@@ -885,6 +885,33 @@ def test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its
     assert "MISSING: d" in digest_at(chores, agent, t + 86400 + 301)
 
 
+@pytest.mark.parametrize(
+    "day",
+    [
+        "2026-09-04",
+        "2026-9-04",
+        "2026-09-4",
+        "2026-9-4",
+        "".join(chr(0xFF10 + int(c)) for c in "2026") + "-09-04",
+    ],
+    ids=["padded", "month", "day", "both", "full-width-year"],  # strptime reads each of them as the date
+)
+def test_a_day_the_digest_is_asked_about_selects_the_same_rows_in_any_spelling_a_date_has(tmp_path, day):
+    khive = FakeKhive()
+    chores, agent = build(tmp_path, khive, [], w=Probe("w", full(), every="weekly"))
+    chores.extra_digest = lambda d: [f"extra {d}"]  # the desk's lines are asked for the day the digest names
+    t = datetime(2026, 9, 4, 9, 0).timestamp()
+    ledger(chores, ("w", t))
+    text = digest_at(chores, agent, t + 30 * 86400, day=day)
+    head, *lines = text.splitlines()
+    assert head == f"[chores digest 2026-09-04] {SELF}: 1 check(s); a MISSING line is the finding"
+    assert lines == [
+        f"{OWNER} w 09:00 quiet 1 run(s), 1 answered, 1 quiet, 0 report, 0 escalate, 0 instrument-failed",
+        "extra 2026-09-04",
+    ]
+    assert khive.sent[-1]["subject"] == "chores digest 2026-09-04"
+
+
 def test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace(tmp_path):
     probes = {
         n: Probe(n, full(), every=e) for n, e in (("w", "weekly"), ("p", "every:15m"), ("a", "every:30m"))
@@ -1097,6 +1124,41 @@ def test_a_label_and_an_instant_on_different_days_make_the_ledger_unreadable_nam
     head, *lines = digest_at(chores, agent, t).splitlines()
     assert ": ledger unreadable (ValueError: a ledger row's `at` and `ts` name different days: " in head
     assert lines == [f"{OWNER} w not judged: ledger unreadable"]
+
+
+@pytest.mark.parametrize(
+    "ts",
+    ["bad", True, False, None, "1789498790", [1789498790.0], float("nan"), float("inf"), float("-inf")],
+    ids=repr,
+)
+def test_a_ts_that_is_not_a_finite_number_makes_the_ledger_unreadable_naming_the_field(tmp_path, ts):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("w", t - 3600))  # a run that reads `not due` were the bad row skipped
+    row = {"at": label(t), "ts": ts, "chore": "w", "findings": [], "control": True, "escalate": False}
+    with chores.ledger.open("a") as fh:
+        fh.write(json.dumps(row) + "\n")  # the standard library writes a non-finite float as NaN or Infinity
+    head, *lines = digest_at(chores, agent, t).splitlines()
+    assert ": ledger unreadable (ValueError: a ledger row has no usable ts: " in head
+    assert lines == [f"{OWNER} w not judged: ledger unreadable"]
+
+
+@pytest.mark.parametrize("kind", ["none-written", "int", "float"])
+def test_a_row_with_no_ts_or_a_finite_number_for_one_is_judged(tmp_path, kind):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("w", t - 3600))
+    ts = {"none-written": _DROP, "int": int(t), "float": float(t)}[kind]
+    row = {"at": label(t), "ts": ts, "chore": "w", "findings": [], "control": True, "escalate": False}
+    row = {k: v for k, v in row.items() if v is not _DROP}  # a row from before rows carried `ts` has none
+    assert ("ts" in row) is (kind != "none-written")
+    with chores.ledger.open("a") as fh:
+        fh.write(json.dumps(row) + "\n")
+    head, *lines = digest_at(chores, agent, t + 1800).splitlines()
+    assert head.endswith(": 2 check(s); a MISSING line is the finding")
+    assert lines == [
+        f"{OWNER} w 09:00 quiet 2 run(s), 2 answered, 2 quiet, 0 report, 0 escalate, 0 instrument-failed"
+    ]
 
 
 def test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none(tmp_path):
@@ -1617,7 +1679,16 @@ def test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing(tmp
             agenda=[
                 ("tick: m", SELF, "pending", "2027-02-28T09:30:00Z", "2027-01-31T09:30:00Z", "monthly"),
                 # a row with no anchor counts its months from its own firing, as the store does for one
-                ("tick: legacy", SELF, "pending", "2027-02-28T09:30:00Z", None, "monthly"),
+                # (made a minute before it, as a tick is: the firing is the first inside its creation's month)
+                (
+                    "tick: legacy",
+                    SELF,
+                    "pending",
+                    "2027-02-28T09:30:00Z",
+                    None,
+                    "monthly",
+                    "2027-02-28T09:29:00Z",
+                ),
             ]
         )
         chores, agent = build(
@@ -1640,6 +1711,56 @@ def test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing(tmp
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+# a store that keeps no `repeat_anchor` moves `trigger_at` a calendar month on per delivery, in UTC
+_MONTHS = {
+    "three-months-on": ("2027-04-15T09:30:00+00:00", "2027-01-15T09:29:00.250000Z", "2027-01-15T09:30:00Z"),
+    "feb-28-clamp": ("2027-03-31T09:30:00+00:00", "2027-02-28T09:29:00Z", "2027-02-28T09:30:00Z"),
+    "leap-feb-29-clamp": ("2028-03-31T09:30:00+00:00", "2028-02-29T09:29:00Z", "2028-02-29T09:30:00Z"),
+    "two-back-a-31-day-month": ("2027-03-31T09:30:00+00:00", "2027-01-31T09:29:00Z", "2027-01-31T09:30:00Z"),
+    "across-the-year": ("2027-02-10T09:30:00+00:00", "2026-11-10T09:29:00Z", "2026-11-10T09:30:00Z"),
+    # Feb 28 21:00 in UTC is Mar 1 in +05:00: the month steps back in UTC, to Jan 28 and not to Jan 31
+    "utc-day": ("2027-03-01T02:00:00+05:00", "2027-01-28T20:00:00Z", "2027-01-28T21:00:00Z"),
+    # made Sep 15 with its first firing a month on, in the store's offset spelling: one month back is
+    # before its creation, so the trigger is the first
+    "first-firing-a-month-after-creation": (
+        "2027-10-15T14:00:00-04:00",
+        "2027-09-15T18:59:50.091369Z",
+        "2027-10-15T18:00:00Z",
+    ),
+    "fired-before-creation-is-its-own": (
+        "2027-01-15T09:30:00+00:00",
+        "2027-03-01T00:00:00Z",
+        "2027-01-15T09:30:00Z",
+    ),
+    "creation-month-is-its-own": (
+        "2027-01-15T09:30:00+00:00",
+        "2027-01-15T09:29:00Z",
+        "2027-01-15T09:30:00Z",
+    ),
+    "no-creation-firing-ahead-of-now": ("2028-09-15T09:30:00+00:00", None, "2028-06-01T00:00:00Z"),
+    "no-creation-firing-behind-now": ("2027-05-15T09:30:00+00:00", None, "2027-05-15T09:30:00Z"),
+    "creation-no-month-counts": (
+        "2028-09-15T09:30:00+00:00",
+        "0001-01-01T00:00:00+05:00",
+        "2028-06-01T00:00:00Z",
+    ),
+}
+
+
+@pytest.mark.parametrize(("trigger", "born", "first"), list(_MONTHS.values()), ids=list(_MONTHS))
+def test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits(
+    tmp_path, trigger, born, first
+):
+    now, want = (datetime.fromisoformat(x).timestamp() for x in ("2028-06-01T00:00:00Z", first))
+    row = ("tick: m", SELF, "pending", trigger, None, "monthly", born)
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], m=Probe("m", full(), every="monthly"))
+    agent.clock = lambda: now
+    asyncio.run(chores.ensure_ticks())
+    assert agent.state.get("first_due").value == {"m": want}
+    text = digest_at(chores, agent, want + 301)  # a second past the grace: the first firing is the finding
+    assert f"MISSING: m, no run recorded, first due by {label(want)}" in text.splitlines()
 
 
 def test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick(tmp_path):
@@ -1752,6 +1873,49 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
     agent.clock = lambda: now
     asyncio.run(chores.ensure_ticks())
     assert agent.state.get("first_due").value == {"disk": now - 7200}
+
+
+@pytest.mark.parametrize(
+    ("kept", "replaced"),
+    [
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() + 5 * 1800, True),  # the row's own next firing
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() + 1, True),  # a second late
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp(), False),
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() - 3600, False),  # earlier: the stronger evidence
+        ("soon", True),  # a record that is no instant is no record
+        (True, True),
+        (float("nan"), True),
+        (float("inf"), True),
+    ],
+    ids=["a-period-run-late", "a-second-late", "equal", "earlier", "text", "bool", "nan", "inf"],
+)
+def test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing(
+    tmp_path, kept, replaced
+):
+    first = datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp()
+    row = pending("disk", first + 5 * 1800, "every:30m", first - 60)  # delivered five times, still pending
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], disk=Probe("disk", full()))
+    agent.clock = lambda: first + 4 * 1800 + 100
+    agent.state.put("first_due", {"disk": kept, "other": 7.0}, run="-", seq=0)
+    asyncio.run(chores.ensure_ticks())
+    want = first if replaced else kept
+    assert agent.state.get("first_due").value == {"disk": want, "other": 7.0}  # nothing else is touched
+    line = f"MISSING: disk, no run recorded, first due by {label(want)}"
+    assert line in digest_at(chores, agent, first + 301).splitlines()  # the finding is not hidden
+
+
+@pytest.mark.parametrize(("shift", "replaced"), [(86400, True), (-100, False)], ids=["later", "earlier"])
+def test_a_tick_made_now_replaces_a_later_first_due_on_record_and_keeps_an_earlier_one(
+    tmp_path, shift, replaced
+):
+    khive = FakeKhive()
+    chores, agent = build(tmp_path, khive, [], pr=Probe("pr", full(), every="every:15m"))
+    kept = time.time() + 60 + shift  # the tick is made for a minute from now
+    agent.state.put("first_due", {"pr": kept}, run="-", seq=0)
+    asyncio.run(chores.ensure_ticks(first_in_s=60))
+    (remind,) = [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: pr"' in op]
+    sent = datetime.fromisoformat(re.search(r'at="([^"]+)"', remind).group(1)).timestamp()
+    assert agent.state.get("first_due").value == {"pr": sent if replaced else kept}
 
 
 def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_agenda_keeps_it(tmp_path):

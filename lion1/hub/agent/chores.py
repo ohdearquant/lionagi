@@ -37,6 +37,7 @@ from __future__ import annotations
 import calendar
 import dataclasses
 import json
+import math
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -515,8 +516,10 @@ class Chores:
     async def digest(self, day: str | None, run: Run) -> str:
         now = self.agent.clock()
         day = day or time.strftime("%Y-%m-%d", time.localtime(now))
+        named = datetime.strptime(day, "%Y-%m-%d")
+        day = named.date().isoformat()  # padded as a ledger label opens: `2026-9-4` is `2026-09-04`
         # the moment a chore is judged at: now, or the end of a past day the digest was asked about
-        moment = min(now, (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp())
+        moment = min(now, (named + timedelta(days=1)).timestamp())
         try:  # a ledger unreadable or torn judges nothing: a missing subject is not an empty one. An absent
             # file is an empty ledger: an agent whose chores have not run has not written one
             ledger, unread = self.rows(), ""
@@ -526,6 +529,8 @@ class Chores:
                 usable = {  # each field the digest reads from a row, and whether it is one it can use
                     "chore": isinstance(row.get("chore"), str) and bool(row["chore"].strip()),
                     "at": isinstance(row.get("at"), str) and _is_label(row["at"]),
+                    # a row from before rows carried `ts` has none; one that has it holds a number to read
+                    "ts": "ts" not in row or _is_number(row["ts"]),
                     "findings": isinstance(row.get("findings"), list)
                     and all(isinstance(f, str) for f in row["findings"]),
                     "control": isinstance(row.get("control"), bool),
@@ -708,8 +713,8 @@ class Chores:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
         a steward. Creates what is missing, returns what it created. A chore's first firing is kept in
-        the agent's state (`first_due`) for the digest, once: from the tick when created, from the
-        pending reminder's own row (`_first_firing`) when the tick was already there and none is kept."""
+        the agent's state (`first_due`) for the digest: the earlier of what the tick's pending rows give
+        (`_first_firing`; the tick's own firing when it was just made) and what is already kept."""
         (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
         me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
         now = self.agent.clock()
@@ -737,9 +742,13 @@ class Chores:
                 created.append(content)
                 fires = [_iso_epoch(at)]
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
-            # set once: an earlier first due is the stronger evidence
-            if fires and chore in self.instruments and chore not in firsts:
-                self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
+            if fires and chore in self.instruments:
+                # a kept first due stands unless a row's history admits an earlier firing: a tick is made a
+                # minute before its first, so what a row gives is not before it, however late its trigger
+                kept = firsts.get(chore)
+                first = min(fires) if not _is_number(kept) else min(kept, *fires)
+                if first != kept:
+                    self.agent.state.put("first_due", {**firsts, chore: first}, run="-", seq=0)
         return created
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
@@ -999,6 +1008,11 @@ def _is_label(at: str) -> bool:
     return _LABEL.fullmatch(at) is not None
 
 
+def _is_number(v: Any) -> bool:
+    """A number that is no bool and no NaN or infinity, which a JSON line can spell."""
+    return (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and math.isfinite(v))
+
+
 def _epoch(row: dict) -> float:
     """The row's instant: its `ts`; a row written before rows carried one reads its local `at`, which
     names two instants in the hour a clock change repeats."""
@@ -1014,29 +1028,45 @@ def _iso_epoch(iso: str | None) -> float:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
 
 
+def _months_before(t: datetime, n: int) -> datetime:
+    """`t` n calendar months earlier, its day clamped to that month's last, as the store clamps a month."""
+    y, m = divmod(t.year * 12 + t.month - 1 - n, 12)
+    return t.replace(year=y, month=m + 1, day=min(t.day, calendar.monthrange(y, m + 1)[1]))
+
+
 def _first_firing(row: dict, now: float) -> float | None:
     """The first firing a pending reminder's row implies, or None when it names no instant. The store moves
     `trigger_at` on to the next firing after each delivery and keeps the row pending, so it is no first
-    due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. A
-    fixed period's firings lie a period apart, so the first is the earliest not before the row's own
-    creation (`created_at`, beside `properties`); a row naming no creation instant, or a period that is
-    not fixed (a cron), gives its firing or now, whichever is earlier."""
+    due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. Else
+    the first is the earliest firing not before the row's own creation (`created_at`, beside `properties`):
+    a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A row naming no
+    creation instant, or a period that is not fixed (a cron), gives its firing or now, if that is earlier."""
     p = row.get("properties") or {}
     repeat = p.get("repeat")
-    when = (p.get("repeat_anchor") if repeat == "monthly" else None) or p.get("trigger_at")
+    anchor = p.get("repeat_anchor") if repeat == "monthly" else None
+    when = anchor or p.get("trigger_at")
     if not isinstance(when, str) or not when:
         return None
     try:
         first = _iso_epoch(when)
     except (ValueError, OverflowError):
         return None
-    if repeat == "monthly":
+    if anchor:
         return first
     made = row.get("created_at")
     try:
         born = _iso_epoch(made) if isinstance(made, str) and made else None
     except (ValueError, OverflowError):
         born = None
+    if repeat == "monthly" and born is not None:
+        try:
+            t, b = datetime.fromtimestamp(first, UTC), datetime.fromtimestamp(born, UTC)
+        except (ValueError, OverflowError, OSError):
+            return min(first, now)
+        n = (t.year - b.year) * 12 + t.month - b.month  # months from the creation's month to the firing's
+        if n > 0 and _months_before(t, n) < b:  # that month's firing is before its creation: one month less
+            n -= 1
+        return _months_before(t, n).timestamp() if n > 0 else first
     fixed = isinstance(repeat, str) and (repeat in _NAMED or _EVERY.fullmatch(repeat) is not None)
     period = period_s(repeat) if fixed else 0.0
     if born is None or period <= 0:
