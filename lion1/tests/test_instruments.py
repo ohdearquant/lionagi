@@ -1008,7 +1008,17 @@ def delay_connect(monkeypatch, seconds):
 
 
 def real_sh(
-    monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0, hold=False, census=None
+    monkeypatch,
+    argv,
+    *,
+    timeout,
+    cancels=0,
+    pause=0.0,
+    pidfile=None,
+    settle=5.0,
+    hold=False,
+    land=False,
+    census=None,
 ):
     """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
     BOUND; the seconds it took, counted from the first cancel, which comes `pause` seconds in, when
@@ -1016,14 +1026,14 @@ def real_sh(
     it started are closing; whether each was reaped). The last two are read the moment the call
     ended, before this helper cleans up after it: the descendant is then killed and each command is
     closed and killed. A command is recorded where its process comes to exist, before anything is
-    awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the
-    start of every command never connects its pipes, until the helper releases it: right after the census
-    below, or when the call is hung. A `census` dict is filled in the step in which the call returns, before
-    its caller's next turn: `tasks`, the coroutines still pending beside the call; `fds`, the descriptors
-    open that were not before it; `ends`, the parent's pipe ends of the commands started. It then has
-    `group`, the commands' process groups with a member left after `settle` seconds. With `hold` it is
-    finally filled with `released`, the fds and tasks once the held connection has run, which nothing in
-    the helper helps to close."""
+    awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the start of
+    every command never connects its pipes, until the helper releases it: right after the census below, or
+    when the call is hung, or with `land` once the cancels are in. A `census` dict is filled in the step in
+    which the call returns, before its caller's next turn: `tasks`, the coroutines still pending beside the
+    call; `fds`, the descriptors open that were not before it; `ends`, the parent's pipe ends of the commands
+    started. It then has `group`, the commands' process groups with a member left after `settle` seconds. With
+    `hold` it is finally filled with `released`, the fds and tasks once the held connection has run, which
+    nothing in the helper helps to close."""
     started = []
     before: set[int] = set()
     runner: list[asyncio.Task] = []  # this helper's own task, which waits beside the call
@@ -1074,6 +1084,8 @@ def real_sh(
         for _ in range(cancels):  # a second cancel lands while the first one's cleanup runs
             task.cancel()
             await asyncio.sleep(0.05)
+        if land:
+            gate.set()
         done, _ = await asyncio.wait([task], timeout=BOUND)
         took = time.monotonic() - t0
         pipes = [t._pipes.get(fd) for t in started for fd in (1, 2)]  # None: never connected
@@ -1155,12 +1167,13 @@ def test_a_cancel_after_the_timeout_while_the_start_connects_is_not_the_timeouts
     monkeypatch, tmp_path
 ):
     # the deadline passed while the start was held: the command and its group are ended once it has
-    # started, and the cancel that came in meanwhile is raised then
-    delay_connect(monkeypatch, 1.0)
+    # started, and the cancel that came in meanwhile is raised then. The start is held until the cancel is
+    # in, and the grace outlasts the test's bound, so no clock decides the order, however slow the machine
+    monkeypatch.setattr(instr, "_GRACE", BOUND)
     pidfile = tmp_path / "descendant.pid"
     argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
     got, took, left, closed, reaped = real_sh(
-        monkeypatch, argv, timeout=0.2, cancels=1, pause=0.3, pidfile=pidfile
+        monkeypatch, argv, timeout=0.2, cancels=1, pause=0.3, pidfile=pidfile, hold=True, land=True
     )
     assert got == "cancelled" and took < 3
     assert left is False and closed and reaped
