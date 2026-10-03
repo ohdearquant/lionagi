@@ -2101,8 +2101,9 @@ class _Failed(Exception):
 
 
 class _Limit(asyncio.Timeout):
-    """The walk's time limit and the time budget its deadline comes from: a grant of time that moves
-    the deadline moves the budget with it, and one that lands after the limit fired moves neither."""
+    """A walk's or a settlement's time limit and the time budget its deadline comes from: a grant of
+    time that moves the deadline moves the budget with it, and one that lands after the limit fired
+    moves neither."""
 
     def __init__(self, run: Run):
         super().__init__(_deadline(run))
@@ -2187,9 +2188,9 @@ class _Walk:
             try:
                 # the time budget bounds it as any turn's; a write it cuts while the write waited for its
                 # command is cut by the budget as the walk's own cut is, and is told as that is, once
-                cut = await _settle(self.run, self.tasks)
+                cut, budget = await _settle(self.run, self.tasks)
                 if any(task in self.write_reads for task in cut):
-                    self.out_of_time(self.run.bounds["time_budget"])
+                    self.out_of_time(budget)
             finally:
                 # a value still computing now has no reader left (each was cancelled): it stops with
                 # them, whether the settle returned or raised
@@ -2225,10 +2226,14 @@ class _Walk:
                 reader = _Reader(self)
                 self.named |= node.named
                 fields: dict[str, Any] = {}
+                size = 0  # what `_size(fields)` counts, kept as the fields land, never scanned again whole
                 for key, v in node.fields:
+                    if key in fields:  # a key written again holds only its last value
+                        size -= 1 + len(key) + _size(fields[key])
                     fields[key] = await evaluate(v, reader)
+                    size += 1 + len(key) + _size(fields[key])
                     # counted as a dict literal is: no field after the one that takes it past the limit runs
-                    if _size(fields) > LIMIT:
+                    if size > LIMIT:
                         raise EvalError(
                             f"line {node.line}: the OUT{{}} fields together are "
                             f"past the size limit of {LIMIT}"
@@ -2554,17 +2559,20 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True) -> list[asyncio.Task]:
+async def _settle(
+    run: Run, tasks: list[asyncio.Task], by_deadline: bool = True
+) -> tuple[list[asyncio.Task], float | None]:
     """Wait for the turn's commands, under the run's deadline unless `by_deadline` is False: one still
     running when it passes is cancelled, and a grant of time while it waits moves it, as it moves a
     walk's. A cancelled command has settled itself as a RESULT; any other way out of a command task
     is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
     settle did not wait for (a command `OUT{}` did not name) is seen through by the reap. The tasks its
-    own deadline cancelled are returned."""
+    own deadline cancelled are returned, with the time budget that deadline came from."""
     cut: list[asyncio.Task] = []
+    budget = None
     if tasks:
         waited = set(tasks)
-        limit = asyncio.timeout_at(_deadline(run) if by_deadline else None)
+        limit = _Limit(run) if by_deadline else asyncio.timeout_at(None)
         try:
             async with limit:
                 if by_deadline:
@@ -2574,6 +2582,7 @@ async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True)
                 finally:
                     run.timeouts.discard(limit)
         except TimeoutError:  # only this limit raises it: the wait itself never does
+            budget = limit.budget  # the run's deadline fired, so this limit is the run's `_Limit`
             for task in waited:
                 if not task.done():
                     task.cancel()
@@ -2583,7 +2592,7 @@ async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True)
         for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 raise r
-    return cut
+    return cut, budget
 
 
 def _left(run: Run) -> float | None:

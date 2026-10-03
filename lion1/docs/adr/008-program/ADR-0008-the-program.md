@@ -359,7 +359,7 @@ computation binds its failure.
   `test_a_write_queued_with_time_left_is_refused_as_spent_whatever_its_evaluation_raises`,
   `test_a_write_waiting_when_the_walk_expired_commits_nothing_whatever_a_late_grant_did`,
   `test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read` and
-  `test_a_write_queued_before_the_walk_was_cut_commits_nothing_and_the_turn_is_refused_once` pin it.
+  `test_a_write_on_a_spent_budget_and_the_walks_cut_in_a_comprehension_refuse_the_turn_once` pin it.
 - **S12**: A write the settlement's own deadline cuts while it waits for its command is the budget
   spent too: the turn says so once, naming the budget the settlement ran under. A cut command no
   write waits for is a cancelled result and no refusal.
