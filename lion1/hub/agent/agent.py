@@ -61,6 +61,7 @@ __all__ = (
     "Gtd",
     "CLAUDE_CODE",
     "claude_code_options",
+    "codex_options",
     "Agent",
 )
 
@@ -295,6 +296,25 @@ def claude_code_options(table: dict | None) -> dict:
     return options
 
 
+CODEX = ("timeout", "effort", "cli", "home")  # the `[codex]` keys: none of them gives the model a tool
+
+
+def codex_options(table: dict | None) -> dict:
+    """`[codex]` as an agent takes it: `timeout`, `effort`, `cli` and `home`. A codex model has no
+    tools of its own and runs only on a CLI release its tools-off claim was measured on
+    (ADR-0016/D3), so any other key, `unmeasured` among them, refuses by name, whatever the model,
+    at load and at a reload, never ignored."""
+    if table is not None and not isinstance(table, dict):
+        raise ValueError(f"[codex] is a table of timeout, effort, cli and home, not {table!r}")
+    options = dict(table or {})
+    if extra := sorted(set(options) - set(CODEX)):
+        raise ValueError(
+            f"[codex] {', '.join(extra)}: a codex model has no tools of its own "
+            f"(ADR-0016/D3); the keys are {', '.join(CODEX)}"
+        )
+    return options
+
+
 def _at(task: dict) -> float | None:
     """A task's `at` as unix seconds: a number or an ISO time (naive = local); None if unset or unreadable."""
     value = task.get("at")
@@ -512,6 +532,7 @@ class Agent:
             claude_code_options(
                 cfg.get("claude_code")
             )  # the backend stays until a restart: said, not ignored
+            codex_options(cfg.get("codex"))
         except (OSError, tomllib.TOMLDecodeError, ValueError, TypeError) as e:
             self.errors.append(f"reload failed: {type(e).__name__}: {e}")
             self._say(f"reload failed, the values in force stay: {type(e).__name__}: {e}")

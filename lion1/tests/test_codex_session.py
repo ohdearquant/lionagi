@@ -500,6 +500,46 @@ def test_no_session_file_adds_nothing(cli, tmp_path):
     assert "context_window" not in s.calls[0] and s.calls[0]["thread_id"]
 
 
+def test_a_chat_on_a_codex_model_keeps_one_thread_and_a_continued_chat_stands_on_its_last_count(
+    cli, observed, tmp_path, monkeypatch
+):
+    """`lion chat --model codex/<model>`: the console's system prompt is the CLI's instructions, the
+    model has no tools of its own, and a chat continued from its log seeds the new session's first
+    figure with the last call's count and the characters it stood in."""
+    import shutil
+
+    import lion_cli.agent as agent_mod
+    from lion_cli.chat import chat_main
+    from lion_cli.main import parser
+
+    which, seeds = shutil.which, []
+
+    class Spy(CodexSession):
+        async def __call__(self, messages):
+            seeds.append(self.base)
+            return await super().__call__(messages)
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: cli if name == "codex" else which(name, *a, **k)
+    )
+    monkeypatch.setattr(agent_mod, "CodexSession", Spy)
+    work = tmp_path / "work"
+    work.mkdir()
+    args, log = ["chat", "--dir", str(work), "--model", "codex/gpt-6-luna"], str(tmp_path / "c.jsonl")
+    asyncio.run(chat_main(parser().parse_args([*args, "--log", log, "--say", "hi", "--turns", "1"])))
+    [a] = observed()
+    assert not a["resumed"] and a["argv"][a["argv"].index("-m") + 1] == "gpt-6-luna"
+    assert a["instructions"] != INSTRUCTIONS and len(a["instructions"]) > 500  # the console's own prompt
+    assert "hi" in a["prompt"] and a["instructions"] not in a["prompt"]
+    assert {"--disable", "shell_tool"} <= set(a["argv"]) and 'sandbox_mode="read-only"' in a["argv"]
+    assert seeds == [None]
+    asyncio.run(chat_main(parser().parse_args([*args, "-r", log, "--say", "and again", "--turns", "1"])))
+    b = observed()[1]
+    assert not b["resumed"] and b["thread"] != a["thread"]  # a new process: a new thread, the whole view
+    assert "hi" in b["prompt"] and "and again" in b["prompt"]
+    assert seeds[1] == (100 + len(a["prompt"]) // 4, len(a["prompt"]))
+
+
 def test_an_unmeasured_release_is_refused_before_a_thread_is_started(cli, observed, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_VERSION", "codex-cli 0.157.0")
     s = CodexSession(cli=cli)
