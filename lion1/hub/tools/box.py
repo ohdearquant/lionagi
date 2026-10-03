@@ -11,16 +11,23 @@ repository in it."""
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
+import os
 import posixpath
 import re
 import shlex
+import signal
 import subprocess
 import tarfile
 from pathlib import Path
 from typing import Any, Protocol
 
-__all__ = ("Box", "BoxBase", "git_diff", "inside", "pack", "BoxTree")
+__all__ = ("GIT_TIMEOUT", "Box", "BoxBase", "git_diff", "inside", "pack", "BoxTree")
+
+# seconds each of `pack`'s git calls on this machine gets: a git held by a lock or a helper that never
+# answers would hold the push, and a chat that starts with one, without end
+GIT_TIMEOUT = 30.0
 
 
 class Box(Protocol):
@@ -110,23 +117,53 @@ class BoxBase:
         return await git_diff(self, base)  # type: ignore[arg-type]
 
 
+def _git(directory: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """`git -C directory <args>`, its output captured, within `GIT_TIMEOUT`. Past it, or on a ^C, the
+    process group git leads is killed, a helper it started with it, and git reaped; past it,
+    `TimeoutError` says git did not answer, which a git that exited with an rc never does."""
+    with subprocess.Popen(
+        ["git", "-C", str(directory), *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,  # a group of its own: the kill reaches what git started, holding its pipes
+    ) as proc:
+        try:
+            out, err = proc.communicate(timeout=GIT_TIMEOUT)
+        except BaseException as e:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:  # the group ended on its own
+                pass
+            except PermissionError:
+                # macOS answers EPERM for a group whose only member is its leader, exited and not yet
+                # reaped: `poll` reaps it without blocking. EPERM again is a member this process may not
+                # signal, and raises
+                proc.poll()
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            if isinstance(e, subprocess.TimeoutExpired):
+                raise TimeoutError(
+                    f"git {args[0]} in {directory} did not answer within {GIT_TIMEOUT:g}s and was stopped"
+                ) from None
+            raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
 def _in_repository(directory: Path) -> bool:
     """Whether `directory` is inside a git work tree (read without the index: a broken one still says yes)."""
-    done = subprocess.run(
-        ["git", "-C", str(directory), "rev-parse", "--is-inside-work-tree"], capture_output=True
-    )
+    done = _git(directory, "rev-parse", "--is-inside-work-tree")
     return done.returncode == 0 and done.stdout.strip() == b"true"
 
 
 def pack(directory: Path) -> tuple[bytes, list[str]]:
     """`directory` as a gzipped tar for a remote box's `push`, and the names in it: the files and symlinks
     git sees when it is a repository (tracked and untracked, ignored ones left out), else every one. A
-    symlink goes in as a link, not followed, whether it points at a file, a directory or nothing."""
+    symlink goes in as a link, not followed, whether it points at a file, a directory or nothing. A git
+    call that does not answer within `GIT_TIMEOUT` is stopped, and `TimeoutError` raised."""
     directory = Path(directory).resolve()
-    done = subprocess.run(
-        ["git", "-C", str(directory), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        capture_output=True,
-    )
+    done = _git(directory, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
     if done.returncode == 0:
         names = [n.decode("utf-8", "surrogateescape") for n in done.stdout.split(b"\0") if n]
     elif _in_repository(directory):

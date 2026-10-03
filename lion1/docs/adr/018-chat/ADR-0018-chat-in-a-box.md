@@ -395,11 +395,12 @@ within one `GIT_TIMEOUT`.
 
 ### D3: `prepare_box` and `take_patch`, the patch before the stop ^d3
 
-Serves C3, C4 and C5. `prepare_box` starts the box, pushes, and commits the baseline, returning its
-hash. At the end `chat_main` takes the patch under `asyncio.shield`, then stops the box; a failure
-taking it keeps the box and names it. The default is print and save; `--apply` lands. `take_patch`'s
-host git calls have `GIT_TIMEOUT` (30 s) each, the box's diff calls 120 s each; an apply stopped at
-it may have written part of the patch, so the directory is said to be unknown, and the box stops.
+Serves C3, C4 and C5. `prepare_box` starts the box, pushes (D17), and commits the baseline,
+returning its hash. At the end `chat_main` takes the patch under `asyncio.shield`, then stops the
+box; a failure taking it keeps the box and names it. The default is print and save; `--apply` lands.
+`take_patch`'s host git calls have `GIT_TIMEOUT` (30 s) each, the box's diff calls 120 s each; an
+apply stopped at it may have written part of the patch, so the directory is said to be unknown, and
+the box stops.
 
 - **Landing evidence**: `tests/test_daytona.py`: the chat in a box end to end, the subdirectory
   apply, committed edits, the ignored tracked file, the kept box named; `tests/test_chat.py`: failed
@@ -570,6 +571,20 @@ into the model again.
   `test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments`,
   `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
   the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`.
+
+### D17: The push's git calls on this machine, each within the hub's `GIT_TIMEOUT` ^d17
+
+Serves C3. A push lists the directory with `git ls-files` and, when that fails, asks `git rev-parse`
+whether it is a repository, in `pack` of `hub/tools/box.py`. Each call has that module's
+`GIT_TIMEOUT` (30 s); the hub does not import the command's. Past it the process group git leads is
+killed, with what git started in it, git is reaped, and `TimeoutError` says git did not answer
+within the bound, which a git that exits with an rc never says. Nothing is pushed.
+
+- **Landing evidence**: `tests/test_daytona.py`:
+  `test_a_push_whose_local_git_never_answers_is_stopped_at_the_bound_and_said_to_have_timed_out`,
+  `ls-files` and `rev-parse` each stalled;
+  `test_a_stalled_git_whose_group_kill_is_first_refused_with_eperm_is_still_stopped`. Control:
+  either call unbounded fails its own case alone.
 
 ## Alternatives
 

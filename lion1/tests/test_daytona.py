@@ -6,11 +6,14 @@ and `python` through `shell()`, the code tools through `BoxTree`, a directory pu
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -282,6 +285,82 @@ def test_push_stops_on_a_repository_git_cannot_list(stubbed, tmp_path):
     with pytest.raises(OSError, match="git ls-files in .* exited 128"):
         asyncio.run(box.push(src, dest=str(work / "src3-again")))
     assert not (work / "src3-again").exists()  # nothing was sent
+
+
+def stalled_git(tmp_path: Path, monkeypatch, stalls: str) -> Path:
+    """`git` first on PATH whose `stalls` call never answers: it waits on a child that holds its pipes,
+    both pids appended to the file returned. Any other call exits 128, as for a repository git cannot
+    list."""
+    pids = tmp_path / "stalled-pids"
+    stub = tmp_path / "stalled-bin"
+    stub.mkdir()
+    log = shlex.quote(str(pids))
+    (stub / "git").write_text(
+        f'#!/bin/sh\ncase " $* " in *" {stalls} "*) ;; *) echo "fatal: bad index" >&2; exit 128;; esac\n'
+        f"echo $$ >> {log}\n/bin/sleep 10 &\necho $! >> {log}\nwait\n"
+    )
+    (stub / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub}{os.pathsep}{os.environ['PATH']}")
+    return pids
+
+
+def gone(pids: Path) -> None:
+    """The stalled git and its child, both ended: git reaped by the call, the child, orphaned by the
+    kill, by init within a few seconds."""
+    started = [int(p) for p in pids.read_text().split()]
+    assert len(started) == 2
+    for pid in started:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline, f"pid {pid} still runs"
+            time.sleep(0.05)
+
+
+@pytest.mark.parametrize("stalls", ["ls-files", "rev-parse"])
+def test_a_push_whose_local_git_never_answers_is_stopped_at_the_bound_and_said_to_have_timed_out(
+    stubbed, tmp_path, monkeypatch, stalls
+):
+    # the push's git calls had no time limit: a git held by a lock or a helper held `lion chat --box
+    # daytona` before its first call. `ls-files` stalls; or it fails and the repository check behind it does
+    box, work, _, _ = stubbed
+    src = tmp_path / "src4"
+    src.mkdir()
+    (src / "keep.py").write_text("x = 1\n")
+    pids = stalled_git(tmp_path, monkeypatch, stalls)
+    monkeypatch.setattr("hub.tools.box.GIT_TIMEOUT", 1.0, raising=False)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError, match=f"git {stalls} in .* did not answer within 1s and was stopped"):
+        asyncio.run(box.push(src, dest=str(work / "src4")))
+    assert 1.0 <= time.monotonic() - start < 2.0
+    assert not (work / "src4").exists()  # nothing was sent
+    gone(pids)
+
+
+def test_a_stalled_git_whose_group_kill_is_first_refused_with_eperm_is_still_stopped(tmp_path, monkeypatch):
+    # macOS answers EPERM for a group whose only member is its leader, exited and not yet reaped. Here
+    # the first kill is refused so while git still runs: it is tried again after a reap that does not
+    # block, the group ends, and the call still says git did not answer
+    from hub.tools import box as box_mod
+
+    pids = stalled_git(tmp_path, monkeypatch, "status")
+    monkeypatch.setattr(box_mod, "GIT_TIMEOUT", 1.0)
+    real, sent = os.killpg, []
+
+    def killpg(pid, sig):
+        sent.append(pid)
+        if len(sent) == 1:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        real(pid, sig)
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    with pytest.raises(TimeoutError, match="git status in .* did not answer within 1s and was stopped"):
+        box_mod._git(tmp_path, "status")
+    assert len(sent) == 2
+    gone(pids)
 
 
 def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(stubbed, tmp_path, capsys):
