@@ -219,14 +219,16 @@ without it.
 
 Serves C3. `codex` or `codex/<model>` is the subscription CLI on one thread per run
 ([[ADR-0009-backends#^d6|ADR-0009/D6]]), the model without tools of its own. `[codex]` takes
-`timeout`, `effort`, `cli` and `home`, refusing any other key by name, `unmeasured` among them;
-`build` refuses a backend built with it. So no served path runs a CLI release the tools-off claim
-was not measured on ([[ADR-0009-backends|ADR-0009]] S23). The chat seeds a continued session's first
-figure from its last call.
+`timeout`, `effort`, `cli` and `home`. Any other key is refused by name, `unmeasured` among them, as
+is a value its key does not take; `build` refuses a backend built with `unmeasured`. So no served
+path runs a CLI release the tools-off claim was not measured on ([[ADR-0009-backends|ADR-0009]]
+S23). The chat seeds a continued session's first figure from its last call's answering attempt (S29
+there).
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_backend_for_codex_is_the_session_on_the_named_model_on_a_measured_release_only`,
   `test_a_codex_key_that_is_not_timeout_effort_cli_or_home_is_refused_by_name_whatever_the_model`,
+  `test_a_codex_value_that_is_not_what_its_key_takes_is_refused_by_the_key`,
   `test_build_refuses_a_codex_backend_built_for_an_unmeasured_release`;
   `tests/test_codex_session.py`:
   `test_a_chat_on_a_codex_model_keeps_one_thread_and_a_continued_chat_stands_on_its_last_count`.

@@ -482,11 +482,14 @@ async def _chat_main(
     backend = backend_for(a.model)
     if isinstance(backend, ClaudeCodeSession | CodexSession):
         # a continued chat's new session starts from the whole view: its first figure stands on the
-        # count the last session call reported and the characters it stood in (ADR-0009/C4, C7); a
-        # codex call whose share of its thread's totals was unknown reported none
-        last = next((r for r in reversed(billed) if "prompt_chars" in r and not r.get("usage_unknown")), None)
-        if last is not None and (count := _prompt_tokens(last)) is not None:
-            backend.base = (count, int(last["prompt_chars"]))
+        # count the last session call reported and the characters it stood in (ADR-0009/C4, C7). A
+        # codex row names its answering attempt's count, `None` when its share of the thread's totals
+        # was unknown: its `usage` sums the attempts
+        last = next((r for r in reversed(billed) if "prompt_chars" in r), None)
+        if last is not None:
+            count = last["prompt_tokens"] if "prompt_tokens" in last else _prompt_tokens(last)
+            if count is not None:
+                backend.base = (count, int(last["prompt_chars"]))
     runs: list[Run] = []
     say = Console(
         a.model,

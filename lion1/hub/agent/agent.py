@@ -312,6 +312,14 @@ def codex_options(table: dict | None) -> dict:
             f"[codex] {', '.join(extra)}: a codex model has no tools of its own "
             f"(ADR-0016/D3); the keys are {', '.join(CODEX)}"
         )
+    timeout = options.get("timeout")
+    if "timeout" in options and (  # `true` is an int to Python: one second, read off a typo
+        isinstance(timeout, bool) or not isinstance(timeout, int | float) or not 0 < timeout < float("inf")
+    ):
+        raise ValueError(f"[codex] timeout is a number of seconds above zero, not {timeout!r}")
+    for key in ("effort", "cli", "home"):
+        if key in options and not (isinstance(options[key], str) and options[key]):
+            raise ValueError(f"[codex] {key} is a string that is not empty, not {options[key]!r}")
     return options
 
 

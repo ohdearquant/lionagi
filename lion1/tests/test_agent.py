@@ -1391,6 +1391,37 @@ def test_a_codex_key_that_is_not_timeout_effort_cli_or_home_is_refused_by_name_w
         backend_for(model, codex="x")
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("timeout", True),  # an int to Python: one second, off a typo
+        ("timeout", "fast"),
+        ("timeout", 0),
+        ("timeout", -5),
+        ("timeout", float("inf")),
+        ("timeout", float("nan")),
+        ("effort", 3),
+        ("effort", ""),
+        ("cli", ""),
+        ("cli", ["codex"]),
+        ("home", ""),  # an empty home would be read as the directory the process stands in
+        ("home", 7),
+    ],
+)
+def test_a_codex_value_that_is_not_what_its_key_takes_is_refused_by_the_key(monkeypatch, key, value):
+    from lion_cli.agent import backend_for
+
+    from hub.agent.agent import codex_options
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: f"/opt/bin/{name}")
+    with pytest.raises(ValueError, match=rf"^\[codex\] {key} is a "):
+        codex_options({key: value})
+    with pytest.raises(ValueError, match=rf"^\[codex\] {key} is a "):
+        backend_for("codex", codex={key: value})
+    good = {"timeout": 0.5, "effort": "low", "cli": "codex", "home": "/h"}
+    assert codex_options(good) == good and codex_options({"timeout": 1800}) == {"timeout": 1800}
+
+
 def test_build_refuses_a_codex_backend_built_for_an_unmeasured_release(tmp_path, kkernel_stub):
     """`build` takes a backend from anywhere: one built to run a CLI release nobody measured may let
     the model act outside every gate, so it is refused, as is the config key that would ask for it."""
