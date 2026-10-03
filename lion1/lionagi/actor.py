@@ -2201,11 +2201,12 @@ class _Walk:
         # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
         # as it bounds a command's arguments: one still computing at the deadline stops there
         limit = self.limit = _Limit(self.run)
+        found: dict[str, Any] | None = None
         try:
             async with limit:
                 self.run.timeouts.add(limit)  # while the walk runs, a grant of time moves its deadline
                 try:
-                    return await self.block(script.body)
+                    found = await self.block(script.body)
                 finally:
                     self.run.timeouts.discard(limit)
         except _Failed:
@@ -2228,6 +2229,9 @@ class _Walk:
                 cut, budget = await _settle(self.run, self.tasks)
                 if any(task in self.write_reads for task in cut):
                     self.out_of_time(budget)
+                    # the output built before the cut goes with the write: nothing the walk held commits,
+                    # whatever bound a grant landing after the cut raised
+                    found = None
             finally:
                 # a value still computing now has no reader left (each was cancelled): it stops with
                 # them, whether the settle returned or raised
@@ -2241,6 +2245,7 @@ class _Walk:
                     self.consume(reads, entry.seq)  # at the reader's settle
             consumed = sorted(self.used.keys() - self.named, key=lambda a: self.run.record.get(a).seq)
             self.run.intermediates.update((a, self.used[a]) for a in consumed)
+        return found
 
     def consume(self, reads: set[str], at: int) -> None:
         for alias in reads:

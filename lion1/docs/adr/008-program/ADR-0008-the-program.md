@@ -384,12 +384,13 @@ computation binds its failure.
   `test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output`,
   `test_a_part_a_command_shrank_after_it_was_counted_still_counts_at_the_size_it_landed_with` and
   `test_a_value_of_a_kind_a_capture_shares_is_shared_in_the_output` pin it.
-- **S14**: A key written again gives back what it landed as, whatever a command made of its value
-  since: the count is what each field held as it landed. The copy is the program's candidate; hooks
-  and `accept` may rewrite it after. A copy that fails, a serializer raising or too deep a nesting,
-  refuses the turn; the run goes on. With no write cut, an output built before a late grant is
-  checked against the bound the grant raised, and commits.
+- **S14**: A key written again gives back what it landed as, whatever a command made of it since:
+  the count is each field as it landed. The copy is the program's candidate; hooks and `accept` may
+  rewrite it after. A copy that fails (a serializer raising, too deep a nesting) refuses the turn;
+  the run goes on. An output built before a late grant commits under the raised bound only with no
+  write cut: a cut write drops it (S9).
   `test_a_key_written_again_gives_back_what_it_landed_as_whatever_a_command_made_of_it_since`,
   `test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when_no_write_was_cut`,
+  `test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write`,
   `test_a_key_written_again_after_its_list_grew_lets_no_part_past_the_limit_run` and
   `test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on` pin it.

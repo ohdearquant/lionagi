@@ -1947,6 +1947,32 @@ def test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when
     assert isinstance(run.outcome, Success) and run.output == {"k": "v"} and run.refused == []
 
 
+def test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write():
+    async def extend(run, bound, amount, reason) -> bool:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass  # the settlement's deadline cancels the request, and it is granted anyway
+        return True
+
+    turn = fenced(
+        'g = run.more(bound="time_budget", amount=5, reason="too late")',
+        "note.k = nap(seconds=2)",
+        'OUT{k: "v"}',
+    )
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    actor = _nap_actor("settle-cut-late-grant-output")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the cut cancels the write's command and the request, and the grant lands after it and raises the
+    # bound: the output the walk built before the cut goes with the write, never checked against the
+    # raised bound, so nothing the walk held commits
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
 def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under():
     async def extend(run, bound, amount, reason) -> bool:
         while not any(limit.expired() for limit in run.timeouts):
