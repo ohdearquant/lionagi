@@ -34,7 +34,7 @@ from .bus import Bus
 from .experience import Experience, ExperienceLesson, ExperienceRecord
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
-from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
+from .program import LIMIT, Branch, Command, EvalError, Script, Value, _size, evaluate, pointers
 from .program import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
 )
@@ -2185,8 +2185,11 @@ class _Walk:
             raise
         finally:
             try:
-                # the time budget bounds it as any turn's
-                await _settle(self.run, self.tasks)
+                # the time budget bounds it as any turn's; a write it cuts while the write waited for its
+                # command is cut by the budget as the walk's own cut is, and is told as that is, once
+                cut = await _settle(self.run, self.tasks)
+                if any(task in self.write_reads for task in cut):
+                    self.out_of_time(self.run.bounds["time_budget"])
             finally:
                 # a value still computing now has no reader left (each was cancelled): it stops with
                 # them, whether the settle returned or raised
@@ -2221,7 +2224,15 @@ class _Walk:
             elif isinstance(node, ProgramOutput):
                 reader = _Reader(self)
                 self.named |= node.named
-                fields = {key: await evaluate(v, reader) for key, v in node.fields}
+                fields: dict[str, Any] = {}
+                for key, v in node.fields:
+                    fields[key] = await evaluate(v, reader)
+                    # counted as a dict literal is: no field after the one that takes it past the limit runs
+                    if _size(fields) > LIMIT:
+                        raise EvalError(
+                            f"line {node.line}: the OUT{{}} fields together are "
+                            f"past the size limit of {LIMIT}"
+                        )
                 self.consume(reader.reads, len(self.run.record))
                 return fields
             elif isinstance(node, Command):
@@ -2310,6 +2321,10 @@ class _Walk:
         return value
 
     def write(self, node: Any) -> None:
+        # a write reached on a spent walk launches nothing: not the command on its right side, not that
+        # command's arguments or the hooks that gate it
+        if self.spent():
+            return
         prior = self.writes.get(node.key)
         reader = _Reader(self)
         target = ".".join(("note", node.key, *node.path))
@@ -2539,12 +2554,14 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True) -> None:
+async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True) -> list[asyncio.Task]:
     """Wait for the turn's commands, under the run's deadline unless `by_deadline` is False: one still
     running when it passes is cancelled, and a grant of time while it waits moves it, as it moves a
     walk's. A cancelled command has settled itself as a RESULT; any other way out of a command task
     is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
-    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap."""
+    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap. The tasks its
+    own deadline cancelled are returned."""
+    cut: list[asyncio.Task] = []
     if tasks:
         waited = set(tasks)
         limit = asyncio.timeout_at(_deadline(run) if by_deadline else None)
@@ -2560,11 +2577,13 @@ async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True)
             for task in waited:
                 if not task.done():
                     task.cancel()
+                    cut.append(task)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         run.tasks.difference_update(tasks)
         for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 raise r
+    return cut
 
 
 def _left(run: Run) -> float | None:
