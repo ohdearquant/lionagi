@@ -570,9 +570,11 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S8**: A restart loses live runs: their logs remain and a resume is the client's ask (C7). The
   `once` keys live in memory, so a key replayed after a restart acts again.
 - **S9**: The boundary: who may start what, a durable store of runs and supervision across restarts
-  are the kernel's. Here an offer is the grant and a file is the store. The kernel shape of
-  2026-09-03 is a per-run MCP served by khived on loopback with a token; this transport is the local
-  surface until the kernel serves it, and nothing beyond this machine is decided here.
+  are the kernel's; here an offer is the grant and a file is the store. This serves `Actor.run`
+  until the kernel's exec and observer surfaces land, when start, watch and stop route there;
+  mid-run input (`say`) has no counterpart there and stays here. Every kernel loopback surface is
+  bearer-credentialed, so C9's no-token choice does not carry over if this actor is ever served by
+  or beside khived.
 - **S10**: The transport is under the core's coverage gate, so its tests open real loopback sockets.
 - **S11**: The service routes a bus event to its served run by the runtime's id, so it rests on that
   id being unique among an actor's live runs. `Run` draws 8 hex digits and `Actor.runs` keys on them
