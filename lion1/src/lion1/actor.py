@@ -1228,10 +1228,8 @@ class Actor:
                 run.notes_written.append(lv.alias)
 
     def _dispatch(self, run: Run, program: Program, subset: Operable) -> list[asyncio.Task]:
-        # Every command in the turn runs, OUT{} or not. Commands beside OUT{} used to be scratch
-        # (declared, not run, named as such): the model writes "edit, then done" in one turn and
-        # meant both, and told three times that the edit had not run it wrote the same turn again,
-        # so the fix it had written never reached the tree and the run ended refused.
+        # Every command in the turn runs, OUT{} or not: a model writes "edit, then done" in one turn
+        # and means both (why not scratch: ADR-0002, Alternatives).
         # every command of the turn is admitted before any of them runs: under an eager task factory
         # the coroutine would otherwise run inside create_task, settle, and only then be registered as
         # pending (a second RESULT under its alias from `_never_started`), and a pointer at a later
@@ -1682,10 +1680,9 @@ class Actor:
         lines.append("")  # the context figure, written once the fold below has settled the view
         folded: Directive | None = None
         # the figure the fold decides on: the view's estimate plus what the backend's last reported
-        # count stood above the view beyond its floor for this run, history the record never saw (a
-        # session-keeping CLI's tool turns: one call read 14.8M tokens while the estimate never
-        # moved, ADR-0009/A3). The floor itself, the backend's fixed context, is never counted:
-        # a fold cannot take it off, and counting it would fold every round past a budget it exceeds.
+        # count stood above the view beyond its floor for this run, history the record never saw
+        # (ADR-0009/A3). The floor itself, the backend's fixed context, is never counted: a fold
+        # cannot take it off, and counting it would fold every round past a budget it exceeds.
         excess = 0
         if run.anchor is not None and run.floor is not None:
             excess = max(0, run.anchor[0] - run.anchor[1] - run.floor)
@@ -1934,9 +1931,9 @@ def _read(text: str, language: str = "core", refused: str | None = None) -> Prog
         raise lndl.LNDLError(refused)
     seen = "".join(c for c in text if unicodedata.category(c) != "Cf")  # zero-width characters hide nothing
     if frame := _SYSTEM_FRAME.search(seen):
-        # the model wrote the loop's own frame and went on as if the results in it were real (9 of
-        # 50 thinking-off runs, half their output tokens); none of it runs. A mention is refused too:
-        # every rule that spared the tag in backticks also spared a frame made to look like one
+        # a model that writes the loop's own frame goes on as if the results in it were real, so none
+        # of it runs (ADR-0004/C4). A mention is refused too: every rule that spared the tag in
+        # backticks also spared a frame made to look like one
         line = len(_BREAK.findall(seen, 0, frame.start())) + 1
         shown = _BREAK.split(seen[frame.start() :], 1)[0].strip()
         shown = shown if len(shown) <= 80 else shown[:77] + "..."

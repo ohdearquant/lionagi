@@ -861,9 +861,8 @@ def _parse_constructs(text: str, repairs: list[str]) -> Program:
             lvars.append(Lvar(alias=alias, value=body.strip(), spec=spec, field=fld))
         elif not _CALLISH.match(body.strip()):
             # a shell line, a script, a note's prose, written in <lact>: it is a value, not a request,
-            # and it is kept under the alias rather than lost to a wasted round (on Mini-50, 7 unreadable
-            # turns were bare shell in a <lact>, ADR-0004/A1, and the model's next turn pointed at the
-            # alias it had used)
+            # kept under the alias rather than lost to a wasted round, so a later turn can point at the
+            # alias it used (ADR-0004/A1)
             lvars.append(Lvar(alias=alias, value=body.strip(), spec=spec, field=fld))
             problems.append(
                 f"<lact {alias}> held a value, not a call, so it was kept as <lvar {alias}>; to act on "
@@ -947,8 +946,8 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         "A pointer *alias refers to anything you named, to any entry by its record name (_r41, _m12; "
         "names starting with _ are the record's), "
         "or to a note (note.key). Values are never repeated for you; point at them.\n"
-        # Mini-50 wrote 6 notes in 952 turns with only the pointer sentence above to go on; the model
-        # was never told what a note is for, how to write one, or that it outlives the run
+        # with only the pointer sentence above, notes were rare (ADR-0004/S3): the model is told what
+        # a note is for, how to write one, and that it outlives the run
         "Notes outlive this run: <lvar note.key>text</lvar> writes one under `key`, *note.key reads it, "
         f"{finding}the next run of this profile starts with "
         "them in reach. Write a note when you have established something a later round or a later run "
