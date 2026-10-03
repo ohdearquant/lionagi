@@ -344,3 +344,11 @@ refused at build.
   crossing refused is owed at the next run, and the chore's own mark waits for every copy. A notice
   that reached nobody leaves the chore untold:
   `test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands`.
+
+- **S12**: A `verdict-freshness` row is one per pull request, its repo case-blind and its number
+  unpadded, however any source spells it. An older snapshot's second spelling of one pull request is
+  retired silently; a full page keeps a row spelled another way as it keeps one spelled as
+  configured
+  (`test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_spells_it`,
+  `test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure`,
+  `test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way`).

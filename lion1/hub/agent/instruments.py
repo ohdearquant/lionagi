@@ -1773,16 +1773,16 @@ class VerdictFreshness:
                 rows, err = await _open_prs(self.sh, repo, "number,headRefOid") if info else (None, err)
                 if rows is None:
                     control = False
-                    unread.add(repo)
+                    unread.add(repo.lower())
                     findings.append(f"{repo}: {err if info else 'gh does not resolve it as itself: ' + err}")
                     continue
                 positives.append(f"{repo} resolved as itself; pr list answered {len(rows)} row(s)")
                 prs += [(repo, p["number"], p["headRefOid"]) for p in rows]
                 if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
-                    unread.add(repo)
+                    unread.add(repo.lower())
         keys = {_pr_id(k): k for k in prev}  # a PR keeps its row's key however it is spelled now
         prev = {k: v for k, v in prev.items() if keys[_pr_id(k)] == k}  # one row per PR; an alias is retired
-        snap = {k: v for k, v in prev.items() if _pr_id(k) in unread or k.split("#")[0] in unread}
+        snap = {k: v for k, v in prev.items() if _pr_id(k) in unread or k.split("#")[0].lower() in unread}
         data, stale_n = [], 0
         for repo, n, head in prs:
             key = keys.get(_pr_id(f"{repo}#{n}"), f"{repo}#{n}")

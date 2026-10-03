@@ -1961,6 +1961,23 @@ def test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until
     assert set(inst.state.get("verdict-freshness").value) == {"o/r#9"}
 
 
+def test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way(
+    monkeypatch, tmp_path
+):
+    """The repo is configured as `o/r`; an older snapshot holds `O/R#7`. A full page without #7 keeps
+    that row, as it keeps one spelled as configured."""
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    kept = "O/R#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: x"
+    store.put("verdict-freshness", {"O/R#7": kept}, run="-", seq=0)
+    sh = freshness_sh(prs=((8, HEAD8), (9, HEAD9)))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and store.get("verdict-freshness").value["O/R#7"] == kept
+    assert not any("no longer open" in f for f in out.findings)
+
+
 def test_verdict_freshness_an_empty_verdict_dir_fails_the_instrument_and_judges_no_pr(tmp_path):
     inst = VerdictFreshness(
         MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
