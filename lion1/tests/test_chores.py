@@ -870,6 +870,113 @@ def test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its
     assert "MISSING: d" in digest_at(chores, agent, t + 86400 + 301)
 
 
+def test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace(tmp_path):
+    probes = {
+        n: Probe(n, full(), every=e) for n, e in (("w", "weekly"), ("p", "every:15m"), ("a", "every:30m"))
+    }
+    chores, agent = build(tmp_path, FakeKhive(), [], **probes)
+    asyncio.run(chores.ensure_ticks(first_in_s=60))
+    first = agent.state.get("first_due").value
+    # `a` ran at its first firing and the digest fires at that instant too: `w` and `p` have not run yet
+    ledger(chores, ("a", first["a"] + 2))
+    assert "MISSING: " not in digest_at(chores, agent, first["a"] + 10)
+    for name in ("w", "p"):
+        due = first[name]
+        line = f"{OWNER} {name} no run yet, first due by {label(due)}"
+        assert line in digest_at(chores, agent, due - 10) and line in digest_at(chores, agent, due + 300)
+        text = digest_at(chores, agent, due + 301)  # one second past the grace
+        assert f"MISSING: {name}, no run recorded, first due by {label(due)}" in text and line not in text
+
+
+def test_a_chore_with_no_run_and_no_first_due_on_record_is_missing_as_before(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    chores.ledger.write_text("")  # a ledger that reads, with no row
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    assert "MISSING: w, no run recorded" in digest_at(chores, agent, t).splitlines()
+    for record in ("soon", True, None):  # a record that is no instant is no evidence either
+        agent.state.put("first_due", {"w": record}, run="-", seq=0)
+        assert "MISSING: w, no run recorded" in digest_at(chores, agent, t).splitlines()
+
+
+@pytest.mark.parametrize(
+    ("tz", "first", "last", "due"),
+    [
+        # the store runs the 28th again on Mar 28, though Feb 28 is Feb's last day
+        ("UTC", "2027-01-28T09:30:00", "2027-02-28T09:30:05", "2027-03-28T09:30:00"),
+        # the 31st, clamped to Feb 28 and back on the 31st
+        ("UTC", "2027-01-31T09:30:00", "2027-02-28T09:30:05", "2027-03-31T09:30:00"),
+        ("UTC", "2027-01-28T09:30:00", "2027-02-28T17:45:00", "2027-03-28T09:30:00"),  # the first due's time
+        ("UTC", "2028-01-30T09:30:00", "2028-02-29T09:31:00", "2028-03-30T09:30:00"),  # a leap February
+        ("UTC", "2027-11-30T09:30:00", "2027-12-30T09:30:03", "2028-01-30T09:30:00"),  # across the year
+        # a run in January for the 31st: the anchor day clamps to the next month's last day
+        ("UTC", "2027-01-31T09:30:00", "2027-01-31T09:30:05", "2027-02-28T09:30:00"),
+        ("UTC", "2028-01-31T09:30:00", "2028-01-31T09:31:00", "2028-02-29T09:30:00"),
+        # 21:00 on Jan 27 in New York is Jan 28 in UTC: the anchor day is UTC's
+        ("America/New_York", "2027-01-28T02:00:00", "2027-02-28T02:00:04", "2027-03-28T02:00:00"),
+    ],
+)
+def test_a_monthly_chore_is_due_on_its_anchor_day_when_its_first_due_is_on_record(
+    tmp_path, monkeypatch, tz, first, last, due
+):
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        chores, agent = build(tmp_path, FakeKhive(), [], m=Probe("m", full(), every="monthly"))
+        f, t, d = (datetime.fromisoformat(x).replace(tzinfo=UTC).timestamp() for x in (first, last, due))
+        agent.state.put("first_due", {"m": f}, run="-", seq=0)
+        ledger(chores, ("m", t))
+        assert f"{OWNER} m not due: last run {label(t)}, due by {label(d)}" in digest_at(
+            chores, agent, d + 300
+        )
+        assert f"MISSING: m, last run {label(t)}, due by {label(d)}" in digest_at(chores, agent, d + 301)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_a_monthly_chore_with_no_first_due_on_record_keeps_the_month_end_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    try:
+        chores, agent = build(tmp_path, FakeKhive(), [], m=Probe("m", full(), every="monthly"))
+        t = datetime(2027, 2, 28, 9, 30, 5, tzinfo=UTC).timestamp()  # Jan 28's chore, run on Feb's last day
+        ledger(chores, ("m", t))
+        mar28, mar31 = (datetime(2027, 3, d, 9, 30, 5, tzinfo=UTC).timestamp() for d in (28, 31))
+        text = digest_at(chores, agent, mar28 + 301)  # late, never false: due by the month's end
+        assert f"{OWNER} m not due: last run {label(t)}, due by {label(mar31)}" in text
+        assert "MISSING: m" not in text
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+@pytest.mark.parametrize(
+    ("row", "error"),
+    [
+        ("{}", "ValueError"),
+        ('{"at": 5, "chore": "x"}', "ValueError"),
+        ('{"chore": "w"}', "ValueError"),
+        ('{"at": "2026-09-14 09:00:00"}', "ValueError"),
+        ('{"at": "2026-09-14 09:00:00", "chore": 5}', "ValueError"),
+        ('{"at": "yesterday", "chore": "w"}', "ValueError"),  # a label that is no time
+        ('{"at": "0001-01-01 00:00:00", "chore": "w"}', "OverflowError"),  # nor a time the clock counts
+        ("[]", "ValueError"),
+        ("null", "ValueError"),
+    ],
+)
+def test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable(
+    tmp_path, row, error
+):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("w", t - 3600))  # a run that reads `not due` were the bad row skipped
+    with chores.ledger.open("a") as fh:
+        fh.write(row + "\n")
+    head, *lines = digest_at(chores, agent, t).splitlines()
+    assert f": ledger unreadable ({error}: " in head and head.endswith("; a MISSING line is the finding")
+    assert lines == [f"{OWNER} w not judged: ledger unreadable"]
+
+
 def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_acknowledged(tmp_path):
     khive = FakeKhive(
         mail(SELF, "tick: disk"),
@@ -1293,6 +1400,29 @@ def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_
     assert 'content="tick: digest"' in reminds[1] and 'repeat="daily"' in reminds[1]
     assert 'content="tick: aged"' in reminds[2] and 'repeat="every:1h"' in reminds[2]
     assert asyncio.run(chores.ensure_ticks()) == created  # the fake agenda does not grow; a real one would
+
+
+def test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one(tmp_path):
+    khive = FakeKhive(agenda=["tick: disk"])  # its tick is pending already: no firing of ours to keep
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [],
+        disk=Probe("disk", full()),
+        pr=Probe("pr", full(), every="every:15m"),
+        ask=Probe("ask", full(), every=None),
+    )
+    asyncio.run(chores.ensure_ticks(first_in_s=60))
+    (remind,) = [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: pr"' in op]
+    sent = datetime.fromisoformat(re.search(r'at="([^"]+)"', remind).group(1)).timestamp()
+    first = agent.state.get("first_due").value
+    assert first == {"pr": sent}  # not disk (pending), ask (no tick), digest or aged (not chores)
+    chores.instruments["new"] = Probe("new", full(), every="daily")
+    asyncio.run(
+        chores.ensure_ticks(first_in_s=7200)
+    )  # the fake agenda does not grow: pr's tick is made again
+    kept = agent.state.get("first_due").value
+    assert kept["pr"] == sent and set(kept) == {"pr", "new"} and kept["new"] > sent
 
 
 def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_agenda_keeps_it(tmp_path):

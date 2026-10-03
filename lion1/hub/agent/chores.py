@@ -123,8 +123,9 @@ class Check(BaseModel):
 class Digest(BaseModel):
     """Tell the owner what the ledger holds for one day: one line per chore, every chore, MISSING
     for a chore with a period and no run within one period and the store's fire grace before the
-    digest's moment, `not judged` for a cron chore and for a ledger that cannot be read, and
-    `on ask: no run` for a chore run only on an ask that did not run."""
+    digest's moment (a chore that has not run yet, only past its first due and the grace), `not judged`
+    for a cron chore and for a ledger that cannot be read, and `on ask: no run` for a chore run only on an
+    ask that did not run."""
 
     day: str | None = Field(default=None, description="YYYY-MM-DD; default today")
 
@@ -518,9 +519,21 @@ class Chores:
         moment = min(now, (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp())
         try:  # a ledger absent, unreadable or torn judges nothing: a missing subject is not an empty one
             ledger, unread = [json.loads(x) for x in self.ledger.read_text().splitlines() if x.strip()], ""
-        except (OSError, ValueError) as e:
+            # a row that names no chore or time judges nothing either: skipped, its run would read missing
+            for r in ledger:
+                if not (
+                    isinstance(r, dict) and isinstance(r.get("at"), str) and isinstance(r.get("chore"), str)
+                ):
+                    raise ValueError(f"a ledger row names no chore or no time: {str(r)[:80]}")
+                _epoch(r)  # a label that is no time raises here, not in the judgment below
+        except (OSError, ValueError, OverflowError) as e:
             ledger, unread = [], f"{type(e).__name__}: {e}"
         rows = [r for r in ledger if r["at"].startswith(day)]
+        firsts = {  # chore -> the instant its tick first came due; a value that is no instant is no record
+            k: float(v)
+            for k, v in _val(self.agent.state, "first_due", {}).items()
+            if isinstance(v, int | float) and not isinstance(v, bool)
+        }
         actor = self.owner
         lines = [
             f"[chores digest {day}] {self.agent.khive.actor}: "
@@ -541,16 +554,28 @@ class Chores:
             if every and not cron:  # judged against one period before the moment
                 ran = [r for r in ledger if r["chore"] == name and _epoch(r) <= moment]
                 latest = max(ran, key=_epoch, default=None)
-                if latest is None:
-                    lines.append(f"MISSING: {name}, no run recorded")
+                first = firsts.get(name)
+                if latest is None:  # no run is missing only once its first due and the grace are past
+                    if first is not None and moment <= first + _FIRE_GRACE_S:
+                        lines.append(f"{actor} {name} no run yet, first due by {_now(first)}")
+                    else:
+                        lines.append(
+                            f"MISSING: {name}, no run recorded"
+                            + (f", first due by {_now(first)}" if first is not None else "")
+                        )
                     continue
-                if every == "monthly":  # a calendar month in UTC, as the store counts its monthly repeat;
-                    # a run on its month's last day is due by the next month's last (Jan 31, Feb 28, Mar 31)
+                if every == "monthly":  # a calendar month in UTC, as the store counts its monthly repeat
                     t = datetime.fromtimestamp(_epoch(latest), UTC)
                     y, m = divmod(t.year * 12 + t.month, 12)
                     end = calendar.monthrange(y, m + 1)[1]
-                    d = end if t.day == calendar.monthrange(t.year, t.month)[1] else min(t.day, end)
-                    due = t.replace(year=y, month=m + 1, day=d).timestamp()
+                    if first is not None:  # the next month's anchor day: the first due's UTC day, clamped
+                        a = datetime.fromtimestamp(first, UTC)  # to that month's last, at its time of day
+                        due = a.replace(year=y, month=m + 1, day=min(a.day, end)).timestamp()
+                    else:
+                        # no first due on record: a run on its month's last day is due by the next
+                        # month's last (Jan 31, Feb 28, Mar 31)
+                        d = end if t.day == calendar.monthrange(t.year, t.month)[1] else min(t.day, end)
+                        due = t.replace(year=y, month=m + 1, day=d).timestamp()
                 else:
                     due = _epoch(latest) + period_s(every)
                 since = f"last run {latest['at']}, due by {_now(due)}"
@@ -666,7 +691,8 @@ class Chores:
     async def ensure_ticks(self, *, first_in_s: int = 60) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
-        a steward. Creates what is missing, returns what it created."""
+        a steward. Creates what is missing, returns what it created. A chore's tick, when created, has
+        its first firing kept in the agent's state (`first_due`) for the digest; the earliest is kept."""
         (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
         me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
         pending = {
@@ -689,6 +715,10 @@ class Chores:
                 f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
             )
             created.append(content)
+            chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
+            # set once: an earlier first due is the stronger evidence
+            if chore in self.instruments and chore not in firsts:
+                self.agent.state.put("first_due", {**firsts, chore: _iso_epoch(at)}, run="-", seq=0)
         return created
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:

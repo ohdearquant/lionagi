@@ -181,9 +181,9 @@ thread per chore, recipient and day, which the hop cap bounds. The standing stat
 recipient; evidence is capped at 4,000 characters, and says so.
 
 `dead_after` unanswered runs in a row escalate once as a dead instrument; an answered run clears it.
-The digest gives the owner one line per chore, `MISSING` where a periodic chore is overdue (S12),
-and the day's tokens. The aged pass tells the steward once of each report the owner received and the
-steward did not, left unanswered on its thread past `aged_after` periods of the chore.
+The digest gives the owner one line per chore, `MISSING` where a periodic chore is overdue (S12 to
+S14), and the day's tokens. The aged pass tells the steward once of each report the owner received
+and the steward did not, left unanswered on its thread past `aged_after` periods of the chore.
 
 ## Decisions
 
@@ -196,9 +196,12 @@ dead-instrument check. The defaults: aged after 2 periods, dead after 3 runs, th
 aged pass hourly. The digest's line per chore names the last ending and counts the day's runs,
 answered, quiet, report, escalate and instrument-failed.
 
-- **Landing evidence**: `tests/test_chores.py`, 38 tests: the three endings, each refusal, the
-  standing state per recipient, the dead instrument, the digest, the aged pass (each report told
-  once at 1,000 and 1,001 unanswered,
+- **Landing evidence**: `tests/test_chores.py`: the three endings, each refusal, the standing state
+  per recipient, the dead instrument, the digest per period
+  (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
+  `test_a_monthly_chore_is_due_on_its_anchor_day_when_its_first_due_is_on_record`,
+  `test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`), the aged
+  pass (each report told once at 1,000 and 1,001 unanswered,
   `test_each_unanswered_report_is_told_to_the_steward_once_however_many_markers_the_ledger_holds`),
   the missed tick, `ensure_ticks`.
 
@@ -228,14 +231,15 @@ with the expected actor asserted (C4).
 ### D4: Ticks are the store's reminders, and missed ones are caught up once ^d4
 
 Serves C3. `ensure_ticks` reads the actor's pending reminders from `schedule.agenda` and creates
-each missing one with `schedule.remind`, first firing a minute out. The CLI creates ticks at serve
-start and on `--ticks`, never for a chair.
+each missing one with `schedule.remind`, first firing a minute out (S13). The CLI creates ticks at
+serve start and on `--ticks`, never for a chair.
 
 `_catch_up` asks the store for the actor's missed and failed rows, filtered before each page of 200,
 pages each list to its end, rechecks both in code and runs each row once. An id stays under
 `missed_seen` while the store lists it; two misses ask the store for it by id (S9).
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
+  `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
   `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
   `test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once` (201 rows, two passes),
@@ -321,20 +325,33 @@ bypasses the handler: no refusals, no row, no send.
   ask narrowed covers nothing: the tick was the whole sweep, so it runs
   (`test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore`).
 - **S12**: A periodic chore is overdue with no run within one period and a grace before the digest's
-  moment, now or the end of a past day asked about. A period is `every:N`, `daily` or `weekly` in
-  seconds, `monthly` a calendar month in UTC. The grace is the store's default, 300 seconds, the
-  longest it fires a reminder late before marking it missed: a run one period and 300 seconds old is
-  within it, a second older is `MISSING`, and `due by` names the period's end
+  moment, now or the end of a past day asked about. A period is `every:<N><s|m|h|d>`, `daily` or
+  `weekly`, fixed seconds, or `monthly`, a calendar month in UTC. The grace is the store's default,
+  300 seconds, the longest it fires a reminder late before marking it missed: a run one period and
+  300 seconds old is within it, a second older is `MISSING`, and `due by` names the period's end
   (`test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_the_day`,
   `test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day`).
-- **S13**: A run on Jan 31 is due by February's last day, and a run on a month's last day by the
-  next month's last (`test_a_monthly_chore_is_due_a_calendar_month_in_utc_after_its_last_run`). The
-  digest reads no anchor, so a monthly chore the store anchored on the 28th to the 30th and last run
-  on a month's last day reads `MISSING` up to three days late.
-- **S14**: A cron reads `not judged: cron`
-  (`test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day`). A ledger the digest cannot
-  read, absent, torn or undecodable, judges no chore and says so, where an empty one is judged
-  (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`); a daily chore's line
-  is as it was
-  (`test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run`). The
+- **S13**: A chore's first due is the first firing of its tick, which `ensure_ticks` keeps in the
+  agent's state under `first_due` when it creates the tick, once: an earlier one is never
+  overwritten. A chore with no run reads `no run yet, first due by <instant>` until that instant and
+  the grace are past, then `MISSING`. With no first due on record it reads `MISSING` as before,
+  there being no evidence it was ever fine
+  (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
+  `test_a_chore_with_no_run_and_no_first_due_on_record_is_missing_as_before`,
+  `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`).
+- **S14**: With its first due on record, a monthly chore run in a month is due on the next month's
+  anchor day: the first due's UTC day, clamped to that month's last, at its UTC time of day
+  (`test_a_monthly_chore_is_due_on_its_anchor_day_when_its_first_due_is_on_record`). With none, a
+  run on a month's last day is due by the next month's last, so a chore the store anchored on the
+  28th to the 30th reads `MISSING` up to three days late, never falsely
+  (`test_a_monthly_chore_with_no_first_due_on_record_keeps_the_month_end_rule`,
+  `test_a_monthly_chore_is_due_a_calendar_month_in_utc_after_its_last_run`).
+- **S15**: A cron reads `not judged: cron`
+  (`test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day`); a daily chore's line is as it
+  was (`test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run`). The
   aged pass counts a period by `period_s`: a monthly one as 30 days, a cron's as a day.
+- **S16**: A ledger the digest cannot read judges no chore and says so: absent, torn, undecodable,
+  or holding a row that names no chore or no time. Such a row is never skipped, as its run would
+  read as a missing one; an empty ledger is judged
+  (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`,
+  `test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`).
