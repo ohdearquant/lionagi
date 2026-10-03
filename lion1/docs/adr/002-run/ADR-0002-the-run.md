@@ -67,7 +67,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | the message has `OUT{}` | every command reached; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
 | under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command reached | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command reached                               | the run continues once they settle                               |
-| the message has `OUT{}` only in a branch the program does not take | every command reached; no output | the run continues once they settle, as a turn that acted, not a reply |
+| the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle, as a turn that acted, not a reply |
 
 Every command control flow reaches is dispatched, `OUT{}` or not; "edit, then done" in one turn
 means both, and a program's untaken branch, or what follows its `return`, is never reached
@@ -173,7 +173,7 @@ is removed with no compatibility shim: the package is alpha and the name never c
 - **S1**: A retry costs a turn; its message stays on the record as TEXT, and the retry itself is the
   `round.retry` event on the actor's bus and `run.retry_error`. Its reason rides the next turn's
   notification, so a retry on the run's last turn surfaces none. A backend's refusal, a reason on
-  its reply, is persisted at once in the TEXT entry's metadata; a blank reason is no refusal. A
+  its reply, is persisted at once in the TEXT entry's metadata; an empty reason is no refusal. A
   caller counting outcomes sees no retry. Pinned: the notification by
   `test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong`, the metadata by
   `test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`; no test pins
