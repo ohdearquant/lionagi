@@ -1229,6 +1229,7 @@ class Rows(BaseModel):
 class Grow(BaseModel):
     rows: Any
     n: int
+    after: float = 0  # seconds the handler waits before it grows the list
 
 
 def _growing_actor(name: str) -> Actor:
@@ -1240,6 +1241,8 @@ def _growing_actor(name: str) -> Actor:
 
     @actor.handler(Grow)
     async def grow(req: Grow, ctx) -> str:
+        if req.after:
+            await asyncio.sleep(req.after)
         req.rows.append("x" * req.n)  # the list the earlier field holds, reached through the pointer
         return "grown"
 
@@ -1255,6 +1258,17 @@ def test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_out
     # size reads fit while the dict does not: the whole is measured once more as it is emitted
     assert run.output is None and not isinstance(run.outcome, Success)
     assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+def test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output():
+    # the command is launched before OUT{} and settles after the walk: at HEAD before this the emitted
+    # output held the stored list, which the settling command then grew
+    run = _run(
+        _growing_actor("out-settled"),
+        fenced("rows = rows(n=3)", f"late = grow(rows=*rows, n={LIMIT}, after=0.05)", "OUT{a: *rows}"),
+    )
+    assert isinstance(run.outcome, Success) and run.output == {"a": ["r", "r", "r"]}
+    assert len(run.record.get("rows").content.value) == 4  # the stored value did grow
 
 
 @pytest.mark.parametrize(

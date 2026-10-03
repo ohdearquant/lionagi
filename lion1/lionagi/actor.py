@@ -670,9 +670,17 @@ async def _more(req: RunMore, ctx: Context) -> str:
             raise PermissionError(f"{req.bound} stays at {now}: the job did not grant {amount} more")
         run.bounds[req.bound] = now + amount
         if req.bound == "time_budget":  # a walk or a settle waiting now runs to the new deadline
+            clock = asyncio.get_running_loop().time()
             for limit in run.timeouts:
-                if not limit.expired():  # one that fired has cancelled its walk already
-                    limit.reschedule(_deadline(run))
+                if limit.expired():  # one that fired has cancelled its walk already
+                    continue
+                when = limit.when()
+                if when is not None and clock >= when:
+                    # the deadline passed while a synchronous grant held the loop: the limit fires now, as
+                    # the loop would have, and the grant lands after it
+                    limit.fire()
+                    continue
+                limit.reschedule(_deadline(run))
     return f"{req.bound} raised from {now} to {now + amount}"
 
 
@@ -2113,6 +2121,13 @@ class _Limit(asyncio.Timeout):
         super().reschedule(when)
         self.budget = self.run.bounds["time_budget"]
 
+    def fire(self) -> None:
+        """What the loop's timer does at the deadline, done now: a deadline that passed while a
+        synchronous call held the loop has not fired yet, and a walk that leaves its limit before the
+        loop turns would never be cut."""
+        self._timeout_handler.cancel()  # the timer, which would fire a second time
+        self._on_timeout()
+
 
 class _Walk:
     """One program over the dispatcher (ADR-0008/D1, D3): a command runs as its own task when its block
@@ -2242,6 +2257,9 @@ class _Walk:
                 # whole is measured once more as it is emitted
                 if _size(fields) > LIMIT:
                     raise EvalError(past)
+                # what is emitted is a copy of what was measured: a command still settling after the walk
+                # holds the stored value, and grows that, not the output
+                fields = _captured(fields)
                 self.consume(reader.reads, len(self.run.record))
                 return fields
             elif isinstance(node, Command):

@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 from typing import Literal
 
 import pytest
@@ -1715,6 +1716,26 @@ def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant(
     # refusal named 5.2, a budget that elapsed time was nowhere near
     late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
     assert run.bounds["time_budget"] == 5.2 and run.elapsed < 5.2
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.3)  # a synchronous grant that holds the loop: the deadline passes under it, unfired
+        return True
+
+    turn = '```\nOUT{granted: DO run.more(bound="time_budget", amount=5, reason="held")}\n```'
+    run = asyncio.run(
+        Actor("b-held").run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1, extend=extend),
+            scripted(turn),
+        )
+    )
+    # the limit fires as the grant lands, as the loop would have fired it: the walk is cut under the
+    # budget it ran under, and the grant is the late one
+    late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.2 and run.output is None
     assert run.refused == [("turn", f"{late}; nothing after it ran")]
 
 
