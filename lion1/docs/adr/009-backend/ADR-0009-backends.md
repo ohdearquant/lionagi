@@ -60,7 +60,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/li
 | #  | statement                                                                                                                         | source                                                                                                                                                                                                    | if false                                                                                              |
 | -- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | A1 | A provider's prompt count is the size of the context the model saw on that attempt.                                               | the router's `usage.prompt_tokens`; the session CLI's input, cache read and cache write per turn; on 4,240 bench calls the count read 1.20 times the view estimate plus 1,695 ([[ADR-0006-the-notification#Assumptions\|ADR-0006/A3]]) | the anchor is exact about the wrong prompt; the figure returns to the estimate                        |
-| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags in `hub/backend/codex.py` the CLI cannot run a command, search or spawn, measured on its 0.153 release; the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
+| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags and the cleared catalogue of `hub/backend/codex.py` the model lists no tool and can run no command, search or spawn, measured on its 0.156.1 release (S19); the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
 | A3 | What a count stands above the view at its least is fixed context; what it later stands above that is history the record never saw. | the session CLI reads 34k cached input per call with its settings loaded against 3.9k without; on a served run one call read 14.8M tokens over its tool turns while the estimate never moved (2026-09-24) | the fold fires every turn past a budget the fixed context exceeds, or never sees the tool turns       |
 
 ## Claims
@@ -198,15 +198,17 @@ child; the gate settles (C6).
 ### D3: The subscription CLI backend in `hub/backend/codex.py` ^d3
 
 Serves C1 and C5. `Codex` runs the CLI once per turn in a scratch directory with every acting
-feature disabled: spawning removed by `agents.max_depth=0` (the feature flag alone does not), web
-search off, a chat framing replacing the base instructions, the environment context dropped. A
-private home holding a symlinked login is used when given. The view goes in as one transcript; usage
-comes from the `turn.completed` event; cost is unknown. It hands back that event's input count for
-the answering attempt (S3).
+feature off: by flag, and by handing the CLI its model catalogue with each entry's tools cleared
+(S20). Web search is off, a chat framing replaces the base instructions, the environment context
+dropped. A private home holding a symlinked login is used when given. The view goes in as one
+transcript; usage comes from the `turn.completed` event; cost is unknown. It hands back that event's
+input count for the answering attempt (S3).
 
 - **Landing evidence**: `tests/test_codex.py`: the transcript in and the usage shaped, the transient
-  retry with attempts recorded, the empty answer retried with both attempts counted, the failed
-  envelope, cancellation joining the child, the count handed back and anchoring the next figure
+  retry, the empty answer retried with both attempts counted, the failed envelope, cancellation
+  joining the child, the cleared catalogue
+  (`test_each_call_hands_the_cli_its_catalogue_with_the_acting_fields_cleared`), the count handed
+  back and anchoring the next figure
   (`test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it`).
 
 ### D4: The anchor at the call site and the floor in `_notify` ^d4
@@ -338,3 +340,15 @@ swallowed too: a spin.
   other admitted call goes back with its input and no decision, for the CLI's own rules
   (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). The rule holds whether or not
   the CLI would skip its own check of that list on an `allow`.
+- **S19**: On the subscription CLI's 0.156.1 release the flags alone made no chat completion (A2).
+  Its model catalogue names a tool mode and a sub-agent version per model, and no flag removes the
+  tools those give. With every flag set, gpt-6-luna listed a code-execution tool and six sub-agent
+  tools and started a sub-agent when asked; the event stream showed neither call.
+  `agents.max_depth=0` still removes the first sub-agent version's spawn tool, which its feature
+  flag alone does not.
+- **S20**: So each call hands the subscription CLI its own catalogue (`codex debug models`, asked
+  once) with those fields cleared in every entry; the goal tools and the bundled skill list are
+  switched off, and two settings the release refuses are dropped. Measured after, on gpt-6-luna and
+  gpt-6-sol: no tool listed, none run when asked, a one-line prompt at 191 input tokens against
+  4,795. A later release that gives a model tools by another route shows only when the model is
+  asked again: no test runs the live CLI.

@@ -2,13 +2,20 @@
 
 The view goes in as one prompt with its roles marked, the model's final message comes out. The
 CLI is an agent, so every feature that lets the model act is switched off by flag (shell, exec,
-web search, sub-agents, images, apps, browser, computer use, plugins, hooks); measured on 0.153,
-what is left cannot run a command, search, or spawn. Every command the model wants goes through
-this runtime's handlers as LNDL. Without those flags a read-only sandbox still let the model read
-this machine and search the web for the upstream fix: 34 commands and 850k input tokens in one
-turn. Usage comes from the `turn.completed` event, whose input count is handed back as the prompt
-count; there is no cost on a subscription, so `total_cost_usd` stays None and the bench records the
-spend as unknown, never as zero.
+web search, sub-agents, images, apps, browser, computer use, plugins, hooks, goals). Every command
+the model wants goes through this runtime's handlers as LNDL. Without those flags a read-only
+sandbox still let the model read this machine and search the web for the upstream fix: 34 commands
+and 850k input tokens in one turn. Usage comes from the `turn.completed` event, whose input count
+is handed back as the prompt count; there is no cost on a subscription, so `total_cost_usd` stays
+None and the bench records the spend as unknown, never as zero.
+
+The flags are not the whole of it. The CLI's model catalogue gives each model a tool mode and a
+sub-agent version, and for a model whose entry names them no flag removes those tools: measured on
+0.156.1 with gpt-6-luna, every flag here left the model a code-execution tool and six sub-agent
+tools, and it started a sub-agent when asked; the stream showed neither call. So each call hands
+the CLI its own catalogue back (`codex debug models`, asked once) with those fields cleared in
+every entry (`CHAT`). With that and the flags the model lists no tool and can run no command,
+search or spawn, and the prompt of a one-line question fell from 4,795 input tokens to 191.
 
 The CLI's own base instructions describe an agent with a shell in a read-only workspace; with the
 tools off, a reasoning model reads that as a broken interface and, one reply in three at turn one,
@@ -57,6 +64,7 @@ from .claude_code import _clipped, _transcript
 __all__ = (
     "TRANSIENT",
     "DISABLED",
+    "CHAT",
     "INSTRUCTIONS",
     "SCRATCH_AGENTS_MD",
     "CodexError",
@@ -81,7 +89,18 @@ DISABLED = (  # codex features that let the model act; `codex features list` nam
     "multi_agent",  # spawn_agent worked with only the shell off
     "image_generation",
     "view_image",
+    "goals",  # get_goal, create_goal, update_goal
 )
+# a catalogue entry's fields that give its model tools no flag removes, as they stand for a chat:
+# the code-execution tool and its wait (`tool_mode`), the sub-agent tools (`multi_agent_version`),
+# the patch tool, the tools the entry lists by name
+CHAT = {
+    "tool_mode": None,
+    "multi_agent_version": None,
+    "apply_patch_tool_type": None,
+    "experimental_supported_tools": [],
+}
+_CATALOG_S = 60.0  # how long the CLI has to print its catalogue: it reads a file, 0.13 s measured
 INSTRUCTIONS = (  # replaces the CLI's base instructions, which describe an agent with tools
     "You are a language model completing a conversation. The conversation arrives as tagged blocks "
     "(USER, ASSISTANT, SYSTEM); the latest messages define the format your reply must take. Reply "
@@ -107,6 +126,7 @@ class Codex:
     timeout: float = 900.0  # per attempt; a high-effort model on a large view takes minutes
     retries: int = 2  # further attempts after a transient failure or an empty answer
     calls: list[dict] = field(default_factory=list)  # per call: usage, timing, model, events of note
+    _chat_catalog: str | None = field(default=None, repr=False)  # the catalogue each call hands the CLI
 
     def __post_init__(self) -> None:
         self.cli = self.cli or shutil.which("codex")
@@ -133,7 +153,9 @@ class Codex:
             "-C",
             str(scratch),
             "-c",
-            "agents.max_depth=0",  # the only thing that removes spawn_agent; the feature flag does not
+            f'model_catalog_json="{scratch / "models.json"}"',  # the catalogue with `CHAT` in every entry
+            "-c",
+            "agents.max_depth=0",  # removes the first sub-agent version's spawn_agent; the flag does not
             "-c",
             'web_search="disabled"',
             "-c",
@@ -149,9 +171,9 @@ class Codex:
             "-c",
             "include_collaboration_mode_instructions=false",
             "-c",
-            "include_skills_usage_instructions=false",
+            "skills.bundled.enabled=false",  # the CLI's own skills, listed in every prompt (2.5k characters)
             "-c",
-            "include_plugin_usage_instructions=false",
+            "tools.experimental_request_user_input.enabled=false",  # nobody is there to answer
             "-o",
             str(scratch / "last.txt"),
         ]
@@ -170,12 +192,18 @@ class Codex:
         notes: list[str] = []
         t0 = time.monotonic()
         error: str | None = None
+        try:
+            catalog = await self._catalog()
+        except CodexError as e:  # no attempt went out; the call still lands its envelope (ADR-0009/C5)
+            self.calls.append({**self._envelope(usage_total, notes, t0, 0), "error": _clipped(str(e))})
+            raise
         # this call's own directory: its retries reuse it, and it goes once the child is joined
         scratch = Path(tempfile.mkdtemp(prefix="lionagi-codex-"))
         answered = 0  # attempts that came back, billed whether or not they answered
         try:
             (scratch / "AGENTS.md").write_text(SCRATCH_AGENTS_MD)
             (scratch / "instructions.md").write_text(INSTRUCTIONS)
+            (scratch / "models.json").write_text(catalog)
             for attempt in range(self.retries + 1):
                 text, usage, failure, seen, raw = await self._attempt(prompt, scratch)
                 answered += 1
@@ -236,36 +264,60 @@ class Codex:
             "notes": kept,
         }
 
+    def _env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        if self.home:
+            env["CODEX_HOME"] = self.home
+        return env
+
+    async def _catalog(self) -> str:
+        """The CLI's model catalogue with `CHAT` in every entry, asked of the CLI once. A CLI that
+        cannot print it fails the call before any prompt is sent: without it the flags leave a
+        model its catalogue's tools."""
+        if self._chat_catalog is None:
+            proc = await asyncio.create_subprocess_exec(
+                self.cli,
+                "debug",
+                "models",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._env(),
+                start_new_session=True,
+            )
+            try:
+                out, err = await _joined(proc, None, _CATALOG_S)
+            except TimeoutError:
+                raise CodexError(f"codex debug models did not answer within {_CATALOG_S:.0f}s") from None
+            try:
+                models = json.loads(out)["models"]
+                entries = [{**entry, **CHAT} for entry in models]
+            except (ValueError, KeyError, TypeError):
+                detail = err.decode(errors="replace").strip() or out.decode(errors="replace").strip()
+                raise CodexError(
+                    f"codex debug models printed no model catalogue (exit {proc.returncode}): "
+                    f"{_clipped(detail)}"
+                ) from None
+            self._chat_catalog = json.dumps({"models": entries})
+        return self._chat_catalog
+
     async def _attempt(self, prompt: bytes, scratch: Path) -> tuple[str | None, dict, str, list[str], dict]:
         """One `codex exec` in `scratch`: (text or None, usage, why None, notes, the raw stream and
         stderr when the child answered)."""
         last = scratch / "last.txt"
         last.unlink(missing_ok=True)
-        env = dict(os.environ)
-        if self.home:
-            env["CODEX_HOME"] = self.home
         proc = await asyncio.create_subprocess_exec(
             *self.argv(scratch),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(scratch),
-            env=env,
+            env=self._env(),
             start_new_session=True,  # the CLI's whole process group: a kill ends its children too
         )
         try:
-            out, err = await asyncio.wait_for(proc.communicate(prompt), timeout=self.timeout)
-        except (TimeoutError, asyncio.CancelledError) as e:
-            # the child is this backend's to stop: a cancelled task must not leave it running, nor
-            # a grandchild holding the pipes open past the loop's end
-            # the group, whether or not its leader has exited: a child the leader left behind can
-            # hold the pipes open, and the drain below would wait on it with no deadline
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            await proc.wait()
-            await proc.communicate()  # drains and closes the pipes the cancelled read left open
-            if isinstance(e, asyncio.CancelledError):
-                raise
+            out, err = await _joined(proc, prompt, self.timeout)
+        except TimeoutError:
             return None, {}, f"timed out after {self.timeout:.0f}s", [], {}
         raw = {"stream": out.decode(errors="replace"), "stderr": err.decode(errors="replace")}
         usage: dict = {}
@@ -297,7 +349,8 @@ class Codex:
                 "mcp_tool_call",
                 "web_search",
                 "collab_tool_call",
-            ):  # should never happen with DISABLED in force; the record shows it if it does
+            ):  # none with DISABLED and CHAT in force. The stream is no proof of that: it showed
+                # nothing of a sub-agent the model started, nor of its code-execution call (0.156.1)
                 notes.append(f"{item['type']}: {str(item.get('command') or item.get('tool') or item)[:120]}")
         text = last.read_text() if last.exists() else ""
         if not text.strip():
@@ -310,3 +363,22 @@ class Codex:
         else:
             why = f"no message: events {dict(kinds)}; " + ("; ".join(notes) or stderr_tail)
         return None, usage, why, notes + failures, raw
+
+
+async def _joined(
+    proc: asyncio.subprocess.Process, data: bytes | None, timeout: float
+) -> tuple[bytes, bytes]:
+    """What the child printed, given `data` on its stdin. On a timeout or a cancel its whole group
+    is killed and reaped before the exception goes on."""
+    try:
+        return await asyncio.wait_for(proc.communicate(data), timeout=timeout)
+    except (TimeoutError, asyncio.CancelledError):
+        # the child is this backend's to stop: a cancelled task must not leave it running, nor
+        # a grandchild holding the pipes open past the loop's end
+        # the group, whether or not its leader has exited: a child the leader left behind can
+        # hold the pipes open, and the drain below would wait on it with no deadline
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()
+        await proc.communicate()  # drains and closes the pipes the cancelled read left open
+        raise
