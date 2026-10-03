@@ -785,12 +785,13 @@ def test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts
 
 
 @pytest.mark.parametrize("ignores", [0, 2], ids=["cancelled", "abandoned"])
-@pytest.mark.parametrize("answer", ["kills", "finds-it-gone", "is-refused"])
+@pytest.mark.parametrize("answer", ["kills", "finds-it-gone", "fails"])
 def test_sh_kills_the_group_of_a_start_that_never_lands_by_the_pid_its_popen_holds(
     monkeypatch, answer, ignores
 ):
     # the start never returns, cancelled or given up on, but it has forked its process and keeps it in the
-    # extra dict asyncio hands it: that process leads a group of its own, which is ended by its pid
+    # extra dict asyncio hands it: that process leads a group of its own, which is ended by its pid. Any
+    # answer but ESRCH and EPERM is the caller's to be told, and is not tried again: this Popen has no `poll`
     monkeypatch.setattr(instr, "_GRACE", 0.1)
     start = Start(monkeypatch, ignores=ignores, popen=SimpleNamespace(pid=424242))
     sent = []
@@ -799,16 +800,65 @@ def test_sh_kills_the_group_of_a_start_that_never_lands_by_the_pid_its_popen_hol
         sent.append((pid, sig))
         if answer == "finds-it-gone":
             raise ProcessLookupError(errno.ESRCH, "No such process")
-        if answer == "is-refused":
-            raise PermissionError(errno.EPERM, "Operation not permitted")
+        if answer == "fails":
+            raise OSError(errno.EINVAL, "Invalid argument")
 
     monkeypatch.setattr(os, "killpg", killpg)
     got, _ = sh_over(start, timeout=0.05)
     assert sent == [(424242, signal.SIGKILL)]
-    if answer == "is-refused":  # a group this process may not signal is the caller's to be told
-        assert isinstance(got, PermissionError)
+    if answer == "fails":
+        assert type(got) is OSError and got.errno == errno.EINVAL
     else:
         assert got == (124, "", "/bin/x did not finish within 0.05s")
+
+
+class Leader:
+    """The Popen of a start that never lands, as the OS treats the group it leads. `exited` leaves the leader
+    the group's only member, exited and not yet reaped: macOS answers EPERM to the signal until `poll` reaps
+    it, and ESRCH after. One that still runs is a live member this process may not signal: EPERM every time,
+    whatever `poll` says. `events` is the order of the calls."""
+
+    pid = 424242
+
+    def __init__(self, exited):
+        self.exited, self.reaped, self.events = exited, False, []
+
+    def killpg(self, pid, sig):
+        assert (pid, sig) == (self.pid, signal.SIGKILL)
+        self.events.append("killpg")
+        if self.reaped:
+            raise ProcessLookupError(errno.ESRCH, "No such process")
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    def poll(self):
+        self.events.append("poll")
+        self.reaped = self.exited
+        return -9 if self.exited else None
+
+
+@pytest.mark.parametrize("by", ["a-timeout", "a-cancel"])
+@pytest.mark.parametrize("leader", ["exited", "running"])
+def test_a_refused_signal_to_a_start_that_never_lands_is_retried_once_its_leader_is_reaped(
+    monkeypatch, leader, by
+):
+    # macOS answers EPERM to a group whose only member is its exited, unreaped leader: `poll` reaps it
+    # between the two signals, and the second finds the group gone. A leader that still runs answers EPERM
+    # again, which is the caller's to be told, and a cancel in flight gives way to it
+    monkeypatch.setattr(instr, "_GRACE", 0.1)
+    popen = Leader(exited=leader == "exited")
+    start = Start(monkeypatch, popen=popen)
+    monkeypatch.setattr(os, "killpg", popen.killpg)
+    if by == "a-timeout":
+        got, _ = sh_over(start, timeout=0.05)
+        expected = (124, "", "/bin/x did not finish within 0.05s")
+    else:
+        got, _ = sh_over(start, timeout=0.05, cancel_after=0.1)  # inside the wait for the landing
+        expected = "cancelled"
+    if leader == "exited":
+        assert got == expected
+    else:
+        assert isinstance(got, PermissionError)
+    assert popen.events == ["killpg", "poll", "killpg"]
 
 
 def test_a_cancel_in_the_wait_for_a_start_that_never_lands_still_ends_its_group(monkeypatch):

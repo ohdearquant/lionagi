@@ -148,9 +148,10 @@ async def _landed(launch: asyncio.Future[asyncio.subprocess.Process], holder: di
     take that one: on 3.11 and 3.12 a start that began its process waits for its pipes after the
     first. A cancel of the caller is absorbed meanwhile. A start that landed is stopped, the group it
     began ended. One that did not land, cancelled or given up on, has its process's group killed by
-    the pid of the Popen in `holder`, when there is one; asyncio reaps the leader. A cancel that came
-    in while waiting is raised after that. The pipe ends asyncio has not connected by then are its own
-    connection task's, out of the runner's reach: that task closes them once the loop runs it."""
+    the pid of the Popen in `holder`, when there is one, a refused signal retried once as `_stop` does;
+    asyncio reaps the leader. A cancel that came in while waiting is raised after that. The pipe ends
+    asyncio has not connected by then are its own connection task's, out of the runner's reach: that
+    task closes them once the loop runs it."""
     loop = asyncio.get_running_loop()
     cancelled = False
     for attempt in range(3):
@@ -165,8 +166,18 @@ async def _landed(launch: asyncio.Future[asyncio.subprocess.Process], holder: di
     if launch.done() and not launch.cancelled() and launch.exception() is None:
         await _stop(launch.result())
     elif (popen := holder.get("subprocess")) is not None:  # the group leads under the leader's pid
-        with contextlib.suppress(ProcessLookupError):
+        try:
             os.killpg(popen.pid, signal.SIGKILL)
+        except ProcessLookupError:  # the group ended on its own
+            pass
+        except PermissionError:
+            # as in `_stop`: macOS answers EPERM for a group whose only member is its leader, exited and
+            # not yet reaped, and the retry is read once the leader is reaped. There is no Process to drain
+            # here, only the held Popen, whose `poll` reaps an exited leader without blocking and leaves
+            # one that still runs alone. EPERM again means a member this process may not signal: it raises
+            popen.poll()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(popen.pid, signal.SIGKILL)
     if cancelled:
         raise asyncio.CancelledError
 
