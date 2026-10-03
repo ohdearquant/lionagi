@@ -31,7 +31,7 @@ from lionagi.record import Entry
 
 from .agent import backend_for
 from .config import instructions
-from .view import Console
+from .view import Console, cost_whole
 
 __all__ = (
     "console",
@@ -208,16 +208,15 @@ def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
     too), falling back to the last attempt's `usage.cost` for a backend that reports only that, a
     total of 0 being a bill of 0 so only an absent total falls back; and how many calls that sum
-    misses, with no figure at all or the router's `cost_complete` false."""
+    misses, with no figure at all or the router's `cost_complete` false. A USAGE row read back from a
+    log with no `cost_complete` is from before the key: whether its subtotal is whole is unknown, so
+    it counts with them."""
     cost = 0.0
     for c in calls:
         billed = c.get("total_cost_usd")
         cost += float(billed if billed is not None else (c.get("usage") or {}).get("cost") or 0)
     unknown = sum(
-        1
-        for c in calls
-        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
-        or c.get("cost_complete") is False
+        1 for c in calls if not cost_whole(c) or (c.get("kind") == "USAGE" and "cost_complete" not in c)
     )
     return cost, unknown
 

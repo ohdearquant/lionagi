@@ -29,7 +29,9 @@ with no message (a reasoning-heavy turn that ran out of output). Each call has i
 directory, reused by its retries and removed once its child is joined; a call that fails for good
 lands on `calls` as a failed envelope carrying its attempts' usage and the last attempt's raw
 stream and stderr, since the scratch is gone: each text, the error's too, by its head and tail
-within `claude_code._DIAGNOSTIC_CHARS` characters, counting what it left out.
+within `claude_code._DIAGNOSTIC_CHARS` characters, counting what it left out. The notes of any call
+(its events of note, each failed attempt's reason) are kept to the first `_NOTES`, then one entry
+counting the rest.
 """
 
 from __future__ import annotations
@@ -89,6 +91,7 @@ SCRATCH_AGENTS_MD = (  # beside the shared home's AGENTS.md, which says to read 
     "This process is a text harness. Reply only in the format the latest user message specifies; "
     "there are no guidance files to read.\n"
 )
+_NOTES = 20  # the most notes a call's envelope keeps
 
 
 class CodexError(RuntimeError):
@@ -214,6 +217,9 @@ class Codex:
 
     def _envelope(self, usage_total: Counter, notes: list[str], t0: float, attempts: int) -> dict:
         cached = usage_total.get("cached_input_tokens", 0)
+        kept = notes[:_NOTES]
+        if len(notes) > _NOTES:
+            kept.append(f"[{len(notes) - _NOTES} more note(s) omitted]")
         return {
             "model": self.model,
             "effort": self.effort,
@@ -227,7 +233,7 @@ class Codex:
                 "cache_creation_input_tokens": usage_total.get("cache_write_input_tokens", 0),
                 "output_tokens": usage_total.get("output_tokens", 0),
             },
-            "notes": notes,
+            "notes": kept,
         }
 
     async def _attempt(self, prompt: bytes, scratch: Path) -> tuple[str | None, dict, str, list[str], dict]:
