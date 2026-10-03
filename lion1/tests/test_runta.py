@@ -1313,7 +1313,9 @@ def test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion(tmp_
     mod.delete_fails["rt-1"] = OSError("gone away")
     with pytest.raises(asyncio.CancelledError) as e:
         asyncio.run(box.stop())
-    assert getattr(e.value, "__notes__", []) == []  # a cancellation is the news, not a note on the deletion
+    assert e.value.__notes__ == [
+        "the deletion also failed: OSError('gone away')"
+    ]  # the cancel is raised; what the deletion said rides as its note
     assert closed == ["sdk", "api"]  # the other client was still closed
     assert mod.runtimes_store["rt-1"].deleted is False and box.started is False and box.box_id is None
 
