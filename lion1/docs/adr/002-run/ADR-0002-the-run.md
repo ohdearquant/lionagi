@@ -68,11 +68,12 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command                                       | the run continues once they settle                               |
 
-Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit, then done" in one
-turn means both. A command is admitted at alias reservation, entered when its handler is called,
-settled when its RESULT lands; one cancelled before it entered is recorded by the loop. Only the
-fourth row refuses the message whole; any other construct that cannot be read is dropped and named
-while the rest runs ([[ADR-0004-the-language#^c3|ADR-0004/C3]]).
+Every command control flow reaches is dispatched, `OUT{}` or not; "edit, then done" in one turn
+means both, and a program's untaken branch, or what follows its `return`, is never reached
+(ADR-0008). A command is admitted at alias reservation, entered when its handler is called, settled
+when its RESULT lands; one cancelled before entering is recorded. Only the fourth row refuses the
+message; any other unreadable construct is dropped and named while the rest runs
+([[ADR-0004-the-language#^c3|ADR-0004/C3]]).
 
 `OUT{}` waits for what it references, through pointers, and for no effect
 ([[ADR-0005-command-handling#^c6|ADR-0005/C6]]); "edit, then done" points `OUT{}` at the edit. An
