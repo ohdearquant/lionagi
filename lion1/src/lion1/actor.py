@@ -32,26 +32,29 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from . import lndl
 from .bus import Bus
 from .experience import Experience, ExperienceLesson, ExperienceRecord
-from .lndl import Lact, Lvar, Pointer, Program
-from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
-from .program import (
+from .lndl import (
     LIMIT,
     Branch,
     Command,
     EvalError,
+    Lact,
+    Lvar,
+    Pointer,
+    Program,
     Script,
     Value,
     _size,
     evaluate,
     note_keys,
     pointers,
+    program_guidance,
 )
-from .program import (
+from .lndl import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
 )
-from .program import check as check_script
-from .program import guidance as program_guidance
-from .program import read as read_script
+from .lndl import check as check_script
+from .lndl import read as read_script
+from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 

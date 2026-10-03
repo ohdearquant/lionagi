@@ -195,9 +195,8 @@ consumption, on the next notification or the closure ([[ADR-0007-the-record#^d2|
 resumed chat folds it and recompiles nothing; the record keeps four kinds
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
-- **Landing evidence**: `src/lion1/program.py` (beside `src/lion1/lndl.py`, which a
-  `src/lion1/lndl/` package would shadow); `tests/test_program.py`:
-  `test_the_records_example_resolves_in_one_turn`,
+- **Landing evidence**: `src/lion1/lndl.py`, the program form after the three constructs;
+  `tests/test_program.py`: `test_the_records_example_resolves_in_one_turn`,
   `test_a_syntax_error_refuses_the_whole_message_and_nothing_runs`,
   `test_a_check_that_fails_refuses_the_whole_message_naming_the_line`,
   `test_a_build_past_the_size_limit_settles_the_node_invalid`,
