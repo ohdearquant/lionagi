@@ -9,7 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from hub.chat import entry_row
-from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Success, program
+from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, program
 from lionagi.actor import ProfileError, Result
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import LNDLError
@@ -855,6 +855,64 @@ def test_a_turn_without_a_block_is_idle_and_under_a_conversation_is_the_reply():
 
     run = _run(_actor("chat", []), "hello there", "unused", wait=wait)
     assert replies == [2] and run.outcome.__class__.__name__ == "Stopped"
+
+
+def _asking():
+    asked: list = []
+
+    async def wait(run):
+        asked.append(run.round)
+        return False
+
+    return asked, wait
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("a = 3",),
+        ('note["k"] = {x: 1}',),
+        ("a = 3 if true else 4",),
+        ("if true:", "    a = 3", "else:", "    b = 4"),
+    ],
+)
+def test_a_program_that_runs_no_command_and_gives_no_out_is_a_reply_under_wait(lines):
+    # the core rule, for a program: it acts when it holds a command or an OUT{}, and a value or a note
+    # write is neither, so the turn is the reply and wait is asked at the next turn's start
+    asked, wait = _asking()
+    run = _run(_actor("no-act", []), fenced(*lines), "unused", wait=wait)
+    assert asked == [2] and run.outcome == Stopped(2)
+
+
+@pytest.mark.parametrize(
+    ("lines", "ran"),
+    [
+        ('a = echo(text="x")', [("echo", "x")]),
+        ('note["k"] = echo(text="x")', [("echo", "x")]),
+        ('if (DO echo(text="x")) == "x":\n    a = 1', [("echo", "x")]),
+        ('if false:\n    DO echo(text="x")', []),
+        ('if true:\n    a = 1\nelse:\n    DO echo(text="x")', []),
+        ('v = false and DO echo(text="x")', []),
+        ('note["k"] = false and DO echo(text="x")', []),
+    ],
+)
+def test_a_program_with_a_command_call_anywhere_in_it_is_not_a_reply_under_wait(lines, ran):
+    # the static shape of the message, as the core rule reads it: a command in an untaken branch or in
+    # an expression never reached still makes the turn one that acted, so wait is not asked
+    calls: list = []
+    asked, wait = _asking()
+    run = _run(_actor("act", calls), fenced(*lines.split("\n")), fenced('OUT{ok: "yes"}'), wait=wait)
+    assert calls == ran and asked == [] and run.round == 2 and isinstance(run.outcome, Success)
+
+
+@pytest.mark.parametrize("out", ['OUT{answer: "x"}', 'return {answer: "x"}'])
+def test_a_program_with_only_an_out_is_not_a_reply_under_wait_when_accept_refuses_it(out):
+    # an output the gate refuses is a retry: the turn acted, so wait is not asked before the next one
+    asked, wait = _asking()
+    verdicts = iter(["not yet", None])
+    turn = fenced(out)
+    run = _run(_actor("out", []), turn, turn, wait=wait, accept=lambda run, fields: next(verdicts))
+    assert asked == [] and run.round == 2 and isinstance(run.outcome, Success)
 
 
 def test_two_fenced_blocks_are_refused():

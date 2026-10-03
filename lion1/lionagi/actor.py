@@ -34,7 +34,7 @@ from .bus import Bus
 from .experience import Experience, ExperienceLesson, ExperienceRecord
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
-from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
+from .program import Branch, Command, EvalError, Script, Value, Write, evaluate, pointers
 from .program import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
 )
@@ -1031,7 +1031,7 @@ class Actor:
                     continue
                 run.idle_note = None
                 if isinstance(program, Script):
-                    acted = spoke = bool(program.body)
+                    acted, spoke = _acts(program.body), bool(program.body)
                 else:
                     acted = bool(program.lacts) or program.out is not None
                     spoke = acted or bool(program.lvars)
@@ -2357,6 +2357,30 @@ def _distance(a: str, b: str) -> int:
         for j, cb in enumerate(b, 1):
             prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
     return row[-1]
+
+
+def _acts(nodes: tuple) -> bool:
+    """Whether a program's text holds a command call or an `OUT{}` anywhere in it, an untaken branch
+    and what follows a `return` included: the shape of the message, as the core rule reads it."""
+    for node in nodes:
+        match node:
+            case Command() | ProgramOutput() | Write(value=Command()):
+                return True
+            case Branch(test=test, body=body, orelse=orelse):
+                if _calls(test) or _acts(body) or _acts(orelse):
+                    return True
+            case Write(value=expr):
+                if _calls(expr):
+                    return True
+            case _:
+                if _calls(node.expr):
+                    return True
+    return False
+
+
+def _calls(expr: ast.expr) -> bool:
+    """A `DO` call written inside an expression: the only call the reader admits there."""
+    return any(isinstance(n, ast.Call) for n in ast.walk(expr))
 
 
 def _referenced(program: Program) -> set[str]:
