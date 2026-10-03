@@ -90,11 +90,11 @@ is refused. An offer is fixed when it is made (D1).
   same effective request, backend script, stores and schedule of inputs and controls, the run's id
   and clock readings aside. Also when the service appends to a record or changes an outcome.
 
-The service calls `Actor.run` once per start and awaits it as a task on the actor's loop. It reads
-the run and writes two things on it: inbound input (C5) and the interrupt (C6). An error before
-`run.started` is a refusal with no run, and the log reserved for it is removed; a cancel before then
-keeps it, aborted (D7). After it the run exists and its state says how it ended. A log that stops
-its run (C8) is the one stated departure from this parity.
+The service calls `Actor.run` once per start, a task on the actor's loop. It writes two things on
+the run: input (C5) and the interrupt (C6). An error before `run.started` is a refusal with no run,
+and the log reserved for it is removed; a cancel before then keeps it, aborted (D7). After it the
+state says how the run ended. Departures: a log that stops its run (C8), and `run.waiting`, the
+service's own event (D4). Rows and events are per run as far as ids differ (S11).
 
 ### C3: A row is published complete, once, in order _(enforced: mechanical; owed, S1)_ ^c3
 
@@ -290,10 +290,10 @@ on any other run is refused.
 Serves C1, C12 and C13. `Service(actor, *, dir=None, max_live=8, keep=100)`; `keep` counts ended
 runs held in memory. `Service.offer(profile, backend, request=RunRequest(), *, converse=False)`
 raises `ValueError`, naming which, for a template setting `wait` or `reply_on_commands` or a name
-already offered. It keeps a copy of the profile with its own `defaults` dict, and of the template,
-so a later change to the caller's objects reaches no run. `Service.card()` builds the card from
-`Actor.subset` and `model_json_schema`. `entry_row` and `load_log` move from `hub/chat.py` to
-`lionagi/checkpoint.py`, and the hub imports them.
+already offered. It keeps a copy of the profile with its own `defaults` dict, and of the template;
+the stores the profile names and the callbacks a request carries stay the caller's, live.
+`Service.card()` builds the card from `Actor.subset` and `model_json_schema`. `entry_row` and
+`load_log` move from `hub/chat.py` to `lionagi/checkpoint.py`, and the hub imports them.
 
 - **Landing evidence**: owed: `tests/test_serve.py` for the card against the model's own guidance,
   the import boundary and the dependency list.
@@ -359,11 +359,12 @@ again and sleeps on it.
 
 ### D6: `interrupt`, `stop` and `cancel` ^d6
 
-Serves C6. `interrupt(id)` calls `Run.interrupt`. `stop(id)` sets the flag read by the `stop`
-callback the service hands `Actor.run`, and the wake event with no await between, then calls
-`Run.interrupt`. `cancel(id)` cancels the task and awaits it; on a run still starting that is the
-reserved task, and the run is aborted with no runtime id. Each answers the state. One on an ended
-run is refused, and so is every one but `cancel` on a starting run.
+Serves C6. `interrupt(id)` calls `Run.interrupt` and answers the state with `cut`, whether an
+awaited call was cancelled now. `stop(id)` sets the flag read by the `stop` callback the service
+hands `Actor.run`, and the wake event with no await between, then calls `Run.interrupt`.
+`cancel(id)` cancels the task and awaits it; on a run still starting that is the reserved task, and
+the run is aborted with no runtime id. Each answers the state. One on an ended run is refused, and
+so is every one but `cancel` on a starting run.
 
 - **Landing evidence**: owed: stop while waiting, mid-call, during a command and after an accepted
   output; cancel before the commit and during it; cancel with an interrupt in both orders.
@@ -397,7 +398,7 @@ parsed message with a defect is refused.
 | `GET /runs/{id}/events` and `GET /events` | the stream of one run, or of every run | 200 as `text/event-stream`; 404 or 410 |
 | `POST /runs/{id}/input` | queues `text`, optionally with `once` | 202 with the handle; 409 or 429 |
 | `POST /runs/{id}/end`, `/interrupt`, `/stop`, `/cancel` | the control | 202 with the state; 409 |
-| any route | the shared answers | also 403, 405, 408, 413, 415, 500 or 503, where D9 says they fit |
+| any route | the shared answers | also 400, 403, 404, 405, 408, 410, 413, 415, 500 or 503, where D9 says they fit |
 
 | the raw request | rule |
 | --------------- | ---- |
@@ -445,6 +446,7 @@ client raises the card's protocol version.
 | `closed` | true once an `end` was accepted, after which input is refused; else false; null on a cut-short log |
 | `outcome`, `output` | an `outcome` and a `Success`'s output; null until ended, after an abort and on a cut-short log |
 | `error` | the log's failure; on a run an exception aborted, its type and message; else null |
+| `cut` | on an interrupt's answer only: whether an awaited call was cancelled now |
 
 | request | body |
 | ------- | ---- |
@@ -534,7 +536,8 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | Appending the `END` row, or retrying, after a failed append | the new row either joins the torn bytes into one last line the loader drops, or follows them past a line feed, where the loader refuses the whole file; neither keeps the row, and the cursor cannot repair bytes already written (C8) |
 | Waiting at shutdown for experience stores | the core does not wait for a slow store, so the service has nothing to await ([[ADR-0020-the-experience\|ADR-0020]] S3) |
 | Trusting the parsed headers | the parser accepts a folded line, a space before the colon and a repeated Origin; the raw checks of D8 run first (C10) |
-| Calling a handler with no run | a `Context` belongs to a run, and the gates, receipts and bounds are the run's ([[ADR-0005-command-handling#^c3\|ADR-0005/C3]]) |
+| Calling a handler with no run | a `Context` belongs to a run ([[ADR-0005-command-handling#^c3\|ADR-0005/C3]]); its bounds and its request's gates are the run's, and the actor's `before` hooks apply to every run it serves |
+| An error code on `Service.offer`'s refusal | it is owner-side Python, a `ValueError` naming the field; D9's codes are the transport's |
 | A WebSocket | it needs a framing layer or a dependency; a stream down and POSTs up carry everything here |
 | A check in the loop before each backend call, so a log failing at `round.started` holds that call back | a change to the core for one failure path; the one call it lets out is the run's last, and its output may stand (C8) |
 | A gate in the loop that takes no input after `end` | a second change to the core; the exchange in flight finishes its command rounds, and what it never took stays listed (C15) |
