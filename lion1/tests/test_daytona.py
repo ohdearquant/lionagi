@@ -363,6 +363,50 @@ def test_a_stalled_git_whose_group_kill_is_first_refused_with_eperm_is_still_sto
     gone(pids)
 
 
+def test_a_stalled_git_left_exited_and_unreaped_is_reaped_before_its_kill_is_tried_again(
+    tmp_path, monkeypatch
+):
+    # macOS answers EPERM for a group whose only member is its leader, exited and not yet reaped, until
+    # something reaps it. The first kill ends the group and is refused so; the reap is what lets the
+    # second find the group gone, and the call still says git did not answer
+    from hub.tools import box as box_mod
+
+    pids = stalled_git(tmp_path, monkeypatch, "status")
+    monkeypatch.setattr(box_mod, "GIT_TIMEOUT", 1.0)
+    procs: list[subprocess.Popen] = []
+
+    class Recorded(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            procs.append(self)
+
+    monkeypatch.setattr(subprocess, "Popen", Recorded)
+    real, sent = os.killpg, []
+
+    def killpg(pid, sig):
+        sent.append(pid)
+        if len(sent) == 1:
+            real(pid, sig)  # the group ends, its leader left exited and not reaped
+            deadline = time.monotonic() + 5
+            while (
+                subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout[
+                    :1
+                ]
+                != "Z"
+            ):
+                assert time.monotonic() < deadline, "the leader never exited"
+                time.sleep(0.01)
+        if procs[0].returncode is None:  # nothing reaped the leader: refused, as macOS refuses it
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        raise ProcessLookupError(errno.ESRCH, "No such process")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    with pytest.raises(TimeoutError, match="git status in .* did not answer within 1s and was stopped"):
+        box_mod._git(tmp_path, "status")
+    assert len(sent) == 2 and procs[0].returncode is not None
+    gone(pids)
+
+
 def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(stubbed, tmp_path, capsys):
     """`lion chat --box daytona` end to end on the stub: the directory pushed at the same path, the
     file tools over the box's tree, a git baseline for the copy, the diff saved as the chat's patch
