@@ -182,8 +182,8 @@ value.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code says turn as this corpus does: `max_turns`, `Exhausted(turns)`, `<system turn=`,
   the `turn.*` events, `Stopped(turn)`, an entry's `turn`. The earlier spelling, round, is gone with
-  no alias: `max_rounds` is refused as no bound. A log written before the rename still reads, its
-  entries' `round` taken as their turn. A retry is no outcome: the run has no `Retry` class.
+  no alias and no reader: `max_rounds` is refused as no bound, and a log written before the rename
+  reads with no turn on its entries. A retry is no outcome: the run has no `Retry` class.
 - **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
   for what it references, and an assembly that fails or an output refused settles the rest of the
   turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before

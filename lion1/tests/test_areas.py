@@ -535,9 +535,6 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
         m = _WAKE.match(line)
         assert m and (m["wake"], m["tokens_in"], m["cost"]) == ("45", "56129", "0.0624"), line
         assert (m["context"], m["restarts"]) == (context, restarts), line
-        # a line written before the rename counts rounds: the same wake, the same count
-        was = _WAKE.match(line.replace(" turns, ", " rounds, "))
-        assert " turns, " in line and was and was.groupdict() == m.groupdict(), line
     d = tmp_path / "r"
     d.mkdir()
     (d / "serve.log").write_text("\n".join([old, ctx, both, alone]) + "\n")

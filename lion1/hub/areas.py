@@ -73,12 +73,10 @@ _STYLE = (
 # during the burst, follow when any: both optional and each printed on its own (`_line` in
 # hub/agent/agent.py), so an older line without them still matches; the tasks of the queue the wake
 # presented follow the same way, and so does the count of calls of unknown cost beside the dollars.
-# A line written before the rename counts `rounds`; it still matches, read as turns.
 # The phone app parses the `log` event's lines with this same pattern.
 _WAKE = re.compile(
     r"(?P<at>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) wake (?:(?P<wake>\d+): (?P<outcome>.+?) after "
-    r"(?P<turns>\d+) (?:turns|rounds), (?P<mail>\d+) mail, (?P<sent>\d+) sent; "
-    r"(?P<calls>\d+) model call\(s\), "
+    r"(?P<turns>\d+) turns, (?P<mail>\d+) mail, (?P<sent>\d+) sent; (?P<calls>\d+) model call\(s\), "
     r"(?P<tokens_in>\d+) in, (?P<tokens_out>\d+) out, \$(?P<cost>[\d.]+)"
     r"(?: \(partial: (?P<unknown>\d+) call\(s\) of unknown cost\))?; (?P<idle>\d+) idle poll\(s\) "
     r"before it at 0 tokens"

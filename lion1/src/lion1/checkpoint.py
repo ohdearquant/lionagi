@@ -134,7 +134,7 @@ def entry_of(row: dict) -> Entry | None:
         kind=kind,
         content=content,
         alias=row.get("alias"),
-        turn=row.get("turn", row.get("round", 0)),  # a log written before the rename says `round`
+        turn=row.get("turn", 0),
         meta=meta,
     )
 
