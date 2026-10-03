@@ -138,7 +138,8 @@ def _git(directory: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
             except PermissionError:
                 # macOS answers EPERM for a group whose only member is its leader, exited and not yet
                 # reaped: `poll` reaps it without blocking. EPERM again is a member this process may not
-                # signal, and raises
+                # signal, and raises. A refused kill reached no member, and git, this process's own child,
+                # is one it may signal: git has exited, so the wait leaving this block returns at once
                 proc.poll()
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(proc.pid, signal.SIGKILL)

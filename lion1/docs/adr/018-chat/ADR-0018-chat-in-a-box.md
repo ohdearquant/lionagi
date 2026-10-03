@@ -574,12 +574,12 @@ into the model again.
 
 ### D17: The push's git calls on this machine, each within the hub's `GIT_TIMEOUT` ^d17
 
-Serves C3. A push lists the directory with `git ls-files` and, when that fails, asks `git rev-parse`
-whether it is a repository, in `pack` of `hub/tools/box.py`, shared by the Daytona and Runta pushes.
-Each call has that module's `GIT_TIMEOUT` (30 s); the hub does not import the command's. Past it
-git's process group is killed and git reaped, and `TimeoutError` says git did not answer within the
-bound; a kill refused again after the reap raises `PermissionError`, as no member is one this
-process may signal. Nothing is pushed.
+Serves C3. A push lists files with `git ls-files` and, when that fails, asks `git rev-parse` whether
+it is a repository, in `box.pack`, shared by the Daytona and Runta pushes. Each call has that
+module's `GIT_TIMEOUT` (30 s); the hub does not import the command's. Past it, or on an interrupt,
+git's process group is killed and git reaped; past it, `TimeoutError` says so. A kill refused again
+after the reap raises `PermissionError`: a refused kill reached no member, so git, this process's
+own child, had exited. Nothing is pushed.
 
 - **Landing evidence**: `tests/test_daytona.py`:
   `test_a_push_whose_local_git_never_answers_is_stopped_at_the_bound_and_said_to_have_timed_out`,
