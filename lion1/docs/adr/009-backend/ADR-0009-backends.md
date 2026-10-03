@@ -336,5 +336,5 @@ swallowed too: a spin.
   (`test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`).
 - **S18**: The hook answers `allow` only for a tool the CLI's `--allowedTools` names exactly; any
   other admitted call goes back with its input and no decision, for the CLI's own rules
-  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). Whether an `allow` would skip
-  the CLI's own check of that list is not measured; the rule holds either way.
+  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). The rule holds whether or not
+  the CLI would skip its own check of that list on an `allow`.
