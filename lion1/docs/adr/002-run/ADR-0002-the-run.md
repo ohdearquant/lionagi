@@ -155,9 +155,10 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
 
 ### D2: A retry is no outcome, so `Retry` is removed ^d2
 
-Serves C4. `Retry` was exported from `lionagi` and `lionagi.actor` and sat in the `Outcome` union,
-yet no run ever constructed one: a retry is the `round.retry` event and `run.retry_error` (S1). It
-is removed with no compatibility shim: the package is alpha and the name never carried a value.
+Serves C4. `Retry` was among the exports of `lionagi` and `lionagi.actor` and sat in the `Outcome`
+union, yet no run ever constructed one: a retry is the `round.retry` event and `run.retry_error`
+(S1). It is removed with no compatibility shim: the package is alpha and the name never carried a
+value.
 
 - **Landing evidence**: `Outcome` and the package exports no longer name it;
   `test_unreadable_turn_is_a_retry_not_an_end` goes on past the retry to `Success`.
