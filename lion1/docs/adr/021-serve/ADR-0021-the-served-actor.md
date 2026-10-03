@@ -25,6 +25,10 @@ tags:
 
 ## Context
 
+This record serves the author's request of 2026-10-02 that serving an agent be as easy as serving an
+API, starting with a local app and designed in a record first; its first consumer is the native app
+(ADR-0022).
+
 An actor is reached only by the Python that calls `Actor.run`. Every program outside that process
 gets its own glue: the areas server reads residents' files
 ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]), and the terminal chat drives `Actor.run` with its own
@@ -566,7 +570,9 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S8**: A restart loses live runs: their logs remain and a resume is the client's ask (C7). The
   `once` keys live in memory, so a key replayed after a restart acts again.
 - **S9**: The boundary: who may start what, a durable store of runs and supervision across restarts
-  are the kernel's. Here an offer is the grant and a file is the store.
+  are the kernel's. Here an offer is the grant and a file is the store. The kernel shape of
+  2026-09-03 is a per-run MCP served by khived on loopback with a token; this transport is the local
+  surface until the kernel serves it, and nothing beyond this machine is decided here.
 - **S10**: The transport is under the core's coverage gate, so its tests open real loopback sockets.
 - **S11**: The service routes a bus event to its served run by the runtime's id, so it rests on that
   id being unique among an actor's live runs. `Run` draws 8 hex digits and `Actor.runs` keys on them
