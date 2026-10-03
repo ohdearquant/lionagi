@@ -62,12 +62,12 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or program (ADR-0008/C1) or a backend's refusal | nothing | a retry; the error rides the next notification |
 | under `wait`, the message has no command and no `OUT{}` anywhere in its text | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
 | the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
+| the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle, as a turn that acted, not a reply |
 | the message has `OUT{}` and its fields do not assemble | every command reached; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command reached; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
 | the message has `OUT{}` | every command reached; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
 | under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command reached | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command reached                               | the run continues once they settle                               |
-| the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle, as a turn that acted, not a reply |
 
 Every command control flow reaches is dispatched, `OUT{}` or not; "edit, then done" in one turn
 means both, and a program's untaken branch, or what follows its `return`, is never reached
