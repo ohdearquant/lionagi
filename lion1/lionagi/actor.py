@@ -59,7 +59,6 @@ __all__ = (
     "Result",
     "Success",
     "Continue",
-    "Retry",
     "Exhausted",
     "Refused",
     "Stopped",
@@ -247,11 +246,6 @@ class Continue:
 
 
 @dataclass(frozen=True)
-class Retry:
-    error: str
-
-
-@dataclass(frozen=True)
 class Exhausted:
     """A bound was spent at a round's start, `rounds` rounds in: `reason` names it, rounds (max_rounds),
     idle (max_idle), time (time_budget), cost (cost_budget) or context (context_budget)."""
@@ -273,7 +267,7 @@ class Stopped:
     round: int
 
 
-Outcome = Success | Continue | Retry | Exhausted | Refused | Stopped
+Outcome = Success | Continue | Exhausted | Refused | Stopped
 
 _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `name(...)` as a whole value
 # the notification's own opening tag, in any case or spacing after `system`, its `<` as itself or `&lt;`
@@ -1048,11 +1042,38 @@ class Actor:
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
                 run.idle_note = None
+                for var in () if isinstance(program, Script) else program.lvars:
+                    # a call written in a value tag runs nothing; say so by name
+                    call = _CALL_SHAPED.match(var.value)
+                    if call and call.group(1) in subset.names():
+                        run.refused.append(
+                            (
+                                var.alias,
+                                f"a value tag runs nothing; to run {call.group(1)}(...) write "
+                                f"<lact {var.alias}>{call.group(1)}(...)</lact>",
+                            )
+                        )
+                for problem in program.problems:
+                    run.refused.append(("turn", problem))
+                failed = None
                 if isinstance(program, Script):
-                    acted = spoke = bool(program.body)
+                    walk = _Walk(self, run, subset, m.seq)
+                    try:
+                        found = await walk.execute(program)
+                    except lndl.LNDLError as e:  # the output could not be computed: a retry (ADR-0008/C7)
+                        found, failed = None, str(e)
+                    # the turn's class is what its walk did, never the program's text: a command launched,
+                    # one computing an earlier turn's value ran included, or OUT{} reached (ADR-0002/C1)
+                    acted, spoke = walk.acted, bool(program.body)
+                    program = Program(lacts=walk.lacts, out=None if found is None else lndl.Out(found))
+                    referenced: set[str] = set()
+                    tasks = walk.tasks
                 else:
                     acted = bool(program.lacts) or program.out is not None
                     spoke = acted or bool(program.lvars)
+                    self._declare(run, program, m.seq)
+                    referenced = _referenced(program)
+                    tasks = self._dispatch(run, program, subset)
                 if request.wait is not None and not acted:
                     run.replied = True  # the reply; the other side speaks next
                 elif not spoke:
@@ -1070,34 +1091,10 @@ class Actor:
                         )
                 else:
                     run.idle_rounds = 0
-                for var in () if isinstance(program, Script) else program.lvars:
-                    # a call written in a value tag runs nothing; say so by name
-                    call = _CALL_SHAPED.match(var.value)
-                    if call and call.group(1) in subset.names():
-                        run.refused.append(
-                            (
-                                var.alias,
-                                f"a value tag runs nothing; to run {call.group(1)}(...) write "
-                                f"<lact {var.alias}>{call.group(1)}(...)</lact>",
-                            )
-                        )
-                for problem in program.problems:
-                    run.refused.append(("turn", problem))
-                if isinstance(program, Script):
-                    walk = _Walk(self, run, subset, m.seq)
-                    try:
-                        found = await walk.execute(program)
-                    except lndl.LNDLError as e:  # the output could not be computed: a retry (ADR-0008/C7)
-                        self._retry(run, str(e))
-                        self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
-                        continue
-                    program = Program(lacts=walk.lacts, out=None if found is None else lndl.Out(found))
-                    referenced: set[str] = set()
-                    tasks = walk.tasks
-                else:
-                    self._declare(run, program, m.seq)
-                    referenced = _referenced(program)
-                    tasks = self._dispatch(run, program, subset)
+                if failed is not None:
+                    self._retry(run, failed)
+                    self.bus.emit("round.retry", run=run.id, round=round_no, error=failed)
+                    continue
                 if program.out is None:
                     await _settle(run, tasks, _left(run))
                     if (
@@ -2128,6 +2125,8 @@ class _Walk:
         # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
         self.used: dict[str, int] = {}
         self.named: set[str] = set()  # what OUT{} points at: never consumed
+        # the walk launched a command, from any node or value, or reached OUT{}: the turn acted
+        self.acted = False
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
         try:
@@ -2167,6 +2166,7 @@ class _Walk:
                 if ended is not None:
                     return ended
             elif isinstance(node, ProgramOutput):
+                self.acted = True
                 reader = _Reader(self, self._snapshot(*(v for _, v in node.fields)))
                 self.named |= node.named
                 fields = {key: await evaluate(v, reader) for key, v in node.fields}
@@ -2189,6 +2189,7 @@ class _Walk:
 
     def launch(self, la: Lact, args: Callable[[], Awaitable[dict[str, Any]]]) -> asyncio.Task:
         run = self.run
+        self.acted = True
         admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         run.thunks[la.alias] = args
         task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))

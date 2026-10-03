@@ -4,7 +4,7 @@ A `RunRequest` carries the bounds: `max_rounds`, `time_budget` in seconds, `max_
 accept gate in a row, and `view_budget`, the estimated tokens the view may hold before the runtime
 folds the oldest results to placeholders. The run ends as a value the caller reads, never a string: `Success`,
 `Exhausted(rounds)`, `Exhausted(rounds, "time")`, `Refused(why, times)`, `Stopped(round)`. A turn
-that could not be read is a `Retry` inside the run, told to the model and counted when it repeats,
+that could not be read is retried inside the run, told to the model and counted when it repeats,
 never an end. Scripted backends; runs offline.
 
     uv run python examples/budgets_and_outcomes.py
@@ -104,7 +104,7 @@ async def main() -> None:
         scripted("<lact e1>echo(1)</lact>", "<lact e1>echo(1)</lact>", "done"),
     )
     told = [ln for ln in notes(run)[2].splitlines() if "could not be read" in ln][0]
-    print("Retry (inside) ", run.outcome, "| the run went on; the third notification said:", told[:70], "...")
+    print("Retried inside ", run.outcome, "| the run went on; the third notification said:", told[:70], "...")
 
     run = await make().run(
         p,

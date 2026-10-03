@@ -36,9 +36,11 @@ Source: `Actor.run` in `lionagi/actor.py`.
 - **message**: what the model wrote in a turn: prose with requests in it
   ([[ADR-0004-the-language|ADR-0004]]).
 - **idle turn**: a turn whose message holds no request.
-- **retry**: a turn whose message the runtime did not accept: unreadable, refused whole, or an
-  output refused by `accept`; the reason rides the next notification.
-- **`Continue`**: the run's state after a settled turn without `OUT{}`; not an outcome.
+- **retry**: a turn whose message the runtime did not accept: unreadable, refused whole, an output
+  that could not be computed or assembled, or one refused by `accept` short of `max_refusals`; the
+  reason rides the next notification.
+- **`Continue`**: the `Outcome` value a settled turn without `OUT{}` leaves in `run.outcome`; never
+  a run's terminal value.
 - **outcome**: the run's terminal value (C4).
 
 ## Assumptions
@@ -59,23 +61,24 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
 | under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
-| the message carries the loop's own `<system round=` frame, two `OUT{}` or a backend's refusal | nothing                             | a retry; the error rides the next notification                   |
-| under `wait`, the message has no command and no `OUT{}`   | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
+| the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or program (ADR-0008/C1) or a backend's refusal | nothing | a retry; the error rides the next notification |
+| under `wait`, the turn launched no command and reached no `OUT{}`: in the tag form none is in the parsed program; in the program form its walk (ADR-0008) did neither, computing an earlier turn's value included | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
 | the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
-| the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
-| the message has `OUT{}` and `accept` refuses it | every command; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
-| the message has `OUT{}` | every command; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
-| under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
-| the message has no `OUT{}`                                | every command                                       | the run continues once they settle                               |
+| the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle |
+| the message has `OUT{}` and its fields do not assemble | every command reached; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
+| the message has `OUT{}` and `accept` refuses it | every command reached; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
+| the message has `OUT{}` | every command reached; a tag-form `OUT{}` waits for what it references; a program's walk settles every command it launched, within the time budget ([[ADR-0008-the-program#^d1\|ADR-0008/D1]]), before `OUT{}` assembles | `Success` when the fields assemble and `accept` has nothing to say; in the tag form the rest cancelled and reaped; in the program form nothing is left, and an unrelated command bounds `Success` by the time budget |
+| under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command reached | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
+| the message has no `OUT{}`                                | every command reached                               | the run continues once they settle                               |
 
-Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit, then done" in one
-turn means both. A command is admitted at alias reservation, entered when its handler is called,
-settled when its RESULT lands; one cancelled before it entered is recorded by the loop. A construct
-that cannot be read is dropped and named while the rest runs
-([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame, two `OUT{}` and backend refusals refuse
-the message whole.
+Every command control flow reaches is dispatched, `OUT{}` or not; "edit, then done" means both. A
+program's class is read off its walk, an earlier turn's value launching a command included. A
+command is admitted at alias reservation, entered when its handler is called, settled when its
+RESULT lands; one cancelled before entering is recorded. Only the fourth row refuses the message;
+any other unreadable construct is dropped and named while the rest runs
+([[ADR-0004-the-language#^c3|ADR-0004/C3]]).
 
-`OUT{}` waits for what it references, through pointers, and for no effect
+Tag-form `OUT{}` waits for what it references, through pointers, and for no effect
 ([[ADR-0005-command-handling#^c6|ADR-0005/C6]]); "edit, then done" points `OUT{}` at the edit. An
 accepted output ends the run, and what `OUT{}` did not name is cancelled and reaped (C4); a refused
 one is a retry, and the turn's commands settle before the next backend call, so none outlives its
@@ -111,13 +114,13 @@ turn.
 ### C4: A run ends in one of four values, and nothing else is an outcome _(enforced: mechanical)_ ^c4
 
 - **Subject**: every run.
-- **Violated when**: `run.outcome` holds a value outside the four, or a retry, a refusal or a fold
-  is reported as one.
+- **Violated when**: `run.outcome` ends outside the four, or a retry, a refusal or a fold is
+  reported as one.
 
 `Success(output)`, `Exhausted(rounds, reason)` with the reason rounds or time today (idle, cost and
 context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refused(why, times)` and
-`Stopped(round)`. `Continue`, a state and not an outcome, is what a settled turn without `OUT{}`
-leaves; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
+`Stopped(round)`. `Continue` is the `Outcome` value a settled turn without `OUT{}` leaves in
+`run.outcome`; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
 
 Open asks are cancelled when the run ends, whichever value it ends in, or an abort; a command still
 pending then is cancelled and reaped, its RESULT on the record before `run` returns or raises (S4).
@@ -135,17 +138,30 @@ After it, a cancellation is re-raised after the closure and delivery, outcome ke
 Serves C1 to C4. Bounds are checked at the turn's start; under `wait`, after a reply or pause,
 `wait` is asked, and false ends the run, appending nothing. Then the inbox is taken, the
 notification is appended, `stop` is asked, the backend is called once, the message is read, commands
-are dispatched, and the turn settles. Under `wait` a message with no command nor `OUT{}` replies,
-and with `reply_on_commands` so does one whose commands all landed;
+are dispatched, and the turn settles. Under `wait` a turn with no command nor `OUT{}` replies, and
+with `reply_on_commands` so does one whose commands all landed;
 `test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_and_a_failed_one_is_not`
 pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
-- **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_edges.py`; tests compare
-  `Exhausted`, `Refused` and `Stopped` by value and `Success` by type; the reap by
+- **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_edges.py`, `tests/test_program.py`;
+  `Exhausted`, `Refused`, `Stopped` compared by value, `Success` by type; the reap by
   `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
-  closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`. One cancelled
-  before it entered is recorded by `_never_started`; the clock after `wait` by
+  closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`; program `wait`
+  rows by `test_a_program_that_runs_no_command_and_gives_no_out_is_a_reply_under_wait`,
+  `test_a_program_is_a_reply_under_wait_unless_its_walk_launches_a_command_or_reaches_out` and
+  `test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_under_wait`;
+  `_never_started` records one cancelled before entering; the clock after `wait` by
   `test_a_wait_that_outlasts_the_time_budget_admits_no_further_call`.
+
+### D2: A retry is no outcome, so `Retry` is removed ^d2
+
+Serves C4. `Retry` was among the exports of `lionagi` and `lionagi.actor` and sat in the `Outcome`
+union, yet no run ever constructed one: a retry is the `round.retry` event and `run.retry_error`
+(S1). It is removed with no compatibility shim: the package is alpha and the name never carried a
+value.
+
+- **Landing evidence**: `Outcome` and the package exports no longer name it;
+  `test_unreadable_turn_is_a_retry_not_an_end` goes on past the retry to `Success`.
 
 ## Alternatives
 
@@ -158,16 +174,18 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
 
 ## Consequences
 
-- **S1**: A retry costs a turn, and its message stays on the record as TEXT; the retry itself is the
-  `round.retry` event on the actor's bus and `run.retry_error`. Its reason enters the record only in
-  the next turn's notification, so a retry on the run's last turn leaves none there; a caller
-  counting outcomes never sees it. The notification is pinned by
-  `test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong`; no test pins the event.
+- **S1**: A retry costs a turn; its message stays on the record as TEXT, and the retry itself is the
+  `round.retry` event on the actor's bus and `run.retry_error`. Its reason rides the next turn's
+  notification, so a retry on the run's last turn surfaces none. A backend's refusal, a reason on
+  its reply, is persisted at once in the TEXT entry's metadata; an empty reason is no refusal. A
+  caller counting outcomes sees no retry. Pinned: the notification by
+  `test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong`, the metadata by
+  `test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`; no test pins
+  the event.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
   `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
-  with the first change that touches them; the `Retry` class the code defines and never constructs
-  goes with it.
+  with the first change that touches them. A retry is no outcome: the run has no `Retry` class.
 - **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
   for what it references, and an assembly that fails or an output refused settles the rest of the
   turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before
