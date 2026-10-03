@@ -6,6 +6,7 @@ mails it) and the served routes behind it."""
 import asyncio
 import fcntl
 import http.client
+import ipaddress
 import json
 import os
 import plistlib
@@ -684,7 +685,8 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
 def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post(
     tmp_path, monkeypatch
 ):
-    inside = ("127.0.0.1", "::1", "100.64.0.1", "100.127.255.254", "::ffff:100.70.1.2")
+    middle = str(ipaddress.ip_network("100.64.0.0/10")[1 << 21])  # the range's middle, no device's address
+    inside = ("127.0.0.1", "::1", "100.64.0.1", middle, "100.127.255.254", "::ffff:100.70.1.2")
     assert all(_peer_allowed(a) for a in inside)
     outside = ("100.63.255.255", "100.128.0.1", "192.168.1.20", "8.8.8.8", "::ffff:8.8.8.8", "", "x")
     assert not any(_peer_allowed(a) for a in outside)
