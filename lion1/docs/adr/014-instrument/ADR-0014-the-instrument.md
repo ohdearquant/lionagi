@@ -364,3 +364,8 @@ refused at build.
   `test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order`,
   `test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number`,
   `test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest`).
+- **S14**: A candidate is a file stem: its JSON, or its Markdown header only when the stem has no
+  JSON; a JSON that does not parse is the candidate's error, never a fallback to the Markdown beside
+  it (`test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy`). The
+  case-blind, unpadded identity of S12 and S13 is this instrument's; the desk's triage of a verdict
+  notice still compares the repo spelling exactly and escalates a mismatch, so it fails closed.
