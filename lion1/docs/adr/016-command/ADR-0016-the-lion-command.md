@@ -290,3 +290,7 @@ there).
 - **S11**: For `codex` no call carries a cost figure: a subscription prints none. The row's dollars
   do not move and every call counts as of unknown cost (S2), so the day's cost cap never holds a
   codex agent; its wakes per hour still do.
+- **S12**: A `[claude_code]` value its key does not take is refused by the key's name, as D6 says of
+  `[codex]`: `timeout` is a number of seconds above zero, since `true` read as one second, and
+  `effort` and `cli` are strings that are not empty. Pinned by `tests/test_agent.py`:
+  `test_a_claude_code_value_that_is_not_what_its_key_takes_is_refused_by_the_key`.

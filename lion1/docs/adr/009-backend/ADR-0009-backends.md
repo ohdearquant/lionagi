@@ -416,3 +416,9 @@ a first figure. A call's usage is the thread's totals less the call before's (S2
   attempts. The session's envelope names the answering attempt's count apart, as `prompt_tokens`,
   with no figure where S26 left it out. The chat's log keeps it, and a continued chat seeds its
   first figure from that count and the characters it stood in, never from the sum.
+- **S30**: No acting shape is built on the subscription CLI: C6's gate cannot hold there. Measured
+  on 0.156.1, seven calls: a pre-tool hook in a private home fires under `exec`, exit 2 stops the
+  call, a replacement input is taken, and a hook that crashes or times out lets the tool run. Under
+  every shell type the model has `exec_command` and `write_stdin`; `write_stdin` reaches a running
+  command with no hook call, and the hook sees the command alone. Not measured: MCP tools, the
+  post-tool hook, the escalation parameters.
