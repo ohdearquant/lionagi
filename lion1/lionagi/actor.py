@@ -445,8 +445,8 @@ class Run:
         # what a name repair would have done, measured while it is off (ADR-0008/D2)
         self.misnamed: list[tuple[str, str | None, int | None]] = []
         self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
-        # each limit a command was launched or settled under, asked as its handler is about to start: one
-        # fired refuses it, whatever a later grant raised
+        # asked as a command's handler is about to start, any one true refuses it whatever a later grant
+        # raised: its walk's limits, or a grant that landed after the deadline while it was pending
         self.halts: dict[str, list[Callable[[], bool]]] = {}
         # results a program consumed, each with the seq it was consumed at, hidden by the next notification
         self.intermediates: dict[str, int] = {}
@@ -682,7 +682,14 @@ async def _more(req: RunMore, ctx: Context) -> str:
             granted = await granted
         if not granted:
             raise PermissionError(f"{req.bound} stays at {now}: the job did not grant {amount} more")
+        late = req.bound == "time_budget" and run.elapsed >= now
         run.bounds[req.bound] = now + amount
+        if late:
+            # the deadline passed before the grant landed: it raises the bound for what follows the turn, and
+            # each command the turn still has pending, waited for or not, is refused before its handler starts
+            for alias in run.pending:
+                if alias != ctx.alias:
+                    run.halts.setdefault(alias, []).append(lambda: True)
         if req.bound == "time_budget":  # a walk or a settle waiting now runs to the new deadline
             clock = asyncio.get_running_loop().time()
             for limit in run.timeouts:
@@ -1589,7 +1596,7 @@ class Actor:
             bound = f"{spent}_budget"
             why = f"refused: the {bound} of {run.bounds[bound]:g} is spent"
             return Result(la.name, False, error=why, reason="refused"), None
-        # a fired deadline it was launched or settled under refuses it, whatever bound a later grant raised
+        # its walk's fired deadline, or a grant that landed late while it was pending, refuses it
         if any(halt() for halt in run.halts.get(la.alias, ())):
             why = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
             return Result(la.name, False, error=why, reason="refused"), None
@@ -2663,12 +2670,6 @@ async def _settle(
         waited = set(tasks)
         if limit is None:
             limit = _Limit(run) if by_deadline else asyncio.timeout_at(None)
-        if by_deadline:
-            # a command still pending is refused at its handler once this limit fired: one queued behind
-            # a synchronous grant that held the loop past the deadline reaches it before the cut lands
-            for alias, task in run.pending.items():
-                if task in waited:
-                    run.halts.setdefault(alias, []).append(limit.expired)
         try:
             async with limit:
                 if by_deadline:

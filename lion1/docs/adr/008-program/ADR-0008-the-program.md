@@ -398,9 +398,9 @@ computation binds its failure.
   `test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write`,
   `test_a_key_written_again_after_its_list_grew_lets_no_part_past_the_limit_run` and
   `test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on` pin it.
-- **S15**: A command the walk launched is refused at its handler once the walk's or the settlement's
-  deadline fired, whatever bound a later grant raised. One queued behind a synchronous grant that
-  held the loop past the deadline runs no handler, though the run's bound reads unspent by then. The
-  refusal is the command's own result; a write waiting on it is refused as spent (S11).
+- **S15**: A command the walk launched is refused before its handler starts once the walk's or the
+  settlement's deadline fired, whatever bound a later grant raised. One queued behind a synchronous
+  grant that held the loop past the deadline runs no handler, though the run's bound reads unspent
+  by then. The refusal is the command's own result; a write waiting on it is refused as spent (S11).
   `test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_handler` and
   `test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits` pin it.

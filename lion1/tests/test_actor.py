@@ -1926,6 +1926,36 @@ def test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_han
     assert ("n1", HALTED) in run.refused
 
 
+@pytest.mark.parametrize("out", ["names-the-grant", "names-nothing"])
+def test_a_command_an_out_turn_leaves_out_of_its_wait_is_refused_after_a_late_grant(out):
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the deadline passes under it
+        return True
+
+    async def accept(run, fields):
+        await asyncio.sleep(0)  # an accept that yields: queued commands run before the output is judged
+
+    ran: list[float] = []
+    actor = _echo_actor(f"b-out-late-grant-{out}")
+
+    @actor.handler(Nap, effect="pure")
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)
+        return req.seconds
+
+    named = "[m1]" if out == "names-the-grant" else '"x"'
+    turn = (
+        '<lact m1>run.more(bound="time_budget", amount=5, reason="held")</lact>'
+        f"<lact n1>nap(seconds=0)</lact> OUT{{answer: {named}}}"
+    )
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5, extend=extend, accept=accept)
+    run = asyncio.run(actor.run(Profile("p"), request, scripted(turn)))
+    # OUT{} waits only for what it names, so n1 is in no wait when the grant lands after the deadline: the
+    # grant raises the bound for what follows the turn, and n1, still pending, never enters its handler
+    assert run.bounds["time_budget"] == 5.5 and ran == []
+    assert ("n1", HALTED) in run.refused
+
+
 HALTED = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
 
 
