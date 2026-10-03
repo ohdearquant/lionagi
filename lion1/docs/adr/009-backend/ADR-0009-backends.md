@@ -336,6 +336,7 @@ swallowed too: a spin.
   (`test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`).
 - **S18**: The hook answers `allow` only for a tool the CLI's `--allowedTools` names exactly; any
   other admitted call goes back with its input and no decision, for the CLI's own rules
-  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). The rule is needed: measured
-  once on the installed CLI in `-p` mode, an `allow` runs a tool that `--allowedTools` leaves out, a
-  built-in or an MCP tool alike, and with no decision the CLI denies that tool.
+  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`, which pins the hook's answers).
+  The rule is needed. Measured once on the installed CLI (2.1.288) in `-p` mode, with a tool no
+  permission rule allows: an `allow` ran it, a built-in or an MCP tool alike, and with no decision
+  the CLI denied it. No test runs the live CLI.
