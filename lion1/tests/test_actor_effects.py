@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-from lionagi import Actor, Handler, Kind, Profile, RunRequest
+from lion1 import Actor, Handler, Kind, Profile, RunRequest
 from tests.test_actor import scripted
 
 

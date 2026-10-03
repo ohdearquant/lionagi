@@ -3,8 +3,8 @@ import asyncio
 from lion_cli.view import Console
 from pydantic import BaseModel
 
-from lionagi import Actor, Profile, RunRequest, lndl
-from lionagi.record import Kind
+from lion1 import Actor, Profile, RunRequest, lndl
+from lion1.record import Kind
 from tests.test_actor import scripted
 from tests.test_actor_execution import Mark, _exec_actor, _exec_run
 

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from lionagi.bus import Bus, Event
+from lion1.bus import Bus, Event
 
 
 class HandlerFailure(Exception):

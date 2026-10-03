@@ -19,8 +19,8 @@ from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
 from hub.khive import Khive
-from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
-from lionagi.checkpoint import load
+from lion1 import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
+from lion1.checkpoint import load
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes

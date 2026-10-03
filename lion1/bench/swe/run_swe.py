@@ -29,7 +29,7 @@ from hub.backend import ClaudeCode, ClaudeCodeSession, Codex, OpenRouter
 from hub.tools import Box, BoxTree, SandboxDead, code, shell
 from hub.tools import watch as watching
 from hub.tools.watch import Watch
-from lionagi import Actor, Exhausted, Kind, Profile, RunRequest, Success
+from lion1 import Actor, Exhausted, Kind, Profile, RunRequest, Success
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox import testbed  # noqa: E402

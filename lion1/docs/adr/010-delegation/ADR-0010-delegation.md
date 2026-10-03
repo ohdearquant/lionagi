@@ -30,7 +30,7 @@ The actor holds the inbox ([[ADR-0001-the-actor|ADR-0001]]); the asking command 
 turn's rule ([[ADR-0002-the-run#^c1|ADR-0002/C1]]) with nothing awaited inline
 ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]); the notification names what arrived
 ([[ADR-0006-the-notification#^c2|ADR-0006/C2]]). Source: `Actor.queue`, `Actor._take_inbox`, the
-handle branch of dispatch, `Actor._deliver` and the `_ACTORS` registry in `lionagi/actor.py`;
+handle branch of dispatch, `Actor._deliver` and the `_ACTORS` registry in `src/lion1/actor.py`;
 `notebooks/03_two_actors.ipynb`.
 
 ## Definitions

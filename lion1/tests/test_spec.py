@@ -5,10 +5,10 @@ from typing import Generic, Literal, TypeVar
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, create_model
 
-import lionagi.spec as spec_module
-from lionagi import Actor, Profile, RunRequest, Success
-from lionagi.actor import _fields
-from lionagi.spec import Operable, field_key, render_guidance, spec_name
+import lion1.spec as spec_module
+from lion1 import Actor, Profile, RunRequest, Success
+from lion1.actor import _fields
+from lion1.spec import Operable, field_key, render_guidance, spec_name
 
 
 class ReadFile(BaseModel):

@@ -37,7 +37,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from hub import guidance
-from lionagi.actor import Context, Run
+from lion1.actor import Context, Run
 
 from ..khive import LOST, Khive, KhiveError, lit
 from .agent import Agent, AgentError

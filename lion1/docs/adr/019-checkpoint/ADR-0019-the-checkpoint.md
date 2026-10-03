@@ -33,7 +33,7 @@ When a resident takes a checkpoint and how its next process replays it is
 [[ADR-0013-the-agent#^c7|ADR-0013/C7]]; the fold a resident's view follows is
 [[ADR-0007-the-record|ADR-0007]]; the context figure is [[ADR-0006-the-notification|ADR-0006]];
 `lion context` and the areas server that carry the verbs are [[ADR-0016-the-lion-command|ADR-0016]]
-and [[ADR-0017-the-desk|ADR-0017]]. Source: `lionagi/checkpoint.py`, `hub/context.py`,
+and [[ADR-0017-the-desk|ADR-0017]]. Source: `src/lion1/checkpoint.py`, `hub/context.py`,
 `apps/cli/lion_cli/context.py`, `context_api` in `apps/cli/lion_cli/areas.py`, `_checkpoint` and
 `_restore` in `hub/agent/agent.py`.
 
@@ -68,7 +68,7 @@ and [[ADR-0017-the-desk|ADR-0017]]. Source: `lionagi/checkpoint.py`, `hub/contex
 
 ### C1: A take reads named values and a folded view, and calls no model _(enforced: mechanical)_ ^c1
 
-- **Subject**: `take` in `lionagi/checkpoint.py` and its callers: `lion context checkpoint`, the
+- **Subject**: `take` in `src/lion1/checkpoint.py` and its callers: `lion context checkpoint`, the
   `/api/context/checkpoint` route, the resident's `_checkpoint`.
 - **Violated when**: a take reaches a backend, a value holds text a model wrote for the checkpoint,
   a kind or reason outside the lists is kept, or a tool call or its result is held inline.
@@ -102,7 +102,7 @@ refusal of injected text is pinned by
 
 ### C3: The kept view is half the budget, oldest folded first, and the person's words are eight at most _(enforced: mechanical)_ ^c3
 
-- **Subject**: `fold_turns` in `lionagi/checkpoint.py`, `directives` in `hub/context.py`, and
+- **Subject**: `fold_turns` in `src/lion1/checkpoint.py`, `directives` in `hub/context.py`, and
   `render_prompt`.
 - **Violated when**: the kept exchanges estimate over half the budget while more than one is kept,
   the latest exchange is folded, a folded one goes unnamed, or a restore carries more than eight
@@ -147,8 +147,8 @@ an agent id and it started within 12 hours (A4). A timestamp with no zone is rea
 
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
-- **Subject**: `save` and `assert_ignored` in `lionagi/checkpoint.py`, `set_var` and `checkpoint` in
-  `apps/cli/lion_cli/context.py`, the resident's `_checkpoint`.
+- **Subject**: `save` and `assert_ignored` in `src/lion1/checkpoint.py`, `set_var` and `checkpoint`
+  in `apps/cli/lion_cli/context.py`, the resident's `_checkpoint`.
 - **Violated when**: a file lands under a `.khive/context/` a git work tree does not ignore, a git
   that cannot answer reads as ignored, a take replaces another, `latest.json` names no file, or a
   declared value is lost.
@@ -179,7 +179,7 @@ naming no actor and a `pending.jsonl` line that is not a declared value refuse t
 
 ## Decisions
 
-### D1: `lionagi/checkpoint.py`: `Var`, `Checkpoint`, `take`, `fold_turns`, `render_prompt`, `save`, `load`, `to_history` ^d1
+### D1: `src/lion1/checkpoint.py`: `Var`, `Checkpoint`, `take`, `fold_turns`, `render_prompt`, `save`, `load`, `to_history` ^d1
 
 Serves C1, C3, C4 and C6. `take` is pure: no model call, no file. `save` writes and `load` reads by
 id, the latest when none is named, refusing an id that is not a plain name. `to_history` is a

@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from lionagi import Actor, Kind, Message, Profile, RunRequest, render_guidance
+from lion1 import Actor, Kind, Message, Profile, RunRequest, render_guidance
 
 NOTE = (
     "58-year-old man with type 2 diabetes and hypertension, seen for follow-up. Takes metformin 500 mg "

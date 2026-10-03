@@ -9,9 +9,9 @@ from typing import Any
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from lionagi import Actor, Kind, Message, Profile, Result, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
-from lionagi.spec import spec_name
+from lion1 import Actor, Kind, Message, Profile, Result, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
+from lion1.spec import spec_name
 from tests.test_actor import scripted
 
 
@@ -413,7 +413,7 @@ def _diamond(k: int, shape: str) -> tuple[Any, list]:
 
 @pytest.mark.parametrize("shape", ["tuple", "model"])
 def test_a_capture_copies_a_value_reached_twice_once(shape):
-    from lionagi.actor import _captured
+    from lion1.actor import _captured
 
     value, leaf = _diamond(20, shape)
     calls: list[int] = []

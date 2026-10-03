@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context, Kind, Profile, ProfileError, RunRequest
+from lion1 import Actor, Context, Kind, Profile, ProfileError, RunRequest
 
 root = Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process

@@ -12,7 +12,7 @@ import uuid
 import pytest
 from pydantic import BaseModel
 
-from lionagi import (
+from lion1 import (
     Actor,
     Bus,
     Exhausted,
@@ -25,10 +25,10 @@ from lionagi import (
     Stopped,
     Success,
 )
-from lionagi.actor import Handle, Inbound, JobError, ProfileError, Result
-from lionagi.experience import Experience, ExperienceRecord, MemoryExperienceStore
-from lionagi.notes import MemoryNoteStore
-from lionagi.record import Record
+from lion1.actor import Handle, Inbound, JobError, ProfileError, Result
+from lion1.experience import Experience, ExperienceRecord, MemoryExperienceStore
+from lion1.notes import MemoryNoteStore
+from lion1.record import Record
 
 ASK = "convert the numbers to meters"
 
@@ -708,8 +708,8 @@ def test_an_unnamed_model_and_version_stay_none():
 
 
 def test_the_lesson_guidance_shows_a_whole_first_sentence_and_the_limits_the_handler_holds_it_to():
-    from lionagi.experience import ExperienceLesson
-    from lionagi.spec import render_guidance
+    from lion1.experience import ExperienceLesson
+    from lion1.spec import render_guidance
 
     # the guidance shows a spec's first docstring line and each field's description, nothing more of the
     # docstring: the length, not blank, the ids rule and the turn to send it in must all be in what it shows

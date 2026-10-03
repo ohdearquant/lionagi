@@ -25,10 +25,10 @@ from rich.text import Text
 
 from hub.areas import partial
 from hub.chat import entry_row, line
-from lionagi import lndl
-from lionagi.actor import _read
-from lionagi.checkpoint import jsonable
-from lionagi.record import Entry, Kind
+from lion1 import lndl
+from lion1.actor import _read
+from lion1.checkpoint import jsonable
+from lion1.record import Entry, Kind
 
 from .clipboard import to_clipboard
 from .voice import Voice

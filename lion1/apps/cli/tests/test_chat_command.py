@@ -14,7 +14,7 @@ from lion_cli.view import RESULT_LINES, Console
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, model_serializer
 
 from hub.chat import chat, entry_row, load_log
-from lionagi import Actor, Profile
+from lion1 import Actor, Profile
 from tests.test_actor import scripted
 
 
@@ -356,8 +356,8 @@ def test_a_command_that_never_ran_and_a_broken_hook_show_without_verbose(tmp_pat
 
 
 def test_a_shell_result_is_marked_by_its_own_rc_not_by_the_handlers_success():
-    from lionagi.actor import Result
-    from lionagi.record import Entry, Kind
+    from lion1.actor import Result
+    from lion1.record import Entry, Kind
 
     say = Console("m", None, color=False, width=200)
     fine = {"rc": 0, "stdout": "a\nb\n", "stderr": "", "elapsed": 1.25}
@@ -671,8 +671,8 @@ def test_a_turn_the_loop_refuses_prints_that_nothing_in_it_ran_never_its_calls_a
 def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_the_copy(tmp_path, capsys):
     """A turn the backend would not hand on (text beside a native tool call) lands with `refused` on
     its entry and none of it runs: the console and the copied chat say so, with no call arrow."""
-    from lionagi import Kind
-    from lionagi.actor import Reply
+    from lion1 import Kind
+    from lion1.actor import Reply
 
     (tmp_path / "a.txt").write_text("alpha\n")
     actor, profile = console(tmp_path, model="m")
@@ -861,8 +861,8 @@ def test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_val
     tmp_path, monkeypatch
 ):
     """An older log holds a model value as its str; it resumes as that string, as it always did."""
-    from lionagi import Kind, Record
-    from lionagi.actor import Result
+    from lion1 import Kind, Record
+    from lion1.actor import Result
 
     rec = Record("old")
     rec.append(Kind.INPUT, "fetch Dune")

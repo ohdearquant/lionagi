@@ -42,8 +42,8 @@ it happens ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and the record alrea
 either.
 
 It decides no remote bind, no token, no tool-protocol transport, no store beyond one log file per
-run, and no client. Source: `lionagi/actor.py` (`run`, `Run.inbox`, `Run.interrupt`),
-`lionagi/bus.py`, `lionagi/checkpoint.py` (`entry_of`), `hub/chat.py` (`chat`, `entry_row`,
+run, and no client. Source: `src/lion1/actor.py` (`run`, `Run.inbox`, `Run.interrupt`),
+`src/lion1/bus.py`, `src/lion1/checkpoint.py` (`entry_of`), `hub/chat.py` (`chat`, `entry_row`,
 `load_log`), `apps/cli/lion_cli/areas.py` (`guarded`).
 
 ## Definitions
@@ -240,9 +240,9 @@ not kill it (S6). The core does not wait for a slow experience store
 
 ### C12: The core gains no dependency and imports no provider _(enforced: mechanical; owed, S1)_ ^c12
 
-- **Subject**: `lionagi/serve.py` and the package's dependency list.
+- **Subject**: `src/lion1/serve.py` and the package's dependency list.
 - **Violated when**: the module imports anything but the standard library, pydantic with its core
-  and `lionagi`, or the dependency list changes.
+  and `lion1`, or the dependency list changes.
 
 ### C13: The card tells a client what the model is told, and nothing of the prompt _(enforced: mechanical; owed, S1)_ ^c13
 
@@ -289,7 +289,7 @@ on any other run is refused.
 
 ## Decisions
 
-### D1: `lionagi/serve.py` holds `Service` and `Offer`; `entry_row` moves beside `entry_of` ^d1
+### D1: `src/lion1/serve.py` holds `Service` and `Offer`; `entry_row` moves beside `entry_of` ^d1
 
 Serves C1, C12 and C13. `Service(actor, *, dir=None, max_live=8, keep=100)`; `keep` counts ended
 runs held in memory. `Service.offer(profile, backend, request=RunRequest(), *, converse=False)`
@@ -297,7 +297,7 @@ raises `ValueError`, naming which, for a template setting `wait` or `reply_on_co
 already offered. It keeps a copy of the profile with its own `defaults` dict, and of the template;
 the stores the profile names and the callbacks a request carries stay the caller's, live.
 `Service.card()` builds the card from `Actor.subset` and `model_json_schema`. `entry_row` and
-`load_log` move from `hub/chat.py` to `lionagi/checkpoint.py`, and the hub imports them.
+`load_log` move from `hub/chat.py` to `src/lion1/checkpoint.py`, and the hub imports them.
 
 - **Landing evidence**: owed: `tests/test_serve.py` for the card against the model's own guidance,
   the import boundary and the dependency list.
@@ -598,8 +598,8 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S17**: A `once` key is scoped to its operation: starts across the service, inputs within one
   run. The last 100 of each are held in memory, and a key past that acts again, as after a restart.
 - **S18**: A resumed view equals the earlier run's rows only in what `entry_of` keeps: its filter of
-  a row's meta (`lionagi/checkpoint.py`) drops a recall's receipt on a SYSTEM row, so the receipt is
-  not carried into history.
+  a row's meta (`src/lion1/checkpoint.py`) drops a recall's receipt on a SYSTEM row, so the receipt
+  is not carried into history.
 - **S19**: `_deliver` answers a consumed inbound to the actor its origin names
   ([[ADR-0010-delegation#^c3|ADR-0010/C3]]). A client's input names `client`, so it is answered to
   no one while no actor has that name, and the service refuses a start while one is registered.

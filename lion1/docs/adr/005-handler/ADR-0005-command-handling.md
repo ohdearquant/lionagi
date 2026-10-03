@@ -28,7 +28,7 @@ A turn's commands ([[ADR-0004-the-language|ADR-0004]]) are dispatched by the act
 ([[ADR-0002-the-run#^c1|ADR-0002/C1]]). This record fixes the order a command goes through, the bus
 that observes it, the privilege gate, what a handler is given, and the hooks around a handler.
 Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Handler` in
-`lionagi/actor.py`; `lionagi/bus.py`; `hub/hooks/`.
+`src/lion1/actor.py`; `src/lion1/bus.py`; `hub/hooks/`.
 
 ## Definitions
 
@@ -167,14 +167,14 @@ measurement is what checks it.
 
 - **Subject**: every `install` of hooks carrying a `python -m hub.hooks.scripts.<name>` row.
 - **Violated when**: such a row is installed while its interpreter, that interpreter's prefix, the
-  `hub` or `lionagi` it would import, or one of its import paths lies inside the directory.
+  `hub` or `lion1` it would import, or one of its import paths lies inside the directory.
 
 `load` rewrites a bundled row to lion's own interpreter under `-I`, so neither the directory nor
 `PYTHONPATH` supplies its code. `install` checks that interpreter and its prefix, then asks it,
-without importing, where `hub` and `lionagi` resolve and what its import paths are. When one of
-those places lies inside the directory, it refuses every hook before registering any: the model
-writes there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with
-no bundled row install without the check.
+without importing, where `hub` and `lion1` resolve and what its import paths are. When one of those
+places lies inside the directory, it refuses every hook before registering any: the model writes
+there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with no
+bundled row install without the check.
 
 ### C8: The reference guard refuses what it cannot read, and the tree hook names what moved _(enforced: mechanical)_ ^c8
 
@@ -250,7 +250,7 @@ costs less than a missing one.
   `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
   `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
 
-### D2: The bus is `lionagi/bus.py` ^d2
+### D2: The bus is `src/lion1/bus.py` ^d2
 
 Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded log of events.
 

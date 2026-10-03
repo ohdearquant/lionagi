@@ -4,7 +4,7 @@ file per block, named for the chat, the entry and the block's place in it, linke
 from lion_cli.view import Console, diagram_page, mermaid_blocks
 from rich.markdown import Markdown
 
-from lionagi.record import Entry, Kind
+from lion1.record import Entry, Kind
 
 FLOW = "graph TD\n  A-->B"
 SEQUENCE = "sequenceDiagram\n  a->>b: hi"

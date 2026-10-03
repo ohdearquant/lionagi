@@ -19,10 +19,10 @@ import pytest
 from pydantic import BaseModel
 
 from hub.chat import entry_row
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.checkpoint import entry_of
-from lionagi.lndl import guidance
-from lionagi.notes import FileNoteStore, MemoryNoteStore
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.checkpoint import entry_of
+from lion1.lndl import guidance
+from lion1.notes import FileNoteStore, MemoryNoteStore
 from tests.test_actor import scripted
 
 
@@ -293,7 +293,7 @@ def test_a_file_write_interrupted_before_the_rename_leaves_the_file_as_it_was_an
         raise Interrupted
 
     with monkeypatch.context() as m:
-        m.setattr("lionagi.notes.os.replace", interrupted)
+        m.setattr("lion1.notes.os.replace", interrupted)
         with pytest.raises(Interrupted):
             store.put("plan", "two", run="r", seq=2)
     assert len(temps) == 1 and temps[0][1] == "two"  # the new payload had reached the temp file
@@ -316,7 +316,7 @@ def test_a_file_write_interrupted_after_the_rename_keeps_the_new_file_and_raises
         raise Interrupted
 
     with monkeypatch.context() as m:
-        m.setattr("lionagi.notes.os.replace", replaced_then_interrupted)
+        m.setattr("lion1.notes.os.replace", replaced_then_interrupted)
         with pytest.raises(Interrupted):
             store.put("plan", "two", run="r", seq=2)
     assert len(temps) == 1 and not temps[0].exists()
@@ -483,7 +483,7 @@ def test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in
         except BaseException as e:
             errors.append(e)
 
-    monkeypatch.setattr("lionagi.notes.fcntl.flock", announcing)
+    monkeypatch.setattr("lion1.notes.fcntl.flock", announcing)
     with other._locked():  # another console holds the file while this put has passed its check
         thread = threading.Thread(target=writer)
         thread.start()
@@ -813,7 +813,7 @@ def test_a_first_write_that_fails_leaves_nothing_behind_and_the_next_write_carri
     path = tmp_path / "notes.json"
     store = FileNoteStore(path)
     with monkeypatch.context() as m:
-        m.setattr("lionagi.notes.os.replace", refuse)
+        m.setattr("lion1.notes.os.replace", refuse)
         with pytest.raises(OSError, match="replace refused"):
             store.put("ghost", "uncommitted", run="r1", seq=1)
     assert not path.exists() and not list(tmp_path.glob("*.tmp"))
@@ -823,14 +823,14 @@ def test_a_first_write_that_fails_leaves_nothing_behind_and_the_next_write_carri
     assert store.get("ghost") is None and store.get("real").value == "committed"
     other = FileNoteStore(tmp_path / "other.json")
     with monkeypatch.context() as m:
-        m.setattr("lionagi.notes.os.replace", refuse)
+        m.setattr("lion1.notes.os.replace", refuse)
         with pytest.raises(OSError, match="replace refused"):
             other.put("ghost", "uncommitted", run="r1", seq=1)
     assert (other.get("ghost"), other.version) == (None, 0)
     # a failed write over an existing file keeps the file and the value it held
     old = path.read_bytes()
     with monkeypatch.context() as m:
-        m.setattr("lionagi.notes.os.replace", refuse)
+        m.setattr("lion1.notes.os.replace", refuse)
         with pytest.raises(OSError, match="replace refused"):
             store.put("real", "changed", run="r1", seq=3)
     assert path.read_bytes() == old and (store.get("real").value, store.version) == ("committed", 1)

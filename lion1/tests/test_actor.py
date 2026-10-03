@@ -8,8 +8,8 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field, computed_field, field_validator
 
-import lionagi.actor as actor_module
-from lionagi import (
+import lion1.actor as actor_module
+from lion1 import (
     Actor,
     Exhausted,
     Kind,
@@ -20,8 +20,8 @@ from lionagi import (
     RunRequest,
     Success,
 )
-from lionagi.actor import JobError, Output, ProfileError
-from lionagi.spec import spec_name
+from lion1.actor import JobError, Output, ProfileError
+from lion1.spec import spec_name
 
 
 class Done(BaseModel):
@@ -334,7 +334,7 @@ def test_a_gate_that_raises_refuses_the_finish_instead_of_ending_the_run():
 
 
 def test_a_section_that_raises_is_a_line_in_the_notice_not_the_end_of_the_run():
-    from lionagi import Exhausted
+    from lion1 import Exhausted
 
     actor = _echo_actor("t12b")
 
@@ -666,7 +666,7 @@ def test_an_awaited_section_lands_in_every_notification():
 
 
 def test_a_stop_ends_the_run_before_the_round_it_names():
-    from lionagi import Stopped
+    from lion1 import Stopped
 
     actor = _echo_actor("t13")
     calls: list[int] = []
@@ -689,7 +689,7 @@ def test_a_stop_ends_the_run_before_the_round_it_names():
 
 
 def test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_the_clock():
-    from lionagi import Exhausted
+    from lion1 import Exhausted
 
     actor = _echo_actor("t14")
 
@@ -725,7 +725,7 @@ def test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_th
 def test_a_wait_that_outlasts_the_time_budget_admits_no_further_call(
     monkeypatch, answered_at, answer, calls, outcome
 ):
-    from lionagi import Stopped
+    from lion1 import Stopped
 
     now = [0.0]  # a stepped clock: the wait moves it, nothing sleeps
     monkeypatch.setattr(actor_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
@@ -806,7 +806,7 @@ def test_an_unreadable_out_runs_the_commands_and_an_accepted_one_reaps_what_it_d
 
 
 def test_a_stop_is_asked_after_the_notification_so_what_a_section_saw_can_end_the_run():
-    from lionagi import Stopped
+    from lion1 import Stopped
 
     actor = _echo_actor("t16")
     ended: list[bool] = []
@@ -867,8 +867,8 @@ FABRICATED = (
 
 
 def test_a_frame_anywhere_a_mention_included_is_refused_naming_its_line():
-    from lionagi.actor import _read
-    from lionagi.lndl import LNDLError
+    from lion1.actor import _read
+    from lion1.lndl import LNDLError
 
     with pytest.raises(LNDLError) as fabricated:
         _read(FABRICATED)
@@ -1040,7 +1040,7 @@ def test_a_peer_whose_backend_raises_settles_the_ask_as_failed_instead_of_hangin
 
 @pytest.mark.parametrize("bound, reason", [({"max_rounds": 0}, "rounds"), ({"time_budget": 0}, "time")])
 def test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run(bound, reason):
-    from lionagi import Exhausted
+    from lion1 import Exhausted
 
     peer, asker, tasks = Actor(f"t-idle-{reason}-peer"), Actor(f"t-idle-{reason}-asker"), []
 
@@ -1190,7 +1190,7 @@ def test_the_records_names_start_with_an_underscore_and_no_alias_may():
 
 
 def test_a_directive_keeps_its_targets_when_the_name_would_later_resolve_elsewhere():
-    from lionagi.record import Directive, Record, fold
+    from lion1.record import Directive, Record, fold
 
     record = Record("t")
     first = record.append(Kind.RESULT, "first", alias="a")
@@ -1224,7 +1224,7 @@ def test_one_alias_cannot_name_a_value_and_a_command_in_the_same_run():
 def test_guidance_shows_a_data_dependent_default_without_calling_it():
     from pydantic import Field
 
-    from lionagi.spec import render_guidance
+    from lion1.spec import render_guidance
 
     class Derived(BaseModel):
         root: str
@@ -1235,7 +1235,7 @@ def test_guidance_shows_a_data_dependent_default_without_calling_it():
 
 
 def test_a_file_note_store_refuses_a_value_the_file_cannot_carry(tmp_path):
-    from lionagi import FileNoteStore
+    from lion1 import FileNoteStore
 
     store = FileNoteStore(tmp_path / "notes.json")
     store.put("ok", {"payload": [1, 2]}, run="a", seq=0)
@@ -1493,7 +1493,7 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     context and never folds; growth past that does, and under fold_inputs the earlier mail and replies
     fold with it, the latest mail stays. Over the budget with nothing older to fold, the event still
     rides the notification: a session-keeping backend starts over from the view on it."""
-    from lionagi.actor import Reply as Said
+    from lion1.actor import Reply as Said
 
     mail = iter([("second mail",), ("third mail",), ()])
 
@@ -1518,8 +1518,8 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     assert "of session history beyond it" in notices[2].content
     directive = notices[2].meta["directive"]
     assert directive.op == "hide" and directive.refs == ("_in0", "_m2", "_in3")  # the third mail stays
-    from lionagi.actor import _message, _messages
-    from lionagi.record import fold
+    from lion1.actor import _message, _messages
+    from lion1.record import fold
 
     view = fold(run.record, protect_input=False)
     rendered = "\n".join(m.content for m in _messages(view))
@@ -1618,7 +1618,7 @@ def test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_
 
 
 def test_reported_cost_ends_the_run_and_a_command_asked_once_it_is_spent_never_starts():
-    from lionagi.actor import Reply as Said
+    from lion1.actor import Reply as Said
 
     turns = iter(range(1, 10))
 
@@ -2109,7 +2109,7 @@ def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse():
     "cost", [float("nan"), Decimal("0.25"), "0.25", False], ids=["nan", "decimal", "str", "bool"]
 )
 def test_a_reported_cost_that_is_not_a_number_reads_as_spent(cost):
-    from lionagi.actor import Reply as Said
+    from lion1.actor import Reply as Said
 
     def run_with(cost):
         turns = iter(['<lact a1>echo(text="x")</lact>', '<lact a2>echo(text="y")</lact>'])
@@ -2188,7 +2188,7 @@ def _hanging_actor(name: str, started: list[asyncio.Task]) -> Actor:
 
 
 def test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns():
-    from lionagi.actor import Result
+    from lion1.actor import Result
 
     started: list[asyncio.Task] = []
     actor = _hanging_actor("t-reap", started)
@@ -2257,7 +2257,7 @@ def test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns
 
 
 def test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds():
-    from lionagi import Exhausted
+    from lion1 import Exhausted
 
     started: list[asyncio.Task] = []
     actor = _hanging_actor("t-last-turn-deadline", started)
@@ -2350,7 +2350,7 @@ def test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_a
 
 
 def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time():
-    from lionagi import Exhausted
+    from lion1 import Exhausted
 
     started: list[asyncio.Task] = []
     actor = _hanging_actor("t-deadline", started)

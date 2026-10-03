@@ -50,7 +50,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lionagi.actor import Message, Reply
+from lion1.actor import Message, Reply
 
 from .claude_code import _clipped, _transcript
 

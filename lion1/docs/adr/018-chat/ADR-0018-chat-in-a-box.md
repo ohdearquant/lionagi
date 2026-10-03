@@ -370,7 +370,7 @@ Serves C1 and C6. `chat` runs the actor once with `wait`, `history`, `accept` an
 and hands each entry to `say` from the bus's `run.started`, `round.started` and `command.` events,
 from `wait`, and once more at the end. `entry_row` writes a result as its five fields and a
 directive as data; `load_log` reads rows back through `entry_of`, the reader the checkpoint in
-`lionagi/checkpoint.py` also uses.
+`src/lion1/checkpoint.py` also uses.
 
 - **Landing evidence**: `tests/test_chat.py`: a plain turn and the next line on one record, each
   entry said as it lands, `OUT{}` refused, the pause, the log read back as history, the directives
@@ -553,7 +553,7 @@ set.
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`. Control:
   the old line fails both.
 
-### D16: `jsonable` in `lionagi/checkpoint.py`, the writers' `default=` ^d16
+### D16: `jsonable` in `src/lion1/checkpoint.py`, the writers' `default=` ^d16
 
 Serves C19 and C20. `jsonable` returns `model_dump(mode="json")` for a pydantic model, whatever form
 that takes, and the `str` of anything else, or of a model whose dump raises pydantic's serialization
@@ -606,8 +606,8 @@ into the model again.
   and a boxed chat starts from a fresh push of the directory as it stands: an earlier chat patch
   left unapplied is not in the new copy.
 - **S3**: A run ended mid-turn does not resume ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). Beside the
-  chat, `lionagi/checkpoint.py` and `lion context` take and restore checkpoints of named values and
-  a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
+  chat, `src/lion1/checkpoint.py` and `lion context` take and restore checkpoints of named values
+  and a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
   ([[ADR-0013-the-agent|ADR-0013]]) replays its last checkpointed record as history, and refuses one
   that no longer folds to the checkpoint's view.
 - **S4**: The chat log holds every value whole; the console prints a result as one line. The closing

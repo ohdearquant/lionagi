@@ -8,7 +8,7 @@ import json
 from pydantic import BaseModel
 
 from hub.chat import entry_row, load_log
-from lionagi import Actor, Kind, Profile, Result, RunRequest
+from lion1 import Actor, Kind, Profile, Result, RunRequest
 from tests.test_actor import scripted
 
 

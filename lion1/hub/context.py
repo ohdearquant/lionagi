@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from lionagi.checkpoint import DIRECTIVES, CheckpointError, Var, fold_turns
-from lionagi.lndl import plain
+from lion1.checkpoint import DIRECTIVES, CheckpointError, Var, fold_turns
+from lion1.lndl import plain
 
 from .agent.instruments import GH, PR_PAGE, Runner, sh
 from .khive import Khive, lit

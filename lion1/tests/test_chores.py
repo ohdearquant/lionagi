@@ -29,7 +29,7 @@ from hub.agent.chores import (
     verbs,
 )
 from hub.khive import LOST, KhiveError
-from lionagi import Actor, Kind, Message
+from lion1 import Actor, Kind, Message
 
 OWNER, STEWARD, SELF = "lambda:x", "lambda:owner", "lambda:x:agent"
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"

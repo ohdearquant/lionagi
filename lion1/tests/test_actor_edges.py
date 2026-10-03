@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from lionagi import (
+from lion1 import (
     Actor,
     Exhausted,
     Handle,
@@ -762,7 +762,7 @@ def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
         hex = "5eed5eed" + "0" * 24
 
     real, forced = uuid.uuid4, iter([Drawn, Drawn])  # the first two draws are the same id
-    monkeypatch.setattr("lionagi.actor.uuid.uuid4", lambda: next(forced, None) or real())
+    monkeypatch.setattr("lion1.actor.uuid.uuid4", lambda: next(forced, None) or real())
     actor = Actor("ids")
 
     async def both():

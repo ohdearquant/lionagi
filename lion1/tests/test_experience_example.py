@@ -8,8 +8,8 @@ import tempfile
 
 import pytest
 
-from lionagi import Kind
-from lionagi.experience import FileExperienceStore
+from lion1 import Kind
+from lion1.experience import FileExperienceStore
 from tests.test_examples import load
 
 

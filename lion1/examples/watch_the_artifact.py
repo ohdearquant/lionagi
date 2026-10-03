@@ -17,7 +17,7 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context, Kind, Profile, RunRequest
+from lion1 import Actor, Context, Kind, Profile, RunRequest
 
 
 class Write(BaseModel):

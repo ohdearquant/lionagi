@@ -16,8 +16,8 @@ import pytest
 from hub import files, shell
 from hub.hooks import install, load, run_hook
 from hub.hooks.shell import HERE
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 GATE = """

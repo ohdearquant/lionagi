@@ -29,7 +29,7 @@ model produces ([[ADR-0001-the-actor|ADR-0001]]). The profile
 ([[ADR-0001-the-actor#^c3|ADR-0001/C3]]) supplies defaults beneath it. Every bound is told to the
 model each turn ([[ADR-0006-the-notification|ADR-0006]]); the view's own fold line belongs to the
 record ([[ADR-0007-the-record|ADR-0007]]). Source: `RunRequest` and the bound checks in
-`lionagi/actor.py`.
+`src/lion1/actor.py`.
 
 ## Definitions
 

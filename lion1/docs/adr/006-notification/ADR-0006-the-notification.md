@@ -29,7 +29,7 @@ Once per turn, before the backend call, the runtime appends one SYSTEM entry to 
 ([[ADR-0007-the-record|ADR-0007]]). The turn is [[ADR-0002-the-run|ADR-0002]]; the bounds the entry
 reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come from
 [[ADR-0005-command-handling|ADR-0005]]. Source: `Actor._notify` and `Actor.section` in
-`lionagi/actor.py`.
+`src/lion1/actor.py`.
 
 ## Definitions
 

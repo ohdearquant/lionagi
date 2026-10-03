@@ -10,7 +10,7 @@ from urllib.parse import quote
 import pytest
 from lion_cli.view import Console, linked
 
-from lionagi.record import Entry, Kind
+from lion1.record import Entry, Kind
 
 
 def vscode(path: Path, suffix: str = "") -> str:

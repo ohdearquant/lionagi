@@ -6,7 +6,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from lionagi.checkpoint import KINDS, WHYS
+from lion1.checkpoint import KINDS, WHYS
 
 from .agent import agent_main
 from .areas import areas_main
@@ -19,7 +19,7 @@ __all__ = ("parser", "main")
 
 def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     """The command tree; `chat` replaces `lion chat`'s built-in defaults (a flag on the line still wins)."""
-    ap = argparse.ArgumentParser(prog="lion", description="lionagi v1")
+    ap = argparse.ArgumentParser(prog="lion", description="lion1")
     sub = ap.add_subparsers(dest="command", required=True)
     ag = sub.add_parser("agent", help="an actor's long-running agent, from its directory")
     ag.add_argument(

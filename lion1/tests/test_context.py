@@ -33,8 +33,8 @@ from hub.context import (
     watches,
 )
 from hub.khive import KhiveError
-from lionagi import Actor, Kind, Record, Reply, Result, fold
-from lionagi.checkpoint import (
+from lion1 import Actor, Kind, Record, Reply, Result, fold
+from lion1.checkpoint import (
     DIRECTIVES,
     LAZY,
     CheckpointError,
