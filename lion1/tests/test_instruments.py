@@ -17,6 +17,7 @@ import sys
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from lion_cli import agent as cli_agent
@@ -650,6 +651,35 @@ def test_sh_raises_when_a_live_group_cannot_be_signalled_and_still_closes_its_pi
     assert child.kills == 2 and not child.drained and child._transport.closed
 
 
+def test_sh_retries_a_refused_signal_when_a_cancel_ends_the_drain_and_then_raises_the_cancel(monkeypatch):
+    # EPERM is an exited leader not yet reaped or a member this process may not signal, and the drain tells
+    # which: a cancel that ends the drain first still gets the second signal, with the pipes still open
+    child = Child(blocked=True)
+    stub_child(monkeypatch, child)
+    sent = []
+
+    def killpg(pid, sig):
+        sent.append("closed" if child._transport.closed else "open")
+        if len(sent) == 1:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        raise ProcessLookupError(errno.ESRCH, "No such process")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+
+    async def run():
+        task = asyncio.create_task(instr.sh(["/bin/x"]))
+        await asyncio.sleep(0.05)
+        task.cancel()  # the first signal is refused, and the drain is waiting
+        await asyncio.sleep(0.05)
+        assert sent == ["open"] and not child._transport.closed
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert sent == ["open", "open"] and child._transport.closed
+
+
 @pytest.mark.parametrize("fault", ["kill", "drain"])
 def test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes(monkeypatch, fault):
     child = Child(drain_error=ConnectionResetError(errno.ECONNRESET, "Connection reset by peer"))
@@ -670,16 +700,20 @@ class Start:
     """The start of a command, replaced: it waits `delay` seconds, or on a future nobody sets when there is
     no `delay`, then fails with `fault` when it has one. A cancel is recorded in `seen`; a start with
     `child` has begun that process before the cancel reaches it, and hands it back instead of raising; one
-    that `ignores` n cancels goes on waiting through them, and takes the next. `ended` says it is over."""
+    that `ignores` n cancels goes on waiting through them, and takes the next. `ended` says it is over. A
+    start with `popen` has forked that process, which it keeps in the `extra` dict it is given, as asyncio
+    does, before it waits."""
 
-    def __init__(self, monkeypatch, delay=None, fault=None, child=None, ignores=0):
+    def __init__(self, monkeypatch, delay=None, fault=None, child=None, ignores=0, popen=None):
         self.delay, self.fault, self.child, self.seen, self.gate = delay, fault, child, [], None
-        self.ignores, self.ended = ignores, False
+        self.ignores, self.ended, self.popen = ignores, False, popen
         monkeypatch.setattr(asyncio, "create_subprocess_exec", self.spawn)
         if child is not None:
             monkeypatch.setattr(os, "killpg", child.killpg)
 
     async def spawn(self, *argv, **kw):
+        if self.popen is not None:
+            kw.get("extra", {})["subprocess"] = self.popen
         try:
             if self.delay is None:
                 self.gate = asyncio.get_running_loop().create_future()
@@ -742,9 +776,48 @@ def test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts
     # began can land and be ended, and then cancelled
     monkeypatch.setattr(instr, "_GRACE", 0.2)
     start = Start(monkeypatch)
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append(pid))
     got, took = sh_over(start, timeout=0.05)
     assert got == (124, "", "/bin/x did not finish within 0.05s")
     assert start.seen == ["cancelled"] and 0.2 <= took < 0.05 + 0.2 + 0.2 + 1
+    assert sent == []  # a start that began no process leaves no group to signal
+
+
+@pytest.mark.parametrize("ignores", [0, 2], ids=["cancelled", "abandoned"])
+@pytest.mark.parametrize("answer", ["kills", "finds-it-gone", "is-refused"])
+def test_sh_kills_the_group_of_a_start_that_never_lands_by_the_pid_its_popen_holds(
+    monkeypatch, answer, ignores
+):
+    # the start never returns, cancelled or given up on, but it has forked its process and keeps it in the
+    # extra dict asyncio hands it: that process leads a group of its own, which is ended by its pid
+    monkeypatch.setattr(instr, "_GRACE", 0.1)
+    start = Start(monkeypatch, ignores=ignores, popen=SimpleNamespace(pid=424242))
+    sent = []
+
+    def killpg(pid, sig):
+        sent.append((pid, sig))
+        if answer == "finds-it-gone":
+            raise ProcessLookupError(errno.ESRCH, "No such process")
+        if answer == "is-refused":
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    got, _ = sh_over(start, timeout=0.05)
+    assert sent == [(424242, signal.SIGKILL)]
+    if answer == "is-refused":  # a group this process may not signal is the caller's to be told
+        assert isinstance(got, PermissionError)
+    else:
+        assert got == (124, "", "/bin/x did not finish within 0.05s")
+
+
+def test_a_cancel_in_the_wait_for_a_start_that_never_lands_still_ends_its_group(monkeypatch):
+    monkeypatch.setattr(instr, "_GRACE", 0.1)
+    start = Start(monkeypatch, popen=SimpleNamespace(pid=424242))
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    got, _ = sh_over(start, timeout=0.05, cancel_after=0.1)  # inside the wait for the landing
+    assert got == "cancelled" and sent == [(424242, signal.SIGKILL)]
 
 
 @pytest.mark.parametrize("ignores", [1, 2], ids=["takes-the-second-cancel", "takes-neither"])
@@ -835,6 +908,25 @@ def alive(pid: int, settle: float = 0.0) -> bool:
         time.sleep(0.02)
 
 
+async def groups_left(pgids: list[int], settle: float) -> list[int]:
+    """The process groups among `pgids` with a member left once `settle` seconds have let the killed ones be
+    reaped: an exited member not yet reaped answers EPERM on macOS, and is still a member."""
+    end = time.monotonic() + settle
+    while True:
+        left = []
+        for pgid in pgids:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                pass
+            left.append(pgid)
+        if not left or time.monotonic() >= end:
+            return left
+        await asyncio.sleep(0.02)
+
+
 def open_fds() -> set[int]:
     """The descriptors this process has open (the listing's own is closed by the time it is read)."""
     fds = set()
@@ -878,9 +970,10 @@ def real_sh(
     start of every command never connects its pipes, until the helper releases it: right after the census
     below, or when the call is hung. A `census` dict is filled in the step in which the call returns, before
     its caller's next turn: `tasks`, the coroutines still pending beside the call; `fds`, the descriptors
-    open that were not before it; `ends`, the parent's pipe ends of the commands started. With `hold` it
-    is then filled with `released`, the same two once the held connection has run, which nothing in the
-    helper helps to close."""
+    open that were not before it; `ends`, the parent's pipe ends of the commands started. It then has
+    `group`, the commands' process groups with a member left after `settle` seconds. With `hold` it is
+    finally filled with `released`, the fds and tasks once the held connection has run, which nothing in
+    the helper helps to close."""
     started = []
     before: set[int] = set()
     runner: list[asyncio.Task] = []  # this helper's own task, which waits beside the call
@@ -938,6 +1031,8 @@ def real_sh(
         reaped = all(t.get_returncode() is not None for t in started)
         if task in done:
             got = "cancelled" if task.cancelled() else task.result()
+            if census is not None:
+                census["group"] = await groups_left([t.get_pid() for t in started], settle)
             if census is not None and hold:
                 gate.set()
                 stop = time.monotonic() + BOUND
@@ -1035,6 +1130,20 @@ def test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_end
     assert census["tasks"] == ["real_sh.<locals>.held"]
     assert len(census["ends"]) == 2 and census["fds"] == census["ends"]
     # and when the connection runs it closes them, the leader already killed: nothing helps it
+    assert census["released"] == (set(), [])
+
+
+def test_sh_ends_the_group_of_a_command_whose_pipes_never_connect(monkeypatch, tmp_path):
+    # the start is stuck connecting for good with its process begun, and a descendant of it runs in its
+    # group: the start is cancelled and the group is ended by the pid asyncio forked it under, not left
+    monkeypatch.setattr(instr, "_GRACE", 0.3)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    census = {}
+    got, _, left, _, _ = real_sh(monkeypatch, argv, timeout=1.0, pidfile=pidfile, hold=True, census=census)
+    assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+    assert left is False and census["group"] == []
+    # the descendant held the pipe: with it gone the held connection closes the ends when it runs
     assert census["released"] == (set(), [])
 
 

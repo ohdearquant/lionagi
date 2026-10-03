@@ -185,13 +185,13 @@ direction, cadence and question.
 
 Each command starts in its own process group; the timeout counts from the call, start included. Past
 it, or on a cancel, the runner kills the group, drains its pipes for up to five seconds, the grace,
-and closes them. A start unlanded by then is cancelled after a grace; one that lands is stopped as
-above.
+and closes them. A start unlanded by then is cancelled after a grace and its group killed; one that
+lands is stopped as above.
 
 A group the runner may not signal and a drain that fails raise. A start that fails raises, unless a
-cancel is in flight. A descendant outside the group, or of a start that never landed, is not killed,
-and its pipe is abandoned at the grace. Such a start's pipe ends stay with asyncio's connection
-task, which closes them at end of file once the loop runs it.
+cancel is in flight. A descendant outside the group is not killed, and its pipe is abandoned at the
+grace. A start that never landed leaves its pipe ends to asyncio's connection task, and one that
+produced no process has nothing to signal.
 
 ## Decisions
 
@@ -308,12 +308,12 @@ refused at build.
 
 ### D8: `sh` starts a command as a task of its own and stops it by one path ^d8
 
-Serves C9. The start is a task waited for up to the timeout. One unlanded then is cancelled after a
-grace, again after another, and abandoned after a third. `_stop` takes what landed: `killpg` of the
-group, a drain of up to the grace, then the pipe transports closed in a `finally`. An `EPERM` is
-read again once the drain has reaped the leader; only a second refusal raises. The pipe ends of a
-start that never landed stay asyncio's: a close from outside races its connection task's queued
-reader.
+Serves C9. The start is a task whose `extra` dict asyncio fills with the Popen at the fork. One
+unlanded at the timeout is cancelled after a grace, again after another, and abandoned after a
+third; its Popen's pid has its group killed. `_stop` takes what landed: `killpg`, a drain of up to
+the grace, then the pipes closed in a `finally`, which first retries an `EPERM`, whatever ended the
+drain; only a second refusal raises. An unlanded start's pipe ends stay asyncio's: closing them from
+outside races its reader.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation`,
@@ -331,8 +331,12 @@ reader.
   `test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel`,
   `test_a_process_a_cancelled_start_had_begun_is_stopped_like_one_that_landed`,
   `test_a_start_that_failed_is_raised_on_either_side_of_the_timeout`,
-  `test_sh_returns_once_a_start_has_taken_its_second_cancel_and_gives_up_on_one_that_takes_neither`
-  and `test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it`.
+  `test_sh_returns_once_a_start_has_taken_its_second_cancel_and_gives_up_on_one_that_takes_neither`,
+  `test_sh_kills_the_group_of_a_start_that_never_lands_by_the_pid_its_popen_holds`,
+  `test_a_cancel_in_the_wait_for_a_start_that_never_lands_still_ends_its_group`,
+  `test_sh_retries_a_refused_signal_when_a_cancel_ends_the_drain_and_then_raises_the_cancel`,
+  `test_sh_ends_the_group_of_a_command_whose_pipes_never_connect` and
+  `test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it`.
 
 ## Alternatives
 

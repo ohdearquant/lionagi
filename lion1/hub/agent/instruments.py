@@ -96,11 +96,14 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
     is a shell. The `timeout` runs from the call and covers the command's start. Past it, or on a
     cancel, the command's process group is killed and its pipes drained for up to `_GRACE` seconds
     and then closed. A start still unlanded at the timeout gets `_GRACE` seconds to land, and is
-    then cancelled, twice if it must be, before the call returns. A descendant that left the group
-    is not killed, and its pipe is abandoned at the grace. A start that failed, a group that cannot
-    be signalled, or a pipe that fails to drain raises."""
+    then cancelled, twice if it must be, and the group of the process it began, if it began one, is
+    killed. A descendant that left the group is not killed, and its pipe is abandoned at the grace.
+    A start that failed, a group that cannot be signalled, or a pipe that fails to drain raises."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    # asyncio keeps this dict as the transport's extra info and puts the Popen in it as it forks the
+    # process, before the start can land: the one handle a start cut short leaves on that process
+    holder: dict[str, Any] = {}
     # the start is a task of its own: cut short while asyncio connects the pipes, it would end the
     # command's leader alone, leaving the group it leads (and on 3.11 and 3.12 waiting for its pipes)
     launch = asyncio.create_task(
@@ -111,16 +114,17 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,  # the command's whole process group: a timeout ends its children too
+            extra=holder,
         )
     )
     lapsed = 124, "", f"{argv[0]} did not finish within {timeout}s"
     try:
         await asyncio.wait([launch], timeout=timeout)  # a cancel stops this wait and never reaches the start
     except BaseException:
-        await _landed(launch)
+        await _landed(launch, holder)
         raise
     if not launch.done():
-        await _landed(launch)
+        await _landed(launch, holder)
         if launch.done() and not launch.cancelled():
             launch.result()  # a start that failed is a failure, whenever it failed, and not a timeout
         return lapsed
@@ -136,14 +140,15 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
-async def _landed(launch: asyncio.Future[asyncio.subprocess.Process]) -> None:
+async def _landed(launch: asyncio.Future[asyncio.subprocess.Process], holder: dict[str, Any]) -> None:
     """Stop what a start still running has begun. It is given `_GRACE` seconds to land, then is
     cancelled and given `_GRACE` more to take the cancel, then cancelled again and given as long to
     take that one: on 3.11 and 3.12 a start that began its process waits for its pipes after the
     first. A cancel of the caller is absorbed meanwhile. A start that landed is stopped, the group it
-    began ended. A cancel that came in while waiting is raised after that. The pipe ends asyncio has
-    not connected by then are its own connection task's, out of the runner's reach: that task closes
-    them once the loop runs it."""
+    began ended. One that did not land, cancelled or given up on, has its process's group killed by
+    the pid of the Popen in `holder`, when there is one; asyncio reaps the leader. A cancel that came
+    in while waiting is raised after that. The pipe ends asyncio has not connected by then are its own
+    connection task's, out of the runner's reach: that task closes them once the loop runs it."""
     loop = asyncio.get_running_loop()
     cancelled = False
     for attempt in range(3):
@@ -157,6 +162,9 @@ async def _landed(launch: asyncio.Future[asyncio.subprocess.Process]) -> None:
             launch.cancel()  # a start that has not landed is cancelled; one that has is left as it is
     if launch.done() and not launch.cancelled() and launch.exception() is None:
         await _stop(launch.result())
+    elif (popen := holder.get("subprocess")) is not None:  # the group leads under the leader's pid
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(popen.pid, signal.SIGKILL)
     if cancelled:
         raise asyncio.CancelledError
 
@@ -176,14 +184,17 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
             await asyncio.wait_for(proc.communicate(), _GRACE)
         except TimeoutError:  # a descendant that left the group holds a pipe, and is not ours to end
             pass
-    finally:  # the pipes close here, not whenever that descendant lets go of them
-        proc._transport.close()
-    if refused:
-        # macOS answers EPERM for a group whose only member is its leader, exited and not yet reaped:
-        # that group is gone once the drain has reaped it. EPERM again means a member still runs that
-        # this process may not signal, and the caller is told
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
+    finally:
+        try:
+            if refused:
+                # macOS answers EPERM for a group whose only member is its leader, exited and not yet
+                # reaped: that group is gone once the drain has reaped it. EPERM again means a member
+                # still runs that this process may not signal, and the caller is told. A drain cut short
+                # by a cancel is read the same way, and the cancel is raised after
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+        finally:  # the pipes close here, not whenever that descendant lets go of them
+            proc._transport.close()
 
 
 def _age_h(iso: str, now: float | None = None) -> float:
