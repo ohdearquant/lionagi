@@ -117,7 +117,9 @@ var POLL_MS = 5000;
 var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
 var shown = 0;  // the revision of the rows on the page
 // the server stamps each areas payload, stream or poll, with the revision of the read it came from: of two
-// payloads the newer stays, whichever arrived first
+// payloads the newer stays, whichever arrived first. A stream connection is a server epoch, as a restarted
+// server may count below the rows shown: the page forgets them when the stream opens and keeps the higher
+// revision only within one connection
 function takeAreas(rows, rev) {
   if (!(rev > shown)) return;
   shown = rev;
@@ -143,6 +145,7 @@ function startPoll() {
 }
 function connect() {
   var es = new EventSource('/events');
+  es.addEventListener('open', function () { shown = 0; });  // each connect, each reconnect
   es.addEventListener('areas', function (ev) {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     setConn(true);

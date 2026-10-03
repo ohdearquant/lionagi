@@ -1283,6 +1283,20 @@ def test_the_app_keeps_the_newer_revision_whichever_of_poll_and_stream_arrives_f
     assert seen["newerStreamAfter"] == ["stream22"]  # a newer one is kept
 
 
+def test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision(tmp_path):
+    seen = app_session(tmp_path, "epoch")
+    # a restarted server may count below the revision shown: its rows, once the stream opens, are taken
+    assert seen["afterOpen"] == ["restarted"]
+    # within that connection the higher revision stays: an older event is dropped and a newer one taken
+    assert seen["sameConnection"] == ["restarted"] and seen["newer"] == ["newer"]
+    # and a poll's answer after the stream opened is taken whatever its revision
+    assert seen["polled"] == ["polled"]
+
+
+def test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between(tmp_path):
+    assert app_session(tmp_path, "epochSame") == {"actors": ["first"]}
+
+
 def test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload(tmp_path):
     seen = app_session(tmp_path, "sending")
     assert (seen["sent"]["subject"], seen["sent"]["content"]) == ("hello", "first")  # what was typed before
@@ -1295,6 +1309,17 @@ def test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty(tm
     # where it is; a navigation, even back to the same resident, is a new page with no draft
     seen = app_session(tmp_path, "clearing")
     assert seen == {"answered": "", "reloaded": "half a thought", "returned": ""}
+
+
+def test_the_app_composer_keeps_the_words_of_a_refused_send_and_clears_them_once_one_is_accepted(tmp_path):
+    seen = app_session(tmp_path, "refusedSend")
+    # the refusal is toasted, nothing else is sent, and the composer still holds what was typed
+    assert "send failed" in seen["refused"]["toast"] and seen["refused"]["sends"] == 1
+    assert (seen["refused"]["subject"], seen["refused"]["content"]) == ("hello", "words")
+    # the page's draft holds them too, so a rebuilt page restores them
+    assert seen["reloaded"] == {"subject": "hello", "content": "words"}
+    # the same words sent again and accepted are cleared
+    assert seen["accepted"] == {"subject": "", "content": "", "toast": "sent"}
 
 
 def test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll(tmp_path):

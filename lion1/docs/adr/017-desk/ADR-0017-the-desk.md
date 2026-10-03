@@ -320,17 +320,20 @@ unless an edit followed the send, and a navigation clears it.
 ### C16: The phone page shows the newest rows, whichever of the poll and the stream brings them _(enforced: mechanical)_ ^c16
 
 - **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
-- **Violated when**: older rows replace newer ones shown, from the poll or the stream. Two polls run
-  at once, or one that never settles stops the next.
+- **Violated when**: older rows replace newer ones shown, or a stream's first rows are refused. Two
+  polls run at once, or one that never settles stops the next.
 
-Every areas read, the poll's and the stream's, takes a revision under one lock: the wall clock in
-microseconds, or one above the last where the clock has not passed it. A restarted server starts
-from the clock, so above its last unless the clock stepped back. `/events` serves the last read;
-`/api/areas` makes a read of its own, which becomes the last. An `areas` event carries its revision
-as its `id`, an `/api/areas` answer in `X-Areas-Revision`; the page keeps the higher.
+Every read behind `/api/areas` and the `areas` events of `/events` takes a revision under one lock:
+the larger of the microsecond wall clock and the last plus one. The root page and `/api/resident`
+read directly and carry none. `/events` serves the last read; `/api/areas` makes its own, which
+becomes the last.
 
-With the stream down the page polls every five seconds, one at a time. A poll out for ten seconds is
-aborted and frees the next, as a failed one does; an aborted poll's answer is dropped.
+The revision is an `areas` event's `id` and an `/api/areas` answer's `X-Areas-Revision`. A stream
+connection is a new epoch: the page takes the first revision after it, and keeps the higher only
+within one.
+
+With the stream down the page polls every five seconds. A poll out for ten seconds is aborted and
+frees the next, as a failed one does; an aborted poll's answer is dropped.
 
 ## Decisions
 
@@ -426,21 +429,23 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (45 tests), among them
+- **Landing evidence**: `tests/test_areas.py` (registry, rows, guards, stream), among them
   `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file`,
   `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`,
   `test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll`,
   `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision` and
   `test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back`;
-  `tests/app_page_harness.js` runs the served script under node for ten `test_the_app_` tests of C15
-  and C16:
+  `tests/app_page_harness.js` runs the served script under node for these C15 and C16 tests:
   `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
   `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
   `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
   `test_the_app_keeps_the_newer_revision_whichever_of_poll_and_stream_arrives_first`,
+  `test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision`,
+  `test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between`,
   `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,
   `test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload`,
   `test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty`,
+  `test_the_app_composer_keeps_the_words_of_a_refused_send_and_clears_them_once_one_is_accepted`,
   `test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll`,
   `test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next` and
   `test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_again`.

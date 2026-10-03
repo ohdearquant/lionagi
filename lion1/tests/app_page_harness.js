@@ -217,6 +217,9 @@ function boot(html) {
       for (const fn of streams.at(-1).handlers[type] || []) fn(ev);
     },
     streamError() { streams.at(-1).onerror(); },
+    streamOpen() {  // the stream's connection opens, on its first connect and on every reconnect
+      for (const fn of streams.at(-1).handlers.open || []) fn({ type: 'open' });
+    },
     async answer(req, data, rev) {  // `/api/areas` states its revision in a header
       const headers = { get: (name) => (name.toLowerCase() === 'x-areas-revision' && rev !== undefined ? String(rev) : null) };
       req.resolve({ ok: true, json: () => Promise.resolve(data), headers });
@@ -438,6 +441,61 @@ const scenarios = {
     page.emit('areas', [row('stream22')], 22);
     seen.newerStreamAfter = page.actors();
     return seen;
+  },
+
+  // a stream connection is a server epoch: the first rows after it opens are taken whatever their revision,
+  // as a restarted server may count below the last one shown, and within the connection the higher stays
+  async epoch(page) {
+    const seen = {};
+    page.emit('areas', [row('first')], 1000);
+    page.streamOpen();
+    page.emit('areas', [row('restarted')], 995);
+    seen.afterOpen = page.actors();
+    page.emit('areas', [row('older')], 990);
+    seen.sameConnection = page.actors();
+    page.emit('areas', [row('newer')], 996);
+    seen.newer = page.actors();
+    page.streamError();
+    await page.advance(5000);
+    const out = page.requests('/api/areas').at(-1);
+    page.streamOpen();
+    await page.answer(out, [row('polled')], 100);  // a poll's answer, after the stream opened, is taken too
+    seen.polled = page.actors();
+    return seen;
+  },
+
+  // with no stream opening between, rows older than those shown are dropped
+  async epochSame(page) {
+    page.emit('areas', [row('first')], 1000);
+    page.emit('areas', [row('older')], 995);
+    return { actors: page.actors() };
+  },
+
+  // a send the server refuses leaves the words in the composer, through a reload of the page as well, and
+  // says it failed; the same words sent again and accepted are cleared
+  async refusedSend(page) {
+    await page.open(DIR);
+    page.type('talk-subject', 'hello');
+    page.type('talk-content', 'words');
+    page.click(page.byId('talk-send'));
+    await page.answer(page.requests('/send')[0], { ok: false });
+    const composer = () => ({
+      subject: page.byId('talk-subject').value,
+      content: page.byId('talk-content').value,
+    });
+    const toast = () => page.byId('toast').textContent;
+    const refused = { ...composer(), toast: toast(), sends: page.requests('/send').length };
+    page.click(page.act('wake'));  // a control's answer rebuilds the page, which restores the page's draft
+    await page.answer(page.requests('/control')[0], { ok: true, detail: 'woken' });
+    await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    const reloaded = composer();
+    page.click(page.byId('talk-send'));
+    const again = page.requests('/send')[1];  // none goes out when the composer was emptied
+    if (again) {
+      await page.answer(again, { ok: true });
+      await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    }
+    return { refused, reloaded, accepted: { ...composer(), toast: toast() } };
   },
 
   // a tick while a poll is out starts no poll, a poll that fails frees the next, and one that has settled
