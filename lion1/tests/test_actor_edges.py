@@ -415,6 +415,19 @@ def test_a_field_typed_any_reads_its_text_as_a_literal_when_it_is_one(text, expe
     assert value == expected and type(value) is type(expected)
 
 
+def test_a_spec_rebuilt_with_a_text_field_keeps_the_text_it_read_as_a_list_before():
+    class Shape(BaseModel):
+        value: list[int]
+
+    turn = "<lvar shape.value v>[1]</lvar>OUT{shape: [v]}"
+    run = once(Actor("edge-rebuilt"), Profile("p"), turn, emits=(Shape,))
+    assert run.output["shape"].value == [1]  # a field that cannot take text reads it as a literal
+    Shape.model_fields["value"].annotation = str
+    Shape.model_rebuild(force=True)  # the same class, its field now text
+    run = once(Actor("edge-rebuilt"), Profile("p"), turn, emits=(Shape,))
+    assert isinstance(run.outcome, Success) and run.output["shape"].value == "[1]"
+
+
 def test_a_command_pointing_into_a_circle_it_is_not_part_of_waits_and_is_not_blamed_for_it():
     actor = _echo_actor("edge-circle-bystander")
     turn = "<lact z>echo(text=*x)</lact><lact x>echo(text=*y)</lact><lact y>echo(text=*x)</lact>"

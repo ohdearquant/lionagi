@@ -175,7 +175,7 @@ class Profile:
 
     def __post_init__(self) -> None:
         # the name is the notes file's name under `notes_dir`: one file per profile, none outside it
-        if not _PROFILE_NAME.match(self.name) or ".." in self.name:
+        if not _PROFILE_NAME.fullmatch(self.name) or ".." in self.name:
             raise ProfileError(f"profile name {self.name!r}: letters, digits, _ . - only, it names a file")
         if self.language not in ("core", "program"):
             raise ProfileError(f"profile language {self.language!r}: core or program")
@@ -184,7 +184,7 @@ class Profile:
             raise ProfileError(f"profile {self.name!r} defaults name no bound: {unknown}")
 
 
-_PROFILE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+_PROFILE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")  # whole: `$` matches before a final newline
 
 
 HandlerFn = Callable[[BaseModel, "Context"], "Awaitable[Any] | Any"]
@@ -391,7 +391,7 @@ class Run:
         self.values: dict[str, tuple[int, Any]] = {}  # alias -> (seq of the TEXT that declared it, value)
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
-        self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
+        self.tasks: set[asyncio.Task] = set()  # every command and note-write task no settle saw through
         # the time limits of the walks and settles waiting now, which a grant of time by `run.more` moves
         self.timeouts: set[asyncio.Timeout] = set()
         self.entered: set[str] = set()  # pending aliases whose handler has been called
@@ -2180,6 +2180,7 @@ class _Walk:
         task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))
         task.add_done_callback(functools.partial(self.actor._never_started, run, la))
         run.pending[la.alias] = task
+        run.tasks.add(task)
         admitted.set_result(None)  # registered before it runs, under any task factory
         self.reads.setdefault(la.alias, set())
         self.tasks.append(task)
@@ -2309,6 +2310,7 @@ class _Walk:
         task = asyncio.create_task(put())
         self.write_reads[task] = (reads, prior)
         self.writes[node.key] = task
+        self.run.tasks.add(task)
         self.tasks.append(task)
 
 
@@ -2451,7 +2453,8 @@ def _coerce(spec: Spec, fld: str, value: Any) -> Any:
         return value
     if info.annotation is not Any:
         try:
-            _adapter(spec, fld).validate_python(value, strict=True)
+            # built per call, never cached by Spec: a rebuilt Spec keeps its class and changes its fields
+            TypeAdapter(info.annotation).validate_python(value, strict=True)
         except ValidationError:
             pass
         else:
@@ -2464,11 +2467,6 @@ def _coerce(spec: Spec, fld: str, value: Any) -> Any:
         except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
             continue
     return value
-
-
-@functools.lru_cache(maxsize=512)
-def _adapter(spec: Spec, fld: str) -> TypeAdapter:
-    return TypeAdapter(spec.model_fields[fld].annotation)
 
 
 def _output_guidance(emits: tuple[Spec, ...]) -> str:

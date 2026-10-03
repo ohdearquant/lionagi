@@ -211,8 +211,9 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
   `test_each_catalogue_repair_is_named_and_counted`,
-  `test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns`. A pointer reaches an
-  earlier line's name or the record: no cycle.
+  `test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns`,
+  `test_a_cancelled_program_returns_only_once_every_task_it_launched_is_through`. A pointer reaches
+  an earlier line's name or the record: no cycle.
 
 ### D2: The repair catalogue is data, and each repair is counted ^d2
 
