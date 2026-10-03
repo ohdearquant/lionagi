@@ -27,6 +27,7 @@ from hub.areas import partial
 from hub.chat import entry_row, line
 from lionagi import lndl
 from lionagi.actor import _read
+from lionagi.checkpoint import jsonable
 from lionagi.record import Entry, Kind
 
 from .clipboard import to_clipboard
@@ -266,7 +267,7 @@ class Console:
             with self.log.open("a") as fh:
                 if self.head is not None and not self.written:
                     fh.write(json.dumps(self.head) + "\n")
-                fh.write(json.dumps(entry_row(e), default=str) + "\n")
+                fh.write(json.dumps(entry_row(e), default=jsonable) + "\n")
                 self._bill(fh, e.round)
             self.written += 1
         if e.kind is Kind.TEXT and (prose := _prose(str(e.content))):  # a replayed reply counts too

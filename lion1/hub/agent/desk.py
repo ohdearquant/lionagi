@@ -229,7 +229,7 @@ class Desk:
         for it, and discovery replays its keyed request each time. The notice is `tick: sweep`; the sweep
         lists what is pending."""
         held = _val(self.agent.state, "desk_pending", {})
-        pending = await self._discover(0 if any(not _by_code(m) for m in held.values()) else wait_ms)
+        pending, _, _ = await self._discover(0 if any(not _by_code(m) for m in held.values()) else wait_ms)
         pending = {mid: m for mid, m in pending.items() if not _by_code(m)}
         if not pending:
             return []
@@ -284,7 +284,7 @@ class Desk:
                 self.agent.errors.append(line)
             return False
 
-    async def _discover(self, wait_ms: int = 0) -> dict[str, dict]:
+    async def _discover(self, wait_ms: int = 0) -> tuple[dict[str, dict], bool, float]:
         """Every page of the chair's unread box since the discovery cursor (`desk_watch`, an instant; the
         box's `since` is an inclusive bound on `created_at` to the microsecond). A row
         no ledger row holds and the desk did not send joins `desk_pending`, which is written before the
@@ -297,8 +297,10 @@ class Desk:
         wait is escalated here, by code, and never joins the sweep's list; its send is recorded like an
         answer's and settled the same way. A new verdict notice is triaged here, by code, and never joins
         it either: filed, left or escalated; a task it filed whose outcome is unknown is replayed as a
-        send is. The pending messages, after."""
+        send is. The pending messages, after, whether the scan paged, and the instant of its first read:
+        what the scan did not list had not arrived by then, as far as the scan read."""
         state = self.agent.state
+        read_at = time.time()
         since = _val(state, "desk_watch", "") or _val(state, "desk_since", "")
         if not since:  # the desk handles what arrives after it went live, not the chair's backlog
             since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -442,16 +444,19 @@ class Desk:
         cursor = _val(state, "desk_watch", "") or since
         if not paged and newest is not None and _instant(newest) >= _instant(cursor):
             state.put("desk_watch", after(newest), run="-", seq=0)
-        return _val(state, "desk_pending", {})
+        return _val(state, "desk_pending", {}), paged, read_at
 
     async def sweep(self, run: Run) -> str:
         """List the pending messages after reading the box: those the desk can act on first, oldest first
         and at most a page; then, apart, at most a page of deliveries unresolved, which only wait or leave."""
         state = self.agent.state  # the brief's liveness line counts the sweeps run in its window
         state.put("desk_sweeps", _val(state, "desk_sweeps", 0) + 1, run=run.id, seq=run.record.seq)
-        pending = await self._discover()
+        pending, paged, read_at = await self._discover()
         since = _val(self.agent.state, "desk_since", "")
-        expired = self._expire(run)
+        # a scan that paged may have skipped a clarify's answer: the next scan that fits one page expires,
+        # and only a clarify whose cap had passed when that scan read, so an answer the scan was too
+        # early for is not an answer that never came
+        expired = [] if paged else self._expire(run, read_at)
         note = (
             f"; {len(expired)} clarify unanswered past {self.clarify_hours}h, left: {expired}"
             if expired
@@ -844,12 +849,17 @@ class Desk:
                 open_.pop(r["msg"])
         return open_
 
-    def _expire(self, run: Run) -> list[str]:
-        """A clarify unanswered past the cap is left for the chair; unbounded pending is a silent drop."""
-        cut = time.time() - self.clarify_hours * 3600
+    def _expire(self, run: Run, read_at: float) -> list[str]:
+        """A clarify unanswered past the cap is left for the chair; unbounded pending is a silent drop. A
+        message pending on its thread is an answer received and not yet handled: the sweep lists it, and
+        an answer or a leave of it resolves the clarify, so the cap leaves nothing while it waits. The cap
+        is judged at `read_at`, the instant the box was read: a clarify whose cap passed during the
+        sweep's own work is judged by the next read, which an answer may have reached."""
+        cut = read_at - self.clarify_hours * 3600
+        waiting = {m.get("thread") for m in _val(self.agent.state, "desk_pending", {}).values()}
         out = []
         for mid, r in self._open_clarifies().items():
-            if _epoch(r) < cut:
+            if _epoch(r) < cut and r["thread"] not in waiting:
                 self._row(mid, r, "left", why="clarify unanswered", run=run)
                 out.append(mid)
         return sorted(out)

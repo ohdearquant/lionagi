@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, computed_field, model_serializer
 
 from lionagi import checkpoint as module
 from lionagi.actor import Result
@@ -30,6 +31,7 @@ from lionagi.checkpoint import (
     assert_ignored,
     entry_of,
     fold_turns,
+    jsonable,
     load,
     render_prompt,
     save,
@@ -485,6 +487,25 @@ def test_a_row_whose_text_carries_a_separator_is_one_row_and_a_var_with_one_roun
     assert to_history(again) == history
 
 
+def test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named(plain):
+    # the record was decoded whole before the cutoff: a write cut inside a multi-byte character after
+    # the take raised UnicodeDecodeError, which is not the CheckpointError a restore's caller reads
+    rec = Record("r0")
+    rec.append(Kind.INPUT, "say hi back", inbound="actor:two")
+    rec.append(Kind.TEXT, "hi back ☃", round=1)
+    rows = [json.dumps(row_of(e), ensure_ascii=False).encode() for e in rec]
+    path = plain / "r0.jsonl"
+    path.write_bytes(b"\n".join(rows) + b"\n\xff not text\n" + "☃".encode()[:2])
+    c = take({"record": str(path)}, [], actor=ACTOR, why="end", budget=100, record=rec, now=AT)
+    save(c, plain)
+    assert to_history(load(plain)) == tuple(rec)
+    path.write_bytes(rows[0] + b"\n" + rows[1][:-5] + b"\xe2\x98")
+    with pytest.raises(
+        CheckpointError, match=r"r0\.jsonl line 2 is not a record row \(.*utf-8.*\); nothing was replayed"
+    ):
+        to_history(c)
+
+
 def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     turns = [turn(1, "t" * 400), turn(2, "text two"), turn(3, "", kind="event"), turn(4, "text four")]
     view = fold_turns(turns, 100)  # 102 + 4 + 2 + 4: the first goes
@@ -763,6 +784,26 @@ def test_save_lands_the_file_names_it_latest_and_never_overwrites(plain):
     ]
 
 
+def test_a_taken_name_costs_a_probe_and_never_another_encoding_of_the_document(plain, monkeypatch):
+    # each occupied name built the file's bytes again from scratch: the eighth save of one id in one
+    # second encoded the document eight times, 36 over the eight
+    c = take({}, [var("a", "fact", "x" * 300)], actor=ACTOR, why="manual", budget=100, now=AT)
+    encoded: list[str] = []
+    real = module._bytes
+    monkeypatch.setattr(module, "_bytes", lambda doc: encoded.append(doc["id"]) or real(doc))
+    counts, paths = [], []
+    for _ in range(8):
+        before = len(encoded)
+        paths.append(save(c, plain))
+        counts.append(len(encoded) - before)
+    assert counts == [1] * 8 and encoded == [ID] * 8
+    assert [p.stem for p in paths] == [ID, *(f"{ID}-{n:02d}" for n in range(2, 9))]
+    for p in paths:  # each file the bytes an encoding under its own name gives, its id that name
+        assert p.read_bytes() == real({**dataclasses.asdict(c), "id": p.stem})
+        assert load(plain, p.stem) == dataclasses.replace(c, id=p.stem)
+    assert load(plain).id == f"{ID}-08"
+
+
 def test_load_says_what_is_missing_or_malformed_and_takes_only_a_name(plain):
     with pytest.raises(CheckpointError, match="latest.json is absent"):
         load(plain)
@@ -884,3 +925,84 @@ def test_a_value_the_file_cannot_carry_is_refused_before_anything_is_written(pla
         save(lone, plain)
     assert (sorted(p.name for p in ctx.iterdir()), (ctx / "latest.json").read_text()) == before
     assert load(plain).vars[0].value == "snowman: ☃"
+
+
+class Book(BaseModel):
+    title: str
+    year: int
+
+
+class Loose(BaseModel):
+    v: object
+
+
+def test_a_model_value_is_written_as_its_fields_and_one_json_cannot_hold_as_its_str(plain):
+    # a var's value that is a model was written, shown and sized as its str, which a restore cannot
+    # read a field of
+    book = Book(title="Dune", year=1965)
+    odd = Loose(v=types.SimpleNamespace(x=1))  # pydantic has no JSON form for the namespace
+    assert jsonable(book) == {"title": "Dune", "year": 1965}
+    assert jsonable(odd) == str(odd) == "v=namespace(x=1)" and jsonable(AT) == str(AT)
+    c = take({}, [var("value.b", "fact", book)], actor=ACTOR, why="manual", budget=100, now=AT)
+    assert '- value.b: {"title": "Dune", "year": 1965}' in render_prompt(c)
+    save(c, plain)
+    assert load(plain).vars[0].value == {"title": "Dune", "year": 1965}
+
+
+class Shut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str
+
+    @computed_field
+    @property
+    def upper(self) -> str:
+        return self.title.upper()
+
+
+def test_a_computed_field_is_written_as_a_key_that_a_model_forbidding_extras_refuses():
+    # a replay validates the dict into the model: a computed field's key is extra input there
+    written = jsonable(Shut(title="dune"))
+    assert written == {"title": "dune", "upper": "DUNE"}
+    with pytest.raises(ValidationError, match="upper\n  Extra inputs are not permitted"):
+        Shut.model_validate(written)
+    assert Shut.model_validate({"title": "dune"}).upper == "DUNE"
+
+
+class Open(Shut):
+    model_config = ConfigDict(extra="allow")
+
+
+def test_a_computed_field_is_written_as_a_key_that_a_model_allowing_extras_keeps_as_extra_data():
+    back = Open.model_validate(jsonable(Open(title="dune")))
+    assert back.model_extra == {"upper": "DUNE"} and back.title == "dune" and back.upper == "DUNE"
+
+
+class Tags(RootModel[list[str]]):
+    pass
+
+
+class Mark(BaseModel):
+    title: str
+
+    @model_serializer
+    def as_title(self) -> str:
+        return self.title
+
+
+def test_a_model_whose_dump_is_not_an_object_is_written_as_that_dump(plain):
+    # a root model dumps its root and a serializer may return a scalar: the file and the prompt hold
+    # that JSON, and a restore reads it back as it was written
+    tags, mark = Tags(["Dune", "sf"]), Mark(title="Dune")
+    assert (jsonable(tags), jsonable(mark)) == (["Dune", "sf"], "Dune")
+    c = take(
+        {},
+        [var("value.t", "fact", tags), var("value.m", "fact", mark)],
+        actor=ACTOR,
+        why="manual",
+        budget=100,
+        now=AT,
+    )
+    shown = render_prompt(c)
+    assert '- value.t: ["Dune", "sf"]' in shown and '- value.m: "Dune"' in shown
+    save(c, plain)
+    assert {v.name: v.value for v in load(plain).vars} == {"value.t": ["Dune", "sf"], "value.m": "Dune"}

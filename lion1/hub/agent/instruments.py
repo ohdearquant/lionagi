@@ -1013,6 +1013,11 @@ _GITHUB_ORIGIN = re.compile(
 )
 
 
+def _head(branch: str | None) -> str:
+    # git's own label for a detached HEAD, which no branch can carry: it holds a space
+    return "(detached HEAD)" if branch is None else branch
+
+
 def _pr_number(p: Any) -> bool:
     # a pull request's number is a positive integer; a bool is an int to Python and is not one
     n = p.get("number") if isinstance(p, dict) else None
@@ -1087,9 +1092,11 @@ class Worktrees:
             prev = _snapshot(self.state, f"worktrees:{repo}")
             snap = {}
             for t in trees[1:]:  # the first entry is the main checkout
+                # a detached HEAD is a record without a branch attribute, kept as no branch: a branch
+                # named `detached` is a branch
                 path, branch = (
                     t.get("worktree", "?"),
-                    (t.get("branch") or "detached").removeprefix("refs/heads/"),
+                    t["branch"].removeprefix("refs/heads/") if "branch" in t else None,
                 )
                 failed = []
                 rc, st, _ = await self.sh([GIT, "-C", path, "status", "--porcelain"])
@@ -1102,9 +1109,9 @@ class Worktrees:
                 if not logged:
                     failed.append("log")
                 pr = "?"
-                if slug is None and branch != "detached":
+                if slug is None and branch is not None:
                     failed.append("PR")
-                elif branch != "detached":
+                elif branch is not None:
                     rc, prs, _ = await self.sh(
                         [
                             GH,
@@ -1131,7 +1138,7 @@ class Worktrees:
                         failed.append("PR")
                 parked = dirty > 0 and age_d > self.parked_days and pr == "none"
                 lines.append(
-                    f"{path} | {branch} | dirty {dirty} | HEAD {age_d:.1f}d | PR {pr}"
+                    f"{path} | {_head(branch)} | dirty {dirty} | HEAD {age_d:.1f}d | PR {pr}"
                     + (" | PARKED" if parked else "")
                 )
                 if failed:  # the last good reading stands until a read succeeds
@@ -1151,7 +1158,7 @@ class Worktrees:
                     findings.append(f"{p}: worktree gone")
                 elif a is None:
                     findings.append(
-                        f"{p}: new worktree on {b['branch']}"
+                        f"{p}: new worktree on {_head(b['branch'])}"
                         + (", parked: dirty, old, no PR" if b["parked"] else "")
                         if prev is not None
                         else f"{p} ({b['branch']}): parked: dirty, HEAD older than {self.parked_days:g} "
@@ -1160,8 +1167,14 @@ class Worktrees:
                         else ""
                     )
                 else:
-                    if a.get("pr") != b["pr"] or a.get("branch") != b["branch"]:
-                        was, now_ = f"{a.get('branch')}/{a.get('pr')}", f"{b['branch']}/{b['pr']}"
+                    # a row stored before a detached HEAD was kept as no branch reads `detached` with PR
+                    # `?` in either state: its branch is unknown, so only its PR is compared and the
+                    # report says the row could be either
+                    known = not (a.get("branch") == "detached" and a.get("pr") == "?")
+                    if a.get("pr") != b["pr"] or (known and a.get("branch") != b["branch"]):
+                        label = _head(a.get("branch")) if known else "detached or (detached HEAD)"
+                        was = f"{label}/{a.get('pr')}"
+                        now_ = f"{_head(b['branch'])}/{b['pr']}"
                         findings.append(f"{p}: {was} -> {now_}")
                     if b["parked"] and not a.get("parked"):
                         findings.append(

@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lionagi.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
-from lionagi.checkpoint import Var, assert_ignored, load, save, take, to_history
+from lionagi.checkpoint import Var, assert_ignored, jsonable, load, save, take, to_history
 from lionagi.lndl import plain
 from lionagi.notes import FileNoteStore, MemoryNoteStore, NoteStore
 from lionagi.record import Directive, Entry, Kind
@@ -712,8 +712,10 @@ class Agent:
             self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
             await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
         if self.admit is not None:  # refused mail is read, recorded on the cursor, and never run
-            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m in mail if not self.admit(m)]
-            mail = [m for m in mail if self.admit(m)]
+            # one answer per message: a gate may do work per call, and a second call may answer otherwise
+            verdicts = [(m, self.admit(m)) for m in mail]
+            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+            mail = [m for m, ok in verdicts if ok]
         mail = self._triage(mail, woken=bool(notices))
         # `taking` names only what runs: deferred mail sits under its own note, dropped mail on the cursor
         self.state.put("taking", {"mail": [m.get("id") for m in mail]} if mail else {}, run="-", seq=0)
@@ -761,8 +763,9 @@ class Agent:
             raise AgentError(f"not in the read box: {sorted(wanted)}")
         self._dropped = []
         if self.admit is not None:  # the gate stands on this path as on `wake`: a rerun is a wake
-            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m in found if not self.admit(m)]
-            found = [m for m in found if self.admit(m)]
+            verdicts = [(m, self.admit(m)) for m in found]  # asked once per message, as on `wake`
+            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+            found = [m for m, ok in verdicts if ok]
             if not found:
                 prior = _value(self.state, "cursor", {})
                 facts = {**prior, "dropped": self._dropped, "dropped_at": _stamp(self.clock())}
@@ -979,7 +982,7 @@ class Agent:
             ctx.mkdir(parents=True, exist_ok=True)
             log = ctx / f"record-{run.id}.jsonl"
             tmp = log.with_name(f".{log.name}.{os.getpid()}.tmp")
-            tmp.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in run.record))
+            tmp.write_text("".join(json.dumps(entry_row(e), default=jsonable) + "\n" for e in run.record))
             os.replace(tmp, log)
             # a note over LAZY is carried by its key (`take`): the model's note.get reaches the profile's
             # notes; the agent's own (the cursor) are a file the model never reads, named by its path
@@ -1111,10 +1114,9 @@ class Agent:
                     self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
                     await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
                 if self.admit is not None:
-                    self._dropped = [
-                        {"id": m.get("id"), "from": _sender(m)} for m in mail if not self.admit(m)
-                    ]
-                    mail = [m for m in mail if self.admit(m)]
+                    verdicts = [(m, self.admit(m)) for m in mail]  # asked once per message, as on `wake`
+                    self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+                    mail = [m for m, ok in verdicts if ok]
                 mail = self._triage(mail, woken=bool(notices))
                 self.state.put(
                     "taking", {"mail": [m.get("id") for m in mail]} if mail else {}, run="-", seq=0
