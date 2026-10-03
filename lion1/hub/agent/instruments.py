@@ -227,9 +227,10 @@ def _utc() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def _resolve(run: Runner, repo: str) -> tuple[dict | None, str]:
+async def _resolve(run: Runner, repo: str, *, case_blind: bool = False) -> tuple[dict | None, str]:
     """The destination check: gh must return the repo's own name for it (a rename redirects with rc
-    0). The row carries the immutable id and whether this token is admin there."""
+    0). `case_blind` compares the names lowered, since gh answers with the repo's own case; a rename
+    still returns another name. The row carries the immutable id and whether this token is admin there."""
     rc, out, err = await run(
         [GH, "api", f"repos/{repo}", "--jq", "{full_name, id, admin: .permissions.admin}"]
     )
@@ -237,7 +238,8 @@ async def _resolve(run: Runner, repo: str) -> tuple[dict | None, str]:
         info = json.loads(out) if rc == 0 else None
     except json.JSONDecodeError:
         info = None
-    if not isinstance(info, dict) or info.get("full_name") != repo:
+    name = info.get("full_name") if isinstance(info, dict) else None
+    if not isinstance(name, str) or (name.lower() != repo.lower() if case_blind else name != repo):
         return None, (err or out).strip()[:200]
     return info, ""
 
@@ -375,6 +377,7 @@ class PrState:
         bad = [r for r in self.repos if r.get("ci", "actions") not in ("actions", "statuses", "none")]
         if bad:
             raise ValueError(f"a repo's ci is actions, statuses or none: {bad}")
+        self._running = LoopLock()
 
     async def _verdict(self, repo: str, ci: str, sha: str) -> tuple[str, bool]:
         """The CI verdict at a head on the repo's declared channel; the bool is that channel's own
@@ -437,6 +440,12 @@ class PrState:
         return row
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time, as `VerdictFreshness.run`: a run whose list is older than another run's
+        snapshot would close what that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         repos = [{"name": r, "ci": "actions"} if isinstance(r, str) else r for r in args.get("repos") or []]
         repos = repos or self.repos
         findings, table, positives, control, stale_n, pr_n = [], [], [], True, 0, 0
@@ -494,7 +503,18 @@ class PrState:
                     f"{repo}#{pr['number']} {pr['title'][:50]} | {sha[:10]} | {verdict} | review={review} | "
                     f"mergeable={mergeable} | updated {age_d:.1f}d ago{draft}"
                 )
-            prev = _snapshot(self.state, f"pr-state:{repo}")
+            # The snapshot is read after the last awaited call and put below with no await between the two:
+            # a PR the last read holds and a full page lacks is viewed first, and the snapshot read again.
+            viewed: dict[str, tuple[int, str, str]] = {}
+            while True:
+                prev = _snapshot(self.state, f"pr-state:{repo}")
+                unviewed = sorted((n for n in prev or {} if n not in snap and n not in viewed), key=int)
+                if not full or not unviewed:
+                    break
+                for n in unviewed:  # absent from a capped page: the PR itself says whether it is open
+                    viewed[n] = await self.sh(
+                        [GH, "pr", "view", n, "-R", repo, "--json", "state", "--jq", ".state"]
+                    )
             if prev is None:
                 findings.append(f"{repo}: first sight, {len(prs)} open PR(s); the table is the row")
             else:
@@ -507,10 +527,8 @@ class PrState:
                             + (" | STALE" if b["stale"] else "")
                         )
                     elif b is None:
-                        if full:  # absent from a capped page: the PR itself says whether it is open
-                            rc, st, err = await self.sh(
-                                [GH, "pr", "view", n, "-R", repo, "--json", "state", "--jq", ".state"]
-                            )
+                        if full:
+                            rc, st, err = viewed[n]
                             st = st.strip()
                             if rc != 0 or st not in ("OPEN", "CLOSED", "MERGED"):  # only a closure retires
                                 control = False
@@ -1153,8 +1171,15 @@ class Worktrees:
             run,
         )
         self.empty_expected = empty_expected
+        self._running = LoopLock()
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time, as `VerdictFreshness.run`: a run whose list is older than another run's
+        snapshot would report gone a tree that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         findings, lines, positives, control, total, parked_n = [], [], [], True, 0, 0
         for repo in self.repos:
             rc, out, err = await self.sh([GIT, "-C", repo, "worktree", "list", "--porcelain", "-z"])
@@ -1186,8 +1211,7 @@ class Worktrees:
                 continue
             positives.append(f"{repo} lists {len(trees)} tree(s) incl. the main checkout; origin {slug}")
             lines.append(f"control: {positives[-1]}")
-            prev = _snapshot(self.state, f"worktrees:{repo}")
-            snap = {}
+            snap, unread = {}, []
             for t in trees[1:]:  # the first entry is the main checkout
                 # a detached HEAD is a record without a branch attribute, kept as no branch: a branch
                 # named `detached` is a branch
@@ -1241,11 +1265,16 @@ class Worktrees:
                 if failed:  # the last good reading stands until a read succeeds
                     control = False
                     findings.append(f"{path}: the {', '.join(failed)} read failed; the tree is unread")
-                    if path in (prev or {}):
-                        snap[path] = prev[path]
+                    unread.append(path)
                     continue
                 parked_n += parked
                 snap[path] = {"branch": branch, "dirty": dirty, "pr": pr, "parked": parked}
+            # The snapshot is read here, after the last awaited call, and put below with no await between the
+            # two: the rows kept for an unread tree are the current ones, not the ones this run began with.
+            prev = _snapshot(self.state, f"worktrees:{repo}")
+            for path in unread:
+                if path in (prev or {}):
+                    snap[path] = prev[path]
             total += len(snap)
             if prev is None:
                 findings.append(f"{repo}: first snapshot, {len(snap)} worktree(s)")
@@ -1402,6 +1431,7 @@ class RequiredContexts:
             )
         self.state, self.every, self.source_identity, self.sh = state, every, source_identity, run
         self.empty_expected = empty_expected
+        self._running = LoopLock()
 
     async def _at_head(self, repo: str, sha: str) -> tuple[dict[str, dict], list[str], bool]:
         """Each context posted at the head, the newest per name across both surfaces, with what
@@ -1502,6 +1532,12 @@ class RequiredContexts:
         return seen, gaps, empty
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time, as `VerdictFreshness.run`: a run whose list is older than another run's
+        snapshot would close what that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         wanted = {str(p) for p in args.get("prs") or []}  # an ask narrowed to PRs: rows, no transitions
         event = str(args.get("source_event") or "direct read (no chore run)")
         findings, table, positives, data, control, pr_n, red_n = [], [], [], [], True, 0, 0
@@ -1551,8 +1587,8 @@ class RequiredContexts:
                     f"{repo} resolved as itself (id {info.get('id')}), admin {admin}; {declared}: ruleset "
                     f"{surf['ruleset']}, classic {surf['classic']}; pr list answered {len(prs)} row(s)"
                 )
-            prev = _snapshot(self.state, f"required-contexts:{repo}") or {}
             snap: dict[str, str] = {}
+            headless: list[str] = []  # PRs whose head did not read: their last row is kept
             for pr in prs:
                 n, sha = str(pr["number"]), pr.get("headRefOid") or ""
                 if wanted and f"{repo}#{n}" not in wanted:
@@ -1560,8 +1596,7 @@ class RequiredContexts:
                 if not re.fullmatch(r"[0-9a-f]{40}", sha):
                     control = False
                     findings.append(f"{repo}#{n}: head not read ({sha!r})")
-                    if n in prev:
-                        snap[n] = prev[n]
+                    headless.append(n)
                     continue
                 pr_n += 1
                 rules, surf = reads[pr["baseRefName"]]
@@ -1645,6 +1680,12 @@ class RequiredContexts:
                         },
                     }
                 )
+            # The snapshot is read here, after the last awaited call, and put below with no await between the
+            # two: the rows kept for an unread head are the current ones, not the ones this run began with.
+            prev = _snapshot(self.state, f"required-contexts:{repo}") or {}
+            for n in headless:
+                if n in prev:
+                    snap[n] = prev[n]
             if wanted:  # an on-demand read: every named row, and the snapshot untouched
                 findings += [snap[k] for k in sorted(snap, key=int)]
                 findings += [
@@ -1798,17 +1839,20 @@ class VerdictFreshness:
 
     async def _run(self, args: dict[str, Any]) -> Outcome:
         try:
-            entries = [(e.name, e.path, e.stat().st_mtime) for e in os.scandir(self.dir)]
+            entries = [(e.name, e.path, e.stat()) for e in os.scandir(self.dir)]
         except OSError as e:
             return Outcome(
                 findings=(f"{self.dir}: unreadable ({e}); no PR is judged",), evidence=str(e), control=False
             )
         index: dict[tuple[str, int], dict[str, dict[str, tuple[str, float]]]] = {}  # (slug, n) -> stem -> ext
-        for name, p, m in entries:
-            if v := _VERDICT_FILE.match(name):  # a file is kept under its own stem, however it is spelled
+        for name, p, st in entries:
+            # a candidate is a regular file, a link read as what it points to (one stat for the type and the
+            # mtime); a directory named like a verdict is none
+            if S_ISREG(st.st_mode) and (v := _VERDICT_FILE.match(name)):
+                # a file is kept under its own stem, however it is spelled
                 index.setdefault((v.group(2).lower(), int(v.group(3))), {}).setdefault(v.group(1), {})[
                     v.group(4)
-                ] = (p, m)
+                ] = (p, st.st_mtime)
         # the known-positive from the world: the daemon's newest verdict parses, read as a PR's is read
         pairs = [files for stems in index.values() for files in stems.values()]
         newest = self._read(max(pairs, key=lambda f: (f.get("json") or f["md"])[::-1])) if pairs else None
@@ -2028,6 +2072,7 @@ class CiRed:
         if bad:
             raise ValueError(f"a repo's channel is actions or local:<log dir>: {bad}")
         self.state, self.every, self.sh, self.empty_expected = state, every, run, empty_expected
+        self._running = LoopLock()
 
     async def _actions(self, repo: str, sha: str) -> tuple[list[dict], list[str], str]:
         """Each failed job of each red run at the head with its red lines; the reads that failed; what
@@ -2143,6 +2188,12 @@ class CiRed:
         return entries, gaps, f"{path.name}: {', '.join(verdicts) or 'no job verdict yet'}"
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time, as `VerdictFreshness.run`: a run whose list is older than another run's
+        snapshot would close what that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         wanted = {str(p) for p in args.get("prs") or []}  # an ask narrowed to PRs: rows, no transitions
         findings, table, positives, data, control, pr_n, red_n = [], [], [], [], True, 0, 0
         for spec in self.repos:
@@ -2164,18 +2215,17 @@ class CiRed:
             )
             table.append(f"control: gh resolves {repo} as itself; channel {channel}")
             heads = {str(p["number"]): p.get("headRefOid") or "" for p in prs}
-            prev = _snapshot(self.state, f"ci-red:{repo}") or {}
             snap: dict[str, list[str]] = {}
             red_lines: dict[str, dict[str, str]] = {}  # per red PR: each red run's line by its snapshot key
             quiet: set[str] = set()  # read, and no red at the head
+            unread: list[str] = []  # PRs whose head or runs did not read: their last red is kept
             for n, sha in heads.items():
                 if wanted and f"{repo}#{n}" not in wanted:
                     continue
                 if not re.fullmatch(r"[0-9a-f]{40}", sha):
                     control = False
                     findings.append(f"{repo}#{n}: head not read ({sha!r})")
-                    if n in prev:
-                        snap[n] = prev[n]
+                    unread.append(n)
                     continue
                 pr_n += 1
                 if root is None:
@@ -2228,14 +2278,20 @@ class CiRed:
                             "dropped_by_dedupe": dropped,
                         }
                     )
-                elif gaps and n in prev:  # not read: its last red is kept, never cleared
-                    snap[n] = prev[n]
-                elif not gaps:
+                elif gaps:  # not read: its last red is kept, never cleared
+                    unread.append(n)
+                else:
                     quiet.add(n)
                 if wanted:
                     findings += list(red.values()) or (
                         [] if gaps else [f"{repo}#{n} {sha[:8]}: no red on {channel}"]
                     )
+            # The snapshot is read here, after the last awaited call, and put below with no await between the
+            # two: the rows kept for an unread PR are the current ones, not the ones this run began with.
+            prev = _snapshot(self.state, f"ci-red:{repo}") or {}
+            for n in unread:
+                if n in prev:
+                    snap[n] = prev[n]
             if wanted:  # an on-demand read: every named row, and the snapshot untouched
                 findings += [
                     f"{w}: not among the open PRs read"
