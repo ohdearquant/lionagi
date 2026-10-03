@@ -356,9 +356,11 @@ refused at build.
   `test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_another_case`,
   `test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way`).
 - **S13**: A verdict file counts for a pull request by the repo and number its name spells,
-  case-blind and unpadded, when its own content names that pull request. Each file stays a candidate
-  under its own name, so two that differ only in the repo's case are both read; the newest by mtime,
-  then round, then path is the verdict, whatever order the directory lists them
+  case-blind and unpadded, when its content names that pull request. A file that cannot be read
+  stays a candidate; if it is the newest, it is reported unreadable and fails the control. Each
+  verdict is its own candidate, so two that differ only in the repo's case are both read; the newest
+  by mtime, then round, then the greatest path is the verdict, in any listing order
   (`test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates`,
   `test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order`,
-  `test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number`).
+  `test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number`,
+  `test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest`).

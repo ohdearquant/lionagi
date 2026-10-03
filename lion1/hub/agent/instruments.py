@@ -1672,8 +1672,8 @@ class VerdictFreshness:
 
     def _newest(self, stems: dict[str, dict[str, tuple[str, float]]], repo: str, n: int) -> dict | None:
         """The newest of a PR's verdicts, one per file stem however the stem spells the repo or the
-        number, by mtime, then round, then path; a file whose own repo and number are another PR's is
-        not a candidate, an unreadable one stays one (it may be the newest)."""
+        number, by mtime, then round, then the greatest path; a file whose own repo and number are
+        another PR's is not a candidate, an unreadable one stays one (it may be the newest)."""
         recs = [self._read(files) for files in stems.values()]
         own = _pr_id(f"{repo}#{n}")
         recs = [r for r in recs if "error" in r or _pr_id(f"{r['repo']}#{r['number']}") == own]

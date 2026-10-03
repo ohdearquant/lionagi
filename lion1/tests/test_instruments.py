@@ -2101,6 +2101,37 @@ def test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_co
     )
 
 
+@pytest.mark.parametrize("newer", [True, False])
+def test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest(
+    tmp_path, newer
+):
+    """A file that cannot be read cannot name its PR, so it stays a candidate by its file name: when it is
+    the PR's newest, the run reports it unreadable rather than reading the older verdict beside it."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    bad = tmp_path / "o-r-7-12345678.json"
+    bad.write_text("{not json")
+    os.utime(bad, (1500, 1500) if newer else (500, 500))
+    verdict(tmp_path, 8, OLD, head8="88888888", mtime=2000)  # the directory's newest parses
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(tmp_path),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    if newer:
+        assert not out.control and [d["state"] for d in out.data] == ["UNREADABLE"]
+        assert out.findings[0].startswith(
+            f"o/r#7 77777777: newest verdict unreadable: {bad}: JSONDecodeError"
+        )
+    else:
+        assert out.control and out.findings == (
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+        )
+
+
 def test_verdict_freshness_an_enumerator_without_a_total_line_failed(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"/x/my_open_prs.sh": (2, "", "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n")})
@@ -2341,14 +2372,15 @@ def test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure(tmp_
 def test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates(
     monkeypatch, tmp_path, reverse
 ):
-    """One PR's verdicts can be filed as `O-R-7-<head8>` and `o-r-7-<head8>`: the newer is the verdict
-    however the directory lists them, so an older approval never hides a newer request for changes."""
+    """One PR's verdicts can be filed as `o-r-7-<head8>` and `O-R-7-<head8>`: the newer is the verdict
+    however the directory lists them, so an older approval filed as the lookup spells the repo never hides
+    a newer request for changes filed in another case."""
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=2000, named="new/r")
     listed_as(
         monkeypatch,
         tmp_path,
-        lambda name: name.replace("old-r", "O-R").replace("new-r", "o-r"),
+        lambda name: name.replace("old-r", "o-r").replace("new-r", "O-R"),
         reverse=reverse,
     )
     sh = freshness_sh(prs=((7, HEAD7),))
