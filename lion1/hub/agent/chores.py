@@ -1090,7 +1090,12 @@ def _aged_key(row: dict) -> str:
     two reports in the hour a clock change repeats are two markers."""
     ts = row.get("ts")
     key = f"{row['chore']}|{row['at']}"
-    return f"{key}|{ts:.6f}" if isinstance(ts, int | float) and not isinstance(ts, bool) else key
+    if not isinstance(ts, int | float) or isinstance(ts, bool):
+        return key
+    try:
+        return f"{key}|{ts:.6f}"
+    except OverflowError:  # an integer no float holds: `_countable` never ages that row
+        return key
 
 
 _LABEL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
@@ -1138,13 +1143,20 @@ def _epoch(row: dict) -> float:
 
 def _countable(row: dict) -> float | None:
     """The row's instant as the digest counts one: its `at` a label `_is_label` admits, its `ts` a finite
-    number where it has one, and the time from 1970 to before `_TIME_END`. None for any other row, on every
-    platform alike."""
+    number where it has one, and the time from 1970 to before `_TIME_END`, on the day the `at` names. A row
+    without `ts` in the hour a clock change repeats counts from the later of its two instants, so it ages
+    once both are old enough. None for any other row, on every platform alike."""
     at = row.get("at")
     if not isinstance(at, str) or not _is_label(at) or ("ts" in row and not _is_number(row["ts"])):
         return None
-    t = _epoch(row)
-    return t if 0 <= t < _TIME_END else None
+    try:
+        two = _readings(row)
+        t = two[1] if two else _epoch(row)
+    except OverflowError:  # an integer `ts` no float holds
+        return None
+    if not 0 <= t < _TIME_END or time.strftime("%Y-%m-%d", time.localtime(t)) != at[:10]:
+        return None
+    return t
 
 
 def _readings(row: dict) -> tuple[float, float] | None:

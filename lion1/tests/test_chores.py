@@ -25,6 +25,7 @@ from hub.agent.chores import (
     Digest,
     Outcome,
     _aged_key,
+    _countable,
     period_s,
     sender_of,
     verbs,
@@ -1481,8 +1482,14 @@ def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_
 
 @pytest.mark.parametrize(
     "time_of",
-    [{"at": "0001-01-01 00:00:00"}, {"ts": -62135596800.0}, {"ts": "soon"}],
-    ids=["year-one-label", "ts-before-1970", "ts-not-a-number"],
+    [
+        lambda row: {"at": "0001-01-01 00:00:00"},
+        lambda row: {"ts": -62135596800.0},
+        lambda row: {"ts": "soon"},
+        lambda row: {"ts": row["ts"] - 3 * 86400},  # old enough to age, on a day its label does not name
+        lambda row: {"ts": 10**400},  # a JSON integer no float holds
+    ],
+    ids=["year-one-label", "ts-before-1970", "ts-not-a-number", "ts-on-another-day", "ts-no-float-holds"],
 )
 def test_aged_names_and_never_ages_a_report_whose_time_is_no_instant_to_count_from(tmp_path, time_of):
     # a time the digest cannot count is none here either: no age, so no false escalation, and no raise
@@ -1497,9 +1504,10 @@ def test_aged_names_and_never_ages_a_report_whose_time_is_no_instant_to_count_fr
     assert [s["to"] for s in khive.sent] == [OWNER]
     age_ledger(chores, hours=1.5)  # past two periods: a countable time would be aged
     (row,) = chores.rows()
-    if "at" in time_of:
+    change = time_of(row)
+    if "at" in change:
         row.pop("ts", None)  # a row from before `ts` reads its label
-    row.update(time_of)
+    row.update(change)
     chores.ledger.write_text(json.dumps(row) + "\n")
     run = asyncio.run(agent.wake())
     assert len(khive.sent) == 1  # the steward is told nothing
@@ -1585,6 +1593,20 @@ def test_a_report_in_the_hour_a_clock_change_repeats_is_aged_from_its_own_instan
         assert len(keys) == 2  # two reports, two aged markers, though both read 01:30
         old = {"at": "2026-09-22 12:00:00", "thread": "t1"}  # a row from before `ts`: its label is read
         assert asyncio.run(chores._acknowledged(old)) == (True, "answered")
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_a_report_without_ts_in_a_repeated_hour_ages_from_the_later_instant_it_names(monkeypatch):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        label = "2026-11-01 01:30:00"  # 01:30 EDT, then 01:30 EST an hour later
+        first, second = (datetime(2026, 11, 1, h, 30, tzinfo=UTC).timestamp() for h in (5, 6))
+        assert _countable({"at": label}) == second  # told only once both readings are old enough
+        assert _countable({"at": label, "ts": first}) == first  # a row with `ts` names one instant
+        assert _countable({"at": label, "ts": first - 86400}) is None  # a `ts` the label's day does not hold
     finally:
         monkeypatch.undo()
         time.tzset()
