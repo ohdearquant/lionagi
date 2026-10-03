@@ -2514,17 +2514,46 @@ def test_a_pending_tick_row_naming_no_instant_is_not_judged_and_gives_no_first_d
             # a monthly row whose anchor is no instant: its firing is the next, not the first
             ("tick: m", SELF, "pending", "2027-02-28T09:30:00Z", "soon", "monthly"),
             pending("disk", base + 60, "every:30m", base),
+            # two rows of one tick, one past its grace, one naming no instant: the unknown may be earlier
+            pending("w", base - 7200, "weekly", base - 7260),
+            ("tick: w", SELF, "pending", "soon"),
         ]
     )
     chores, agent = build(
-        tmp_path, khive, [], disk=Probe("disk", full()), m=Probe("m", full(), every="monthly")
+        tmp_path,
+        khive,
+        [],
+        disk=Probe("disk", full()),
+        m=Probe("m", full(), every="monthly"),
+        w=Probe("w", full(), every="weekly"),
     )
     lines = digest_at(chores, agent, base).splitlines()
-    assert f"{OWNER} m not judged: a pending tick row names no first due" in lines
+    for chore in ("m", "w"):
+        assert f"{OWNER} {chore} not judged: a pending tick row names no first due" in lines
     assert f"{OWNER} disk no run yet, first due by {label(base + 60)}" in lines
     assert "MISSING: " not in "\n".join(lines)
-    assert asyncio.run(chores.ensure_ticks()) == ["tick: digest", "tick: aged"]  # the row stands
-    assert agent.state.get("first_due").value == {"disk": base + 60}  # and records no first due
+    assert asyncio.run(chores.ensure_ticks()) == ["tick: digest", "tick: aged"]  # the rows stand
+    assert agent.state.get("first_due").value == {"disk": base + 60}  # and record no first due
+    assert f"{OWNER} w not judged: a pending tick row names no first due" in digest_at(chores, agent, base)
+
+
+@pytest.mark.parametrize("answer", [{}, None, {"events": "x"}, []], ids=["empty", "none", "text", "list"])
+def test_an_agenda_answer_that_is_no_page_is_a_failed_read_not_an_empty_one(tmp_path, answer):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    khive = FakeKhive()
+    inner = khive.exec
+
+    async def exec(ops):
+        return [answer] if ops.startswith("schedule.agenda") else await inner(ops)
+
+    khive.exec = exec
+    chores, agent = build(tmp_path, khive, [], w=Probe("w", full(), every="weekly"))
+    reason = f"agenda unreadable: ValueError: the agenda answer is no page: {str(answer)[:80]}"
+    assert digest_at(chores, agent, base).splitlines()[1:] == [f"{OWNER} w not judged: {reason}"]
+    with pytest.raises(ValueError, match="the agenda answer is no page"):
+        asyncio.run(chores.ensure_ticks())
+    assert not [op for op in khive.ops if op.startswith("schedule.remind")]  # no second tick made
+    assert agent.state.get("first_due") is None
 
 
 @pytest.mark.parametrize(

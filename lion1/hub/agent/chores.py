@@ -765,9 +765,14 @@ class Chores:
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
             # a first due on record stands: a row cannot say what lead its tick was made with, so what it
             # gives is no reason to lower one
-            known = [f for f in fires if f is not None]  # a row naming no instant gives no first due
-            if known and chore in self.instruments and _instant(firsts.get(chore)) is None:
-                self.agent.state.put("first_due", {**firsts, chore: min(known)}, run="-", seq=0)
+            # a row naming no instant may be the earliest: a tick with one records no first due at all
+            if (
+                fires
+                and None not in fires
+                and chore in self.instruments
+                and _instant(firsts.get(chore)) is None
+            ):
+                self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
         return created
 
     async def _pending_firsts(self, now: float) -> tuple[dict[Any, list[float | None]], str | None]:
@@ -787,7 +792,9 @@ class Chores:
             (agenda,) = await self.agent.khive.exec(
                 f"schedule.agenda(limit={_AGENDA_PAGE}" + (f", from={lit(after)})" if after else ")")
             )
-            events = (agenda or {}).get("events", [])
+            events = agenda.get("events") if isinstance(agenda, dict) else None
+            if not isinstance(events, list):  # an answer that is no page is a failed read, not an empty one
+                raise ValueError(f"the agenda answer is no page: {str(agenda)[:80]}")
             new = 0
             for e in events:
                 if e["id"] in seen:  # the row a page ends on is the first of the next
