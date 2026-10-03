@@ -124,12 +124,9 @@ context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refus
 
 Open asks are cancelled when the run ends, whichever value it ends in, or an abort; a command still
 pending then is cancelled and reaped, its RESULT on the record before `run` returns or raises (S4).
-Before the terminal commit, an uncaught exception (a backend raising, an unwritable store, a command
-task's own defect, S5) escapes `run` with `run.outcome` unset, the record as appended: an abort, not
-an outcome.
-
-After it, a cancellation is re-raised after the closure and delivery, outcome kept
-([[ADR-0020-the-experience#^c5|ADR-0020/C5]]).
+An exception the loop does not catch, a backend that raises, a store that cannot be written or a
+command task's own defect (S5), propagates from `run` to the caller with `run.outcome` unset; the
+record holds what was appended. That is an abort, not an outcome.
 
 ## Decisions
 
