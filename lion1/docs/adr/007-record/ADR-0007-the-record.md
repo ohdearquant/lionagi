@@ -244,10 +244,10 @@ on writing, when decided, sits on those two.
 
 Serves C7. `FileNoteStore.put` renders the value and an int `seq`, not a bool, with
 `json.dumps(allow_nan=False)`, encodes key, run and text as UTF-8, reads it back with `json.loads`,
-and then stores that copy: a later change, even during the lock wait, reaches nothing stored. The
-write renders the same way, so every file is standard JSON. `_load` refuses NaN, Infinity,
-overflowing numbers, non-UTF-8 bytes and a lone surrogate, naming file and text, byte offset or key
-path, repairing nothing. An underflowing number loads as a signed zero, as JSON parses it.
+and stores that copy: a later change, even during the lock wait, reaches nothing stored. Writes
+render the same way: every file is standard JSON. `_load` refuses NaN, Infinity, overflowing floats,
+integers past the digit limit, non-UTF-8 bytes and a lone surrogate, naming file and text, byte
+offset or key path, repairing nothing. An underflow loads as a signed zero.
 
 - **Landing evidence**:
   `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,

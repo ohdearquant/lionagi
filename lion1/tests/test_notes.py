@@ -502,6 +502,22 @@ def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_a
 
 
 @pytest.mark.parametrize(
+    "text",
+    [_notes_file(value="1" * 5000), _notes_file(seq="1" * 5000), _notes_file(version="9" * 4301)],
+    ids=["value", "seq", "version"],
+)
+def test_an_integer_past_the_digit_limit_is_refused_on_load_naming_the_file(tmp_path, text):
+    # valid JSON whose integer int() refuses past its digit limit: bare, the error names no file
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    path.write_text(text)
+    said = re.escape(f"{path}: the file holds an integer of ") + r"\d+ digits, past the limit"
+    _refused_on_every_path(path, store, said, text)
+    path.write_text(_notes_file())  # repaired by hand: the store reads it again
+    assert store.get("k").value == "x"
+
+
+@pytest.mark.parametrize(
     "number, text",
     [
         ("1e999", _notes_file(value="1e999")),

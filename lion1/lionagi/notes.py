@@ -175,6 +175,15 @@ class FileNoteStore(MemoryNoteStore):
                 )
             return value
 
+        def integer(digits: str) -> int:
+            try:
+                return int(digits)
+            except ValueError:  # past the interpreter's digit limit: int() names no file
+                raise ValueError(
+                    f"{self.path}: the file holds an integer of {len(digits)} digits, past the limit int() "
+                    "converts; repair it by hand"
+                ) from None
+
         # a file another locale wrote cannot be told from a damaged UTF-8 one by its bytes, so it is
         # refused whole, never converted by a guess
         try:
@@ -184,7 +193,7 @@ class FileNoteStore(MemoryNoteStore):
                 f"{self.path}: the file is not UTF-8 (the byte at offset {e.start} cannot be decoded); "
                 "re-encode it as UTF-8 by hand"
             ) from None
-        data = json.loads(text, parse_constant=refuse, parse_float=finite)
+        data = json.loads(text, parse_constant=refuse, parse_float=finite, parse_int=integer)
         # valid UTF-8 can still spell a lone surrogate (`\ud800`), which parses to a string the flush
         # cannot encode: every later write would fail there, so the file is refused here
         where = _lone_surrogate(data)
