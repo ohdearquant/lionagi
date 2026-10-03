@@ -31,9 +31,10 @@ from lionagi.record import Entry
 
 from .agent import backend_for
 from .config import instructions
-from .view import Console
+from .view import Console, cost_whole
 
 __all__ = (
+    "GIT_TIMEOUT",
     "console",
     "prepare_box",
     "take_patch",
@@ -46,6 +47,10 @@ __all__ = (
     "Interrupt",
     "chat_main",
 )
+
+# seconds: a resume's patch check, git's own lookup included; the branch `--code` names; each of
+# take_patch's calls on this machine (the box's own git for the diff runs under the box's exec timeout)
+GIT_TIMEOUT = 30.0
 
 
 def console(
@@ -167,7 +172,9 @@ async def take_patch(
     the chat log as `<chat_id>.patch`; with `apply` it is also applied to `directory` by `git apply`,
     from the top of the repository `directory` sits in (a patch from a subdirectory gets its prefix),
     which lands whole or not at all. None when nothing changed; a diff that fails raises. A patch that
-    will not apply is still saved, the failure is said, and the directory is left as it was."""
+    will not apply is still saved, the failure is said, and the directory is left as it was. Each git
+    call on this machine has `GIT_TIMEOUT`; an apply stopped at it is said to leave the directory
+    unknown. The diff is the box's own git, each call under the box's `exec` timeout (120 s)."""
     patch = await box.diff(baseline)
     if not patch.strip():
         say("box: no change in the copy")
@@ -177,9 +184,20 @@ async def take_patch(
     path.write_text(patch)
     say(f"box: the copy's diff, {patch.count(chr(10))} line(s), saved as {path}")
     print(patch, end="" if patch.endswith("\n") else "\n")
-    argv = _git_apply(directory, str(path))
+    try:
+        argv = _git_apply(directory, str(path), timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:  # nothing ran on the directory
+        say(f"box: not applied; git rev-parse did not answer within {GIT_TIMEOUT:g}s")
+        return path
     if apply:
-        done = subprocess.run(argv, capture_output=True, text=True)
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        except subprocess.TimeoutExpired:  # stopped mid-way: what it wrote is unknown, never undone
+            say(
+                f"box: git apply did not finish within {GIT_TIMEOUT:g}s and was stopped; whether it "
+                f"changed {directory} is unknown: read the files before applying {path} again"
+            )
+            return path
         if done.returncode == 0:
             say(f"box: applied to {directory} (git apply)")
         else:
@@ -189,13 +207,14 @@ async def take_patch(
     return path
 
 
-def _git_apply(directory: Path, *args: str) -> list[str]:
+def _git_apply(directory: Path, *args: str, timeout: float) -> list[str]:
     """`git apply <args>` for a chat patch over `directory`: from the top of the repository it sits in,
-    with its prefix, or over plain files when it sits in none."""
+    with its prefix, or over plain files when it sits in none. Finding the top takes `timeout` at most."""
     top = subprocess.run(
         ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--show-prefix"],
         capture_output=True,
         text=True,
+        timeout=timeout,
     )
     if top.returncode == 0:  # from a subdirectory `git apply` skips every path and exits 0
         root, prefix = top.stdout.split("\n")[:2]
@@ -208,16 +227,15 @@ def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
     too), falling back to the last attempt's `usage.cost` for a backend that reports only that, a
     total of 0 being a bill of 0 so only an absent total falls back; and how many calls that sum
-    misses, with no figure at all or the router's `cost_complete` false."""
+    misses, with no figure at all or the router's `cost_complete` false. A USAGE row read back from a
+    log with no `cost_complete` is from before the key: whether its subtotal is whole is unknown, so
+    it counts with them."""
     cost = 0.0
     for c in calls:
         billed = c.get("total_cost_usd")
         cost += float(billed if billed is not None else (c.get("usage") or {}).get("cost") or 0)
     unknown = sum(
-        1
-        for c in calls
-        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
-        or c.get("cost_complete") is False
+        1 for c in calls if not cost_whole(c) or (c.get("kind") == "USAGE" and "cost_complete" not in c)
     )
     return cost, unknown
 
@@ -265,15 +283,18 @@ def _k(n: float) -> str:
 
 def _branch(directory: Path) -> str:
     """The checked-out branch, from git itself (so a linked worktree's `.git` file and a
-    subdirectory both resolve), or `(no git)`."""
+    subdirectory both resolve), `(no git)`, or that git did not answer within `GIT_TIMEOUT`."""
     try:
         result = subprocess.run(
             ["git", "-C", str(directory), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
+            timeout=GIT_TIMEOUT,
         )
     except FileNotFoundError:
         return "(no git)"
+    except subprocess.TimeoutExpired:
+        return f"(git did not answer within {GIT_TIMEOUT:g}s)"
     if result.returncode != 0:
         return "(no git)"
     return result.stdout.strip()
@@ -396,18 +417,34 @@ async def _chat_main(
             )
         patch = chats / f"{prior.stem}.patch"
         if patch.exists():
-            try:  # does the saved patch come off the directory as it stands?
+            # does the saved patch come off the directory as it stands (applied), or go on whole (not
+            # applied)? Anything else is unknown, told with git's reason; one bound covers every call
+            deadline = time.monotonic() + GIT_TIMEOUT
+            standing, why = None, ""  # applied: nothing to tell
+            try:
+                check = _git_apply(directory, "--check", timeout=GIT_TIMEOUT)
                 off = subprocess.run(
-                    _git_apply(directory, "--check", "-R", str(patch)), capture_output=True
-                ).returncode
-                standing = "are not applied to" if off else None
+                    [*check, "-R", str(patch)], capture_output=True, timeout=deadline - time.monotonic()
+                )
+                if off.returncode != 0:
+                    on = subprocess.run(
+                        [*check, str(patch)], capture_output=True, timeout=deadline - time.monotonic()
+                    )
+                    standing = "are not applied to"
+                    if on.returncode != 0:  # unreadable, a file changed since, a broken repository
+                        first = (off.stderr.decode(errors="replace").strip().splitlines() or [""])[0]
+                        why = f" (git apply exited {off.returncode}: {first[:300]})"
             except FileNotFoundError:  # no git here: unchecked, and the model is told that much
+                why = " (no git)"
+            except subprocess.TimeoutExpired:
+                why = f" (git did not answer within {GIT_TIMEOUT:g}s)"
+            if why:
                 standing = "could not be checked against"
             if standing is not None:
                 notes.append(
                     f"the previous session's changes, saved as {patch}, {standing} {directory} as "
-                    "it stands, so edits the record shows may be missing from the files you work now; "
-                    "read a file before relying on an edit to it."
+                    f"it stands{why}, so edits the record shows may be missing from the files you work "
+                    "now; read a file before relying on an edit to it."
                 )
         notice = " ".join(notes) or None
     box = getattr(a, "box", None) or ran.get("box", "vm")

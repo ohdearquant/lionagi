@@ -87,6 +87,7 @@ def test_every_real_box_test_is_opt_in():
     # a test that boots a real VM or box is
     # skipped unless its opt-in variable is set (the original asserted both variables unset instead)
     import tests.test_daytona as daytona
+    import tests.test_runta as runta
 
     for var, fn in (
         ("LION_DAYTONA_E2E", daytona.test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory),
@@ -94,6 +95,7 @@ def test_every_real_box_test_is_opt_in():
             "LION_CONTAINER_E2E",
             test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and_stops,
         ),
+        ("LION_RUNTA_E2E", runta.test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops),
     ):
         (mark,) = [m for m in fn.pytestmark if m.name == "skipif"]
         assert os.environ.get(var) == "1" or mark.args[0], f"{fn.__name__} runs without {var}=1"

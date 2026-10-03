@@ -6,18 +6,15 @@ starts, never at import: the hub loads without it."""
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import shlex
-import subprocess
-import tarfile
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .box import BoxBase
+from .box import BoxBase, pack
 
 __all__ = ("api_key", "SandboxDead", "DEAD_MARKS", "DaytonaSandbox")
 
@@ -38,14 +35,6 @@ class SandboxDead(RuntimeError):
 
 
 DEAD_MARKS = ("failed to resolve container ip", "is the sandbox started")
-
-
-def _in_repository(directory: Path) -> bool:
-    """Whether `directory` is inside a git work tree (read without the index: a broken one still says yes)."""
-    done = subprocess.run(
-        ["git", "-C", str(directory), "rev-parse", "--is-inside-work-tree"], capture_output=True
-    )
-    return done.returncode == 0 and done.stdout.strip() == b"true"
 
 
 @dataclass
@@ -196,30 +185,10 @@ class DaytonaSandbox(BoxBase):
         """Copy `directory` into the box at `dest` (default `workdir`): the files git sees when it is
         a repository (tracked and untracked, ignored ones left out), else every file. Returns the names
         archived, relative to `dest`: what the box received, the manifest a baseline commits."""
-        directory = Path(directory).resolve()
         dest = dest or self.workdir
-        done = subprocess.run(
-            ["git", "-C", str(directory), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-            capture_output=True,
-        )
-        if done.returncode == 0:
-            names = [n.decode("utf-8", "surrogateescape") for n in done.stdout.split(b"\0") if n]
-        elif _in_repository(directory):
-            # a repository git could not list (a broken index): every-file would send what its
-            # .gitignore keeps out, so the push stops here instead
-            said = done.stderr.decode(errors="replace").strip()[-300:]
-            raise OSError(f"git ls-files in {directory} exited {done.returncode}: {said}")
-        else:
-            names = [str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()]
-        buf = io.BytesIO()
-        uploaded: list[str] = []
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for name in names:
-                if (directory / name).is_file():
-                    tar.add(directory / name, arcname=name, recursive=False)
-                    uploaded.append(name)
+        data, uploaded = pack(Path(directory))
         archive = f"/tmp/lion-push-{uuid.uuid4().hex}.tgz"
-        await self._box.fs.upload_file(buf.getvalue(), archive)
+        await self._box.fs.upload_file(data, archive)
         q = shlex.quote(dest)
         rc, out = await self.run(f"mkdir -p {q} && tar -xzf {archive} -C {q} && rm -f {archive}", timeout=600)
         if rc != 0:

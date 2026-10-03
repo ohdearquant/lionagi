@@ -9,11 +9,13 @@ import http.client
 import json
 import os
 import plistlib
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1025,16 +1027,22 @@ def test_send_answers_json_under_accept_from_a_json_or_form_body_with_no_origin(
     assert code == 400 and json.loads(text)["detail"].startswith("no identity")
 
 
-def read_events(resp, until, timeout: float) -> list[tuple[str, object]]:
-    """(event, data) off an open `/events` response until `until(events)` holds."""
+def read_events(resp, until, timeout: float, ids: list | None = None) -> list[tuple[str, object]]:
+    """(event, data) off an open `/events` response until `until(events)` holds; `ids`, when given, is
+    appended each event's (name, id), the id None for an event sent without one."""
     events: list[tuple[str, object]] = []
-    event, deadline = "", time.monotonic() + timeout
+    event, sent, deadline = "", None, time.monotonic() + timeout
     while time.monotonic() < deadline:
         line = resp.readline().decode()
-        if line.startswith("event: "):
+        if line.startswith("id: "):
+            sent = line[len("id: ") :].strip()
+        elif line.startswith("event: "):
             event = line[len("event: ") :].strip()
         elif line.startswith("data: "):
             events.append((event, json.loads(line[len("data: ") :])))
+            if ids is not None:
+                ids.append((event, sent))
+            sent = None
             if until(events):
                 return events
     raise AssertionError(f"not within {timeout}s: {events}")
@@ -1083,6 +1091,174 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     conn.close()
     stream.join(5)
     assert not stream.is_alive(), "the /events thread outlived its client"
+
+
+def open_stream(port: int):
+    """An open `/events` response and the connection under it."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/events")
+    return conn, conn.getresponse()
+
+
+def api_revision(port: int) -> int:
+    code, _, head = call(port, "GET", "/api/areas")
+    assert code == 200
+    return int(head["X-Areas-Revision"])
+
+
+def test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas_cli, "_POLL_S", 5.0)  # a stream opened next is served the cached read
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    conn, resp = open_stream(port)
+    (first,) = read_events(resp, lambda ev: bool(ev), 5)
+    assert first[0] == "areas" and first[1][0]["controls"]["held_by_file"] is False
+    (d / "hold").write_text("held by person from the app at now: r\n")
+    code, text, head = call(port, "GET", "/api/areas")  # the poll that saw the change
+    polled = json.loads(text)
+    assert code == 200 and polled[0]["controls"]["held_by_file"] is True
+    later, again = open_stream(port)
+    ids: list = []
+    (second,) = read_events(again, lambda ev: bool(ev), 5, ids)
+    assert second == ("areas", polled)  # the stream did not fall back to the read before the poll's
+    assert int(ids[0][1]) >= int(head["X-Areas-Revision"])
+    for c in (resp, again, conn, later):
+        c.close()
+
+
+def test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.5)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    started = time.time_ns() // 1000
+    polled = api_revision(port)
+    assert polled >= started  # the count starts at the wall clock in microseconds
+    (d / "hold").write_text("held by person from the app at now: r\n")
+    assert api_revision(port) > polled  # a read of rows that changed is a later read
+    polled = api_revision(port)
+    conn, resp = open_stream(port)
+    ids: list = []
+    read_events(resp, lambda ev: bool(ev), 5, ids)
+    streamed = int(ids[0][1])
+    assert ids[0][0] == "areas" and streamed >= polled  # the stream serves the read the poll last made
+    (d / "hold").unlink()
+    read_events(resp, lambda ev: {"areas", "ping"} <= {e for e, _ in ev}, 5, ids)
+    changed = [int(i) for e, i in ids if e == "areas"]
+    assert changed[-1] > streamed  # a changed row is a later read
+    assert all(i is None for e, i in ids if e != "areas")  # only an `areas` event is stamped
+    (d / "hold").write_text("held by person from the app at now: r\n")
+    assert api_revision(port) > changed[-1]  # and a poll of rows that changed after the stream is later
+    resp.close()
+    conn.close()
+
+
+def test_the_stream_sends_a_read_above_the_last_it_sent_though_its_rows_are_those_it_sent(
+    tmp_path, monkeypatch
+):
+    # the stream waits on a gate between its passes, so the polls come between two of them; a `ping` ends each
+    # pass, and with the poll interval long the stream's read is the last read, whichever request made it
+    gate = threading.Semaphore(0)
+    clock = types.SimpleNamespace(
+        monotonic=time.monotonic, time_ns=time.time_ns, sleep=lambda _s: gate.acquire(timeout=10)
+    )
+    monkeypatch.setattr(areas_cli, "time", clock)
+    monkeypatch.setattr(areas_cli, "_POLL_S", 3600.0)
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.0)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    conn, resp = open_stream(port)
+
+    def a_pass() -> list[tuple[str, object, str | None]]:
+        ids: list = []
+        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 5, ids)
+        return [(e, x, i) for (e, x), (_, i) in zip(got, ids, strict=True)]
+
+    try:
+        sent = a_pass()[0]
+        assert sent[0] == "areas" and sent[1][0]["controls"]["held_by_file"] is False
+        (d / "hold").write_text("held by person from the app at now: r\n")
+        code, text, _ = call(port, "GET", "/api/areas")  # a read that sees the change...
+        assert code == 200 and json.loads(text)[0]["controls"]["held_by_file"] is True
+        (d / "hold").unlink()
+        code, text, head = call(port, "GET", "/api/areas")  # ...and one that sees it undone
+        assert code == 200 and json.loads(text) == sent[1]  # the rows the stream sent, at a higher revision
+        assert int(head["X-Areas-Revision"]) > int(sent[2])
+        gate.release()
+        again = a_pass()
+        assert again[0] == ("areas", sent[1], head["X-Areas-Revision"])  # sent for its revision, not its rows
+        gate.release()
+        assert [e for e, _, _ in a_pass()] == ["ping"]  # a revision it has sent is not sent twice
+    finally:
+        resp.close()
+        conn.close()
+        gate.release(5)  # the stream's next writes find the client gone
+
+
+def test_a_read_whose_rows_are_unchanged_keeps_the_revision_and_the_stream_stays_quiet(tmp_path, monkeypatch):
+    # the same gated stream: the reads come between two of its passes, and a `ping` ends each pass
+    gate = threading.Semaphore(0)
+    clock = types.SimpleNamespace(
+        monotonic=time.monotonic, time_ns=time.time_ns, sleep=lambda _s: gate.acquire(timeout=10)
+    )
+    monkeypatch.setattr(areas_cli, "time", clock)
+    monkeypatch.setattr(areas_cli, "_POLL_S", 3600.0)
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.0)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    conn, resp = open_stream(port)
+
+    def a_pass() -> list[tuple[str, object, str | None]]:
+        ids: list = []
+        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 5, ids)
+        return [(e, x, i) for (e, x), (_, i) in zip(got, ids, strict=True)]
+
+    try:
+        sent = a_pass()[0]
+        assert sent[0] == "areas" and sent[1][0]["controls"]["held_by_file"] is False
+        for _ in range(2):  # two reads of rows that have not changed answer at the revision the stream sent
+            code, text, head = call(port, "GET", "/api/areas")
+            assert code == 200 and json.loads(text) == sent[1]
+            assert head["X-Areas-Revision"] == sent[2]
+        gate.release()
+        assert [e for e, _, _ in a_pass()] == ["ping"]  # so the stream has nothing to send
+        (d / "hold").write_text("held by person from the app at now: r\n")
+        code, text, head = call(port, "GET", "/api/areas")  # a read whose rows differ takes a later revision
+        assert code == 200 and json.loads(text)[0]["controls"]["held_by_file"] is True
+        assert int(head["X-Areas-Revision"]) > int(sent[2])
+        gate.release()
+        again = a_pass()
+        assert again[0] == ("areas", json.loads(text), head["X-Areas-Revision"])  # and the stream sends it
+        assert [e for e, _, _ in again] == ["areas", "ping"]
+    finally:
+        resp.close()
+        conn.close()
+        gate.release(5)  # the stream's next writes find the client gone
+
+
+def test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back(
+    tmp_path, monkeypatch
+):
+    now = [7_000_000_000_000_000]  # the wall clock in microseconds
+    clock = types.SimpleNamespace(monotonic=time.monotonic, sleep=time.sleep, time_ns=lambda: now[0] * 1000)
+    monkeypatch.setattr(areas_cli, "time", clock)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    hold = d / "hold"
+
+    def changed() -> int:  # a read of rows that changed: the hold file toggles one of them
+        if hold.exists():
+            hold.unlink()
+        else:
+            hold.write_text("held by person from the app at now: r\n")
+        return api_revision(port)
+
+    first = api_revision(port)
+    assert first == now[0]  # the first read is stamped with the clock
+    assert changed() == first + 1  # a clock that stood still still gives a later revision
+    now[0] -= 5_000_000
+    assert changed() == first + 2  # and one that stepped back
+    now[0] += 50_000_000
+    assert changed() == now[0]  # the clock ahead again leads
 
 
 def test_the_log_tail_reads_history_then_whole_new_lines_and_starts_over_on_a_shrunk_log(tmp_path):
@@ -1145,3 +1321,207 @@ def test_a_plist_whose_root_is_not_a_dict_or_whose_label_is_not_a_name_is_no_lab
     assert controls_info(str(d))["launchd_label"] is None
     (d / "job.plist").write_bytes(plistlib.dumps({"Label": "com.example.x"}))
     assert controls_info(str(d))["launchd_label"] == "com.example.x"
+
+
+# ---- the phone page's script, run by node against a stand-in for the browser ----
+
+APP_PAGE = Path(__file__).with_name("app_page_harness.js")
+
+
+def app_session(tmp_path: Path, scenario: str) -> dict:
+    """What one scripted session left behind: the page `/app` serves, its script run by node in
+    `app_page_harness.js` over a document, an EventSource and a fetch the scenario of that name drives."""
+    node = shutil.which("node")
+    assert node, "node is not on PATH: the phone page's script is run under node"
+    html = fetch(f"http://127.0.0.1:{serve_on(registry(tmp_path))}/app").decode()
+    done = subprocess.run(
+        [node, str(APP_PAGE), scenario], input=html, capture_output=True, encoding="utf-8", timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put(tmp_path):
+    seen = app_session(tmp_path, "log")
+    # the oldest five lines left the box, and a box read at its bottom follows the newest
+    assert seen["full"] == {"nodes": 400, "first": "line 5", "last": "line 404", "following": True}
+    # three more lines arrive with the reader 50 lines up: the oldest three go and the window keeps its line
+    assert seen["scrolled"] == {"nodes": 400, "before": "line 55", "after": "line 55"}
+    # the box built again from the buffer holds the same 400 lines
+    assert seen["rebuilt"] == {"nodes": 400, "first": "line 8", "last": "line 407"}
+
+
+def test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view(tmp_path):
+    seen = app_session(tmp_path, "logRefresh")
+    # a reader 30 lines up stays on line 30 when a control's answer reloads the page and the box is rebuilt
+    assert seen["before"] == "line 30" and seen["control"] == {"nodes": 100, "view": "line 30"}
+    # the same after a send's answer, from another place in the box
+    assert seen["send"] == {"view": "line 12"}
+    # three lines arrive while the page loads and a full buffer drops its oldest three: line 55 stays in view
+    assert seen["full"] == {"before": "line 55", "after": "line 55", "scrollTop": 47 * 20, "nodes": 400}
+
+
+def test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there(tmp_path):
+    seen = app_session(tmp_path, "logFollow")
+    # a reader at the bottom is at the bottom of the rebuilt box, the line that came while it loaded included
+    assert seen["refreshed"] == {"last": "line 100", "following": True}
+    # a page reached by navigation starts at the bottom, though the last one was left scrolled up
+    assert seen["renewed"] == {"view": "line 91", "following": True}
+
+
+def test_the_app_takes_an_event_or_a_live_poll_answer_only_above_the_revision_shown(tmp_path):
+    seen = app_session(tmp_path, "pollOrder")
+    assert seen["streamNewer"] == ["stream12"]  # the stream's rows, then an older poll answer: they stay
+    # an event does not abort the poll out, so an answer of a higher revision is taken
+    assert seen["pollAboveEvent"] == ["poll15"]
+    assert seen["pollTaken"] == ["poll20"]  # and one that met no event
+    # its revision is the one shown: an event under it, though above the stream's rows before it, is dropped
+    assert seen["olderStreamAfter"] == ["poll20"] and seen["newerStreamAfter"] == ["stream22"]
+
+
+def test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it(tmp_path):
+    seen = app_session(tmp_path, "pollThenEvent")
+    assert seen["polled"] == ["polled"]  # a poll answered after the stream opened, at revision 20
+    # an event read before that poll, arriving after it, is refused: the rows stay
+    assert seen["delayed"] == ["polled"]
+    assert seen["polledAfter"] == 0  # the rows refused were the connection's first: the polling ended
+    assert seen["later"] == ["later"]  # an event above it is shown
+
+
+def test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows(tmp_path):
+    seen = app_session(tmp_path, "restartEvent")
+    # no stream opened since the error, so the stream is down: a poll below the revision shown is shown now
+    assert seen["polled"] == ["restarted"]
+    assert seen["below"] == ["restarted"]  # an event under it is refused
+    # and one above it is shown, though below the old server's rows: the revision is set, not raised
+    assert seen["above"] == ["fresh"]
+
+
+def test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown(tmp_path):
+    seen = app_session(tmp_path, "pollRestart")
+    # a later poll is a later read: its rows are taken at the revision of the rows shown, and below it
+    assert seen["sameRevision"] == ["poll1"] and seen["lowerRevision"] == ["poll2"]
+
+
+def test_the_app_takes_a_poll_answer_above_the_stream_rows_shown_while_it_was_out(tmp_path):
+    # the first rows do not abort the poll out: its answer, at a higher revision, is a later read and is shown
+    # and becomes the revision shown, so an event under it is refused and one above it is shown
+    seen = app_session(tmp_path, "pollInFlight")
+    assert seen == {"aborted": False, "actors": ["late"], "refused": ["late"], "shown": ["after"]}
+
+
+def test_the_app_refuses_a_poll_answer_not_above_the_revision_shown_while_the_stream_is_live(tmp_path):
+    # the answer at 900 after rows at 995 is refused, and 995 stays the revision shown: 950 is refused too
+    seen = app_session(tmp_path, "pollRefused")
+    assert seen == {"actors": ["streamed"], "refused": ["streamed"], "shown": ["after"]}
+
+
+def test_the_app_takes_a_poll_answer_whatever_its_revision_while_the_stream_is_down(tmp_path):
+    seen = app_session(tmp_path, "pollDown")
+    # the stream fell again before its first rows, so the answer at 300 is shown and is the revision shown
+    assert seen["polled"] == ["polled"] and seen["below"] == ["polled"] and seen["above"] == ["fresh"]
+    # and with rows at 350 shown, a poll once the stream is down answers at 200, under it, and is taken
+    assert seen["lower"] == ["lower"]
+
+
+def test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision(tmp_path):
+    seen = app_session(tmp_path, "epoch")
+    # a restarted server may count below the revision shown: its rows, once the stream opens, are taken
+    assert seen["afterOpen"] == ["restarted"]
+    # within that connection the higher revision stays: an older event is dropped and a newer one taken
+    assert seen["sameConnection"] == ["restarted"] and seen["newer"] == ["newer"]
+    # a poll out when the stream opens again is aborted: its answer, though higher, shows nothing, and
+    # the first rows after the open are taken
+    assert seen["aborted"] is True and seen["acrossOpen"] == ["newer"]
+    assert seen["reopened"] == ["reopened"]
+    # and the answer of a poll sent since is taken whatever its revision, the stream being down again
+    assert seen["polled"] == ["polled"]
+
+
+def test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between(tmp_path):
+    assert app_session(tmp_path, "epochSame") == {"actors": ["first"]}
+
+
+def test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload(tmp_path):
+    seen = app_session(tmp_path, "sending")
+    assert (seen["sent"]["subject"], seen["sent"]["content"]) == ("hello", "first")  # what was typed before
+    assert (seen["subject"], seen["content"]) == ("hello", "first more")  # and what was typed after it
+    assert seen["toast"] == "sent"
+
+
+def test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty(tmp_path):
+    # a send's answer clears the draft it sent; a control's answer reloads the page and leaves the draft
+    # where it is; a navigation, even back to the same resident, is a new page with no draft
+    seen = app_session(tmp_path, "clearing")
+    assert seen == {"answered": "", "reloaded": "half a thought", "returned": ""}
+
+
+def test_the_app_composer_keeps_the_words_of_a_refused_send_and_clears_them_once_one_is_accepted(tmp_path):
+    seen = app_session(tmp_path, "refusedSend")
+    # the refusal is toasted, nothing else is sent, and the composer still holds what was typed
+    assert "send failed" in seen["refused"]["toast"] and seen["refused"]["sends"] == 1
+    assert (seen["refused"]["subject"], seen["refused"]["content"]) == ("hello", "words")
+    # the page's draft holds them too, so a rebuilt page restores them
+    assert seen["reloaded"] == {"subject": "hello", "content": "words"}
+    # the same words sent again and accepted are cleared
+    assert seen["accepted"] == {"subject": "", "content": "", "toast": "sent"}
+
+
+def test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll(tmp_path):
+    seen = app_session(tmp_path, "pollStale")
+    # rows the stream delivered at a newer revision while a slow poll was out are not replaced by its answer
+    assert seen["afterStale"] == {"actors": ["streamed"], "conn": "live"}
+    # a poll answer newer than the rows shown is applied, and the answer that was dropped freed the latch
+    assert seen["afterPoll"] == {"actors": ["polled"], "polls": 2}
+
+
+def test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next(tmp_path):
+    # a tick over one slow poll starts no second request; its failure is swallowed and the next tick polls;
+    # the poll that was answered is not aborted when its time limit would have passed
+    seen = app_session(tmp_path, "pollSerial")
+    assert seen == {"out": 1, "after": 2, "actors": ["later"], "aborted": False}
+
+
+def test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_again(tmp_path):
+    seen = app_session(tmp_path, "pollHung")
+    # nine seconds out, a poll is still waited for; after two intervals it is aborted and a later tick polls
+    assert seen["waiting"] == {"polls": 1, "abandoned": False}
+    assert seen["givenUp"] == {"polls": 2, "abandoned": True}
+    # the given-up poll settling after all replaces no rows and leaves the poll that went out in its place
+    # holding the latch, so the tick after it starts none; that poll's own answer is applied
+    assert seen["afterLate"] == [] and seen["whileOut"] == 2
+    assert seen["actors"] == ["next"]
+
+
+def test_the_app_shows_a_history_batch_in_the_box_of_the_page_already_open(tmp_path):
+    seen = app_session(tmp_path, "logHistory")
+    # the batch arrives after the page rendered its box, and shows there without another navigation
+    assert seen["shown"] == ["h1", "h2", "h3"]
+    # another resident's batch leaves this box alone, and a live line still follows the batch
+    assert seen["afterOther"] == ["h1", "h2", "h3", "live"]
+
+
+def test_the_app_replaces_a_residents_log_with_the_tail_a_reconnect_replays(tmp_path):
+    seen = app_session(tmp_path, "logReplay")
+    # the replayed tail replaces the buffer: each line stands once, on the page and in a box built again
+    assert seen == {"onPage": list("abcde"), "rebuilt": list("abcde")}
+
+
+def test_the_app_restarts_the_dropped_line_count_of_a_log_a_history_batch_replaces(tmp_path):
+    seen = app_session(tmp_path, "logReplayShed")
+    # the new buffer dropped five lines as the old one had: the place taken before the batch does not move
+    assert seen == {"nodes": 400, "view": "m52", "scrollTop": 50 * 20}
+
+
+def test_the_app_shows_the_streams_rows_again_above_a_poll_answer_that_showed_others(tmp_path):
+    seen = app_session(tmp_path, "pollThenStreamAgain")
+    # a poll's answer above the stream's rows is shown; the stream's rows again, above it, are shown too
+    assert seen == {"polled": ["b"], "streamed": ["a"]}
+
+
+def test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top(tmp_path):
+    seen = app_session(tmp_path, "logTop")
+    # the box holds 400 and a window at the top shows the oldest line that remains as the oldest go
+    assert seen["atTop"] == {"before": "line 5", "after": "line 8", "scrollTop": 0, "nodes": 400}
+    # a window two lines down loses the line it was on with the oldest, and rests at the top
+    assert seen["nearTop"] == {"before": "line 10", "after": "line 11", "scrollTop": 0, "nodes": 400}

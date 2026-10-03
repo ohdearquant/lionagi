@@ -28,7 +28,10 @@ returned nothing: `turn.failed` on a 429/5xx or a timeout (never on 401/403), or
 with no message (a reasoning-heavy turn that ran out of output). Each call has its own scratch
 directory, reused by its retries and removed once its child is joined; a call that fails for good
 lands on `calls` as a failed envelope carrying its attempts' usage and the last attempt's raw
-stream and stderr, since the scratch is gone.
+stream and stderr, since the scratch is gone: each text, the error's too, by its head and tail
+within `claude_code._DIAGNOSTIC_CHARS` characters, counting what it left out. The notes of any call
+(its events of note, each failed attempt's reason) are kept to the first `_NOTES`, each of them by
+its head and tail within the same cap, then one entry counting the rest.
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from pathlib import Path
 
 from lionagi.actor import Message, Reply
 
-from .claude_code import _transcript
+from .claude_code import _clipped, _transcript
 
 __all__ = (
     "TRANSIENT",
@@ -88,6 +91,7 @@ SCRATCH_AGENTS_MD = (  # beside the shared home's AGENTS.md, which says to read 
     "This process is a text harness. Reply only in the format the latest user message specifies; "
     "there are no guidance files to read.\n"
 )
+_NOTES = 20  # the most notes a call's envelope keeps
 
 
 class CodexError(RuntimeError):
@@ -201,8 +205,10 @@ class Codex:
         envelope = self._envelope(usage_total, notes, t0, attempt + 1)
         if error is not None:
             # the billed attempts' usage and the last attempt's raw stream ride on the failed envelope
-            # (ADR-0009/C5): the scratch that held the stream is gone
-            self.calls.append({**envelope, "error": error, **raw})
+            # (ADR-0009/C5): the scratch that held the stream is gone. Each text is kept by head and tail
+            self.calls.append(
+                {**envelope, "error": _clipped(error), **{k: _clipped(v) for k, v in raw.items()}}
+            )
             raise CodexError(error)
         self.calls.append(envelope)
         # the answering attempt's input count, cache read included, is the prompt it sent (ADR-0009/C2);
@@ -211,6 +217,9 @@ class Codex:
 
     def _envelope(self, usage_total: Counter, notes: list[str], t0: float, attempts: int) -> dict:
         cached = usage_total.get("cached_input_tokens", 0)
+        kept = [_clipped(n) for n in notes[:_NOTES]]
+        if len(notes) > _NOTES:
+            kept.append(f"[{len(notes) - _NOTES} more note(s) omitted]")
         return {
             "model": self.model,
             "effort": self.effort,
@@ -224,7 +233,7 @@ class Codex:
                 "cache_creation_input_tokens": usage_total.get("cache_write_input_tokens", 0),
                 "output_tokens": usage_total.get("output_tokens", 0),
             },
-            "notes": notes,
+            "notes": kept,
         }
 
     async def _attempt(self, prompt: bytes, scratch: Path) -> tuple[str | None, dict, str, list[str], dict]:

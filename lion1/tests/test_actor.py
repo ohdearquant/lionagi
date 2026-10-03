@@ -1,6 +1,8 @@
 import asyncio
 import re
 import time
+from decimal import Decimal
+from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -15,7 +17,6 @@ from lionagi import (
     Profile,
     Refused,
     Result,
-    Retry,
     RunRequest,
     Success,
 )
@@ -160,15 +161,18 @@ def test_accept_gate_refuses_then_lets_a_later_turn_through():
 
 
 def test_unreadable_turn_is_a_retry_not_an_end():
+    # a call written with a positional argument cannot be read: the turn is refused whole and retried
     actor = Actor("t3")
     run = asyncio.run(
         actor.run(
             Profile("p"),
-            RunRequest(inputs=("go",), emits=(Done,), max_rounds=1),
-            scripted("<lact a>not a call</lact>"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2),
+            scripted("<lact a>echo(1)</lact>", 'OUT{done: {summary: "read", files: []}}'),
         )
     )
-    assert isinstance(run.outcome, Retry) or run.outcome.__class__.__name__ == "Exhausted"
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "read"
+    sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
+    assert any("your last turn could not be read" in c for c in sys_entries)
 
 
 def test_repeated_refusals_end_the_run_as_refused():
@@ -198,6 +202,32 @@ def _echo_actor(name: str) -> Actor:
         return req.text
 
     return actor
+
+
+def test_a_program_the_reader_refuses_is_a_retry_that_runs_nothing_like_an_unreadable_call():
+    # two fenced blocks: a program profile's reader refuses the message whole (ADR-0002/C1, fourth row)
+    ran: list[str] = []
+    actor = Actor("t3p")
+
+    @actor.handler(Echo, effect="pure")
+    async def echo(req: Echo, ctx) -> str:
+        ran.append(req.text)
+        return req.text
+
+    two = '```\na = echo(text="one")\n```\n```\nb = echo(text="two")\n```'
+    done = '```\nOUT{done: {summary: "read", files: []}}\n```'
+    run = asyncio.run(
+        actor.run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2),
+            scripted(two, done),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "read"
+    assert ran == [] and not [e for e in run.record if e.kind is Kind.RESULT]
+    sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
+    told = "your last turn could not be read: 2 fenced blocks: a turn is one program in one block"
+    assert any(told in c for c in sys_entries)
 
 
 def test_a_reused_alias_is_refused_and_never_reads_as_still_running():
@@ -681,6 +711,43 @@ def test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_th
     unbounded = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), slow))
     header = next(e.content for e in unbounded.record if e.name.startswith("_sys")).splitlines()[0]
     assert " time=0s " in header and unbounded.outcome == Exhausted(1)
+
+
+@pytest.mark.parametrize(
+    "answered_at, answer, calls, outcome",
+    [
+        (59.0, True, 2, ("stopped", 3)),  # under the budget: the turn goes on to its call
+        (60.0, True, 1, ("exhausted", 1)),  # at it: spent, no call
+        (100.0, True, 1, ("exhausted", 1)),  # past it
+        (100.0, False, 1, ("stopped", 2)),  # a false answer is asked first and still stops the run
+    ],
+)
+def test_a_wait_that_outlasts_the_time_budget_admits_no_further_call(
+    monkeypatch, answered_at, answer, calls, outcome
+):
+    from lionagi import Stopped
+
+    now = [0.0]  # a stepped clock: the wait moves it, nothing sleeps
+    monkeypatch.setattr(actor_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    answers = iter([answer, False])
+    called: list[int] = []
+
+    async def wait(run) -> bool:
+        now[0] = answered_at  # the other side took this long to speak
+        return next(answers)
+
+    async def backend(messages: list[Message]) -> str:
+        called.append(1)
+        return "hello"  # a plain reply: the other side speaks next
+
+    request = RunRequest(inputs=("go",), max_rounds=5, time_budget=60, wait=wait)
+    run = asyncio.run(Actor("t-wait-clock").run(Profile("p"), request, backend))
+    kind, rounds = outcome
+    assert run.outcome == (Exhausted(rounds, "time") if kind == "exhausted" else Stopped(rounds))
+    assert len(called) == calls and run.round == calls
+    texts = [e for e in run.record if e.kind is Kind.TEXT]
+    notices = [e for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system round=")]
+    assert len(texts) == len(notices) == calls  # a turn the clock refused leaves no notification behind
 
 
 def test_an_out_dict_literal_may_point_at_values():
@@ -1976,23 +2043,31 @@ def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse():
     assert isinstance(run.outcome, Refused) and "validation error" in run.outcome.why
 
 
-def test_a_reported_cost_that_is_not_a_number_reads_as_spent():
+@pytest.mark.parametrize(
+    "cost", [float("nan"), Decimal("0.25"), "0.25", False], ids=["nan", "decimal", "str", "bool"]
+)
+def test_a_reported_cost_that_is_not_a_number_reads_as_spent(cost):
     from lionagi.actor import Reply as Said
 
-    turns = iter(['<lact a1>echo(text="x")</lact>', '<lact a2>echo(text="y")</lact>'])
+    def run_with(cost):
+        turns = iter(['<lact a1>echo(text="x")</lact>', '<lact a2>echo(text="y")</lact>'])
 
-    async def backend(messages: list[Message]) -> str:
-        return Said(next(turns), cost=float("nan"))  # a cost with no number in it is not room
+        async def backend(messages: list[Message]) -> str:
+            return Said(next(turns), cost=cost)
 
-    run = asyncio.run(
-        _echo_actor("b-cost-nan").run(
-            Profile("p"), RunRequest(inputs=("go",), max_rounds=5, cost_budget=1.0), backend
+        return asyncio.run(
+            _echo_actor("b-cost-nan").run(
+                Profile("p"), RunRequest(inputs=("go",), max_rounds=2, cost_budget=1.0), backend
+            )
         )
-    )
+
+    run = run_with(cost)  # a cost with no number in it is not room, whatever it would coerce to
     assert run.outcome == Exhausted(1, "cost")
     assert run.resolve("a1") == Result(
         "echo", False, error="refused: the cost_budget of 1 is spent", reason="refused"
     )
+    unreported = run_with(None)  # no cost said is not a malformed one: it spends nothing
+    assert unreported.outcome == Exhausted(2) and unreported.resolve("a2") == "y"
 
 
 def test_a_run_request_takes_its_fields_by_name_only():

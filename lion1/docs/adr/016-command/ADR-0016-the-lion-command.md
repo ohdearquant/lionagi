@@ -195,20 +195,25 @@ session restarts when present.
 ### D5: The readers `stats`, `resident`, `wakes` and the chat's `spent` ^d5
 
 Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `resident` takes a
-resident's row from its own `chores.toml`, notes and lock, drops a row of another day, and names
-what it could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log
-with the pattern the page shares. `spent` sums each call's `total_cost_usd`, its `usage.cost` only
-when the total is null, and counts the calls with neither or with `cost_complete` false; the chat
-log keeps each envelope's cost as it came.
+resident's row from its `chores.toml`, notes and lock, drops another day's row, and names what it
+could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log with
+the page's pattern. `spent` sums each call's `total_cost_usd`, its `usage.cost` only when the total
+is null, and counts the calls with neither or with `cost_complete` false. Chat-log rows state
+`cost_complete`; a reader of them (`load_log(..., usage=rows)`, `spent(rows)`) counts an older one
+without it.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
   as the lock, the serve log's wake lines,
   `test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_every_view`;
   `tests/test_chat.py`: the cost line over every attempt,
   `test_the_cost_line_marks_a_sum_that_misses_calls_of_unknown_or_incomplete_cost`,
-  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`; `tests/test_agent.py`:
-  `test_once_refuses_served_identity`, `--stats` under a held lock;
-  `test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text`, the text it prints.
+  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`;
+  `apps/cli/tests/test_chat_command.py`:
+  `test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses`,
+  `test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not`,
+  `test_a_row_from_before_cost_complete_counts_among_the_calls_the_sum_may_miss`;
+  `tests/test_agent.py`: `test_once_refuses_served_identity`, `--stats` under a held lock;
+  `test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text`.
 
 ## Alternatives
 

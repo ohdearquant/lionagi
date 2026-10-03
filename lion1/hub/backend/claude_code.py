@@ -15,7 +15,8 @@ one-turn call then dies on (measured: Sonnet invented a `grep` tool it was never
 
 A call that fails lands on `calls` as a failed envelope before the error is raised (ADR-0009/C5):
 the CLI's own result envelope when it printed one (a refused turn carries its cost), else one whose
-cost is unknown. The error carries the CLI's whole detail.
+cost is unknown. The error carries the CLI's whole detail; the copy on `calls` keeps its head and
+tail within `_DIAGNOSTIC_CHARS` characters, counting what it left out.
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ class ClaudeCode:
         try:
             text, envelope = await _exec(self.cli, args, prompt, model=self.model, timeout=self.timeout)
         except ClaudeCodeError as e:
-            self.calls.append({**(e.envelope or {"total_cost_usd": None}), "error": str(e)})
+            self.calls.append({**(e.envelope or {"total_cost_usd": None}), "error": _clipped(str(e))})
             raise
         self.calls.append(envelope)
         return Reply(text, prompt_tokens=_prompt_tokens(envelope))
@@ -153,7 +154,8 @@ class ClaudeCodeSession:
     # the gate over an acting session (ADR-0009/C6): with `actor`, every tool call the CLI makes asks
     # the CLI's pre-tool hook, which asks that actor's privilege check (`requires`: a tool's privileges
     # by tool name) and before hooks for the run named on the messages; a refusal stops the tool, and
-    # the call lands on the run's record as a RESULT under the CLI's tool-use id
+    # the call lands on the run's record as a RESULT under the CLI's tool-use id. An admission allows
+    # only a tool `tools` or `allowed` names; any other admitted call the CLI's own rules decide
     actor: Actor | None = None
     requires: dict[str, tuple[str, ...]] = field(default_factory=dict)
     calls: list[dict] = field(default_factory=list)
@@ -348,7 +350,11 @@ class ClaudeCodeSession:
                             raise asyncio.CancelledError
 
                 stack.push_async_callback(settle)
-                hook = {"type": "command", "command": shlex.join([sys.executable, "-I", "-c", _HOOK, sock])}
+                listed = json.dumps(list(self.tools + self.allowed))  # what --allowedTools names
+                hook = {
+                    "type": "command",
+                    "command": shlex.join([sys.executable, "-I", "-c", _HOOK, listed, sock]),
+                }
                 hook["timeout"] = math.ceil(self.timeout)  # the call's deadline, never the hook's, ends it
                 settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
                 args += ["--settings", json.dumps(settings)]
@@ -361,13 +367,13 @@ class ClaudeCodeSession:
                 # a failed call lands its envelope before the error goes on (ADR-0009/C5); what the CLI
                 # printed accumulates over the fork chain like an answer's, so it is taken the same way
                 if e.envelope is None:
-                    self.calls.append({"total_cost_usd": None, "error": str(e)})
+                    self.calls.append({"total_cost_usd": None, "error": _clipped(str(e))})
                     raise
                 failed, envelope = e, e.envelope
         # over a resumed session the CLI's cost and api time accumulate along the forks, its usage does
         # not: the share is read against the point resumed. A failed call's fork is never gone on from
         call = {**_delta(envelope, prev), "prompt_chars": (step.base.chars if step.base else 0) + len(prompt)}
-        self.calls.append(call if failed is None else {**call, "error": str(failed)})
+        self.calls.append(call if failed is None else {**call, "error": _clipped(str(failed))})
         now = _clock()
         # the provider's hour runs from a request's read of the cache. The CLI times its turn from after
         # it started (which can wait on MCP servers) and prints when in that turn its first request went
@@ -555,7 +561,7 @@ class ClaudeCodeAgentic:
                 self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd
             )
         except ClaudeCodeError as e:
-            self.calls.append({**(e.envelope or {"total_cost_usd": None}), "error": str(e)})
+            self.calls.append({**(e.envelope or {"total_cost_usd": None}), "error": _clipped(str(e))})
             raise
         self.calls.append(envelope)
         return text
@@ -703,6 +709,17 @@ async def _exec(
     return text, data
 
 
+def _clipped(text: str) -> str:
+    """A failed call's diagnostic text as `calls` keeps it: whole within `_DIAGNOSTIC_CHARS`, else
+    its head and its tail (where a CLI's reason usually is) around a line counting the characters
+    left out, the whole no longer than the cap. The error raised keeps all of it."""
+    if len(text) <= _DIAGNOSTIC_CHARS:
+        return text
+    room = _DIAGNOSTIC_CHARS - len(f"\n[{len(text)} characters omitted]\n")  # the mark at its longest
+    head = room // 2
+    return text[:head] + f"\n[{len(text) - room} characters omitted]\n" + text[len(text) - room + head :]
+
+
 # a restart's price, a character written to the hour-long cache in reads of one, by model: a write is 2
 # times the model's input price and a read 0.1 times, except 0.05 on Opus 5.5 and 0.025 on Fable 5.1 and
 # Mythos 5.1 (Anthropic's published pricing table)
@@ -718,6 +735,7 @@ _ALIASES = {
 }
 _CONTEXT = frozenset({"context.hide", "context.show", "context.summarize"})
 _CACHE_TTL_S = 3600.0  # the provider's cache life the CLI writes for (`ephemeral_1h`), from its last read
+_DIAGNOSTIC_CHARS = 4096  # the most characters of a call's error, stream, stderr or note `calls` keeps
 _clock = time.monotonic
 _REPLY = "\x00reply"  # a point's entry for the model's reply: no record entry is named so
 
@@ -775,14 +793,18 @@ def _prompt(messages: list[Message]) -> str:
 
 # the CLI's pre-tool hook, run by this interpreter isolated: the tool call on stdin goes to the gate's
 # socket and the verdict comes back. Exit 2 stops the tool with the reason; the CLI runs a tool whose
-# hook failed any other way, so a failure to ask exits 2 too
+# hook failed any other way, so a failure to ask exits 2 too. An admitted call goes back with its
+# input, and with `allow` only when the CLI's own allowed list (argv 1) names its tool: the CLI runs a
+# tool its hook allowed whatever that list says, so for any other tool its own rules decide
 _READ_S = 5.0  # how long a hook has to finish sending its request, once it has connected
 _JOIN_S = 5.0  # how long the call's end waits for its cancelled asks to end before abandoning them
 _HOOK = """import json, socket, sys
 try:
     s = socket.socket(socket.AF_UNIX)
-    s.connect(sys.argv[1])
-    s.sendall(sys.stdin.buffer.read())
+    s.connect(sys.argv[2])
+    call = sys.stdin.buffer.read()
+    listed = json.loads(call)["tool_name"] in json.loads(sys.argv[1])
+    s.sendall(call)
     s.shutdown(socket.SHUT_WR)
     answer = json.loads(b"".join(iter(lambda: s.recv(65536), b"")))
 except Exception as e:
@@ -790,7 +812,9 @@ except Exception as e:
 if "refuse" in answer:
     sys.stderr.write(answer["refuse"])
     sys.exit(2)
-out = {"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": answer["allow"]}
+out = {"hookEventName": "PreToolUse", "updatedInput": answer["allow"]}
+if listed:
+    out["permissionDecision"] = "allow"
 print(json.dumps({"hookSpecificOutput": out}))
 """
 
@@ -865,9 +889,11 @@ def _repeat(la: Lact) -> Result:
 
 
 def _land(live: Run, la: Lact, verdict: Result) -> Result:
-    """The tool call on the run's record: started when admitted, else not executed. A twin that landed
-    while this one was at the gate holds the id: this one lands as a repeat, under the id suffixed by
-    the record's next seq, so an id is admitted no more than once. What landed is returned."""
+    """The tool call on the run's record: admitted, else not executed. Admitted is the gate's verdict,
+    written before the CLI acts on it, never that the tool ran (a log written before says started). A
+    twin that landed while this one was at the gate holds the id: this one lands as a repeat, under the
+    id suffixed by the record's next seq, so an id is admitted no more than once. What landed is
+    returned."""
     alias = la.alias
     if live.record.has_alias(alias):
         if verdict.ok:
@@ -875,7 +901,7 @@ def _land(live: Run, la: Lact, verdict: Result) -> Result:
         alias = f"{alias}_{live.record.seq}"
         while live.record.get(alias) is not None:  # the CLI named one like the suffix
             alias += "_"
-    execution = "started" if verdict.ok else "not executed"
+    execution = "admitted" if verdict.ok else "not executed"
     live.record.append(Kind.RESULT, verdict, alias=alias, round=live.round, execution=execution)
     return verdict
 

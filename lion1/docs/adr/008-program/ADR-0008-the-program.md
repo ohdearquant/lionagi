@@ -269,8 +269,11 @@ computation binds its failure.
   `test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes`,
   `test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_reader_too`,
   `test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_never_waits_on_itself`,
-  `test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_as_it_would_have`.
-  Owed: a last turn's values on the closure (ADR-0006).
+  `test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_as_it_would_have`. A
+  reader holds only the writes of the notes it reads, through the values it reads too:
+  `test_a_reader_holds_only_the_writes_of_the_notes_it_reads_however_many_the_program_makes`,
+  `test_a_value_holds_only_the_writes_of_the_notes_it_reads_whatever_its_first_reader_holds`. Owed:
+  a last turn's values on the closure (ADR-0006).
 
 ## Alternatives
 

@@ -23,6 +23,7 @@ classifiers = [
 
 [project.optional-dependencies]
 daytona = ["daytona>=0.100"]  # hub.tools.daytona: a box on Daytona
+runta = ["runta-sdk>=0.2.1"]  # hub.tools.runta: a box on Runta
 
 [dependency-groups]
 dev = [

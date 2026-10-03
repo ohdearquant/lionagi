@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from lion_cli.agent import build as cli_build
 
-from hub.agent import Agent, AgentError, Budget, Posture
+from hub.agent import Agent, AgentError, Budget, Posture, Wake, WakeRule
 from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
@@ -1651,6 +1651,300 @@ def test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_c
     assert rows[-1]["by"] == ANSWER_ID and desk._open_clarifies() == {} and pending(agent) == {}
 
 
+@pytest.mark.parametrize("then", ["batch", "drop"])
+def test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice(
+    tmp_path, then
+):
+    """The gate stages the answer before `[wake]` sorts the mail: a `drop` does not keep it from the
+    desk and a `batch` does not delay its listing. The batched mail still runs once its window opens;
+    that run finds the answer's row and the clarify resolved, and nothing is answered, sent, resolved
+    or recorded a second time."""
+    now = [time.time()]
+    out = full(findings=(), evidence="df: 301 GiB free", population="volumes", predicate="under a floor")
+    disk = Probe("disk", out)
+    answer = f'<lact a1>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+    again = (  # the released mail's run names the answer again, by the commands that take it
+        f'<lact a2>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+        f'<lact l2>leave(msg="{ANSWER_ID}", why="no-instrument")</lact>'
+    )
+    desk, khive, reader, agent = clarified(tmp_path, [SWEEP, answer, DONE, SWEEP, again, DONE], disk=disk)
+    agent.wake_rules = Wake(batch_after=600, batch_size=5, rules=(WakeRule(then, senders=(ASKER,)),))
+    agent.clock = lambda: now[0]
+    agent.budget = Budget()  # a hop limit of 12: a second reply on the thread is not refused by the cap
+    khive.mail.append(mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+
+    def held() -> list[str]:  # the mail `batch` keeps under `deferred` for its window
+        return [m["id"] for m in (stored(agent, "deferred") or {}).get("mail", [])]
+
+    assert asyncio.run(agent.wake()) is None  # the rule holds the mail: no run
+    dropped = stored(agent, "cursor").get("dropped", [])
+    if then == "batch":
+        assert held() == [ANSWER] and dropped == []
+    else:
+        assert held() == [] and dropped == [{"id": ANSWER, "from": ASKER, "rule": "drop"}]
+    assert list(pending(agent)) == [ANSWER_ID]  # staged at the gate all the same
+    run = asyncio.run(agent.wake())  # the watch wakes the desk for it; a watch notice releases no mail
+    assert run is not None and stored(agent, "cursor")["mail"] == []
+    assert held() == ([ANSWER] if then == "batch" else [])  # listed while the mail is still held
+    assert results(run)[0].endswith(
+        f"[msg {ANSWER_ID} from {ASKER} subject 'disk or pr?']\n"
+        "is it the disk under the roots or PR 12 that is red?\n"
+        "[the answer to the desk's clarify, 'the disk under the roots' or 'PR 12']\n"
+        "the disk under the roots"
+    )
+    handled = [("m-c1", "clarified"), (ANSWER_ID, "answered"), ("m-c1", "resolved")]
+    assert [(r["msg"], r["class"]) for r in desk.rows()] == handled and len(khive.sent) == 2
+    now[0] += 600  # the window opens on age
+    run = asyncio.run(agent.wake())
+    if then == "batch":  # the held mail runs now, the same envelope, and finds it handled
+        assert run is not None and stored(agent, "cursor")["mail"] == [ANSWER] and held() == []
+        first = next(e for e in run.record if e.kind is Kind.INPUT).content
+        assert f"[mail {ANSWER} from {ASKER} thread t-c1 subject 's' waited since" in first
+        said = results(run)
+        assert any(r.startswith(f"sweep: nothing new for {OWNER}") for r in said)
+        refused = f"desk: '{ANSWER_ID}' is not a message the sweep listed; known: []"
+        assert sum(refused in r for r in said) == 2
+    else:  # dropped mail never runs
+        assert run is None
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == handled and rows[-1]["by"] == ANSWER_ID
+    assert len(khive.sent) == 2 and len(disk.args) == 1  # one reply, one instrument run
+    assert desk._open_clarifies() == {} and pending(agent) == {}
+
+
+@pytest.mark.parametrize("then", ["batch", "drop"])
+def test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and_answers_it_once(
+    tmp_path, then
+):
+    """The chair's in-run wait admits before `[wake]` sorts, as `wake` does: an answer that arrives while
+    the run waits is staged by the poll that takes it, whether its rule holds or drops the mail, and the
+    burst the watch opens in the same run lists and answers it. The batched mail joins that run once its
+    window opens and answers, sends, resolves and records nothing a second time."""
+    now = [time.time()]
+    out = full(findings=(), evidence="df: 301 GiB free", population="volumes", predicate="under a floor")
+    disk = Probe("disk", out)
+    answer = f'<lact a1>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+    again = (  # the released mail's burst names the answer again, by the commands that take it
+        f'<lact a2>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+        f'<lact l2>leave(msg="{ANSWER_ID}", why="no-instrument")</lact>'
+    )
+    # aliases are unique for the whole run, bursts included; a turn of plain text ends a burst
+    turns = ["<lact s2>sweep()</lact>", "nothing pending", "<lact s3>sweep()</lact>", answer, "answered"]
+    turns += ["<lact s4>sweep()</lact>", again, "handled already"]
+    desk, khive, reader, agent = clarified(tmp_path, turns, disk=disk)
+    agent.continuous, agent.poll_ms = True, 20
+    agent.wake_rules = Wake(batch_after=600, batch_size=5, rules=(WakeRule(then, senders=(ASKER,)),))
+    agent.clock = lambda: now[0]
+    agent.budget = Budget()  # a hop limit of 12: a second reply on the thread is not refused by the cap
+    khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))  # opens the run; no rule matches it
+    lines: list[str] = []
+    seen: dict[str, dict] = {}
+    step = {"polls": 0, "after": 0, "mailed": False}
+
+    def held() -> list[str]:  # the mail `batch` keeps under `deferred` for its window
+        return [m["id"] for m in (stored(agent, "deferred") or {}).get("mail", [])]
+
+    def look() -> dict:
+        cursor = stored(agent, "cursor") or {}
+        return {
+            "pending": list(pending(agent)),
+            "held": held(),
+            "dropped": cursor.get("dropped"),
+            "mail": cursor.get("mail"),
+            "rows": [(r["msg"], r["class"]) for r in desk.rows()],
+            "sent": len(khive.sent),
+        }
+
+    def bursts() -> int:
+        return sum(1 for line in lines if re.match(r"wake \d+: Quiet after", line))
+
+    def until() -> bool:  # asked before each poll of the wait
+        step["polls"] += 1
+        n = bursts()
+        if n == 1 and not step["mailed"]:  # the first burst went quiet: the answer arrives in the wait
+            khive.mail.append(mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+            step["mailed"] = True
+        elif step["mailed"] and not khive.mail and "taken" not in seen:
+            seen["taken"] = look()  # the poll that took the answer has admitted and sorted it
+        elif n == 2 and "listed" not in seen:
+            seen["listed"] = look()
+            now[0] += 600  # the window opens on age
+        elif "listed" in seen:
+            step["after"] += 1
+        return n >= 3 or step["after"] >= 10 or step["polls"] >= 400  # the bound: a lost burst never hangs
+
+    asyncio.run(agent.serve(until=until, log=lines.append))
+    taken, listed = seen["taken"], seen.get("listed")
+    assert taken["pending"] == [ANSWER_ID]  # staged at the gate all the same
+    if then == "batch":
+        assert taken["held"] == [ANSWER] and taken["dropped"] == []
+    else:
+        assert taken["held"] == [] and taken["dropped"] == [{"id": ANSWER, "from": ASKER, "rule": "drop"}]
+    assert taken["rows"] == [("m-c1", "clarified")] and taken["sent"] == 1
+    handled = [("m-c1", "clarified"), (ANSWER_ID, "answered"), ("m-c1", "resolved")]
+    # the watch's burst, in the same run, listed and answered it while the mail was still held
+    assert listed is not None and listed["rows"] == handled and listed["sent"] == 2
+    assert listed["held"] == ([ANSWER] if then == "batch" else []) and listed["mail"] == []
+    assert listed["pending"] == []
+    assert len(agent.runs) == 2  # the clarify's wake, then one run for every burst of the chair
+    run = agent.runs[-1]
+    said = results(run)
+    assert said[0].startswith(f"sweep: nothing new for {OWNER}")
+    assert said[1].endswith(
+        f"[msg {ANSWER_ID} from {ASKER} subject 'disk or pr?']\n"
+        "is it the disk under the roots or PR 12 that is red?\n"
+        "[the answer to the desk's clarify, 'the disk under the roots' or 'PR 12']\n"
+        "the disk under the roots"
+    )
+    assert said[2].startswith(f"{ANSWER_ID}: answered {ASKER} on thread t-c1 with disk")
+    inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
+    if then == "batch":  # the held mail joins the same run when its window opens, and finds it handled
+        assert bursts() == 3 and len(inputs) == 3 and stored(agent, "cursor")["mail"] == [ANSWER]
+        assert f"[mail {ANSWER} from {ASKER} thread t-c1 subject 's' waited since" in inputs[2]
+        assert said[3].startswith(f"sweep: nothing new for {OWNER}") and held() == []
+        refused = f"desk: '{ANSWER_ID}' is not a message the sweep listed; known: []"
+        assert len(said) == 6 and sum(refused in r for r in said[4:]) == 2
+    else:  # dropped mail never runs, though a window would be open by now
+        assert bursts() == 2 and len(inputs) == 2 and len(said) == 3 and step["after"] >= 10
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == handled and rows[-1]["by"] == ANSWER_ID
+    assert len(khive.sent) == 2 and len(disk.args) == 1  # one reply, one instrument run
+    assert desk._open_clarifies() == {} and pending(agent) == {}
+
+
+@pytest.mark.parametrize(
+    "sender, mid, to_desk",
+    [(ASKER, "m-c2", False), ("lambda:b", "m-c3", False), (ASKER, ANSWER_ID, True)],
+    ids=["to-the-chair", "another-sender-on-the-thread", "to-the-desk"],
+)
+def test_a_clarify_whose_answer_is_pending_at_the_cap_is_resolved_by_it_and_never_left_unanswered(
+    tmp_path, sender, mid, to_desk
+):
+    """An answer received and not yet handled is not an unanswered clarify: the sweep past the cap lists
+    it and leaves nothing, and handling it resolves the clarify. The thread is the association, as in
+    the resolution."""
+    leave = f'<lact l1>leave(msg="{mid}", why="no-instrument")</lact>'
+    desk, khive, reader, agent = clarified(tmp_path, [SWEEP, leave, DONE], admit_replies=to_desk)
+    if to_desk:  # the gate admits it into the intake
+        khive.mail.append(mail(sender, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+    else:
+        reader.rows.append(inbox_row(sender, "Re: disk or pr?", "the disk", mid, "t-c1"))
+        khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
+    desk.clarify_hours = -1  # the cap is already behind us
+    run = asyncio.run(agent.wake())
+    said = results(run)[0]
+    assert f"[msg {mid} from {sender}" in said and "unanswered" not in said
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == [
+        ("m-c1", "clarified"),
+        (mid, "left"),
+        ("m-c1", "resolved"),
+    ]
+    assert rows[-1]["by"] == mid and desk._open_clarifies() == {} and pending(agent) == {}
+
+
+def test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_cap(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    reader.rows.append(inbox_row(ASKER, "Re: disk or pr?", "the disk", "m-c2", "t-other"))
+    desk.clarify_hours = -1
+    said = asyncio.run(desk.sweep(sweep_run()))
+    assert "1 clarify unanswered past -1h, left: ['m-c1']" in said and f"[msg m-c2 from {ASKER}" in said
+    rows = desk.rows()
+    assert [(r["msg"], r["class"], r.get("why")) for r in rows[1:]] == [
+        ("m-c1", "left", "clarify unanswered")
+    ]
+    assert list(pending(agent)) == ["m-c2"] and desk._open_clarifies() == {}
+
+
+def fyi(i: int) -> dict:
+    """A notice on a thread of its own, stamped `i` seconds past ten."""
+    return inbox_row(
+        "lambda:b", f"n{i}", "fyi", f"m-n{i:02d}", f"t-n{i:02d}", at=f"2026-09-22T10:00:{i:02d}Z"
+    )
+
+
+def test_a_sweep_whose_read_paged_past_a_clarifys_answer_leaves_no_clarify(tmp_path):
+    """Offsets index the unread set, which the chair changes between pages: the chair reads the newest
+    row after the first page, the second page starts one row late, and the answer, the oldest row
+    stamped, is never read. That sweep leaves no clarify past the cap; the next lists the answer, and
+    leaving it resolves the clarify."""
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    agent.state.put("desk_watch", LIVE, run="-", seq=0)
+    newer = [fyi(i) for i in range(1, 21)]
+    answer = inbox_row(ASKER, "Re: disk or pr?", "the disk", "m-c2", "t-c1", at="2026-09-22T10:00:00Z")
+    reader.rows += [*newer, answer]
+    read = reader.exec
+
+    async def chair_reads_between_pages(ops: str):
+        page = await read(ops)
+        newer[-1].setdefault("status", "read")
+        return page
+
+    reader.exec = chair_reads_between_pages
+    desk.clarify_hours = -1  # the cap is already behind us
+    said = asyncio.run(desk.sweep(sweep_run("r1")))
+    assert "m-c2" not in pending(agent) and "unanswered" not in said
+    assert list(desk._open_clarifies()) == ["m-c1"]
+    run = sweep_run("r2")
+    said = asyncio.run(desk.sweep(run))
+    assert f"[msg m-c2 from {ASKER}" in said and "unanswered" not in said
+    asyncio.run(desk.leave(Leave(msg="m-c2", why="no-instrument"), run))
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == [
+        ("m-c1", "clarified"),
+        ("m-c2", "left"),
+        ("m-c1", "resolved"),
+    ]
+    assert rows[-1]["by"] == "m-c2" and desk._open_clarifies() == {}
+
+
+def test_a_clarify_past_the_cap_is_left_by_the_first_sweep_whose_read_fits_one_page(tmp_path):
+    """Twenty notices and the clarified message, unread, are two pages: that sweep leaves nothing. The
+    chair reads one, the next read fits a page, and with nothing pending on its thread the clarify is
+    left as unanswered."""
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    agent.state.put("desk_watch", LIVE, run="-", seq=0)
+    newer = [fyi(i) for i in range(1, 21)]
+    reader.rows += newer
+    desk.clarify_hours = -1
+    said = asyncio.run(desk.sweep(sweep_run("r1")))
+    assert "unanswered" not in said and list(desk._open_clarifies()) == ["m-c1"]
+    newer[-1]["status"] = "read"
+    said = asyncio.run(desk.sweep(sweep_run("r2")))
+    assert "1 clarify unanswered past -1h, left: ['m-c1']" in said and desk._open_clarifies() == {}
+
+
+def test_a_clarify_whose_cap_passes_during_the_sweeps_own_work_waits_for_the_next_read(tmp_path, monkeypatch):
+    """The box is read half an hour before the cap, and the sweep's work after the read runs past it:
+    an answer sent in between is one the read was too early for, not one that never came, so the
+    clarify stays open. The next sweep reads after the cap, finds no answer, and leaves it."""
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    agent.state.put("desk_watch", LIVE, run="-", seq=0)
+    clock = [time.time() + 1800]
+
+    class Ticking:  # the desk's `time`, its `time()` ours
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def time(self):
+            return clock[0]
+
+    monkeypatch.setattr(desk_module, "time", Ticking())
+    read = reader.exec
+
+    async def the_cap_passes_after_the_read(ops: str):
+        page = await read(ops)
+        clock[0] += 3600
+        return page
+
+    reader.exec = the_cap_passes_after_the_read
+    desk.clarify_hours = 1
+    said = asyncio.run(desk.sweep(sweep_run("r1")))
+    assert "unanswered" not in said and list(desk._open_clarifies()) == ["m-c1"]
+    said = asyncio.run(desk.sweep(sweep_run("r2")))  # read at +2.5h: the cap had passed, no answer
+    assert "1 clarify unanswered past 1h, left: ['m-c1']" in said and desk._open_clarifies() == {}
+
+
 @pytest.mark.parametrize(
     "sender, thread, close, admit_replies",
     [
@@ -1702,6 +1996,18 @@ def test_the_gate_reads_the_ledger_once_per_message(tmp_path):
     reads.clear()
     assert desk.admit(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1")) is False
     assert reads == ["read"]
+
+
+def test_a_wake_asks_the_desks_gate_once_per_message(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE])
+    asked: list[str] = []
+    admit = desk.admit
+    desk.admit = lambda m: asked.append(m["id"]) or admit(m)
+    khive.mail.append(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1"))
+    khive.mail.append(mail("lambda:c", "nor this", mid="c3d4e5f6", thread="t-c1"))
+    assert asyncio.run(agent.wake()) is None
+    assert asked == ["b2c3d4e5", "c3d4e5f6"]
+    assert [d["id"] for d in stored(agent, "cursor")["dropped"]] == ["b2c3d4e5", "c3d4e5f6"]
 
 
 def test_a_ledger_the_gate_cannot_read_leaves_the_mail_to_the_agents_gate_and_the_error_on_the_wake(tmp_path):

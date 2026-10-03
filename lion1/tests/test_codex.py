@@ -242,6 +242,142 @@ def test_failed_envelope_is_preserved(tmp_path: Path, monkeypatch):
     assert "403 Forbidden" in call["error"] and call["total_cost_usd"] is None
 
 
+def test_a_failed_calls_stream_stderr_and_error_on_calls_keep_their_head_and_tail_within_the_cap(
+    tmp_path: Path,
+):
+    """A child that prints a megabyte on each stream, forty error items and no message: the error
+    raised is whole, the envelope keeps the head and tail of the error, the raw stream and stderr
+    around a mark counting the characters left out, and the attempt's usage whole."""
+    from hub.backend import claude_code
+
+    usage = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 120, "output_tokens": 9}})
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        f"print({usage!r})\n"
+        "for n in range(40):\n"
+        '    item = {"type": "error", "message": f"note {n} " + "n" * 400}\n'
+        '    print(json.dumps({"type": "item.completed", "item": item}))\n'
+        'sys.stdout.write("x" * 1_000_000 + " TAIL-OUT")\n'
+        'sys.stderr.write("HEAD-ERR " + "y" * 1_000_000 + " TAIL-ERR")\n'
+    )
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = Codex(cli=str(cli), retries=0)
+    with pytest.raises(CodexError, match="^codex no message") as e:
+        asyncio.run(backend([Message("user", "go")]))
+    call = backend.calls[-1]
+    whole = {
+        "error": str(e.value),
+        "stream": usage
+        + "\n"
+        + "".join(
+            json.dumps(
+                {"type": "item.completed", "item": {"type": "error", "message": f"note {n} " + "n" * 400}}
+            )
+            + "\n"
+            for n in range(40)
+        )
+        + "x" * 1_000_000
+        + " TAIL-OUT",
+        "stderr": "HEAD-ERR " + "y" * 1_000_000 + " TAIL-ERR",
+    }
+    assert len(whole["error"]) > 10_000  # forty notes of 300 characters each
+    for key, text in whole.items():
+        kept = call[key]
+        m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+        assert m is not None, (key, kept[:200])
+        head, tail = kept[: m.start()], kept[m.end() :]
+        assert text.startswith(head) and text.endswith(tail) and head and tail
+        assert len(head) + int(m[1]) + len(tail) == len(text)
+        assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+    assert call["usage"]["input_tokens"] == 120 and call["usage"]["output_tokens"] == 9
+    assert call["total_cost_usd"] is None and call["attempts"] == 1
+    # the notes: the first of them, then one mark counting the forty items' and the failure's own
+    # note that were left out
+    cap = codex_mod._NOTES
+    assert call["notes"][:-1] == [(f"note {n} " + "n" * 400)[:300] for n in range(cap)]
+    assert call["notes"][-1] == f"[{41 - cap} more note(s) omitted]"
+
+
+def _noisy_cli(tmp_path: Path, name: str, errors: int, answer: bool) -> str:
+    """A fake `codex` that prints `errors` error items, then an answer or nothing."""
+    script = tmp_path / f"{name}.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        f"for n in range({errors}):\n"
+        '    item = {"type": "error", "message": f"note {n}"}\n'
+        '    print(json.dumps({"type": "item.completed", "item": item}))\n'
+        + (
+            'print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}))\n'
+            if answer
+            else ""
+        )
+    )
+    cli = tmp_path / name
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    return str(cli)
+
+
+def test_a_calls_notes_are_kept_to_the_cap_with_one_mark_counting_the_rest(tmp_path: Path):
+    """A failed call's envelope keeps the first notes and, past the cap, one mark counting the others;
+    the error raised still carries every note."""
+    kept = codex_mod._NOTES
+    # a failed call's own note joins the item notes: one fewer item fills the cap exactly
+    for errors in (kept - 1, kept):
+        backend = Codex(cli=_noisy_cli(tmp_path, f"fail{errors}", errors, answer=False), retries=0)
+        with pytest.raises(CodexError) as e:
+            asyncio.run(backend([Message("user", "go")]))
+        notes = backend.calls[-1]["notes"]
+        assert all(f"note {n}" in str(e.value) for n in range(errors))
+        if errors < kept:
+            assert len(notes) == kept and notes[-1].startswith("attempt 1 failed: no message")
+        else:
+            assert notes == [f"note {n}" for n in range(kept)] + ["[1 more note(s) omitted]"]
+
+
+def test_the_notes_of_a_call_that_answered_are_kept_to_the_cap_too(tmp_path: Path):
+    kept = codex_mod._NOTES
+    backend = Codex(cli=_noisy_cli(tmp_path, "answered", 40, answer=True), retries=0)
+    assert asyncio.run(backend([Message("user", "go")])) == "ok"
+    assert backend.calls[-1]["notes"] == [f"note {n}" for n in range(kept)] + [
+        f"[{40 - kept} more note(s) omitted]"
+    ]
+
+
+def test_one_oversized_note_on_a_failed_call_is_kept_by_its_head_and_tail_within_the_cap(tmp_path: Path):
+    """An event type of 200 000 characters and no message: the call's one note names the type, the
+    error raised carries all of it, and the envelope keeps the note's head and tail around a mark
+    counting the characters left out."""
+    from hub.backend import claude_code
+
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        'print(json.dumps({"type": "HEAD-KIND " + "k" * 200_000 + " TAIL-KIND"}))\n'
+    )
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = Codex(cli=str(cli), retries=0)
+    with pytest.raises(CodexError, match="^codex no message") as e:
+        asyncio.run(backend([Message("user", "go")]))
+    assert len(str(e.value)) > 200_000 and str(e.value).endswith("TAIL-KIND': 1}; ")
+    whole = "attempt 1 failed: " + str(e.value).removeprefix("codex ")
+    (kept,) = backend.calls[-1]["notes"]
+    m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+    assert m is not None, kept[:200]
+    head, tail = kept[: m.start()], kept[m.end() :]
+    assert whole.startswith(head) and whole.endswith(tail) and head and tail
+    assert len(head) + int(m[1]) + len(tail) == len(whole)
+    assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+
+
 _real_sleep = asyncio.sleep
 
 
