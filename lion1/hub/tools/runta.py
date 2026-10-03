@@ -494,25 +494,40 @@ class RuntaSandbox(BoxBase):
             self.runtime_id = made["id"]
             self._rt = await self._client.runtimes.get(self.runtime_id)
             await self._rt.wait_until_ready(timeout=self.create_timeout)
-            if self.egress is not None:
-                # a restored runtime runs its checkpoint's processes from the moment it is restored, so a
-                # policy set after leaves them a window under the other, and a change reads back before
-                # it holds: only a runtime that reports the box's own policy is a box
-                got = Egress.from_api(_policy_json((await self._rt.refresh_info()).egress_policy))
-                if _reach(got) != _reach(self.egress):
-                    raise SandboxDead(
-                        f"the runtime reports egress policy {got or 'none'}, not the box's {self.egress}"
-                    )
+            await self._own_policy("started")
             # straight to the runtime: `exec` starts in the workdir this makes, after the prelude
             r = await self._on_runtime(["mkdir", "-p", "--", self.workdir], timeout=60)
             if r.exit_code != 0:
                 err = r.stderr.decode(errors="replace")
                 raise SandboxDead(f"mkdir {self.workdir} exited {r.exit_code}: {err[-300:]}")
-        except BaseException:
-            await self.stop()
+        except BaseException as e:
+            await self._stop_for(e)
             raise
         self.started = True
         return self
+
+    async def _own_policy(self, when: str) -> None:
+        """Only a runtime that reports the box's own policy is a box. A restored runtime runs its
+        checkpoint's processes from the moment it is restored, so a policy set after leaves them a window
+        under the other, and a change reads back before it holds: the policy rides the create, and what
+        the runtime did before this read is the service's to have gated."""
+        if self.egress is None:
+            return
+        got = Egress.from_api(_policy_json((await self._rt.refresh_info()).egress_policy))
+        if _reach(got) != _reach(self.egress):
+            raise SandboxDead(
+                f"{when}, the runtime reports egress policy {got or 'none'}, not the box's {self.egress}"
+            )
+
+    async def _stop_for(self, e: BaseException) -> None:
+        """Delete the runtime behind a failed start or resume. A deletion that fails does not replace the
+        failure: the error names both, and the runtime left behind."""
+        try:
+            await self.stop()
+        except Exception as left:
+            if isinstance(e, Exception):
+                raise SandboxDead(f"{e}; and runtime {self.runtime_id} was not deleted: {left!r}") from e
+            raise e from left
 
     async def _gone(self, error: BaseException) -> bool:
         """Whether the runtime behind a failed call has ended: the exec channel answers a deleted runtime
@@ -628,7 +643,13 @@ class RuntaSandbox(BoxBase):
         await self._rt.pause()
 
     async def resume(self, *, timeout: float = 300.0) -> None:
+        """Resume a suspended runtime; one that comes back reporting another policy is deleted."""
         await self._rt.resume(timeout=timeout)
+        try:
+            await self._own_policy("resumed")
+        except SandboxDead as e:
+            await self._stop_for(e)
+            raise
 
     async def events(self, **filters: Any) -> list[Event]:
         """This box's events (see the module's `events`); readable after `stop`."""

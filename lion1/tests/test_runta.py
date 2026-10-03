@@ -98,6 +98,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
 
     runtimes_store: dict[str, Any] = {}
     preset_policy: dict[str, Any] = {}
+    delete_fails: dict[str, BaseException] = {}  # a runtime whose `delete` raises this
     async_runta_instances: list[Any] = []
 
     class Files:
@@ -168,6 +169,8 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
             self.paused = False
 
         async def delete(self):
+            if self.id in delete_fails:
+                raise delete_fails[self.id]
             self.deleted = True
 
     class Runtimes:
@@ -192,6 +195,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
     mod.EgressPolicy = _EgressPolicySDK
     mod.runtimes_store = runtimes_store
     mod.preset_policy = preset_policy
+    mod.delete_fails = delete_fails
     mod.async_runta_instances = async_runta_instances
     return mod
 
@@ -750,6 +754,40 @@ def test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_del
     assert clients[0].closed is True and mod.async_runta_instances[-1].closed is True
     assert [c["method"] for c in calls] == ["POST"]
     assert calls[0]["json"]["egress_policy"] == WANTED.api()  # the box sent its own with the create
+
+
+def test_a_deletion_that_fails_does_not_replace_the_refusal(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED, precreate_workdir=False)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+    mod.delete_fails["rt-1"] = OSError("gone away")
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.start())
+    said = str(e.value)
+    for part in ("denylist", "bad.com", "a.com", "runtime rt-1 was not deleted", "OSError('gone away')"):
+        assert part in said
+    assert box.started is False and clients[0].closed is True  # the clients still close
+
+
+def test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_deletes_it(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box.start())
+    rt = mod.runtimes_store["rt-1"]
+    asyncio.run(box.suspend())
+    assert rt.paused is True
+    rt.policy = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.resume())
+    for part in ("resumed", "denylist", "bad.com", "a.com"):
+        assert part in str(e.value)
+    assert rt.paused is False and rt.deleted is True and box.started is False and box.box_id is None
+    # the same policy back: the box goes on
+    box2, mod2, _, _ = _ready_box(monkeypatch, tmp_path, egress=WANTED, rt_id="rt-2")
+    mod2.preset_policy["rt-2"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box2.start())
+    asyncio.run(box2.suspend())
+    asyncio.run(box2.resume())
+    assert mod2.runtimes_store["rt-2"].deleted is False and box2.started is True
 
 
 @pytest.mark.parametrize("checkpoint", [None, "ckpt-1"], ids=["fresh", "restored"])

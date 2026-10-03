@@ -288,10 +288,10 @@ need `capture` set.
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
-- **S16**: A box given a policy sends it with the create and starts only a runtime that reports it:
-  a restored runtime runs its checkpoint's processes from the moment it is restored, so a policy set
-  after leaves them a window under another (S17). One that reports another policy, fresh or
-  restored, is deleted and `start` raises `SandboxDead` naming both; a box with no policy sends none
-  and checks none.
+- **S16**: A box given a policy sends it with the create and starts, or resumes, only a runtime that
+  reports it. A restored runtime's processes run from the restore, so a policy set after leaves them
+  a window under another (S17); what ran before the read is the service's to have gated. One that
+  reports another policy is deleted and the call raises `SandboxDead` naming both; a deletion that
+  fails is named in that error. A box with no policy sends none and checks none.
 - **S17**: A policy change on a running runtime can read back before it holds. A closure that
   matters is proven from inside the box.
