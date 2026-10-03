@@ -95,7 +95,7 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
+      uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4
 
     # Setting up buildx pulls the BuildKit image from Docker Hub, so this step
     # depends on a registry outside this project. A transient 502 there is what
