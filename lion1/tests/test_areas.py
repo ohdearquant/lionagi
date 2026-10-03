@@ -6,6 +6,7 @@ mails it) and the served routes behind it."""
 import asyncio
 import fcntl
 import http.client
+import ipaddress
 import json
 import os
 import plistlib
@@ -684,14 +685,15 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
 def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post(
     tmp_path, monkeypatch
 ):
-    inside = ("127.0.0.1", "::1", "100.64.0.1", "100.90.12.34", "100.127.255.254", "::ffff:100.70.1.2")
+    middle = str(ipaddress.ip_network("100.64.0.0/10")[1 << 21])  # the range's middle, no device's address
+    inside = ("127.0.0.1", "::1", "100.64.0.1", middle, "100.127.255.254", "::ffff:100.70.1.2")
     assert all(_peer_allowed(a) for a in inside)
     outside = ("100.63.255.255", "100.128.0.1", "192.168.1.20", "8.8.8.8", "::ffff:8.8.8.8", "", "x")
     assert not any(_peer_allowed(a) for a in outside)
     d = app_dir(tmp_path)
-    port = serve_on(registry(tmp_path, d), allow=["phone.tailnet.ts.net", "100.90.12.34"])
+    port = serve_on(registry(tmp_path, d), allow=["device.example.net", "100.64.0.1"])
     # Host: the bound host:port, 127.0.0.1, localhost and every --allow; nothing else
-    for host in (f"phone.tailnet.ts.net:{port}", f"100.90.12.34:{port}", f"localhost:{port}"):
+    for host in (f"device.example.net:{port}", f"100.64.0.1:{port}", f"localhost:{port}"):
         assert call(port, "GET", "/api/areas", headers={"Host": host})[0] == 200
     code, text, _ = call(port, "GET", "/api/areas", headers={"Host": f"evil.example:{port}"})
     assert code == 403 and "is not this server" in text
@@ -702,7 +704,7 @@ def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_a
     for origin in ("http://evil.example", f"http://evil.example:{port}", "null", f"ftp://127.0.0.1:{port}"):
         code, doc = control(port, hold, {"Origin": origin})
         assert code == 403 and "is not this server" in doc["detail"] and not (d / "hold").exists(), origin
-    for origin in (f"https://phone.tailnet.ts.net:{port}", f"http://127.0.0.1:{port}"):
+    for origin in (f"https://device.example.net:{port}", f"http://127.0.0.1:{port}"):
         assert control(port, {**hold, "action": "resume"}, {"Origin": origin})[0] == 200
     code, doc = control(port, hold)  # no Origin header at all
     assert code == 200 and doc["ok"] is True and (d / "hold").exists()
