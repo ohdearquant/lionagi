@@ -418,10 +418,11 @@ const scenarios = {
     return { afterStale, afterPoll: { actors: page.actors(), polls: page.requests('/api/areas').length } };
   },
 
-  // stream events are ordered by the revision they carry, a poll's answer is taken as it arrives and sets no
-  // revision, and an `areas` event aborts the poll out: 1 the stream's rows stay over the answer of a poll out
-  // when they came, 2 though that answer's revision is higher, 3 a poll answer is taken, 4 a stream event older
-  // than the stream's rows shown is dropped after it, 5 a newer one is kept
+  // stream events are ordered by the revision they carry, a poll's answer is taken as it arrives and its
+  // revision becomes the one shown, and an `areas` event aborts the poll out: 1 the stream's rows stay over the
+  // answer of a poll out when they came, 2 though that answer's revision is higher, 3 a poll answer is taken,
+  // 4 a stream event under that answer's revision, though above the stream's rows shown before it, is dropped,
+  // 5 one above it is kept
   async pollOrder(page) {
     const seen = {};
     const poll = async (name, answerRev, during) => {
@@ -437,7 +438,7 @@ const scenarios = {
     seen.pollAborted = page.actors();
     await poll('poll20', 20);
     seen.pollTaken = page.actors();
-    page.emit('areas', [row('stream12b')], 12);
+    page.emit('areas', [row('stream15')], 15);
     seen.olderStreamAfter = page.actors();
     await poll('poll21', 21);
     page.emit('areas', [row('stream22')], 22);
@@ -457,6 +458,38 @@ const scenarios = {
     await page.advance(5000);
     await page.answer(page.requests('/api/areas').at(-1), [row('poll2')], 300);
     seen.lowerRevision = page.actors();
+    return seen;
+  },
+
+  // the revision of a poll's answer is the one shown: after the stream opened, a poll answered at 20 and an
+  // event read before it, at 15, arriving late are refused; an event above it is shown
+  async pollThenEvent(page) {
+    const seen = {};
+    page.streamError();
+    page.streamOpen();  // reconnected and no rows yet, so the poll timer still runs
+    await page.advance(5000);
+    await page.answer(page.requests('/api/areas').at(-1), [row('polled')], 20);
+    seen.polled = page.actors();
+    page.emit('areas', [row('delayed')], 15);
+    seen.delayed = page.actors();
+    page.emit('areas', [row('later')], 25);
+    seen.later = page.actors();
+    return seen;
+  },
+
+  // the revision shown is the last poll's, set and not raised: after the poll of a restarted server, at a
+  // revision below the rows shown, an event under that poll's revision is refused and one above it is shown
+  async restartEvent(page) {
+    const seen = {};
+    page.emit('areas', [row('old')], 1000);
+    page.streamError();
+    await page.advance(5000);
+    await page.answer(page.requests('/api/areas').at(-1), [row('restarted')], 300);
+    seen.polled = page.actors();
+    page.emit('areas', [row('delayed')], 250);
+    seen.below = page.actors();
+    page.emit('areas', [row('fresh')], 500);
+    seen.above = page.actors();
     return seen;
   },
 

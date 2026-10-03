@@ -1281,8 +1281,24 @@ def test_the_app_orders_stream_events_by_revision_and_takes_each_poll_answer_as_
     # an event aborts the poll out, so an answer of a higher revision is dropped too
     assert seen["pollAborted"] == ["stream13"]
     assert seen["pollTaken"] == ["poll20"]  # a poll answer is taken as it arrives
-    # it sets no revision: an event older than the stream's rows shown is dropped, a newer one kept
+    # its revision is the one shown: an event under it, though above the stream's rows before it, is dropped
     assert seen["olderStreamAfter"] == ["poll20"] and seen["newerStreamAfter"] == ["stream22"]
+
+
+def test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it(tmp_path):
+    seen = app_session(tmp_path, "pollThenEvent")
+    assert seen["polled"] == ["polled"]  # a poll answered after the stream opened, at revision 20
+    # an event read before that poll, arriving after it, is refused: the rows stay
+    assert seen["delayed"] == ["polled"]
+    assert seen["later"] == ["later"]  # an event above it is shown
+
+
+def test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows(tmp_path):
+    seen = app_session(tmp_path, "restartEvent")
+    assert seen["polled"] == ["restarted"]  # a poll below the revision shown is the one shown now
+    assert seen["below"] == ["restarted"]  # an event under it is refused
+    # and one above it is shown, though below the old server's rows: the revision is set, not raised
+    assert seen["above"] == ["fresh"]
 
 
 def test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown(tmp_path):

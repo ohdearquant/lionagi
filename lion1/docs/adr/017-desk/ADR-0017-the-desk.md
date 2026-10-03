@@ -320,19 +320,19 @@ unless an edit followed the send, and a navigation clears it.
 ### C16: The phone page shows the newest rows, whichever of the poll and the stream brings them _(enforced: mechanical)_ ^c16
 
 - **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
-- **Violated when**: older rows replace newer ones shown, or a stream's first rows are refused.
+- **Violated when**: older rows replace newer ones shown, or later rows are refused.
 
 Every read behind `/api/areas` and the `areas` events of `/events` takes the larger of the
-microsecond wall clock and the last plus one as its revision. The root page and `/api/resident` read
-directly and carry none. `/events` serves the last read; `/api/areas` makes its own, which becomes
-the last.
+microsecond wall clock and the last plus one as its revision, an `areas` event's `id` and an
+`/api/areas` answer's `X-Areas-Revision`. The root page and `/api/resident` read directly and carry
+none. `/events` serves the last read; `/api/areas` makes its own, which becomes the last.
 
-The revision is an `areas` event's `id` and an `/api/areas` answer's `X-Areas-Revision`. A stream
-connection is an epoch: its first revision is taken and the higher stays within it.
+Within a stream connection, an epoch that `open` begins, an event not above the last read shown is
+refused.
 
-With the stream down the page polls every five seconds, one at a time, taking each answer as it
-arrives, as a later poll is a later read. Ten seconds out, or the stream opening or sending rows,
-aborts a poll and drops its answer; an aborted or failed poll frees the next.
+With the stream down, polls run one at a time; each answer is taken on arrival and its revision
+becomes the one shown, as a later poll is a later read. Ten seconds out, or the stream opening or
+sending rows, aborts a poll and drops its answer; an aborted or failed poll frees the next.
 
 ## Decisions
 
@@ -434,11 +434,13 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
   `test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll`,
   `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision` and
   `test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back`;
-  `tests/app_page_harness.js` runs the served script under node for these tests:
+  `tests/app_page_harness.js` runs the served script under node:
   `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
   `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
   `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
   `test_the_app_orders_stream_events_by_revision_and_takes_each_poll_answer_as_it_arrives`,
+  `test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it`,
+  `test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows`,
   `test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown`,
   `test_the_app_drops_the_answer_of_a_poll_still_out_when_the_streams_first_rows_come`,
   `test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision`,

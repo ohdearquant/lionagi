@@ -115,12 +115,12 @@ function setConn(live) {
 // ---- live data: SSE, with a 5s polling fallback when it errors ----
 var POLL_MS = 5000;
 var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
-var shown = 0;  // the revision of the stream's rows on the page
-// the server stamps each `areas` event with the revision of the read it came from: within one stream
-// connection the newer of two events stays, whichever arrived first. A connection is a server epoch, as a
-// restarted server may count below the rows shown: the page forgets them when the stream opens. A poll's
-// answer sets no revision: polls run one at a time, so a later one is a later read of whichever server
-// answered, and the stream's `open` and `areas` events give up the poll out
+var shown = 0;  // the revision of the last read shown, a poll's or the stream's
+// the server stamps each `areas` event and `/api/areas` answer with the revision of the read it came from.
+// A stream connection is a server epoch, as a restarted server may count below the rows shown: the page
+// forgets them when the stream opens, and within it an event not above the last read shown is refused.
+// Polls run one at a time, so a later one is a later read of whichever server answered: each answer is
+// taken and its revision becomes the one shown. The stream's `open` and `areas` events give up the poll out
 function takeAreas(rows, rev) {
   if (!(rev > shown)) return;
   shown = rev;
@@ -136,8 +136,10 @@ function startPoll() {
     function free() { if (polling === ctl) polling = null; }  // a poll given up frees no later poll's latch
     var cut = setTimeout(function () { ctl.abort(); free(); }, 2 * POLL_MS);  // never settles: give up
     fetch('/api/areas', { signal: ctl.signal }).then(function (r) {
+      var rev = Number(r.headers.get('X-Areas-Revision'));
       return r.json().then(function (rows) {
         if (ctl.signal.aborted) return;  // given up, by the clock or by the stream
+        shown = rev;  // set, not raised: the last poll is the current read, though a restart counts lower
         state.areas = rows;
         if (state.mode === 'list') renderList();
       });
