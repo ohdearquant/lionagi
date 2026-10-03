@@ -1859,13 +1859,34 @@ def verdict(d, n: int, evaluated: str, *, head8: str, mtime: float, round_no=1, 
         "## Blocking\n" + "".join(f"- {b}\n" for b in blocking or ["none"]) + "\n## Issues (0)\n"
     )
     slug = kw.get("named", body["repo"]).replace("/", "-")  # the daemon names the file as the repo is spelled
-    paths = [d / f"{slug}-{n}-{head8}.md"]
+    num = kw.get("filed_as", n)  # and as the number is spelled
+    paths = [d / f"{slug}-{num}-{head8}.md"]
     paths[0].write_text(md)
     if json_file:
-        paths.append(d / f"{slug}-{n}-{head8}.json")
+        paths.append(d / f"{slug}-{num}-{head8}.json")
         paths[1].write_text(json.dumps(body))
     for p in paths:
         os.utime(p, (mtime, mtime))
+
+
+def listed_as(monkeypatch, d, spell, *, reverse=False):
+    """List d's files under spell(name), in name order or reversed: a case-sensitive directory holds two
+    files that differ only in case, and the filesystems a run may sit on do not all."""
+    real = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self._entry, self.name, self.path = entry, spell(entry.name), entry.path
+
+        def stat(self):
+            return self._entry.stat()
+
+    def scandir(path):
+        if os.fspath(path) != os.fspath(d):
+            return real(path)
+        return iter([Entry(e) for e in sorted(real(path), key=lambda e: e.name, reverse=reverse)])
+
+    monkeypatch.setattr(os, "scandir", scandir)
 
 
 def freshness_sh(prs=((7, HEAD7), (8, HEAD8), (9, HEAD9))) -> FakeSh:
@@ -2314,6 +2335,116 @@ def test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure(tmp_
     rows = store.get("verdict-freshness").value
     assert len(rows) == 1 and " 77777777: AT-HEAD, " in next(iter(rows.values()))
     assert not any("no longer open" in f for f in out.findings) and out.control
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates(
+    monkeypatch, tmp_path, reverse
+):
+    """One PR's verdicts can be filed as `O-R-7-<head8>` and `o-r-7-<head8>`: the newer is the verdict
+    however the directory lists them, so an older approval never hides a newer request for changes."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=2000, named="new/r")
+    listed_as(
+        monkeypatch,
+        tmp_path,
+        lambda name: name.replace("old-r", "O-R").replace("new-r", "o-r"),
+        reverse=reverse,
+    )
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {tmp_path}/new-r-7-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order(
+    monkeypatch, tmp_path, reverse
+):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, named="new/r")
+    listed_as(
+        monkeypatch,
+        tmp_path,
+        lambda name: name.replace("old-r", "O-R").replace("new-r", "o-r"),
+        reverse=reverse,
+    )
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, APPROVE, blocking 0; read json: {tmp_path}/old-r-7-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("filed_as", ["007", "07"])
+def test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number(tmp_path, filed_as):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, filed_as=filed_as)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+        f"{tmp_path}/o-r-{filed_as}-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("first", ["o/r#7", "O/R#07"])
+def test_verdict_freshness_of_two_conflicting_rows_for_one_pr_the_one_at_its_head_now_is_the_row(
+    tmp_path, first
+):
+    """An older snapshot's rows for one PR disagree: the one that read the head the PR has now is the
+    later observation, whichever the snapshot lists first."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    path = f"{tmp_path}/o-r-7-77777777.json"
+    rows = {
+        "o/r#7": "o/r#7 00000000: STALE (verdict at 00000000), APPROVE, blocking 0; read json: x",
+        "O/R#07": f"O/R#07 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {path}",
+    }
+    store = MemoryNoteStore()
+    snapshot = {k: rows[k] for k in sorted(rows, key=lambda k: k != first)}  # `first` is listed first
+    store.put("verdict-freshness", snapshot, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"O/R#07": rows["O/R#07"]}
+    assert out.control and out.findings == ()  # the row it was told is the row it reads again
+
+
+@pytest.mark.parametrize("flip", [False, True])
+@pytest.mark.parametrize(
+    ("aliases", "winner"),
+    [(("O/R#07", "o/r#7"), "o/r#7"), (("o/R#07", "O/R#7"), "O/R#7")],
+    ids=["the-spelling-read-now", "the-smaller-key"],
+)
+def test_verdict_freshness_two_rows_at_one_head_keep_the_spelling_read_now_then_the_smaller_key(
+    tmp_path, aliases, winner, flip
+):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    rows = {k: f"{k} 00000000: NEVER-REVIEWED" for k in (reversed(aliases) if flip else aliases)}
+    store.put("verdict-freshness", rows, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert set(store.get("verdict-freshness").value) == {winner}
+    assert out.control and not any("no longer open" in f for f in out.findings)
+
+
+def test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_another_case(tmp_path):
+    """The page is short, so nothing retains the row: the PR's own read finds it, its repo case-blind."""
+    assert instr.PR_PAGE > 1
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    store.put("verdict-freshness", {"O/R#7": "O/R#7 77777777: NEVER-REVIEWED"}, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    rows = store.get("verdict-freshness").value
+    assert out.control and set(rows) == {"O/R#7"} and rows["O/R#7"].startswith("O/R#7 77777777: AT-HEAD")
+    assert not any("no longer open" in f for f in out.findings)
 
 
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
