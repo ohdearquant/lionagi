@@ -321,12 +321,22 @@ computation binds its failure.
   100,000-item yield, and the loop runs one more interval before the cancel lands, so the overrun
   past it is under two such intervals, not zero.
 - **S9**: A `run.more` that raises the time budget moves the deadline of a walk computing its own
-  expressions, so what follows the grant runs to the new deadline. A `TimeoutError` raised by what
-  the walk reads is that error: only the walk's own deadline reads as the budget spent. That refusal
-  stays on the run's `refused` list; the spent budget ends the run before a notification tells it,
-  and the closure names the outcome and the cancelled commands, no refusal.
+  expressions and of the settlement of the turn's commands, argument evaluation included, so what
+  follows the grant runs to the new deadline. A refused grant moves nothing and the late command is
+  cancelled. The reap at the run's end has no deadline.
   `test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_runs_under`,
-  `test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_and_moves_nothing`,
+  `test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_settle_waits_under`,
+  `test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they_settle_under`,
+  `test_a_refused_grant_during_settlement_leaves_the_deadline_and_the_late_command_cancelled`,
+  `test_a_grant_of_time_moves_the_deadline_of_every_limit_a_run_has_registered`,
+  `test_a_settle_cancelled_while_it_waits_leaves_no_time_limit_on_the_run`,
+  `test_a_grant_of_time_during_the_reap_gives_it_no_deadline_so_a_cleanup_runs_to_its_end` and
+  `test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_and_moves_nothing` pin
+  it.
+- **S10**: A `TimeoutError` raised by what the walk reads is that error: only the walk's own
+  deadline reads as the budget spent. That refusal stays on the run's `refused` list; the spent
+  budget ends the run before a notification tells it, and the closure names the outcome and the
+  cancelled commands, no refusal.
   `test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent` and
   `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension` pin
   it.

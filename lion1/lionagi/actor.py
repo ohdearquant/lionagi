@@ -393,7 +393,7 @@ class Run:
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
         self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
-        # the time limits of the walks computing now, which a grant of time by `run.more` moves
+        # the time limits of the walks and settles waiting now, which a grant of time by `run.more` moves
         self.timeouts: set[asyncio.Timeout] = set()
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         # pending alias -> the notes its command read from the store, each read once (None: absent)
@@ -669,7 +669,7 @@ async def _more(req: RunMore, ctx: Context) -> str:
         if not granted:
             raise PermissionError(f"{req.bound} stays at {now}: the job did not grant {amount} more")
         run.bounds[req.bound] = now + amount
-        if req.bound == "time_budget":  # a walk computing its own expressions runs to the new deadline
+        if req.bound == "time_budget":  # a walk or a settle waiting now runs to the new deadline
             for limit in run.timeouts:
                 if not limit.expired():  # one that fired has cancelled its walk already
                     limit.reschedule(_deadline(run))
@@ -1093,7 +1093,7 @@ class Actor:
                     referenced = _referenced(program)
                     tasks = self._dispatch(run, program, subset)
                 if program.out is None:
-                    await _settle(run, tasks, _left(run))
+                    await _settle(run, tasks)
                     if (
                         request.reply_on_commands
                         and request.wait is not None
@@ -1112,11 +1112,11 @@ class Actor:
                     continue
                 # OUT{} waits for what it points at still running, and for nothing else: an accepted
                 # output ends the run and the reap takes the rest; one not accepted settles the turn
-                await _settle(run, [run.pending[a] for a in referenced if a in run.pending], _left(run))
+                await _settle(run, [run.pending[a] for a in referenced if a in run.pending])
                 try:
                     run.output = self._assemble(run, program)
                 except lndl.LNDLError as e:
-                    await _settle(run, tasks, _left(run))
+                    await _settle(run, tasks)
                     # the error clears only once the whole turn, assembly included, read: a finish
                     # that fails the same way every round is counted as the same error (ADR-0002/C3)
                     self._retry(run, str(e))
@@ -1146,7 +1146,7 @@ class Actor:
                 )
                 run.entered.discard("OUT")
                 if not result.ok:  # told as any refusal is, and the run goes on; the turn settles
-                    await _settle(run, tasks, _left(run))
+                    await _settle(run, tasks)
                     run.output = None
                     run.refusals += 1
                     why = result.error.removeprefix("refused: ")
@@ -2152,7 +2152,7 @@ class _Walk:
         finally:
             try:
                 # the time budget bounds it as any turn's
-                await _settle(self.run, self.tasks, _left(self.run))
+                await _settle(self.run, self.tasks)
             finally:
                 # a value still computing now has no reader left (each was cancelled): it stops with
                 # them, whether the settle returned or raised
@@ -2497,15 +2497,27 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(run: Run, tasks: list[asyncio.Task], timeout: float | None = None) -> None:
-    """Wait for the turn's commands, for `timeout` seconds when it is given: one still running then is
-    cancelled. A cancelled command has settled itself as a RESULT; any other way out of a command task
+async def _settle(run: Run, tasks: list[asyncio.Task], by_deadline: bool = True) -> None:
+    """Wait for the turn's commands, under the run's deadline unless `by_deadline` is False: one still
+    running when it passes is cancelled, and a grant of time while it waits moves it, as it moves a
+    walk's. A cancelled command has settled itself as a RESULT; any other way out of a command task
     is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
     settle did not wait for (a command `OUT{}` did not name) is seen through by the reap."""
     if tasks:
-        _, late = await asyncio.wait(tasks, timeout=timeout)
-        for task in late:
-            task.cancel()
+        waited = set(tasks)
+        limit = asyncio.timeout_at(_deadline(run) if by_deadline else None)
+        try:
+            async with limit:
+                if by_deadline:
+                    run.timeouts.add(limit)
+                try:
+                    await asyncio.wait(waited)
+                finally:
+                    run.timeouts.discard(limit)
+        except TimeoutError:  # only this limit raises it: the wait itself never does
+            for task in waited:
+                if not task.done():
+                    task.cancel()
         results = await asyncio.gather(*tasks, return_exceptions=True)
         run.tasks.difference_update(tasks)
         for r in results:
@@ -2533,7 +2545,7 @@ async def _reap(run: Run) -> None:
     before the run returns (ADR-0002/S5)."""
     for task in run.pending.values():
         task.cancel()
-    await _settle(run, list(run.tasks))
+    await _settle(run, list(run.tasks), by_deadline=False)
 
 
 async def _reaped(run: Run) -> bool:

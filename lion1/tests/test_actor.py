@@ -1697,6 +1697,91 @@ def test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_a
     assert told == ["time_budget raised from 100 to 100.5"] and run.bounds["time_budget"] == 100.5
 
 
+def test_a_grant_of_time_moves_the_deadline_of_every_limit_a_run_has_registered():
+    more = next(h for h in actor_module.DEFAULT_HANDLERS if h.name == "run.more")
+    ask = actor_module.RunMore(bound="time_budget", amount=0.5, reason="r")
+
+    async def main():
+        run = actor_module.Run(_echo_actor("b-limits"), Profile("p"), RunRequest(time_budget=100))
+        ctx = actor_module.Context(run, "m1", more)
+        loop = asyncio.get_running_loop()
+        first, second = asyncio.timeout_at(loop.time() + 1000), asyncio.timeout_at(loop.time() + 2000)
+        async with first, second:
+            run.timeouts.update((first, second))
+            await more.fn(ask, ctx)
+            return first.when() - loop.time(), second.when() - loop.time()
+
+    # each limit a walk or a settle is running under now ends where the raised budget does, not where it did
+    for ahead in asyncio.run(main()):
+        assert 99 < ahead <= 100.5
+
+
+def test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they_settle_under():
+    actor = _echo_actor("b-settle-grant")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    turn = (
+        '<lact m1>run.more(bound="time_budget", amount=5, reason="one more nap")</lact>'
+        "<lact n1>nap(seconds=1)</lact>"
+    )
+    run = asyncio.run(
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5), scripted(turn))
+    )
+    # the turn's commands settle once: the nap, running at the 0.5 s the run began with, was cancelled there
+    # though m1 had raised the budget to 5.5 s meanwhile; the settle waits to the deadline as it stands
+    assert run.resolve("m1") == "time_budget raised from 0.5 to 5.5"
+    assert run.resolve("n1") == "rested" and run.elapsed > 0.5
+    assert run.timeouts == set()
+
+
+def test_a_settle_cancelled_while_it_waits_leaves_no_time_limit_on_the_run():
+    async def main():
+        run = actor_module.Run(_echo_actor("b-settle-cancelled"), Profile("p"), RunRequest(time_budget=100))
+        command = asyncio.ensure_future(asyncio.sleep(100))
+        settling = asyncio.ensure_future(actor_module._settle(run, [command]))
+        await asyncio.sleep(0)  # the settle is waiting, its limit on the run for a grant to move
+        waiting = len(run.timeouts)
+        settling.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await settling
+        command.cancel()
+        await asyncio.gather(command, return_exceptions=True)
+        return waiting, run.timeouts
+
+    assert asyncio.run(main()) == (1, set())
+
+
+def test_a_grant_of_time_during_the_reap_gives_it_no_deadline_so_a_cleanup_runs_to_its_end():
+    actor = _echo_actor("b-reap-grant")
+    cleaned: list[str] = []
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        try:
+            await asyncio.sleep(100)
+        except asyncio.CancelledError:  # the accepted output ended the run: this is its reap
+            ask = actor_module.RunMore(bound="time_budget", amount=0.01, reason="to clean up")
+            await actor_module._more(
+                ask, ctx
+            )  # were the reap held to a deadline, it would fall inside the cleanup
+            await asyncio.sleep(1)
+            cleaned.append("done")
+            raise
+        return "rested"
+
+    turn = '<lact n1>nap(seconds=0)</lact><lact e1>echo(text="x")</lact>OUT{done: {summary: *e1, files: []}}'
+    run = asyncio.run(
+        actor.run(Profile("p"), RunRequest(inputs=("go",), emits=(Done,), time_budget=0.5), scripted(turn))
+    )
+    # the reap cancels what the output did not name and waits for it, however long it takes
+    assert isinstance(run.outcome, Success) and cleaned == ["done"]
+    assert run.resolve("n1").reason == "cancelled" and run.timeouts == set()
+
+
 def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
     actor = Actor("b-out-before")
     order: list[tuple[str, ...]] = []

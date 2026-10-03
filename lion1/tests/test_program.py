@@ -1376,6 +1376,47 @@ def test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_ru
     assert run.output == {"granted": "time_budget raised from 0.4 to 5.4", "after": 0.8}
 
 
+GRANT_IN_AN_ARGUMENT = (
+    'a = echo(text=DO run.more(bound="time_budget", amount=5, reason="one more nap"))',
+    "b = nap(seconds=1)",
+)
+
+
+def _nap_actor(name: str) -> Actor:
+    actor = _actor(name, [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        await asyncio.sleep(req.seconds)
+        return req.seconds
+
+    return actor
+
+
+def test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_settle_waits_under():
+    turn = fenced(*GRANT_IN_AN_ARGUMENT, 'OUT{done: "yes"}')
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1)
+    run = asyncio.run(_nap_actor("settle-grant").run(PROGRAM, request, scripted(turn)))
+    # the output is a literal, so the walk waits for no command: its own limit is gone when the turn's
+    # commands settle, and the argument of `a` grants during that wait. The nap, running at the 0.5 s the
+    # run began with, was cancelled there though the budget had risen to 5.5 s
+    assert run.bounds["time_budget"] == 5.5
+    assert run.resolve("b") == 1 and run.elapsed > 0.5
+    assert isinstance(run.outcome, Success) and run.output == {"done": "yes"}
+    assert run.timeouts == set()
+
+
+def test_a_refused_grant_during_settlement_leaves_the_deadline_and_the_late_command_cancelled():
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=lambda *ask: False)
+    run = asyncio.run(
+        _nap_actor("settle-refused").run(PROGRAM, request, scripted(fenced(*GRANT_IN_AN_ARGUMENT)))
+    )
+    # nothing was granted, so the settle's deadline is the one it began with: the nap is cancelled there
+    assert run.bounds["time_budget"] == 0.5
+    assert run.resolve("b").reason == "cancelled" and 0.5 <= run.elapsed < 1
+    assert run.outcome == Exhausted(1, "time") and run.timeouts == set()
+
+
 @pytest.mark.parametrize(
     "first", [('a = echo(text="x")',), ("if 1 / 0:", '    a = echo(text="x")')], ids=["settled", "refused"]
 )
