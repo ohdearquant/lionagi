@@ -332,25 +332,25 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`). A check the
   ask narrowed covers nothing: the tick was the whole sweep, so it runs
   (`test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore`).
-- **S12**: A periodic chore is overdue with no run within one period and a grace before the digest's
-  moment, now or the end of a past day asked about. A period is `every:<N><s|m|h|d>`, `daily` or
-  `weekly`, fixed seconds, or `monthly`, a calendar month in UTC. The grace is the store's default,
-  300 seconds, the longest it fires a reminder late before marking it missed: a run one period and
-  300 seconds old is within it, a second older is `MISSING`, and `due by` names the period's end
+- **S12**: A periodic chore is overdue when the digest's moment, now or the end of a past day asked
+  about, is past its due time and a grace. A fixed period, `every:<N><s|m|h|d>`, `daily` or
+  `weekly`, is due one period after the last run; a `monthly` chore, on its anchor day in the month
+  after the last run's, the store repeating from the fixed anchor (S14). The grace is the store's
+  default, 300 seconds (A4): `MISSING` is a second past it, and `due by` names the due time
   (`test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_the_day`,
   `test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day`).
 - **S13**: A chore's first due is the first firing of its tick, which `ensure_ticks` keeps in the
   agent's state under `first_due` (S17); an earlier one is never overwritten. A chore with no run
   reads `no run yet, first due by <instant>` until that instant and the grace are past, then
-  `MISSING`. With no first due on record it reads `MISSING` as before, there being no evidence it
-  was ever fine (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
-  `test_a_chore_with_no_run_and_no_first_due_on_record_is_missing_as_before`,
+  `MISSING`. With none on record it reads one from the pending tick row (S26)
+  (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
   `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`).
-- **S14**: With its first due on record, a monthly chore run in a month is due on the next month's
-  anchor day: the first due's UTC day, clamped to that month's last, at its UTC time of day
-  (`test_a_monthly_chore_is_due_on_its_anchor_day_when_its_first_due_is_on_record`). With none, a
-  run on a month's last day is due by the next month's last, so a chore the store anchored on the
-  28th to the 30th reads `MISSING` up to three days late, never falsely
+- **S14**: A monthly chore's anchor is the first due's UTC day and time of day, the day clamped to a
+  month's last. A run off schedule, before or after the anchor day, moves nothing: the chore is due
+  on the anchor day of the next month
+  (`test_a_monthly_chore_is_due_on_its_anchor_day_when_its_first_due_is_on_record`). With none on
+  record, a run on a month's last day is due by the next month's last, so a chore the store anchored
+  on the 28th to the 30th reads `MISSING` up to three days late, never falsely
   (`test_a_monthly_chore_with_no_first_due_on_record_keeps_the_month_end_rule`,
   `test_a_monthly_chore_is_due_a_calendar_month_in_utc_after_its_last_run`).
 - **S15**: A cron with no run that day reads `not judged: cron`; one that ran shows its run counts
@@ -388,19 +388,21 @@ bypasses the handler: no refusals, no row, no send.
 - **S19**: A row's `answered`, which the digest counts a run by, is a boolean where the row has one;
   a row from before the field has none, and its `control` says
   (`test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none`).
-- **S20**: A start that stopped between its reminder and the record is healed at the next. At the
-  edges of S17, a row created a period (a minute or more) ago and next due in one gives the firing a
-  period after its creation; a firing before the floor is its own, never stepped forward. A creation
-  that is no instant, a cron and a zero period give the firing, or now if that is earlier
+- **S20**: A start that stopped between its reminder and its record heals at the next. At the edges
+  of S17, a row created a period (a minute or more) ago and next due in one gives the firing a
+  period after its creation. A fixed period's first due steps back no further than the floor (S25),
+  and a firing already before it is its own. A creation that is no instant, a cron and a zero period
+  give the firing, or now if that is earlier
   (`test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_a_period_after_creation`,
   `test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_stepped_forward`,
   `test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier`).
-- **S21**: A monthly row gives its `repeat_anchor`. Without one the first due is the trigger less
-  whole calendar months, in UTC, each day clamped to its month's last, and not before the row's
-  `created_at`. A firing on a month's last day, under 31, may be a clamped later one: if its
-  step-back precedes the creation, the floor (S17), a lower bound on the firing, is the first due.
-  With no creation it is the firing or now, if earlier
-  (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`,
+- **S21**: A monthly row gives its `repeat_anchor`. Without one it is the trigger less whole UTC
+  calendar months, each day clamped to its month's last, stopping before a month preceding the row's
+  `created_at`; a firing already before the creation is its own. A firing on a short month's last
+  day may be a clamped later one: if its step-back precedes the creation, the floor (S25) is the
+  first due. With no creation, the firing or now, if earlier
+  (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`, the
+  `fired-before-creation-is-its-own` row of
   `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`,
   `test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation`,
   `test_a_clamped_monthly_row_is_missing_a_tick_lead_and_the_grace_after_its_creation`,
@@ -411,17 +413,26 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_day_the_digest_is_asked_about_selects_the_same_rows_in_any_spelling_a_date_has`).
 - **S23**: A stored `first_due` is a record only where it is a finite number, no bool, that a UTC
   date can name, in the digest and in `ensure_ticks` alike. Any other value is no record:
-  `ensure_ticks` replaces it with the pending row's firing, and the digest still delivers, a chore
-  with no run reading `MISSING: <chore>, no run recorded`
+  `ensure_ticks` replaces it with the pending row's firing, and the digest reads that row as for
+  none (S26), a chore with no tick pending reading `MISSING: <chore>, no run recorded, no tick
+  pending`
   (`test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers`,
   `test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999`,
   `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`).
 - **S24**: A row's `ts` and `at` come from one read of the clock, `at` being that instant's local
   label, so a check across local midnight writes a row whose two name one day
   (`test_a_row_written_across_local_midnight_names_one_day_by_both_its_label_and_its_instant`).
-- **S25**: A tick's first firing is a minute after its creation, so a first due recovered from a
-  pending row steps back no further than the floor: the second of `created_at` plus that minute,
-  less a second for the store's stamp. A monthly stand-in is that floor, and a one-second period may
-  read a second early
+- **S25**: A tick's first firing is the lead after its creation, a minute by default
+  (`ensure_ticks(first_in_s=...)`). A first due recovered from a pending row steps back no further
+  than the floor: the second of `created_at` plus the default lead, less a second for the store's
+  stamp. A monthly stand-in is that floor, and a one-second period may read a second early
   (`test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carries`,
   `test_the_stand_in_and_the_tick_a_start_makes_share_one_lead`).
+- **S26**: A chore with no run and no first due on record reads one from its pending tick row, as
+  `ensure_ticks` does (S17). The read makes no tick and records nothing, so a caller that wakes an
+  agent without `ensure_ticks` judges the same. The agenda is read once, and only when a chore needs
+  it. A row naming no instant gives none, and the line reads `MISSING: <chore>, no run recorded`;
+  with no tick pending it ends `, no tick pending`
+  (`test_a_python_digest_wake_reads_a_pending_tick_row_for_a_chore_with_no_first_due`,
+  `test_the_digest_reads_the_agenda_once_and_only_for_a_chore_with_no_run_and_no_first_due`,
+  `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`).

@@ -555,6 +555,8 @@ class Chores:
             k: t for k, v in _val(self.agent.state, "first_due", {}).items() if (t := _instant(v)) is not None
         }
         actor = self.owner
+        # the pending ticks' firings: read once, and only if a chore needs one (`ensure_ticks` reads the same)
+        pending: dict[Any, list[float]] | None = None
         lines = [
             f"[chores digest {day}] {self.agent.khive.actor}: "
             + (f"ledger unreadable ({unread})" if unread else f"{len(rows)} check(s)")
@@ -576,12 +578,19 @@ class Chores:
                 latest = max(ran, key=_epoch, default=None)
                 first = firsts.get(name)
                 if latest is None:  # no run is missing only once its first due and the grace are past
+                    ticked = True
+                    if first is None:  # none on record: the tick's pending row gives it, read and not kept
+                        if pending is None:
+                            pending = await self._pending_firsts(now)
+                        fires = pending.get(f"tick: {name}")
+                        first, ticked = (min(fires) if fires else None), fires is not None
                     if first is not None and moment <= first + _FIRE_GRACE_S:
                         lines.append(f"{actor} {name} no run yet, first due by {_now(first)}")
                     else:
                         lines.append(
                             f"MISSING: {name}, no run recorded"
                             + (f", first due by {_now(first)}" if first is not None else "")
+                            + ("" if ticked else ", no tick pending")
                         )
                     continue
                 if every == "monthly":  # a calendar month in UTC, as the store counts its monthly repeat
@@ -714,17 +723,7 @@ class Chores:
         a steward. Creates what is missing, returns what it created. A chore's first firing is kept in
         the agent's state (`first_due`) for the digest: the earlier of what the tick's pending rows give
         (`_first_firing`; the tick's own firing when it was just made) and what is already kept."""
-        (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
-        me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
-        now = self.agent.clock()
-        pending: dict[Any, list[float]] = {}  # content -> the first firing each pending reminder's row gives
-        for e in (agenda or {}).get("events", []):
-            p = e.get("properties") or {}
-            if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
-                continue
-            fires = pending.setdefault(e.get("content"), [])
-            if (first := _first_firing(e, now)) is not None:
-                fires.append(first)
+        pending = await self._pending_firsts(self.agent.clock())
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
@@ -751,6 +750,21 @@ class Chores:
                 if first != kept:
                     self.agent.state.put("first_due", {**firsts, chore: first}, run="-", seq=0)
         return created
+
+    async def _pending_firsts(self, now: float) -> dict[Any, list[float]]:
+        """content -> the first firing each of this actor's pending reminders' rows gives (`_first_firing`).
+        A read: it makes no reminder and records nothing, for `ensure_ticks` and the digest alike."""
+        (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
+        me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
+        pending: dict[Any, list[float]] = {}
+        for e in (agenda or {}).get("events", []):
+            p = e.get("properties") or {}
+            if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
+                continue
+            fires = pending.setdefault(e.get("content"), [])
+            if (first := _first_firing(e, now)) is not None:
+                fires.append(first)
+        return pending
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
         """Once per run: the actor's own reminders khive marked missed (never fired) or failed, not

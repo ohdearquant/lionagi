@@ -870,7 +870,7 @@ def test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so(tmp_
     head, *lines = text.splitlines()
     if not error:
         assert head.endswith(": 0 check(s); a MISSING line is the finding")
-        assert lines == [f"{OWNER} a on ask: no run", "MISSING: w, no run recorded"]
+        assert lines == [f"{OWNER} a on ask: no run", "MISSING: w, no run recorded, no tick pending"]
         return
     assert f": ledger unreadable ({error}: " in head and head.endswith("; a MISSING line is the finding")
     assert lines == [f"{OWNER} a not judged: ledger unreadable", f"{OWNER} w not judged: ledger unreadable"]
@@ -930,14 +930,14 @@ def test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grac
         assert f"MISSING: {name}, no run recorded, first due by {label(due)}" in text and line not in text
 
 
-def test_a_chore_with_no_run_and_no_first_due_on_record_is_missing_as_before(tmp_path):
+def test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so(tmp_path):
     chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
     chores.ledger.write_text("")  # a ledger that reads, with no row
     t = datetime(2026, 9, 14, 9, 0).timestamp()
-    assert "MISSING: w, no run recorded" in digest_at(chores, agent, t).splitlines()
+    assert "MISSING: w, no run recorded, no tick pending" in digest_at(chores, agent, t).splitlines()
     for record in ("soon", True, None):  # a record that is no instant is no evidence either
         agent.state.put("first_due", {"w": record}, run="-", seq=0)
-        assert "MISSING: w, no run recorded" in digest_at(chores, agent, t).splitlines()
+        assert "MISSING: w, no run recorded, no tick pending" in digest_at(chores, agent, t).splitlines()
 
 
 _END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC).timestamp()  # the last second a UTC datetime names
@@ -968,7 +968,7 @@ def test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_d
     assert text == none
     assert [m["content"] for m in khive.sent] == [none, text] and {m["to"] for m in khive.sent} == {OWNER}
     if not ran:
-        assert "MISSING: w, no run recorded" in text.splitlines()
+        assert "MISSING: w, no run recorded, no tick pending" in text.splitlines()
 
 
 @pytest.mark.parametrize("ran", [False, True], ids=["never-run", "monthly-run"])
@@ -1017,6 +1017,36 @@ def test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_
     ]
 
 
+def test_a_python_digest_wake_reads_a_pending_tick_row_for_a_chore_with_no_first_due(tmp_path):
+    now = float(int(time.time()))
+    row = pending("disk", now + 60, "every:30m", now)  # made a moment ago, first firing a minute out
+    khive = FakeKhive(mail(SELF, "tick: digest"), agenda=[row])
+    probes = {"disk": Probe("disk", full()), "w": Probe("w", full(), every="weekly")}
+    chores, agent = build(tmp_path, khive, ["<lact d1>digest()</lact>", DONE], **probes)
+    asyncio.run(agent.wake())  # `ensure_ticks` never ran: no first due is on record
+    lines = khive.sent[-1]["content"].splitlines()
+    assert f"{OWNER} disk no run yet, first due by {label(now + 60)}" in lines  # inside the first grace
+    assert "MISSING: w, no run recorded, no tick pending" in lines  # no tick row at all
+    assert agent.state.get("first_due") is None  # read, never recorded
+    assert not [op for op in khive.ops if op.startswith("schedule.remind")]  # and no tick made
+    late = digest_at(chores, agent, now + 60 + 301).splitlines()
+    assert f"MISSING: disk, no run recorded, first due by {label(now + 60)}" in late
+
+
+def test_the_digest_reads_the_agenda_once_and_only_for_a_chore_with_no_run_and_no_first_due(tmp_path):
+    khive = FakeKhive()
+    chores, agent = build(tmp_path, khive, [], **{n: Probe(n, full(), every="weekly") for n in "abcd"})
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("a", t - 86400))  # a ran
+    agent.state.put("first_due", {"b": t}, run="-", seq=0)  # b has its first due on record
+    digest_at(chores, agent, t)
+    assert len([op for op in khive.ops if op.startswith("schedule.agenda")]) == 1  # c and d share one read
+    khive.ops.clear()
+    agent.state.put("first_due", {"b": t, "c": t, "d": t}, run="-", seq=0)
+    digest_at(chores, agent, t)
+    assert not [op for op in khive.ops if op.startswith("schedule.agenda")]  # each has a run or a record
+
+
 @pytest.mark.parametrize(
     ("tz", "first", "last", "due"),
     [
@@ -1027,6 +1057,8 @@ def test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_
         ("UTC", "2027-01-28T09:30:00", "2027-02-28T17:45:00", "2027-03-28T09:30:00"),  # the first due's time
         ("UTC", "2028-01-30T09:30:00", "2028-02-29T09:31:00", "2028-03-30T09:30:00"),  # a leap February
         ("UTC", "2027-11-30T09:30:00", "2027-12-30T09:30:03", "2028-01-30T09:30:00"),  # across the year
+        # a run off schedule, before the anchor's day: the store repeats from the anchor, so it moves nothing
+        ("UTC", "2027-01-28T09:30:00", "2027-02-03T12:00:00", "2027-03-28T09:30:00"),
         # a run in January for the 31st: the anchor day clamps to the next month's last day
         ("UTC", "2027-01-31T09:30:00", "2027-01-31T09:30:05", "2027-02-28T09:30:00"),
         ("UTC", "2028-01-31T09:30:00", "2028-01-31T09:31:00", "2028-02-29T09:30:00"),
