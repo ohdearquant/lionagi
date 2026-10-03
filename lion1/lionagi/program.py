@@ -587,13 +587,14 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                 raise _past(node)
             return items
         case ast.Dict(keys=keys, values=values):
-            fields, size = {}, 0
+            fields, sizes, size = {}, {}, 0
             for k, v in zip(keys, values, strict=True):
                 key = _key(node, k)
-                if key in fields:  # a key written again holds only its last value
-                    size -= 1 + len(key) + _size(fields[key])
+                if key in fields:  # a key written again holds only its last value: what that one landed as
+                    size -= sizes[key]  # leaves, whatever a command made of it since
                 fields[key] = await evaluate(v, env, bound)
-                size += 1 + len(key) + _size(fields[key])
+                sizes[key] = 1 + len(key) + _size(fields[key])
+                size += sizes[key]
                 if size > LIMIT:
                     raise _past(node)
             if _size(fields) > LIMIT:  # as a list is

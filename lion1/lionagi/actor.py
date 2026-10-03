@@ -2241,15 +2241,17 @@ class _Walk:
                 reader = _Reader(self)
                 self.named |= node.named
                 fields: dict[str, Any] = {}
+                sizes: dict[str, int] = {}  # what each field landed as
                 size = (
                     0  # what `_size(fields)` counts, kept as the fields land, scanned whole once at the end
                 )
                 past = f"line {node.line}: the OUT{{}} fields together are past the size limit of {LIMIT}"
                 for key, v in node.fields:
-                    if key in fields:  # a key written again holds only its last value
-                        size -= 1 + len(key) + _size(fields[key])
+                    if key in fields:  # a key written again holds only its last value: what that one landed
+                        size -= sizes[key]  # as leaves, whatever a command made of it since
                     fields[key] = await evaluate(v, reader)
-                    size += 1 + len(key) + _size(fields[key])
+                    sizes[key] = 1 + len(key) + _size(fields[key])
+                    size += sizes[key]
                     # counted as a dict literal is: no field after the one that takes it past the limit runs
                     if size > LIMIT:
                         raise EvalError(past)
@@ -2259,7 +2261,14 @@ class _Walk:
                     raise EvalError(past)
                 # what is emitted is a copy of what was measured: a command still settling after the walk
                 # holds the stored value, and grows that, not the output
-                fields = _captured(fields)
+                try:
+                    fields = _captured(fields)
+                except (
+                    Exception
+                ) as e:  # a model's serializer raised, or a nesting past the interpreter's depth
+                    raise EvalError(
+                        f"line {node.line}: the OUT{{}} fields cannot be copied, {type(e).__name__}: {e}"
+                    ) from e
                 self.consume(reader.reads, len(self.run.record))
                 return fields
             elif isinstance(node, Command):

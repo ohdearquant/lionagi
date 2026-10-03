@@ -1313,6 +1313,52 @@ def test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_out
     assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
 
 
+@pytest.mark.parametrize("site", ["literal", "out"])
+def test_a_key_written_again_gives_back_what_it_landed_as_whatever_a_command_made_of_it_since(site):
+    # k lands holding the big list; the command between clears that list through the pointer; k is written
+    # again with a string that fits only if what leaves the count is the size k landed with, not the size
+    # of the emptied list it holds by then
+    big, text = LIMIT // 4, "b" * (LIMIT - 20)  # the list counts two per one-character row
+    inner = f'{{k: *rows, s: DO shrink(rows=*rows), k: "{text}"}}'
+    turn = fenced(f"rows = rows(n={big})", f"OUT{{c: {inner}}}" if site == "literal" else f"OUT{inner}")
+    run = _run(_growing_actor(f"landed-{site}"), turn)
+    assert isinstance(run.outcome, Success), run.retry_error
+    out = run.output["c"] if site == "literal" else run.output
+    assert out == {"k": text, "s": "shrunk"}
+
+
+@pytest.mark.parametrize("site", ["literal", "out"])
+def test_a_key_written_again_after_its_list_grew_lets_no_part_past_the_limit_run(site):
+    # k landed small; the command grew its list past the limit through the pointer; k is written again, and
+    # what leaves the count is the small size it landed with, so the big field after it is refused as it
+    # lands and the command after that never runs
+    inner = (
+        f'{{k: *rows, g: DO grow(rows=*rows, n={LIMIT}), k: "b", big: "c" * {LIMIT}, '
+        "late: DO grow(rows=*rows, n=1)}"
+    )
+    turn = fenced("rows = rows(n=3)", f"OUT{{c: {inner}}}" if site == "literal" else f"OUT{inner}")
+    run = _run(_growing_actor(f"grown-{site}"), turn)
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert "past the size limit" in run.retry_error
+    assert len(run.record.get("rows").content.value) == 4  # grown once; the late command never ran
+
+
+def test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on(monkeypatch):
+    real = actor_module._captured
+
+    def captured(value, memo=None):
+        if isinstance(value, dict) and "deep" in value:  # a nesting past the interpreter's depth
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(value, memo)
+
+    monkeypatch.setattr(actor_module, "_captured", captured)
+    run = _run(_actor("out-uncopyable", []), fenced('OUT{deep: "x"}'))
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == (
+        "line 1: the OUT{} fields cannot be copied, RecursionError: maximum recursion depth exceeded"
+    )
+
+
 def test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output():
     # the command is launched before OUT{} and settles after the walk: the output emitted is a copy of the
     # list, and the settling command grows the stored one
@@ -1733,6 +1779,24 @@ def test_a_write_the_settlement_cut_names_the_budget_it_ran_under_when_a_grant_l
     assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
     assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
     assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when_no_write_was_cut():
+    async def extend(run, bound, amount, reason) -> bool:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass  # the settlement's deadline cancels the request, and it is granted anyway
+        return True
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="too late")', 'OUT{k: "v"}')
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    actor = _nap_actor("settle-late-grant-output")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the cut cancels the request and no write waited on it: nothing is refused, and the output the walk had
+    # built is checked against the bound the late grant raised, and commits
+    assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
+    assert isinstance(run.outcome, Success) and run.output == {"k": "v"} and run.refused == []
 
 
 def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under():
