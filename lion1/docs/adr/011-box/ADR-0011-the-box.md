@@ -208,10 +208,10 @@ to; the person picks `--offline` when the directory holds what the network must 
 
 Serves C1 and C2. `RuntaSandbox` starts a runtime from a Runta image or checkpoint under an egress
 policy the service enforces outside the guest; a box with a policy starts only one reporting it
-(S16). The image is built the first time (S18), then found by name in the service's one-page build
-listing (S19), else built again. `exec` keeps the remote box's timeout seam, files use the runtime's
-file API, and `workdir` raises `SandboxDead` for an ended runtime. Its records come back as bus
-events and need `capture` set.
+(S16). The bench's launcher builds the image once (S18), finds it by name later (S19), and hands it
+to `start`. `exec` keeps the remote box's timeout seam, files use the runtime's file API, and
+`workdir` raises `SandboxDead` for an ended runtime. Its records come back as bus events and need
+`capture` set.
 
 - **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
   under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test), among them
@@ -314,10 +314,11 @@ events and need `capture` set.
 - **S18**: An image build is awaited to its timeout, counted from before the create request. Each
   request ends at it at the latest, by wall clock, as does each 15 s wait, and a failed request is
   retried only while time is left. The build is reported timed out at the deadline plus scheduling
-  latency, and a build that succeeded is reported as such. Two concurrent first builds may both
-  build.
+  latency, and a build that succeeded is reported as such; decoding a response that arrived in time
+  is outside the bound. Two concurrent first builds may both build.
 - **S19**: The service lists at most 100 builds per request, with no cursor. The lookup sorts the
-  page it returns by `updated_at`, read as instants, a row without a time carrying an offset the
-  oldest, and reuses the newest matching build; a matching build the page omits is not found and the
-  image is built again (`test_find_image_does_not_find_a_build_the_page_leaves_out`,
+  page it returns by `updated_at`, read as instants, and reuses the newest matching build; a row
+  whose time is missing, malformed or without an offset sorts oldest. A matching build the page
+  omits is not found and the image is built again
+  (`test_find_image_does_not_find_a_build_the_page_leaves_out`,
   `test_find_image_orders_builds_by_the_instant_and_a_row_without_one_is_the_oldest`).

@@ -307,7 +307,7 @@ class RuntaApi:
         time left to it and at most the usual 60 s, bounds only one socket operation at a time), a backoff
         wait ends there at the latest, and nothing is retried past it. What ends at the deadline is raised:
         the request's failure, or a `TimeoutError` when the deadline fell during a request or had passed
-        before one could begin."""
+        before one could begin. Decoding a response that arrived in time is outside the bound."""
         import httpx
 
         # one key for every attempt of this call: a retried create is the same create
