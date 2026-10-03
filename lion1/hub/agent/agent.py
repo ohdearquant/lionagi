@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
-from lion1.checkpoint import Var, assert_ignored, jsonable, load, save, take, to_history
+from lion1.checkpoint import Var, jsonable, load, save, take, to_history
 from lion1.lndl import plain
 from lion1.notes import FileNoteStore, MemoryNoteStore, NoteStore
 from lion1.record import Directive, Entry, Kind
@@ -48,7 +48,7 @@ from lion1.record import Directive, Entry, Kind
 from ..areas import partial
 from ..backend.claude_code import _prompt_tokens
 from ..chat import entry_row
-from ..khive import Khive, lit
+from ..khive import Khive, assert_ignored, context_dir, lit
 
 __all__ = (
     "AgentError",
@@ -958,10 +958,10 @@ class Agent:
             return ()
         self._restored = True
         cwd = getattr(self.khive, "cwd", None)
-        if cwd is None or not (Path(cwd) / ".khive" / "context" / "latest.json").exists():
+        if cwd is None or not (context_dir(cwd) / "latest.json").exists():
             return ()
         try:
-            return to_history(load(Path(cwd)))
+            return to_history(load(context_dir(cwd)))
         except Exception as e:
             self.errors.append(f"restore: {type(e).__name__}: {e}")
             self._say(f"restore failed, the run starts fresh: {self.errors[-1]}")
@@ -978,7 +978,7 @@ class Agent:
         d = Path(cwd)
         try:
             assert_ignored(d)
-            ctx = d / ".khive" / "context"
+            ctx = context_dir(d)
             ctx.mkdir(parents=True, exist_ok=True)
             log = ctx / f"record-{run.id}.jsonl"
             tmp = log.with_name(f".{log.name}.{os.getpid()}.tmp")
@@ -1039,7 +1039,7 @@ class Agent:
                 record=run.record,
                 fold_inputs=run.request.fold_inputs,
             )
-            self._say(f"checkpoint {save(ckpt, d).stem} ({why}) at seq {run.record.seq}")
+            self._say(f"checkpoint {save(ckpt, ctx).stem} ({why}) at seq {run.record.seq}")
         except Exception as e:
             self.errors.append(f"checkpoint {why}: {type(e).__name__}: {e}")
             self._say(self.errors[-1])

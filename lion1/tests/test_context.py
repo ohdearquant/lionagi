@@ -3,7 +3,6 @@ reader works on a synthetic transcript holding one row of every kind a live one 
 text throughout; each source harvests its kind, and an absent source is a value."""
 
 import asyncio
-import functools
 import io
 import json
 import os
@@ -38,15 +37,23 @@ from hub.backend.claude_code.checkpoint import (
     transcript_turns,
     watches,
 )
-from hub.khive import KhiveError
+from hub.khive import KhiveError, NotIgnored, assert_ignored, context_dir
 from lion1 import Actor, Kind, Record, Reply, Result, fold
 from lion1 import checkpoint as core
-from lion1.checkpoint import LAZY, CheckpointError, NotIgnored, Var, take, to_history
+from lion1.checkpoint import LAZY, CheckpointError, Var, take, to_history
 from tests.test_agent import REPLY, FakeKhive, mail, profile_for
 from tests.test_areas import call, registry, serve_on
 
-load = functools.partial(core.load, kinds=SESSION_KINDS, whys=SESSION_WHYS)
-save = functools.partial(core.save, kinds=SESSION_KINDS, whys=SESSION_WHYS)
+
+def load(directory, id=None):
+    """An actor directory's checkpoint, as `lion context` reads it: its folder, the session's lists."""
+    return core.load(context_dir(directory), id, kinds=SESSION_KINDS, whys=SESSION_WHYS)
+
+
+def save(c, directory):
+    return core.save(c, context_dir(directory), kinds=SESSION_KINDS, whys=SESSION_WHYS)
+
+
 FIXTURE = Path(__file__).parent / "fixtures" / "session_transcript.jsonl"
 AT_TAKE = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)  # the fixture's timed Monitor has not timed out yet
 ACTOR = "lambda:x"
@@ -739,7 +746,7 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     d = actor_dir(repo)
     ckpt = take_session({}, [], actor=ACTOR, why="manual", budget=100)
     with pytest.raises(NotIgnored, match="does not ignore it"):
-        save(ckpt, d)
+        assert_ignored(d)
     assert not (d / ".khive" / "context").exists()
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--dir", str(d), "--transcript", str(FIXTURE)])
@@ -752,6 +759,7 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     # writes `.khive/context/`, the form the remedy names)
     (repo / ".gitignore").write_text("**/.khive/context/\n")
     assert not (d / ".khive" / "context").exists()
+    assert_ignored(d)
     written = save(ckpt, d)
     assert written.is_file() and json.loads((written.parent / "latest.json").read_text()) == {
         "id": written.stem
@@ -760,7 +768,8 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     outside = tmp_path / "plain"
     probe = subprocess.run(["git", "-C", str(tmp_path), "rev-parse"], capture_output=True, text=True)
     assert "not a git repository" in probe.stderr  # the control: tmp_path itself is outside a repository
-    assert save(ckpt, actor_dir(outside)).is_file()
+    away = actor_dir(outside)
+    assert assert_ignored(away) is None and save(ckpt, away).is_file()
 
 
 def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path, monkeypatch):
@@ -978,6 +987,26 @@ def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
     # taken by the stop, so it holds everything but the closure the run appends when it returns
     assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq - 1 and agent.errors == []
     assert len(backend.calls) == 1  # the second round's notification ended the run before the model
+
+
+def test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_says_so(
+    tmp_path, monkeypatch
+):
+    isolated_git(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+
+    def one_run() -> Agent:
+        backend = Growing((FAILS.format("g1"), 1_000), ("never read", 1_000))
+        agent = resident(FakeKhive(mail("lambda:a", "say hi back"), cwd=repo), backend, max_rounds=1)
+        serve_one(agent)
+        return agent
+
+    refused = one_run()
+    assert len(refused.errors) == 1 and refused.errors[0].startswith("checkpoint end: NotIgnored: ")
+    assert not context_dir(repo).exists()  # neither the record nor the checkpoint was written
+    (repo / ".gitignore").write_text(".khive/context/\n")
+    assert one_run().errors == [] and load(repo).why == "end"  # the control: ignored, it lands
 
 
 class Book(BaseModel):
