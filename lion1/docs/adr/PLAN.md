@@ -3,7 +3,7 @@
 ## What the records are
 
 `docs/adr/` is the design of the loop written once, in the present tense, from the package
-`lionagi/` as it stands; the amended history it was distilled from is not in this repository. A
+`src/lion1/` as it stands; the amended history it was distilled from is not in this repository. A
 record says what is, why,
 and what it costs, in the register the tooling in `docs/adr/_scripts/` enforces: Context, Definitions,
 Assumptions, Claims, Decisions, Alternatives, Consequences, with anchors on the C and D items. A fact the

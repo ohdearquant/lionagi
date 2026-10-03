@@ -19,8 +19,8 @@ from hub.agent import desk as dm
 from hub.agent.chores import Bounded
 from hub.agent.instruments import GH, VerdictFreshness
 from hub.khive import KhiveError
-from lionagi import RunRequest
-from lionagi.notes import FileNoteStore
+from lion1 import RunRequest
+from lion1.notes import FileNoteStore
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Scripted
 from tests.test_desk import (
     LIVE,

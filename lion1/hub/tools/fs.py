@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 from .code import LocalTree, Tree
 

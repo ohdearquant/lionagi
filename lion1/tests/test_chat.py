@@ -14,9 +14,9 @@ import pytest
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
-from lionagi.checkpoint import CheckpointError, load, save, take, to_history
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
+from lion1.checkpoint import CheckpointError, load, save, take, to_history
 from tests.test_actor import scripted
 
 
@@ -272,7 +272,7 @@ def test_a_console_notice_reaches_the_model_as_inbound_in_the_first_round(tmp_pa
 
 
 def test_context_directives_ride_the_log_so_a_resumed_view_folds_the_same(tmp_path):
-    from lionagi.record import fold
+    from lion1.record import fold
 
     (tmp_path / "a.txt").write_text("alpha\n")
     (tmp_path / "b.txt").write_text("beta\n")
@@ -349,7 +349,7 @@ def test_each_entry_is_said_as_it_lands_not_at_the_next_round_boundary(tmp_path)
     # silent about a command that had run
     from pydantic import BaseModel
 
-    from lionagi import Actor, Context, Profile
+    from lion1 import Actor, Context, Profile
 
     class Fast(BaseModel):
         pass
@@ -936,7 +936,7 @@ def test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_u
 
 
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
-    from lionagi.record import fold
+    from lion1.record import fold
 
     (tmp_path / "a.txt").write_text("alpha\n")
     (tmp_path / "b.txt").write_text("beta\n")
@@ -1094,8 +1094,8 @@ def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp
 
     from lion_cli.chat import status_line
 
-    from lionagi import Reply
-    from lionagi.actor import Handle, Inbound
+    from lion1 import Reply
+    from lion1.actor import Handle, Inbound
 
     (tmp_path / "a.txt").write_text("alpha\n")
 
@@ -1257,7 +1257,7 @@ def test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked(tmp
 def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it():
     from lion_cli.view import Console
 
-    from lionagi.record import Entry
+    from lion1.record import Entry
 
     """On a terminal the round in flight shows a spinner at the bottom; a verbose result prints its
     head to the scrollback and parks its detail under the spinner until the next one lands; the
@@ -1267,7 +1267,7 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
 
     from rich.console import Console as RichConsole
 
-    from lionagi.actor import Result
+    from lion1.actor import Result
 
     def result(seq: int, alias: str, value, spec="read") -> Entry:
         return Entry(seq=seq, kind=Kind.RESULT, round=1, alias=alias, content=Result(spec, True, value))

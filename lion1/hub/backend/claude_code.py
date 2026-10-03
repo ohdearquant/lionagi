@@ -41,9 +41,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from lionagi.actor import Actor, Message, Reply, Result, Run, SessionPlan
-from lionagi.lndl import Lact
-from lionagi.record import Kind
+from lion1.actor import Actor, Message, Reply, Result, Run, SessionPlan
+from lion1.lndl import Lact
+from lion1.record import Kind
 
 __all__ = (
     "ClaudeCodeError",

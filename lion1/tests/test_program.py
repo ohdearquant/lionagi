@@ -10,14 +10,14 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-import lionagi.actor as actor_module
+import lion1.actor as actor_module
 from hub.chat import entry_row
-from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, program
-from lionagi.actor import ProfileError, Result, _Reader
-from lionagi.checkpoint import entry_of
-from lionagi.lndl import LNDLError
-from lionagi.notes import FileNoteStore, MemoryNoteStore
-from lionagi.program import LIMIT, Command, EvalError, Script, Value, Write, evaluate, guidance, read
+from lion1 import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, program
+from lion1.actor import ProfileError, Result, _Reader
+from lion1.checkpoint import entry_of
+from lion1.lndl import LNDLError
+from lion1.notes import FileNoteStore, MemoryNoteStore
+from lion1.program import LIMIT, Command, EvalError, Script, Value, Write, evaluate, guidance, read
 
 PROGRAM = Profile("p", language="program")
 

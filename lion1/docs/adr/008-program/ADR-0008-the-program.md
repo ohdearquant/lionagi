@@ -35,7 +35,7 @@ view, and a reading that fixes small slips without executing a message it could 
 The grammar exists as a parser with no evaluator and no consumer: the symbolic phase of the `krons`
 LNDL package (lexer, Pratt parser, AST with `if`/`elif`/`else` by indent, inline `if`, `return`,
 `note["key"]`, `DO`). This record adopts it as the program form, compiled onto the existing
-dispatcher. Source: `lionagi/lndl.py`, `Actor._dispatch` and `_perform` in `lionagi/actor.py`,
+dispatcher. Source: `src/lion1/lndl.py`, `Actor._dispatch` and `_perform` in `src/lion1/actor.py`,
 `krons/lndl/symbolic_*.py` and `krons/lndl/fuzzy.py`.
 
 ## Definitions
@@ -185,7 +185,7 @@ cycle over reference and control edges and refuses the message (C1).
 
 ## Decisions
 
-### D1: A compiler in `lionagi/lndl/`, its graph handed to the existing dispatcher ^d1
+### D1: A compiler in `src/lion1/lndl/`, its graph handed to the existing dispatcher ^d1
 
 Serves C1, C3, C6 and C7. `read` normalises (C2), the parser builds the AST, and `compile` lowers it
 to the graph, an `if` becoming a conditional node whose control result gates its suffix (C7).
@@ -195,8 +195,9 @@ consumption, on the next notification or the closure ([[ADR-0007-the-record#^d2|
 resumed chat folds it and recompiles nothing; the record keeps four kinds
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
-- **Landing evidence**: `lionagi/program.py` (beside `lionagi/lndl.py`, which a `lionagi/lndl/`
-  package would shadow); `tests/test_program.py`: `test_the_records_example_resolves_in_one_turn`,
+- **Landing evidence**: `src/lion1/program.py` (beside `src/lion1/lndl.py`, which a
+  `src/lion1/lndl/` package would shadow); `tests/test_program.py`:
+  `test_the_records_example_resolves_in_one_turn`,
   `test_a_syntax_error_refuses_the_whole_message_and_nothing_runs`,
   `test_a_check_that_fails_refuses_the_whole_message_naming_the_line`,
   `test_a_build_past_the_size_limit_settles_the_node_invalid`,

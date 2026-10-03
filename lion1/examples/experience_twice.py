@@ -23,8 +23,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from lionagi import Actor, Context, Kind, Message, Profile, Run, RunRequest
-from lionagi.experience import Experience, FileExperienceStore
+from lion1 import Actor, Context, Kind, Message, Profile, Run, RunRequest
+from lion1.experience import Experience, FileExperienceStore
 
 root = Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process

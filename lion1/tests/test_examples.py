@@ -31,7 +31,10 @@ OWN_TESTS = ("bench_agent",)
 
 
 def run(script: str, *args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    env = {**env, "PYTHONPATH": os.pathsep.join(filter(None, (str(ROOT), env.get("PYTHONPATH"))))}
+    env = {
+        **env,
+        "PYTHONPATH": os.pathsep.join(filter(None, (str(ROOT), str(ROOT / "src"), env.get("PYTHONPATH")))),
+    }
     return subprocess.run(
         [sys.executable, str(EXAMPLES / f"{script}.py"), *args],
         cwd=ROOT,

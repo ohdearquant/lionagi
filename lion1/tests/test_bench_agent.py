@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from hub.agent import AgentError
-from lionagi import Kind, Success
+from lion1 import Kind, Success
 from tests.test_agent import FakeKhive, Scripted, mail
 
 spec = importlib.util.spec_from_file_location(

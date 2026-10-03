@@ -34,7 +34,7 @@ from hub.backend import (
     OpenRouter,
     OpenRouterError,
 )
-from lionagi import Actor, Context, Kind, Profile, RunRequest, Success
+from lion1 import Actor, Context, Kind, Profile, RunRequest, Success
 
 TEXT = "the loop goes round and every round is one message in and one message out"
 

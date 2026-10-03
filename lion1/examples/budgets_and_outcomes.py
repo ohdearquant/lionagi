@@ -16,7 +16,7 @@ import asyncio
 
 from pydantic import BaseModel
 
-from lionagi import Actor, Context, Kind, Profile, RunRequest, fold
+from lion1 import Actor, Context, Kind, Profile, RunRequest, fold
 
 
 class Echo(BaseModel):

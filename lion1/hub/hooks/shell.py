@@ -45,8 +45,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from lionagi import Actor, Result, Run
-from lionagi.lndl import Lact
+from lion1 import Actor, Result, Run
+from lion1.lndl import Lact
 
 __all__ = ("HERE", "REFUSE", "EVENTS", "Hook", "load", "run_hook", "install")
 
@@ -56,7 +56,7 @@ EVENTS = ("before", "after", "round")
 # a reference row, as hooks.toml writes it
 _BUNDLED = re.compile(r"python[0-9.]*\s+-m\s+(hub\.hooks\.scripts\.\w+)")
 _PROBE = """import importlib.util as u, json, sys
-found = [(n, s) for n in ("hub", "lionagi") if (s := u.find_spec(n))]
+found = [(n, s) for n in ("hub", "lion1") if (s := u.find_spec(n))]
 where = [[n, p] for n, s in found for p in ([s.origin] if s.origin else s.submodule_search_locations)]
 print(json.dumps(where + [["an import path", p] for p in sys.path]))"""  # finds, never imports
 

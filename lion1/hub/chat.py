@@ -19,9 +19,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from lionagi.actor import Actor, Handle, Inbound, Profile, Result, Run, RunRequest
-from lionagi.checkpoint import entry_of
-from lionagi.record import Directive, Entry, Kind
+from lion1.actor import Actor, Handle, Inbound, Profile, Result, Run, RunRequest
+from lion1.checkpoint import entry_of
+from lion1.record import Directive, Entry, Kind
 
 __all__ = ("END", "chat", "line", "entry_row", "load_log")
 

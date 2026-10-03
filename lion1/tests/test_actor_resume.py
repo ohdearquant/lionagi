@@ -9,8 +9,8 @@ from pydantic import BaseModel
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lionagi import Actor, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 
@@ -197,8 +197,8 @@ def test_a_rewritten_note_resolves_to_its_latest_value_after_resume(tmp_path):
 def test_a_two_out_turn_an_older_reader_ran_keeps_its_values_on_resume_and_a_refused_one_does_not():
     from dataclasses import replace
 
-    from lionagi import Kind
-    from lionagi.checkpoint import entry_of
+    from lion1 import Kind
+    from lion1.checkpoint import entry_of
 
     calls: list[str] = []
     actor = _resume_actor("resume-two-outs", calls)

@@ -254,7 +254,7 @@ whole life.
   replay, lost receipts, restart, cap refusal and transport refusal tests;
   `tests/test_bench_agent.py`.
 
-### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `lionagi/checkpoint.py` ^d5
+### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `src/lion1/checkpoint.py` ^d5
 
 Serves C7. The request carries `wait=_wait`, `fold_inputs` and no declared output, with a stop that
 ends a burst past `max_rounds` or the day's cap; `_run_batch` takes the same `end` checkpoint when

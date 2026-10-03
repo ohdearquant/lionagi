@@ -22,8 +22,8 @@ from hub.guidance import guidance
 from hub.hooks import install, load
 from hub.khive import Khive
 from hub.tools import LocalTree, files, khive_ops
-from lionagi import Actor, Profile
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Profile
+from lion1.actor import DEFAULT_HANDLERS
 
 __all__ = (
     "build",

@@ -36,7 +36,7 @@ from hub.context import (
     watches,
 )
 from hub.khive import Khive, KhiveError
-from lionagi.checkpoint import (
+from lion1.checkpoint import (
     KINDS,
     WHYS,
     CheckpointError,

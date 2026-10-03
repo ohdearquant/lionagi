@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from hub.agent import Agent, AgentError
 from hub.backend import OpenRouter
 from hub.khive import Khive, lit
-from lionagi import Actor, Context, Profile
+from lion1 import Actor, Context, Profile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIR = ROOT / ".khive" / "agents" / "bench"

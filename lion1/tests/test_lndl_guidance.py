@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from lionagi.lndl import Pointer, guidance, parse, parse_call
+from lion1.lndl import Pointer, guidance, parse, parse_call
 
 # The OUT example line is padded to a column; the padding is checked on its own below, so the golden
 # texts compare it squeezed to one space.

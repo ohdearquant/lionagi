@@ -15,7 +15,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 __all__ = ("ReadLines", "Search", "Edit", "Tree", "LocalTree", "numbered", "reend", "replace_once", "code")
 

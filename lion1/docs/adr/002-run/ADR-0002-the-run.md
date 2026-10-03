@@ -26,7 +26,7 @@ the four ways it ends.
 profile. The job and its bounds are [[ADR-0003-the-bounds|ADR-0003]], the turn's grammar
 [[ADR-0004-the-language|ADR-0004]], the order a command goes through
 [[ADR-0005-command-handling|ADR-0005]], the notification [[ADR-0006-the-notification|ADR-0006]].
-Source: `Actor.run` in `lionagi/actor.py`.
+Source: `Actor.run` in `src/lion1/actor.py`.
 
 ## Definitions
 
@@ -155,7 +155,7 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
 
 ### D2: A retry is no outcome, so `Retry` is removed ^d2
 
-Serves C4. `Retry` was among the exports of `lionagi` and `lionagi.actor` and sat in the `Outcome`
+Serves C4. `Retry` was among the exports of `lion1` and `lion1.actor` and sat in the `Outcome`
 union, yet no run ever constructed one: a retry is the `round.retry` event and `run.retry_error`
 (S1). It is removed with no compatibility shim: the package is alpha and the name never carried a
 value.

@@ -6,8 +6,8 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel
 
-from lionagi import Actor, Run
-from lionagi.lndl import Lact
+from lion1 import Actor, Run
+from lion1.lndl import Lact
 
 __all__ = ("SECRET_WORDS", "no_secrets")
 

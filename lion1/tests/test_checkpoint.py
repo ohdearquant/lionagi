@@ -18,9 +18,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, computed_field, model_serializer
 
-from lionagi import checkpoint as module
-from lionagi.actor import Result
-from lionagi.checkpoint import (
+from lion1 import checkpoint as module
+from lion1.actor import Result
+from lion1.checkpoint import (
     DIRECTIVES,
     KINDS,
     LAZY,
@@ -38,7 +38,7 @@ from lionagi.checkpoint import (
     take,
     to_history,
 )
-from lionagi.record import Directive, Entry, Kind, Record
+from lion1.record import Directive, Entry, Kind, Record
 
 ACTOR = "actor:one"
 AT = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)
@@ -528,7 +528,7 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
         var("mcp", "fact", ["khive", "lion"]),
         var("loop", "fact", "/x/.khive/loop/x_loop.md"),
         var("next", "fact", "placeholder next"),
-        var("branch", "fact", "lionagi/checkpoint"),
+        var("branch", "fact", "src/lion1/checkpoint"),
         *[var(f"directive.{i}", "directive", f"placeholder word {i}", "hook", f"10:0{i}") for i in range(9)],
         var(
             "lane.t1",
@@ -575,7 +575,7 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
         "Topic: placeholder-topic",
         "",
         "Declared:",
-        "- branch: lionagi/checkpoint",
+        "- branch: src/lion1/checkpoint",
         "",
         "The last 3 exchange(s) as they stood; 1 earlier folded, the transcript keeps them: /t/x.jsonl",
         "[2026-09-24T10:00:02Z] in:",

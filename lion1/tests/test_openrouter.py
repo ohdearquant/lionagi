@@ -7,9 +7,9 @@ import pytest
 from hub.backend import OpenRouter, OpenRouterError
 from hub.backend import openrouter as mod
 from hub.chat import entry_row
-from lionagi import Actor, Kind, Message, Profile, RunRequest
-from lionagi.checkpoint import entry_of
-from lionagi.lndl import parse
+from lion1 import Actor, Kind, Message, Profile, RunRequest
+from lion1.checkpoint import entry_of
+from lion1.lndl import parse
 
 
 def _answers(*replies):

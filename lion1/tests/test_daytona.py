@@ -18,8 +18,8 @@ import pytest
 
 from hub import BoxTree, DaytonaSandbox, code, shell
 from hub.tools import daytona as daytona_mod
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 

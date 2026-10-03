@@ -23,7 +23,7 @@ import urllib.request
 from asyncio import CancelledError  # by name: tests stand in for the module's `asyncio`
 from dataclasses import dataclass, field
 
-from lionagi.actor import Message, Reply
+from lion1.actor import Message, Reply
 
 from .markup import normalize, tool_calls_text
 
@@ -269,7 +269,7 @@ def _post(body: dict, timeout: float) -> dict:
             "Authorization": f"Bearer {api_key()}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/ohdearquant/lionagi",
-            "X-Title": "lionagi v1 bench",
+            "X-Title": "lion1 bench",
         },
         method="POST",
     )

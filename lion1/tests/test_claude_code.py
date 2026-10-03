@@ -13,7 +13,7 @@ import pytest
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
 from hub.chat import entry_row, load_log
-from lionagi import Actor, Kind, Message, Profile, RunRequest
+from lion1 import Actor, Kind, Message, Profile, RunRequest
 
 
 def _fake_exec(calls: list[dict]):
@@ -67,9 +67,9 @@ def test_round_one_opens_the_session_and_later_rounds_resume_it_with_only_the_ne
 def test_a_failed_context_directive_does_not_restart_the_session(monkeypatch, tmp_path):
     """A hide of a ref that does not exist fails and leaves the view as it was: its result renders
     with no spec, so the session goes on; the control is the same hide of a real ref, which does."""
-    from lionagi import Kind, RunRequest
-    from lionagi.actor import _messages
-    from lionagi.record import fold
+    from lion1 import Kind, RunRequest
+    from lion1.actor import _messages
+    from lion1.record import fold
     from tests.test_actor import scripted
     from tests.test_chat import reader
 

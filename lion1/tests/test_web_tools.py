@@ -26,9 +26,9 @@ import pytest
 
 from hub import tools
 from hub.tools.web import Brave, Hit, Jina, SearXNG, Tavily, WebError, WebFetch, WebSearch, provider_from_env
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
-from lionagi.spec import render_guidance
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
+from lion1.spec import render_guidance
 from tests.test_actor import scripted
 
 w = importlib.import_module("hub.tools.web")  # `hub.tools.web` the attribute is the function

@@ -39,11 +39,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lionagi.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
-from lionagi.checkpoint import Var, assert_ignored, jsonable, load, save, take, to_history
-from lionagi.lndl import plain
-from lionagi.notes import FileNoteStore, MemoryNoteStore, NoteStore
-from lionagi.record import Directive, Entry, Kind
+from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
+from lion1.checkpoint import Var, assert_ignored, jsonable, load, save, take, to_history
+from lion1.lndl import plain
+from lion1.notes import FileNoteStore, MemoryNoteStore, NoteStore
+from lion1.record import Directive, Entry, Kind
 
 from ..areas import partial
 from ..backend.claude_code import _prompt_tokens

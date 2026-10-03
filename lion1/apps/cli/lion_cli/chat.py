@@ -25,9 +25,9 @@ from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
 from hub.tools.code import Tree
-from lionagi import Actor, Kind, Profile, lndl
-from lionagi.actor import DEFAULT_HANDLERS, Run, _text
-from lionagi.record import Entry
+from lion1 import Actor, Kind, Profile, lndl
+from lion1.actor import DEFAULT_HANDLERS, Run, _text
+from lion1.record import Entry
 
 from .agent import backend_for
 from .config import instructions

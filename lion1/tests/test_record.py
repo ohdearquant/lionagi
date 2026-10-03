@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from lionagi.record import Directive, Entry, Kind, Record, ViewEntry, directives, fold
+from lion1.record import Directive, Entry, Kind, Record, ViewEntry, directives, fold
 
 # The record's own names, spelled out here so the tests do not borrow the module's table (ADR-0007/C1).
 PREFIX = {Kind.INPUT: "_in", Kind.SYSTEM: "_sys", Kind.TEXT: "_m", Kind.RESULT: "_r"}

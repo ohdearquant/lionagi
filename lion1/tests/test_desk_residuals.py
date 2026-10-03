@@ -18,8 +18,8 @@ from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded
 from hub.agent.desk import Answer, Clarify, Leave, after
 from hub.khive import LOST, Khive, KhiveError
-from lionagi import Kind, RunRequest
-from lionagi.notes import FileNoteStore
+from lion1 import Kind, RunRequest
+from lion1.notes import FileNoteStore
 from tests.test_desk import (
     ASKER,
     DONE,

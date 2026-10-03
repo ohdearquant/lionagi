@@ -14,7 +14,7 @@ import pytest
 from hub.backend import Codex, CodexError
 from hub.backend import codex as codex_mod
 from hub.backend.codex import DISABLED, INSTRUCTIONS
-from lionagi import Actor, Message, Profile, RunRequest
+from lion1 import Actor, Message, Profile, RunRequest
 
 # The fake keeps a per-scratch attempt counter beside `last.txt`, so a prompt can ask for a
 # failure on the first attempt and an answer on the second. With FAKE_CODEX_LOG set it also writes

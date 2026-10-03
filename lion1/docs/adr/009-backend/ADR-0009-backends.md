@@ -32,7 +32,7 @@ turn ([[ADR-0002-the-run|ADR-0002]]); a native tool call in its answer is read b
 ([[ADR-0004-the-language|ADR-0004]]); the fold it must follow is [[ADR-0007-the-record|ADR-0007]].
 Which model a name resolves to, through which route and on whose key, and whether the model that
 answered is the one named, are decided below this boundary: here a backend is built with a model
-name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionagi/actor.py`;
+name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/lion1/actor.py`;
 `hub/backend/openrouter.py`, `hub/backend/claude_code.py`, `hub/backend/codex.py`.
 
 ## Definitions

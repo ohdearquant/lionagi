@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from lionagi.lndl import (
+from lion1.lndl import (
     Aliases,
     LNDLError,
     Lvar,

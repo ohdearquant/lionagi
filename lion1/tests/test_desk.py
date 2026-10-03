@@ -21,8 +21,8 @@ from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
 from hub.agent.verdicts import Verdicts
 from hub.khive import LOST, Khive, KhiveError
-from lionagi import Actor, Kind, RunRequest
-from lionagi.notes import FileNoteStore
+from lion1 import Actor, Kind, RunRequest
+from lion1.notes import FileNoteStore
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Probe, Scripted, full, mail
 
 ASKER = "lambda:a"  # an agent that wrote to the owner; not in the agent's trusted set

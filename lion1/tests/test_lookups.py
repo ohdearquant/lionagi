@@ -13,7 +13,7 @@ import pytest
 from hub.agent import instruments as instr
 from hub.agent.chores import Chores, Outcome
 from hub.agent.lookups import TAIL, Adrs, Decisions, Issues, Record, stem, terms
-from lionagi import MemoryNoteStore
+from lion1 import MemoryNoteStore
 from tests.test_chores import DONE, OWNER, SELF, FakeKhive, Probe, full, mail
 from tests.test_desk import ASKER, SWEEP, FakeReader, build, inbox_row, results
 from tests.test_instruments import FakeSh
