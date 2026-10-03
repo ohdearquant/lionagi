@@ -576,3 +576,6 @@ least two and at most all of them.
   `Agent.wake` and
   `test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and_answers_it_once` for
   a chair's in-run wait.
+- **S16**: A GET is served whatever its Origin, as C11 names a POST, and no answer, `/events`
+  included, carries an `Access-Control-*` header, so a page elsewhere cannot read one; pinned by
+  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
