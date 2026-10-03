@@ -686,7 +686,8 @@ async def _more(req: RunMore, ctx: Context) -> str:
         run.bounds[req.bound] = now + amount
         if late:
             # the deadline passed before the grant landed: it raises the bound for what follows the turn, and
-            # each command the turn still has pending, waited for or not, is refused before its handler starts
+            # each command the turn still has pending, waited for or not, is refused if its handler has not
+            # started; one already in its handler is settled by the turn's wait or the run's end
             for alias in run.pending:
                 if alias != ctx.alias:
                     run.halts.setdefault(alias, []).append(lambda: True)
