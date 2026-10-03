@@ -1167,6 +1167,37 @@ def test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable(t
     assert lines == [f"{OWNER} w not judged: ledger unreadable"]
 
 
+@pytest.mark.parametrize(
+    ("at", "exists"),
+    [
+        ("2026-03-08 02:30:00", False),  # the hour the spring change skips
+        ("2026-03-08 02:00:00", False),  # its first second
+        ("2026-03-08 01:59:59", True),
+        ("2026-03-08 03:30:00", True),
+        ("2026-11-01 01:30:00", True),  # the hour the autumn change repeats: a time that exists, twice
+    ],
+    ids=["skipped-hour", "first-skipped-second", "second-before-skip", "after-skip", "repeated-hour"],
+)
+def test_a_label_in_a_skipped_hour_names_no_time_and_one_in_a_repeated_hour_names_one(
+    tmp_path, monkeypatch, at, exists
+):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+        row = {"at": at, "chore": "w", "findings": [], "control": True, "escalate": False}
+        chores.ledger.write_text(json.dumps(row) + "\n")  # no `ts`: a row from before rows carried one
+        t = datetime(2026, 11, 2, 12, 0).timestamp()
+        head, *_ = digest_at(chores, agent, t, day=at[:10]).splitlines()
+        if exists:
+            assert head.endswith(": 1 check(s); a MISSING line is the finding")
+        else:
+            assert ": ledger unreadable (ValueError: a ledger row has no usable at: " in head
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 def test_a_row_the_digest_cannot_select_by_its_label_is_not_a_chore_that_never_ran(tmp_path):
     chores, agent = build(tmp_path, FakeKhive(), [], a=Probe("a", full(), every=None))
     t = datetime(2026, 9, 14, 9, 0).timestamp()
@@ -1807,6 +1838,36 @@ _MONTHS = {
         "0001-01-01T00:00:00+05:00",
         "2028-06-01T00:00:00Z",
     ),
+    # a firing on a short month's last day may be a clamped later day: the true first lies anywhere from the
+    # creation on, so the creation stands in
+    "clamped-into-a-leap-february": (
+        "2028-02-29T09:31:00+00:00",
+        "2028-01-30T09:30:00Z",
+        "2028-01-30T09:30:00Z",
+    ),
+    "clamped-into-february": ("2027-02-28T09:31:00+00:00", "2027-01-30T09:30:00Z", "2027-01-30T09:30:00Z"),
+    "clamped-into-a-30-day-month": (
+        "2027-04-30T09:31:00+00:00",
+        "2027-03-31T09:30:00Z",
+        "2027-03-31T09:30:00Z",
+    ),
+    "two-months-back-lands-before-creation": (
+        "2027-02-28T09:00:00+00:00",
+        "2026-12-30T12:00:00Z",
+        "2026-12-30T12:00:00Z",
+    ),
+    # no clamp: the day is not its month's last, or no later day than the 31st exists, so the firing stands
+    "day-29-created-after-its-day": (
+        "2026-04-29T09:31:00+00:00",
+        "2026-03-30T09:30:00Z",
+        "2026-04-29T09:31:00Z",
+    ),
+    "thirty-first-stands": ("2027-01-31T09:00:00+00:00", "2026-12-31T12:00:00Z", "2027-01-31T09:00:00Z"),
+    "last-day-with-a-step-back-after-creation": (
+        "2027-04-30T09:31:00+00:00",
+        "2027-03-01T09:00:00Z",
+        "2027-03-30T09:31:00Z",
+    ),
 }
 
 
@@ -1822,6 +1883,21 @@ def test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admit
     assert agent.state.get("first_due").value == {"m": want}
     text = digest_at(chores, agent, want + 301)  # a second past the grace: the first firing is the finding
     assert f"MISSING: m, no run recorded, first due by {label(want)}" in text.splitlines()
+
+
+def test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation(
+    tmp_path,
+):
+    # first fired Jan 30; Feb 29 is the leap year's clamp of 30
+    born = datetime(2028, 1, 30, 9, 30, tzinfo=UTC)
+    row = ("tick: m", SELF, "pending", "2028-02-29T09:31:00+00:00", None, "monthly", iso(born.timestamp()))
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], m=Probe("m", full(), every="monthly"))
+    agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
+    asyncio.run(chores.ensure_ticks())
+    assert agent.state.get("first_due").value == {"m": born.timestamp()}
+    month_on = datetime(2028, 2, 29, 9, 30, tzinfo=UTC).timestamp() + 300  # a calendar month, and the grace
+    line = f"MISSING: m, no run recorded, first due by {label(born.timestamp())}"
+    assert line in digest_at(chores, agent, month_on).splitlines()
 
 
 def test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick(tmp_path):
@@ -1947,8 +2023,25 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
         (True, True),
         (float("nan"), True),
         (float("inf"), True),
+        (-(10**20), True),  # a number no UTC date names is no record, however early it reads
+        (-1e11, True),
+        (10**20, True),
+        (_END + 1, True),
     ],
-    ids=["a-period-run-late", "a-second-late", "equal", "earlier", "text", "bool", "nan", "inf"],
+    ids=[
+        "a-period-run-late",
+        "a-second-late",
+        "equal",
+        "earlier",
+        "text",
+        "bool",
+        "nan",
+        "inf",
+        "below-year-1-huge",
+        "below-year-1",
+        "1e20",
+        "year-10000",
+    ],
 )
 def test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing(
     tmp_path, kept, replaced

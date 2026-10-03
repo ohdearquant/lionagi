@@ -363,7 +363,7 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`,
   `test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_and_the_grace`).
 - **S17**: A tick `ensure_ticks` finds pending gives its chore a first due from its own row, and the
-  earlier of that and any first due on record is kept; a record that is no finite number is none.
+  earlier of that and any first due on record is kept; a record that is no instant (S23) is none.
   The store moves `trigger_at` on after each delivery, so a fixed period's first due is the trigger
   less whole periods, while not before the row's `created_at`. The earliest of a tick's rows counts;
   a row naming no instant gives none
@@ -372,16 +372,17 @@ bypasses the handler: no refusals, no row, no send.
   `test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing`,
   `test_a_tick_made_now_replaces_a_later_first_due_on_record_and_keeps_an_earlier_one`).
 - **S18**: A row the digest can judge from has a non-blank `chore`, an `at` in the form a check
-  writes, `YYYY-MM-DD HH:MM:SS` naming a time that exists, a `findings` list of strings, and boolean
-  `control` and `escalate`. A `ts`, where it has one, is a finite number. Its time, `ts` or else
-  `at`, is from 1970 to before the year 9999, and falls on the day `at` names, the day the digest
-  selects the row by
+  writes, `YYYY-MM-DD HH:MM:SS` naming a time the clock has, none in a skipped hour, a `findings`
+  list of strings, and boolean `control` and `escalate`. A `ts`, where it has one, is a finite
+  number. Its time, `ts` or else `at`, is from 1970 to before the year 9999, and falls on the day
+  `at` names, the day the digest selects the row by
   (`test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`,
   `test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable`,
   `test_a_row_the_digest_cannot_select_by_its_label_is_not_a_chore_that_never_ran`,
   `test_a_label_and_an_instant_on_different_days_make_the_ledger_unreadable_naming_both`,
   `test_a_ts_that_is_not_a_finite_number_makes_the_ledger_unreadable_naming_the_field`,
-  `test_a_row_with_no_ts_or_a_finite_number_for_one_is_judged`).
+  `test_a_row_with_no_ts_or_a_finite_number_for_one_is_judged`,
+  `test_a_label_in_a_skipped_hour_names_no_time_and_one_in_a_repeated_hour_names_one`).
 - **S19**: A row's `answered`, which the digest counts a run by, is a boolean where the row has one;
   a row from before the field has none, and its `control` says
   (`test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none`).
@@ -393,17 +394,21 @@ bypasses the handler: no refusals, no row, no send.
   `test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_stepped_forward`,
   `test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier`).
 - **S21**: A monthly row gives its `repeat_anchor`. Without one the first due is the trigger less
-  whole calendar months, in UTC, each day clamped to its month's last as the store clamps it, while
-  not before the row's `created_at`; with none it is the firing or now, whichever is earlier
+  whole calendar months, in UTC, each day clamped to its month's last, and not before the row's
+  `created_at`. A firing on the last day of a month under 31 days may be a clamped later day: if its
+  step-back falls before the creation, the creation is the first due. A row with no creation gives
+  the firing or now, if earlier
   (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`,
-  `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`).
+  `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`,
+  `test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation`).
 - **S22**: A day the digest is asked about is read as a date and named in the padded form a ledger
   label opens with, `2026-09-04` for `2026-9-4`, so either spelling selects the same rows and judges
   at the same moment. A text that is no date raises before anything is sent
   (`test_a_day_the_digest_is_asked_about_selects_the_same_rows_in_any_spelling_a_date_has`).
-- **S23**: The digest reads a chore's `first_due` as a record only where it is a finite number, no
-  bool, that a UTC date can name, the first two as S17 has it. Any other value is no record: the
-  digest still delivers, and a chore with no run reads `MISSING: <chore>, no run recorded`
+- **S23**: A stored `first_due` is a record only where it is a finite number, no bool, that a UTC
+  date can name, in the digest and in `ensure_ticks` alike. Any other value is no record:
+  `ensure_ticks` replaces it with the pending row's firing, and the digest still delivers, a chore
+  with no run reading `MISSING: <chore>, no run recorded`
   (`test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers`,
   `test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999`,
   `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`).

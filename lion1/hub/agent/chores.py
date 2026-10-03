@@ -550,15 +550,9 @@ class Chores:
         except (OSError, ValueError, OverflowError) as e:
             ledger, unread = [], f"{type(e).__name__}: {e}"
         rows = [r for r in ledger if r["at"].startswith(day)]
-        firsts: dict[str, float] = {}  # chore -> the instant its tick first came due
-        for k, v in _val(self.agent.state, "first_due", {}).items():
-            if not _is_number(v):  # a value that is no instant is no record
-                continue
-            try:
-                datetime.fromtimestamp(v, UTC)  # nor is one the text and the month rule below cannot read
-            except (ValueError, OverflowError, OSError):
-                continue
-            firsts[k] = float(v)
+        firsts = {  # chore -> the instant its tick first came due; a value that is no instant is no record
+            k: t for k, v in _val(self.agent.state, "first_due", {}).items() if (t := _instant(v)) is not None
+        }
         actor = self.owner
         lines = [
             f"[chores digest {day}] {self.agent.khive.actor}: "
@@ -750,7 +744,8 @@ class Chores:
                 # a kept first due stands unless a row's history admits an earlier firing: a tick is made a
                 # minute before its first, so what a row gives is not before it, however late its trigger
                 kept = firsts.get(chore)
-                first = min(fires) if not _is_number(kept) else min(kept, *fires)
+                held = _instant(kept)
+                first = min(fires) if held is None else min(held, *fires)
                 if first != kept:
                     self.agent.state.put("first_due", {**firsts, chore: first}, run="-", seq=0)
         return created
@@ -1004,17 +999,30 @@ _LABEL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
 
 def _is_label(at: str) -> bool:
     """`at` as `_now` writes it, in that form only (the digest selects a day by its first ten characters)
-    and naming a time that exists."""
+    and naming a time that exists: it comes back from local time as itself, so the hour a clock change
+    skips names none, and a repeated hour names one."""
     try:
-        time.strptime(at, "%Y-%m-%d %H:%M:%S")
+        named = time.strptime(at, "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return False
-    return _LABEL.fullmatch(at) is not None
+    return _LABEL.fullmatch(at) is not None and time.localtime(time.mktime(named))[:6] == named[:6]
 
 
 def _is_number(v: Any) -> bool:
     """A number that is no bool and no NaN or infinity, which a JSON line can spell."""
     return (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and math.isfinite(v))
+
+
+def _instant(v: Any) -> float | None:
+    """A stored first due as an instant: a finite number, no bool, that a UTC date can name. Anything else is
+    none, to the digest that reads it and to `ensure_ticks` that keeps or replaces it."""
+    if not _is_number(v):
+        return None
+    try:
+        datetime.fromtimestamp(v, UTC)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return float(v)
 
 
 def _epoch(row: dict) -> float:
@@ -1043,8 +1051,10 @@ def _first_firing(row: dict, now: float) -> float | None:
     `trigger_at` on to the next firing after each delivery and keeps the row pending, so it is no first
     due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. Else
     the first is the earliest firing not before the row's own creation (`created_at`, beside `properties`):
-    a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A row naming no
-    creation instant, or a period that is not fixed (a cron), gives its firing or now, if that is earlier."""
+    a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A monthly firing
+    on the last day of a month of fewer than 31 days may be a clamped later day, so when its step-back falls
+    before the creation the creation stands in. A row naming no creation instant, or a period that is not
+    fixed (a cron), gives its firing or now, if that is earlier."""
     p = row.get("properties") or {}
     repeat = p.get("repeat")
     anchor = p.get("repeat_anchor") if repeat == "monthly" else None
@@ -1068,7 +1078,11 @@ def _first_firing(row: dict, now: float) -> float | None:
         except (ValueError, OverflowError, OSError):
             return min(first, now)
         n = (t.year - b.year) * 12 + t.month - b.month  # months from the creation's month to the firing's
-        if n > 0 and _months_before(t, n) < b:  # that month's firing is before its creation: one month less
+        early = n > 0 and _months_before(t, n) < b  # that month's firing is before its creation
+        last = calendar.monthrange(t.year, t.month)[1]
+        if early and t.day == last and last < 31:
+            return born  # a clamp is possible: the row's day may be later, so none lies before its creation
+        if early:  # no clamp: one month less
             n -= 1
         return _months_before(t, n).timestamp() if n > 0 else first
     fixed = isinstance(repeat, str) and (repeat in _NAMED or _EVERY.fullmatch(repeat) is not None)
