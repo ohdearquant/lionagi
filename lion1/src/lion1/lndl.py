@@ -34,7 +34,7 @@ import re
 import tokenize
 import warnings
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from itertools import combinations
@@ -276,14 +276,22 @@ def _lift_heredocs(source: str) -> tuple[str, list[str]]:
     return "".join(out), docs
 
 
+def _splice(source: str, spans: Iterable[tuple[int, int, str]]) -> str:
+    """`source` with each span (start, end, replacement) replaced. The spans come in order and
+    do not overlap, their positions those of the text as given."""
+    parts, at = [], 0
+    for start, end, text in spans:
+        parts += (source[at:start], text)
+        at = end
+    parts.append(source[at:])
+    return "".join(parts)
+
+
 def _line_offsets(source: str) -> list[int]:
     """Where each line starts, lines as `readline` splits them: at `\\n` only. `str.splitlines` also
     breaks at U+2028, U+2029, a lone `\\r` and the other separators, so a string argument holding one
     would shift every position the tokenizer reports on the lines after it."""
-    offsets = [0]
-    for line in source.split("\n")[:-1]:
-        offsets.append(offsets[-1] + len(line) + 1)
-    return offsets
+    return [0, *(m.end() for m in re.finditer("\n", source))]
 
 
 def _mark_pointers(source: str) -> tuple[str, list[str]]:
@@ -332,9 +340,7 @@ def _mark_pointers(source: str) -> tuple[str, list[str]]:
                 )
             spans.append((at(tok.start), at(tokens[end].end), f"{_PTR}{len(names)}"))
             names.append(name)
-    for start, end, repl in reversed(spans):
-        source = source[:start] + repl + source[end:]
-    return source, names
+    return _splice(source, spans), names
 
 
 def _escape_newlines_in_strings(source: str) -> str:
@@ -447,9 +453,7 @@ def _insert_commas(source: str) -> str | None:
             depth -= 1
     if not spots:
         return None
-    for at in reversed(spots):
-        source = source[:at] + ", " + source[at:]
-    return source
+    return _splice(source, ((at, at, ", ") for at in spots))
 
 
 _CLOSERS = "the call's closers were missing at its end and were supplied"
@@ -459,21 +463,25 @@ _COMMA = "a comma between arguments was missing and was supplied"
 _TOLD = {"closers": _CLOSERS, "comma": _COMMA}
 
 
-def _readings(source: str) -> list[tuple[str, tuple[str, ...]]]:
-    """The text as written, then each repair a model's slip calls for, with the repairs it applied."""
+def _readings(source: str) -> Iterator[tuple[str, tuple[str, ...]]]:
+    """The text as written, then each repair a model's slip calls for, with the repairs it applied.
+    Each is made when the one before it did not read: a call that reads as written costs no repair."""
     out: list[tuple[str, tuple[str, ...]]] = [(source, ())]
+    yield out[0]
     if "\n" in source:
         out.append((_escape_newlines_in_strings(source), ("newline",)))
+        yield out[-1]
     closed = _close_dangling(source)
     if closed is not None:
         out.append((closed, ("closers",)))
+        yield out[-1]
         if "\n" in closed:
             out.append((_escape_newlines_in_strings(closed), ("closers", "newline")))
-    for text, names in list(out):
+            yield out[-1]
+    for text, names in out:
         with_commas = _insert_commas(text)
         if with_commas is not None:
-            out.append((with_commas, (*names, "comma")))
-    return out
+            yield with_commas, (*names, "comma")
 
 
 def _parse_expr(text: str) -> ast.expr:
@@ -816,12 +824,8 @@ def spans(text: str) -> list[tuple[int, int]]:
 def plain(text: str) -> str:
     """The reply without its LNDL: what the model said beside its commands, its lines kept. The
     constructs are cut where `spans` finds them, so the prose is the prose the parser left."""
-    prose, at = [], 0
-    for start, end in spans(text):
-        prose.append(text[at:start])
-        at = end
-    prose.append(text[at:])
-    lines = (" ".join(ln.split()) for ln in " ".join(prose).splitlines())
+    prose = _splice(text, ((start, end, " ") for start, end in spans(text)))
+    lines = (" ".join(ln.split()) for ln in prose.splitlines())
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
@@ -1173,9 +1177,7 @@ def _mark(source: str) -> str:
             spans.append((at(tok.start), at(tok.end), _PTR))
         if tok.type not in (tokenize.NL, tokenize.COMMENT):
             prev = tok
-    for start, end, repl in reversed(spans):
-        source = source[:start] + repl + source[end:]
-    return source
+    return _splice(source, spans)
 
 
 def _prefix(prev: tokenize.TokenInfo | None) -> bool:
@@ -1559,6 +1561,13 @@ def _arith(node: ast.expr, op: tuple[str, Callable[[Any, Any], Any]], a: Any, b:
         and _size(seq) * times > LIMIT
     ):
         raise _past(node)  # refused before it is built, not after
+    if (
+        sign == "*"
+        and isinstance(a, int)
+        and isinstance(b, int)
+        and (a.bit_length() + b.bit_length() - 1) // 3 > LIMIT
+    ):
+        raise _past(node)  # the product of two long numbers holds the loop while it is built
     try:
         value = fn(a, b)
     except TypeError:
@@ -1585,7 +1594,8 @@ def _past(node: ast.expr) -> EvalError:
 
 
 def _size(value: Any) -> int:
-    """Characters and items through nesting, counted until past LIMIT and no further."""
+    """Characters and items through nesting, counted until past LIMIT and no further. A whole
+    number is one item until it is past 64 bits, then its digits."""
     n, stack = 0, [value]
     while stack and n <= LIMIT:
         v = stack.pop()
@@ -1593,10 +1603,14 @@ def _size(value: Any) -> int:
             n += len(v)
         elif isinstance(v, dict):
             n += len(v) + sum(len(k) if isinstance(k, str) else 1 for k in v)  # a key is characters too
-            stack.extend(v.values())
+            if n <= LIMIT:  # past the limit already: what it holds is not walked
+                stack.extend(v.values())
         elif isinstance(v, list | tuple):
             n += len(v)
-            stack.extend(v[: LIMIT + 1])
+            if n <= LIMIT:
+                stack.extend(v)
+        elif isinstance(v, int) and v.bit_length() > 64:
+            n += v.bit_length() // 3  # a long number is its digits, near enough: three bits to one
         else:
             n += 1
     return n

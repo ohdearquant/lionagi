@@ -115,6 +115,41 @@ def _notices(run) -> str:
     return "\n".join(e.content for e in run.record if e.kind is Kind.SYSTEM)
 
 
+class Cut(BaseModel):
+    target: str
+
+
+class Hold(BaseModel):
+    pass
+
+
+def test_a_command_cancelled_before_it_started_leaves_no_arguments_held_for_the_run():
+    # its arguments are computed when its handler is about to run; one that never got there kept
+    # them, and the walk they close over, until the run ended
+    actor = Actor("never-started")
+    seen: list[dict] = []
+
+    @actor.handler(Cut)
+    async def cut(req: Cut, ctx) -> str:
+        ctx.run.pending[req.target].cancel()  # launched after this one: its coroutine has not run
+        seen.append(dict(ctx.run.thunks))
+        return "cut"
+
+    @actor.handler(Hold)
+    async def hold(req: Hold, ctx) -> str:
+        return "held"
+
+    @actor.handler(Echo)
+    async def echo(req: Echo, ctx) -> str:
+        seen.append(dict(ctx.run.thunks))
+        return req.text
+
+    run = _run(actor, fenced('k = cut(target="h")', "h = hold()"), fenced('e = echo(text="after")'))
+    assert run.record.get("h").content.error == "cancelled before it started"
+    assert list(seen[0]) == ["h"] and seen[1] == {}
+    assert run.thunks == {} and run.pointing == {}
+
+
 def test_the_records_example_resolves_in_one_turn():
     calls: list = []
     actor = _actor("example", calls)
@@ -1246,6 +1281,36 @@ def test_the_evaluator_names_what_it_could_not_compute(expr, said, monkeypatch):
             big=list(range(LIMIT // 2 + 1)),
             t=(0,),
         )
+
+
+def test_a_container_already_past_the_size_limit_is_counted_and_not_walked():
+    # the count stops there either way; its children were pushed first, every one of them
+    class Dict(dict):
+        def values(self):
+            raise AssertionError("walked")
+
+    class List(list):
+        def __iter__(self):
+            raise AssertionError("walked")
+
+    assert lndl._size(Dict({"k" * (LIMIT + 1): 1})) == LIMIT + 2
+    assert lndl._size(List([0] * (LIMIT + 1))) == LIMIT + 1
+
+
+def test_a_long_whole_number_counts_as_its_digits_and_a_product_past_the_limit_is_never_built(monkeypatch):
+    # a number was one item whatever its length: twenty lines squaring one held the loop 2.7 s under
+    # a 0.5 s time budget, each further line three times longer, and no deadline lands in arithmetic
+    n = 10 ** (LIMIT * 2 // 3)
+    assert value("*n + 1", n=n) == n + 1 and value("*n * 2", n=n) == 2 * n and value("7 * 6") == 42
+    edge = 2 ** (3 * LIMIT + 1)  # as many digits as the limit holds, by the count: its double is one past
+    assert value("*edge - 1", edge=edge) == edge - 1
+    for expr in ("*edge + *edge", "[*n, *n]"):
+        with pytest.raises(EvalError, match="past the size limit"):
+            value(expr, n=n, edge=edge)
+    sign, _ = lndl._ARITH[ast.Mult]
+    monkeypatch.setitem(lndl._ARITH, ast.Mult, (sign, lambda a, b: pytest.fail("built")))
+    with pytest.raises(EvalError, match="past the size limit"):
+        value("*n * *n", n=n)
 
 
 @pytest.mark.parametrize(

@@ -83,7 +83,7 @@ class MemoryNoteStore:
         return note
 
     def list(self, prefix: str = "") -> list[Note]:
-        return [n for k, n in sorted(self._notes.items()) if k.startswith(prefix)]
+        return [self._notes[k] for k in sorted(k for k in self._notes if k.startswith(prefix))]
 
     def find(self, query: str) -> list[Note]:
         """Case-insensitive substring over key and content, casefolded (`STRASSE` finds `Straße`); a blank

@@ -389,6 +389,15 @@ def test_a_pinned_seq_that_names_no_entry_is_skipped_and_cannot_crash_the_fold()
     assert shape(fold(r)) == ["_r0", "_r1"]
 
 
+def test_a_pin_past_the_record_under_a_date_past_it_is_skipped_and_cannot_crash_the_fold():
+    # a row read back from a log carries its own date and pins, and neither is held to the record's
+    # length: the pin indexed the entries and raised IndexError while the input was protected
+    r = make(Kind.INPUT, Kind.RESULT)
+    r.append(Kind.SYSTEM, "notice", directive=Directive("hide", (), at=100, seqs=(50, 1)))
+    assert shape(fold(r)) == ["_in0", "_r1 hidden", "_sys2"]
+    assert shape(fold(r, protect_input=False)) == ["_in0", "_r1 hidden", "_sys2"]
+
+
 def test_a_summary_pinned_beside_a_seq_that_names_no_entry_still_stands_in_front_of_its_target():
     r = make(Kind.RESULT)
     direct(r, "summarize", text="kept", seqs=(-1, 0))

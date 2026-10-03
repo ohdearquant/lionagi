@@ -405,3 +405,10 @@ computation binds its failure.
   by then. The refusal is the command's own result; a write waiting on it is refused as spent (S11).
   `test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_handler` and
   `test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits` pin it.
+- **S16**: A whole number past 64 bits counts toward the size limit as its digits, one for every
+  three bits, and a product of two whole numbers that would pass the limit is refused before it is
+  built. A number was one item before, whatever its length: a program squaring one for twenty lines
+  held the loop 2.7 s under a 0.5 s time budget, three times longer for each line more, and no
+  deadline lands inside arithmetic.
+  `test_a_long_whole_number_counts_as_its_digits_and_a_product_past_the_limit_is_never_built` pins
+  it.

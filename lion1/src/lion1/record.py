@@ -181,7 +181,8 @@ def fold(
         seqs = d.seqs
         if seqs is None:
             seqs = [e.seq for ref in d.refs if (e := record.get(ref)) is not None]
-        targets = [s for s in seqs if 0 <= s < d.at]
+        # earlier than its date and on the record: a row read back from a log may pin a seq past both
+        targets = [s for s in seqs if 0 <= s < min(d.at, len(entries))]
         if protect_input:
             targets = [s for s in targets if entries[s].kind is not Kind.INPUT]
         if d.op == "hide":
