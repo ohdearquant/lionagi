@@ -244,8 +244,8 @@ pages each list to its end, rechecks both in code and runs each row once. An id 
   `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`,
   `test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
   `test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one`,
-  `test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing`,
-  `test_a_tick_made_now_replaces_a_later_first_due_on_record_and_keeps_an_earlier_one`,
+  `test_a_first_due_on_record_stands_over_the_pending_rows_and_one_that_is_no_instant_is_replaced`,
+  `test_a_tick_made_now_leaves_a_first_due_on_record_where_it_is_later_or_earlier`,
   `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
   `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
@@ -332,17 +332,18 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`). A check the
   ask narrowed covers nothing: the tick was the whole sweep, so it runs
   (`test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore`).
-- **S12**: A periodic chore is overdue when the digest's moment, now or the end of a past day asked
-  about, is past its due time and a grace. A fixed period, `every:<N><s|m|h|d>`, `daily` or
-  `weekly`, is due one period after the last run; a `monthly` chore, on its anchor day in the month
-  after the last run's, the store repeating from the fixed anchor (S14). The grace is the store's
-  default, 300 seconds (A4): `MISSING` is a second past it, and `due by` names the due time
+- **S12**: A periodic chore is overdue when the digest's moment, now or before the next midnight of
+  a past day asked about, is past its due time and a grace. A fixed period, `every:<N><s|m|h|d>`,
+  `daily` or `weekly`, is due one period after the last run; a `monthly` chore, on its anchor day in
+  the month after the last run's (S14). The grace is the store's default, 300 seconds (A4):
+  `MISSING` is a second past it, and `due by` names the due time
   (`test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_the_day`,
-  `test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day`).
+  `test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day`,
+  `test_a_run_stamped_at_the_next_midnight_belongs_to_the_next_day_and_not_to_the_day_before`).
 - **S13**: A chore's first due is the first firing of its tick, which `ensure_ticks` keeps in the
-  agent's state under `first_due` (S17); an earlier one is never overwritten. A chore with no run
-  reads `no run yet, first due by <instant>` until that instant and the grace are past, then
-  `MISSING`. With none on record it reads one from the pending tick row (S26)
+  agent's state under `first_due` (S17); one on record stands. A chore with no run reads `no run
+  yet, first due by <instant>` until that instant and the grace are past, then `MISSING`. With none
+  on record it reads one from the pending tick row (S26)
   (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
   `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`).
 - **S14**: A monthly chore's anchor is the first due's UTC day and time of day, the day clamped to a
@@ -364,15 +365,15 @@ bypasses the handler: no refusals, no row, no send.
   chores have not run has written none, so it reads S13's line
   (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`,
   `test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_and_the_grace`).
-- **S17**: A tick `ensure_ticks` finds pending gives its chore a first due from its own row, and the
-  earlier of that and any first due on record is kept; a record that is no instant (S23) is none.
-  The store moves `trigger_at` on after each delivery, so a fixed period's first due is the trigger
-  less whole periods, while not before the floor (S25). The earliest of a tick's rows counts; a row
-  naming no instant gives none
+- **S17**: A first due on record stands, and one that is no instant (S23) is none. Where none is on
+  record, a tick `ensure_ticks` makes gives its own firing, and one it finds pending gives its
+  row's. The store moves `trigger_at` on after each delivery, so a fixed period's first due is the
+  trigger less whole periods, while not before the floor (S25). The earliest of a tick's rows
+  counts; a row naming no instant gives none
   (`test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one`,
   `test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick`,
-  `test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing`,
-  `test_a_tick_made_now_replaces_a_later_first_due_on_record_and_keeps_an_earlier_one`).
+  `test_a_first_due_on_record_stands_over_the_pending_rows_and_one_that_is_no_instant_is_replaced`,
+  `test_a_tick_made_now_leaves_a_first_due_on_record_where_it_is_later_or_earlier`).
 - **S18**: A row the digest can judge from has a non-blank `chore`, an `at` in the form a check
   writes, `YYYY-MM-DD HH:MM:SS` naming a time the clock has, none in a skipped hour, a `findings`
   list of strings, and boolean `control` and `escalate`. A `ts`, where it has one, is a finite
@@ -418,21 +419,32 @@ bypasses the handler: no refusals, no row, no send.
   pending`
   (`test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers`,
   `test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999`,
-  `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`).
+  `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`,
+  `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`).
 - **S24**: A row's `ts` and `at` come from one read of the clock, `at` being that instant's local
   label, so a check across local midnight writes a row whose two name one day
   (`test_a_row_written_across_local_midnight_names_one_day_by_both_its_label_and_its_instant`).
 - **S25**: A tick's first firing is the lead after its creation, a minute by default
   (`ensure_ticks(first_in_s=...)`). A first due recovered from a pending row steps back no further
   than the floor: the second of `created_at` plus the default lead, less a second for the store's
-  stamp. A monthly stand-in is that floor, and a one-second period may read a second early
-  (`test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carries`,
-  `test_the_stand_in_and_the_tick_a_start_makes_share_one_lead`).
-- **S26**: A chore with no run and no first due on record reads one from its pending tick row, as
-  `ensure_ticks` does (S17). The read makes no tick and records nothing, so a caller that wakes an
-  agent without `ensure_ticks` judges the same. The agenda is read once, and only when a chore needs
-  it. A row naming no instant gives none, and the line reads `MISSING: <chore>, no run recorded`;
-  with no tick pending it ends `, no tick pending`
+  stamp. A monthly stand-in is that floor, and a one-second period may read a second early. A custom
+  lead is on no row: a tick whose record of one was lost recovers at that floor and may read
+  `MISSING` early (`test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carries`,
+  `test_the_stand_in_and_the_tick_a_start_makes_share_one_lead`,
+  `test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead`).
+- **S26**: A chore with no run or first due on record reads one from its pending tick row, as
+  `ensure_ticks` does (S17). The read makes no tick and records nothing, so a wake without
+  `ensure_ticks` judges alike. The agenda is read once, only when a chore needs it, 200 rows a page
+  from the last row's `trigger_at`, merged by id, to 25 pages. A row naming no instant gives none:
+  `MISSING: <chore>, no run recorded`, ending `, no tick pending` with no tick
   (`test_a_python_digest_wake_reads_a_pending_tick_row_for_a_chore_with_no_first_due`,
   `test_the_digest_reads_the_agenda_once_and_only_for_a_chore_with_no_run_and_no_first_due`,
-  `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`).
+  `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`,
+  `test_the_agenda_is_read_in_pages_of_200_each_from_the_last_row_of_the_page_before`,
+  `test_an_agenda_read_that_ends_short_on_its_25th_page_is_not_capped`).
+- **S27**: A read that ends on a full 25th page is capped, and a chore whose tick it did not find
+  reads `not judged: the agenda read was capped at 5000 rows`. `ensure_ticks` makes no tick a capped
+  read did not find, and names it. A read that fails reads each chore that needed it `not judged:
+  agenda unreadable: <error>`, and the digest is still sent; `ensure_ticks` raises
+  (`test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tick`,
+  `test_a_digest_whose_agenda_read_fails_says_so_for_each_chore_that_needed_it_and_is_sent`).

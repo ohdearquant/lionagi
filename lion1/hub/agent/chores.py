@@ -519,8 +519,9 @@ class Chores:
         day = day or time.strftime("%Y-%m-%d", time.localtime(now))
         named = datetime.strptime(day, "%Y-%m-%d")
         day = named.date().isoformat()  # padded as a ledger label opens: `2026-9-4` is `2026-09-04`
-        # the moment a chore is judged at: now, or the end of a past day the digest was asked about
-        moment = min(now, (named + timedelta(days=1)).timestamp())
+        # the moment a chore is judged at: now, or the next midnight for a past day the digest was asked about
+        end = (named + timedelta(days=1)).timestamp()
+        moment, ended = min(now, end), end <= now
         try:  # a ledger unreadable or torn judges nothing: a missing subject is not an empty one. An absent
             # file is an empty ledger: an agent whose chores have not run has not written one
             ledger, unread = self.rows(), ""
@@ -557,6 +558,7 @@ class Chores:
         actor = self.owner
         # the pending ticks' firings: read once, and only if a chore needs one (`ensure_ticks` reads the same)
         pending: dict[Any, list[float]] | None = None
+        capped, agenda_error = False, ""
         lines = [
             f"[chores digest {day}] {self.agent.khive.actor}: "
             + (f"ledger unreadable ({unread})" if unread else f"{len(rows)} check(s)")
@@ -574,15 +576,27 @@ class Chores:
                 lines.append(f"{actor} {name} " + ("not judged: cron" if cron else "on ask: no run"))
                 continue
             if every and not cron:  # judged against one period before the moment
-                ran = [r for r in ledger if r["chore"] == name and _epoch(r) <= moment]
+                # a past day is judged before its next midnight: a run stamped at it is the next day's
+                ran = [
+                    r
+                    for r in ledger
+                    if r["chore"] == name and (_epoch(r) < moment if ended else _epoch(r) <= moment)
+                ]
                 latest = max(ran, key=_epoch, default=None)
                 first = firsts.get(name)
                 if latest is None:  # no run is missing only once its first due and the grace are past
                     ticked = True
                     if first is None:  # none on record: the tick's pending row gives it, read and not kept
-                        if pending is None:
-                            pending = await self._pending_firsts(now)
-                        fires = pending.get(f"tick: {name}")
+                        if pending is None and not agenda_error:
+                            try:  # a failed read judges each chore that needs it, and the digest goes out
+                                pending, capped = await self._pending_firsts(now)
+                            except Exception as e:
+                                agenda_error = f"{type(e).__name__}: {e}"
+                        fires = (pending or {}).get(f"tick: {name}")
+                        if agenda_error or (capped and fires is None):  # a capped read did not see every row
+                            reason = f"agenda unreadable: {agenda_error}" if agenda_error else _CAPPED
+                            lines.append(f"{actor} {name} not judged: {reason}")
+                            continue
                         first, ticked = (min(fires) if fires else None), fires is not None
                     if first is not None and moment <= first + _FIRE_GRACE_S:
                         lines.append(f"{actor} {name} no run yet, first due by {_now(first)}")
@@ -720,10 +734,11 @@ class Chores:
     async def ensure_ticks(self, *, first_in_s: int | None = None) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
-        a steward. Creates what is missing, returns what it created. A chore's first firing is kept in
-        the agent's state (`first_due`) for the digest: the earlier of what the tick's pending rows give
-        (`_first_firing`; the tick's own firing when it was just made) and what is already kept."""
-        pending = await self._pending_firsts(self.agent.clock())
+        a steward. Creates what is missing, returns what it created, and names a tick a capped agenda read did
+        not find, which it does not create. A chore's first firing is kept in the agent's state (`first_due`)
+        for the digest: one on record stands, and where there is none the tick's own firing is recorded when
+        it was just made, else what its pending rows give (`_first_firing`)."""
+        pending, capped = await self._pending_firsts(self.agent.clock())
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
@@ -734,6 +749,9 @@ class Chores:
         at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + lead))
         for content, every in wanted.items():
             fires = pending.get(content)
+            if fires is None and capped:  # a read that did not see every row cannot say the tick is absent
+                created.append(f"{content}: not created, {_CAPPED}")
+                continue
             if fires is None:
                 await self.agent.khive.exec(
                     f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
@@ -741,30 +759,45 @@ class Chores:
                 created.append(content)
                 fires = [_iso_epoch(at)]
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
-            if fires and chore in self.instruments:
-                # a kept first due stands unless a row's history admits an earlier firing: a tick is made a
-                # minute before its first, so what a row gives is not before it, however late its trigger
-                kept = firsts.get(chore)
-                held = _instant(kept)
-                first = min(fires) if held is None else min(held, *fires)
-                if first != kept:
-                    self.agent.state.put("first_due", {**firsts, chore: first}, run="-", seq=0)
+            # a first due on record stands: a row cannot say what lead its tick was made with, so what it
+            # gives is no reason to lower one
+            if fires and chore in self.instruments and _instant(firsts.get(chore)) is None:
+                self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
         return created
 
-    async def _pending_firsts(self, now: float) -> dict[Any, list[float]]:
-        """content -> the first firing each of this actor's pending reminders' rows gives (`_first_firing`).
-        A read: it makes no reminder and records nothing, for `ensure_ticks` and the digest alike."""
-        (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
+    async def _pending_firsts(self, now: float) -> tuple[dict[Any, list[float]], bool]:
+        """content -> the first firing each of this actor's pending reminders' rows gives (`_first_firing`),
+        and whether the read was capped. The agenda answers at most 200 rows, earliest first, so while a
+        page is full it is read again from its last row's `trigger_at`, rows merged by id, up to 25 pages;
+        a read that ends on a full 25th page did not see every row. A read: it makes no reminder and
+        records nothing, for `ensure_ticks` and the digest alike."""
         me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
         pending: dict[Any, list[float]] = {}
-        for e in (agenda or {}).get("events", []):
-            p = e.get("properties") or {}
-            if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
-                continue
-            fires = pending.setdefault(e.get("content"), [])
-            if (first := _first_firing(e, now)) is not None:
-                fires.append(first)
-        return pending
+        seen: set[Any] = set()
+        after = ""
+        for _ in range(_AGENDA_PAGES):
+            (agenda,) = await self.agent.khive.exec(
+                f"schedule.agenda(limit={_AGENDA_PAGE}" + (f", from={lit(after)})" if after else ")")
+            )
+            events = (agenda or {}).get("events", [])
+            for e in events:
+                if e["id"] in seen:  # the row a page ends on is the first of the next
+                    continue
+                seen.add(e["id"])
+                p = e.get("properties") or {}
+                if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
+                    continue
+                fires = pending.setdefault(e.get("content"), [])
+                if (first := _first_firing(e, now)) is not None:
+                    fires.append(first)
+            if len(events) < _AGENDA_PAGE:
+                return pending, False
+            after = (events[-1].get("properties") or {}).get("trigger_at")
+            if not isinstance(after, str) or not after:
+                raise ValueError(
+                    f"a full agenda page ends at a row with no trigger_at: {str(events[-1])[:80]}"
+                )
+        return pending, True
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
         """Once per run: the actor's own reminders khive marked missed (never fired) or failed, not
@@ -985,6 +1018,9 @@ _EVERY = re.compile(r"every:(\d+)([smhd])")
 _NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
 _FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
 _TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the floor)
+_AGENDA_PAGE = 200  # the most rows one `schedule.agenda` read answers
+_AGENDA_PAGES = 25  # the pages one read of the agenda follows
+_CAPPED = f"the agenda read was capped at {_AGENDA_PAGE * _AGENDA_PAGES} rows"
 _TIME_END = datetime(9999, 1, 1, tzinfo=UTC).timestamp()  # a monthly chore steps a month past its last run
 
 

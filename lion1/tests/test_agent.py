@@ -1023,6 +1023,7 @@ def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_
 
     now = time.time()
     tick = {  # made a moment ago, first firing a minute out
+        "id": "ev1",
         "content": "tick: gtd-inbox",
         "created_at": at(now),
         "properties": {

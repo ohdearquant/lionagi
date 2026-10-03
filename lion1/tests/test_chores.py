@@ -74,6 +74,28 @@ class FakeKhive:
         self.tasks: dict[str, tuple[str, dict]] = {}  # gtd.assign key -> (the op, the row it created)
         self.gtd_refuse = ""  # a gtd.assign refusal the store answers, as an ungranted namespace would
         self.gtd_lose = 0  # gtd.assign answers to drop after the row lands, as a lost response would
+        self.grows = False  # True: a reminder made lands on the agenda, created now, as the store keeps it
+        self.paged = False  # True: the agenda answers the earliest `limit` rows from `from`
+        self.agenda_error: Exception | None = None  # what a failed agenda read raises
+
+    def event(self, n: int, c) -> dict:
+        # a str is this actor's reminder; (content, actor[, status[, trigger_at[, repeat_anchor[, repeat[,
+        # created_at]]]]]), None leaving a field out; the creation instant sits beside `properties`
+        content, actor, status, trigger, anchor, repeat, born = (
+            *((c, self.actor) if isinstance(c, str) else c),
+            *[None] * 5,
+        )[:7]
+        given = {"trigger_at": trigger, "repeat_anchor": anchor, "repeat": repeat}
+        return {
+            "id": f"e{n}",
+            "content": content,
+            **({} if born is None else {"created_at": born}),
+            "properties": {  # the agenda keeps a row's status here, none beside properties
+                "status": status or "pending",
+                "created_by_actor": actor,
+                **{k: v for k, v in given.items() if v is not None},
+            },
+        }
 
     async def inbox(self, *, wait_ms=0, limit=50, status="unread", offset=0):
         out, self.mail = self.mail[:limit], self.mail[limit:]
@@ -104,27 +126,23 @@ class FakeKhive:
 
     async def exec(self, ops: str):
         self.ops.append(ops)
-        # a str is this actor's reminder; (content, actor[, status[, trigger_at[, repeat_anchor[, repeat[,
-        # created_at]]]]]), None leaving a field out; the creation instant sits beside `properties`
+        if ops.startswith("schedule.remind") and self.grows:
+            content, at, repeat = re.search(
+                r'content="([^"]*)", at="([^"]*)", repeat="([^"]*)"', ops
+            ).groups()
+            self.agenda.append(
+                (content, self.actor, "pending", at, None, repeat, iso(time.time(), micros=True))
+            )
         if ops.startswith("schedule.agenda"):
-            events = []
-            for c in self.agenda:
-                content, actor, status, trigger, anchor, repeat, born = (
-                    *((c, self.actor) if isinstance(c, str) else c),
-                    *[None] * 5,
-                )[:7]
-                given = {"trigger_at": trigger, "repeat_anchor": anchor, "repeat": repeat}
-                events.append(
-                    {
-                        "content": content,
-                        **({} if born is None else {"created_at": born}),
-                        "properties": {  # the agenda keeps a row's status here, none beside properties
-                            "status": status or "pending",
-                            "created_by_actor": actor,
-                            **{k: v for k, v in given.items() if v is not None},
-                        },
-                    }
-                )
+            if self.agenda_error is not None:
+                raise self.agenda_error
+            events = [self.event(n, c) for n, c in enumerate(self.agenda)]
+            if self.paged:
+                args = {k: json.loads(v) for k, v in re.findall(r'(\w+)=("[^"]*"|\d+)', ops)}
+                events = sorted(
+                    (e for e in events if e["properties"]["trigger_at"] >= args.get("from", "")),
+                    key=lambda e: e["properties"]["trigger_at"],
+                )[: args["limit"]]
             return [{"events": events}]
         if ops.startswith(
             '[list(kind="scheduled_event"'
@@ -780,6 +798,23 @@ def test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_
     assert f"MISSING: weekly, {due}" in digest_at(chores, agent, t + 30 * 86400, day=day)
     with pytest.raises(ValueError):  # a day that is not a date names no moment to judge at
         asyncio.run(chores.digest("yesterday", "r1"))
+
+
+def test_a_run_stamped_at_the_next_midnight_belongs_to_the_next_day_and_not_to_the_day_before(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    midnight = datetime(2026, 9, 15).timestamp()  # a local midnight, as a ledger label is
+    ledger(chores, ("w", midnight))
+    none = "MISSING: w, no run recorded, no tick pending"
+    for now in (midnight, midnight + 5 * 86400):  # the 14th is past at the midnight itself, and after it
+        text = digest_at(chores, agent, now, day="2026-09-14")
+        assert none in text.splitlines() and "not due" not in text
+    line = f"{OWNER} w 00:00 quiet 1 run(s), 1 answered, 1 quiet, 0 report, 0 escalate, 0 instrument-failed"
+    assert line in digest_at(chores, agent, midnight + 5 * 86400, day="2026-09-15")
+    ledger(chores, ("w", midnight - 1))  # a second before it is the 14th's own, and counts
+    text = digest_at(chores, agent, midnight + 5 * 86400, day="2026-09-14")
+    assert f"{OWNER} w 23:59 quiet 1 run(s)" in text and none not in text
+    ledger(chores, ("w", midnight + 3600))  # a run at the very instant of today's digest counts for today
+    assert f"{OWNER} w 01:00 quiet 1 run(s)" in digest_at(chores, agent, midnight + 3600)
 
 
 def test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day(tmp_path):
@@ -2169,10 +2204,10 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
 @pytest.mark.parametrize(
     ("kept", "replaced"),
     [
-        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() + 5 * 1800, True),  # the row's own next firing
-        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() + 1, True),  # a second late
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() + 5 * 1800, False),  # the row's own next firing
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() + 1, False),  # a second late
         (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp(), False),
-        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() - 3600, False),  # earlier: the stronger evidence
+        (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() - 3600, False),  # earlier
         ("soon", True),  # a record that is no instant is no record
         (True, True),
         (float("nan"), True),
@@ -2197,7 +2232,7 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
         "year-10000",
     ],
 )
-def test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing(
+def test_a_first_due_on_record_stands_over_the_pending_rows_and_one_that_is_no_instant_is_replaced(
     tmp_path, kept, replaced
 ):
     first = datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp()
@@ -2209,21 +2244,18 @@ def test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_
     want = first if replaced else kept
     assert agent.state.get("first_due").value == {"disk": want, "other": 7.0}  # nothing else is touched
     line = f"MISSING: disk, no run recorded, first due by {label(want)}"
-    assert line in digest_at(chores, agent, first + 301).splitlines()  # the finding is not hidden
+    assert line in digest_at(chores, agent, want + 301).splitlines()  # the finding is not hidden
 
 
-@pytest.mark.parametrize(("shift", "replaced"), [(86400, True), (-100, False)], ids=["later", "earlier"])
-def test_a_tick_made_now_replaces_a_later_first_due_on_record_and_keeps_an_earlier_one(
-    tmp_path, shift, replaced
-):
+@pytest.mark.parametrize("shift", [86400, -100], ids=["later", "earlier"])
+def test_a_tick_made_now_leaves_a_first_due_on_record_where_it_is_later_or_earlier(tmp_path, shift):
     khive = FakeKhive()
     chores, agent = build(tmp_path, khive, [], pr=Probe("pr", full(), every="every:15m"))
     kept = time.time() + 60 + shift  # the tick is made for a minute from now
     agent.state.put("first_due", {"pr": kept}, run="-", seq=0)
     asyncio.run(chores.ensure_ticks(first_in_s=60))
-    (remind,) = [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: pr"' in op]
-    sent = datetime.fromisoformat(re.search(r'at="([^"]+)"', remind).group(1)).timestamp()
-    assert agent.state.get("first_due").value == {"pr": sent if replaced else kept}
+    assert [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: pr"' in op]
+    assert agent.state.get("first_due").value == {"pr": kept}
 
 
 def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_agenda_keeps_it(tmp_path):
@@ -2233,6 +2265,123 @@ def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_age
         tmp_path, khive, [], disk=Probe("disk", full()), pr=Probe("pr", full(), every="every:15m")
     )
     assert asyncio.run(chores.ensure_ticks()) == ["tick: pr", "tick: digest", "tick: aged"]
+
+
+def test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead(
+    tmp_path,
+):
+    khive = FakeKhive()
+    khive.grows = True  # the store keeps the row made, created now: the lead is on no row
+    chores, agent = build(tmp_path, khive, [], p=Probe("p", full(), every="every:15m"))
+    asyncio.run(chores.ensure_ticks(first_in_s=7200))
+    (remind,) = [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: p"' in op]
+    first = datetime.fromisoformat(re.search(r'at="([^"]+)"', remind).group(1)).timestamp()  # two hours out
+    assert agent.state.get("first_due").value == {"p": first}
+    agent.clock = lambda: first - 6000  # twenty minutes after the creation
+    assert asyncio.run(chores.ensure_ticks()) == []  # the row is found and nothing is made
+    # the row alone gives the firing at the default lead less whole periods: 15 minutes after the creation
+    assert agent.state.get("first_due").value == {"p": first}
+    text = digest_at(chores, agent, first - 6000 + 60)  # past that firing and its grace
+    assert f"{OWNER} p no run yet, first due by {label(first)}" in text.splitlines()
+    assert "MISSING: " not in text
+
+
+def agenda_rows(count: int, base: float, ticks: dict[int, tuple]) -> list[tuple]:
+    """`count` pending reminders of another actor, one second apart from `base`, with this actor's ticks
+    (index -> (chore, repeat)) in place of them, each made a minute before its firing."""
+    rows = [(f"other: {i}", "lambda:other:agent", "pending", iso(base + i)) for i in range(count)]
+    for i, (chore, repeat) in ticks.items():
+        rows[i] = pending(chore, base + i, repeat, base + i - 60)
+    return rows
+
+
+def agenda_reads(khive: FakeKhive) -> list[str]:
+    return [op for op in khive.ops if op.startswith("schedule.agenda")]
+
+
+def test_the_agenda_is_read_in_pages_of_200_each_from_the_last_row_of_the_page_before(tmp_path):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    # the store answers 200 rows, then the 150 from the last of them, which it gives again
+    khive = FakeKhive(agenda=agenda_rows(349, base, {199: ("a", "every:30m"), 348: ("disk", "every:30m")}))
+    khive.paged = True
+    chores, agent = build(tmp_path, khive, [], a=Probe("a", full()), disk=Probe("disk", full()))
+    lines = digest_at(chores, agent, base).splitlines()  # one read, in two pages, for both chores
+    assert f"{OWNER} a no run yet, first due by {label(base + 199)}" in lines
+    assert f"{OWNER} disk no run yet, first due by {label(base + 348)}" in lines  # found on the second page
+    assert agenda_reads(khive) == [
+        "schedule.agenda(limit=200)",
+        f'schedule.agenda(limit=200, from="{iso(base + 199)}")',
+    ]
+    assert asyncio.run(chores.ensure_ticks()) == ["tick: digest", "tick: aged"]  # no second tick: disk
+    assert agent.state.get("first_due").value == {"a": base + 199, "disk": base + 348}
+    # the row both pages carry is merged by its id: one firing
+    found = asyncio.run(chores._pending_firsts(base))
+    assert found == ({"tick: a": [base + 199], "tick: disk": [base + 348]}, False)
+
+
+def test_an_agenda_read_that_ends_short_on_its_25th_page_is_not_capped(tmp_path):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    khive = FakeKhive(
+        agenda=agenda_rows(4926, base, {4925: ("disk", "every:30m")})
+    )  # 24 pages of 200, then 150
+    khive.paged = True
+    chores, agent = build(tmp_path, khive, [], disk=Probe("disk", full()))
+    line = f"{OWNER} disk no run yet, first due by {label(base + 4925)}"
+    assert line in digest_at(chores, agent, base).splitlines()
+    assert len(agenda_reads(khive)) == 25
+
+
+def test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tick(
+    tmp_path,
+):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    # 300 rows at one instant: each read answers the same 200 and the tick behind them is never reached
+    rows = [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    khive = FakeKhive(agenda=[*rows, pending("disk", base + 600, "every:30m", base + 540)])
+    khive.paged = True
+    chores, agent = build(
+        tmp_path, khive, [], disk=Probe("disk", full()), w=Probe("w", full(), every="weekly")
+    )
+    text = digest_at(chores, agent, base)
+    note = "not judged: the agenda read was capped at 5000 rows"
+    assert text.splitlines()[1:] == [f"{OWNER} disk {note}", f"{OWNER} w {note}"] and "MISSING: " not in text
+    assert len(agenda_reads(khive)) == 25
+    khive.ops.clear()
+    capped = "not created, the agenda read was capped at 5000 rows"
+    assert asyncio.run(chores.ensure_ticks()) == [
+        f"tick: {name}: {capped}" for name in ("disk", "w", "digest", "aged")
+    ]
+    assert len(agenda_reads(khive)) == 25 and not [op for op in khive.ops if op.startswith("schedule.remind")]
+    assert agent.state.get("first_due") is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [("raises", "KhiveError: agenda: boom"), ("no-trigger", "ValueError: a full agenda page ends at a row")],
+)
+def test_a_digest_whose_agenda_read_fails_says_so_for_each_chore_that_needed_it_and_is_sent(
+    tmp_path, kind, reason
+):
+    khive = FakeKhive()
+    if kind == "raises":
+        khive.agenda_error = KhiveError("agenda: boom")
+    else:  # a full page whose last row names no instant to read the next page from
+        khive.agenda = [f"row {i}" for i in range(200)]
+    probes = {
+        n: Probe(n, full(), every=e) for n, e in (("k", "every:30m"), ("w", "weekly"), ("x", "every:30m"))
+    }
+    chores, agent = build(tmp_path, khive, [], **probes)
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    agent.state.put("first_due", {"k": t + 600}, run="-", seq=0)  # k needs no read
+    text = digest_at(chores, agent, t)
+    assert khive.sent[-1]["content"] == text and [m["to"] for m in khive.sent] == [OWNER]
+    _, k, w, x = text.splitlines()
+    assert k == f"{OWNER} k no run yet, first due by {label(t + 600)}"
+    for line, name in ((w, "w"), (x, "x")):
+        assert line.startswith(f"{OWNER} {name} not judged: agenda unreadable: {reason}")
+    assert "MISSING: " not in text and len(agenda_reads(khive)) == 1  # read once, for both
+    with pytest.raises(KhiveError if kind == "raises" else ValueError, match="boom|no trigger_at"):
+        asyncio.run(chores.ensure_ticks())  # a tick cannot be made without knowing what is pending
 
 
 def test_the_chores_profile_names_each_chore_with_its_direction_and_question_and_only_three_handlers(
