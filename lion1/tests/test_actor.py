@@ -1907,7 +1907,9 @@ def test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_han
         return True
 
     ran: list[float] = []
+    seen: list[str] = []
     actor = _echo_actor(f"b-settle-held-grant-{effect}")
+    actor.before(lambda run, la, req: seen.append(la.alias))  # admits each call, after noting it
 
     @actor.handler(Nap, effect=effect)
     async def nap(req: Nap, ctx) -> float:
@@ -1924,6 +1926,7 @@ def test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_han
     assert run.resolve("m1") == "time_budget raised from 0.5 to 5.5"
     assert ran == [] and run.bounds["time_budget"] == 5.5
     assert ("n1", HALTED) in run.refused
+    assert "n1" in seen  # the halt is checked after the before hooks, as a spent budget is (S6)
 
 
 @pytest.mark.parametrize("out", ["names-the-grant", "names-nothing"])

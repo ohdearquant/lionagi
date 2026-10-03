@@ -228,3 +228,6 @@ refuse, and the caller receives the value it judged.
   it. A program's commands also answer to their walk's limits (ADR-0008/S15).
   `test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler` and
   `test_a_command_an_out_turn_leaves_out_of_its_wait_is_refused_after_a_late_grant` pin it.
+- **S6**: S5's refusal is checked beside the C2 re-read, after the command's arguments are evaluated
+  and its before hooks run, as a spent budget's is: a hook may see a call that is then refused
+  (`test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler`).
