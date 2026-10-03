@@ -418,9 +418,10 @@ const scenarios = {
     return { afterStale, afterPoll: { actors: page.actors(), polls: page.requests('/api/areas').length } };
   },
 
-  // of the rows the poll and the stream deliver the page keeps the newer revision, whichever arrives first:
-  // 1 the stream's newer rows beat a poll answer that comes after them, 2 a poll answer newer than the stream's
-  // rows replaces them, 3 a stream event of older rows after a poll answer is dropped, 4 a newer one is kept
+  // stream events are ordered by the revision they carry, a poll's answer is taken as it arrives and sets no
+  // revision, and an `areas` event aborts the poll out: 1 the stream's rows stay over the answer of a poll out
+  // when they came, 2 though that answer's revision is higher, 3 a poll answer is taken, 4 a stream event older
+  // than the stream's rows shown is dropped after it, 5 a newer one is kept
   async pollOrder(page) {
     const seen = {};
     const poll = async (name, answerRev, during) => {
@@ -433,9 +434,10 @@ const scenarios = {
     await poll('poll10', 10, () => page.emit('areas', [row('stream12')], 12));
     seen.streamNewer = page.actors();
     await poll('poll15', 15, () => page.emit('areas', [row('stream13')], 13));
-    seen.pollNewer = page.actors();
+    seen.pollAborted = page.actors();
     await poll('poll20', 20);
-    page.emit('areas', [row('stream18')], 18);
+    seen.pollTaken = page.actors();
+    page.emit('areas', [row('stream12b')], 12);
     seen.olderStreamAfter = page.actors();
     await poll('poll21', 21);
     page.emit('areas', [row('stream22')], 22);
@@ -443,8 +445,38 @@ const scenarios = {
     return seen;
   },
 
+  // a poll's answer is taken as it arrives, whatever its revision: a later poll is a later read, and a
+  // restarted server may count below the rows shown
+  async pollRestart(page) {
+    const seen = {};
+    page.emit('areas', [row('streamed')], 1000);
+    page.streamError();
+    await page.advance(5000);
+    await page.answer(page.requests('/api/areas').at(-1), [row('poll1')], 1000);
+    seen.sameRevision = page.actors();
+    await page.advance(5000);
+    await page.answer(page.requests('/api/areas').at(-1), [row('poll2')], 300);
+    seen.lowerRevision = page.actors();
+    return seen;
+  },
+
+  // a poll sent after the stream opened and still out when its first rows come is aborted: its answer, though
+  // its revision is higher, is dropped and the stream's rows stay
+  async pollInFlight(page) {
+    page.streamError();
+    page.streamOpen();  // reconnected and no rows yet, so the poll timer still runs
+    await page.advance(5000);
+    const out = page.requests('/api/areas').at(-1);
+    page.emit('areas', [row('streamed')], 995);
+    const seen = { aborted: abandoned(out) };
+    await page.answer(out, [row('late')], 2000);
+    seen.actors = page.actors();
+    return seen;
+  },
+
   // a stream connection is a server epoch: the first rows after it opens are taken whatever their revision,
-  // as a restarted server may count below the last one shown, and within the connection the higher stays
+  // as a restarted server may count below the last one shown, and within the connection the higher stays; a
+  // poll out when the stream opens is aborted, so its answer, though its revision is higher, shows nothing
   async epoch(page) {
     const seen = {};
     page.emit('areas', [row('first')], 1000);
@@ -457,9 +489,16 @@ const scenarios = {
     seen.newer = page.actors();
     page.streamError();
     await page.advance(5000);
-    const out = page.requests('/api/areas').at(-1);
+    const out = page.requests('/api/areas').at(-1);  // a poll sent before the stream opens again
     page.streamOpen();
-    await page.answer(out, [row('polled')], 100);  // a poll's answer, after the stream opened, is taken too
+    seen.aborted = abandoned(out);
+    await page.answer(out, [row('late')], 2000);  // its answer comes after the open
+    seen.acrossOpen = page.actors();
+    page.emit('areas', [row('reopened')], 995);
+    seen.reopened = page.actors();
+    page.streamError();
+    await page.advance(5000);
+    await page.answer(page.requests('/api/areas').at(-1), [row('polled')], 100);  // a poll sent since is taken
     seen.polled = page.actors();
     return seen;
   },

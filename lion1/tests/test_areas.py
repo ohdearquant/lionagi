@@ -1275,12 +1275,25 @@ def test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_
     assert seen["renewed"] == {"view": "line 91", "following": True}
 
 
-def test_the_app_keeps_the_newer_revision_whichever_of_poll_and_stream_arrives_first(tmp_path):
+def test_the_app_orders_stream_events_by_revision_and_takes_each_poll_answer_as_it_arrives(tmp_path):
     seen = app_session(tmp_path, "pollOrder")
     assert seen["streamNewer"] == ["stream12"]  # the stream's rows, then an older poll answer: they stay
-    assert seen["pollNewer"] == ["poll15"]  # a poll answer newer than the stream's rows replaces them
-    assert seen["olderStreamAfter"] == ["poll20"]  # an older stream event after a poll answer is dropped
-    assert seen["newerStreamAfter"] == ["stream22"]  # a newer one is kept
+    # an event aborts the poll out, so an answer of a higher revision is dropped too
+    assert seen["pollAborted"] == ["stream13"]
+    assert seen["pollTaken"] == ["poll20"]  # a poll answer is taken as it arrives
+    # it sets no revision: an event older than the stream's rows shown is dropped, a newer one kept
+    assert seen["olderStreamAfter"] == ["poll20"] and seen["newerStreamAfter"] == ["stream22"]
+
+
+def test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown(tmp_path):
+    seen = app_session(tmp_path, "pollRestart")
+    # a later poll is a later read: its rows are taken at the revision of the rows shown, and below it
+    assert seen["sameRevision"] == ["poll1"] and seen["lowerRevision"] == ["poll2"]
+
+
+def test_the_app_drops_the_answer_of_a_poll_still_out_when_the_streams_first_rows_come(tmp_path):
+    # the first rows abort the poll, so its answer, though its revision is higher, shows nothing
+    assert app_session(tmp_path, "pollInFlight") == {"aborted": True, "actors": ["streamed"]}
 
 
 def test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision(tmp_path):
@@ -1289,7 +1302,11 @@ def test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revi
     assert seen["afterOpen"] == ["restarted"]
     # within that connection the higher revision stays: an older event is dropped and a newer one taken
     assert seen["sameConnection"] == ["restarted"] and seen["newer"] == ["newer"]
-    # and a poll's answer after the stream opened is taken whatever its revision
+    # a poll out when the stream opens again is aborted: its answer, though higher, shows nothing, and
+    # the first rows after the open are taken
+    assert seen["aborted"] is True and seen["acrossOpen"] == ["newer"]
+    assert seen["reopened"] == ["reopened"]
+    # and the answer of a poll sent since is taken whatever its revision
     assert seen["polled"] == ["polled"]
 
 

@@ -115,11 +115,12 @@ function setConn(live) {
 // ---- live data: SSE, with a 5s polling fallback when it errors ----
 var POLL_MS = 5000;
 var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
-var shown = 0;  // the revision of the rows on the page
-// the server stamps each areas payload, stream or poll, with the revision of the read it came from: of two
-// payloads the newer stays, whichever arrived first. A stream connection is a server epoch, as a restarted
-// server may count below the rows shown: the page forgets them when the stream opens and keeps the higher
-// revision only within one connection
+var shown = 0;  // the revision of the stream's rows on the page
+// the server stamps each `areas` event with the revision of the read it came from: within one stream
+// connection the newer of two events stays, whichever arrived first. A connection is a server epoch, as a
+// restarted server may count below the rows shown: the page forgets them when the stream opens. A poll's
+// answer sets no revision: polls run one at a time, so a later one is a later read of whichever server
+// answered, and the stream's `open` and `areas` events give up the poll out
 function takeAreas(rows, rev) {
   if (!(rev > shown)) return;
   shown = rev;
@@ -135,18 +136,22 @@ function startPoll() {
     function free() { if (polling === ctl) polling = null; }  // a poll given up frees no later poll's latch
     var cut = setTimeout(function () { ctl.abort(); free(); }, 2 * POLL_MS);  // never settles: give up
     fetch('/api/areas', { signal: ctl.signal }).then(function (r) {
-      var rev = Number(r.headers.get('X-Areas-Revision'));
       return r.json().then(function (rows) {
-        if (ctl.signal.aborted) return;  // given up
-        takeAreas(rows, rev);
+        if (ctl.signal.aborted) return;  // given up, by the clock or by the stream
+        state.areas = rows;
+        if (state.mode === 'list') renderList();
       });
     }).catch(function () {}).then(function () { clearTimeout(cut); free(); });
   }, POLL_MS);
 }
 function connect() {
   var es = new EventSource('/events');
-  es.addEventListener('open', function () { shown = 0; });  // each connect, each reconnect
+  es.addEventListener('open', function () {  // each connect, each reconnect
+    if (polling) polling.abort();  // the stream speaks now: a poll out is given up
+    shown = 0;
+  });
   es.addEventListener('areas', function (ev) {
+    if (polling) polling.abort();
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     setConn(true);
     takeAreas(JSON.parse(ev.data), Number(ev.lastEventId));

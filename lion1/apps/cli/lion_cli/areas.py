@@ -226,8 +226,9 @@ def make_server(
     def read_rows() -> None:  # with `snapshot_lock` held
         areas = load_areas(registry)
         rows = area_rows(status(areas))
-        # the wall clock in microseconds, above the last revision given: a restarted server's revisions
-        # continue above the last of the one before it
+        # the wall clock in microseconds, above the last revision given. The count starts at 0 with each
+        # server, so it is the wall clock that keeps a restarted server's revisions above the earlier one's,
+        # unless the clock stepped back, which the page's stream epoch covers
         rev = max(snapshot["rev"] + 1, time.time_ns() // 1000)
         snapshot.update(at=time.monotonic(), areas=areas, rows=rows, rev=rev)
 
