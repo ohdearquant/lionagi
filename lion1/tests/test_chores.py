@@ -1593,6 +1593,12 @@ def test_a_report_in_the_hour_a_clock_change_repeats_is_aged_from_its_own_instan
         assert len(keys) == 2  # two reports, two aged markers, though both read 01:30
         old = {"at": "2026-09-22 12:00:00", "thread": "t1"}  # a row from before `ts`: its label is read
         assert asyncio.run(chores._acknowledged(old)) == (True, "answered")
+        # one from before `ts` in the repeated hour counts from the later instant, as it ages: a reply
+        # between the two may precede the report, so it acknowledges nothing
+        legacy = {"at": label, "thread": "t1"}
+        assert asyncio.run(chores._acknowledged(legacy)) == (False, "no reply among 1 message(s)")
+        nowhen = {"at": "0001-01-01 00:00:00", "thread": "t1"}
+        assert asyncio.run(chores._acknowledged(nowhen)) == (False, "no instant to count from")
     finally:
         monkeypatch.undo()
         time.tzset()

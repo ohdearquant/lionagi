@@ -981,7 +981,11 @@ class Chores:
         return None
 
     async def _acknowledged(self, row: dict) -> tuple[bool, str]:
-        """Has the owner written on the report's thread since the report? Unreadable reads as no."""
+        """Has the owner written on the report's thread since the report, the instant the aged pass
+        counts from? Unreadable reads as no."""
+        since = _countable(row)
+        if since is None:
+            return False, "no instant to count from"
         thread = row.get("thread")
         if not thread:
             return False, "no thread recorded"
@@ -990,7 +994,6 @@ class Chores:
         except Exception as e:
             return False, f"thread unreadable: {type(e).__name__}: {e}"
         msgs = t.get("messages", []) if isinstance(t, dict) else []
-        since = _epoch(row)
         for m in msgs:
             if (
                 sender_of(m) == self.owner

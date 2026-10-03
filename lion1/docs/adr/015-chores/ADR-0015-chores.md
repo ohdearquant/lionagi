@@ -468,8 +468,10 @@ bypasses the handler: no refusals, no row, no send.
   leaves it out
   (`test_a_run_without_ts_in_a_repeated_hour_is_not_judged_from_while_it_may_be_the_last`).
 - **S31**: The aged pass reads a report's time by S18's rule, its day included. A report whose time
-  is none the digest counts is not aged and is named in the pass's result, the same on every
-  platform. A report without `ts` in the hour a clock change repeats ages from the later of the two
-  instants it names (S30), so the steward hears of it once both are old enough
+  is none the digest counts is not aged, and the pass's result counts them and names the first five,
+  the same on every platform. A report without `ts` in the hour a clock change repeats ages from the
+  later of the two instants it names (S30), and only a reply after that instant acknowledges it, so
+  the steward hears of it once both are old enough
   (`test_aged_names_and_never_ages_a_report_whose_time_is_no_instant_to_count_from`,
-  `test_a_report_without_ts_in_a_repeated_hour_ages_from_the_later_instant_it_names`).
+  `test_a_report_without_ts_in_a_repeated_hour_ages_from_the_later_instant_it_names`,
+  `test_a_report_in_the_hour_a_clock_change_repeats_is_aged_from_its_own_instant`).
