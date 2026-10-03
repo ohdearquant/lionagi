@@ -40,7 +40,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -517,15 +517,26 @@ class Chores:
         day = day or time.strftime("%Y-%m-%d", time.localtime(now))
         # the moment a chore is judged at: now, or the end of a past day the digest was asked about
         moment = min(now, (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp())
-        try:  # a ledger absent, unreadable or torn judges nothing: a missing subject is not an empty one
-            ledger, unread = [json.loads(x) for x in self.ledger.read_text().splitlines() if x.strip()], ""
-            # a row that names no chore or time judges nothing either: skipped, its run would read missing
+        try:  # a ledger unreadable or torn judges nothing: a missing subject is not an empty one. An absent
+            # file is an empty ledger: an agent whose chores have not run has not written one
+            ledger, unread = self.rows(), ""
+            # a row the judgment below cannot read judges nothing either: skipped, its run would read missing
             for r in ledger:
-                if not (
-                    isinstance(r, dict) and isinstance(r.get("at"), str) and isinstance(r.get("chore"), str)
-                ):
-                    raise ValueError(f"a ledger row names no chore or no time: {str(r)[:80]}")
-                _epoch(r)  # a label that is no time raises here, not in the judgment below
+                row = r if isinstance(r, dict) else {}
+                usable = {  # each field the digest reads from a row, and whether it is one it can use
+                    "chore": isinstance(row.get("chore"), str) and bool(row["chore"].strip()),
+                    "at": isinstance(row.get("at"), str),
+                    "findings": isinstance(row.get("findings"), list)
+                    and all(isinstance(f, str) for f in row["findings"]),
+                    "control": isinstance(row.get("control"), bool),
+                    "escalate": isinstance(row.get("escalate"), bool),
+                }
+                if not all(usable.values()):
+                    bad = ", ".join(k for k, ok in usable.items() if not ok)
+                    raise ValueError(f"a ledger row has no usable {bad}: {str(r)[:80]}")
+                # a label that is no time raises in `_epoch`; a count must be a time the digest can step from
+                if not 0 <= _epoch(r) < _TIME_END:
+                    raise ValueError(f"a ledger row's time is no instant the digest counts: {str(r)[:80]}")
         except (OSError, ValueError, OverflowError) as e:
             ledger, unread = [], f"{type(e).__name__}: {e}"
         rows = [r for r in ledger if r["at"].startswith(day)]
@@ -691,16 +702,23 @@ class Chores:
     async def ensure_ticks(self, *, first_in_s: int = 60) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
-        a steward. Creates what is missing, returns what it created. A chore's tick, when created, has
-        its first firing kept in the agent's state (`first_due`) for the digest; the earliest is kept."""
+        a steward. Creates what is missing, returns what it created. A chore's first firing is kept in
+        the agent's state (`first_due`) for the digest, once: from the tick when created, from the
+        pending reminder's own row when the tick was already there and none is kept."""
         (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
         me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
-        pending = {
-            e.get("content")
-            for e in (agenda or {}).get("events", [])
-            if (e.get("properties") or {}).get("status", "pending") == "pending"
-            and (e.get("properties") or {}).get("created_by_actor") == me
-        }
+        pending: dict[Any, list[float]] = {}  # content -> the firing each pending reminder's row names
+        for e in (agenda or {}).get("events", []):
+            p = e.get("properties") or {}
+            if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
+                continue
+            fires = pending.setdefault(e.get("content"), [])
+            # a monthly row keeps its first firing as the anchor its months count from, the others
+            # only their next one; a row naming no instant names no firing
+            when = p.get("repeat_anchor") or p.get("trigger_at")
+            if isinstance(when, str) and when:
+                with suppress(ValueError, OverflowError):
+                    fires.append(_iso_epoch(when))
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
@@ -709,16 +727,17 @@ class Chores:
         created = []
         at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + first_in_s))
         for content, every in wanted.items():
-            if content in pending:
-                continue
-            await self.agent.khive.exec(
-                f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
-            )
-            created.append(content)
+            fires = pending.get(content)
+            if fires is None:
+                await self.agent.khive.exec(
+                    f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
+                )
+                created.append(content)
+                fires = [_iso_epoch(at)]
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
             # set once: an earlier first due is the stronger evidence
-            if chore in self.instruments and chore not in firsts:
-                self.agent.state.put("first_due", {**firsts, chore: _iso_epoch(at)}, run="-", seq=0)
+            if fires and chore in self.instruments and chore not in firsts:
+                self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
         return created
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
@@ -939,6 +958,7 @@ def sender_of(m: dict) -> str:
 _EVERY = re.compile(r"every:(\d+)([smhd])")
 _NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
 _FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
+_TIME_END = datetime(9999, 1, 1, tzinfo=UTC).timestamp()  # a monthly chore steps a month past its last run
 
 
 def period_s(every: str | None) -> float:

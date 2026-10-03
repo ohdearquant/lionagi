@@ -200,8 +200,10 @@ answered, quiet, report, escalate and instrument-failed.
   per recipient, the dead instrument, the digest per period
   (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
   `test_a_monthly_chore_is_due_on_its_anchor_day_when_its_first_due_is_on_record`,
-  `test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`), the aged
-  pass (each report told once at 1,000 and 1,001 unanswered,
+  `test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`,
+  `test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable`,
+  `test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_and_the_grace`), the
+  aged pass (each report told once at 1,000 and 1,001 unanswered,
   `test_each_unanswered_report_is_told_to_the_steward_once_however_many_markers_the_ledger_holds`),
   the missed tick, `ensure_ticks`.
 
@@ -231,8 +233,8 @@ with the expected actor asserted (C4).
 ### D4: Ticks are the store's reminders, and missed ones are caught up once ^d4
 
 Serves C3. `ensure_ticks` reads the actor's pending reminders from `schedule.agenda` and creates
-each missing one with `schedule.remind`, first firing a minute out (S13). The CLI creates ticks at
-serve start and on `--ticks`, never for a chair.
+each missing one with `schedule.remind`, first firing a minute out (S13, S17). The CLI creates ticks
+at serve start and on `--ticks`, never for a chair.
 
 `_catch_up` asks the store for the actor's missed and failed rows, filtered before each page of 200,
 pages each list to its end, rechecks both in code and runs each row once. An id stays under
@@ -240,6 +242,7 @@ pages each list to its end, rechecks both in code and runs each row once. An id 
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
   `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`,
+  `test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
   `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
   `test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once` (201 rows, two passes),
@@ -332,11 +335,10 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_the_day`,
   `test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day`).
 - **S13**: A chore's first due is the first firing of its tick, which `ensure_ticks` keeps in the
-  agent's state under `first_due` when it creates the tick, once: an earlier one is never
-  overwritten. A chore with no run reads `no run yet, first due by <instant>` until that instant and
-  the grace are past, then `MISSING`. With no first due on record it reads `MISSING` as before,
-  there being no evidence it was ever fine
-  (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
+  agent's state under `first_due` (S17), once: an earlier one is never overwritten. A chore with no
+  run reads `no run yet, first due by <instant>` until that instant and the grace are past, then
+  `MISSING`. With no first due on record it reads `MISSING` as before, there being no evidence it
+  was ever fine (`test_a_chore_with_no_run_yet_is_missing_only_past_its_first_due_and_the_grace`,
   `test_a_chore_with_no_run_and_no_first_due_on_record_is_missing_as_before`,
   `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`).
 - **S14**: With its first due on record, a monthly chore run in a month is due on the next month's
@@ -350,8 +352,21 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day`); a daily chore's line is as it
   was (`test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run`). The
   aged pass counts a period by `period_s`: a monthly one as 30 days, a cron's as a day.
-- **S16**: A ledger the digest cannot read judges no chore and says so: absent, torn, undecodable,
-  or holding a row that names no chore or no time. Such a row is never skipped, as its run would
-  read as a missing one; an empty ledger is judged
+- **S16**: A ledger the digest cannot read judges no chore and says so: torn, undecodable,
+  unreadable, or holding a row it cannot judge from (S18). Such a row is never skipped, as its run
+  would read as a missing one. An empty ledger is judged, and an absent file is one: an agent whose
+  chores have not run has written none, so it reads S13's line
   (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`,
-  `test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`).
+  `test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_and_the_grace`).
+- **S17**: A tick `ensure_ticks` finds pending gives its chore a first due too, when none is kept,
+  from the reminder's own row: its next firing, or for a monthly one its anchor, which the store
+  counts months from. Of several reminders of one tick the earliest counts. A start that stopped
+  between its reminder and the record is healed at the next. A row naming no instant gives none
+  (`test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
+  `test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`,
+  `test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick`).
+- **S18**: A row the digest can judge from has a non-blank `chore`, an `at` string, a `findings`
+  list of strings, and boolean `control` and `escalate`. Its time, `ts` or else `at`, is from 1970
+  and before the year 9999, so a monthly chore can step a month from it
+  (`test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`,
+  `test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable`).
