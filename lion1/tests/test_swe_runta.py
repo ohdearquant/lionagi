@@ -4,6 +4,7 @@ found or built, and `run_set --where runta` reaches the testbed through `one`.""
 import asyncio
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -209,6 +210,49 @@ def test_a_runta_policy_that_does_not_lift_in_time_refuses_the_grade(monkeypatch
     with pytest.raises(RuntimeError, match="github.com, pypi.org still did not answer in 0s"):
         asyncio.run(swe_sandbox.open_code_hosts(box, within=0))
     assert len(set_to) == 1
+    assert not [c for c in ran if c.startswith("getent")]  # nothing was left, so no probe was started
+
+
+def _slow_probe_box(*, takes: float, shut: bool):
+    """A Runta box whose probes each take `takes` seconds unless the timeout they are handed ends them first
+    (rc 124, no output), as a box's own does; the timeouts handed in are recorded."""
+    box = RuntaSandbox(workdir="/testbed", egress=CODE_HOST_POLICY)
+    timeouts = []
+
+    async def run(cmd, *, timeout=120, env=None):
+        if not cmd.startswith("getent"):
+            return 0, ""
+        timeouts.append(timeout)
+        try:
+            await asyncio.wait_for(asyncio.sleep(takes), timeout)
+        except TimeoutError:
+            return 124, ""
+        return 0, "140.82.112.3 STREAM x\n\n" + ("000 curl=7\n" if shut else "200 curl=0\n")
+
+    async def set_egress(policy):
+        box.egress = policy
+        return policy
+
+    box.run, box.set_egress = run, set_egress
+    return box, timeouts
+
+
+def test_a_probe_that_outlasts_the_wait_refuses_the_grade_within_it():
+    box, timeouts = _slow_probe_box(takes=1.5, shut=False)
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="github.com, pypi.org still did not answer in 0.2s"):
+        asyncio.run(swe_sandbox.open_code_hosts(box, within=0.2))
+    assert time.monotonic() - t0 < 1.0  # the first probe was ended at what was left of 0.2 s
+    assert len(timeouts) == 1 and 0 < timeouts[0] <= 0.2  # and with nothing left the second was not started
+
+
+def test_the_wait_between_passes_never_runs_past_the_bound():
+    box, timeouts = _slow_probe_box(takes=0.0, shut=True)  # every probe answers at once, and is shut
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="github.com, pypi.org still did not answer in 0.2s"):
+        asyncio.run(swe_sandbox.open_code_hosts(box, within=0.2))
+    assert time.monotonic() - t0 < 1.0  # the 3 s wait between passes is cut to what is left
+    assert len(timeouts) == 2 and all(0 < x <= 0.2 for x in timeouts)  # one pass, each probe within the bound
 
 
 def test_reopening_a_runta_box_without_a_policy_only_rewrites_the_hosts_file():

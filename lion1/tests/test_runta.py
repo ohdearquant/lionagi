@@ -1252,15 +1252,15 @@ def test_set_egress_checkpoint_suspend_resume_events_after_stop_and_stop_twice(t
     assert rt.deleted is True
 
 
-def _failing_closes(box, mod, failing):
-    """Both clients' `close` recording its call in the list returned; a named one raises `OSError(name)`."""
+def _failing_closes(box, mod, failing, error=OSError):
+    """Both clients' `close` recording its call in the list returned; a named one raises `error(name)`."""
     sdk, api, closed = mod.async_runta_instances[-1], box._api, []
 
     def closing(name, real):
         async def close():
             closed.append(name)
             if name in failing:
-                raise OSError(name)
+                raise error(name)
             await real()
 
         return close
@@ -1303,6 +1303,19 @@ def test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_a
     assert e.value.__notes__ == [f"closing a client also failed: OSError({name!r})" for name in failing]
     assert closed == ["sdk", "api"] and mod.runtimes_store["rt-1"].deleted is False
     assert box.started is False and box.box_id is None
+
+
+@pytest.mark.parametrize("failing", [("sdk",), ("api",)], ids=["the SDK client", "the API client"])
+def test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion(tmp_path, monkeypatch, failing):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path)
+    asyncio.run(box.start())
+    closed = _failing_closes(box, mod, failing, error=asyncio.CancelledError)
+    mod.delete_fails["rt-1"] = OSError("gone away")
+    with pytest.raises(asyncio.CancelledError) as e:
+        asyncio.run(box.stop())
+    assert getattr(e.value, "__notes__", []) == []  # a cancellation is the news, not a note on the deletion
+    assert closed == ["sdk", "api"]  # the other client was still closed
+    assert mod.runtimes_store["rt-1"].deleted is False and box.started is False and box.box_id is None
 
 
 def test_events_without_a_runtime_id_refuses():

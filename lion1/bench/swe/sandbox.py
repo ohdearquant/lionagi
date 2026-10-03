@@ -163,12 +163,15 @@ PROBED = ("github.com", "pypi.org")  # one code host and one index, proved from 
 LOOPBACK = ("127.0.0.1", "::1")
 
 
-async def _probe(box: Box, host: str) -> tuple[list[str], str, str]:
+async def _probe(box: Box, host: str, timeout: float | None = None) -> tuple[list[str], str, str]:
     """(every address the name resolves to, the HTTP code, curl's rc) for `host`, read from inside
     the box. `getent ahosts` lists both families: `getent hosts` preferred the AAAA answer from DNS
-    over the v4 line in /etc/hosts, so pypi.org read as open under a v4-only closure."""
+    over the v4 line in /etc/hosts, so pypi.org read as open under a v4-only closure. `timeout`, when
+    given, ends the probe there; the box's own default holds otherwise."""
     probe = f"curl -sS -m 8 -o /dev/null -w '%{{http_code}}' https://{host}/ 2>/dev/null; echo \" curl=$?\""
-    _, out = await box.run(f"getent ahosts {host}; echo; {probe}")
+    _, out = await box.run(
+        f"getent ahosts {host}; echo; {probe}", **({} if timeout is None else {"timeout": timeout})
+    )
     head, _, fetch = out.strip().rpartition("\n")
     addresses = [ln.split()[0] for ln in head.splitlines() if ln.strip()]
     # no curl in the box prints ` curl=127` alone: the code is empty, never the rc read as one
@@ -222,10 +225,16 @@ async def open_code_hosts(box: Box, *, within: float = 120.0) -> None:
     await box.set_egress(Egress(mode="denylist"))
     deadline = time.monotonic() + within
     while True:
-        shut = [host for host in PROBED if (await _probe(box, host))[2] != "0"]
+        shut = []
+        for i, host in enumerate(PROBED):
+            left = deadline - time.monotonic()
+            if left <= 0:  # no probe may start with nothing left; the hosts not yet answered are named
+                shut_hosts = ", ".join([*shut, *PROBED[i:]])
+                raise RuntimeError(
+                    f"the policy was emptied and {shut_hosts} still did not answer in {within:g}s"
+                )
+            if (await _probe(box, host, left))[2] != "0":
+                shut.append(host)
         if not shut:
             return
-        if time.monotonic() >= deadline:
-            shut_hosts = ", ".join(shut)
-            raise RuntimeError(f"the policy was emptied and {shut_hosts} still did not answer in {within:g}s")
-        await asyncio.sleep(3)
+        await asyncio.sleep(max(0.0, min(3, deadline - time.monotonic())))

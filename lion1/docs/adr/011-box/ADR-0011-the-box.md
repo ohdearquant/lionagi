@@ -222,7 +222,8 @@ need `capture` set.
   `test_a_run_past_a_fractional_deadline_is_timed_out_though_its_rounded_time_is_under_it`,
   `test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error`,
   `test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_attached`,
-  `test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion` and
+  `test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion`,
+  `test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives

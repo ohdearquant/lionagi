@@ -665,8 +665,8 @@ class RuntaSandbox(BoxBase):
 
     async def stop(self) -> None:
         """Delete the runtime (Runta's `rm`) and close the clients. Both clients are closed whatever
-        happens; a failed deletion is the error raised, with each close failure noted on it, else the
-        first close failure."""
+        happens; a close that is cancelled is raised, else a failed deletion is, with each close failure
+        noted on it, else the first close failure."""
         deleting: BaseException | None = None
         try:
             if self._rt is not None:
@@ -682,14 +682,22 @@ class RuntaSandbox(BoxBase):
         self.started = False
         client, self._client = self._client, None
         api, self._api = self._api, None
-        closing: list[BaseException] = []
+        closing: list[Exception] = []
+        cancelled: BaseException | None = None  # a cancellation is raised, never noted on another error
         for held in (client, api):
             if held is None:
                 continue
             try:
                 await held.close()
-            except BaseException as e:
+            except Exception as e:
                 closing.append(e)
+            except BaseException as e:
+                if cancelled is None:
+                    cancelled = e
+        if cancelled is not None:
+            if deleting is not None:  # the cancel outranks it; what the deletion said rides along
+                cancelled.add_note(f"the deletion also failed: {deleting!r}")
+            raise cancelled
         if deleting is not None:
             for failure in closing:
                 deleting.add_note(f"closing a client also failed: {failure!r}")

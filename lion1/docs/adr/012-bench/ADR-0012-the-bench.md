@@ -218,8 +218,8 @@ Serves C1 and C4. `grade` mirrors the harness's `run_instance` in the box: reset
 attempts, the eval script under a timeout, the harness's report function, a status on every early
 stop. `close_code_hosts` writes marked `/etc/hosts` lines and probes from inside; `open_code_hosts`
 rewrites the file in place, since it is a bind mount, and proves no marked line is left. An unaided
-Runta runtime carries the code hosts as its policy; reopening empties it, waits until the probed
-hosts answer, else refuses the grade. The codex arm is refused there.
+Runta runtime carries the code-host policy; reopening empties it, waits up to 120 s for the probed
+hosts, else refuses the grade. The codex arm is refused there.
 
 - **Landing evidence**: `tests/test_swe_sandbox.py`: `test_failed_reset_is_not_graded`, the probe
   test refusing a reachable or elsewhere-resolving host. `tests/test_swe_runta.py`:
@@ -229,6 +229,8 @@ hosts answer, else refuses the grade. The codex arm is refused there.
   `test_an_unaided_runta_runtime_with_another_policy_is_refused_before_the_model_runs`,
   `test_reopening_a_runta_box_empties_its_policy_and_waits_until_the_hosts_answer`,
   `test_a_runta_policy_that_does_not_lift_in_time_refuses_the_grade`,
+  `test_a_probe_that_outlasts_the_wait_refuses_the_grade_within_it`,
+  `test_the_wait_between_passes_never_runs_past_the_bound`,
   `test_reopening_a_runta_box_without_a_policy_only_rewrites_the_hosts_file`.
 
 ### D3: The loop arm in `bench/swe/run_swe.py` ^d3
