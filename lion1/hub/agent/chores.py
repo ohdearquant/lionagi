@@ -700,6 +700,7 @@ class Chores:
         async with self._aging:
             now, done, rows = time.time(), set(_val(self.agent.state, "aged_sent", [])), self.rows()
             due: list[tuple[dict, float, str]] = []
+            uncounted: list[dict] = []  # reports whose time is no instant to age from: named, never aged
             for r in rows:
                 if not r.get("msg") or not r["findings"] or self.steward in (r.get("sent_to") or []):
                     continue  # only reports the owner alone received; the steward has the rest already
@@ -710,7 +711,10 @@ class Chores:
                     continue
                 inst = self.instruments.get(r["chore"])
                 period = period_s(inst.every if inst else None)
-                age = now - _epoch(r)
+                if (t := _countable(r)) is None:
+                    uncounted.append(r)
+                    continue
+                age = now - t
                 if age < self.aged_after * period:
                     continue
                 acked, how = await self._acknowledged(r)
@@ -741,7 +745,13 @@ class Chores:
             # a marker lives as long as the ledger row it covers: no count of reports lets one be told twice
             live = {_aged_key(r) for r in rows}
             self.agent.state.put("aged_sent", sorted(done & live), run=run.id, seq=run.record.seq)
-            return f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
+            said = f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
+            if uncounted:
+                said += (
+                    f"; {len(uncounted)} report(s) not aged, their time is no instant to count from: "
+                    + ", ".join(f"{r['chore']} {r.get('at')!r}" for r in uncounted[:5])
+                )
+            return said
 
     # ticks
 
@@ -1124,6 +1134,17 @@ def _epoch(row: dict) -> float:
     if isinstance(ts, int | float) and not isinstance(ts, bool):
         return float(ts)
     return time.mktime(time.strptime(row["at"], "%Y-%m-%d %H:%M:%S"))
+
+
+def _countable(row: dict) -> float | None:
+    """The row's instant as the digest counts one: its `at` a label `_is_label` admits, its `ts` a finite
+    number where it has one, and the time from 1970 to before `_TIME_END`. None for any other row, on every
+    platform alike."""
+    at = row.get("at")
+    if not isinstance(at, str) or not _is_label(at) or ("ts" in row and not _is_number(row["ts"])):
+        return None
+    t = _epoch(row)
+    return t if 0 <= t < _TIME_END else None
 
 
 def _readings(row: dict) -> tuple[float, float] | None:

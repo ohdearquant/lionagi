@@ -1479,6 +1479,35 @@ def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_
     assert Aged().chore is None
 
 
+@pytest.mark.parametrize(
+    "time_of",
+    [{"at": "0001-01-01 00:00:00"}, {"ts": -62135596800.0}, {"ts": "soon"}],
+    ids=["year-one-label", "ts-before-1970", "ts-not-a-number"],
+)
+def test_aged_names_and_never_ages_a_report_whose_time_is_no_instant_to_count_from(tmp_path, time_of):
+    # a time the digest cannot count is none here either: no age, so no false escalation, and no raise
+    khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: aged", mid="c3d4e5f6"))
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [CHECK, DONE, "<lact a1>aged()</lact>", DONE],
+        disk=Probe("disk", full(findings=("low",), evidence="df"), every="every:30m"),
+    )
+    asyncio.run(agent.wake())
+    assert [s["to"] for s in khive.sent] == [OWNER]
+    age_ledger(chores, hours=1.5)  # past two periods: a countable time would be aged
+    (row,) = chores.rows()
+    if "at" in time_of:
+        row.pop("ts", None)  # a row from before `ts` reads its label
+    row.update(time_of)
+    chores.ledger.write_text(json.dumps(row) + "\n")
+    run = asyncio.run(agent.wake())
+    assert len(khive.sent) == 1  # the steward is told nothing
+    said = [e.content.value for e in run.record if e.kind is Kind.RESULT and e.content.spec == "aged"]
+    named = f"1 report(s) not aged, their time is no instant to count from: disk {row['at']!r}"
+    assert said == [f"aged: nothing unanswered; {named}"]
+
+
 def test_two_aged_passes_of_one_turn_tell_the_steward_once_and_keep_both_markers(tmp_path):
     khive = Yielding(
         mail(SELF, "tick: disk"),

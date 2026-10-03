@@ -467,3 +467,6 @@ bypasses the handler: no refusals, no row, no send.
   reads ``not judged: a run without `ts` names an hour the clock repeats``; a later run both precede
   leaves it out
   (`test_a_run_without_ts_in_a_repeated_hour_is_not_judged_from_while_it_may_be_the_last`).
+- **S31**: The aged pass reads a report's time by S18's rule. A report whose time is none the digest
+  counts is not aged and is named in the pass's result, the same on every platform
+  (`test_aged_names_and_never_ages_a_report_whose_time_is_no_instant_to_count_from`).
