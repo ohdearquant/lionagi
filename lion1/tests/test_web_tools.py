@@ -15,6 +15,7 @@ import socket
 import ssl
 import threading
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -999,6 +1000,12 @@ def test_a_timed_tls_connection_is_watched_from_its_dial_and_before_its_handshak
     events: list[tuple] = []
 
     class Raw:
+        def settimeout(self, timeout):
+            events.append(("timeout", timeout))
+
+        def connect(self, address):
+            events.append(("connect", address))
+
         def setsockopt(self, *args):
             pass
 
@@ -1015,23 +1022,127 @@ def test_a_timed_tls_connection_is_watched_from_its_dial_and_before_its_handshak
             events.append(("wrap", sock, server_hostname, do_handshake_on_connect))
             return wrapped
 
-    def dial(address, timeout, source_address=None):
-        events.append(("dial", address, timeout))
-        return raw
-
-    monkeypatch.setattr(w.socket, "create_connection", dial)
+    monkeypatch.setattr(w.socket, "socket", lambda *args: raw)
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("192.0.2.1", 3128))])
     monkeypatch.setattr(w, "_watch", lambda sock: events.append(("watch", sock)))
     conn = w._TimedTLS("proxy.example", 3128, timeout=5.0, context=Wraps())
     conn.set_tunnel("search.example", 443)
     monkeypatch.setattr(conn, "_tunnel", lambda: events.append(("tunnel",)))
     conn.connect()
     assert events == [
-        ("dial", ("proxy.example", 3128), 5.0),
-        ("watch", raw),
+        ("watch", raw),  # before it dials
+        ("timeout", 5.0),
+        ("connect", ("192.0.2.1", 3128)),
         ("tunnel",),
         ("wrap", raw, "search.example", False),
         ("watch", wrapped),
         ("handshake",),
+    ]
+
+
+# the proxy's dial: `_dial` tries one address at a time through `_connect`, each under the request's clock
+
+
+@pytest.fixture
+def fake_time(monkeypatch):
+    """What `_Clock` and `_left` read as the time, moved by the test."""
+    now = [100.0]
+    monkeypatch.setattr(w, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
+    return now
+
+
+THREE = [(2, 1, 6, "", (f"192.0.2.{n}", 3128)) for n in (1, 2, 3)]
+
+
+def test_each_address_of_a_proxy_is_dialed_with_what_is_left_of_the_deadline(fake_time, monkeypatch):
+    tried: list[tuple] = []
+
+    def connect(info, timeout, source_address=None):
+        tried.append((info[4][0], timeout))
+        fake_time[0] += 5  # an address that takes five seconds to refuse
+        raise ConnectionRefusedError("refused")
+
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: THREE)
+    monkeypatch.setattr(w, "_connect", connect)
+    with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
+        w._dial(("proxy.example", 3128), 20.0)
+    # the second try gets the remainder, not the 10 s the first had; at zero the third is never dialed
+    assert tried == [("192.0.2.1", 10.0), ("192.0.2.2", 5.0)]
+
+
+def test_a_dial_whose_resolution_used_the_deadline_dials_nothing(fake_time, monkeypatch):
+    def resolve(*args, **kwargs):
+        fake_time[0] += 10  # the name took the whole request
+        return THREE
+
+    monkeypatch.setattr(w.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(w, "_connect", lambda *a: pytest.fail("dialed past the deadline"))
+    with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
+        w._dial(("proxy.example", 3128), 20.0)
+
+
+def test_a_dial_goes_on_to_the_next_address_and_ends_with_the_last_refusal(monkeypatch):
+    tried: list[str] = []
+
+    def second_answers(info, timeout, source_address=None):
+        tried.append(info[4][0])
+        if info[4][0] == "192.0.2.2":
+            return "connected"
+        raise ConnectionRefusedError(info[4][0])
+
+    def none_answers(info, timeout, source_address=None):
+        raise ConnectionRefusedError(info[4][0])
+
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: THREE)
+    monkeypatch.setattr(w, "_connect", second_answers)
+    assert w._dial(("proxy.example", 3128), 20.0) == "connected" and tried == ["192.0.2.1", "192.0.2.2"]
+    monkeypatch.setattr(w, "_connect", none_answers)
+    with pytest.raises(ConnectionRefusedError, match="192.0.2.3"):
+        w._dial(("proxy.example", 3128), 20.0)
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: [])
+    with pytest.raises(OSError, match="'proxy.example' resolves to no address"):
+        w._dial(("proxy.example", 3128), 20.0)
+
+
+def test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not(monkeypatch):
+    events: list[tuple] = []
+
+    class Raw:
+        def __init__(self, family, kind, proto):
+            events.append(("socket", family))
+
+        def settimeout(self, timeout):
+            events.append(("timeout", timeout))
+
+        def bind(self, address):
+            events.append(("bind", address))
+
+        def connect(self, address):
+            events.append(("connect", address))
+            if address[0] == "192.0.2.1":
+                raise ConnectionRefusedError("refused")
+
+        def close(self):
+            events.append(("close",))
+
+    answers = [(2, 1, 6, "", ("192.0.2.1", 3128)), (10, 1, 6, "", ("2001:db8::1", 3128, 0, 0))]
+    monkeypatch.setattr(w.socket, "socket", Raw)
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: answers)
+    monkeypatch.setattr(w, "_watch", lambda sock: events.append(("watch", type(sock))))
+    sock = w._dial(("proxy.example", 3128), 5.0, ("198.51.100.7", 0))
+    assert isinstance(sock, Raw)
+    assert events == [
+        ("socket", 2),
+        ("watch", Raw),
+        ("timeout", 5.0),
+        ("bind", ("198.51.100.7", 0)),
+        ("connect", ("192.0.2.1", 3128)),
+        ("close",),
+        ("socket", 10),
+        ("watch", Raw),
+        ("timeout", 5.0),
+        ("bind", ("198.51.100.7", 0)),
+        ("connect", ("2001:db8::1", 3128, 0, 0)),
     ]
 
 
@@ -1198,6 +1309,52 @@ def test_a_proxy_that_answers_connect_a_byte_now_and_then_is_cut_at_the_deadline
     with pytest.raises(WebError, match="p: timed out after 0.4s"):
         w._send("p", urllib.request.Request("https://search.example/"), timeout=0.4)
     assert time.monotonic() - began < 2
+
+
+@pytest.mark.parametrize(
+    ("url", "proxy"),
+    [
+        ("http://search.example/", None),
+        ("http://search.example/", "http://proxy.example:3128"),
+        ("https://search.example/", "http://proxy.example:3128"),
+    ],
+    ids=["direct-http", "proxy-http", "proxy-https"],
+)
+def test_a_name_with_several_stalled_addresses_is_dialed_within_the_deadline(monkeypatch, url, proxy):
+    # five addresses, each refusing after 0.15 s: the clock's 0.5 s ends the third try's wait, and no try
+    # may be given a timeout that reaches past it
+    overruns: list[float] = []
+
+    class Stalled:
+        def __init__(self, family, kind, proto):
+            self.timeout = None
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            overruns.append(time.monotonic() + self.timeout - w._current.clock.deadline)
+            time.sleep(min(self.timeout, 0.15))
+            raise ConnectionRefusedError("refused") if self.timeout > 0.15 else TimeoutError("timed out")
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            pass
+
+    five = [(2, 1, 6, "", (f"192.0.2.{n}", 3128)) for n in range(1, 6)]
+    monkeypatch.setattr(w.socket, "socket", Stalled)
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: five)
+    monkeypatch.setattr(
+        urllib.request, "getproxies", lambda: {"http": proxy, "https": proxy} if proxy else {}
+    )
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    began = time.monotonic()
+    with pytest.raises(WebError, match="p: timed out after 0.5s"):
+        w._send("p", urllib.request.Request(url), timeout=0.5)
+    assert time.monotonic() - began < 1.0
+    assert len(overruns) >= 3 and max(overruns) < 0.075  # each try ends by the deadline, at the latest
 
 
 @pytest.mark.parametrize("in_headers", [False, True], ids=["body", "headers"])

@@ -183,14 +183,40 @@ class _Timed(http.client.HTTPConnection):
 
     def connect(self) -> None:
         self.timeout = _left(self.timeout)
+        self._create_connection = _dial
         super().connect()
-        _watch(self.sock)
+
+
+def _connect(info: tuple, timeout: float | None, source_address: tuple | None = None) -> socket.socket:
+    """One try at one address `getaddrinfo` gave. The clock watches the socket before it connects, so the
+    deadline ends a connect that stalls, and before anything reads from it: a proxy's answer to CONNECT
+    may drip too."""
+    family, kind, proto, _, address = info
+    sock = socket.socket(family, kind, proto)
+    try:
+        _watch(sock)
+        sock.settimeout(timeout)
+        if source_address:
+            sock.bind(source_address)
+        sock.connect(address)
+    except OSError:
+        sock.close()
+        raise
+    return sock
 
 
 def _dial(address: tuple, timeout: float | None, source_address: tuple | None = None) -> socket.socket:
-    sock = socket.create_connection(address, timeout, source_address)
-    _watch(sock)  # before anything reads from it: a proxy's answer to CONNECT may drip too
-    return sock
+    """`socket.create_connection` under the request's clock: it gives every address the same timeout,
+    however much of the deadline the ones before it used. Here each try gets what is left, and none is
+    made when nothing is."""
+    failure: OSError | None = None
+    for info in socket.getaddrinfo(*address, type=socket.SOCK_STREAM):
+        left = _left(timeout)  # the earlier tries, or the resolution, may have used all of it: then no dial
+        try:
+            return _connect(info, left, source_address)
+        except OSError as e:
+            failure = e
+    raise failure or OSError(f"{address[0]!r} resolves to no address")
 
 
 class _TimedTLS(http.client.HTTPSConnection):

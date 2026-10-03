@@ -107,7 +107,7 @@ letters, digits and hyphens joined by dots, so an internationalized name is give
 environment's choice is the first set of `SEARXNG_URL`, `BRAVE_API_KEY`, `TAVILY_API_KEY`,
 `JINA_API_KEY`.
 
-### C5: A fetch is made only to a public address, at every hop _(enforced: mechanical)_ ^c5
+### C5: A fetch is refused unless the address this process resolves is public, at every hop _(enforced: mechanical)_ ^c5
 
 - **Subject**: the address a fetch is given and the address of every redirect it follows.
 - **Violated when**: a scheme other than http or https is opened, a host with any answer that is not
@@ -122,6 +122,8 @@ one checked.
 
 Five ranges are refused whole, whatever the interpreter calls them, because the supported patch
 releases disagree on them (A2): 192.0.0.0/24, 64:ff9b:1::/48, 2001::/23, 2002::/16 and 3fff::/20.
+
+The proxy's own reach is C6's and S6's.
 
 ### C6: A fetch the proxy does not take dials an address that was checked _(enforced: mechanical)_ ^c6
 
@@ -262,6 +264,21 @@ error's detail included.
   `test_a_proxy_that_answers_connect_a_byte_now_and_then_is_cut_at_the_deadline`,
   `test_an_error_whose_detail_outlasts_the_deadline_is_a_timeout`.
 
+### D8: `_dial` and `_connect`: a provider's or a proxy's connection, one address at a time ^d8
+
+Serves C7. `_Timed` and `_TimedTLS` connect through `_dial`, which resolves the name and tries each
+address through `_connect`, in the order `getaddrinfo` gave them. Each try is given what is left of
+the request's clock, and none is made when nothing is. `_connect` hands its socket to the clock
+before it connects, so the deadline ends a connect that stalls, and closes the socket when the
+connect fails. The last failure is raised when no address answers.
+
+- **Landing evidence**: `tests/test_web_tools.py`:
+  `test_a_name_with_several_stalled_addresses_is_dialed_within_the_deadline`,
+  `test_each_address_of_a_proxy_is_dialed_with_what_is_left_of_the_deadline`,
+  `test_a_dial_whose_resolution_used_the_deadline_dials_nothing`,
+  `test_a_dial_goes_on_to_the_next_address_and_ends_with_the_last_refusal`,
+  `test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not`.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -276,7 +293,7 @@ error's detail included.
 
 ## Consequences
 
-- **S1**: D1 to D7 landed with the tests they name. Each of these turned named tests red: removing
+- **S1**: D1 to D8 landed with the tests they name. Each of these turned named tests red: removing
   the pinned connection, dialing by name, ignoring the carried address, and choosing the transport
   from a first reading of the proxy settings. So did a clock that watches no socket, an expired
   clock that loses to a refusal, a key left in place, a whole read, and each of the two parser
@@ -307,4 +324,5 @@ error's detail included.
 - **S11**: The tests D2, D3, D4 and D7 name turn red when C5's five ranges are left to the
   interpreter, when a timed socket reaches the clock after a proxy's answer or its handshake, or
   when a short body reads as whole. They also turn red when a missing result list reads as none, or
-  when an HTTP status is kept past the deadline.
+  when an HTTP status is kept past the deadline. Those D8 names turn red when a dial gives each
+  address the first one's remainder, or watches its socket after the connect.
