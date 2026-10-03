@@ -190,15 +190,18 @@ class _Timed(http.client.HTTPConnection):
 def _connect(info: tuple, timeout: float | None, source_address: tuple | None = None) -> socket.socket:
     """One try at one address `getaddrinfo` gave. The clock watches the socket before it connects, so the
     deadline ends a connect that stalls, and before anything reads from it: a proxy's answer to CONNECT
-    may drip too."""
+    may drip too. A worker can be paused after the caller read the time left, and the clock's shutdown
+    fails on a socket not yet connected, so the time left is read again just before the connect and
+    once more after it: a connection that outlived the deadline is closed, never handed back."""
     family, kind, proto, _, address = info
     sock = socket.socket(family, kind, proto)
     try:
         _watch(sock)
-        sock.settimeout(timeout)
         if source_address:
             sock.bind(source_address)
+        sock.settimeout(_left(timeout))  # a TimeoutError is an OSError: the socket is closed below
         sock.connect(address)
+        _left(timeout)
     except OSError:
         sock.close()
         raise
@@ -397,10 +400,14 @@ def _hit(title: Any, url: Any, snippet: Any, published: Any = None) -> Hit | Non
     return Hit(title=_text(title), url=url, snippet=_text(snippet)[:SNIPPET_CHARS], published=stamp)
 
 
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+
+
 def _domain(site: str) -> str:
-    """Labels of ASCII letters, digits and hyphens joined by dots; an internationalized name in punycode."""
+    """DNS labels joined by dots: 1 to 63 ASCII letters, digits and hyphens each, none beginning or ending
+    with a hyphen, 253 characters in all; an internationalized name in punycode."""
     site = site.strip()
-    if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*", site):
+    if len(site) > 253 or not re.fullmatch(rf"{_LABEL}(?:\.{_LABEL})*", site):
         raise WebError(f"site must be a bare domain such as docs.python.org, not {site!r}")
     return site
 

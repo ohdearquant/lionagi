@@ -440,6 +440,35 @@ def test_a_body_without_its_result_list_is_off_the_shape_not_empty(wire, make, _
             run(make().search(WebSearch(query="x")))
 
 
+@pytest.mark.parametrize(("make", "_body"), PROVIDERS)
+def test_a_result_with_an_unusable_field_is_read_as_far_as_it_goes(wire, make, _body):
+    # the body's shape is refused (the test above); inside a result, a title or snippet that is not text
+    # reads as empty, a date that is not text as none, and a result with no usable link is dropped
+    rows = [
+        {
+            "title": 5,
+            "url": "https://example.org/a",
+            "content": ["x"],
+            "description": {},
+            "published_date": 3,
+            "publishedDate": 3,
+            "page_age": 3,
+            "age": 3,
+            "publishedTime": 3,
+            "date": 3,
+        },
+        {"title": "no link", "content": "c", "description": "c"},
+        {"title": "empty link", "url": ""},
+        {"title": "link that is not text", "url": 5},
+        {"title": "Last", "url": "https://example.org/b", "content": "c", "description": "c"},
+    ]
+    wire.answers = [Resp(json.dumps({"results": rows, "web": {"results": rows}, "data": rows}))]
+    assert run(make().search(WebSearch(query="x"))) == [
+        Hit(title="", url="https://example.org/a", snippet=""),
+        Hit(title="Last", url="https://example.org/b", snippet="c"),
+    ]
+
+
 def test_a_provider_redirect_is_an_error_and_never_followed(monkeypatch):
     class Moved(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -491,6 +520,28 @@ def test_a_site_that_is_not_a_domain_is_refused():
             Brave(KEY).request(WebSearch(query="x", site=site))
     punycode = Brave(KEY).request(WebSearch(query="x", site="xn--bcher-kva.example"))
     assert query(punycode)["q"] == "site:xn--bcher-kva.example x"  # an IDN is given as punycode
+
+
+def test_a_site_is_dns_labels_none_starting_or_ending_with_a_hyphen():
+    longest = ".".join(["a" * 63, "a" * 63, "a" * 63, "a" * 61])  # 253 characters, 63 to a label
+    assert len(longest) == 253
+    for site in ("a-b.example", "a.b", "x", "1.2.3.4", "a" * 63 + ".example", longest):
+        assert query(Brave(KEY).request(WebSearch(query="x", site=site)))["q"] == f"site:{site} x"
+    for site in (
+        "-a.example",  # a label beginning with a hyphen, first, middle and last
+        "a.-b.example",
+        "example.-a",
+        "a-.example",  # a label ending with one, first, middle and last
+        "a.b-.example",
+        "example.a-",
+        "-",
+        "a" * 64 + ".example",  # a label of 64
+        longest + "a",  # 254 characters
+        "a..example",
+        "a.example.",
+    ):
+        with pytest.raises(WebError, match="bare domain"):
+            Brave(KEY).request(WebSearch(query="x", site=site))
 
 
 # --- choosing a provider ---------------------------------------------------------------------------
@@ -587,6 +638,26 @@ def test_no_hits_and_a_provider_error_are_results_not_crashes():
     b = {e.alias: e.content for e in second.record if e.kind is Kind.RESULT}["a"]
     assert a.ok and a.value == "(no results)"
     assert b.ok is False and b.error == "WebError: brave: HTTP 429, rate limited; try again later"
+
+
+@pytest.mark.parametrize(("make", "_body"), PROVIDERS)
+def test_a_search_whose_every_result_has_no_usable_link_is_no_results(wire, make, _body):
+    rows = [{"title": "no link"}, {"title": "empty link", "url": ""}, {"title": "number", "url": 5}]
+    wire.answers = [Resp(json.dumps({"results": rows, "web": {"results": rows}, "data": rows}))]
+    actor, profile = web_actor(make())
+    turns = '<lact a>web_search(query="q")</lact>', "done"
+    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), scripted(*turns)))
+    a = {e.alias: e.content for e in result.record if e.kind is Kind.RESULT}["a"]
+    assert a.ok and a.value == "(no results)"
+
+
+def test_a_search_provider_given_to_web_is_called_as_it_is_and_owes_its_own_failures():
+    actor, profile = web_actor(Canned(error=RuntimeError("boom")))
+    turns = '<lact a>web_search(query="q")</lact>', "done"
+    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), scripted(*turns)))
+    a = {e.alias: e.content for e in result.record if e.kind is Kind.RESULT}["a"]
+    # the runtime's failed result for what it raised: not a `WebError`, no provider name, nothing blanked
+    assert a.ok is False and a.error == "RuntimeError: boom"
 
 
 def test_a_scripted_fetch_reads_a_page_and_a_private_address_is_a_failed_result(wire, monkeypatch):
@@ -1134,16 +1205,99 @@ def test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not(monk
     assert events == [
         ("socket", 2),
         ("watch", Raw),
-        ("timeout", 5.0),
         ("bind", ("198.51.100.7", 0)),
+        ("timeout", 5.0),  # read last before the connect
         ("connect", ("192.0.2.1", 3128)),
         ("close",),
         ("socket", 10),
         ("watch", Raw),
-        ("timeout", 5.0),
         ("bind", ("198.51.100.7", 0)),
+        ("timeout", 5.0),
         ("connect", ("2001:db8::1", 3128, 0, 0)),
     ]
+
+
+@pytest.fixture
+def stepping(fake_time, monkeypatch):
+    """Sockets that move the fake clock: `before` seconds pass as one is made, after the dial read what
+    was left; `during` pass inside its connect, which then returns after the clock's shutdown missed it."""
+    step = types.SimpleNamespace(before=0.0, during=0.0, made=[])
+
+    class Sock:
+        def __init__(self, family, kind, proto):
+            fake_time[0] += step.before
+            self.timeout = self.address = None
+            self.closed, self.sent = False, []
+            step.made.append(self)
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            self.address = address
+            fake_time[0] += step.during
+
+        def setsockopt(self, *args):
+            pass
+
+        def do_handshake(self):
+            pass
+
+        def sendall(self, data):
+            self.sent.append(data)
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(w.socket, "socket", Sock)
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("192.0.2.1", 80))])
+    return step
+
+
+def timed(https: bool):
+    """A provider's connection of either kind; the TLS one's context wraps nothing, so what the request
+    sends is what the socket stub records."""
+    if not https:
+        return w._Timed("search.example", 80, timeout=20.0)
+
+    class Wraps:
+        verify_mode, check_hostname = ssl.CERT_REQUIRED, True
+
+        def wrap_socket(self, sock, server_hostname, do_handshake_on_connect=True):
+            return sock
+
+    return w._TimedTLS("search.example", 443, timeout=20.0, context=Wraps())
+
+
+@pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
+def test_a_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows(stepping, https):
+    stepping.during = 11.0  # the 10 s request's connect comes back a second late
+    conn = timed(https)
+    with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
+        conn.request("GET", "/")
+    (sock,) = stepping.made
+    assert sock.address == ("192.0.2.1", 80) and sock.closed and sock.sent == []
+
+
+@pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
+def test_a_dial_paused_before_its_connect_connects_with_what_is_left_then(stepping, https):
+    stepping.before = 4.0  # paused after the dial read its 10 s, before the connect
+    with w._Clock(10):
+        timed(https).connect()
+    (sock,) = stepping.made
+    assert sock.address == ("192.0.2.1", 80) and sock.timeout == 6.0 and not sock.closed
+
+
+@pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
+def test_a_dial_paused_to_the_deadline_never_connects(stepping, https):
+    stepping.before = 10.0
+    with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
+        timed(https).connect()
+    (sock,) = stepping.made
+    assert sock.address is None and sock.closed
 
 
 class Seen(http.server.BaseHTTPRequestHandler):

@@ -80,14 +80,14 @@ model will not follow what a page says (S3).
 
 ### C3: Every failure is a failed result the model can read, and never carries the key _(enforced: mechanical)_ ^c3
 
-- **Subject**: every search provider call and every fetch.
+- **Subject**: every call of the four search provider adapters (S12) and every fetch.
 - **Violated when**: a refused key, a rate limit, a timeout, a network failure, a cut body or a body
-  off the documented shape raises anything but `WebError` or ends the run; or the key reaches the
-  model in an error or a hit.
+  that D2 or D3 refuses raises anything but `WebError` or ends the run; or the key reaches the model
+  in an error or a hit.
 
 Each of those is raised as `WebError` with the search provider's name or `web_fetch` first, which
 the runtime settles as a failed command ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). A search
-with no results is a result that says so.
+with no results, one whose every result D3 drops included, is a result that says so.
 
 A key is sent only in the header its search provider documents, and a search provider's redirect is
 an error, never followed: it would carry that header to another host. A provider that echoes the
@@ -102,10 +102,12 @@ anything is read (S8).
 
 SearXNG has no site filter and no week range, and Jina has no recency: each says so in a failed
 result that tells the model to search again without it. Brave documents the `site:` operator inside
-the query and gets it there. A `site` is refused unless it is a bare domain: labels of ASCII
-letters, digits and hyphens joined by dots, so an internationalized name is given in punycode. The
-environment's choice is the first set of `SEARXNG_URL`, `BRAVE_API_KEY`, `TAVILY_API_KEY`,
-`JINA_API_KEY`.
+the query and gets it there.
+
+A `site` is refused unless it is a bare domain: DNS labels of 1 to 63 ASCII letters, digits and
+hyphens, none beginning or ending with a hyphen, joined by dots, 253 characters at most; an
+internationalized name is given in punycode. The environment's choice is the first set of
+`SEARXNG_URL`, `BRAVE_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`.
 
 ### C5: A fetch is refused unless the address this process resolves is public, at every hop _(enforced: mechanical)_ ^c5
 
@@ -139,13 +141,14 @@ is the proxy's to restrict.
 
 ### C7: Every request ends by one deadline and reads a bounded body _(enforced: mechanical)_ ^c7
 
-- **Subject**: every search provider call and every fetch, redirects included.
+- **Subject**: every call of the four search provider adapters (S12) and every fetch, redirects
+  included.
 - **Violated when**: a request outlives its deadline by more than one socket operation; more than
   2,000,001 bytes of a body are read; a fetch returns a body that is not a text type, or page text
   past `max_chars`; or a cut is not marked.
 
-A request has one deadline of 20 seconds, from its first connection to the last byte read, however
-the bytes arrive: a peer that sends a byte now and then is cut at the deadline as one that sends
+A request has a 20-second deadline, from its first connection to the last byte read, however the
+bytes arrive: a peer that sends a byte now and then is cut at the deadline as one that sends
 nothing. A provider's answer past 2,000,000 bytes is refused. A fetch reads text types only, at most
 2,000,001 bytes whatever `max_chars` asks.
 
@@ -159,13 +162,14 @@ any command ([[ADR-0003-the-bounds|ADR-0003]]).
 
 Serves C1 and C2. The two request models carry the warning in the first line of their docstrings,
 which is the line the generated guidance shows. `web` registers both handlers with `effect="read"`
-and returns the names it registered. `hub/tools/__init__.py` exports the models, the adapters,
-`provider_from_env`, `WebError` and `web`.
+and returns the names it registered. A search provider it is given is called as it is (S12).
+`hub/tools/__init__.py` exports the models, the adapters, `provider_from_env`, `WebError` and `web`.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_web_registers_two_read_commands_named_from_their_classes`,
   `test_the_model_is_told_the_web_is_material_not_instructions`,
-  `test_a_scripted_run_searches_and_reads_the_hits`.
+  `test_a_scripted_run_searches_and_reads_the_hits`,
+  `test_a_search_provider_given_to_web_is_called_as_it_is_and_owes_its_own_failures`.
 
 ### D2: `_send`, `_credentials` and `_failure`: one request, and every way it fails as `WebError` ^d2
 
@@ -187,18 +191,20 @@ or non-list result list.
 
 ### D3: `SearXNG`, `Brave`, `Tavily`, `Jina` and `provider_from_env` ^d3
 
-Serves C4. Each adapter has `request`, which builds the one request its reference describes, and
-`parse`, which reads the documented fields into hits. A result with no link is skipped. A missing
-result list raises, as does a section or a result of another type than its reference names (C3);
-Brave's `web` section, which its reference makes optional, reads as no hits when it is absent. The
-reference and the date it was read sit in a comment above each class. An unsupported argument raises
-before any request is made.
+Serves C3 and C4. Each adapter has `request`, which builds its reference's request, and `parse`,
+which turns the body into hits. A body is refused when its result list is missing, or a section,
+list or result is not the type its reference names. A result is read as far as it is usable: a title
+or snippet that is not text is empty, and one with no usable link is dropped. Brave's optional `web`
+section reads as no hits when absent. An unsupported argument raises before any request.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_searxng_has_no_week_and_no_site_and_says_so`, `test_jina_has_no_recency_and_says_so`,
   `test_brave_builds_its_request_and_parses_its_hits`, `test_brave_with_no_web_section_has_no_hits`,
   `test_a_body_without_its_result_list_is_off_the_shape_not_empty`,
+  `test_a_result_with_an_unusable_field_is_read_as_far_as_it_goes`,
+  `test_a_search_whose_every_result_has_no_usable_link_is_no_results`,
   `test_tavily_sends_only_the_filters_it_was_given`, `test_a_site_that_is_not_a_domain_is_refused`,
+  `test_a_site_is_dns_labels_none_starting_or_ending_with_a_hyphen`,
   `test_provider_from_env_takes_the_first_configured_in_order`.
 
 ### D4: `_check_url`, `_public_addresses`, `_carried_v4` and the redirect handler ^d4
@@ -267,17 +273,21 @@ error's detail included.
 ### D8: `_dial` and `_connect`: a provider's or a proxy's connection, one address at a time ^d8
 
 Serves C7. `_Timed` and `_TimedTLS` connect through `_dial`, which resolves the name and tries each
-address through `_connect`, in the order `getaddrinfo` gave them. Each try is given what is left of
-the request's clock, and none is made when nothing is. `_connect` hands its socket to the clock
-before it connects, so the deadline ends a connect that stalls, and closes the socket when the
-connect fails. The last failure is raised when no address answers.
+address through `_connect` in order. Each try gets what is left of the request's clock, and none is
+made when nothing is. `_connect` hands its socket to the clock before it connects, re-reads the time
+left before the connect and after it, and closes the socket when the connect or either reading
+fails: a connect begun or returned past the deadline ends in the deadline's error. The last failure
+is raised when no address answers.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_name_with_several_stalled_addresses_is_dialed_within_the_deadline`,
   `test_each_address_of_a_proxy_is_dialed_with_what_is_left_of_the_deadline`,
   `test_a_dial_whose_resolution_used_the_deadline_dials_nothing`,
   `test_a_dial_goes_on_to_the_next_address_and_ends_with_the_last_refusal`,
-  `test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not`.
+  `test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not`,
+  `test_a_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows`,
+  `test_a_dial_paused_before_its_connect_connects_with_what_is_left_then`,
+  `test_a_dial_paused_to_the_deadline_never_connects`.
 
 ## Alternatives
 
@@ -326,3 +336,10 @@ connect fails. The last failure is raised when no address answers.
   when a short body reads as whole. They also turn red when a missing result list reads as none, or
   when an HTTP status is kept past the deadline. Those D8 names turn red when a dial gives each
   address the first one's remainder, or watches its socket after the connect.
+- **S12**: `web` calls a search provider it is given as it is. C3's `WebError` and key blanking and
+  C7's deadline and body bound cover the four adapters, so a provider of another make owes its own;
+  what it raises reaches the model as the runtime's failed result
+  ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]).
+- **S13**: In `_connect`, removing the read of the time left before the connect turns the two
+  paused-dial tests red, and removing the read after it turns the late-connect test red. Each is run
+  as an http and as an https connection.
