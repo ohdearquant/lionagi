@@ -34,7 +34,18 @@ from .bus import Bus
 from .experience import Experience, ExperienceLesson, ExperienceRecord
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
-from .program import Branch, Command, EvalError, Script, Value, evaluate, note_keys, pointers
+from .program import (
+    LIMIT,
+    Branch,
+    Command,
+    EvalError,
+    Script,
+    Value,
+    _size,
+    evaluate,
+    note_keys,
+    pointers,
+)
 from .program import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
 )
@@ -387,6 +398,8 @@ class Run:
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
         self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
+        # the time limits of the walks and settles waiting now, which a grant of time by `run.more` moves
+        self.timeouts: set[asyncio.Timeout] = set()
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         # pending alias -> the notes its command read from the store, each read once (None: absent)
         self.reads: dict[str, dict[str, Note | None]] = {}
@@ -432,6 +445,9 @@ class Run:
         # what a name repair would have done, measured while it is off (ADR-0008/D2)
         self.misnamed: list[tuple[str, str | None, int | None]] = []
         self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
+        # asked as a command's handler is about to start, any one true refuses it whatever a later grant
+        # raised: its walk's limits, or a grant that landed after the deadline while it was pending
+        self.halts: dict[str, list[Callable[[], bool]]] = {}
         # results a program consumed, each with the seq it was consumed at, hidden by the next notification
         self.intermediates: dict[str, int] = {}
         # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it and
@@ -666,7 +682,27 @@ async def _more(req: RunMore, ctx: Context) -> str:
             granted = await granted
         if not granted:
             raise PermissionError(f"{req.bound} stays at {now}: the job did not grant {amount} more")
+        late = req.bound == "time_budget" and run.elapsed >= now
         run.bounds[req.bound] = now + amount
+        if late:
+            # the deadline passed before the grant landed: it raises the bound for what follows the turn, and
+            # each command the turn still has pending, waited for or not, is refused if its handler has not
+            # started; one already in its handler is settled by the turn's wait or the run's end
+            for alias in run.pending:
+                if alias != ctx.alias:
+                    run.halts.setdefault(alias, []).append(lambda: True)
+        if req.bound == "time_budget":  # a walk or a settle waiting now runs to the new deadline
+            clock = asyncio.get_running_loop().time()
+            for limit in run.timeouts:
+                if limit.expired():  # one that fired has cancelled its walk already
+                    continue
+                when = limit.when()
+                if when is not None and clock >= when:
+                    # the deadline passed while a synchronous grant held the loop: the limit fires now, as
+                    # the loop would have, and the grant lands after it
+                    limit.fire()
+                    continue
+                limit.reschedule(_deadline(run))
     return f"{req.bound} raised from {now} to {now + amount}"
 
 
@@ -1096,7 +1132,7 @@ class Actor:
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=failed)
                     continue
                 if program.out is None:
-                    await _settle(run, tasks, _left(run))
+                    await _settle(run, tasks)
                     if (
                         request.reply_on_commands
                         and request.wait is not None
@@ -1115,11 +1151,11 @@ class Actor:
                     continue
                 # OUT{} waits for what it points at still running, and for nothing else: an accepted
                 # output ends the run and the reap takes the rest; one not accepted settles the turn
-                await _settle(run, [run.pending[a] for a in referenced if a in run.pending], _left(run))
+                await _settle(run, [run.pending[a] for a in referenced if a in run.pending])
                 try:
                     run.output = self._assemble(run, program)
                 except lndl.LNDLError as e:
-                    await _settle(run, tasks, _left(run))
+                    await _settle(run, tasks)
                     # the error clears only once the whole turn, assembly included, read: a finish
                     # that fails the same way every round is counted as the same error (ADR-0002/C3)
                     self._retry(run, str(e))
@@ -1149,7 +1185,7 @@ class Actor:
                 )
                 run.entered.discard("OUT")
                 if not result.ok:  # told as any refusal is, and the run goes on; the turn settles
-                    await _settle(run, tasks, _left(run))
+                    await _settle(run, tasks)
                     run.output = None
                     run.refusals += 1
                     why = result.error.removeprefix("refused: ")
@@ -1420,6 +1456,7 @@ class Actor:
             return  # `_perform` ran and settled the command itself
         run.pending.pop(la.alias)
         run.waits.pop(la.alias, None)
+        run.halts.pop(la.alias, None)
         result = Result(la.name, False, error="cancelled before it started", reason="cancelled")
         run.record.append(Kind.RESULT, result, alias=la.alias, round=run.round, execution="not executed")
         run.refused.append((la.alias, result.error))
@@ -1504,6 +1541,7 @@ class Actor:
             run.waits.pop(la.alias, None)  # its row is read by nobody once it has settled
             run.entered.discard(la.alias)
             run.reads.pop(la.alias, None)
+            run.halts.pop(la.alias, None)
         if cancelled:
             raise asyncio.CancelledError
 
@@ -1558,6 +1596,10 @@ class Actor:
         if spent is not None:
             bound = f"{spent}_budget"
             why = f"refused: the {bound} of {run.bounds[bound]:g} is spent"
+            return Result(la.name, False, error=why, reason="refused"), None
+        # its walk's fired deadline, or a grant that landed late while it was pending, refuses it
+        if any(halt() for halt in run.halts.get(la.alias, ())):
+            why = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
             return Result(la.name, False, error=why, reason="refused"), None
         ctx = Context(run, la.alias, handler)
         run.entered.add(la.alias)  # from here the handler may have acted on the world
@@ -2103,6 +2145,27 @@ class _Failed(Exception):
     """A block finished Failed: nothing after it runs, in it or around it (ADR-0008/C7)."""
 
 
+class _Limit(asyncio.Timeout):
+    """A walk's or a settlement's time limit and the time budget its deadline comes from: a grant of
+    time that moves the deadline moves the budget with it, and one that lands after the limit fired
+    moves neither."""
+
+    def __init__(self, run: Run):
+        super().__init__(_deadline(run))
+        self.run, self.budget = run, run.bounds["time_budget"]
+
+    def reschedule(self, when: float | None) -> None:
+        super().reschedule(when)
+        self.budget = self.run.bounds["time_budget"]
+
+    def fire(self) -> None:
+        """What the loop's timer does at the deadline, done now: a deadline that passed while a
+        synchronous call held the loop has not fired yet, and a walk that leaves its limit before the
+        loop turns would never be cut."""
+        self._timeout_handler.cancel()  # the timer, which would fire a second time
+        self._on_timeout()
+
+
 class _Walk:
     """One program over the dispatcher (ADR-0008/D1, D3): a command runs as its own task when its block
     reaches it, a value is computed when first read, a note is written when its assignment is reached,
@@ -2125,13 +2188,59 @@ class _Walk:
         # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
         self.used: dict[str, int] = {}
         self.named: set[str] = set()  # what OUT{} points at: never consumed
+        self.told = False  # the turn's refusal for a spent time budget is on the run's list
+        self.settling: _Limit | None = None  # the settlement's limit, once the walk's commands are settled
         # the walk launched a command, from any node or value, or reached OUT{}: the turn acted
         self.acted = False
 
+    def out_of_time(self, budget: float) -> None:
+        """The turn's refusal for a spent time budget, told once however many ways the walk finds it
+        spent. `budget` is the one the walk's deadline came from; a grant that landed after the
+        deadline is named beside it, never folded into it. Kept on the run's list: the spent budget
+        ends the run before a notification tells it."""
+        if self.told:
+            return
+        self.told = True
+        raised = self.run.bounds["time_budget"] - budget
+        late = f", and a grant of {raised:g} landed after the deadline" if raised > 0 else ""
+        spent = f"the time_budget of {budget:g} is spent{late}"
+        self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
+
+    def expired(self) -> bool:
+        """Whether the walk's own limit or its settlement's has fired, whatever a later grant raised;
+        a refusal on this alone tells nothing of the turn."""
+        return any(t is not None and t.expired() for t in (self.limit, self.settling))
+
+    def spent(self) -> bool:
+        """Whether nothing the walk still holds may commit: its own limit has expired, or the time
+        budget is spent. A grant that landed after the limit expired raised the bound for what follows
+        the walk and leaves the walk expired. The refusal is told, once."""
+        # the settlement's limit counts as the walk's own: a write it fired under, queued behind the grant
+        # that held the loop past it, runs before the cut lands and must find the walk spent
+        fired = next((t for t in (self.limit, self.settling) if t is not None and t.expired()), None)
+        if fired is None and _left(self.run) != 0.0:
+            return False
+        self.out_of_time((fired or self.limit).budget)
+        return True
+
     async def execute(self, script: Script) -> dict[str, Any] | None:
+        # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
+        # as it bounds a command's arguments: one still computing at the deadline stops there
+        limit = self.limit = _Limit(self.run)
+        found: dict[str, Any] | None = None
         try:
-            return await self.block(script.body)
+            async with limit:
+                self.run.timeouts.add(limit)  # while the walk runs, a grant of time moves its deadline
+                try:
+                    found = await self.block(script.body)
+                finally:
+                    self.run.timeouts.discard(limit)
         except _Failed:
+            return None
+        except TimeoutError:
+            if not limit.expired():  # raised by what the walk read, not by this deadline
+                raise
+            self.out_of_time(limit.budget)
             return None
         except (
             asyncio.CancelledError
@@ -2140,13 +2249,31 @@ class _Walk:
                 task.cancel()
             raise
         finally:
-            await _settle(self.run, self.tasks, _left(self.run))  # the time budget bounds it as any turn's
+            try:
+                # the time budget bounds it as any turn's; a write it cuts while the write waited for its
+                # command is cut by the budget as the walk's own cut is, and is told as that is, once
+                self.settling = _Limit(self.run)
+                cut, budget = await _settle(self.run, self.tasks, limit=self.settling)
+                if any(task in self.write_reads for task in cut):
+                    self.out_of_time(budget)
+                # a turn told spent, by a write the settlement cut or one refused as its deadline fired,
+                # commits nothing the walk held: the output goes too, whatever bound a late grant raised
+                if self.told:
+                    found = None
+            finally:
+                # a value still computing now has no reader left (each was cancelled): it stops with
+                # them, whether the settle returned or raised
+                computing = [c for c in self.computed.values() if not c.done()]
+                for c in computing:
+                    c.cancel()
+                await asyncio.gather(*computing, return_exceptions=True)
             for alias, reads in self.reads.items():
                 entry = self.run.record.get(alias)
                 if entry.content.ok:
                     self.consume(reads, entry.seq)  # at the reader's settle
             consumed = sorted(self.used.keys() - self.named, key=lambda a: self.run.record.get(a).seq)
             self.run.intermediates.update((a, self.used[a]) for a in consumed)
+        return found
 
     def consume(self, reads: set[str], at: int) -> None:
         for alias in reads:
@@ -2169,7 +2296,33 @@ class _Walk:
                 self.acted = True
                 reader = _Reader(self, self._snapshot(*(v for _, v in node.fields)))
                 self.named |= node.named
-                fields = {key: await evaluate(v, reader) for key, v in node.fields}
+                fields: dict[str, Any] = {}
+                sizes: dict[str, int] = {}  # what each field landed as
+                size = (
+                    0  # what `_size(fields)` counts, kept as the fields land, scanned whole once at the end
+                )
+                past = f"line {node.line}: the OUT{{}} fields together are past the size limit of {LIMIT}"
+                for key, v in node.fields:
+                    if key in fields:  # a key written again holds only its last value: what that one landed
+                        size -= sizes[key]  # as leaves, whatever a command made of it since
+                    fields[key] = await evaluate(v, reader)
+                    sizes[key] = 1 + len(key) + _size(fields[key])
+                    size += sizes[key]
+                    # counted as a dict literal is: no field after the one that takes it past the limit runs
+                    if size > LIMIT:
+                        raise EvalError(past)
+                # a value a command grew after its field was counted, through the pointer both hold: the
+                # whole is measured once more as it is emitted
+                if _size(fields) > LIMIT:
+                    raise EvalError(past)
+                # what is emitted is a copy of what was measured: a command still settling after the walk
+                # holds the stored value, and grows that, not the output
+                try:
+                    fields = _captured(fields)
+                except Exception as e:  # a model's copy raised, or a nesting past the interpreter's depth
+                    raise EvalError(
+                        f"line {node.line}: the OUT{{}} fields cannot be copied, {type(e).__name__}: {e}"
+                    ) from e
                 self.consume(reader.reads, len(self.run.record))
                 return fields
             elif isinstance(node, Command):
@@ -2192,6 +2345,7 @@ class _Walk:
         self.acted = True
         admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         run.thunks[la.alias] = args
+        run.halts[la.alias] = [self.expired]
         task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))
         task.add_done_callback(functools.partial(self.actor._never_started, run, la))
         run.pending[la.alias] = task
@@ -2269,6 +2423,10 @@ class _Walk:
         return value
 
     def write(self, node: Any) -> None:
+        # a write reached on a spent walk launches nothing: not the command on its right side, not that
+        # command's arguments or the hooks that gate it
+        if self.spent():
+            return
         prior = self.writes.get(node.key)
         target = ".".join(("note", node.key, *node.path))
         producer = self.command(node.value) if isinstance(node.value, Command) else None
@@ -2288,6 +2446,10 @@ class _Walk:
         async def put() -> None:
             if prior is not None:  # two assignments to one note are two writes, in the order written
                 await asyncio.shield(prior)
+            # a write reached after the walk expired or the budget is spent is refused as spent, whatever
+            # its evaluation would have raised
+            if self.spent():
+                return
             try:
                 # a write that names a value comes after it, whether or not evaluating reaches the
                 # pointer (`false and *v`): the value reads the note before this write lands
@@ -2298,6 +2460,10 @@ class _Walk:
                 )
             except lndl.LNDLError as e:  # what it writes failed: the note keeps its value
                 self.run.refused.append((target, f"not written: {e}"))
+                return
+            # the deadline cuts the walk at its next yield, and a write that reached the store with none
+            # in between is past it: once it is spent nothing is committed, the store as it was
+            if self.spent():
                 return
             try:
                 old = self.run.notes.get(node.key)
@@ -2489,20 +2655,42 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(run: Run, tasks: list[asyncio.Task], timeout: float | None = None) -> None:
-    """Wait for the turn's commands, for `timeout` seconds when it is given: one still running then is
-    cancelled. A cancelled command has settled itself as a RESULT; any other way out of a command task
+async def _settle(
+    run: Run, tasks: list[asyncio.Task], by_deadline: bool = True, limit: _Limit | None = None
+) -> tuple[list[asyncio.Task], float | None]:
+    """Wait for the turn's commands, under the run's deadline unless `by_deadline` is False: one still
+    running when it passes is cancelled, and a grant of time while it waits moves it, as it moves a
+    walk's. A cancelled command has settled itself as a RESULT; any other way out of a command task
     is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
-    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap."""
+    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap. The tasks its
+    own deadline cancelled are returned, with the time budget that deadline came from. A walk hands in
+    the `_Limit` it settles under, so its writes can ask whether that deadline fired."""
+    cut: list[asyncio.Task] = []
+    budget = None
     if tasks:
-        _, late = await asyncio.wait(tasks, timeout=timeout)
-        for task in late:
-            task.cancel()
+        waited = set(tasks)
+        if limit is None:
+            limit = _Limit(run) if by_deadline else asyncio.timeout_at(None)
+        try:
+            async with limit:
+                if by_deadline:
+                    run.timeouts.add(limit)
+                try:
+                    await asyncio.wait(waited)
+                finally:
+                    run.timeouts.discard(limit)
+        except TimeoutError:  # only this limit raises it: the wait itself never does
+            budget = limit.budget  # the run's deadline fired, so this limit is the run's `_Limit`
+            for task in waited:
+                if not task.done():
+                    task.cancel()
+                    cut.append(task)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         run.tasks.difference_update(tasks)
         for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 raise r
+    return cut, budget
 
 
 def _left(run: Run) -> float | None:
@@ -2512,6 +2700,12 @@ def _left(run: Run) -> float | None:
     return max(0.0, run.bounds["time_budget"] - run.elapsed)
 
 
+def _deadline(run: Run) -> float | None:
+    """Where the time budget ends on the event loop's clock; None without one."""
+    left = _left(run)
+    return None if left is None else asyncio.get_running_loop().time() + left
+
+
 async def _reap(run: Run) -> None:
     """At the run's end, whatever is still pending is cancelled and waited for, so its cancelled
     RESULT is on the record when `run` returns and no command task outlives it (ADR-0002/C1); every
@@ -2519,7 +2713,7 @@ async def _reap(run: Run) -> None:
     before the run returns (ADR-0002/S5)."""
     for task in run.pending.values():
         task.cancel()
-    await _settle(run, list(run.tasks))
+    await _settle(run, list(run.tasks), by_deadline=False)
 
 
 async def _reaped(run: Run) -> bool:

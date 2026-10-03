@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Literal
@@ -1737,6 +1738,272 @@ def test_an_ask_on_an_unbounded_bound_raises_nothing_and_only_a_count_is_rounded
     assert m1.error == "ValueError: cost_budget is not bounded in this run; there is nothing to raise"
     assert run.bounds["cost_budget"] is None
     assert run.bounds["time_budget"] == 100.5 and run.bounds["max_refusals"] == 4
+
+
+def test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_and_moves_nothing():
+    more = next(h for h in actor_module.DEFAULT_HANDLERS if h.name == "run.more")
+    ask = actor_module.RunMore(bound="time_budget", amount=0.5, reason="r")
+    told: list[str] = []
+
+    async def main():
+        run = actor_module.Run(_echo_actor("b-fired"), Profile("p"), RunRequest(time_budget=100))
+        ctx = actor_module.Context(run, "m1", more)
+        fired = asyncio.timeout(0)  # a walk's limit: its deadline has passed
+        try:
+            async with fired:
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:  # fired, and the walk has not yet left its limit
+                    run.timeouts.add(fired)
+                    told.append(await more.fn(ask, ctx))
+                    raise
+        except TimeoutError:
+            pass
+        return run
+
+    run = asyncio.run(main())
+    assert told == ["time_budget raised from 100 to 100.5"] and run.bounds["time_budget"] == 100.5
+
+
+def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant():
+    async def extend(run, bound, amount, reason) -> bool:
+        while not any(limit.expired() for limit in run.timeouts):
+            await asyncio.sleep(0)  # the walk's deadline has not fired
+        return True  # it has, and the walk has not yet left its limit: the grant lands here
+
+    turn = '```\nOUT{granted: DO run.more(bound="time_budget", amount=5, reason="late")}\n```'
+    run = asyncio.run(
+        Actor("b-late").run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1, extend=extend),
+            scripted(turn),
+        )
+    )
+    # the budget the walk ran under is spent, whatever the grant raised the bound to meanwhile: the
+    # refusal named 5.2, a budget that elapsed time was nowhere near
+    late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.2 and run.elapsed < 5.2
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.3)  # a synchronous grant that holds the loop: the deadline passes under it, unfired
+        return True
+
+    turn = '```\nOUT{granted: DO run.more(bound="time_budget", amount=5, reason="held")}\n```'
+    run = asyncio.run(
+        Actor("b-held").run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1, extend=extend),
+            scripted(turn),
+        )
+    )
+    # the limit fires as the grant lands, as the loop would have fired it: the walk is cut under the
+    # budget it ran under, and the grant is the late one
+    late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.2 and run.output is None
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_walk_a_grant_reached_in_time_names_the_raised_budget_when_it_runs_out():
+    actor = _echo_actor("b-in-time")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    grant = 'granted: DO run.more(bound="time_budget", amount=0.3, reason="more")'
+    turn = f"```\nOUT{{{grant}, after: DO nap(seconds=5)}}\n```"
+    run = asyncio.run(
+        actor.run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1),
+            scripted(turn),
+        )
+    )
+    # the grant moved the walk's deadline before it fired, so the budget the walk ran under is the raised
+    # one and no grant came after the deadline
+    assert run.bounds["time_budget"] == 0.5
+    assert run.refused == [("turn", "the time_budget of 0.5 is spent; nothing after it ran")]
+
+
+def test_a_write_waiting_when_the_walk_expired_commits_nothing_whatever_a_late_grant_did():
+    actor = _echo_actor("b-late-write")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    async def extend(run, bound, amount, reason) -> bool:
+        while not any(limit.expired() for limit in run.timeouts):
+            await asyncio.sleep(0)  # the walk's deadline has not fired
+        return True  # it has: the grant lands after it
+
+    grant = 'OUT{granted: DO run.more(bound="time_budget", amount=5, reason="late")}'
+    turn = f"```\nnote.k = nap(seconds=0.4)\n{grant}\n```"
+    profile = Profile("p", language="program")
+    run = asyncio.run(
+        actor.run(
+            profile, RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1, extend=extend), scripted(turn)
+        )
+    )
+    # the write waits on the nap, which ends at 0.4 s: after the walk's deadline fired and the grant raised
+    # the bound to 5.2 s, so the budget has time left and the walk has not: nothing it queued commits
+    late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.2 and run.elapsed < 5.2
+    assert actor.notes_for(profile).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_grant_of_time_moves_the_deadline_of_every_limit_a_run_has_registered():
+    more = next(h for h in actor_module.DEFAULT_HANDLERS if h.name == "run.more")
+    ask = actor_module.RunMore(bound="time_budget", amount=0.5, reason="r")
+
+    async def main():
+        run = actor_module.Run(_echo_actor("b-limits"), Profile("p"), RunRequest(time_budget=100))
+        ctx = actor_module.Context(run, "m1", more)
+        loop = asyncio.get_running_loop()
+        first, second = asyncio.timeout_at(loop.time() + 1000), asyncio.timeout_at(loop.time() + 2000)
+        async with first, second:
+            run.timeouts.update((first, second))
+            await more.fn(ask, ctx)
+            return first.when() - loop.time(), second.when() - loop.time()
+
+    # each limit a walk or a settle is running under now ends where the raised budget does, not where it did
+    for ahead in asyncio.run(main()):
+        assert 99 < ahead <= 100.5
+
+
+def test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they_settle_under():
+    actor = _echo_actor("b-settle-grant")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    turn = (
+        '<lact m1>run.more(bound="time_budget", amount=5, reason="one more nap")</lact>'
+        "<lact n1>nap(seconds=1)</lact>"
+    )
+    run = asyncio.run(
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5), scripted(turn))
+    )
+    # the turn's commands settle once, and m1 raised the budget to 5.5 s meanwhile: the grant extended the
+    # settle, which waits to the deadline as it stands, so the nap finished that the 0.5 s the run began
+    # with would have cancelled
+    assert run.resolve("m1") == "time_budget raised from 0.5 to 5.5"
+    assert run.resolve("n1") == "rested" and run.elapsed > 0.5
+    assert run.timeouts == set()
+
+
+@pytest.mark.parametrize("effect", ["pure", "write"])
+def test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler(effect):
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settle's deadline passes under it, unfired
+        return True
+
+    ran: list[float] = []
+    seen: list[str] = []
+    actor = _echo_actor(f"b-settle-held-grant-{effect}")
+    actor.before(lambda run, la, req: seen.append(la.alias))  # admits each call, after noting it
+
+    @actor.handler(Nap, effect=effect)
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)  # the effect the command has on the world
+        return req.seconds
+
+    turn = (
+        '<lact m1>run.more(bound="time_budget", amount=5, reason="held")</lact><lact n1>nap(seconds=0)</lact>'
+    )
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5, extend=extend)
+    run = asyncio.run(actor.run(Profile("p"), request, scripted(turn)))
+    # n1 reaches its handler after the grant raised the bound and before the settle's cut lands, side by
+    # side with m1 or behind it as a write: the settle's fired deadline, not the raised bound, decides it
+    assert run.resolve("m1") == "time_budget raised from 0.5 to 5.5"
+    assert ran == [] and run.bounds["time_budget"] == 5.5
+    assert ("n1", HALTED) in run.refused
+    assert "n1" in seen  # the halt is checked after the before hooks, as a spent budget is (S6)
+
+
+@pytest.mark.parametrize("out", ["names-the-grant", "names-nothing"])
+def test_a_command_an_out_turn_leaves_out_of_its_wait_is_refused_after_a_late_grant(out):
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the deadline passes under it
+        return True
+
+    async def accept(run, fields):
+        await asyncio.sleep(0)  # an accept that yields: queued commands run before the output is judged
+
+    ran: list[float] = []
+    actor = _echo_actor(f"b-out-late-grant-{out}")
+
+    @actor.handler(Nap, effect="pure")
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)
+        return req.seconds
+
+    named = "[m1]" if out == "names-the-grant" else '"x"'
+    turn = (
+        '<lact m1>run.more(bound="time_budget", amount=5, reason="held")</lact>'
+        f"<lact n1>nap(seconds=0)</lact> OUT{{answer: {named}}}"
+    )
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5, extend=extend, accept=accept)
+    run = asyncio.run(actor.run(Profile("p"), request, scripted(turn)))
+    # OUT{} waits only for what it names, so n1 is in no wait when the grant lands after the deadline: the
+    # grant raises the bound for what follows the turn, and n1, still pending, never enters its handler
+    assert run.bounds["time_budget"] == 5.5 and ran == []
+    assert ("n1", HALTED) in run.refused
+
+
+HALTED = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
+
+
+def test_a_settle_cancelled_while_it_waits_leaves_no_time_limit_on_the_run():
+    async def main():
+        run = actor_module.Run(_echo_actor("b-settle-cancelled"), Profile("p"), RunRequest(time_budget=100))
+        command = asyncio.ensure_future(asyncio.sleep(100))
+        settling = asyncio.ensure_future(actor_module._settle(run, [command]))
+        await asyncio.sleep(0)  # the settle is waiting, its limit on the run for a grant to move
+        waiting = len(run.timeouts)
+        settling.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await settling
+        command.cancel()
+        await asyncio.gather(command, return_exceptions=True)
+        return waiting, run.timeouts
+
+    assert asyncio.run(main()) == (1, set())
+
+
+def test_a_grant_of_time_during_the_reap_gives_it_no_deadline_so_a_cleanup_runs_to_its_end():
+    actor = _echo_actor("b-reap-grant")
+    cleaned: list[str] = []
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        try:
+            await asyncio.sleep(100)
+        except asyncio.CancelledError:  # the accepted output ended the run: this is its reap
+            ask = actor_module.RunMore(bound="time_budget", amount=0.01, reason="to clean up")
+            await actor_module._more(
+                ask, ctx
+            )  # were the reap held to a deadline, it would fall inside the cleanup
+            await asyncio.sleep(1)
+            cleaned.append("done")
+            raise
+        return "rested"
+
+    turn = '<lact n1>nap(seconds=0)</lact><lact e1>echo(text="x")</lact>OUT{done: {summary: *e1, files: []}}'
+    run = asyncio.run(
+        actor.run(Profile("p"), RunRequest(inputs=("go",), emits=(Done,), time_budget=0.5), scripted(turn))
+    )
+    # the reap cancels what the output did not name and waits for it, however long it takes
+    assert isinstance(run.outcome, Success) and cleaned == ["done"]
+    assert run.resolve("n1").reason == "cancelled" and run.timeouts == set()
 
 
 def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():

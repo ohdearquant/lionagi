@@ -304,3 +304,103 @@ computation binds its failure.
 - **S5**: The raw message is what the model wrote; the normalised program and the repairs applied
   ride the TEXT entry's `meta`, so the admitted reading can be audited after the catalogue changes.
   A version stamp names a parser and keeps nothing.
+- **S6**: A list or dict stops at the part that takes it past the size limit: no later part runs,
+  and the part that crossed it has run. A key a dict writes twice counts by its value at the time,
+  so a dict that passes the limit on the way is refused though the key's last value would fit. The
+  fields of `OUT{}` are one dict: past the limit together, the turn is a retry that names it.
+  `test_a_list_or_dict_past_the_size_limit_runs_no_part_after_the_one_that_took_it_there`,
+  `test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit` and
+  `test_the_fields_of_out_are_held_together_to_the_size_limit_as_a_dict_literal_is` pin it.
+- **S7**: Comprehensions let other tasks run every 100,000 items they examine, kept or rejected,
+  counted once per task across nesting. So the deadline cancels one at its next yield wherever it is
+  computed: in a command's arguments, in a branch's test or an `OUT{}` field, and in a value still
+  computing once its turn's commands settle, whether the settle returns or raises. A test or a field
+  runs on to that yield and commits nothing (S11).
+  `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`,
+  `test_an_output_field_that_runs_past_the_deadline_between_two_yields_commits_nothing`,
+  `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension`,
+  `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension`,
+  `test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns`,
+  `test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing` and
+  `test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget_ends` pin it.
+- **S8**: The run's time budget is the only bound on a comprehension's total work: without one it is
+  unbounded by design, and no number of rejected items stops it, while the items it keeps stop it at
+  the size limit. The deadline is cooperative: a comprehension is cut at a 100,000-item yield, and
+  the loop runs one more interval first, so for scalar items the overrun is under two intervals.
+  Between yields each kept item is sized synchronously, so one large item holds the loop for its own
+  scan.
+- **S9**: A `run.more` that raises the time budget moves the deadline of a walk computing its own
+  expressions and of the settlement of the turn's commands, argument evaluation included, so what
+  follows runs to the new deadline. A refused grant moves nothing and the late command is cancelled.
+  A grant after the walk's own deadline fired raises the bound for what follows the walk; nothing
+  the walk held commits. The reap at the run's end has no deadline.
+  `test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_runs_under`,
+  `test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_settle_waits_under`,
+  `test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they_settle_under`,
+  `test_a_refused_grant_during_settlement_leaves_the_deadline_and_the_late_command_cancelled`,
+  `test_a_grant_of_time_moves_the_deadline_of_every_limit_a_run_has_registered`,
+  `test_a_settle_cancelled_while_it_waits_leaves_no_time_limit_on_the_run`,
+  `test_a_grant_of_time_during_the_reap_gives_it_no_deadline_so_a_cleanup_runs_to_its_end` and
+  `test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_and_moves_nothing` pin
+  it.
+- **S10**: A `TimeoutError` raised by what the walk reads is that error: only the walk's own
+  deadline reads as the budget spent. That refusal names the budget the walk ran under, and a grant
+  that landed after the deadline fired beside it. It stays on the run's `refused` list; the spent
+  budget ends the run before a notification tells it, and the closure names the outcome and the
+  cancelled commands, no refusal.
+  `test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent`,
+  `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension`,
+  `test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant`,
+  `test_the_same_walk_without_the_grant_is_cut_at_the_deadline_it_began_with` and
+  `test_a_walk_a_grant_reached_in_time_names_the_raised_budget_when_it_runs_out` pin it.
+- **S11**: The deadline lands at the walk's next yield. A write reached after the walk's own
+  deadline fired, or the budget is spent, is refused as spent before anything of it runs: no command
+  is launched, no argument evaluated and no hook called, whatever a later grant did or its
+  evaluation would raise. It commits nothing and consumes no result it read; the turn is refused as
+  the budget spent, once however many writes were cut.
+  `test_a_write_reached_past_the_deadline_with_nothing_yielding_commits_nothing`,
+  `test_a_write_reached_past_the_deadline_launches_no_command_and_runs_no_hook`,
+  `test_a_write_reached_past_the_deadline_is_refused_as_spent_whatever_its_evaluation_would_raise`,
+  `test_a_write_queued_with_time_left_is_refused_as_spent_whatever_its_evaluation_raises`,
+  `test_a_write_waiting_when_the_walk_expired_commits_nothing_whatever_a_late_grant_did`,
+  `test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read` and
+  `test_a_write_on_a_spent_budget_and_the_walks_cut_in_a_comprehension_refuse_the_turn_once` pin it.
+- **S12**: A write the settlement's deadline cuts while waiting for its command is the budget spent,
+  told once with the settlement's budget. A cut command no write waits for is a cancelled result. A
+  grant landing after the cut, or as it fires, moves no deadline; the refusal names the walk's
+  budget and the late grant. A synchronous grant holding the loop past the deadline fires the limit;
+  a write queued behind it finds the walk spent.
+  `test_a_write_the_settlement_cut_while_it_waited_for_its_command_is_refused_as_spent_once`,
+  `test_a_write_the_settlement_cut_after_a_grant_names_the_budget_the_settlement_ran_under`,
+  `test_a_write_the_settlement_cut_names_the_budget_it_ran_under_when_a_grant_lands_after_the_cut`,
+  `test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under`,
+  `test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk`,
+  `test_a_write_queued_behind_a_grant_that_held_the_settlement_past_its_deadline_commits_nothing`
+  and `test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn` pin
+  it.
+- **S13**: A command a pointer hands the stored value can grow or shrink a counted part of a list,
+  dict, comprehension or `OUT{}` unseen; a shrunk part counts as landed. The whole is measured again
+  as the literal returns or the output is emitted, refused there after a later part ran. The output
+  is a copy as a capture is (ADR-0007/C1); anything but a string, list, tuple or dict counts as one,
+  however copied.
+  `test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_output_is_emitted`,
+  `test_a_part_of_a_literal_a_command_grew_after_it_was_counted_is_caught_as_it_is_built` and
+  `test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output`,
+  `test_a_part_a_command_shrank_after_it_was_counted_still_counts_at_the_size_it_landed_with` and
+  `test_a_value_of_a_kind_a_capture_shares_is_shared_in_the_output` pin it.
+- **S14**: A key written again gives back what it landed as, whatever a command made of it since:
+  the count is each field as it landed. The copy is the program's candidate; hooks and `accept` may
+  rewrite it after. A failed copy (a model's copy raising, too deep a nesting) refuses the turn; the
+  run goes on. An output built before a late grant commits under the raised bound only if no write
+  was cut or refused as spent (S9, S12).
+  `test_a_key_written_again_gives_back_what_it_landed_as_whatever_a_command_made_of_it_since`,
+  `test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when_no_write_was_cut`,
+  `test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write`,
+  `test_a_key_written_again_after_its_list_grew_lets_no_part_past_the_limit_run` and
+  `test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on` pin it.
+- **S15**: A command the walk launched is refused before its handler starts once the walk's or the
+  settlement's deadline fired, whatever bound a later grant raised. One queued behind a synchronous
+  grant that held the loop past the deadline runs no handler, though the run's bound reads unspent
+  by then. The refusal is the command's own result; a write waiting on it is refused as spent (S11).
+  `test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_handler` and
+  `test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits` pin it.

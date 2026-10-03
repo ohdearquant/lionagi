@@ -14,6 +14,7 @@ in it is ever handed to `eval`.
 from __future__ import annotations
 
 import ast
+import asyncio
 import io
 import math
 import operator
@@ -21,6 +22,7 @@ import re
 import tokenize
 import warnings
 from collections.abc import Awaitable, Callable, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any, Protocol
@@ -59,6 +61,10 @@ __all__ = (
 )
 
 LIMIT = 100_000  # characters and items, counted through nesting: the most one built value may hold
+
+# the items a task's comprehensions examined since they last let other tasks run, kept or rejected:
+# one count per task, so neither nesting nor a node's next expression starts it over
+_WORK: ContextVar[int] = ContextVar("_WORK", default=0)
 
 
 @dataclass(frozen=True)
@@ -575,10 +581,31 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
         case ast.IfExp(test=test, body=body, orelse=orelse):
             return await evaluate(body if await evaluate(test, env, bound) else orelse, env, bound)
         case ast.List(elts=elts):
-            return _built(node, [await evaluate(v, env, bound) for v in elts])
+            items, size = [], 0
+            for v in elts:  # counted as built: no part after the one past the limit is computed
+                items.append(await evaluate(v, env, bound))
+                size += 1 + _size(items[-1])
+                if size > LIMIT:
+                    raise _past(node)
+            # a part a command grew after it was counted, through the pointer both hold: the whole is
+            # measured once more as it is returned
+            if _size(items) > LIMIT:
+                raise _past(node)
+            return items
         case ast.Dict(keys=keys, values=values):
-            pairs = zip(keys, values, strict=True)
-            return _built(node, {_key(node, k): await evaluate(v, env, bound) for k, v in pairs})
+            fields, sizes, size = {}, {}, 0
+            for k, v in zip(keys, values, strict=True):
+                key = _key(node, k)
+                if key in fields:  # a key written again holds only its last value: what that one landed as
+                    size -= sizes[key]  # leaves, whatever a command made of it since
+                fields[key] = await evaluate(v, env, bound)
+                sizes[key] = 1 + len(key) + _size(fields[key])
+                size += sizes[key]
+                if size > LIMIT:
+                    raise _past(node)
+            if _size(fields) > LIMIT:  # as a list is
+                raise _past(node)
+            return fields
         case ast.Call(keywords=keywords):
             args = {kw.arg: await evaluate(kw.value, env, bound) for kw in keywords}
             return await env.do(_command(node).removeprefix(_DO), args, node.lineno)
@@ -589,6 +616,11 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                 raise EvalError(f"line {node.lineno}: a comprehension runs over a list, not {_kind(seq)}")
             out, size = [], 0
             for item in seq:
+                work = _WORK.get() + 1
+                if work >= LIMIT:  # a turn for other tasks, so a cancel or the run's deadline lands
+                    await asyncio.sleep(0)
+                    work = 0
+                _WORK.set(work)
                 inner = bound | {gen.target.id: item}
                 for c in gen.ifs:
                     if not await evaluate(c, env, inner):
@@ -598,6 +630,8 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                     size += 1 + _size(out[-1])  # the item and what it holds
                     if size > LIMIT:
                         raise _past(node)
+            if _size(out) > LIMIT:  # as a list is
+                raise _past(node)
             return out
 
 

@@ -221,3 +221,13 @@ refuse, and the caller receives the value it judged.
   cost that is not a number reads as spent, never as room
   (`test_a_reported_cost_that_is_not_a_number_reads_as_spent`). `RunRequest` takes every field by
   name, so a new bound never shifts another (`test_a_run_request_takes_its_fields_by_name_only`).
+- **S5**: A grant of time landing after the deadline raises the bound for what follows the turn. A
+  pending command, held by the turn's wait or left out by `OUT{}`, is refused if its handler has not
+  started. Behind a synchronous grant that held the loop past the deadline, it would otherwise find
+  room at the C2 re-read. A running handler is not reached: the turn's wait or the run's end settles
+  it. A program's commands also answer to their walk's limits (ADR-0008/S15).
+  `test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler` and
+  `test_a_command_an_out_turn_leaves_out_of_its_wait_is_refused_after_a_late_grant` pin it.
+- **S6**: S5's refusal is checked beside the C2 re-read, after the command's arguments are evaluated
+  and its before hooks run, as a spent budget's is: a hook may see a call that is then refused
+  (`test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler`).
