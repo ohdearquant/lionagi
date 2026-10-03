@@ -33,7 +33,7 @@ turn ([[ADR-0002-the-run|ADR-0002]]); a native tool call in its answer is read b
 Which model a name resolves to, through which route and on whose key, and whether the model that
 answered is the one named, are decided below this boundary: here a backend is built with a model
 name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/lion1/actor.py`;
-`hub/backend/openrouter.py`, `hub/backend/claude_code.py`, `hub/backend/codex.py`.
+`hub/backend/openrouter.py`, `hub/backend/claude_code/__init__.py`, `hub/backend/codex.py`.
 
 ## Definitions
 
@@ -182,7 +182,7 @@ native call when the content is empty; `calls` keeps the envelopes.
   response refused
   (`test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`).
 
-### D2: The two CLI shapes in `hub/backend/claude_code.py` ^d2
+### D2: The two CLI shapes in `hub/backend/claude_code/__init__.py` ^d2
 
 Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, no settings,
 strict MCP config. `ClaudeCodeSession` forks a point per call unless it has tools, one session per
