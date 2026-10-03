@@ -831,9 +831,10 @@ def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_p
 
 
 def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path):
-    """The CLI runs a tool its hook allowed whatever its --allowedTools says, so the hook answers allow
-    only for a tool that list names, exactly; any other admitted call goes back with its input, the
-    before hooks' replacement included, and no decision, for the CLI's own rules. Each lands admitted."""
+    """The hook answers allow only for a tool the CLI's --allowedTools names, exactly; any other admitted
+    call goes back with its input, the before hooks' replacement included, and no decision, for the
+    CLI's own rules (ADR-0009/S18 says why). Each lands admitted. The scripted CLI runs the hook and
+    records its answers; how a real CLI acts on them is not tested here."""
     cli = _scripted(
         tmp_path,
         _tool("Read", "toolu_a", file_path="a.txt"),  # one of the session's tools
