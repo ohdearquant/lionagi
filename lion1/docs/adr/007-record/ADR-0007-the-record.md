@@ -232,7 +232,9 @@ on writing, when decided, sits on those two.
   pointers and its handler's `Context.get` share one read per note, and its RESULT names each
   version read under `notes`, kept through the log
   (`test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`);
-  the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
+  the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`,
+  `test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_and_files_as_they_were`,
+  `test_note_read_reads_a_profiles_file_this_actor_never_opened_and_keeps_no_store_for_it`.
 
 ### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
 
@@ -290,7 +292,8 @@ or said to be unprintable. A resumed chat is a new run and is told again.
 - **S6**: Reading another profile's notes is decided as its own default command, naming the profile
   and gated by a privilege ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]). `note.read(profile, key)`
   requires `note.read`, checked before the handler reads anything, and reads the store the actor
-  keeps under that profile's name, never one a profile brought. A profile lacking the privilege is
+  keeps under that profile's name, never one a profile brought. A name with neither a store nor a
+  file reads as no note, and the read keeps no store for it. A profile lacking the privilege is
   refused with nothing read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
 - **S7**: A fold event makes the provider re-read, once, what stays in view after the first entry it
   hides, and spares every later turn the hidden tokens. Folding to half the budget keeps that
