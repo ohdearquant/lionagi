@@ -1926,13 +1926,13 @@ _MONTHS = {
     "two-back-a-31-day-month": ("2027-03-31T09:30:00+00:00", "2027-01-31T09:29:00Z", "2027-01-31T09:30:00Z"),
     "across-the-year": ("2027-02-10T09:30:00+00:00", "2026-11-10T09:29:00Z", "2026-11-10T09:30:00Z"),
     # Feb 28 21:00 in UTC is Mar 1 in +05:00: the month steps back in UTC, to Jan 28 and not to Jan 31
-    "utc-day": ("2027-03-01T02:00:00+05:00", "2027-01-28T20:00:00Z", "2027-01-28T21:00:00Z"),
-    # made Sep 15 with its first firing a month on, in the store's offset spelling: one month back is
-    # before its creation, so the trigger is the first
+    "utc-day": ("2027-03-01T02:00:00+05:00", "2027-01-28T20:59:00Z", "2027-01-28T21:00:00Z"),
+    # made Sep 15 with its first firing a month on, in the store's offset spelling: a lead longer than the
+    # default, which no row carries, so the latest firing not after the ceiling is a month early
     "first-firing-a-month-after-creation": (
         "2027-10-15T14:00:00-04:00",
         "2027-09-15T18:59:50.091369Z",
-        "2027-10-15T18:00:00Z",
+        "2027-09-15T18:00:00Z",
     ),
     "fired-before-creation-is-its-own": (
         "2027-01-15T09:30:00+00:00",
@@ -1951,36 +1951,52 @@ _MONTHS = {
         "0001-01-01T00:00:00+05:00",
         "2028-06-01T00:00:00Z",
     ),
-    # a firing on a short month's last day may be a clamped later day: the true first lies anywhere from the
-    # creation on, so the earliest a tick can fire stands in: the creation's second plus the lead (a minute)
-    # less a second, the delay the store may stamp the row after the tick's own clock read
+    # a firing on a short month's last day may be a clamped later day: the first is the latest day the clamp
+    # admits, at the firing's time of day, not after the ceiling (the creation, the lead and a second)
     "clamped-into-a-leap-february": (
         "2028-02-29T09:31:00+00:00",
         "2028-01-30T09:30:00Z",
-        "2028-01-30T09:30:59Z",
+        "2028-01-30T09:31:00Z",
     ),
-    "clamped-into-february": ("2027-02-28T09:31:00+00:00", "2027-01-30T09:30:00Z", "2027-01-30T09:30:59Z"),
+    "clamped-into-february": ("2027-02-28T09:31:00+00:00", "2027-01-30T09:30:00Z", "2027-01-30T09:31:00Z"),
     "clamped-into-a-30-day-month": (
         "2027-04-30T09:31:00+00:00",
         "2027-03-31T09:30:00Z",
-        "2027-03-31T09:30:59Z",
+        "2027-03-31T09:31:00Z",
     ),
     "two-months-back-lands-before-creation": (
         "2027-02-28T09:00:00+00:00",
         "2026-12-30T12:00:00Z",
-        "2026-12-30T12:00:59Z",
+        "2026-12-30T09:00:00Z",
     ),
-    # no clamp: the day is not its month's last, or no later day than the 31st exists, so the firing stands
+    "clamped-later-in-the-day-than-its-ceiling": (
+        "2027-02-28T21:00:00+00:00",
+        "2027-01-30T09:30:00Z",
+        "2027-01-29T21:00:00Z",
+    ),
+    # the step-back is after the ceiling: a clamped day leaves the ceiling as the bound, an unclamped one
+    # is a month earlier
+    "clamped-step-back-after-the-ceiling": (
+        "2027-04-30T09:31:00+00:00",
+        "2027-03-01T09:00:00Z",
+        "2027-03-01T09:01:01Z",
+    ),
+    "step-back-after-the-ceiling": (
+        "2027-02-15T09:31:00+00:00",
+        "2027-01-15T09:00:00Z",
+        "2026-12-15T09:31:00Z",
+    ),
+    # no clamp: the day is not its month's last, or no later day than the 31st exists, so the step-back is
+    # the month's firing
     "day-29-created-after-its-day": (
         "2026-04-29T09:31:00+00:00",
         "2026-03-30T09:30:00Z",
-        "2026-04-29T09:31:00Z",
+        "2026-03-29T09:31:00Z",
     ),
-    "thirty-first-stands": ("2027-01-31T09:00:00+00:00", "2026-12-31T12:00:00Z", "2027-01-31T09:00:00Z"),
-    "last-day-with-a-step-back-after-creation": (
-        "2027-04-30T09:31:00+00:00",
-        "2027-03-01T09:00:00Z",
-        "2027-03-30T09:31:00Z",
+    "thirty-first-a-month-back": (
+        "2027-01-31T09:00:00+00:00",
+        "2026-12-31T12:00:00Z",
+        "2026-12-31T09:00:00Z",
     ),
 }
 
@@ -2008,9 +2024,9 @@ def test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_cre
     chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], m=Probe("m", full(), every="monthly"))
     agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
     asyncio.run(chores.ensure_ticks())
-    assert agent.state.get("first_due").value == {"m": born.timestamp() + 59}
+    assert agent.state.get("first_due").value == {"m": born.timestamp() + 60}
     month_on = datetime(2028, 2, 29, 9, 30, tzinfo=UTC).timestamp() + 300  # a calendar month, and the grace
-    line = f"MISSING: m, no run recorded, first due by {label(born.timestamp() + 59)}"
+    line = f"MISSING: m, no run recorded, first due by {label(born.timestamp() + 60)}"
     assert line in digest_at(chores, agent, month_on).splitlines()
 
 
@@ -2020,7 +2036,7 @@ def test_a_clamped_monthly_row_is_missing_a_tick_lead_and_the_grace_after_its_cr
     chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], m=Probe("m", full(), every="monthly"))
     agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
     asyncio.run(chores.ensure_ticks())
-    first = born + 59  # a tick is made a minute after its creation, less the second the stamp may trail
+    first = born + 60  # the latest day the clamp admits not after the ceiling: a minute after the creation
     inside = digest_at(chores, agent, first + 300 - 1).splitlines()  # the grace runs a second more
     assert f"{OWNER} m no run yet, first due by {label(first)}" in inside
     past = digest_at(chores, agent, first + 300 + 1).splitlines()
@@ -2030,8 +2046,9 @@ def test_a_clamped_monthly_row_is_missing_a_tick_lead_and_the_grace_after_its_cr
 
 def test_the_stand_in_and_the_tick_a_start_makes_share_one_lead(tmp_path, monkeypatch):
     monkeypatch.setattr("hub.agent.chores._TICK_LEAD_S", 120)
-    born = datetime(2028, 1, 30, 9, 30, tzinfo=UTC).timestamp()
-    row = ("tick: m", SELF, "pending", "2028-02-29T09:32:00+00:00", None, "monthly", iso(born))
+    born = datetime(2027, 3, 30, 9, 30, tzinfo=UTC).timestamp()
+    # Apr 30 may be a clamped Mar 31, and its step-back, Mar 30 09:33, is after the ceiling: that stands in
+    row = ("tick: m", SELF, "pending", "2027-04-30T09:33:00+00:00", None, "monthly", iso(born))
     fixed = pending("f", born + 120, "every:45s", born)  # a period the lead is not a multiple of
     khive = FakeKhive(agenda=[row, fixed])
     chores, agent = build(
@@ -2045,8 +2062,8 @@ def test_the_stand_in_and_the_tick_a_start_makes_share_one_lead(tmp_path, monkey
     agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
     asyncio.run(chores.ensure_ticks())  # no lead is passed: the constant gives it
     first = agent.state.get("first_due").value
-    # the stand-in, and a fixed period's step-back, stop at the creation plus the lead less a second
-    assert (first["m"], first["f"]) == (born + 119, born + 120)
+    # the stand-in, and a fixed period's step-back, stop at the creation plus the lead and a second
+    assert (first["m"], first["f"]) == (born + 121, born + 120)
     (remind,) = [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: disk"' in op]
     made = datetime.fromisoformat(re.search(r'at="([^"]+)"', remind).group(1)).timestamp()
     assert 110 <= made - time.time() <= 125  # two minutes ahead, not the usual one
@@ -2082,6 +2099,75 @@ def pending(chore: str, firing: float, repeat: str, born: float | str | None = N
     creation beside them (an instant, or text that is none, or nothing)."""
     made = iso(born, micros=True) if isinstance(born, float | int) else born
     return (f"tick: {chore}", SELF, "pending", iso(firing), None, repeat, made)
+
+
+class Clock:
+    """`time` as `ensure_ticks` reads it: an instant that a store call moves on by its latency."""
+
+    def __init__(self, t: float):
+        self.t = t
+
+    def time(self) -> float:
+        return self.t
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+class Stamping(FakeKhive):
+    """A store whose `schedule.remind` takes `lag` seconds and keeps the row it makes, stamped at its end."""
+
+    def __init__(self, clock: Clock, lag: float):
+        super().__init__()
+        self.clock, self.lag = clock, lag
+
+    async def exec(self, ops: str):
+        if not ops.startswith("schedule.remind"):
+            return await super().exec(ops)
+        self.ops.append(ops)
+        self.clock.t += self.lag
+        content, at, repeat = re.search(r'content="([^"]*)", at="([^"]*)", repeat="([^"]*)"', ops).groups()
+        self.agenda.append((content, self.actor, "pending", at, None, repeat, iso(self.clock.t, micros=True)))
+        return [{"ok": True}]
+
+
+def test_a_row_stamped_after_its_clock_read_and_delivered_once_recovers_its_true_first_firing(
+    tmp_path, monkeypatch
+):
+    read = datetime(2026, 9, 14, 12, 0, 0, 250000, tzinfo=UTC).timestamp()
+    clock = Clock(read)
+    monkeypatch.setattr("hub.agent.chores.time", clock)
+    khive = Stamping(clock, 2.0)  # the store stamps the row two seconds after the tick's clock read
+    chores, _ = build(tmp_path, khive, [], disk=Probe("disk", full()))
+    asyncio.run(chores.ensure_ticks())
+    (row,) = [r for r in khive.agenda if r[0] == "tick: disk"]
+    first = datetime.fromisoformat(row[3]).timestamp()
+    assert first == int(read) + 60 and row[6] == iso(read + 2, micros=True)
+    # delivered once, the row's trigger is a period on; an agent started with no state reads the row
+    khive.agenda = [(*r[:3], iso(first + 1800), *r[4:]) if r is row else r for r in khive.agenda]
+    (tmp_path / "again").mkdir()
+    chores, agent = build(tmp_path / "again", khive, [], disk=Probe("disk", full()))
+    assert asyncio.run(chores.ensure_ticks()) == []
+    assert agent.state.get("first_due").value == {"disk": first}
+    text = digest_at(chores, agent, first + 301)  # past its first firing and the grace: overdue
+    assert f"MISSING: disk, no run recorded, first due by {label(first)}" in text.splitlines()
+
+
+def test_each_tick_ensure_ticks_makes_is_timed_from_its_own_read_of_the_clock(tmp_path, monkeypatch):
+    read = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    clock = Clock(read)
+    monkeypatch.setattr("hub.agent.chores.time", clock)
+    khive = Stamping(clock, 2.0)  # each call takes two seconds
+    chores, _ = build(tmp_path, khive, [], disk=Probe("disk", full()), w=Probe("w", full(), every="weekly"))
+    asyncio.run(chores.ensure_ticks())
+    firings = [datetime.fromisoformat(r[3]).timestamp() for r in khive.agenda]
+    assert [r[0] for r in khive.agenda] == ["tick: disk", "tick: w", "tick: digest", "tick: aged"]
+    assert firings[1] - firings[0] == 2 and firings == [read + 60 + 2 * n for n in range(4)]
+    # so each row's stamp trails the clock read that fixed its firing by its own call alone
+    assert [
+        datetime.fromisoformat(r[6]).timestamp() - (f - 60)
+        for r, f in zip(khive.agenda, firings, strict=True)
+    ] == [2] * 4
 
 
 @pytest.mark.parametrize(
@@ -2124,11 +2210,23 @@ def test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_ne
             60,
         ),  # the store stamped the row a fraction of a second after the tick's clock
         ("every:30s", 0.0, 180, 60),  # delivered four times: the history still steps back to the first
-        ("every:1s", 0.0, 60, 59),  # the one case an early answer is allowed: a second, the stamp's delay
+        ("every:30s", 2.0, 90, 60),  # the store stamped the row two seconds after the tick's clock read
+        ("every:1s", 0.0, 65, 61),  # the ceiling's second: a one-second period recovers a second late
+        ("every:30s", 31.0, 90, 90),  # stamped a period after the read: a period late, the limit
+        ("every:30m", 0.0, 7200, 0),  # made two hours out, a longer lead than the default: early
     ],
-    ids=["aligned-30s", "lead-not-a-multiple-45s", "stamped-a-fraction-late", "delivered-four-times", "1s"],
+    ids=[
+        "aligned-30s",
+        "lead-not-a-multiple-45s",
+        "stamped-a-fraction-late",
+        "delivered-four-times",
+        "stamped-two-seconds-late",
+        "1s",
+        "stamped-a-period-late",
+        "a-longer-lead",
+    ],
 )
-def test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carries(
+def test_a_pending_fixed_tick_gives_its_latest_firing_not_after_the_ceiling_its_creation_carries(
     tmp_path, repeat, born, trigger, first
 ):
     day = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
@@ -2146,18 +2244,19 @@ def test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carri
     )
 
 
-def test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_a_period_after_creation(tmp_path):
+def test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_at_its_creation(tmp_path):
     now, period = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp(), 1800
     row = pending("disk", now + period, "every:30m", now - period)
     chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], disk=Probe("disk", full()))
     agent.clock = lambda: now
     asyncio.run(chores.ensure_ticks())
-    assert agent.state.get("first_due").value == {
-        "disk": now
-    }  # not the creation: no firing is before the lead
-    line = f"{OWNER} disk no run yet, first due by {label(now)}"
-    assert line in digest_at(chores, agent, now + 300).splitlines()
-    assert f"MISSING: disk, no run recorded, first due by {label(now)}" in digest_at(chores, agent, now + 301)
+    first = now - period  # the latest firing not after the creation, the lead and a second
+    assert agent.state.get("first_due").value == {"disk": first}
+    line = f"{OWNER} disk no run yet, first due by {label(first)}"
+    assert line in digest_at(chores, agent, first + 300).splitlines()
+    assert f"MISSING: disk, no run recorded, first due by {label(first)}" in digest_at(
+        chores, agent, first + 301
+    )
 
 
 def test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier(tmp_path):
@@ -2279,7 +2378,8 @@ def test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead(
     assert agent.state.get("first_due").value == {"p": first}
     agent.clock = lambda: first - 6000  # twenty minutes after the creation
     assert asyncio.run(chores.ensure_ticks()) == []  # the row is found and nothing is made
-    # the row alone gives the firing at the default lead less whole periods: 15 minutes after the creation
+    # the row alone gives the latest firing not after its creation, the default lead and a second: two
+    # hours early, at the creation itself
     assert agent.state.get("first_due").value == {"p": first}
     text = digest_at(chores, agent, first - 6000 + 60)  # past that firing and its grace
     assert f"{OWNER} p no run yet, first due by {label(first)}" in text.splitlines()
@@ -2353,6 +2453,25 @@ def test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tic
     ]
     assert len(agenda_reads(khive)) == 25 and not [op for op in khive.ops if op.startswith("schedule.remind")]
     assert agent.state.get("first_due") is None
+
+
+def test_a_capped_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing(tmp_path):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    # the tick's row read first gives base; a second row of it, whose history admits base less an hour,
+    # sits past 300 rows at one instant that each read answers again, so no read reaches it
+    rows = [pending("disk", base, "every:30m", base - 60)]
+    rows += [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    khive = FakeKhive(agenda=[*rows, pending("disk", base + 3600, "every:30m", base - 3660)])
+    khive.paged = True
+    chores, agent = build(tmp_path, khive, [], disk=Probe("disk", full()))
+    text = digest_at(chores, agent, base - 1800)  # overdue by the row past the cap, not by the one read
+    assert text.splitlines()[1:] == [f"{OWNER} disk not judged: the agenda read was capped at 5000 rows"]
+    khive.ops.clear()
+    left = asyncio.run(chores.ensure_ticks())
+    assert agent.state.get("first_due") is None  # the row read is no first due either
+    capped = "not created, the agenda read was capped at 5000 rows"
+    assert left == [f"tick: {n}: {capped}" for n in ("disk", "digest", "aged")]
+    assert len(agenda_reads(khive)) == 25 and not [op for op in khive.ops if op.startswith("schedule.remind")]
 
 
 @pytest.mark.parametrize(

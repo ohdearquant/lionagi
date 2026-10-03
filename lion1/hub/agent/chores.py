@@ -593,7 +593,7 @@ class Chores:
                             except Exception as e:
                                 agenda_error = f"{type(e).__name__}: {e}"
                         fires = (pending or {}).get(f"tick: {name}")
-                        if agenda_error or (capped and fires is None):  # a capped read did not see every row
+                        if agenda_error or capped:  # a row past the cap may give an earlier first due
                             reason = f"agenda unreadable: {agenda_error}" if agenda_error else _CAPPED
                             lines.append(f"{actor} {name} not judged: {reason}")
                             continue
@@ -734,25 +734,25 @@ class Chores:
     async def ensure_ticks(self, *, first_in_s: int | None = None) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
-        a steward. Creates what is missing, returns what it created, and names a tick a capped agenda read did
-        not find, which it does not create. A chore's first firing is kept in the agent's state (`first_due`)
-        for the digest: one on record stands, and where there is none the tick's own firing is recorded when
-        it was just made, else what its pending rows give (`_first_firing`)."""
+        a steward. Creates what is missing and returns what it created; after a capped agenda read it creates
+        and records nothing and names each tick it left. A chore's first firing is kept in the agent's state
+        (`first_due`) for the digest: one on record stands, and where there is none the tick's own firing is
+        recorded when it was just made, else what its pending rows give (`_first_firing`)."""
         pending, capped = await self._pending_firsts(self.agent.clock())
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
             wanted["tick: aged"] = self.aged_every
         wanted.update(self.extra_ticks)
+        if capped:  # a read that did not see every row says neither that a tick is absent nor its first due
+            return [f"{content}: not created, {_CAPPED}" for content in wanted]
         created = []
         lead = _TICK_LEAD_S if first_in_s is None else first_in_s
-        at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + lead))
         for content, every in wanted.items():
             fires = pending.get(content)
-            if fires is None and capped:  # a read that did not see every row cannot say the tick is absent
-                created.append(f"{content}: not created, {_CAPPED}")
-                continue
             if fires is None:
+                # the clock is read for each call, so a row's stamp trails its own call's read alone
+                at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + lead))
                 await self.agent.khive.exec(
                     f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
                 )
@@ -1017,7 +1017,7 @@ def sender_of(m: dict) -> str:
 _EVERY = re.compile(r"every:(\d+)([smhd])")
 _NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
 _FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
-_TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the floor)
+_TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the ceiling)
 _AGENDA_PAGE = 200  # the most rows one `schedule.agenda` read answers
 _AGENDA_PAGES = 25  # the pages one read of the agenda follows
 _CAPPED = f"the agenda read was capped at {_AGENDA_PAGE * _AGENDA_PAGES} rows"
@@ -1103,12 +1103,12 @@ def _first_firing(row: dict, now: float) -> float | None:
     """The first firing a pending reminder's row implies, or None when it names no instant. The store moves
     `trigger_at` on to the next firing after each delivery and keeps the row pending, so it is no first
     due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. Else
-    the first is the earliest firing not before the floor of the row's creation (`created_at`, beside
+    the first is the latest firing not after the ceiling of the row's creation (`created_at`, beside
     `properties`): a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A
-    monthly firing on the last day of a month of fewer than 31 days may be a clamped later day, so when its
-    step-back falls before the floor the floor stands in, a lower bound on that firing. A row naming no
-    creation instant, or a period that is not fixed (a cron), gives its firing or now, if that is
-    earlier."""
+    monthly firing on the last day of a month of fewer than 31 days may be a clamped later day: that month's
+    latest day at the firing's time not after the ceiling, or the ceiling itself, an upper bound, when the
+    step-back is already after it. A row naming no creation instant, or a period that is not fixed (a cron),
+    gives its firing or now, if that is earlier."""
     p = row.get("properties") or {}
     repeat = p.get("repeat")
     anchor = p.get("repeat_anchor") if repeat == "monthly" else None
@@ -1126,28 +1126,34 @@ def _first_firing(row: dict, now: float) -> float | None:
         born = _iso_epoch(made) if isinstance(made, str) and made else None
     except (ValueError, OverflowError):
         born = None
-    # no tick fires before this: `ensure_ticks` fixes a first firing the lead after its own clock read, to the
-    # whole second, and the store stamps the row after that read, so the firing may fall up to a second short
-    # of the creation plus the lead. A one-second period may therefore recover a second early.
-    floor = None if born is None else float(math.floor(born) + _TICK_LEAD_S - 1)
-    if repeat == "monthly" and born is not None:
+    # no tick first fires after this: `ensure_ticks` fixes a first firing the lead after its own clock read,
+    # to the whole second, and the store stamps the row after that read, a second more for a whole-second
+    # stamp. The stamp trails the read by the call's latency, which has no bound: a period no longer than
+    # that latency and up to two seconds may recover whole periods late, and a longer custom lead, early.
+    ceiling = None if born is None else born + _TICK_LEAD_S + 1
+    if repeat == "monthly" and ceiling is not None:
         try:
-            t, b = datetime.fromtimestamp(first, UTC), datetime.fromtimestamp(born, UTC)
+            t, c = datetime.fromtimestamp(first, UTC), datetime.fromtimestamp(ceiling, UTC)
         except (ValueError, OverflowError, OSError):
             return min(first, now)
-        n = (t.year - b.year) * 12 + t.month - b.month  # months from the creation's month to the firing's
-        early = n > 0 and _months_before(t, n) < b  # that month's firing is before its creation
+        if t <= c:
+            return first
+        n = (t.year - c.year) * 12 + t.month - c.month  # months from the ceiling's month to the firing's
+        step = _months_before(t, n)
         last = calendar.monthrange(t.year, t.month)[1]
-        if early and t.day == last and last < 31:
-            return floor  # a clamp is possible: the row's day may be later, none lies before the floor
-        if early:  # no clamp: one month less
-            n -= 1
-        return _months_before(t, n).timestamp() if n > 0 else first
+        clamped = t.day == last and last < 31  # the month's firing may be a later day, clamped to this one
+        if step > c:  # that month's firing is after the ceiling
+            return ceiling if clamped else _months_before(t, n + 1).timestamp()
+        if not clamped:
+            return step.timestamp()
+        # the latest day the firing may have been on, at its time of day, not after the ceiling
+        latest = c.replace(hour=t.hour, minute=t.minute, second=t.second, microsecond=t.microsecond)
+        return (latest - timedelta(days=1) if latest > c else latest).timestamp()
     fixed = isinstance(repeat, str) and (repeat in _NAMED or _EVERY.fullmatch(repeat) is not None)
     period = period_s(repeat) if fixed else 0.0
-    if floor is None or period <= 0:
+    if ceiling is None or period <= 0:
         return min(first, now)
-    return first - max(0.0, (first - floor) // period) * period
+    return first - max(0.0, -((ceiling - first) // period)) * period
 
 
 def _val(store: Any, key: str, default: Any) -> Any:

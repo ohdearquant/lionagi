@@ -368,7 +368,7 @@ bypasses the handler: no refusals, no row, no send.
 - **S17**: A first due on record stands, and one that is no instant (S23) is none. Where none is on
   record, a tick `ensure_ticks` makes gives its own firing, and one it finds pending gives its
   row's. The store moves `trigger_at` on after each delivery, so a fixed period's first due is the
-  trigger less whole periods, while not before the floor (S25). The earliest of a tick's rows
+  trigger less whole periods, the latest not after the ceiling (S25). The earliest of a tick's rows
   counts; a row naming no instant gives none
   (`test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one`,
   `test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick`,
@@ -390,20 +390,18 @@ bypasses the handler: no refusals, no row, no send.
   a row from before the field has none, and its `control` says
   (`test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none`).
 - **S20**: A start that stopped between its reminder and its record heals at the next. At the edges
-  of S17, a row created a period (a minute or more) ago and next due in one gives the firing a
-  period after its creation. A fixed period's first due steps back no further than the floor (S25),
-  and a firing already before it is its own. A creation that is no instant, a cron and a zero period
-  give the firing, or now if that is earlier
-  (`test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_a_period_after_creation`,
+  of S17, a row created a period ago and next due in one gives the firing at its creation, the
+  period exceeding the default lead and a second, and a firing at or before the ceiling (S25) is its
+  own. A creation that is no instant, a cron and a zero period give the firing, or now if that is
+  earlier (`test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_at_its_creation`,
   `test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_stepped_forward`,
   `test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier`).
-- **S21**: A monthly row gives its `repeat_anchor`. Without one it is the trigger less whole UTC
-  calendar months, each day clamped to its month's last, stopping before a month preceding the row's
-  `created_at`; a firing already before the creation is its own. A firing on a short month's last
-  day may be a clamped later one: if its step-back precedes the creation, the floor (S25) is the
-  first due. With no creation, the firing or now, if earlier
-  (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`, the
-  `fired-before-creation-is-its-own` row of
+- **S21**: A monthly row gives its `repeat_anchor`. Without one it steps back whole UTC calendar
+  months, days clamped to a month's last, to its latest firing not after the ceiling (S25). A short
+  month's last day may be a clamped later one: the latest day that admits, at its time, not after
+  the ceiling, or the ceiling where the step-back is after it. With no creation, the firing or now,
+  if earlier (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`, the
+  `fired-before-creation-is-its-own` and `clamped-step-back-after-the-ceiling` rows of
   `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`,
   `test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation`,
   `test_a_clamped_monthly_row_is_missing_a_tick_lead_and_the_grace_after_its_creation`,
@@ -424,13 +422,15 @@ bypasses the handler: no refusals, no row, no send.
 - **S24**: A row's `ts` and `at` come from one read of the clock, `at` being that instant's local
   label, so a check across local midnight writes a row whose two name one day
   (`test_a_row_written_across_local_midnight_names_one_day_by_both_its_label_and_its_instant`).
-- **S25**: A tick's first firing is the lead after its creation, a minute by default
-  (`ensure_ticks(first_in_s=...)`). A first due recovered from a pending row steps back no further
-  than the floor: the second of `created_at` plus the default lead, less a second for the store's
-  stamp. A monthly stand-in is that floor, and a one-second period may read a second early. A custom
-  lead is on no row: a tick whose record of one was lost recovers at that floor and may read
-  `MISSING` early (`test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carries`,
-  `test_the_stand_in_and_the_tick_a_start_makes_share_one_lead`,
+- **S25**: A tick first fires the lead after its call's clock read, a minute by default
+  (`ensure_ticks(first_in_s=...)`). `created_at` is stamped after it by the call's latency, which
+  has no bound, so a row recovers its latest firing not after the ceiling: `created_at`, the default
+  lead and a second for a whole-second stamp. A period within that latency and two seconds may
+  recover whole periods late, `no run yet` past the due; a longer custom lead, on no row, early
+  (`test_a_row_stamped_after_its_clock_read_and_delivered_once_recovers_its_true_first_firing`,
+  `test_each_tick_ensure_ticks_makes_is_timed_from_its_own_read_of_the_clock`, the
+  `stamped-a-period-late` and `a-longer-lead` rows of
+  `test_a_pending_fixed_tick_gives_its_latest_firing_not_after_the_ceiling_its_creation_carries`,
   `test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead`).
 - **S26**: A chore with no run or first due on record reads one from its pending tick row, as
   `ensure_ticks` does (S17). The read makes no tick and records nothing, so a wake without
@@ -442,9 +442,11 @@ bypasses the handler: no refusals, no row, no send.
   `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`,
   `test_the_agenda_is_read_in_pages_of_200_each_from_the_last_row_of_the_page_before`,
   `test_an_agenda_read_that_ends_short_on_its_25th_page_is_not_capped`).
-- **S27**: A read that ends on a full 25th page is capped, and a chore whose tick it did not find
-  reads `not judged: the agenda read was capped at 5000 rows`. `ensure_ticks` makes no tick a capped
-  read did not find, and names it. A read that fails reads each chore that needed it `not judged:
-  agenda unreadable: <error>`, and the digest is still sent; `ensure_ticks` raises
+- **S27**: A read ending on a full 25th page is capped, and a row past the cap may give an earlier
+  first due. A chore with no run or first due on record reads `not judged: the agenda read was
+  capped at 5000 rows`, whatever it saw. `ensure_ticks` then makes no tick and records no first due,
+  naming each tick it left. A read that fails reads each chore that needed it `not judged: agenda
+  unreadable: <error>`, and the digest is still sent; `ensure_ticks` raises
   (`test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tick`,
+  `test_a_capped_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing`,
   `test_a_digest_whose_agenda_read_fails_says_so_for_each_chore_that_needed_it_and_is_sent`).
