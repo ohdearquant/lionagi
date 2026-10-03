@@ -276,6 +276,15 @@ def test_an_output_that_cannot_be_computed_is_a_retry_after_its_commands_settle(
     assert run.record.get("a").content.ok
 
 
+def test_a_turn_whose_output_fails_to_compute_is_no_idle_turn():
+    # the retry is classed like any turn its walk acted in: it breaks a row of idle turns, so the third
+    # turn here is the first of a new row, not the second, and max_idle=2 is not spent
+    turns = ("thinking", fenced("OUT{x: 1 / 0}"), "still thinking", fenced("OUT{x: 1}"))
+    run = _run(_actor("idle-row", []), *turns, max_idle=2)
+    assert isinstance(run.outcome, Success) and run.output == {"x": 1}
+    assert "line 1: division by zero" in _notices(run)
+
+
 def test_a_value_is_computed_once_when_first_read_and_bound_for_later_turns():
     calls: list = []
     actor = _actor("values", calls)
@@ -877,42 +886,69 @@ def _asking():
     ],
 )
 def test_a_program_that_runs_no_command_and_gives_no_out_is_a_reply_under_wait(lines):
-    # the core rule, for a program: it acts when it holds a command or an OUT{}, and a value or a note
-    # write is neither, so the turn is the reply and wait is asked at the next turn's start
+    # a program's turn acts when its walk launches a command or reaches OUT{}, and a value or a note
+    # write of data does neither, so the turn is the reply and wait is asked at the next turn's start
     asked, wait = _asking()
     run = _run(_actor("no-act", []), fenced(*lines), "unused", wait=wait)
     assert asked == [2] and run.outcome == Stopped(2)
 
 
 @pytest.mark.parametrize(
-    ("lines", "ran"),
+    ("lines", "ran", "acted"),
     [
-        ('a = echo(text="x")', [("echo", "x")]),
-        ('note["k"] = echo(text="x")', [("echo", "x")]),
-        ('if (DO echo(text="x")) == "x":\n    a = 1', [("echo", "x")]),
-        ('if false:\n    DO echo(text="x")', []),
-        ('if true:\n    a = 1\nelse:\n    DO echo(text="x")', []),
-        ('v = false and DO echo(text="x")', []),
-        ('note["k"] = false and DO echo(text="x")', []),
+        ('a = echo(text="x")', [("echo", "x")], True),
+        ('note["k"] = echo(text="x")', [("echo", "x")], True),
+        ('if (DO echo(text="x")) == "x":\n    a = 1', [("echo", "x")], True),
+        ('OUT{answer: "x"}', [], True),
+        ('return {answer: "x"}', [], True),
+        ("OUT{answer: 1 / 0}", [], True),
+        ('if false:\n    DO echo(text="x")', [], False),
+        ('if true:\n    a = 1\nelse:\n    DO echo(text="x")', [], False),
+        ('v = false and DO echo(text="x")', [], False),
+        ('note["k"] = false and DO echo(text="x")', [], False),
+        ('if false:\n    OUT{answer: "x"}', [], False),
+        ('if false:\n    return {answer: "x"}', [], False),
     ],
 )
-def test_a_program_with_a_command_call_anywhere_in_it_is_not_a_reply_under_wait(lines, ran):
-    # the static shape of the message, as the core rule reads it: a command in an untaken branch or in
-    # an expression never reached still makes the turn one that acted, so wait is not asked
+def test_a_program_is_a_reply_under_wait_unless_its_walk_launches_a_command_or_reaches_out(lines, ran, acted):
+    # the turn's class is what its walk did, never the program's text: a command launched, or OUT{}
+    # reached though the gate refuses it or its fields fail, is a turn that acted and the next turn
+    # follows; a command or an OUT{} control flow does not reach is neither, and the turn is the reply
     calls: list = []
     asked, wait = _asking()
-    run = _run(_actor("act", calls), fenced(*lines.split("\n")), fenced('OUT{ok: "yes"}'), wait=wait)
-    assert calls == ran and asked == [] and run.round == 2 and isinstance(run.outcome, Success)
+
+    def refuse(run, fields):
+        return "not yet" if "answer" in fields else None
+
+    run = _run(
+        _actor("act", calls), fenced(*lines.split("\n")), fenced('OUT{ok: "yes"}'), wait=wait, accept=refuse
+    )
+    assert calls == ran and asked == ([] if acted else [2])
+    assert isinstance(run.outcome, Success) if acted else run.outcome == Stopped(2)
 
 
-@pytest.mark.parametrize("out", ['OUT{answer: "x"}', 'return {answer: "x"}'])
-def test_a_program_with_only_an_out_is_not_a_reply_under_wait_when_accept_refuses_it(out):
-    # an output the gate refuses is a retry: the turn acted, so wait is not asked before the next one
+def test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_under_wait():
+    # the value is computed when a later turn first reads it, and computing it runs a command: that turn
+    # wrote no command, yet its walk launched one, so it acted and the model sees the result next turn
+    calls: list = []
+    asked: list = []
+
+    async def wait(run):  # the other side answers the binding turn's reply, and nothing after it
+        asked.append(run.round)
+        return run.round == 2
+
+    bind, read = fenced('x = DO echo(text="x") if true else 0'), fenced('note["k"] = *x')
+    seen: list = []
+    run = _run(_actor("deferred", calls), bind, read, fenced('OUT{k: *note["k"]}'), wait=wait, seen=seen)
+    assert calls == [("echo", "x")] and asked == [2] and run.output == {"k": "x"} and len(seen) == 3
+    told = seen[2][-1].content  # the third turn's notification: the command settled, the note written
+    assert "echo): str[1], consumed" in told and "notes written: note.k" in told
+    # a value nothing read rides the log, so a resumed run reading it runs the command and acts the same
+    first = _run(_actor("first", []), bind, "idle")
+    history = tuple(entry_of(json.loads(json.dumps(entry_row(e), default=str))) for e in first.record)
     asked, wait = _asking()
-    verdicts = iter(["not yet", None])
-    turn = fenced(out)
-    run = _run(_actor("out", []), turn, turn, wait=wait, accept=lambda run, fields: next(verdicts))
-    assert asked == [] and run.round == 2 and isinstance(run.outcome, Success)
+    run = _run(_actor("resumed", calls), read, fenced('OUT{k: *note["k"]}'), history=history, wait=wait)
+    assert asked == [] and run.output == {"k": "x"} and calls == [("echo", "x")] * 2
 
 
 def test_two_fenced_blocks_are_refused():

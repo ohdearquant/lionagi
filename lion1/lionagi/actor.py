@@ -34,7 +34,7 @@ from .bus import Bus
 from .experience import Experience, ExperienceLesson, ExperienceRecord
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
-from .program import Branch, Command, EvalError, Script, Value, Write, evaluate, pointers
+from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
 from .program import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
 )
@@ -1030,11 +1030,38 @@ class Actor:
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
                 run.idle_note = None
+                for var in () if isinstance(program, Script) else program.lvars:
+                    # a call written in a value tag runs nothing; say so by name
+                    call = _CALL_SHAPED.match(var.value)
+                    if call and call.group(1) in subset.names():
+                        run.refused.append(
+                            (
+                                var.alias,
+                                f"a value tag runs nothing; to run {call.group(1)}(...) write "
+                                f"<lact {var.alias}>{call.group(1)}(...)</lact>",
+                            )
+                        )
+                for problem in program.problems:
+                    run.refused.append(("turn", problem))
+                failed = None
                 if isinstance(program, Script):
-                    acted, spoke = _acts(program.body), bool(program.body)
+                    walk = _Walk(self, run, subset, m.seq)
+                    try:
+                        found = await walk.execute(program)
+                    except lndl.LNDLError as e:  # the output could not be computed: a retry (ADR-0008/C7)
+                        found, failed = None, str(e)
+                    # the turn's class is what its walk did, never the program's text: a command launched,
+                    # one computing an earlier turn's value ran included, or OUT{} reached (ADR-0002/C1)
+                    acted, spoke = walk.acted, bool(program.body)
+                    program = Program(lacts=walk.lacts, out=None if found is None else lndl.Out(found))
+                    referenced: set[str] = set()
+                    tasks = walk.tasks
                 else:
                     acted = bool(program.lacts) or program.out is not None
                     spoke = acted or bool(program.lvars)
+                    self._declare(run, program, m.seq)
+                    referenced = _referenced(program)
+                    tasks = self._dispatch(run, program, subset)
                 if request.wait is not None and not acted:
                     run.replied = True  # the reply; the other side speaks next
                 elif not spoke:
@@ -1052,34 +1079,10 @@ class Actor:
                         )
                 else:
                     run.idle_rounds = 0
-                for var in () if isinstance(program, Script) else program.lvars:
-                    # a call written in a value tag runs nothing; say so by name
-                    call = _CALL_SHAPED.match(var.value)
-                    if call and call.group(1) in subset.names():
-                        run.refused.append(
-                            (
-                                var.alias,
-                                f"a value tag runs nothing; to run {call.group(1)}(...) write "
-                                f"<lact {var.alias}>{call.group(1)}(...)</lact>",
-                            )
-                        )
-                for problem in program.problems:
-                    run.refused.append(("turn", problem))
-                if isinstance(program, Script):
-                    walk = _Walk(self, run, subset, m.seq)
-                    try:
-                        found = await walk.execute(program)
-                    except lndl.LNDLError as e:  # the output could not be computed: a retry (ADR-0008/C7)
-                        self._retry(run, str(e))
-                        self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
-                        continue
-                    program = Program(lacts=walk.lacts, out=None if found is None else lndl.Out(found))
-                    referenced: set[str] = set()
-                    tasks = walk.tasks
-                else:
-                    self._declare(run, program, m.seq)
-                    referenced = _referenced(program)
-                    tasks = self._dispatch(run, program, subset)
+                if failed is not None:
+                    self._retry(run, failed)
+                    self.bus.emit("round.retry", run=run.id, round=round_no, error=failed)
+                    continue
                 if program.out is None:
                     await _settle(run, tasks, _left(run))
                     if (
@@ -2110,6 +2113,8 @@ class _Walk:
         # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
         self.used: dict[str, int] = {}
         self.named: set[str] = set()  # what OUT{} points at: never consumed
+        # the walk launched a command, from any node or value, or reached OUT{}: the turn acted
+        self.acted = False
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
         try:
@@ -2149,6 +2154,7 @@ class _Walk:
                 if ended is not None:
                     return ended
             elif isinstance(node, ProgramOutput):
+                self.acted = True
                 reader = _Reader(self)
                 self.named |= node.named
                 fields = {key: await evaluate(v, reader) for key, v in node.fields}
@@ -2171,6 +2177,7 @@ class _Walk:
 
     def launch(self, la: Lact, args: Callable[[], Awaitable[dict[str, Any]]]) -> asyncio.Task:
         run = self.run
+        self.acted = True
         admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         run.thunks[la.alias] = args
         task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))
@@ -2357,30 +2364,6 @@ def _distance(a: str, b: str) -> int:
         for j, cb in enumerate(b, 1):
             prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
     return row[-1]
-
-
-def _acts(nodes: tuple) -> bool:
-    """Whether a program's text holds a command call or an `OUT{}` anywhere in it, an untaken branch
-    and what follows a `return` included: the shape of the message, as the core rule reads it."""
-    for node in nodes:
-        match node:
-            case Command() | ProgramOutput() | Write(value=Command()):
-                return True
-            case Branch(test=test, body=body, orelse=orelse):
-                if _calls(test) or _acts(body) or _acts(orelse):
-                    return True
-            case Write(value=expr):
-                if _calls(expr):
-                    return True
-            case _:
-                if _calls(node.expr):
-                    return True
-    return False
-
-
-def _calls(expr: ast.expr) -> bool:
-    """A `DO` call written inside an expression: the only call the reader admits there."""
-    return any(isinstance(n, ast.Call) for n in ast.walk(expr))
 
 
 def _referenced(program: Program) -> set[str]:

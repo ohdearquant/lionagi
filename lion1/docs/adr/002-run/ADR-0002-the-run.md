@@ -60,20 +60,20 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
 | the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or program (ADR-0008/C1) or a backend's refusal | nothing | a retry; the error rides the next notification |
-| under `wait`, the message has no command and no `OUT{}` anywhere in its text | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
+| under `wait`, the turn launched no command and reached no `OUT{}`: in the tag form none is in the parsed program; in the program form its walk (ADR-0008) did neither, computing an earlier turn's value included | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
 | the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
-| the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle, as a turn that acted, not a reply |
+| the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle |
 | the message has `OUT{}` and its fields do not assemble | every command reached; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command reached; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
 | the message has `OUT{}` | every command reached; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
 | under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command reached | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command reached                               | the run continues once they settle                               |
 
-Every command control flow reaches is dispatched, `OUT{}` or not; "edit, then done" in one turn
-means both, and a program's untaken branch, or what follows its `return`, is never reached
-(ADR-0008). A command is admitted at alias reservation, entered when its handler is called, settled
-when its RESULT lands; one cancelled before entering is recorded. Only the fourth row refuses the
-message; any other unreadable construct is dropped and named while the rest runs
+Every command control flow reaches is dispatched, `OUT{}` or not; "edit, then done" means both. A
+program's class is read off its walk: an earlier turn's value launching a command makes it act. A
+command is admitted at alias reservation, entered when its handler is called, settled when its
+RESULT lands; one cancelled before entering is recorded. Only the fourth row refuses the message;
+any other unreadable construct is dropped and named while the rest runs
 ([[ADR-0004-the-language#^c3|ADR-0004/C3]]).
 
 `OUT{}` waits for what it references, through pointers, and for no effect
@@ -136,8 +136,8 @@ After it, a cancellation is re-raised after the closure and delivery, outcome ke
 Serves C1 to C4. Bounds are checked at the turn's start; under `wait`, after a reply or pause,
 `wait` is asked, and false ends the run, appending nothing. Then the inbox is taken, the
 notification is appended, `stop` is asked, the backend is called once, the message is read, commands
-are dispatched, and the turn settles. Under `wait` a message with no command nor `OUT{}` replies,
-and with `reply_on_commands` so does one whose commands all landed;
+are dispatched, and the turn settles. Under `wait` a turn with no command nor `OUT{}` replies, and
+with `reply_on_commands` so does one whose commands all landed;
 `test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_and_a_failed_one_is_not`
 pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
@@ -146,9 +146,9 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
   `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
   closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`; program `wait`
   rows by `test_a_program_that_runs_no_command_and_gives_no_out_is_a_reply_under_wait`,
-  `test_a_program_with_a_command_call_anywhere_in_it_is_not_a_reply_under_wait` and
-  `test_a_program_with_only_an_out_is_not_a_reply_under_wait_when_accept_refuses_it`. One cancelled
-  before it entered is recorded by `_never_started`.
+  `test_a_program_is_a_reply_under_wait_unless_its_walk_launches_a_command_or_reaches_out` and
+  `test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_under_wait`. One
+  cancelled before it entered is recorded by `_never_started`.
 
 ### D2: A retry is no outcome, so `Retry` is removed ^d2
 
