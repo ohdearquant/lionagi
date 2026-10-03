@@ -198,8 +198,9 @@ Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `reside
 resident's row from its `chores.toml`, notes and lock, drops another day's row, and names what it
 could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log with
 the page's pattern. `spent` sums each call's `total_cost_usd`, its `usage.cost` only when the total
-is null, and counts the calls with neither or with `cost_complete` false. The chat log's rows state
-`cost_complete`; one without it predates the key, and `spent` counts it too.
+is null, and counts the calls with neither or with `cost_complete` false. Chat-log rows state
+`cost_complete`; a reader of them (`load_log(..., usage=rows)`, `spent(rows)`) counts an older one
+without it.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
   as the lock, the serve log's wake lines,

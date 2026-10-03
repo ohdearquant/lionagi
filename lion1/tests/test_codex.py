@@ -349,6 +349,35 @@ def test_the_notes_of_a_call_that_answered_are_kept_to_the_cap_too(tmp_path: Pat
     ]
 
 
+def test_one_oversized_note_on_a_failed_call_is_kept_by_its_head_and_tail_within_the_cap(tmp_path: Path):
+    """An event type of 200 000 characters and no message: the call's one note names the type, the
+    error raised carries all of it, and the envelope keeps the note's head and tail around a mark
+    counting the characters left out."""
+    from hub.backend import claude_code
+
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        'print(json.dumps({"type": "HEAD-KIND " + "k" * 200_000 + " TAIL-KIND"}))\n'
+    )
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = Codex(cli=str(cli), retries=0)
+    with pytest.raises(CodexError, match="^codex no message") as e:
+        asyncio.run(backend([Message("user", "go")]))
+    assert len(str(e.value)) > 200_000 and str(e.value).endswith("TAIL-KIND': 1}; ")
+    whole = "attempt 1 failed: " + str(e.value).removeprefix("codex ")
+    (kept,) = backend.calls[-1]["notes"]
+    m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+    assert m is not None, kept[:200]
+    head, tail = kept[: m.start()], kept[m.end() :]
+    assert whole.startswith(head) and whole.endswith(tail) and head and tail
+    assert len(head) + int(m[1]) + len(tail) == len(whole)
+    assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+
+
 _real_sleep = asyncio.sleep
 
 

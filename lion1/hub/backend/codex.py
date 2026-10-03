@@ -30,8 +30,8 @@ directory, reused by its retries and removed once its child is joined; a call th
 lands on `calls` as a failed envelope carrying its attempts' usage and the last attempt's raw
 stream and stderr, since the scratch is gone: each text, the error's too, by its head and tail
 within `claude_code._DIAGNOSTIC_CHARS` characters, counting what it left out. The notes of any call
-(its events of note, each failed attempt's reason) are kept to the first `_NOTES`, then one entry
-counting the rest.
+(its events of note, each failed attempt's reason) are kept to the first `_NOTES`, each of them by
+its head and tail within the same cap, then one entry counting the rest.
 """
 
 from __future__ import annotations
@@ -217,7 +217,7 @@ class Codex:
 
     def _envelope(self, usage_total: Counter, notes: list[str], t0: float, attempts: int) -> dict:
         cached = usage_total.get("cached_input_tokens", 0)
-        kept = notes[:_NOTES]
+        kept = [_clipped(n) for n in notes[:_NOTES]]
         if len(notes) > _NOTES:
             kept.append(f"[{len(notes) - _NOTES} more note(s) omitted]")
         return {

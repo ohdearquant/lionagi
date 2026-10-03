@@ -730,7 +730,7 @@ _ALIASES = {
 }
 _CONTEXT = frozenset({"context.hide", "context.show", "context.summarize"})
 _CACHE_TTL_S = 3600.0  # the provider's cache life the CLI writes for (`ephemeral_1h`), from its last read
-_DIAGNOSTIC_CHARS = 4096  # the most characters of a failed call's error, stream or stderr `calls` keeps
+_DIAGNOSTIC_CHARS = 4096  # the most characters of a call's error, stream, stderr or note `calls` keeps
 _clock = time.monotonic
 _REPLY = "\x00reply"  # a point's entry for the model's reply: no record entry is named so
 
