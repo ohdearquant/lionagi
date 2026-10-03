@@ -406,6 +406,7 @@ const scenarios = {
   // a poll's answer older than the rows the stream delivered is dropped, and the next poll still goes out
   async pollStale(page) {
     page.streamError();
+    page.streamOpen();  // reconnected and no rows yet: the poll timer still runs, and the stream is live
     await page.advance(5000);
     const slow = page.requests('/api/areas')[0];
     page.emit('areas', [row('streamed')], 12);
@@ -418,15 +419,16 @@ const scenarios = {
     return { afterStale, afterPoll: { actors: page.actors(), polls: page.requests('/api/areas').length } };
   },
 
-  // stream events are ordered by the revision they carry, a poll's answer is taken as it arrives and its
-  // revision becomes the one shown, and an `areas` event aborts the poll out: 1 the stream's rows stay over the
-  // answer of a poll out when they came, 2 though that answer's revision is higher, 3 a poll answer is taken,
-  // 4 a stream event under that answer's revision, though above the stream's rows shown before it, is dropped,
+  // with the stream live, an event and a poll's answer are each taken only above the revision shown, which
+  // the one taken becomes: 1 the stream's rows stay over the answer of a poll out when they came, whose
+  // revision is lower, 2 a poll answer above the stream's rows is taken, 3 and again with no event, 4 a
+  // stream event under that answer's revision, though above the stream's rows shown before it, is dropped,
   // 5 one above it is kept
   async pollOrder(page) {
     const seen = {};
     const poll = async (name, answerRev, during) => {
       page.streamError();
+      page.streamOpen();  // reconnected and no rows yet: the stream is live and the poll timer still runs
       await page.advance(5000);
       const out = page.requests('/api/areas').at(-1);
       if (during) during();
@@ -435,7 +437,7 @@ const scenarios = {
     await poll('poll10', 10, () => page.emit('areas', [row('stream12')], 12));
     seen.streamNewer = page.actors();
     await poll('poll15', 15, () => page.emit('areas', [row('stream13')], 13));
-    seen.pollAborted = page.actors();
+    seen.pollAboveEvent = page.actors();
     await poll('poll20', 20);
     seen.pollTaken = page.actors();
     page.emit('areas', [row('stream15')], 15);
@@ -462,7 +464,8 @@ const scenarios = {
   },
 
   // the revision of a poll's answer is the one shown: after the stream opened, a poll answered at 20 and an
-  // event read before it, at 15, arriving late are refused; an event above it is shown
+  // event read before it, at 15, arriving late are refused, though the stream's first rows end the polling;
+  // an event above it is shown
   async pollThenEvent(page) {
     const seen = {};
     page.streamError();
@@ -472,13 +475,17 @@ const scenarios = {
     seen.polled = page.actors();
     page.emit('areas', [row('delayed')], 15);
     seen.delayed = page.actors();
+    const polls = page.requests('/api/areas').length;
+    await page.advance(10000);
+    seen.polledAfter = page.requests('/api/areas').length - polls;  // the refused rows still ended the polling
     page.emit('areas', [row('later')], 25);
     seen.later = page.actors();
     return seen;
   },
 
   // the revision shown is the last poll's, set and not raised: after the poll of a restarted server, at a
-  // revision below the rows shown, an event under that poll's revision is refused and one above it is shown
+  // revision below the rows shown, an event under that poll's revision is refused and one above it is shown;
+  // no stream opened since the error, so the stream is down and the poll is taken whatever its revision
   async restartEvent(page) {
     const seen = {};
     page.emit('areas', [row('old')], 1000);
@@ -493,23 +500,71 @@ const scenarios = {
     return seen;
   },
 
-  // a poll sent after the stream opened and still out when its first rows come is aborted: its answer, though
-  // its revision is higher, is dropped and the stream's rows stay
+  // an `areas` event never aborts the poll out: a poll sent after the stream opened and still out when its
+  // first rows come, at 995, answers at 2000 and its rows are shown, a later read of the same server; the
+  // revision shown is then 2000, so an event at 1500 is refused and one at 2500 is shown
   async pollInFlight(page) {
+    const seen = {};
     page.streamError();
     page.streamOpen();  // reconnected and no rows yet, so the poll timer still runs
     await page.advance(5000);
     const out = page.requests('/api/areas').at(-1);
     page.emit('areas', [row('streamed')], 995);
-    const seen = { aborted: abandoned(out) };
+    seen.aborted = abandoned(out);
     await page.answer(out, [row('late')], 2000);
     seen.actors = page.actors();
+    page.emit('areas', [row('between')], 1500);
+    seen.refused = page.actors();
+    page.emit('areas', [row('after')], 2500);
+    seen.shown = page.actors();
+    return seen;
+  },
+
+  // with the stream live, a poll's answer not above the revision shown is refused: the same, the answer at 900
+  // after the rows at 995; the revision shown stays 995, so an event at 950 is refused and one at 1000 shown
+  async pollRefused(page) {
+    const seen = {};
+    page.streamError();
+    page.streamOpen();
+    await page.advance(5000);
+    const out = page.requests('/api/areas').at(-1);
+    page.emit('areas', [row('streamed')], 995);
+    await page.answer(out, [row('late')], 900);
+    seen.actors = page.actors();
+    page.emit('areas', [row('between')], 950);
+    seen.refused = page.actors();
+    page.emit('areas', [row('after')], 1000);
+    seen.shown = page.actors();
+    return seen;
+  },
+
+  // with the stream down again before its first rows came, a poll's answer is taken as it arrives: at 300 it
+  // is shown and is the revision shown (an event at 250 is refused, one at 350 shown); after the rows the
+  // stream falls again and a poll answers at 200, under the revision shown, and is taken too
+  async pollDown(page) {
+    const seen = {};
+    page.streamError();
+    page.streamOpen();
+    await page.advance(5000);
+    const out = page.requests('/api/areas').at(-1);
+    page.streamError();  // no rows came before it
+    await page.answer(out, [row('polled')], 300);
+    seen.polled = page.actors();
+    page.emit('areas', [row('delayed')], 250);
+    seen.below = page.actors();
+    page.emit('areas', [row('fresh')], 350);
+    seen.above = page.actors();
+    page.streamError();
+    await page.advance(5000);
+    await page.answer(page.requests('/api/areas').at(-1), [row('lower')], 200);
+    seen.lower = page.actors();
     return seen;
   },
 
   // a stream connection is a server epoch: the first rows after it opens are taken whatever their revision,
   // as a restarted server may count below the last one shown, and within the connection the higher stays; a
-  // poll out when the stream opens is aborted, so its answer, though its revision is higher, shows nothing
+  // poll out when the stream opens is aborted, so its answer, though its revision is higher, shows nothing;
+  // and a poll answering once the stream has fallen again is taken whatever its revision
   async epoch(page) {
     const seen = {};
     page.emit('areas', [row('first')], 1000);

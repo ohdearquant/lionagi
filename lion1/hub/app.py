@@ -116,11 +116,13 @@ function setConn(live) {
 var POLL_MS = 5000;
 var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
 var shown = 0;  // the revision of the last read shown, a poll's or the stream's
+var streamLive = false;  // an `open` since the last error, and no error since
 // the server stamps each `areas` event and `/api/areas` answer with the revision of the read it came from.
 // A stream connection is a server epoch, as a restarted server may count below the rows shown: the page
-// forgets them when the stream opens, and within it an event not above the last read shown is refused.
-// Polls run one at a time, so a later one is a later read of whichever server answered: each answer is
-// taken and its revision becomes the one shown. The stream's `open` and `areas` events give up the poll out
+// forgets them when the stream opens, and within it a read not above the last one shown is refused.
+// Polls run one at a time, so with the stream down a later one is a later read of whichever server
+// answered: each answer is taken and its revision becomes the one shown. The stream's `open` gives up the
+// poll out; its `areas` events never do, a poll's answer is compared with them as it arrives
 function takeAreas(rows, rev) {
   if (!(rev > shown)) return;
   shown = rev;
@@ -138,8 +140,11 @@ function startPoll() {
     fetch('/api/areas', { signal: ctl.signal }).then(function (r) {
       var rev = Number(r.headers.get('X-Areas-Revision'));
       return r.json().then(function (rows) {
-        if (ctl.signal.aborted) return;  // given up, by the clock or by the stream
-        shown = rev;  // set, not raised: the last poll is the current read, though a restart counts lower
+        if (ctl.signal.aborted) return;  // given up, by the clock or by the stream's open
+        // stream live: taken only above the one shown. Down: the last poll is the current read, set and not
+        // raised, though a restarted server counts lower
+        if (streamLive) { takeAreas(rows, rev); return; }
+        shown = rev;
         state.areas = rows;
         if (state.mode === 'list') renderList();
       });
@@ -149,11 +154,12 @@ function startPoll() {
 function connect() {
   var es = new EventSource('/events');
   es.addEventListener('open', function () {  // each connect, each reconnect
-    if (polling) polling.abort();  // the stream speaks now: a poll out is given up
+    streamLive = true;
+    if (polling) polling.abort();  // a poll out may have asked the server before its restart: given up
     shown = 0;
   });
   es.addEventListener('areas', function (ev) {
-    if (polling) polling.abort();
+    // a connection's first rows end the polling, shown or not
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     setConn(true);
     takeAreas(JSON.parse(ev.data), Number(ev.lastEventId));
@@ -165,7 +171,7 @@ function connect() {
     if (buf.length > LOG_LINES) { buf.shift(); state.shed[d.dir] = (state.shed[d.dir] || 0) + 1; }
     if (state.mode === 'detail' && state.dir === d.dir && !d.history) appendLogLine(d.line);
   });
-  es.onerror = function () { startPoll(); };
+  es.onerror = function () { streamLive = false; startPoll(); };
 }
 
 // ---- routing ----

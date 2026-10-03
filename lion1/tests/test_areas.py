@@ -1275,12 +1275,12 @@ def test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_
     assert seen["renewed"] == {"view": "line 91", "following": True}
 
 
-def test_the_app_orders_stream_events_by_revision_and_takes_each_poll_answer_as_it_arrives(tmp_path):
+def test_the_app_takes_an_event_or_a_live_poll_answer_only_above_the_revision_shown(tmp_path):
     seen = app_session(tmp_path, "pollOrder")
     assert seen["streamNewer"] == ["stream12"]  # the stream's rows, then an older poll answer: they stay
-    # an event aborts the poll out, so an answer of a higher revision is dropped too
-    assert seen["pollAborted"] == ["stream13"]
-    assert seen["pollTaken"] == ["poll20"]  # a poll answer is taken as it arrives
+    # an event does not abort the poll out, so an answer of a higher revision is taken
+    assert seen["pollAboveEvent"] == ["poll15"]
+    assert seen["pollTaken"] == ["poll20"]  # and one that met no event
     # its revision is the one shown: an event under it, though above the stream's rows before it, is dropped
     assert seen["olderStreamAfter"] == ["poll20"] and seen["newerStreamAfter"] == ["stream22"]
 
@@ -1290,12 +1290,14 @@ def test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_
     assert seen["polled"] == ["polled"]  # a poll answered after the stream opened, at revision 20
     # an event read before that poll, arriving after it, is refused: the rows stay
     assert seen["delayed"] == ["polled"]
+    assert seen["polledAfter"] == 0  # the rows refused were the connection's first: the polling ended
     assert seen["later"] == ["later"]  # an event above it is shown
 
 
 def test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows(tmp_path):
     seen = app_session(tmp_path, "restartEvent")
-    assert seen["polled"] == ["restarted"]  # a poll below the revision shown is the one shown now
+    # no stream opened since the error, so the stream is down: a poll below the revision shown is shown now
+    assert seen["polled"] == ["restarted"]
     assert seen["below"] == ["restarted"]  # an event under it is refused
     # and one above it is shown, though below the old server's rows: the revision is set, not raised
     assert seen["above"] == ["fresh"]
@@ -1307,9 +1309,25 @@ def test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server
     assert seen["sameRevision"] == ["poll1"] and seen["lowerRevision"] == ["poll2"]
 
 
-def test_the_app_drops_the_answer_of_a_poll_still_out_when_the_streams_first_rows_come(tmp_path):
-    # the first rows abort the poll, so its answer, though its revision is higher, shows nothing
-    assert app_session(tmp_path, "pollInFlight") == {"aborted": True, "actors": ["streamed"]}
+def test_the_app_takes_a_poll_answer_above_the_stream_rows_shown_while_it_was_out(tmp_path):
+    # the first rows do not abort the poll out: its answer, at a higher revision, is a later read and is shown
+    # and becomes the revision shown, so an event under it is refused and one above it is shown
+    seen = app_session(tmp_path, "pollInFlight")
+    assert seen == {"aborted": False, "actors": ["late"], "refused": ["late"], "shown": ["after"]}
+
+
+def test_the_app_refuses_a_poll_answer_not_above_the_revision_shown_while_the_stream_is_live(tmp_path):
+    # the answer at 900 after rows at 995 is refused, and 995 stays the revision shown: 950 is refused too
+    seen = app_session(tmp_path, "pollRefused")
+    assert seen == {"actors": ["streamed"], "refused": ["streamed"], "shown": ["after"]}
+
+
+def test_the_app_takes_a_poll_answer_whatever_its_revision_while_the_stream_is_down(tmp_path):
+    seen = app_session(tmp_path, "pollDown")
+    # the stream fell again before its first rows, so the answer at 300 is shown and is the revision shown
+    assert seen["polled"] == ["polled"] and seen["below"] == ["polled"] and seen["above"] == ["fresh"]
+    # and with rows at 350 shown, a poll once the stream is down answers at 200, under it, and is taken
+    assert seen["lower"] == ["lower"]
 
 
 def test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision(tmp_path):
@@ -1322,7 +1340,7 @@ def test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revi
     # the first rows after the open are taken
     assert seen["aborted"] is True and seen["acrossOpen"] == ["newer"]
     assert seen["reopened"] == ["reopened"]
-    # and the answer of a poll sent since is taken whatever its revision
+    # and the answer of a poll sent since is taken whatever its revision, the stream being down again
     assert seen["polled"] == ["polled"]
 
 

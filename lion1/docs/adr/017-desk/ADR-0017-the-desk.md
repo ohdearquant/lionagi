@@ -323,16 +323,17 @@ unless an edit followed the send, and a navigation clears it.
 - **Violated when**: older rows replace newer ones shown, or later rows are refused.
 
 Every read behind `/api/areas` and the `areas` events of `/events` takes the larger of the
-microsecond wall clock and the last plus one as its revision, an `areas` event's `id` and an
-`/api/areas` answer's `X-Areas-Revision`. The root page and `/api/resident` read directly and carry
-none. `/events` serves the last read; `/api/areas` makes its own, which becomes the last.
+microsecond wall clock and the last plus one as its revision, an event's `id` and an answer's
+`X-Areas-Revision`. The root page and `/api/resident` carry none. `/events` serves the last read;
+`/api/areas` makes its own, which becomes the last.
 
-Within a stream connection, an epoch that `open` begins, an event not above the last read shown is
-refused.
+Within a stream connection, an epoch that `open` begins, a read not above the last one shown is
+refused; with the stream down, a poll's answer is taken as it arrives. The read taken becomes the
+one shown.
 
-With the stream down, polls run one at a time; each answer is taken on arrival and its revision
-becomes the one shown, as a later poll is a later read. Ten seconds out, or the stream opening or
-sending rows, aborts a poll and drops its answer; an aborted or failed poll frees the next.
+Polls run one at a time from a stream error until a connection's first rows, so one may start after
+`open`. `open` or ten seconds aborts the poll out and drops its answer; an aborted or failed poll
+frees the next.
 
 ## Decisions
 
@@ -438,11 +439,13 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
   `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
   `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
   `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
-  `test_the_app_orders_stream_events_by_revision_and_takes_each_poll_answer_as_it_arrives`,
+  `test_the_app_takes_an_event_or_a_live_poll_answer_only_above_the_revision_shown`,
   `test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it`,
   `test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows`,
   `test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown`,
-  `test_the_app_drops_the_answer_of_a_poll_still_out_when_the_streams_first_rows_come`,
+  `test_the_app_takes_a_poll_answer_above_the_stream_rows_shown_while_it_was_out`,
+  `test_the_app_refuses_a_poll_answer_not_above_the_revision_shown_while_the_stream_is_live`,
+  `test_the_app_takes_a_poll_answer_whatever_its_revision_while_the_stream_is_down`,
   `test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision`,
   `test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between`,
   `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,
