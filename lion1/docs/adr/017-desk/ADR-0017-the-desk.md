@@ -306,18 +306,19 @@ desk leaves the message.
 ### C15: The phone page keeps its newest log lines, its draft and its newest rows _(enforced: mechanical)_ ^c15
 
 - **Subject**: the script `/app` serves, run by a browser.
-- **Violated when**: a log box holds over 400 lines or moves a scrolled-up reader's lines. Words
-  typed during a send are lost, outlive the send, or show on another page. Two polls run at once, or
-  a poll replaces rows the stream delivered after it went out.
+- **Violated when**: a log box holds over 400 lines or shifts lines a scrolled-up reader still has.
+  Typed words are lost, outlive their send or show on another page. Two polls run at once, one that
+  never settles stops the next, or one replaces newer rows.
 
-A resident's log buffer and box each hold 400 lines; a reader at the box's bottom follows the newest
-line, one scrolled up keeps the lines in view.
+A resident's log buffer and box each hold 400 lines. A reader at the bottom follows the newest line;
+one scrolled up keeps the lines in view, except those the oldest-first eviction removes.
 
-The composer's text is the page's draft, each edit a new revision. A re-render restores it, a send's
-answer clears it only if no edit followed the send, and a navigation starts a page with none.
+The composer's text is the page's draft: a re-render restores it, a send's answer clears it unless
+an edit followed the send, and a navigation clears it.
 
-With the stream down the page polls every five seconds, one poll at a time; a failed poll frees the
-next, and a poll's answer is dropped when the stream delivered rows after it was sent.
+With the stream down the page polls every five seconds, one at a time. A poll out for ten seconds is
+aborted and frees the next, as a failed one does; an aborted poll's answer, or one the stream
+overtook, is dropped.
 
 ## Decisions
 
@@ -413,15 +414,17 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (37 tests), among them
+- **Landing evidence**: `tests/test_areas.py` (39 tests), among them
   `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` and
   `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`;
-  `tests/app_page_harness.js` runs the served script under node for C15's five `test_the_app_`
+  `tests/app_page_harness.js` runs the served script under node for C15's seven `test_the_app_`
   tests: `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
+  `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,
   `test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload`,
   `test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty`,
-  `test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll` and
-  `test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next`.
+  `test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll`,
+  `test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next` and
+  `test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_again`.
 
 ### D9: `Bounded.reply` grants a reply; `_spent` counts every cap ^d9
 

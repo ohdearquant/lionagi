@@ -186,6 +186,7 @@ function boot(html) {
     EventSource,
     fetch,
     URLSearchParams,
+    AbortController,
     crypto: { getRandomValues: (a) => a.fill(++tokens) },
     setInterval: timer(true),
     setTimeout: timer(false),
@@ -257,6 +258,8 @@ function detail(dir) {
 }
 
 const lines = (box) => box.children.map((e) => e.textContent);
+const inView = (box) => box.children[Math.floor(box.scrollTop / LINE)].textContent;  // the first line shown
+const abandoned = (req) => Boolean(req.init.signal && req.init.signal.aborted);
 
 // ---- the scenarios ----
 const scenarios = {
@@ -268,7 +271,6 @@ const scenarios = {
     const full = lines(box);
     const following = box.scrollTop + VIEW === box.scrollHeight;
     box.scrollTop = 50 * LINE;
-    const inView = (b) => b.children[Math.floor(b.scrollTop / LINE)].textContent;
     const before = inView(box);
     for (let i = 405; i < 408; i++) page.emit('log', { dir: DIR, line: 'line ' + i });
     const after = inView(box);
@@ -281,6 +283,23 @@ const scenarios = {
       scrolled: { nodes: scrolled.length, before, after },
       rebuilt: { nodes: box.children.length, first: lines(box)[0], last: lines(box).at(-1) },
     };
+  },
+
+  // a reader at the top of a full box, where the oldest lines are the ones that leave: the box still holds
+  // 400, the window never leaves the top, and what it shows is the oldest line that remains
+  async logTop(page) {
+    await page.open(DIR);
+    for (let i = 0; i < 405; i++) page.emit('log', { dir: DIR, line: 'line ' + i });  // lines 5 to 404 remain
+    const box = page.byId('log-box');
+    box.scrollTop = 0;
+    const atTop = { before: inView(box) };
+    for (let i = 405; i < 408; i++) page.emit('log', { dir: DIR, line: 'line ' + i });  // lines 5 to 7 leave
+    Object.assign(atTop, { after: inView(box), scrollTop: box.scrollTop, nodes: box.children.length });
+    box.scrollTop = 2 * LINE;
+    const nearTop = { before: inView(box) };
+    for (let i = 408; i < 411; i++) page.emit('log', { dir: DIR, line: 'line ' + i });  // lines 8 to 10 leave
+    Object.assign(nearTop, { after: inView(box), scrollTop: box.scrollTop, nodes: box.children.length });
+    return { atTop, nearTop };
   },
 
   // words typed while a send is out are in the composer after the send's answer and the reload
@@ -334,17 +353,38 @@ const scenarios = {
     return { afterStale, afterPoll: { actors: page.actors(), polls: page.requests('/api/areas').length } };
   },
 
-  // ticks while a poll is out start no poll, and a poll that fails frees the next
+  // a tick while a poll is out starts no poll, a poll that fails frees the next, and one that has settled
+  // is never aborted afterwards
   async pollSerial(page) {
     page.streamError();
-    await page.advance(15000);
+    await page.advance(10000);
     const out = page.requests('/api/areas').length;
     await page.fail(page.requests('/api/areas')[0], new Error('offline'));
     await page.advance(5000);
     const after = page.requests('/api/areas').length;
     const next = page.requests('/api/areas')[1];
     if (next) await page.answer(next, [row('later')]);
-    return { out, after, actors: page.actors() };
+    await page.advance(10000);
+    return { out, after, actors: page.actors(), aborted: Boolean(next) && abandoned(next) };
+  },
+
+  // a poll that never settles is given up after two intervals and a later tick polls again; were it to
+  // settle after all, its answer neither replaces rows nor frees the poll that went out in its place
+  async pollHung(page) {
+    page.streamError();
+    await page.advance(5000);
+    const hung = page.requests('/api/areas')[0];  // sent at the first tick and never answered
+    await page.advance(9000);
+    const waiting = { polls: page.requests('/api/areas').length, abandoned: abandoned(hung) };
+    await page.advance(7000);
+    const givenUp = { polls: page.requests('/api/areas').length, abandoned: abandoned(hung) };
+    await page.answer(hung, [row('late')]);
+    const afterLate = page.actors();
+    await page.advance(5000);
+    const whileOut = page.requests('/api/areas').length;
+    const next = page.requests('/api/areas')[1];
+    if (next) await page.answer(next, [row('next')]);
+    return { waiting, givenUp, afterLate, whileOut, actors: page.actors() };
   },
 };
 

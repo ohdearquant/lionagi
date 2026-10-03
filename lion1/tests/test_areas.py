@@ -1199,6 +1199,26 @@ def test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_po
 
 
 def test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next(tmp_path):
-    # three ticks over one slow poll start one request; its failure is swallowed and the next tick polls
+    # a tick over one slow poll starts no second request; its failure is swallowed and the next tick polls;
+    # the poll that was answered is not aborted when its time limit would have passed
     seen = app_session(tmp_path, "pollSerial")
-    assert seen == {"out": 1, "after": 2, "actors": ["later"]}
+    assert seen == {"out": 1, "after": 2, "actors": ["later"], "aborted": False}
+
+
+def test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_again(tmp_path):
+    seen = app_session(tmp_path, "pollHung")
+    # nine seconds out, a poll is still waited for; after two intervals it is aborted and a later tick polls
+    assert seen["waiting"] == {"polls": 1, "abandoned": False}
+    assert seen["givenUp"] == {"polls": 2, "abandoned": True}
+    # the given-up poll settling after all replaces no rows and leaves the poll that went out in its place
+    # holding the latch, so the tick after it starts none; that poll's own answer is applied
+    assert seen["afterLate"] == [] and seen["whileOut"] == 2
+    assert seen["actors"] == ["next"]
+
+
+def test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top(tmp_path):
+    seen = app_session(tmp_path, "logTop")
+    # the box holds 400 and a window at the top shows the oldest line that remains as the oldest go
+    assert seen["atTop"] == {"before": "line 5", "after": "line 8", "scrollTop": 0, "nodes": 400}
+    # a window two lines down loses the line it was on with the oldest, and rests at the top
+    assert seen["nearTop"] == {"before": "line 10", "after": "line 11", "scrollTop": 0, "nodes": 400}

@@ -64,9 +64,9 @@ table.wakes th,table.wakes td{text-align:left;padding:.3em .4em;border-bottom:1p
 #toast.show{transform:translate(-50%,0);opacity:1}
 """
 
-# Kept to stdlib-only browser APIs (EventSource, fetch, URLSearchParams, crypto.randomUUID); no
-# framework, no build step. Event delegation on #screen means the one listener survives every
-# innerHTML re-render.
+# Kept to stdlib-only browser APIs (EventSource, fetch, AbortController, URLSearchParams,
+# crypto.randomUUID); no framework, no build step. Event delegation on #screen means the one listener
+# survives every innerHTML re-render.
 _JS = """
 (function () {
 'use strict';
@@ -112,20 +112,23 @@ function setConn(live) {
 }
 
 // ---- live data: SSE, with a 5s polling fallback when it errors ----
-var pollTimer = null, polling = false, streamed = 0;  // streamed: the `areas` events so far
+var POLL_MS = 5000;
+var pollTimer = null, polling = null, streamed = 0;  // polling: the abort controller of the poll in flight
 function startPoll() {
   setConn(false);
   if (pollTimer) return;
   pollTimer = setInterval(function () {
     if (polling) return;  // one poll in flight at a time
-    polling = true;
-    var since = streamed;
-    fetch('/api/areas').then(function (r) { return r.json(); }).then(function (rows) {
+    var ctl = polling = new AbortController(), since = streamed;
+    function free() { if (polling === ctl) polling = null; }  // a poll given up frees no later poll's latch
+    var cut = setTimeout(function () { ctl.abort(); free(); }, 2 * POLL_MS);  // never settles: give up
+    fetch('/api/areas', { signal: ctl.signal }).then(function (r) { return r.json(); }).then(function (rows) {
+      if (ctl.signal.aborted) return;  // given up
       if (streamed !== since) return;  // the stream delivered the areas after this poll was sent
       state.areas = rows;
       if (state.mode === 'list') renderList();
-    }).catch(function () {}).then(function () { polling = false; });
-  }, 5000);
+    }).catch(function () {}).then(function () { clearTimeout(cut); free(); });
+  }, POLL_MS);
 }
 function connect() {
   var es = new EventSource('/events');
