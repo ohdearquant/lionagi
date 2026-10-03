@@ -13,7 +13,7 @@ import pytest
 
 from hub.backend import Codex, CodexError
 from hub.backend import codex as codex_mod
-from hub.backend.codex import CHAT, DISABLED, INSTRUCTIONS
+from hub.backend.codex import CHAT, DISABLED, INSTRUCTIONS, KEPT, MEASURED
 from lion1 import Actor, Message, Profile, RunRequest
 
 # The fake keeps a per-scratch attempt counter beside `last.txt`, so a prompt can ask for a
@@ -22,17 +22,21 @@ from lion1 import Actor, Message, Profile, RunRequest
 FAKE = """\
 import json, os, sys
 argv = sys.argv[1:]
+here = os.path.dirname(os.path.abspath(__file__))
+if argv == ["--version"]:
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.156.1"))
+    sys.exit(int(os.environ.get("FAKE_CODEX_VERSION_EXIT", "0")))
 if argv[:2] == ["debug", "models"]:  # the CLI's catalogue: one model with tools of its own, one without
-    here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "catalogue-asked"), "a") as f:
         f.write("x")
     if os.environ.get("FAKE_CODEX_MODELS"):
         sys.stderr.write("no catalogue here")
         print(os.environ["FAKE_CODEX_MODELS"])
-        sys.exit(1)
-    acting = {"tool_mode": "code_mode_only", "multi_agent_version": "v2",
-              "apply_patch_tool_type": "freeform", "experimental_supported_tools": ["clock"]}
-    plain = {"tool_mode": None, "multi_agent_version": None,
+        sys.exit(int(os.environ.get("FAKE_CODEX_MODELS_EXIT", "0")))
+    acting = {"tool_mode": "code_mode_only", "multi_agent_version": "v2", "shell_type": "unified_exec",
+              "apply_patch_tool_type": "freeform", "experimental_supported_tools": ["clock"],
+              "base_instructions": "You are an agent with a shell.", "a_tool_a_later_release_adds": "on"}
+    plain = {"tool_mode": None, "multi_agent_version": None, "shell_type": "unified_exec",
              "apply_patch_tool_type": "freeform", "experimental_supported_tools": []}
     print(json.dumps({"models": [{"slug": "gpt-6-luna", "context_window": 272000, **acting},
                                  {"slug": "gpt-5.5", "context_window": 272000, **plain}]}))
@@ -147,23 +151,23 @@ def test_the_view_goes_in_as_one_transcript_and_usage_comes_back_shaped(fake_cli
     assert call["attempts"] == 1 and call["notes"] == ["clamping hook timeout"]
 
 
-def test_each_call_hands_the_cli_its_catalogue_with_the_acting_fields_cleared(fake_cli, observed):
+def test_each_call_hands_the_cli_a_catalogue_holding_only_what_a_chat_needs(fake_cli, observed):
     """The flags leave a model the tools its catalogue entry names (measured: a code-execution tool
     and six sub-agent tools, one of which started a sub-agent). Each call's CLI reads a catalogue
-    in which no entry names any, asked of the CLI once; what else an entry says stays."""
+    whose entries hold the fields a chat needs and nothing else of the CLI's own: no tool mode, no
+    sub-agent version, no field a later release adds. The CLI is asked once the first answer is in."""
     backend = Codex(model="gpt-6-luna", cli=fake_cli)
     for _ in range(2):
         asyncio.run(backend([Message("user", "hi")]))
     first, second = observed()
     for seen in (first, second):
         assert Path(seen["catalog_path"]) == Path(seen["scratch"]) / "models.json"
-        entries = seen["catalog"]["models"]
-        assert [(e["slug"], e["context_window"]) for e in entries] == [
-            ("gpt-6-luna", 272000),
-            ("gpt-5.5", 272000),
-        ]
-        for entry in entries:
-            assert {k: entry[k] for k in CHAT} == CHAT
+        assert seen["catalog"] == {
+            "models": [
+                {"slug": "gpt-6-luna", "context_window": 272000, **CHAT},
+                {"slug": "gpt-5.5", "context_window": 272000, **CHAT},
+            ]
+        }
         argv = seen["argv"]
         assert "skills.bundled.enabled=false" in argv
         assert "tools.experimental_request_user_input.enabled=false" in argv
@@ -171,30 +175,83 @@ def test_each_call_hands_the_cli_its_catalogue_with_the_acting_fields_cleared(fa
         assert not [a for a in argv if a.startswith(("include_skills_usage", "include_plugin_usage"))]
     assert "goals" in DISABLED
     assert CHAT == {
-        "tool_mode": None,
-        "multi_agent_version": None,
-        "apply_patch_tool_type": None,
+        "shell_type": "disabled",
         "experimental_supported_tools": [],
+        "base_instructions": INSTRUCTIONS,
     }
+    acting = {
+        "tool_mode",
+        "multi_agent_version",
+        "apply_patch_tool_type",
+        "web_search_tool_type",
+        "supports_search_tool",
+    }
+    assert not acting & set(KEPT)
     assert (Path(fake_cli).parent / "catalogue-asked").read_text() == "x"  # once for both calls
+    assert all(c["notes"] == ["clamping hook timeout"] for c in backend.calls)  # a measured release: no note
 
 
 @pytest.mark.parametrize(
-    "printed",
+    ("said", "code", "named"),
     [
-        "not json",
-        '{"models": 3}',
-        '{"catalogue": []}',
-        '{"models": ["x"]}',
-        '{"models": [{"slug": "m"}]}',  # a catalogue, from a command that failed: not taken
+        ("codex-cli 0.157.0", "0", "codex-cli 0.157.0 is not a release"),
+        ("codex-cli 0.156.10", "0", "codex-cli 0.156.10 is not a release"),
+        ("codex-cli 0.156.1-beta.2", "0", "codex-cli 0.156.1-beta.2 is not a release"),
+        ("no number here", "0", "a CLI that printed no release ('no number here"),
+        ("codex-cli 0.156.1", "3", "a CLI that printed no release ('codex-cli 0.156.1"),
+    ],
+)
+def test_a_cli_release_the_claim_was_not_measured_on_is_refused_before_any_prompt_goes_out(
+    fake_cli, observed, monkeypatch, said, code, named
+):
+    """What the catalogue guards against fails silently, and it held on one release and not on the
+    next: a CLI of any release but those measured is refused, and nothing is asked of it."""
+    assert MEASURED == ("0.156.1",)
+    monkeypatch.setenv("FAKE_CODEX_VERSION", said)
+    monkeypatch.setenv("FAKE_CODEX_VERSION_EXIT", code)
+    backend = Codex(cli=fake_cli)
+    with pytest.raises(CodexError) as e:
+        asyncio.run(backend([Message("user", "hi")]))
+    assert named in str(e.value) and "measured on (0.156.1)" in str(e.value)
+    assert "unmeasured=True" in str(e.value)  # the way to ask the model again is named
+    assert observed() == [] and not (Path(fake_cli).parent / "catalogue-asked").exists()
+    (call,) = backend.calls
+    assert call["attempts"] == 0 and named in call["error"]
+
+
+def test_an_unmeasured_release_goes_only_when_asked_for_and_every_call_says_so(
+    fake_cli, observed, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CODEX_VERSION", "codex-cli 0.157.0")
+    backend = Codex(cli=fake_cli, unmeasured=True)
+    for _ in range(2):
+        assert asyncio.run(backend([Message("user", "hi")])).startswith("seen ")
+    assert len(observed()) == 2
+    for call in backend.calls:
+        assert call["notes"][0].startswith(
+            "codex-cli 0.157.0 is not a release this backend's tools-off claim"
+        )
+        assert call["notes"][1:] == ["clamping hook timeout"]
+
+
+@pytest.mark.parametrize(
+    ("printed", "code"),
+    [
+        ("not json", 0),
+        ('{"models": 3}', 0),
+        ('{"catalogue": []}', 0),
+        ('{"models": ["x"]}', 0),
+        ('{"models": [{"slug": "m"}, 7]}', 0),
+        ('{"models": [{"slug": "m"}]}', 1),  # a catalogue, from a command that failed: not taken
     ],
 )
 def test_a_cli_that_prints_no_catalogue_fails_the_call_before_any_prompt_goes_out(
-    fake_cli, observed, monkeypatch, printed
+    fake_cli, observed, monkeypatch, printed, code
 ):
     monkeypatch.setenv("FAKE_CODEX_MODELS", printed)
+    monkeypatch.setenv("FAKE_CODEX_MODELS_EXIT", str(code))
     backend = Codex(cli=fake_cli)
-    with pytest.raises(CodexError, match=r"printed no model catalogue \(exit 1\): no catalogue here"):
+    with pytest.raises(CodexError, match=rf"printed no model catalogue \(exit {code}\): no catalogue here"):
         asyncio.run(backend([Message("user", "hi")]))
     assert observed() == []  # no `exec` ran: the model was sent nothing
     (call,) = backend.calls  # and the call landed its envelope all the same
@@ -211,7 +268,7 @@ def test_a_cli_whose_catalogue_never_comes_is_stopped_at_the_bound(tmp_path: Pat
     monkeypatch.setattr(codex_mod, "_CATALOG_S", 0.5)
     backend = Codex(cli=str(cli))
     t0 = time.monotonic()
-    with pytest.raises(CodexError, match="codex debug models did not answer within"):
+    with pytest.raises(CodexError, match="codex --version did not answer within"):
         asyncio.run(asyncio.wait_for(backend([Message("user", "hi")]), 15))
     assert time.monotonic() - t0 < 10
     assert backend.calls[-1]["attempts"] == 0
