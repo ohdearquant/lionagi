@@ -934,6 +934,10 @@ class Actor:
                         run.round = round_no - 1
                         run.outcome = Stopped(round_no)
                         break
+                    if (over := _over(run)) is not None:  # the wait may have outlasted the time left
+                        run.round = round_no - 1
+                        run.outcome = Exhausted(run.round, over)
+                        break
                 self._take_inbox(run)
                 if round_no == 1 and profile.experience is not None:
                     await self._recall(run)
@@ -1007,6 +1011,8 @@ class Actor:
                 metered = isinstance(cost, int | float) and not isinstance(cost, bool)
                 if metered:
                     run.cost += cost
+                elif cost is not None:  # a cost that is not a number reads as spent, never as room
+                    run.cost = math.nan
                 if metered and math.isfinite(cost) and cost >= 0:
                     run.spend += cost
                     run.costed += 1
