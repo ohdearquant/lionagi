@@ -160,9 +160,10 @@ remedy, a restart or a removal, is the owner's.
 The command runner has no read list of its own, and `verdict-freshness` may run an enumerator
 command from the config as given. The gate is review of each instrument's commands.
 
-The runner starts each command in a process group of its own. Past the timeout, or on a cancel, it
-kills the group and drains its pipes for up to five seconds, so the caller returns within the
-timeout plus that grace, a filled pipe included; a descendant that left the group is not killed.
+Each command starts in a process group of its own. Past the timeout, or on a cancel, the runner
+kills the group, drains its pipes for up to five seconds and closes them, so the call ends within
+that grace of the later of the timeout and the start. A descendant that left the group is not
+killed. A kill or a drain that fails raises.
 
 ### C8: The model sees one line; the owner gets the measurement _(enforced: mechanical)_ ^c8
 

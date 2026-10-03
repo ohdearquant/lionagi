@@ -5,7 +5,9 @@ later runs report transitions, and a floor is read with the budget of the instru
 it."""
 
 import asyncio
+import asyncio.base_subprocess as base_subprocess
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -547,44 +549,72 @@ def test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_
     )
 
 
+class Transport:
+    """What `proc._transport.close()` reaches: records that the pipes were closed."""
+
+    closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class Child:
-    """A child whose output never comes until its process group is killed: records the kill and
-    whether its pipes were drained after it."""
+    """A command's leader as the OS treats its process group. Running, it ends at the kill and its pipes
+    drain. `gone` has it leave just as the kill arrives: "reaped" is already collected, so the group no
+    longer exists (ESRCH); "unreaped" is exited and not yet collected, the only member left, so macOS
+    answers EPERM until the drain has reaped it. `blocked` is a live group this process may not signal:
+    EPERM every time, and nothing ends it."""
 
     pid = 424242
 
-    def __init__(self):
-        self.killed = self.drained = False
+    def __init__(self, gone=None, blocked=False, drain_error=None):
+        self.gone, self.blocked, self.drain_error = gone, blocked, drain_error
+        self.exited = self.killed = self.drained = False
+        self.reaped = gone == "reaped"
+        self.kills = 0
         self.returncode = None
+        self._transport = Transport()
+
+    def killpg(self, pid, sig):
+        assert (pid, sig) == (self.pid, signal.SIGKILL)
+        self.kills += 1
+        self.exited = self.exited or self.gone is not None
+        if self.exited:
+            if self.reaped:
+                raise ProcessLookupError(errno.ESRCH, "No such process")
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        if self.blocked:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        self.killed = True
 
     async def communicate(self):
-        while not self.killed:  # the pipes stay open while the group lives
+        while not (self.killed or self.exited):  # the pipes stay open while the group lives
             await asyncio.sleep(0.005)
-        self.drained, self.returncode = True, -9
+        if self.drain_error is not None:
+            raise self.drain_error
+        self.drained, self.reaped, self.returncode = True, True, -9
         return b"", b""
 
 
-@pytest.mark.parametrize(
-    "gone",
-    [None, ProcessLookupError, PermissionError],
-    ids=["running", "exited-on-its-own", "exited-not-yet-reaped"],
-)
-def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeypatch, gone):
-    child = Child()
-
+def stub_child(monkeypatch, child):
     async def spawn(*argv, **kw):
         return child
 
-    def killpg(pid, sig):
-        assert (pid, sig) == (Child.pid, signal.SIGKILL)
-        child.killed = True
-        if gone is not None:  # macOS answers EPERM for a group whose only member is an unreaped leader
-            raise gone
-
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(os, "killpg", killpg)
+    monkeypatch.setattr(os, "killpg", child.killpg)
+
+
+@pytest.mark.parametrize(
+    ("gone", "kills"),
+    [(None, 1), ("reaped", 1), ("unreaped", 2)],
+    ids=["running", "exited-on-its-own", "exited-not-yet-reaped"],
+)
+def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeypatch, gone, kills):
+    child = Child(gone)
+    stub_child(monkeypatch, child)
     assert asyncio.run(instr.sh(["/bin/x"], timeout=0.01)) == (124, "", "/bin/x did not finish within 0.01s")
-    assert child.killed and child.drained
+    # an EPERM is read once the drain has reaped the leader: the group is gone, and a second kill says so
+    assert child.drained and child.kills == kills and child._transport.closed
 
     async def cancelled():
         task = asyncio.create_task(instr.sh(["/bin/x"]))
@@ -593,9 +623,47 @@ def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeyp
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    child.killed = child.drained = False
+    child = Child(gone)
+    stub_child(monkeypatch, child)
     asyncio.run(cancelled())
-    assert child.killed and child.drained
+    assert child.drained and child.kills == kills and child._transport.closed
+
+
+@pytest.mark.parametrize("by", ["a-timeout", "a-cancel"])
+def test_sh_raises_when_a_live_group_cannot_be_signalled_and_still_closes_its_pipes(monkeypatch, by):
+    # EPERM before the drain and after it: a member still runs that this process may not signal, which
+    # is not the exited-unreaped leader. The caller is told, and a cancel in flight gives way to it
+    monkeypatch.setattr(instr, "_GRACE", 0.05)
+    child = Child(blocked=True)
+    stub_child(monkeypatch, child)
+
+    async def run():
+        if by == "a-timeout":
+            return await instr.sh(["/bin/x"], timeout=0.01)
+        task = asyncio.create_task(instr.sh(["/bin/x"]))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        await task
+
+    with pytest.raises(PermissionError):
+        asyncio.run(run())
+    assert child.kills == 2 and not child.drained and child._transport.closed
+
+
+@pytest.mark.parametrize("fault", ["kill", "drain"])
+def test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes(monkeypatch, fault):
+    child = Child(drain_error=ConnectionResetError(errno.ECONNRESET, "Connection reset by peer"))
+    stub_child(monkeypatch, child)
+    if fault == "kill":  # not the documented answers: nothing is drained that could hang, the pipes close
+
+        def killpg(pid, sig):
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+        monkeypatch.setattr(os, "killpg", killpg)
+    with pytest.raises(OSError) as raised:
+        asyncio.run(instr.sh(["/bin/x"], timeout=0.01))
+    assert raised.value.errno == (errno.EINVAL if fault == "kill" else errno.ECONNRESET)
+    assert child._transport.closed
 
 
 # a command writing without end: past its timeout its pipe stays full until something reads it
@@ -625,11 +693,25 @@ def alive(pid: int, settle: float = 0.0) -> bool:
         time.sleep(0.02)
 
 
-def real_sh(monkeypatch, argv, *, timeout, cancels=0, pidfile=None, settle=5.0):
+def delay_connect(monkeypatch, seconds):
+    """Hold open the start of every command: asyncio connects a new process's pipes in loop turns after
+    it has forked, and a loaded machine stretches them."""
+    connect = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+    async def late(self, waiter):
+        await asyncio.sleep(seconds)
+        await connect(self, waiter)
+
+    monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", late)
+
+
+def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0):
     """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
-    BOUND; the seconds it took, from the first cancel when there is one; whether the descendant in
-    `pidfile` still runs; whether every command it started was reaped). Whatever the outcome, the
-    descendant is killed and each command's pipes are read to their end before the loop closes."""
+    BOUND; the seconds it took, counted from the first cancel, which comes `pause` seconds in, when
+    there is one; whether the descendant in `pidfile` still runs; whether the pipes of every command
+    it started are closing; whether each was reaped). The last two are read the moment the call
+    ended, before this helper cleans up after it: the descendant is then killed and each command's
+    pipes are read to their end."""
     started = []
     spawn = asyncio.create_subprocess_exec
 
@@ -650,12 +732,15 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pidfile=None, settle=5.0):
         # the descendant runs before the call is timed out or cancelled
         pid = await asyncio.wait_for(written(), BOUND) if pidfile is not None else None
         if cancels:
+            await asyncio.sleep(pause)
             t0 = time.monotonic()
         for _ in range(cancels):  # a second cancel lands while the first one's cleanup runs
             task.cancel()
             await asyncio.sleep(0.05)
         done, _ = await asyncio.wait([task], timeout=BOUND)
         took = time.monotonic() - t0
+        closed = all(p._transport.get_pipe_transport(fd).is_closing() for p in started for fd in (1, 2))
+        reaped = all(p.returncode is not None for p in started)
         if task in done:
             got = "cancelled" if task.cancelled() else task.result()
         else:
@@ -672,7 +757,7 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pidfile=None, settle=5.0):
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             await asyncio.wait_for(proc.communicate(), 5)
-        return got, took, left, all(p.returncode is not None for p in started)
+        return got, took, left, closed, reaped
 
     return asyncio.run(go())
 
@@ -681,27 +766,72 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pidfile=None, settle=5.0):
 def test_sh_returns_at_its_timeout_when_the_command_filled_its_pipe(monkeypatch, fd):
     # the kill alone frees nothing: the full pipe is paused, and on 3.11 and 3.12 a wait returns only
     # once every pipe has closed
-    got, took, _, reaped = real_sh(monkeypatch, [sys.executable, "-c", FLOOD, fd], timeout=0.05)
+    got, took, _, closed, reaped = real_sh(monkeypatch, [sys.executable, "-c", FLOOD, fd], timeout=0.05)
     assert got == (124, "", f"{sys.executable} did not finish within 0.05s")
-    assert took < 0.05 + 3 and reaped
+    assert took < 0.05 + 3 and closed and reaped
 
 
 @pytest.mark.parametrize("leader", ["running", "exited"])
 def test_sh_ends_the_descendant_holding_its_pipe_at_the_timeout(monkeypatch, tmp_path, leader):
     pidfile = tmp_path / "descendant.pid"
     argv = [sys.executable, "-c", FAMILY, str(pidfile), leader, "in-group"]
-    got, took, left, reaped = real_sh(monkeypatch, argv, timeout=1.0, pidfile=pidfile)
+    got, took, left, closed, reaped = real_sh(monkeypatch, argv, timeout=1.0, pidfile=pidfile)
     assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
     assert took < 1.0 + 3  # the group is killed, so the pipe closes without waiting out the grace
-    assert left is False and reaped
+    assert left is False and closed and reaped
 
 
 def test_a_cancelled_sh_ends_the_descendant_holding_its_pipe_and_stays_cancelled(monkeypatch, tmp_path):
     pidfile = tmp_path / "descendant.pid"
     argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
-    got, took, left, reaped = real_sh(monkeypatch, argv, timeout=30, cancels=1, pidfile=pidfile)
+    got, took, left, closed, reaped = real_sh(monkeypatch, argv, timeout=30, cancels=1, pidfile=pidfile)
     assert got == "cancelled" and took < 3
-    assert left is False and reaped
+    assert left is False and closed and reaped
+
+
+def test_sh_counts_the_start_of_its_command_inside_its_timeout(monkeypatch):
+    # the start is held 1.2 s and the timeout runs from the call: the command is ended when it has
+    # started, not a whole timeout after
+    delay_connect(monkeypatch, 1.2)
+    argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+    got, took, _, closed, reaped = real_sh(monkeypatch, argv, timeout=1.0)
+    assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+    assert took < 1.2 + 0.5 and closed and reaped
+
+
+def test_a_cancel_after_the_timeout_while_the_start_still_connects_is_not_turned_into_the_timeouts_answer(
+    monkeypatch,
+):
+    # the deadline passed while the start was held: the command is ended once it has started, and the
+    # cancel that came in meanwhile is raised then
+    delay_connect(monkeypatch, 0.6)
+    argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+    got, took, _, closed, reaped = real_sh(monkeypatch, argv, timeout=0.2, cancels=1, pause=0.4)
+    assert got == "cancelled" and took < 3 and closed and reaped
+
+
+def test_a_cancel_that_lands_over_a_start_that_failed_is_still_the_cancel():
+    # no such program: the start raises in the turn the cancel is delivered; the caller gets the cancel
+    async def run():
+        task = asyncio.create_task(instr.sh(["/no/such/program"]))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancels", [1, 2], ids=["a-cancel", "a-second-cancel"])
+def test_a_cancel_while_the_start_connects_its_pipes_leaves_no_child_running(monkeypatch, tmp_path, cancels):
+    # asyncio ends the leader alone when a cancel lands in that window; the group it leads kept running,
+    # and on 3.11 and 3.12 the cancel waited out the pipes it held
+    delay_connect(monkeypatch, 0.4)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    got, took, left, closed, reaped = real_sh(monkeypatch, argv, timeout=30, cancels=cancels, pidfile=pidfile)
+    assert got == "cancelled" and took < 3
+    assert left is False and closed and reaped
 
 
 @pytest.mark.parametrize("cancels", [0, 1, 2], ids=["a-timeout", "a-cancel", "a-second-cancel"])
@@ -714,7 +844,7 @@ def test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds
     pidfile = tmp_path / "descendant.pid"
     argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "apart"]
     timeout = 30 if cancels else 1.0
-    got, took, left, reaped = real_sh(
+    got, took, left, closed, reaped = real_sh(
         monkeypatch, argv, timeout=timeout, cancels=cancels, pidfile=pidfile, settle=0
     )
     if cancels:
@@ -722,7 +852,10 @@ def test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds
     else:
         assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
         assert took < 1.0 + 1 + 3
-    assert left is True and reaped
+    # the parent's ends of the pipes the descendant holds are closed when the call ends, not whenever it
+    # lets go of them: read before the helper's own cleanup, so a runner that leaves them open fails here
+    assert left is True and closed
+    assert reaped or cancels == 2  # a second cancel ends the drain, and the leader's exit is read later
 
 
 class ExecKhive:
