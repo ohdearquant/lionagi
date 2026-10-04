@@ -132,12 +132,13 @@ class Resident:
 
 def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
     """The registry: `[area.<name>]` tables with `chair` and `desks`. A missing file is no
-    areas, said by the caller; a table missing `chair` raises with the name."""
+    areas, said by the caller; a table missing `chair` raises with the name, and so does an area
+    that lists one directory twice, since two rows of one directory are one agent named twice."""
     path = Path(path)
     if not path.exists():
         return []
     doc = tomllib.loads(path.read_text())
-    areas = doc.get("area") or {}
+    areas = doc.get("area", {})  # absent is no areas; false, 0, "" and [] are not a table either
     if not isinstance(areas, dict):
         raise ValueError("areas.toml: area is not a table of areas")
     out = []
@@ -147,7 +148,11 @@ def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
         desks = t.get("desks", [])
         if not isinstance(desks, list):
             raise ValueError(f"areas.toml: [area.{name}] desks is not a list of directories")
-        out.append(Area(name, str(t["chair"]), [str(a) for a in desks]))
+        desks = [str(a) for a in desks]
+        for i, a in enumerate(desks):
+            if Path(a) in [Path(b) for b in desks[:i]]:
+                raise ValueError(f"areas.toml: [area.{name}] desks lists {a} twice")
+        out.append(Area(name, str(t["chair"]), desks))
     return out
 
 

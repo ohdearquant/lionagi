@@ -312,6 +312,7 @@ list (D7).
   `test_the_wakes_that_acted_are_unknown_for_a_resident_whose_directory_holds_no_log`,
   `test_a_day_whose_notes_cannot_be_read_is_unknown_never_zero`. Also
   `test_a_registry_whose_desks_are_no_list_is_answered_as_unreadable`,
+  `test_a_registry_whose_area_is_no_table_is_unreadable_whatever_its_truth`,
   `test_open_answers_a_path_that_loops_on_itself` and
   `test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address`.
 
@@ -321,10 +322,12 @@ Serves C1. `agent_ids` walks the registry in order and names each directory `<ar
 the name is empty or repeated in the area, it adds `~` and the first six hex digits of SHA-256 over
 the directory as the registry writes it, or more until no other directory of that name shares them.
 `agent_path` reads an id from two path segments or from one holding `%2F`. `Daemon.find` reads the
-registry again on every request.
+registry again on every request. An area that lists one directory twice is a registry that does not
+load.
 
 - **Landing evidence**: `test_two_desks_of_one_area_with_one_name_get_ids_that_tell_them_apart`,
   `test_two_directories_of_one_name_never_share_an_id`,
+  `test_a_registry_that_lists_one_directory_twice_is_unreadable_so_no_two_rows_share_an_id`,
   `test_an_agent_answers_its_row_its_definition_and_what_the_app_may_change`, and in
   `tests/test_areas.py`,
   `test_restart_refuses_without_one_plist_or_in_a_wake_and_kickstarts_the_label`.
@@ -482,6 +485,7 @@ or XCTest.
   and no editable path, with the reason as `refused`, and a write of it answers 409 before a key is
   weighed. The host reads every resident with this tree's loaders, so one run by another tree's
   `lion`, on a file that tree accepts, shows the reason while it runs.
-- **S20**: Loopback names no sender (S2), so the host prints one line for each write it admits: the
-  time, the method, the path and the status, never the body. That line is the only record of when a
-  write came, and it says nothing of who sent it.
+- **S20**: Loopback names no sender (S2), so the host prints one line for each `/v2` write it
+  admits, once it has answered: the time, the method, the path and the status, never the body. That
+  line is the only record of when such a write was answered, and it says nothing of who sent it. The
+  older routes print none.

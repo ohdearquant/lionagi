@@ -522,7 +522,7 @@ def make_server(
             read), carries `once` (32 hex digits, a UUID's hyphens allowed) and runs one at a time,
             with `/control`'s: a replay of (method, path, once) is answered the first answer. Each
             write prints one line, its time, method, path and status, and never its body: loopback
-            names no sender, so the line is what says when a write came."""
+            names no sender, so the line, printed once the write is answered, is what says when."""
             url = urlsplit(self.path)
             path = [unquote(p) for p in url.path[len("/v2/") :].split("/")]
             if method == "GET":

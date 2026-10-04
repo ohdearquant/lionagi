@@ -20,7 +20,7 @@ import lion_cli.daemon as daemon
 import pytest
 from lion_cli.daemon import CAN, agent_ids
 
-from hub.areas import Area
+from hub.areas import Area, load_areas
 from hub.backend.openrouter import OpenRouterError
 from tests.test_areas import (  # noqa: F401 (a fixture)
     FailingKhive,
@@ -1048,6 +1048,28 @@ def test_a_registry_whose_desks_are_no_list_is_answered_as_unreadable(tmp_path):
     assert code == 500 and doc["ok"] is False and "desks" in doc["errors"][0]["message"]
 
 
+@pytest.mark.parametrize("area", ["false", "0", '""', "[]"])
+def test_a_registry_whose_area_is_no_table_is_unreadable_whatever_its_truth(tmp_path, area):
+    registry = tmp_path / "areas.toml"
+    registry.write_text(f"area = {area}\n")
+    port = serve_on(registry)
+    code, doc = get(port, "/v2/today")
+    assert code == 500 and doc["ok"] is False and "not a table" in doc["errors"][0]["message"]
+    code, doc = write(port, "PUT", "/v2/agents/x/desk/definition", {"definition": {}, "once": once()})
+    assert code == 500 and "not a table" in doc["errors"][0]["message"]
+
+
+def test_a_registry_that_lists_one_directory_twice_is_unreadable_so_no_two_rows_share_an_id(tmp_path):
+    d = resident(tmp_path)
+    registry = tmp_path / "areas.toml"
+    registry.write_text(f'[area.x]\nchair = "agent:x"\ndesks = ["{d}", "{d}/"]\n')
+    with pytest.raises(ValueError, match="lists .* twice"):
+        load_areas(registry)
+    port = serve_on(registry)
+    code, doc = get(port, "/v2/today")
+    assert code == 500 and doc["ok"] is False and "twice" in doc["errors"][0]["message"]
+
+
 def test_v2_refuses_a_request_that_names_its_host_or_its_origin_twice(tmp_path):
     port = serve_on(reg(tmp_path, resident(tmp_path)))
     here = f"127.0.0.1:{port}"
@@ -1095,7 +1117,8 @@ def test_open_answers_a_path_that_loops_on_itself(tmp_path, monkeypatch):
     assert code == 404 and doc["ok"] is False and not record.exists()
 
 
-def test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address():
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address(status):
     seen = []
 
     class Sink(BaseHTTPRequestHandler):
@@ -1113,7 +1136,7 @@ def test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address():
 
     class Turn(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(302)
+            self.send_response(status)
             self.send_header("Location", f"http://127.0.0.1:{sink.server_address[1]}/")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -1127,7 +1150,7 @@ def test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address():
     try:
         with pytest.raises(urllib.error.HTTPError) as e:
             FETCH(f"http://127.0.0.1:{turn.server_address[1]}/", {"Authorization": "Bearer made-up"})
-        assert e.value.code == 302 and seen == []
+        assert e.value.code == status and seen == []
     finally:
         for s in (sink, turn):
             s.shutdown()
