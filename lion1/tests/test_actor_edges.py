@@ -4,7 +4,10 @@ await, a conversation whose commands all landed, OUT{} forms that do not assembl
 has ended or was cancelled, the fold stopping at half its budget, and a command task that leaves by a
 door the loop does not watch."""
 
+import ast
 import asyncio
+import gc
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,6 +28,7 @@ from lion1 import (
     Stopped,
     Success,
 )
+from lion1 import actor as runtime
 from tests.test_actor import Answer, Ask, Done, Echo, Tally, _big_actor, _echo_actor, scripted
 
 
@@ -798,3 +802,245 @@ def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
     assert first.id == "5eed5eed" and second.id != first.id and len(second.id) == 8
     assert live == {first.id: first}  # the second run's end left the first where it was
     assert isinstance(first.outcome, Success) and isinstance(second.outcome, Success) and actor.runs == {}
+
+
+# --- a wait on a task the waiter does not own --------------------------------------------------------
+
+
+class Defect(BaseException):
+    """A failure no command wrapper turns into a Result."""
+
+
+def refuse_shield(*_args, **_kwargs):
+    raise AssertionError("the runtime waits on a task without a shield")
+
+
+async def _at_deref(target):
+    run = SimpleNamespace(thunks={}, pending={"source": target}, pointing={}, waits={})
+    la = SimpleNamespace(alias="reader", pointers=lambda: [SimpleNamespace(name="source")], args={})
+    return await Actor("waits")._deref(run, la)
+
+
+async def _at_point(target):
+    run = SimpleNamespace(pending={"source": target}, resolve=lambda _name: None)
+    return await runtime._Reader(SimpleNamespace(values={}, run=run, reads={}), {}).point("source")
+
+
+async def _at_note(target):
+    walk = SimpleNamespace(run=SimpleNamespace(notes=SimpleNamespace(get=lambda _key: None)))
+    return await runtime._Reader(walk, {"k": target}).note("k")
+
+
+async def _at_do(target):
+    walk = SimpleNamespace(auto=lambda: "child", launch=lambda *_args: target)
+    return await runtime._Reader(walk, {}).do("x", {}, 1)
+
+
+async def _at_write(target):
+    walk = object.__new__(runtime._Walk)
+    walk.spent = lambda: False
+    walk.writes, walk.write_reads, walk.values = {"k": target}, {target: (frozenset(), None)}, {}
+    walk.run, walk.tasks = SimpleNamespace(tasks=set()), []
+    walk._snapshot, walk._reads = lambda *_exprs: {}, lambda *_exprs: frozenset()
+    walk.write(SimpleNamespace(key="k", path=(), value=ast.parse("1", mode="eval").body))
+    return await walk.tasks[0]
+
+
+async def _at_value(target):
+    walk = object.__new__(runtime._Walk)
+    walk.computed = {"v": target}
+    return await walk.value("v")
+
+
+WAITS = {
+    "a pointer's command": _at_deref,
+    "a pointer read by an expression": _at_point,
+    "a note's earlier write, read": _at_note,
+    "a command an expression launched": _at_do,
+    "a note's earlier write, written after": _at_write,
+    "a value": _at_value,
+}
+
+
+@pytest.mark.parametrize("site", WAITS)
+def test_a_wait_cut_before_its_task_fails_leaves_the_task_running_and_tells_the_loop_nothing(
+    site, monkeypatch
+):
+    """Each place the runtime waits on a task another part of the run owns. A waiter cut there ends
+    cancelled and the task goes on; the task's failure is its owner's to read, and the loop's exception
+    handler hears nothing of it. A shield has the loop report that failure as nobody's on CPython 3.14.7,
+    so none is taken."""
+    monkeypatch.setattr(asyncio, "shield", refuse_shield)
+
+    async def main():
+        told: list = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: told.append(context["message"])
+        )
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def fails():
+            started.set()
+            await release.wait()
+            raise Defect(site)
+
+        target = asyncio.ensure_future(fails())
+        waiter = asyncio.ensure_future(WAITS[site](target))
+        await started.wait()
+        await asyncio.sleep(0)  # the waiter is at its wait
+        waiter.cancel()
+        (cut,) = await asyncio.gather(waiter, return_exceptions=True)
+        running = not target.done()
+        release.set()
+        (owner,) = await asyncio.gather(target, return_exceptions=True)  # the owner reads the failure
+        del target, waiter
+        gc.collect()
+        await asyncio.sleep(0)
+        return cut, running, owner, told
+
+    cut, running, owner, told = asyncio.run(asyncio.wait_for(main(), 5))
+    assert isinstance(cut, asyncio.CancelledError) and running
+    assert isinstance(owner, Defect) and told == []
+
+
+@pytest.mark.parametrize("site", WAITS)
+def test_a_wait_on_a_task_that_already_failed_raises_its_failure_at_once(site, monkeypatch):
+    monkeypatch.setattr(asyncio, "shield", refuse_shield)
+
+    async def main():
+        async def fails():
+            raise Defect(site)
+
+        target = asyncio.ensure_future(fails())
+        await asyncio.gather(target, return_exceptions=True)
+        waiter = asyncio.ensure_future(WAITS[site](target))
+        turns = 0
+        while not waiter.done():
+            await asyncio.sleep(0)
+            turns += 1
+        (raised,) = await asyncio.gather(waiter, return_exceptions=True)
+        return turns, raised
+
+    turns, raised = asyncio.run(asyncio.wait_for(main(), 5))
+    # the waiter's own first step, and for a write the two more its task takes to start: the wait
+    # itself takes no turn of the loop
+    assert turns == (3 if site == "a note's earlier write, written after" else 1)
+    assert isinstance(raised, Defect)
+
+
+class Holds(BaseModel):
+    pass
+
+
+class Reads(BaseModel):
+    value: str
+
+
+def test_a_run_cancelled_while_a_pointer_waits_on_a_command_that_then_fails_tells_the_loop_nothing():
+    """A whole run, `asyncio.shield` left as it is. One command waits on another's result through a
+    pointer, the run is cancelled there, and the awaited command then fails in its cleanup. The run
+    raises that failure, which the reap read, and the loop's exception handler hears nothing. With a
+    shield at that wait CPython 3.14.7 reports the failure there as a shielded future's."""
+    actor = Actor("pointer-waits")
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Holds, effect="pure")
+    async def holds(req: Holds, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            raise Defect("the cleanup")
+        return ""
+
+    @actor.handler(Reads, effect="pure")
+    async def reads(req: Reads, ctx) -> str:
+        return req.value
+
+    async def backend(messages):
+        return "<lact source>holds()</lact><lact reader>reads(value=*source)</lact> OUT{answer: [reader]}"
+
+    async def main():
+        told: list = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: told.append(context["message"])
+        )
+        running = asyncio.ensure_future(
+            actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend)
+        )
+        await entered.wait()
+        (run,) = actor.runs.values()
+        source, reader = run.pending["source"], run.pending["reader"]
+        while reader._fut_waiter is None:  # the reader is at its wait on the source
+            await asyncio.sleep(0)
+        running.cancel()
+        await cleaning.wait()
+        release.set()
+        (result,) = await asyncio.gather(running, return_exceptions=True)
+        ended = source.done() and reader.done()
+        del source, reader, run
+        gc.collect()
+        await asyncio.sleep(0)
+        return result, ended, told
+
+    result, ended, told = asyncio.run(asyncio.wait_for(main(), 5))
+    assert isinstance(result, Defect) and ended and told == []
+
+
+class Fails(BaseModel):
+    pass
+
+
+class Cleans(BaseModel):
+    pass
+
+
+def test_an_aborts_reap_that_fails_after_a_second_cancel_reaches_the_caller_and_tells_the_loop_nothing(
+    monkeypatch,
+):
+    """A run aborted by a defect reaps its pending commands; a second cancel lands while it waits for the
+    reap, and the reap then fails on a defect in a command's cleanup. The caller gets that defect, and the
+    loop's exception handler hears nothing: the wait on the reap is never a shield."""
+    monkeypatch.setattr(asyncio, "shield", refuse_shield)
+    actor = Actor("reap-waits")
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Fails, effect="pure")
+    async def fails(req: Fails, ctx) -> str:
+        await entered.wait()
+        raise Defect("the command")
+
+    @actor.handler(Cleans, effect="pure")
+    async def cleans(req: Cleans, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            raise Defect("the cleanup")
+        return ""
+
+    async def backend(messages):
+        return "<lact bad>fails()</lact><lact slow>cleans()</lact> OUT{answer: [bad]}"
+
+    async def main():
+        told: list = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: told.append(context["message"])
+        )
+        running = asyncio.ensure_future(actor.run(Profile("p"), RunRequest(inputs=("go",)), backend))
+        await cleaning.wait()  # the abort's reap cancelled the slow command, whose cleanup now holds it
+        running.cancel()
+        await asyncio.sleep(0)  # the cancel lands on the wait for the reap, which waits again
+        still = not running.done()
+        release.set()
+        (result,) = await asyncio.gather(running, return_exceptions=True)
+        gc.collect()
+        await asyncio.sleep(0)
+        return still, result, told
+
+    still, result, told = asyncio.run(asyncio.wait_for(main(), 5))
+    assert still and isinstance(result, Defect) and told == []

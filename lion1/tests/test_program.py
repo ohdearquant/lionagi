@@ -661,6 +661,35 @@ def test_a_store_that_refuses_keeps_the_result_and_claims_no_write(tmp_path):
     assert [e.content.ok for e in run.record if e.kind is Kind.RESULT] == [True]
 
 
+class StoreDefect(BaseException):
+    """A failure of the store no write turns into a notice."""
+
+
+class DefectStore(MemoryNoteStore):
+    def put(self, key, value, **meta):
+        raise StoreDefect(key)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ('note.k = "first"', 'OUT{answer: "done"}'),
+        ('note.k = "first"', 'note.k = "second"', "x = echo(text=note.k)", "OUT{answer: *x}"),
+    ],
+    ids=["a lone write", "a write with a write and a reader waiting on it"],
+)
+def test_a_write_that_fails_on_a_defect_is_raised_by_the_settle_and_no_one_else_is_told(lines, caplog):
+    """A note write's task is the run's own: the settle sees it through, so a defect in one reaches the
+    caller. The write queued behind it and the command that reads the note wait on that task; the loop
+    hears of the failure from neither."""
+    actor = _actor("write-defect", [])
+    profile = Profile("p", language="program", notes=DefectStore())
+    with pytest.raises(StoreDefect):
+        _run(actor, fenced(*lines), profile=profile)
+    gc.collect()
+    assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
 def test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on(tmp_path):
     notes = tmp_path / "notes"
     notes.mkdir()
