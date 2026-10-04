@@ -1186,6 +1186,30 @@ class Actor:
         self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, turns=run.turn)
         return run
 
+    async def serve(
+        self,
+        profile: Profile,
+        backend: Backend,
+        *,
+        request: RunRequest | None = None,
+        converse: bool = False,
+        dir: str | Path | None = None,
+        max_live: int = 8,
+        keep: int = 100,
+        host: str = "127.0.0.1",
+        port: int = 8710,
+        grace: float = 10.0,
+        ready: Callable[[str, int], Any] | None = None,
+    ) -> None:
+        """Serve `profile` on `backend` over HTTP on loopback until cancelled (ADR-0021/D10): a service with
+        one offer, `request` its template and `converse` making each run a conversation; `dir`, `max_live`
+        and `keep` are the service's, `host`, `port`, `grace` and `ready` its transport's."""
+        from .serve import Service  # the service imports this module
+
+        service = Service(self, dir=dir, max_live=max_live, keep=keep)
+        service.offer(profile, backend, request if request is not None else RunRequest(), converse=converse)
+        await service.serve(host, port, grace, ready=ready)
+
     # pieces of a turn
 
     def _retry(self, run: Run, error: str) -> None:
