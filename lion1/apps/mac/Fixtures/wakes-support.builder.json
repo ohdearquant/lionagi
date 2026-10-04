@@ -1,0 +1,27 @@
+{
+  "wakes": [
+    {
+      "id": "w-sb-1",
+      "at": "2026-10-04T10:12:00Z",
+      "seconds": 1140,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "agent",
+        "phrase": "the front desk filed bug 52"
+      },
+      "turns": 60,
+      "cost": 0.61,
+      "outcome": "cut",
+      "text": "Reproduced bug 52 and started a fix; cut at the cost cap.",
+      "commands": [
+        {
+          "line": "make test FILTER=export",
+          "result": "1 failed, 40 passed",
+          "ok": false
+        }
+      ]
+    }
+  ],
+  "more": false
+}

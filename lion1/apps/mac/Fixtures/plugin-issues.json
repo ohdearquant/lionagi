@@ -1,0 +1,88 @@
+{
+  "name": "issues",
+  "about": "An issue tracker's server: read, file and label issues.",
+  "source": "installed",
+  "kind": "mcp",
+  "on": true,
+  "from": {
+    "address": "github.com/example/issues-server",
+    "version": "2.0.1",
+    "installed_at": "2026-09-20T10:00:00Z"
+  },
+  "agents": [],
+  "skills": [],
+  "tools": [
+    {
+      "name": "list_issues",
+      "kind": "mcp",
+      "about": "List issues",
+      "args": [
+        {
+          "name": "repo",
+          "type": "string",
+          "required": true,
+          "about": "owner/name"
+        }
+      ],
+      "effect": "read",
+      "on": true
+    },
+    {
+      "name": "create_issue",
+      "kind": "mcp",
+      "about": "File an issue",
+      "args": [
+        {
+          "name": "repo",
+          "type": "string",
+          "required": true,
+          "about": "owner/name"
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "required": true,
+          "about": "the title"
+        }
+      ],
+      "effect": "write",
+      "on": true
+    },
+    {
+      "name": "add_label",
+      "kind": "mcp",
+      "about": "Label an issue",
+      "args": [
+        {
+          "name": "number",
+          "type": "integer",
+          "required": true,
+          "about": "the issue"
+        },
+        {
+          "name": "label",
+          "type": "string",
+          "required": true,
+          "about": "the label"
+        }
+      ],
+      "effect": "write",
+      "on": true
+    }
+  ],
+  "server": {
+    "command": "issues-server --stdio",
+    "env": [
+      {
+        "name": "ISSUES_TOKEN",
+        "from": "keychain"
+      }
+    ],
+    "state": "connected",
+    "started_at": "2026-10-04T07:58:00Z"
+  },
+  "not_used": [],
+  "given_to": [
+    "platform/front-desk"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "name": "pr-triage",
+  "about": "How to read a verdict and when to escalate.",
+  "source": "yours",
+  "kind": "plugin",
+  "on": true,
+  "folder": "~/.lion/plugins/pr-triage/",
+  "agents": [],
+  "skills": [
+    {
+      "name": "triage-a-verdict",
+      "loaded_when": "the task is a pull request verdict; until then it costs one line of context",
+      "on": true,
+      "text": "# Triage a pull request verdict\n\n1. Read the verdict and the pull request's current head. A verdict that names another head is stale: escalate it with both heads.\n2. READY at the current head goes to the owning chair in the next batch.\n3. NOT READY goes to the author at once, with the first finding quoted.\n4. Anything you cannot place: one question to the chair, never a guess."
+    }
+  ],
+  "tools": [
+    {
+      "name": "pr_status",
+      "kind": "function",
+      "about": "The state of a pull request and its checks",
+      "args": [
+        {
+          "name": "repo",
+          "type": "string",
+          "required": true,
+          "about": "owner/name"
+        },
+        {
+          "name": "number",
+          "type": "integer",
+          "required": true,
+          "about": "the pull request"
+        }
+      ],
+      "effect": "read",
+      "on": true,
+      "code": "class PrStatus(BaseModel):\n    \"\"\"The state of a pull request and its checks.\"\"\"\n    repo: str\n    number: int\n\n@tool(PrStatus, effect=\"read\")\nasync def pr_status(req: PrStatus, ctx) -> dict:\n    return await gh_json(\"pr\", \"view\", req.number, \"-R\", req.repo, \"--json\", \"state,statusCheckRollup\")\n"
+    }
+  ],
+  "not_used": [],
+  "given_to": [
+    "platform/front-desk",
+    "platform/reviewer"
+  ]
+}

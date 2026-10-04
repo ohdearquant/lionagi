@@ -1,0 +1,67 @@
+{
+  "fetched_at": "2026-10-04T11:10:00Z",
+  "models": [
+    {
+      "model_id": "deepseek/deepseek-chat",
+      "name": "DeepSeek Chat",
+      "context": 128000,
+      "price": {
+        "in": 0.27,
+        "out": 1.1
+      },
+      "takes": [
+        "text"
+      ]
+    },
+    {
+      "model_id": "qwen/qwen-max",
+      "name": "Qwen Max",
+      "context": 32000,
+      "price": {
+        "in": 1.6,
+        "out": 6.4
+      },
+      "takes": [
+        "text"
+      ]
+    },
+    {
+      "model_id": "mistralai/mistral-large",
+      "name": "Mistral Large",
+      "context": 128000,
+      "price": {
+        "in": 2.0,
+        "out": 6.0
+      },
+      "takes": [
+        "text"
+      ]
+    },
+    {
+      "model_id": "google/gemini-flash",
+      "name": "Gemini Flash",
+      "context": 1000000,
+      "price": {
+        "in": 0.1,
+        "out": 0.4
+      },
+      "takes": [
+        "text",
+        "images"
+      ]
+    },
+    {
+      "model_id": "meta-llama/llama-4-maverick",
+      "name": "Llama 4 Maverick",
+      "context": 1000000,
+      "price": {
+        "in": 0.15,
+        "out": 0.6
+      },
+      "takes": [
+        "text",
+        "images"
+      ]
+    }
+  ]
+}

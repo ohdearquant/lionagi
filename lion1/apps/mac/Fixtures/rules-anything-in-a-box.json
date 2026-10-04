@@ -1,0 +1,26 @@
+{
+  "name": "anything, in a box",
+  "programs": [
+    "bash",
+    "sh",
+    "python3",
+    "node",
+    "npm",
+    "git",
+    "make",
+    "cargo",
+    "uv"
+  ],
+  "never": [],
+  "write_under": [
+    "/workspace"
+  ],
+  "read": "anywhere",
+  "network": "on",
+  "seconds_per_command": 1800,
+  "ask_first": [],
+  "otherwise": "ask",
+  "used_by": [
+    "platform/builder"
+  ]
+}

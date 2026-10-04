@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "result": {
+    "state": "OPEN",
+    "checks": [
+      {
+        "name": "tests",
+        "conclusion": "SUCCESS"
+      }
+    ]
+  },
+  "seconds": 0.8
+}

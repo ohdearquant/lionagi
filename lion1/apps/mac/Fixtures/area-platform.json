@@ -1,0 +1,119 @@
+{
+  "name": "platform",
+  "chair": {
+    "id": "platform/chair",
+    "name": "chair",
+    "area": "platform",
+    "kind": "chair",
+    "state": "idle",
+    "now": "last woke 10:40, routed two reviews",
+    "woken_by": [
+      "an agent in platform escalates"
+    ],
+    "model": "claude-code/opus",
+    "runs_in": "local",
+    "today": {
+      "cost": 0.21,
+      "wakes": 2,
+      "acted": 2
+    }
+  },
+  "agents": [
+    {
+      "id": "platform/front-desk",
+      "name": "front desk",
+      "area": "platform",
+      "kind": "agent",
+      "state": "running",
+      "now": "reading a new issue on the sample app",
+      "woken_by": [
+        "mail arrives for help@example.com",
+        "an issue opens in example/app"
+      ],
+      "model": "claude-code/sonnet",
+      "runs_in": "local",
+      "today": {
+        "cost": 0.95,
+        "wakes": 45,
+        "acted": 13,
+        "calls": 61
+      }
+    },
+    {
+      "id": "platform/reviewer",
+      "name": "reviewer",
+      "area": "platform",
+      "kind": "agent",
+      "state": "running",
+      "now": "reviewing pull request 214",
+      "woken_by": [
+        "it is called",
+        "a pull request opens in example/app"
+      ],
+      "model": "codex/gpt-5",
+      "runs_in": "local",
+      "today": {
+        "cost": 1.29,
+        "wakes": 9,
+        "acted": 9,
+        "calls": 40
+      },
+      "endpoint": "/v2/agents/platform/reviewer/call"
+    },
+    {
+      "id": "platform/builder",
+      "name": "builder",
+      "area": "platform",
+      "kind": "agent",
+      "state": "idle",
+      "now": "last woke 09:12, opened a branch",
+      "woken_by": [
+        "the reviewer finishes with changes asked"
+      ],
+      "model": "claude-code/sonnet",
+      "runs_in": "daytona",
+      "today": {
+        "cost": 0.19,
+        "wakes": 1,
+        "acted": 1
+      }
+    }
+  ],
+  "today": {
+    "cost": 2.64,
+    "wakes": 57,
+    "acted": 25
+  },
+  "timeline": [
+    {
+      "at": "2026-10-04T11:24:00Z",
+      "agent": "platform/reviewer",
+      "text": "started on pull request 214",
+      "raised": false
+    },
+    {
+      "at": "2026-10-04T11:02:00Z",
+      "agent": "platform/front-desk",
+      "text": "filed issue 388 from a mail: the export button times out",
+      "raised": false
+    },
+    {
+      "at": "2026-10-04T10:40:00Z",
+      "agent": "platform/chair",
+      "text": "routed two reviews to the reviewer",
+      "raised": false
+    },
+    {
+      "at": "2026-10-04T10:15:00Z",
+      "agent": "platform/reviewer",
+      "text": "asked you to approve merging pull request 211",
+      "raised": true
+    },
+    {
+      "at": "2026-10-04T09:12:00Z",
+      "agent": "platform/builder",
+      "text": "opened a branch for the cache fix",
+      "raised": false
+    }
+  ]
+}

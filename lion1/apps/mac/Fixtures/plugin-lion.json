@@ -1,0 +1,297 @@
+{
+  "name": "lion",
+  "about": "The tools every agent starts from: files, code, shell, mail, memory, web, a box and other agents.",
+  "source": "default",
+  "kind": "plugin",
+  "on": true,
+  "folder": "~/.lion/plugins/lion/",
+  "agents": [
+    {
+      "name": "chair",
+      "about": "Keeps an area moving and decides what it can.",
+      "in_use": 4
+    },
+    {
+      "name": "front desk",
+      "about": "Answers what arrives and hands the rest on.",
+      "in_use": 2
+    }
+  ],
+  "skills": [
+    {
+      "name": "write-a-pull-request",
+      "loaded_when": "the task ends in a pull request; until then it costs one line of context",
+      "on": true,
+      "text": "# Write a pull request\n\n1. One change per pull request.\n2. Say what changed and why in the first paragraph.\n3. Name the tests that cover it."
+    },
+    {
+      "name": "summarise-a-thread",
+      "loaded_when": "the task is to summarise a mail or issue thread",
+      "on": true,
+      "text": "# Summarise a thread\n\nLead with the decision or the open question, then who is waiting on whom."
+    }
+  ],
+  "tools": [
+    {
+      "name": "read_file",
+      "kind": "function",
+      "about": "Read a file",
+      "args": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "about": "a path under the agent's folders"
+        }
+      ],
+      "effect": "read",
+      "on": true,
+      "group": "Files"
+    },
+    {
+      "name": "write_file",
+      "kind": "function",
+      "about": "Write a file",
+      "args": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "about": "a path under the agent's folders"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "about": "the new contents"
+        }
+      ],
+      "effect": "write",
+      "on": true,
+      "group": "Files"
+    },
+    {
+      "name": "list_dir",
+      "kind": "function",
+      "about": "List a folder",
+      "args": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "about": "a path under the agent's folders"
+        }
+      ],
+      "effect": "read",
+      "on": true,
+      "group": "Files"
+    },
+    {
+      "name": "search_code",
+      "kind": "function",
+      "about": "Search code by text or symbol",
+      "args": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "about": "what to look for"
+        }
+      ],
+      "effect": "read",
+      "on": true,
+      "group": "Code"
+    },
+    {
+      "name": "edit_code",
+      "kind": "function",
+      "about": "Replace text in a file",
+      "args": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "about": "a path under the agent's folders"
+        },
+        {
+          "name": "old",
+          "type": "string",
+          "required": true,
+          "about": "the text now"
+        },
+        {
+          "name": "new",
+          "type": "string",
+          "required": true,
+          "about": "the text after"
+        }
+      ],
+      "effect": "write",
+      "on": true,
+      "group": "Code"
+    },
+    {
+      "name": "bash",
+      "kind": "function",
+      "about": "Run a command under the agent's shell rules",
+      "args": [
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "about": "the command line"
+        }
+      ],
+      "effect": "run",
+      "on": true,
+      "group": "Shell"
+    },
+    {
+      "name": "read_mail",
+      "kind": "function",
+      "about": "Read the mail a rule delivered",
+      "args": [],
+      "effect": "read",
+      "on": true,
+      "group": "Mail"
+    },
+    {
+      "name": "send_mail",
+      "kind": "function",
+      "about": "Send a reply",
+      "args": [
+        {
+          "name": "to",
+          "type": "string",
+          "required": true,
+          "about": "the address"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "about": "the reply"
+        }
+      ],
+      "effect": "write",
+      "on": true,
+      "group": "Mail"
+    },
+    {
+      "name": "recall",
+      "kind": "function",
+      "about": "Recall notes this agent kept",
+      "args": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "about": "what to recall"
+        }
+      ],
+      "effect": "read",
+      "on": true,
+      "group": "Memory"
+    },
+    {
+      "name": "remember",
+      "kind": "function",
+      "about": "Keep a note for later wakes",
+      "args": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "about": "the note"
+        }
+      ],
+      "effect": "write",
+      "on": true,
+      "group": "Memory"
+    },
+    {
+      "name": "fetch",
+      "kind": "function",
+      "about": "Fetch a web page as text",
+      "args": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "about": "the address"
+        }
+      ],
+      "effect": "read",
+      "on": true,
+      "group": "Web"
+    },
+    {
+      "name": "web_search",
+      "kind": "function",
+      "about": "Search the web",
+      "args": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "about": "what to search for"
+        }
+      ],
+      "effect": "spend",
+      "on": true,
+      "group": "Web"
+    },
+    {
+      "name": "box_run",
+      "kind": "function",
+      "about": "Run a command in a remote box",
+      "args": [
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "about": "the command line"
+        }
+      ],
+      "effect": "run",
+      "on": false,
+      "group": "Box"
+    },
+    {
+      "name": "ask_agent",
+      "kind": "function",
+      "about": "Ask another agent and wait for its answer",
+      "args": [
+        {
+          "name": "agent",
+          "type": "string",
+          "required": true,
+          "about": "the agent's id"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "about": "the question"
+        }
+      ],
+      "effect": "run",
+      "on": true,
+      "group": "Agents"
+    }
+  ],
+  "not_used": [],
+  "given_to": [
+    "platform/chair",
+    "platform/front-desk",
+    "platform/reviewer",
+    "platform/builder",
+    "research/chair",
+    "research/front-desk",
+    "support/chair",
+    "support/front-desk",
+    "support/builder",
+    "ops/chair",
+    "ops/builder"
+  ]
+}

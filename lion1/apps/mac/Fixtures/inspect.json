@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "card": {
+    "commands": [
+      {
+        "name": "triage",
+        "about": "sort one issue into a queue",
+        "args": [
+          {
+            "name": "issue",
+            "type": "integer",
+            "required": true,
+            "about": "the issue number"
+          }
+        ],
+        "effect": "write"
+      },
+      {
+        "name": "summary",
+        "about": "summarise the open queue",
+        "args": [],
+        "effect": "read"
+      }
+    ],
+    "bounds": {
+      "turns": 30,
+      "network": "off"
+    }
+  },
+  "params": [
+    "repo",
+    "queue"
+  ]
+}

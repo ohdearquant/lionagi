@@ -1,0 +1,33 @@
+{
+  "name": "deploy-preview",
+  "about": "Build a branch and deploy it to a preview address.",
+  "source": "yours",
+  "kind": "plugin",
+  "on": true,
+  "folder": "~/.lion/plugins/deploy-preview/",
+  "agents": [],
+  "skills": [],
+  "tools": [
+    {
+      "name": "preview_deploy",
+      "kind": "script",
+      "about": "Build a branch and deploy a preview",
+      "args": [
+        {
+          "name": "branch",
+          "type": "string",
+          "required": true,
+          "about": "the branch to deploy"
+        }
+      ],
+      "effect": "run",
+      "on": true,
+      "code": "#!/bin/sh\nset -eu\nmake build BRANCH=\"$1\"\nmake preview BRANCH=\"$1\"\n"
+    }
+  ],
+  "not_used": [],
+  "given_to": [
+    "platform/builder",
+    "ops/builder"
+  ]
+}

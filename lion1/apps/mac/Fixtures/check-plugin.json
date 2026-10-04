@@ -1,0 +1,38 @@
+{
+  "ok": true,
+  "plugin": {
+    "name": "notes-kit",
+    "about": "Keep and search short notes.",
+    "source": "installed",
+    "kind": "plugin",
+    "on": true,
+    "agents": [
+      {
+        "name": "note keeper",
+        "about": "Keeps notes tidy and findable.",
+        "in_use": 0
+      }
+    ],
+    "skills": [
+      {
+        "name": "keep-a-note",
+        "loaded_when": "the task asks to remember something",
+        "on": true
+      },
+      {
+        "name": "find-a-note",
+        "loaded_when": "the task asks what was noted",
+        "on": true
+      }
+    ],
+    "tools": [],
+    "not_used": [],
+    "given_to": []
+  },
+  "check": {
+    "ok": true,
+    "adds": "manifest ok · adds 2 skills, 1 agent",
+    "risky": [],
+    "not_used": []
+  }
+}

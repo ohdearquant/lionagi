@@ -1,0 +1,40 @@
+{
+  "fetched_at": "2026-10-04T11:28:00Z",
+  "credits_left": 41.2,
+  "used_today": 0.78,
+  "used_month": 38.8,
+  "log": [
+    {
+      "day": "2026-10-04",
+      "model_id": "deepseek/deepseek-chat",
+      "calls": 120,
+      "tokens_in": 1820000,
+      "tokens_out": 290000,
+      "cost": 0.33
+    },
+    {
+      "day": "2026-10-04",
+      "model_id": "qwen/qwen-max",
+      "calls": 31,
+      "tokens_in": 240000,
+      "tokens_out": 96000,
+      "cost": 0.45
+    },
+    {
+      "day": "2026-10-03",
+      "model_id": "deepseek/deepseek-chat",
+      "calls": 388,
+      "tokens_in": 17000000,
+      "tokens_out": 2600000,
+      "cost": 1.92
+    },
+    {
+      "day": "2026-10-03",
+      "model_id": "qwen/qwen-max",
+      "calls": 12,
+      "tokens_in": 90000,
+      "tokens_out": 30000,
+      "cost": 0.34
+    }
+  ]
+}
