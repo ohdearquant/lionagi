@@ -423,9 +423,10 @@ def test_a_command_a_value_launched_while_the_turn_settled_is_cut_at_the_deadlin
     actor = _waiting_actor("late-launch", ends)
     # the walk is past its last line and settling when gate lands; only then does the last command's
     # argument read v, whose DO launches the long wait: a command the settle had not seen when it began
-    turn = fenced("gate = wait(seconds=0.1)", "v = [DO wait(seconds=3)][0]", "out = echo(text=*gate + *v)")
-    run = _run(actor, turn, time_budget=0.5)
-    assert ends == [("wait", 0.1, "ran"), ("wait", 3.0, "cut")] and run.elapsed < 2
+    # the budget is fifteen times the gate's wait, so a loop held up for a second still starts it in time
+    turn = fenced("gate = wait(seconds=0.1)", "v = [DO wait(seconds=8)][0]", "out = echo(text=*gate + *v)")
+    run = _run(actor, turn, time_budget=1.5)
+    assert ends == [("wait", 0.1, "ran"), ("wait", 8.0, "cut")] and run.elapsed < 5
     assert _results(run) == {
         "gate": (True, None, "started"),
         "out": (False, "cancelled before it finished", "not executed"),
@@ -441,12 +442,12 @@ def test_a_late_launch_outliving_every_command_the_settle_began_with_is_cut_at_t
     # launched is done at 0.2 s, and the wait v launched is the only one still running at the deadline
     turn = fenced(
         "gate = wait(seconds=0.1)",
-        "v = [DO wait(seconds=3)][0]",
+        "v = [DO wait(seconds=8)][0]",
         "out = echo(text=*gate + *v)",
         'drop(target="out", after=0.2)',
     )
-    run = _run(actor, turn, time_budget=0.5)
-    assert ends == [("wait", 0.1, "ran"), ("wait", 3.0, "cut")] and 0.5 <= run.elapsed < 2
+    run = _run(actor, turn, time_budget=1.5)
+    assert ends == [("wait", 0.1, "ran"), ("wait", 8.0, "cut")] and 1.5 <= run.elapsed < 5
     assert _results(run) == {
         "gate": (True, None, "started"),
         "out": (False, "cancelled before it finished", "not executed"),
@@ -462,18 +463,18 @@ def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_se
     # the first DO outlives its cancel and returns, so the value goes on to its second DO after the cut
     turn = fenced(
         "gate = wait(seconds=0.1)",
-        'v = [DO stubborn(seconds=3), DO echo(text="late")][1]',
+        'v = [DO stubborn(seconds=8), DO echo(text="late")][1]',
         "out = echo(text=*gate + *v)",
     )
-    run = _run(actor, turn, time_budget=0.5)
-    assert ends == [("wait", 0.1, "ran"), ("stubborn", "cut and returned")] and run.elapsed < 2
+    run = _run(actor, turn, time_budget=1.5)
+    assert ends == [("wait", 0.1, "ran"), ("stubborn", "cut and returned")] and run.elapsed < 5
     # the late echo is refused where it starts and never reaches its handler; its refusal is on the record
     # when the run returns, and the value it failed, with no reader left to tell, is seen through
     assert _results(run) == {
         "gate": (True, None, "started"),
         "out": (False, "cancelled before it finished", "not executed"),
         "r2.2": (True, None, "started"),
-        "r2.3": (False, "refused: the time_budget of 0.5 is spent", "not executed"),
+        "r2.3": (False, "refused: the time_budget of 1.5 is spent", "not executed"),
     }
     assert run.pending == {} and run.tasks == set()
     del run, actor
