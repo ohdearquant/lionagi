@@ -3,7 +3,7 @@
 parsed out into `tool_calls`, into the tags the parser reads."""
 
 from hub.backend.markup import normalize, tool_calls_text
-from lionagi.lndl import parse
+from lion1.lndl import parse
 
 
 def test_native_tool_calls_carrying_lndl_become_the_text_the_model_wrote():

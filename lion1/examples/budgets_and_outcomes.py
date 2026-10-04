@@ -1,9 +1,9 @@
 """Every way a run can end, constructed once, and the bounds a request carries.
 
-A `RunRequest` carries the bounds: `max_rounds`, `time_budget` in seconds, `max_refusals` of the
+A `RunRequest` carries the bounds: `max_turns`, `time_budget` in seconds, `max_refusals` of the
 accept gate in a row, and `view_budget`, the estimated tokens the view may hold before the runtime
 folds the oldest results to placeholders. The run ends as a value the caller reads, never a string: `Success`,
-`Exhausted(rounds)`, `Exhausted(rounds, "time")`, `Refused(why, times)`, `Stopped(round)`. A turn
+`Exhausted(turns)`, `Exhausted(turns, "time")`, `Refused(why, times)`, `Stopped(turn)`. A turn
 that could not be read is retried inside the run, told to the model and counted when it repeats,
 never an end. Scripted backends; runs offline.
 
@@ -16,7 +16,7 @@ import asyncio
 
 from pydantic import BaseModel
 
-from lionagi import Actor, Context, Kind, Profile, RunRequest, fold
+from lion1 import Actor, Context, Kind, Profile, RunRequest, fold
 
 
 class Echo(BaseModel):
@@ -59,12 +59,12 @@ async def main() -> None:
         return f'<lact e{i}>echo(text="{i}")</lact>'
 
     run = await make().run(
-        p, RunRequest(inputs=("go",), emits=(Answer,), max_rounds=5), scripted(say(1), 'OUT{answer: "done"}')
+        p, RunRequest(inputs=("go",), emits=(Answer,), max_turns=5), scripted(say(1), 'OUT{answer: "done"}')
     )
     print("Success        ", run.outcome, "| output:", run.output["answer"].text)
 
-    run = await make().run(p, RunRequest(inputs=("go",), max_rounds=2), scripted(say(1), say(2), say(3)))
-    print("Exhausted      ", run.outcome, "| the round count is the request's max_rounds")
+    run = await make().run(p, RunRequest(inputs=("go",), max_turns=2), scripted(say(1), say(2), say(3)))
+    print("Exhausted      ", run.outcome, "| the turn count is the request's max_turns")
 
     turns = iter([say(1), say(2), say(3)])
 
@@ -72,15 +72,15 @@ async def main() -> None:
         await asyncio.sleep(0.4)
         return next(turns)
 
-    run = await make().run(p, RunRequest(inputs=("go",), max_rounds=5, time_budget=0.7), slow)
-    print("Exhausted/time ", run.outcome, "| read at the top of each round; the header carries the clock")
+    run = await make().run(p, RunRequest(inputs=("go",), max_turns=5, time_budget=0.7), slow)
+    print("Exhausted/time ", run.outcome, "| read at the top of each turn; the header carries the clock")
 
     async def accept(run, output):
         return None if output["answer"].text == "ok" else "the answer must be 'ok'"
 
     run = await make().run(
         p,
-        RunRequest(inputs=("go",), emits=(Answer,), max_rounds=5, accept=accept, max_refusals=2),
+        RunRequest(inputs=("go",), emits=(Answer,), max_turns=5, accept=accept, max_refusals=2),
         scripted('OUT{answer: "no"}', 'OUT{answer: "nope"}'),
     )
     print(
@@ -92,15 +92,15 @@ async def main() -> None:
     asked: list[int] = []
     run = await make().run(
         p,
-        RunRequest(inputs=("go",), max_rounds=5),
+        RunRequest(inputs=("go",), max_turns=5),
         scripted(say(1), say(2)),
         stop=lambda: asked.append(1) or len(asked) >= 2,
     )
-    print("Stopped        ", run.outcome, "| asked after each notification; names the round that did not run")
+    print("Stopped        ", run.outcome, "| asked after each notification; names the turn that did not run")
 
     run = await make().run(
         p,
-        RunRequest(inputs=("go",), max_rounds=3),
+        RunRequest(inputs=("go",), max_turns=3),
         scripted("<lact e1>echo(1)</lact>", "<lact e1>echo(1)</lact>", "done"),
     )
     told = [ln for ln in notes(run)[2].splitlines() if "could not be read" in ln][0]
@@ -108,7 +108,7 @@ async def main() -> None:
 
     run = await make().run(
         p,
-        RunRequest(inputs=("go",), max_rounds=4, view_budget=60),
+        RunRequest(inputs=("go",), max_turns=4, view_budget=60),
         scripted(*(f'<lact e{i}>echo(text="{"x" * 200}")</lact>' for i in range(1, 4)), "done"),
     )
     view = fold(run.record)

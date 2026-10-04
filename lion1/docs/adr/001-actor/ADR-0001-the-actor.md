@@ -23,8 +23,8 @@ them precisely. This record fixes that unit: one named party, what it may be ask
 permitted to do.
 
 The run is [[ADR-0002-the-run|ADR-0002]], the job and its bounds [[ADR-0003-the-bounds|ADR-0003]],
-the order a command goes through [[ADR-0005-command-handling|ADR-0005]]. Source: `lionagi/spec.py`
-and the actor half of `lionagi/actor.py`, in the v1 implementation that follows these records into
+the order a command goes through [[ADR-0005-command-handling|ADR-0005]]. Source: `src/lion1/spec.py`
+and the actor half of `src/lion1/actor.py`, in the v1 implementation that follows these records into
 this repository.
 
 ## Definitions
@@ -149,7 +149,7 @@ Serves C4. `Handler.requires` is a frozenset; the dispatch path validates the ar
 compares `requires` with the profile's privileges, then runs the before hooks.
 
 - **Landing evidence**: `tests/test_actor_execution.py`, the privilege cases; the `Result.reason`
-  vocabulary in `lionagi/actor.py`.
+  vocabulary in `src/lion1/actor.py`.
 
 ## Alternatives
 

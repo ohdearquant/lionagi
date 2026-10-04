@@ -9,7 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "lion-cli",
-    "lionagi",
+    "lion1",
 ]
 
 [[package]]
@@ -1217,7 +1217,7 @@ name = "lion-cli"
 version = "1.0.0a0"
 source = { editable = "apps/cli" }
 dependencies = [
-    { name = "lionagi" },
+    { name = "lion1" },
     { name = "prompt-toolkit" },
     { name = "rich" },
 ]
@@ -1230,7 +1230,7 @@ voice = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lionagi", editable = "." },
+    { name = "lion1", editable = "." },
     { name = "mlx-whisper", marker = "extra == 'voice'", specifier = ">=0.4" },
     { name = "prompt-toolkit", specifier = ">=3.0.36" },
     { name = "rich", specifier = ">=13" },
@@ -1239,7 +1239,7 @@ requires-dist = [
 provides-extras = ["voice"]
 
 [[package]]
-name = "lionagi"
+name = "lion1"
 version = "1.0.0a0"
 source = { editable = "." }
 dependencies = [

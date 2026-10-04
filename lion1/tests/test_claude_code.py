@@ -1,4 +1,4 @@
-"""The resumed-session Claude Code backend: what each round sends, and when it starts a new session."""
+"""The resumed-session Claude Code backend: what each turn sends, and when it starts a new session."""
 
 import asyncio
 import json
@@ -13,7 +13,7 @@ import pytest
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
 from hub.chat import entry_row, load_log
-from lionagi import Actor, Kind, Message, Profile, RunRequest
+from lion1 import Actor, Kind, Message, Profile, RunRequest
 
 
 def _fake_exec(calls: list[dict]):
@@ -33,13 +33,13 @@ def _after(args: list[str], flag: str) -> str:
 
 SYSTEM = Message("system", "the profile")
 IN0 = Message("user", "[in0] go", name="in0")
-SYS1 = Message("system", "<system round=1/4>", name="sys1")
+SYS1 = Message("system", "<system turn=1/4>", name="sys1")
 M2 = Message("assistant", '<lact f1>read_file(path="a")</lact>', name="m2")
 R3 = Message("user", "[r3 f1 read_file] the whole file", name="r3", spec="read_file")
-SYS4 = Message("system", "<system round=2/4>", name="sys4")
+SYS4 = Message("system", "<system turn=2/4>", name="sys4")
 M5 = Message("assistant", '<lact h1>context.hide(refs=["r3"])</lact>', name="m5")
 R6 = Message("user", "[r6 h1 context.hide] hidden: r3", name="r6", spec="context.hide")
-SYS7 = Message("system", "<system round=3/4>", name="sys7")
+SYS7 = Message("system", "<system turn=3/4>", name="sys7")
 
 
 def _session(monkeypatch) -> tuple[ClaudeCodeSession, list[dict]]:
@@ -48,18 +48,18 @@ def _session(monkeypatch) -> tuple[ClaudeCodeSession, list[dict]]:
     return ClaudeCodeSession(cli="/bin/claude"), calls
 
 
-def test_round_one_opens_the_session_and_later_rounds_resume_it_with_only_the_new_entries(monkeypatch):
+def test_turn_one_opens_the_session_and_later_turns_resume_it_with_only_the_new_entries(monkeypatch):
     s, calls = _session(monkeypatch)
     asyncio.run(s([SYSTEM, IN0, SYS1]))
     asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
     first, second = calls
     assert "--resume" not in first["args"] and _after(first["args"], "--system-prompt") == "the profile"
-    assert first["prompt"] == "[in0] go\n\n<system round=1/4>"
+    assert first["prompt"] == "[in0] go\n\n<system turn=1/4>"
     # each call forks the point it resumes, which stays on disk as it was: the session goes on in the fork
     assert _after(second["args"], "--resume") == _after(first["args"], "--session-id")
     assert "--fork-session" in second["args"] and "--system-prompt" not in second["args"]
     assert _after(second["args"], "--session-id") == s.session_id != _after(first["args"], "--session-id")
-    assert second["prompt"] == "[r3 f1 read_file] the whole file\n\n<system round=2/4>"
+    assert second["prompt"] == "[r3 f1 read_file] the whole file\n\n<system turn=2/4>"
     assert first["persist"] and second["persist"]
     assert s.restarts == 0
 
@@ -67,15 +67,15 @@ def test_round_one_opens_the_session_and_later_rounds_resume_it_with_only_the_ne
 def test_a_failed_context_directive_does_not_restart_the_session(monkeypatch, tmp_path):
     """A hide of a ref that does not exist fails and leaves the view as it was: its result renders
     with no spec, so the session goes on; the control is the same hide of a real ref, which does."""
-    from lionagi import Kind, RunRequest
-    from lionagi.actor import _messages
-    from lionagi.record import fold
+    from lion1 import Kind, RunRequest
+    from lion1.actor import _messages
+    from lion1.record import fold
     from tests.test_actor import scripted
     from tests.test_chat import reader
 
     async def run(turns: list[str]):
         actor, profile = reader(tmp_path)
-        return await actor.run(profile, RunRequest(inputs=("go",), max_rounds=3), scripted(*turns))
+        return await actor.run(profile, RunRequest(inputs=("go",), max_turns=3), scripted(*turns))
 
     listing = '<lact f1>list_dir(path=".")</lact>'
     failed = asyncio.run(run([listing, '<lact h1>context.hide(refs=["nope"])</lact>', "done"]))
@@ -101,7 +101,7 @@ def test_a_context_directive_that_frees_more_than_it_rewrites_restarts_the_sessi
     asyncio.run(s([SYSTEM, IN0, SYS1]))
     asyncio.run(s([SYSTEM, IN0, M2, big, SYS4]))
     old_id = s.session_id
-    # round 3: the hide landed, so r3 is out of the folded view and r6 carries the directive; no point
+    # turn 3: the hide landed, so r3 is out of the folded view and r6 carries the directive; no point
     # the session passed is intact (the first holds r3), so it starts over from the whole view
     asyncio.run(s([SYSTEM, IN0, M2, M5, R6, SYS7]))
     third = calls[2]
@@ -112,13 +112,13 @@ def test_a_context_directive_that_frees_more_than_it_rewrites_restarts_the_sessi
     assert "<ASSISTANT>\n<lact f1>" in third["prompt"]  # the model's own turns ride as a transcript
     assert third["prompt"].endswith("<ASSISTANT>")
     assert set(s.sent) == {"in0", "m2", "m5", "r6", "sys7"}
-    # round 4 resumes the new session with only what is new
+    # turn 4 resumes the new session with only what is new
     m8 = Message("assistant", "ok", name="m8")
-    sys9 = Message("system", "<system round=4/4>", name="sys9")
+    sys9 = Message("system", "<system turn=4/4>", name="sys9")
     asyncio.run(s([SYSTEM, IN0, M2, M5, R6, SYS7, m8, sys9]))
     fourth = calls[3]
     assert _after(fourth["args"], "--resume") == _after(third["args"], "--session-id")
-    assert fourth["prompt"] == "<system round=4/4>" and s.restarts == 1
+    assert fourth["prompt"] == "<system turn=4/4>" and s.restarts == 1
 
 
 def test_a_view_that_shrank_by_less_than_a_restart_repays_keeps_the_session(monkeypatch):
@@ -129,7 +129,7 @@ def test_a_view_that_shrank_by_less_than_a_restart_repays_keeps_the_session(monk
     asyncio.run(s([SYSTEM, IN0, M2, Message("assistant", "y", name="m5"), SYS7]))
     third = calls[2]
     assert s.restarts == 0 and "--resume" in third["args"]
-    assert third["prompt"] == "<system round=3/4>"
+    assert third["prompt"] == "<system turn=3/4>"
 
 
 def test_a_resumed_call_records_its_own_usage_and_the_cost_it_added(monkeypatch):
@@ -222,7 +222,7 @@ def test_another_run_on_the_same_backend_gets_its_own_session(monkeypatch):
     assert "--session-id" in second["args"] and "--resume" not in second["args"]
     assert _after(second["args"], "--session-id") != _after(first["args"], "--session-id")
     assert _after(second["args"], "--system-prompt") == "another profile"
-    assert second["prompt"] == "[in0] a different question\n\n<system round=1/4>"
+    assert second["prompt"] == "[in0] a different question\n\n<system turn=1/4>"
     assert s.restarts == 0  # another record, not a changed view
     asyncio.run(s([other, Message("user", "[in0] a third question", name="in0"), SYS1]))
     assert "--session-id" in calls[2]["args"] and calls[2]["prompt"].startswith("[in0] a third question")
@@ -245,8 +245,8 @@ def test_an_inputless_run_after_another_on_one_backend_is_planned_as_its_own_ses
     monkeypatch.setattr(claude_code, "_exec", fake)
     actor, s = Actor("worker"), ClaudeCodeSession(cli="/bin/claude")
     large = Profile("large", system="x" * 80_000)
-    first = asyncio.run(actor.run(large, RunRequest(max_rounds=1, context_budget=100_000), s))
-    second = asyncio.run(actor.run(Profile("small"), RunRequest(max_rounds=1, context_budget=10_000), s))
+    first = asyncio.run(actor.run(large, RunRequest(max_turns=1, context_budget=100_000), s))
+    second = asyncio.run(actor.run(Profile("small"), RunRequest(max_turns=1, context_budget=10_000), s))
     assert first.id != second.id and s._run == second.id and len(calls) == 2
     (one, _), (two, prompt) = calls
     assert "--resume" not in two and _after(two, "--session-id") != _after(one, "--session-id")
@@ -266,12 +266,12 @@ def test_two_runs_with_the_same_first_input_get_their_own_sessions(monkeypatch):
 
     in1a = Message("user", "[in1] FIRST_DETAILS", name="in1")
     in1b = Message("user", "[in1] SECOND_DETAILS", name="in1")
-    sys2 = Message("system", "<system round=1/4>", name="sys2")
+    sys2 = Message("system", "<system turn=1/4>", name="sys2")
     asyncio.run(s([run_a(m) for m in (SYSTEM, IN0, in1a, sys2)]))
     asyncio.run(s([run_b(m) for m in (SYSTEM, IN0, in1b, sys2)]))
     m3 = Message("assistant", '<lact f1>read_file(path="a")</lact>', name="m3")
     r4 = Message("user", "[r4 f1 read_file] the file", name="r4", spec="read_file")
-    sys5 = Message("system", "<system round=2/4>", name="sys5")
+    sys5 = Message("system", "<system turn=2/4>", name="sys5")
     asyncio.run(s([run_a(m) for m in (SYSTEM, IN0, in1a, sys2, m3, r4, sys5)]))
     first, second, third = calls
     assert _after(first["args"], "--session-id") != _after(second["args"], "--session-id")
@@ -542,7 +542,7 @@ def test_the_runtimes_fold_restarts_the_session_from_the_folded_view(monkeypatch
     asyncio.run(s([SYSTEM, IN0, SYS1]))
     asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
     fold = Message(
-        "system", "<system round=3/4>\nfolded: the view was ~90000 of 60000 tokens", name="sys6", spec="fold"
+        "system", "<system turn=3/4>\nfolded: the view was ~90000 of 60000 tokens", name="sys6", spec="fold"
     )
     asyncio.run(s([SYSTEM, IN0, M2, SYS4, fold]))  # R3 folded out of the view
     assert s.restarts == 1 and "--resume" in calls[1]["args"] and "--session-id" in calls[2]["args"]
@@ -563,7 +563,7 @@ def test_the_fold_starts_an_acting_session_over_from_the_whole_view_even_with_no
     monkeypatch.setattr(claude_code, "_exec", fake)
     s = ClaudeCodeSession(cli="/bin/claude", tools=("Read",))
     asyncio.run(s([SYSTEM, IN0, SYS1]))
-    fold = Message("system", "<system round=2/4>\nfolded: nothing older to fold", name="sys3", spec="fold")
+    fold = Message("system", "<system turn=2/4>\nfolded: nothing older to fold", name="sys3", spec="fold")
     asyncio.run(s([SYSTEM, IN0, SYS1, Message("assistant", "ok", name="m2"), fold]))
     assert "--resume" not in calls[1]["args"] and _after(calls[1]["args"], "--system-prompt") == "the profile"
     assert s.restarts == 1
@@ -620,7 +620,7 @@ def test_an_acting_session_starts_over_on_a_directive_result_that_ends_the_call(
 
 
 def test_the_provider_shape_hands_the_cli_its_own_tools_the_directories_and_the_one_mcp(monkeypatch):
-    """The Claude Code provider: with tools the CLI runs them inside each round, in the agent's cwd, with the
+    """The Claude Code provider: with tools the CLI runs them inside each turn, in the agent's cwd, with the
     agent's repository reachable, the named MCP the only one loaded; the default stays the chat shape."""
     calls: list[dict] = []
 
@@ -695,7 +695,7 @@ def test_two_runs_whose_calls_overlap_keep_their_own_session_and_bill(monkeypatc
         return [
             Message("system", "profile", run=run),
             Message("user", f"{run}-first", name="in0", run=run),
-            Message("system", "<system round=1/4>", name="sys1", run=run),
+            Message("system", "<system turn=1/4>", name="sys1", run=run),
             *later,
         ]
 
@@ -708,7 +708,7 @@ def test_two_runs_whose_calls_overlap_keep_their_own_session_and_bill(monkeypatc
         await a  # A comes back while B's call is out
         release["B"].set()
         await b
-        await s(view("A", Message("system", "<system round=2/4>", name="sys2", run="A")))
+        await s(view("A", Message("system", "<system turn=2/4>", name="sys2", run="A")))
 
     asyncio.run(asyncio.wait_for(main(), 5))
     (a1, _, sid_a), (b1, _, sid_b), (a2, flag, sid) = seen
@@ -793,7 +793,7 @@ def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_p
         cli=cli, tools=("Bash", "Read", "Edit"), actor=actor, requires={"Bash": ("shell",), "Edit": ("edit",)}
     )
     profile = Profile("worker", privileges=frozenset({"shell"}))
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=1), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=1), backend))
     a, b, c, d = json.loads((tmp_path / "seen.json").read_text())["seen"]
     assert a["rc"] == 0 and json.loads(a["out"])["hookSpecificOutput"] == {
         "hookEventName": "PreToolUse",
@@ -807,7 +807,7 @@ def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_p
     assert (d["rc"], d["err"]) == (2, "Edit requires ['edit']")
     acts = {e.alias: e for e in run.record if e.kind is Kind.RESULT}
     assert set(acts) == {"toolu_a", "toolu_b", "toolu_c", "toolu_d"}
-    assert all(e.round == 1 for e in acts.values())
+    assert all(e.turn == 1 for e in acts.values())
     ran = acts["toolu_a"]
     assert (ran.content.spec, ran.content.ok, ran.content.value) == ("Bash", True, {"command": "git status"})
     assert ran.meta["execution"] == "admitted"  # the gate's verdict, written before the CLI acts
@@ -851,7 +851,7 @@ def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path):
     backend = ClaudeCodeSession(
         cli=cli, tools=("Read",), allowed=("mcp__probe__mark", "mcp__notes"), actor=actor
     )
-    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_turns=1), backend))
     seen = json.loads((tmp_path / "seen.json").read_text())["seen"]
     assert [s["rc"] for s in seen] == [0] * 5
     outs = [json.loads(s["out"])["hookSpecificOutput"] for s in seen]
@@ -882,7 +882,7 @@ def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
     (tmp_path / "calls.json").write_text(
         json.dumps([_tool("Bash", "toolu_a", command="ls"), _tool("Bash", "toolu_a", command="ls")])
     )
-    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_turns=1), backend))
     first, again = json.loads((tmp_path / "seen.json").read_text())["seen"]
     assert first["rc"] == 0 and again["rc"] == 2
     assert again["err"] == "refused: tool-use id 'toolu_a' is already on the record"
@@ -918,7 +918,7 @@ def test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands(tm
         return type(request).model_validate({"file_path": request.file_path, "metadata": extra})
 
     backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor)
-    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_turns=1), backend))
     a, b = json.loads((tmp_path / "seen.json").read_text())["seen"]
     assert (a["rc"], b["rc"]) == (2, 2)
     assert a["err"].startswith("refused: ") and "PydanticSerializationError" in a["err"]
@@ -955,7 +955,7 @@ time.sleep(30)
 def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch):
     """The CLI's hook connects, then the CLI exits a few event-loop turns later, before the gate's task
     for that connection has run: the gate does not run after the call returned, the hook is refused,
-    and the call lands once in the call's own round, whatever the window (0 to 7 turns): admitted when the
+    and the call lands once in the call's own turn, whatever the window (0 to 7 turns): admitted when the
     hooks ran inside the call, not executed when the call ended first, its hook accepted at the end."""
     import shlex
     import socket
@@ -983,7 +983,7 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
                 for _ in range(k):  # the CLI exits this many turns after its hook connected
                     await asyncio.sleep(0)
             else:
-                await asyncio.sleep(0.05)  # the run is still live during its next round
+                await asyncio.sleep(0.05)  # the run is still live during its next turn
             return "ok", {"total_cost_usd": 0.0}
 
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
@@ -995,15 +995,15 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
             finally:
                 state["returned"] += 1
 
-        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), wrapped)
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), wrapped)
         state["client"].close()
-        landed = [(e.alias, e.round, e.meta.get("execution")) for e in run.record.of_kind(Kind.RESULT)]
+        landed = [(e.alias, e.turn, e.meta.get("execution")) for e in run.record.of_kind(Kind.RESULT)]
         return hooks, landed
 
     for k in range(8):
         hooks, landed = asyncio.run(window(k))
         assert all(returned == 0 for _, returned in hooks), (k, hooks)  # no hook after the call returned
-        # the call lands once, in the call's own round: admitted when its hooks ran, else not executed
+        # the call lands once, in the call's own turn: admitted when its hooks ran, else not executed
         assert landed == [(f"toolu_{k}", 1, "admitted" if hooks else "not executed")], (k, landed)
 
 
@@ -1063,7 +1063,7 @@ def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_i
                 took.append(time.monotonic() - t0)
 
         send = asyncio.create_task(sender())
-        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), wrapped)
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), wrapped)
         await send
         client = state["client"]
         client.settimeout(1.0)
@@ -1073,7 +1073,7 @@ def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_i
             answer = type(e).__name__
         client.close()
         landed = [
-            (e.alias, e.round, e.content.reason, e.meta.get("execution"))
+            (e.alias, e.turn, e.content.reason, e.meta.get("execution"))
             for e in run.record.of_kind(Kind.RESULT)
         ]
         return hooks, landed, answer, took[0]
@@ -1121,7 +1121,7 @@ def test_an_ask_that_finished_as_the_call_settles_is_not_waited_on(monkeypatch):
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
         backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
         try:
-            await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend)
+            await actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend)
         finally:
             state["client"].close()
         return state["calls"]
@@ -1172,7 +1172,7 @@ def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypat
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
         monkeypatch.setattr(claude_code, "_READ_S", 1.0, raising=False)
         backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
-        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend))
         t0 = time.monotonic()
         done, _ = await asyncio.wait({task}, timeout=3)
         state["client"].close()
@@ -1236,7 +1236,7 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
         monkeypatch.setattr(claude_code, "_ask", stuck)
         monkeypatch.setattr(claude_code, "_JOIN_S", 0.5, raising=False)
         backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
-        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend))
         if cancelling:  # a caller that cancels on every turn, as a SIGINT storm would
 
             async def storm():
@@ -1332,7 +1332,7 @@ def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(mo
 
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
         backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
-        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend)
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend)
         release.set()  # after the call: the hooks it held were cancelled at its end
         await asyncio.sleep(0.05)
         answers = []
@@ -1395,7 +1395,7 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
 
         backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor, timeout=1.0)
         t0 = time.monotonic()
-        request = RunRequest(inputs=("go",), max_rounds=1)
+        request = RunRequest(inputs=("go",), max_turns=1)
         task = asyncio.create_task(actor.run(Profile("worker"), request, backend))
         await asyncio.wait_for(entered.wait(), 5)
         if mode.startswith("cancel"):
@@ -1458,7 +1458,7 @@ def _forking(*texts: str):
 READ = '<lact f>read(path="notes")</lact>'
 HIDE = '<lact h>context.hide(refs=["_r3"])</lact>'
 SHOW = Message("user", "[_r9 v context.show] shown: _r3", name="_r9", spec="context.show")
-S10 = Message("system", "<system round=4/9 seq=10>\n</system>", name="_s10")
+S10 = Message("system", "<system turn=4/9 seq=10>\n</system>", name="_s10")
 
 
 def _chat(size: int) -> dict[str, Message]:
@@ -1466,14 +1466,14 @@ def _chat(size: int) -> dict[str, Message]:
     m = {
         "in0": Message("user", "[_in0] read the notes, then put them away", name="_in0"),
         "s1": Message(
-            "system", "<system round=1/9 seq=1>\ncontext: ~20 / 100000 tokens\n</system>", name="_s1"
+            "system", "<system turn=1/9 seq=1>\ncontext: ~20 / 100000 tokens\n</system>", name="_s1"
         ),
         "t2": Message("assistant", READ, name="_t2"),
         "r3": Message("user", "[_r3 f read] " + "n" * size, name="_r3", spec="read"),
-        "s4": Message("system", "<system round=2/9 seq=4>\nsettled:\n  f (_r3, read)\n</system>", name="_s4"),
+        "s4": Message("system", "<system turn=2/9 seq=4>\nsettled:\n  f (_r3, read)\n</system>", name="_s4"),
         "t5": Message("assistant", HIDE, name="_t5"),
         "r6": Message("user", "[_r6 h context.hide] hidden: _r3", name="_r6", spec="context.hide"),
-        "s7": Message("system", "<system round=3/9 seq=7>\n</system>", name="_s7"),
+        "s7": Message("system", "<system turn=3/9 seq=7>\n</system>", name="_s7"),
     }
     m["ph"] = Message(
         "user",
@@ -1587,7 +1587,7 @@ def test_a_show_of_what_the_session_still_holds_sends_nothing_again(monkeypatch)
 
 
 def test_with_no_point_left_intact_the_session_starts_over_from_the_whole_view(monkeypatch):
-    """A summary over the first round's notice: every point the session passed holds it, so the
+    """A summary over the first turn's notice: every point the session passed holds it, so the
     restart writes the whole view as a new session, the system prompt with it."""
     fake, calls = _forking(READ, HIDE, "noted")
     monkeypatch.setattr(claude_code, "_exec", fake)
@@ -1807,7 +1807,7 @@ def test_a_restart_is_priced_at_the_cache_prices_of_the_model_the_cli_reports_se
         "an id that only begins like one the table names",
         "the canonical name",
         "several, the one that took the most input",
-        "several, the other way round",
+        "several, the other way turn",
         "the served model over the one asked for",
         "the served model over an alias asked for",
         "an alias served",
@@ -1867,10 +1867,10 @@ def _through_the_actor(tmp_path, monkeypatch, size: int):
     monkeypatch.setattr(claude_code, "_exec", fake)
     actor, profile = reader(tmp_path)
     s = ClaudeCodeSession(cli="/bin/claude")
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("read the notes",), max_rounds=4), s))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("read the notes",), max_turns=4), s))
     hidden = next(e for e in run.record if e.kind is Kind.RESULT and e.alias == "h1")
     assert hidden.content.ok and len(calls) == 4
-    notices = [str(e.content) for e in run.record if str(e.content).startswith("<system round=")]
+    notices = [str(e.content) for e in run.record if str(e.content).startswith("<system turn=")]
     figures = [int(n.split("context: ~")[1].split(" ")[0]) for n in notices]
     return s, calls, notices, figures
 
@@ -1915,9 +1915,9 @@ def test_through_the_actor_the_runtimes_fold_forks_from_the_point_before_what_it
     actor, profile = reader(tmp_path)
     s = ClaudeCodeSession(cli="/bin/claude")
     run = asyncio.run(
-        actor.run(profile, RunRequest(inputs=("read the notes",), max_rounds=3, view_budget=3000), s)
+        actor.run(profile, RunRequest(inputs=("read the notes",), max_turns=3, view_budget=3000), s)
     )
-    notices = [str(e.content) for e in run.record if str(e.content).startswith("<system round=")]
+    notices = [str(e.content) for e in run.record if str(e.content).startswith("<system turn=")]
     assert "1 older entries" in notices[2] and "session: starts over from this view; ~" in notices[2]
     assert "--fork-session" in calls[2]["args"]
     assert _after(calls[2]["args"], "--resume") == _after(calls[0]["args"], "--session-id")
