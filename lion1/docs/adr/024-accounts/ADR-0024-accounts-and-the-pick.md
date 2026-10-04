@@ -25,21 +25,23 @@ This record serves the author's request of 2026-10-04:
 - 11:40:29: Claude Code and Codex can each sign in to many accounts; build a load balancer across
   them
 
-The same line asks that the earlier tool's work move into this repository.
+The same line asks that the earlier tool's work move into this repository. This record serves the
+agent half of that instruction first; moving a person's sessions is S2, and the order is the
+author's to reverse.
 
-An agent on Claude Code or Codex runs today on the sign-in its process inherited: each backend gives
-its child the whole environment. The Claude Code backend runs the CLI's one-envelope form, which
-carries no limit figure (measured 2026-10-04). No failure is read as a spent account.
+An agent on Claude Code or Codex runs today on the sign-in its process inherited. The Claude Code
+backend runs the CLI's one-envelope form, which carries no limit figure (measured 2026-10-04). No
+failure reads as a spent account.
 
-An earlier tool outside this repository does part of this for interactive sessions. It ranks an
-account it never observed at 50 percent, reads an expired figure as 0, keeps tokens in plain files
-and learns a running session's account from the process table.
+An earlier tool does part of this for interactive sessions. It ranks an unobserved account at 50
+percent, reads an expired figure as 0, keeps tokens in plain files and learns a session's account
+from the process table.
 
-This record fixes one runtime part: the accounts of the two CLI providers, the evidence about each,
-the pick at a wake, what a refusal does, how a run's account is known, and the commands. Interactive
-sessions, API providers' keys and the app's screen are later records (S2 to S4). Source:
-`hub/backend/claude_code/__init__.py` (`_exec`), `hub/backend/codex.py` (`TRANSIENT`, `_env`,
-`_meter`), `hub/agent/agent.py` (`wake`, `_spend`), `apps/cli/lion_cli/agent.py` (`arm`).
+This record fixes one runtime part: the two CLI providers' accounts, the evidence about each, the
+pick at a wake, what a refusal does, how a run's account is known, and the commands. API providers'
+keys and the app's screen are later records (S3, S4). Source: `hub/backend/claude_code/__init__.py`
+(`_exec`), `hub/backend/codex.py` (`TRANSIENT`, `_env`, `_meter`), `hub/agent/agent.py` (`wake`,
+`_spend`), `apps/cli/lion_cli/agent.py` (`arm`).
 
 ## Definitions
 
@@ -65,7 +67,7 @@ sessions, API providers' keys and the app's screen are later records (S2 to S4).
 
 | # | statement | source | if false |
 | - | --------- | ------ | -------- |
-| A1 | Claude Code's stream form carries its limit row under a token sign-in as it does under the CLI's stored login. | two stream calls under the stored login each carried it (2026-10-04); a token sign-in was not measured | Claude Code accounts with a token are usable with figures unknown, and a refusal is their only signal |
+| A1 | Claude Code's stream form carries its limit row under a token sign-in as it does under the CLI's stored login. | measured 2026-10-04: one stream call under a token sign-in carried the row with both windows, its seven-day figure equal to that account's own reading; two calls under the stored login carried it too | Claude Code accounts with a token are usable with figures unknown, and a refusal is their only signal |
 | A2 | A keychain item can be read by a job the operating system starts in the background, with the screen locked. | the router's key is read from a keychain item by name (`api_key` in `hub/backend/openrouter.py`); a locked screen was not measured | a served agent cannot set a token, so its Claude Code accounts other than `default` hold its wakes until custody is amended |
 | A3 | Two Codex homes keep separate sign-ins, and the CLI writes a refreshed credential back into the home it read it from. | the backend's private home reads one login through a link the CLI writes in place (`hub/backend/codex.py`); two real homes were not measured | Codex accounts cannot be told apart by home, and Codex runs on `default` alone |
 | A4 | A Codex `token_count` row names each window's length and the instant it resets. | the session tests' rows carry `used_percent` and `window_minutes` (`tests/test_codex_session.py`); no code here reads a reset | a Codex limit reading has no reset, and only `max_age` ends it |
@@ -110,13 +112,13 @@ nothing. The list is completed before D3 lands (S9).
   older than `max_age`, counts as fresh.
 
 Claude Code's source is the `rate_limit_event` row of its stream form: each window's `utilization`
-and `resetsAt` under `unifiedWindows`, observed when the row is read. Codex's is the `rate_limits`
-of the rollout's last `token_count` row, observed at that row's own `timestamp`, its percentage read
-as a fraction.
+and `resetsAt` under `unifiedWindows`, observed when the row is read. It carries a `status` too.
+Codex's is the `rate_limits` of the rollout's last `token_count` row, observed at that row's own
+`timestamp`, its percentage read as a fraction.
 
-A reading whose reset has passed is no reading. The earlier tool's 0 for an expired figure and its
-50 for a missing seven-day one are rejected by name, and so is its 0 for a missing five-hour one.
-Accounts of one plan group share one limit, so a reading of one is a reading of all.
+A reading past its reset is no reading. The earlier tool's 0 for an expired figure and its 50 for a
+missing seven-day one are rejected by name, and so is its 0 for a missing five-hour one. Accounts of
+one plan group share one limit: a reading of one is a reading of all.
 
 ### C4: The pick happens once at a wake's start and binds every child of that wake _(enforced: mechanical; owed, S1)_ ^c4
 
@@ -272,7 +274,7 @@ before the error goes on. No class sends the call to another account.
 
 | class | read from | does |
 | ----- | --------- | ---- |
-| out of quota | a limit reading from the failed call at a window's limit, or the CLI stating a usage limit (S6) | marks the account and its plan group until the reset named, else until a later probe succeeds; the wake ends |
+| out of quota | the limit row's `status` saying the call was refused, a limit reading from the failed call at a window's limit, or the CLI stating a usage limit (S6) | marks the account and its plan group until the reset named, else until a later probe succeeds; the wake ends |
 | sign-in failed | what `AUTH` in `hub/backend/codex.py` matches: 401, 403, unauthorized or forbidden | marks the account as needing its person until `lion account add` writes it again or a probe succeeds |
 | passing | any other failure | retried as today; a call that still fails ends the wake; no mark |
 
