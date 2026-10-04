@@ -456,8 +456,9 @@ or XCTest.
   route.
 - **S15**: Providers, credentials and shared limits are a later record. Until it lands the app shows
   each provider read only: its state, whether a key is set, codex's release after a check and
-  OpenRouter's usage figures, whose log is empty for an ordinary key. It offers no key entry (S4)
-  and no limits, which the host answers as null.
+  OpenRouter's usage figures, whose log is empty for an ordinary key. A provider's `check` says
+  whether the host has a check for it, and `claude_code` has none, so the app offers it no Check. It
+  offers no key entry (S4) and no limits, which the host answers as null.
 - **S16**: The subagent tool is a later record. Until it lands the app shows nothing for it.
 - **S17**: The host is the areas server, and the residents run their own loops; the two servers of
   [[ADR-0021-the-served-actor|ADR-0021]] S2 still stand. A desk served through the actor, reached by
