@@ -6,8 +6,10 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from hub.accounts import DEFAULT_POOL, PROVIDERS
 from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
 
+from .account import account_main
 from .agent import agent_main
 from .areas import areas_main
 from .chat import chat_main
@@ -184,6 +186,31 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     cv = verbs.add_parser("show", parents=[here], help="print one var's value, a lazy one included")
     cv.add_argument("--var", required=True, help="the var's name, as the restore prompt gives it")
     cv.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
+    pool = argparse.ArgumentParser(add_help=False)
+    pool.add_argument(
+        "--file",
+        default=str(DEFAULT_POOL),
+        help="the pool, beside the areas registry; evidence.json sits beside it",
+    )
+    ac = sub.add_parser("account", help="the Claude Code and Codex accounts agents run on (ADR-0024)")
+    forms = ac.add_subparsers(dest="verb", required=True)
+    aa = forms.add_parser(
+        "add", parents=[pool], help="declare an account; for keychain, its token is read without echo"
+    )
+    aa.add_argument("name", help="letters, digits, '.', '_' and '-'")
+    aa.add_argument("--provider", required=True, choices=PROVIDERS)
+    aa.add_argument(
+        "--credential",
+        required=True,
+        help="keychain or default for claude_code; a home directory or default for codex",
+    )
+    aa.add_argument("--group", default=None, help="the plan group: accounts that draw on one limit")
+    al = forms.add_parser("list", parents=[pool], help="each account, its readings and its mark")
+    al.add_argument("--json", action="store_true", help="print the rows as JSON instead of lines")
+    ad = forms.add_parser(
+        "remove", parents=[pool], help="delete an account and its keychain item; a Codex home stays"
+    )
+    ad.add_argument("name")
     return ap
 
 
@@ -201,6 +228,8 @@ def main(argv: list[str] | None = None) -> None:
         context_main(a)
     elif a.command == "config":
         config_main(a, parser().parse_args(["chat"]))
+    elif a.command == "account":
+        account_main(a)
     elif a.command == "chat":
         try:
             asyncio.run(chat_main(a))

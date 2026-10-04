@@ -1,7 +1,7 @@
 ---
 adr: ADR-0024
 status: proposed
-liveness: unimplemented (nothing is built; every mechanism is owed, S1)
+liveness: partial (the pool file, a Claude Code token's keychain item, the child's environment as a function that starts nothing, the evidence file under its lock with the two limit-row parsers, and `lion account` add, list and remove are under tests; the agent's `accounts` key, the private home's link, the pick, the probe, the refusal classes, the launch record and every backend's use of these are owed, S1)
 date: "2026-10-04"
 area: accounts
 kind: new
@@ -217,7 +217,12 @@ account on `default`, as today.
 | `[pick]` `seven_day`, `five_hour` | the fractions under which an account is usable; 0.97 and 0.95 |
 | `[pick]` `probe_model` | the model a probe calls, per provider; `haiku` for Claude Code, the CLI's default for Codex |
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_accounts.py`:
+  `test_a_pool_file_declares_its_accounts_their_plan_groups_and_the_pick_settings`,
+  `test_every_refusal_of_the_pool_file_names_the_entry_and_the_rule`,
+  `test_no_file_is_one_account_per_provider_named_default_on_the_default_credential`,
+  `test_the_pool_sits_beside_the_areas_registry_and_the_evidence_file_beside_the_pool`; the agent's
+  `accounts` key is owed with the pick (S7).
 
 ### D2: A keychain item per Claude Code account, a home per Codex account ^d2
 
@@ -228,7 +233,13 @@ person signs the CLI in under. The agent's private home ([[ADR-0009-backends#^d3
 keeps its login as a link, which the pick points at the chosen home's while no child runs. An agent
 with no private home runs on `default` alone.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_accounts.py`:
+  `test_a_token_goes_to_the_keychain_tool_on_standard_input_and_reads_back`,
+  `test_a_token_outside_its_form_is_refused_before_the_tool_runs_and_never_repeated`,
+  `test_what_the_keychain_tool_says_reaches_an_error_with_the_token_replaced`,
+  `test_a_claude_code_child_carries_its_accounts_token_and_no_competing_credential`,
+  `test_a_codex_child_runs_from_the_private_home_and_keeps_no_access_token`; pointing the private
+  home's link is owed with the pick (S1).
 
 ### D3: Each backend builds its child's environment from the pick ^d3
 
@@ -249,7 +260,14 @@ an exclusive `flock` on it, as the agent's pid file is held
 together, each within 60 seconds, and a pick that waits past 120 seconds for the lock holds its
 wake. After each call the backend writes the call's reading under the lock.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_accounts.py`:
+  `test_two_processes_writing_the_evidence_file_at_once_lose_no_write`,
+  `test_a_waiter_on_a_file_that_was_replaced_or_removed_takes_the_lock_on_the_path_anew`,
+  `test_a_holder_that_waits_past_its_bound_is_refused`,
+  `test_fresh_ends_at_the_reset_instant_and_holds_at_max_age_exactly`,
+  `test_usable_at_each_threshold_exactly_and_unknown_with_a_window_unknown`,
+  `test_a_plan_groups_reading_is_every_members_and_stays_within_its_provider`, and each parser's
+  full, missing and wrong-type rows; the probes and the backend's write are owed (S1).
 
 ### D5: The pick, in order ^d5
 
@@ -298,7 +316,12 @@ group, readings with their age and source, and marks; never a credential or wher
 <name>` deletes the entry and a Claude Code account's keychain item, and leaves a Codex home to its
 person.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_accounts.py`:
+  `test_add_writes_the_entry_at_the_end_and_keeps_every_other_byte`,
+  `test_add_reads_the_token_without_echo_at_a_terminal`,
+  `test_remove_deletes_the_table_and_its_item_and_leaves_the_rest_and_a_codex_home`,
+  `test_list_shows_each_window_with_its_age_and_source_and_each_mark`,
+  `test_a_made_up_token_is_in_nothing_any_command_or_refusal_wrote`; `probe` is owed (S1).
 
 ## Alternatives
 
