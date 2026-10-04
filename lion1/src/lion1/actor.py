@@ -1533,7 +1533,7 @@ class Actor:
                         f"*{p.name} waits on {la.alias}: a circle of pointers never settles, and a "
                         "command that writes or reads waits for earlier commands of its turn"
                     )
-                await asyncio.shield(task)
+                await _waited(task)
 
         def sub(v: Any) -> Any:
             if isinstance(v, Pointer):
@@ -2202,12 +2202,7 @@ class _Walk:
             # whichever turn bound it (ADR-0008/D4)
             reader = _Reader(self, self._before(name, self.writes if writes is None else writes))
             self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, reader))
-        task = self.computed[name]
-        # `wait` never cancels what it waits on, so a reader cut here leaves the value computing; a
-        # shield would too, and would have the loop log the value's later failure as nobody's
-        if not task.done():
-            await asyncio.wait((task,))
-        return task.result()
+        return await _waited(self.computed[name])
 
     def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
         """The writes a value reads after, of the notes it reads. A write that reads the value comes
@@ -2279,7 +2274,7 @@ class _Walk:
 
         async def put() -> None:
             if prior is not None:  # two assignments to one note are two writes, in the order written
-                await asyncio.shield(prior)
+                await _waited(prior)
             # a write reached after the walk expired or the budget is spent is refused as spent, whatever
             # its evaluation would have raised
             if self.spent():
@@ -2334,7 +2329,7 @@ class _Reader:
             return value
         task = walk.run.pending.get(name)
         if task is not None:
-            await asyncio.shield(task)
+            await _waited(task)
         value = walk.run.resolve(name)
         if isinstance(value, Result):  # a failed command resolves to its Result
             raise EvalError(f"*{name} did not settle ok: {value.error}")
@@ -2346,7 +2341,7 @@ class _Reader:
         if key not in self.notes:
             write = self.writes.get(key)
             if write is not None:
-                await asyncio.shield(write)
+                await _waited(write)
             note = self.walk.run.notes.get(key)
             if note is None:
                 raise EvalError(f"note[{key!r}] is not in the store")
@@ -2359,7 +2354,7 @@ class _Reader:
         async def given() -> dict[str, Any]:
             return args
 
-        await asyncio.shield(self.walk.launch(Lact(alias, name, {}), given))
+        await _waited(self.walk.launch(Lact(alias, name, {}), given))
         return await self.point(alias)
 
 
@@ -2544,6 +2539,15 @@ def _deadline(run: Run) -> float | None:
     return None if left is None else asyncio.get_running_loop().time() + left
 
 
+async def _waited(task: asyncio.Future) -> Any:
+    """`task`'s result once it ends, with nothing cancelled: a waiter cut here leaves the task running,
+    as under a shield. A shield would also have the loop report the task's later failure as nobody's
+    (CPython 3.14.7), when the task's owner is still there to read it."""
+    if not task.done():
+        await asyncio.wait((task,))
+    return task.result()
+
+
 async def _reap(run: Run) -> None:
     """At the run's end, whatever is still pending is cancelled and waited for, so its cancelled
     RESULT is on the record when `run` returns and no command task outlives it (ADR-0002/C1); every
@@ -2561,7 +2565,7 @@ async def _reaped(run: Run) -> bool:
     reap, cancelled = asyncio.ensure_future(_reap(run)), False
     while not reap.done():
         try:
-            await asyncio.shield(reap)
+            await asyncio.wait((reap,))  # never a shield: see `_waited`
         except asyncio.CancelledError:
             cancelled = True
     reap.result()
