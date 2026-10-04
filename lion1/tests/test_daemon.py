@@ -394,6 +394,21 @@ def test_the_days_cap_is_unknown_when_a_residents_budget_is_refused(tmp_path):
     assert get(port, "/v2/today")[1]["totals"]["cap"] is None
 
 
+def test_the_wakes_that_acted_are_unknown_for_a_resident_whose_directory_holds_no_log(tmp_path):
+    here, away = resident(tmp_path, lines=LOG), resident(tmp_path, "away", lines=LOG)
+    port = serve_on(reg(tmp_path, here, away))
+    assert get(port, "/v2/today")[1]["totals"]["acted"] == 2
+    (away / "serve.log").unlink()  # its output is kept elsewhere: the notes still count its wakes
+    today = get(port, "/v2/agents/x/away")[1]["row"]["today"]
+    assert today["wakes"] == 2 and today["acted"] is None
+    assert get(port, "/v2/agents/x/away/wakes")[1] == {"wakes": [], "more": False}
+    totals = get(port, "/v2/today")[1]["totals"]
+    assert totals["wakes"] == 4 and totals["acted"] is None
+    (away / "serve.log").write_text("")  # a log with no wake in it: none acted
+    assert get(port, "/v2/agents/x/away")[1]["row"]["today"]["acted"] == 0
+    assert get(port, "/v2/today")[1]["totals"]["acted"] == 1
+
+
 def test_a_wake_that_missed_calls_of_unknown_cost_has_no_cost(tmp_path):
     partial = wake(3, 1, "09:30:00").replace("$0.1250;", "$0.1250 (partial: 1 call(s) of unknown cost);")
     port = serve_on(reg(tmp_path, resident(tmp_path, lines=[*LOG, partial])))

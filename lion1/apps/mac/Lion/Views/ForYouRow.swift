@@ -47,7 +47,8 @@ struct ForYouRow: View {
     /// "support chair · 12 m"
     private var who: String {
         let name = store.row(item.from.agent)?.name ?? item.from.agent
-        return "\(item.from.area) \(name) · \(Format.ago(item.at, now: store.now))"
+        let who = item.from.area.map { "\($0) \(name)" } ?? name
+        return "\(who) · \(Format.ago(item.at, now: store.now))"
     }
 
     @ViewBuilder private var quickActions: some View {

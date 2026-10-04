@@ -5,7 +5,8 @@ import Foundation
 struct Totals: Codable, Hashable {
     var running: Int
     var wakes: Int
-    var acted: Int
+    /// nil when an agent's log is not where the daemon reads it
+    var acted: Int?
     var cost: Double?
     var cap: Double?
 }

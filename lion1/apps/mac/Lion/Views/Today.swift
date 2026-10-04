@@ -47,7 +47,8 @@ struct TodayView: View {
             Figure(label: "Running now", value: "\(figures?.running ?? 0)",
                    note: running.isEmpty ? "nothing is running" : running.joined(separator: " · "))
             Figure(label: "Wakes today", value: Format.whole(wakes),
-                   note: "\(Format.whole(max(0, wakes - (figures?.acted ?? 0)))) did nothing")
+                   note: figures?.acted.map { "\(Format.whole(max(0, wakes - $0))) did nothing" }
+                       ?? "what they did is not known")
             Figure(label: "Spend today", value: Format.money(figures?.cost), note: capNote)
             Figure(label: "For you", value: "\(store.today?.forYou.open ?? 0)", note: openKinds)
         }
@@ -56,8 +57,8 @@ struct TodayView: View {
 
     private var capNote: String {
         guard let cap = store.today?.totals.cap else { return "no daily cap" }
-        let cost = store.today?.totals.cost ?? 0
-        return "cap \(Format.moneyShort(cap)) · \(cap > 0 ? Int((cost / cap * 100).rounded()) : 0)%"
+        guard let cost = store.today?.totals.cost, cap > 0 else { return "cap \(Format.moneyShort(cap))" }
+        return "cap \(Format.moneyShort(cap)) · \(Int((cost / cap * 100).rounded()))%"
     }
 
     /// "2 questions · 1 reply"
@@ -71,7 +72,10 @@ struct TodayView: View {
             let n = open.filter { $0.kind == word.0 }.count
             return n == 0 ? nil : Format.count(n, word.1, word.2)
         }
-        return parts.isEmpty ? "nothing waits on you" : parts.joined(separator: " · ")
+        if parts.isEmpty {
+            return (store.today?.forYou.open ?? 0) > 0 ? "not read yet" : "nothing waits on you"
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var forYouNote: String {

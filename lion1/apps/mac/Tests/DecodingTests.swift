@@ -112,8 +112,21 @@ final class DecodingTests: XCTestCase {
         var areas = try XCTUnwrap(day["areas"] as? [[String: Any]])
         areas[0]["chair"] = NSNull()
         day["areas"] = areas
+        var totals = try XCTUnwrap(day["totals"] as? [String: Any])
+        totals["acted"] = NSNull()
+        day["totals"] = totals
         let today = try JSONDecoder().decode(Today.self, from: JSONSerialization.data(withJSONObject: day))
         XCTAssertNil(today.areas[0].chair)
+        XCTAssertNil(today.totals.acted)
+
+        var mail = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.data("foryou.json")) as? [String: Any])
+        var items = try XCTUnwrap(mail["items"] as? [[String: Any]])
+        var from = try XCTUnwrap(items[0]["from"] as? [String: Any])
+        from["area"] = NSNull()
+        items[0]["from"] = from
+        mail["items"] = items
+        let forYou = try JSONDecoder().decode(ForYouList.self, from: JSONSerialization.data(withJSONObject: mail))
+        XCTAssertNil(forYou.items[0].from.area)
 
         var shelf = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.data("models.json")) as? [String: Any])
         var models = try XCTUnwrap(shelf["models"] as? [[String: Any]])

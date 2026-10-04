@@ -291,7 +291,8 @@ struct Wake: Codable, Hashable, Identifiable {
 
 struct Asker: Codable, Hashable {
     var agent: String
-    var area: String
+    /// nil for a sender that is no agent of a registered area
+    var area: String?
 }
 
 struct Choice: Codable, Hashable, Identifiable {

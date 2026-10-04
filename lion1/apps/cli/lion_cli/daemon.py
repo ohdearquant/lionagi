@@ -276,8 +276,11 @@ def _rules(cfg: dict) -> list[dict]:
     return out
 
 
-def _acted(directory: str, day: str) -> int:
-    """The day's wakes that sent at least one message: the log says nothing else a wake did."""
+def _acted(directory: str, day: str) -> int | None:
+    """The day's wakes that sent at least one message: the log says nothing else a wake did. None when
+    the directory holds no serve.log: the count is in a log this server does not read."""
+    if not (Path(directory) / "serve.log").is_file():
+        return None
     return sum(
         1 for w in wakes(directory, 1 << 30) if "wake" in w and w["at"].startswith(day) and w["sent"] > 0
     )
@@ -686,7 +689,7 @@ class Daemon:
             "totals": {
                 "running": sum(1 for _, r in rows if r["state"] == "running"),
                 "wakes": sum(r["today"]["wakes"] for _, r in rows),
-                "acted": sum(r["today"]["acted"] for _, r in rows),
+                "acted": _total([r["today"]["acted"] for _, r in rows]),
                 "cost": _total([r["today"]["cost"] for _, r in rows]),
                 "cap": _total(caps),
             },
