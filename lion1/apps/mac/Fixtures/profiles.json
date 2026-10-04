@@ -1,0 +1,34 @@
+{
+  "profiles": [
+    {
+      "name": "chair",
+      "about": "Keeps an area moving and decides what it can.",
+      "from": "lion"
+    },
+    {
+      "name": "front desk",
+      "about": "Answers what arrives and hands the rest on.",
+      "from": "lion"
+    },
+    {
+      "name": "researcher",
+      "about": "Reads what arrives and writes a short brief.",
+      "from": "research-brief"
+    },
+    {
+      "name": "reviewer",
+      "about": "Reviews a pull request and returns a verdict.",
+      "from": "repo-review"
+    },
+    {
+      "name": "builder",
+      "about": "Makes code changes on a branch.",
+      "from": "swe-kit"
+    },
+    {
+      "name": "triager",
+      "about": "Sorts what arrives into the right queue.",
+      "from": "yours"
+    }
+  ]
+}

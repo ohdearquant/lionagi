@@ -1,0 +1,723 @@
+{
+  "plugins": [
+    {
+      "name": "lion",
+      "about": "The tools every agent starts from: files, code, shell, mail, memory, web, a box and other agents.",
+      "source": "default",
+      "kind": "plugin",
+      "on": true,
+      "folder": "~/.lion/plugins/lion/",
+      "agents": [
+        {
+          "name": "chair",
+          "about": "Keeps an area moving and decides what it can.",
+          "in_use": 4
+        },
+        {
+          "name": "front desk",
+          "about": "Answers what arrives and hands the rest on.",
+          "in_use": 2
+        }
+      ],
+      "skills": [
+        {
+          "name": "write-a-pull-request",
+          "loaded_when": "the task ends in a pull request; until then it costs one line of context",
+          "on": true
+        },
+        {
+          "name": "summarise-a-thread",
+          "loaded_when": "the task is to summarise a mail or issue thread",
+          "on": true
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "kind": "function",
+          "about": "Read a file",
+          "args": [
+            {
+              "name": "path",
+              "type": "string",
+              "required": true,
+              "about": "a path under the agent's folders"
+            }
+          ],
+          "effect": "read",
+          "on": true,
+          "group": "Files"
+        },
+        {
+          "name": "write_file",
+          "kind": "function",
+          "about": "Write a file",
+          "args": [
+            {
+              "name": "path",
+              "type": "string",
+              "required": true,
+              "about": "a path under the agent's folders"
+            },
+            {
+              "name": "text",
+              "type": "string",
+              "required": true,
+              "about": "the new contents"
+            }
+          ],
+          "effect": "write",
+          "on": true,
+          "group": "Files"
+        },
+        {
+          "name": "list_dir",
+          "kind": "function",
+          "about": "List a folder",
+          "args": [
+            {
+              "name": "path",
+              "type": "string",
+              "required": true,
+              "about": "a path under the agent's folders"
+            }
+          ],
+          "effect": "read",
+          "on": true,
+          "group": "Files"
+        },
+        {
+          "name": "search_code",
+          "kind": "function",
+          "about": "Search code by text or symbol",
+          "args": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": true,
+              "about": "what to look for"
+            }
+          ],
+          "effect": "read",
+          "on": true,
+          "group": "Code"
+        },
+        {
+          "name": "edit_code",
+          "kind": "function",
+          "about": "Replace text in a file",
+          "args": [
+            {
+              "name": "path",
+              "type": "string",
+              "required": true,
+              "about": "a path under the agent's folders"
+            },
+            {
+              "name": "old",
+              "type": "string",
+              "required": true,
+              "about": "the text now"
+            },
+            {
+              "name": "new",
+              "type": "string",
+              "required": true,
+              "about": "the text after"
+            }
+          ],
+          "effect": "write",
+          "on": true,
+          "group": "Code"
+        },
+        {
+          "name": "bash",
+          "kind": "function",
+          "about": "Run a command under the agent's shell rules",
+          "args": [
+            {
+              "name": "command",
+              "type": "string",
+              "required": true,
+              "about": "the command line"
+            }
+          ],
+          "effect": "run",
+          "on": true,
+          "group": "Shell"
+        },
+        {
+          "name": "read_mail",
+          "kind": "function",
+          "about": "Read the mail a rule delivered",
+          "args": [],
+          "effect": "read",
+          "on": true,
+          "group": "Mail"
+        },
+        {
+          "name": "send_mail",
+          "kind": "function",
+          "about": "Send a reply",
+          "args": [
+            {
+              "name": "to",
+              "type": "string",
+              "required": true,
+              "about": "the address"
+            },
+            {
+              "name": "text",
+              "type": "string",
+              "required": true,
+              "about": "the reply"
+            }
+          ],
+          "effect": "write",
+          "on": true,
+          "group": "Mail"
+        },
+        {
+          "name": "recall",
+          "kind": "function",
+          "about": "Recall notes this agent kept",
+          "args": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": true,
+              "about": "what to recall"
+            }
+          ],
+          "effect": "read",
+          "on": true,
+          "group": "Memory"
+        },
+        {
+          "name": "remember",
+          "kind": "function",
+          "about": "Keep a note for later wakes",
+          "args": [
+            {
+              "name": "text",
+              "type": "string",
+              "required": true,
+              "about": "the note"
+            }
+          ],
+          "effect": "write",
+          "on": true,
+          "group": "Memory"
+        },
+        {
+          "name": "fetch",
+          "kind": "function",
+          "about": "Fetch a web page as text",
+          "args": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": true,
+              "about": "the address"
+            }
+          ],
+          "effect": "read",
+          "on": true,
+          "group": "Web"
+        },
+        {
+          "name": "web_search",
+          "kind": "function",
+          "about": "Search the web",
+          "args": [
+            {
+              "name": "query",
+              "type": "string",
+              "required": true,
+              "about": "what to search for"
+            }
+          ],
+          "effect": "spend",
+          "on": true,
+          "group": "Web"
+        },
+        {
+          "name": "box_run",
+          "kind": "function",
+          "about": "Run a command in a remote box",
+          "args": [
+            {
+              "name": "command",
+              "type": "string",
+              "required": true,
+              "about": "the command line"
+            }
+          ],
+          "effect": "run",
+          "on": false,
+          "group": "Box"
+        },
+        {
+          "name": "ask_agent",
+          "kind": "function",
+          "about": "Ask another agent and wait for its answer",
+          "args": [
+            {
+              "name": "agent",
+              "type": "string",
+              "required": true,
+              "about": "the agent's id"
+            },
+            {
+              "name": "text",
+              "type": "string",
+              "required": true,
+              "about": "the question"
+            }
+          ],
+          "effect": "run",
+          "on": true,
+          "group": "Agents"
+        }
+      ],
+      "not_used": [],
+      "given_to": [
+        "platform/chair",
+        "platform/front-desk",
+        "platform/reviewer",
+        "platform/builder",
+        "research/chair",
+        "research/front-desk",
+        "support/chair",
+        "support/front-desk",
+        "support/builder",
+        "ops/chair",
+        "ops/builder"
+      ]
+    },
+    {
+      "name": "pr-triage",
+      "about": "How to read a verdict and when to escalate.",
+      "source": "yours",
+      "kind": "plugin",
+      "on": true,
+      "folder": "~/.lion/plugins/pr-triage/",
+      "agents": [],
+      "skills": [
+        {
+          "name": "triage-a-verdict",
+          "loaded_when": "the task is a pull request verdict; until then it costs one line of context",
+          "on": true
+        }
+      ],
+      "tools": [
+        {
+          "name": "pr_status",
+          "kind": "function",
+          "about": "The state of a pull request and its checks",
+          "args": [
+            {
+              "name": "repo",
+              "type": "string",
+              "required": true,
+              "about": "owner/name"
+            },
+            {
+              "name": "number",
+              "type": "integer",
+              "required": true,
+              "about": "the pull request"
+            }
+          ],
+          "effect": "read",
+          "on": true
+        }
+      ],
+      "not_used": [],
+      "given_to": [
+        "platform/front-desk",
+        "platform/reviewer"
+      ]
+    },
+    {
+      "name": "research-brief",
+      "about": "Write a short brief from a set of sources.",
+      "source": "yours",
+      "kind": "plugin",
+      "on": true,
+      "folder": "~/.lion/plugins/research-brief/",
+      "agents": [
+        {
+          "name": "researcher",
+          "about": "Reads what arrives and writes a short brief of what matters.",
+          "in_use": 1
+        }
+      ],
+      "skills": [
+        {
+          "name": "brief-from-sources",
+          "loaded_when": "the task is a brief or a reading summary",
+          "on": true
+        }
+      ],
+      "tools": [],
+      "not_used": [],
+      "given_to": [
+        "research/front-desk"
+      ]
+    },
+    {
+      "name": "deploy-preview",
+      "about": "Build a branch and deploy it to a preview address.",
+      "source": "yours",
+      "kind": "plugin",
+      "on": true,
+      "folder": "~/.lion/plugins/deploy-preview/",
+      "agents": [],
+      "skills": [],
+      "tools": [
+        {
+          "name": "preview_deploy",
+          "kind": "script",
+          "about": "Build a branch and deploy a preview",
+          "args": [
+            {
+              "name": "branch",
+              "type": "string",
+              "required": true,
+              "about": "the branch to deploy"
+            }
+          ],
+          "effect": "run",
+          "on": true
+        }
+      ],
+      "not_used": [],
+      "given_to": [
+        "platform/builder",
+        "ops/builder"
+      ]
+    },
+    {
+      "name": "repo-review",
+      "about": "Review a pull request against its tests and conventions.",
+      "source": "installed",
+      "kind": "plugin",
+      "on": true,
+      "from": {
+        "marketplace": "sample-plugins",
+        "address": "github.com/example/sample-plugins",
+        "version": "1.2.0",
+        "installed_at": "2026-09-28T14:05:00Z"
+      },
+      "folder": "~/.lion/plugins/repo-review/",
+      "agents": [
+        {
+          "name": "reviewer",
+          "about": "Reviews a pull request and returns a verdict with findings.",
+          "in_use": 1
+        }
+      ],
+      "skills": [
+        {
+          "name": "review-a-diff",
+          "loaded_when": "the task is a code review",
+          "on": true
+        },
+        {
+          "name": "write-a-verdict",
+          "loaded_when": "a review is finished",
+          "on": true
+        }
+      ],
+      "tools": [],
+      "not_used": [
+        "a hooks file: this Mac's daemon has no hooks"
+      ],
+      "given_to": [
+        "platform/reviewer"
+      ]
+    },
+    {
+      "name": "swe-kit",
+      "about": "Tools for making and testing code changes.",
+      "source": "installed",
+      "kind": "plugin",
+      "on": true,
+      "from": {
+        "marketplace": "sample-plugins",
+        "address": "github.com/example/sample-plugins",
+        "version": "0.9.1",
+        "installed_at": "2026-09-30T09:12:00Z"
+      },
+      "folder": "~/.lion/plugins/swe-kit/",
+      "agents": [
+        {
+          "name": "builder",
+          "about": "Makes code changes on a branch and opens a pull request.",
+          "in_use": 2
+        }
+      ],
+      "skills": [
+        {
+          "name": "fix-a-failing-test",
+          "loaded_when": "a test fails",
+          "on": true
+        },
+        {
+          "name": "open-a-branch",
+          "loaded_when": "work starts on a change",
+          "on": true
+        }
+      ],
+      "tools": [
+        {
+          "name": "run_tests",
+          "kind": "function",
+          "about": "Run the project's tests",
+          "args": [
+            {
+              "name": "filter",
+              "type": "string",
+              "required": false,
+              "about": "only tests matching this"
+            }
+          ],
+          "effect": "run",
+          "on": true
+        },
+        {
+          "name": "open_pr",
+          "kind": "function",
+          "about": "Open a pull request from the current branch",
+          "args": [
+            {
+              "name": "title",
+              "type": "string",
+              "required": true,
+              "about": "the title"
+            }
+          ],
+          "effect": "write",
+          "on": true
+        },
+        {
+          "name": "diff",
+          "kind": "function",
+          "about": "Show the branch's changes",
+          "args": [],
+          "effect": "read",
+          "on": true
+        },
+        {
+          "name": "format_code",
+          "kind": "function",
+          "about": "Format the changed files",
+          "args": [],
+          "effect": "write",
+          "on": true
+        },
+        {
+          "name": "lint",
+          "kind": "function",
+          "about": "Lint the changed files",
+          "args": [],
+          "effect": "read",
+          "on": true
+        }
+      ],
+      "not_used": [],
+      "given_to": [
+        "platform/builder",
+        "support/builder"
+      ]
+    },
+    {
+      "name": "issues",
+      "about": "An issue tracker's server: read, file and label issues.",
+      "source": "installed",
+      "kind": "mcp",
+      "on": true,
+      "from": {
+        "address": "github.com/example/issues-server",
+        "version": "2.0.1",
+        "installed_at": "2026-09-20T10:00:00Z"
+      },
+      "agents": [],
+      "skills": [],
+      "tools": [
+        {
+          "name": "list_issues",
+          "kind": "mcp",
+          "about": "List issues",
+          "args": [
+            {
+              "name": "repo",
+              "type": "string",
+              "required": true,
+              "about": "owner/name"
+            }
+          ],
+          "effect": "read",
+          "on": true
+        },
+        {
+          "name": "create_issue",
+          "kind": "mcp",
+          "about": "File an issue",
+          "args": [
+            {
+              "name": "repo",
+              "type": "string",
+              "required": true,
+              "about": "owner/name"
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "required": true,
+              "about": "the title"
+            }
+          ],
+          "effect": "write",
+          "on": true
+        },
+        {
+          "name": "add_label",
+          "kind": "mcp",
+          "about": "Label an issue",
+          "args": [
+            {
+              "name": "number",
+              "type": "integer",
+              "required": true,
+              "about": "the issue"
+            },
+            {
+              "name": "label",
+              "type": "string",
+              "required": true,
+              "about": "the label"
+            }
+          ],
+          "effect": "write",
+          "on": true
+        }
+      ],
+      "server": {
+        "command": "issues-server --stdio",
+        "env": [
+          {
+            "name": "ISSUES_TOKEN",
+            "from": "keychain"
+          }
+        ],
+        "state": "connected",
+        "started_at": "2026-10-04T07:58:00Z"
+      },
+      "not_used": [],
+      "given_to": [
+        "platform/front-desk"
+      ]
+    },
+    {
+      "name": "browser",
+      "about": "A headless browser: open pages, click, read.",
+      "source": "installed",
+      "kind": "mcp",
+      "on": false,
+      "from": {
+        "marketplace": "community-plugins",
+        "address": "github.com/example/community-plugins",
+        "version": "0.4.0",
+        "installed_at": "2026-09-14T16:30:00Z"
+      },
+      "agents": [],
+      "skills": [],
+      "tools": [
+        {
+          "name": "open_page",
+          "kind": "mcp",
+          "about": "Open a page",
+          "args": [
+            {
+              "name": "url",
+              "type": "string",
+              "required": true,
+              "about": "the address"
+            }
+          ],
+          "effect": "read",
+          "on": false
+        },
+        {
+          "name": "click",
+          "kind": "mcp",
+          "about": "Click an element",
+          "args": [
+            {
+              "name": "selector",
+              "type": "string",
+              "required": true,
+              "about": "a CSS selector"
+            }
+          ],
+          "effect": "write",
+          "on": false
+        }
+      ],
+      "server": {
+        "command": "browser-server",
+        "env": [],
+        "state": "off"
+      },
+      "not_used": [],
+      "given_to": []
+    }
+  ],
+  "marketplaces": [
+    {
+      "name": "sample-plugins",
+      "address": "github.com/example/sample-plugins",
+      "updated_at": "2026-10-04T06:00:00Z"
+    },
+    {
+      "name": "community-plugins",
+      "address": "github.com/example/community-plugins",
+      "updated_at": "2026-10-03T18:00:00Z"
+    }
+  ],
+  "shell_rules": [
+    {
+      "name": "repo work",
+      "used_by": [
+        "platform/front-desk",
+        "platform/reviewer",
+        "support/builder"
+      ]
+    },
+    {
+      "name": "read only",
+      "used_by": [
+        "platform/chair",
+        "research/chair",
+        "research/front-desk",
+        "support/chair",
+        "support/front-desk",
+        "ops/chair"
+      ]
+    },
+    {
+      "name": "ops",
+      "used_by": [
+        "ops/builder"
+      ]
+    },
+    {
+      "name": "anything, in a box",
+      "used_by": [
+        "platform/builder"
+      ]
+    }
+  ]
+}

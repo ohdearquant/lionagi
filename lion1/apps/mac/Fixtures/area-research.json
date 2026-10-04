@@ -1,0 +1,62 @@
+{
+  "name": "research",
+  "chair": {
+    "id": "research/chair",
+    "name": "chair",
+    "area": "research",
+    "kind": "chair",
+    "state": "idle",
+    "now": "last woke 08:00, set the week's reading",
+    "woken_by": [
+      "every day at 08:00"
+    ],
+    "model": "claude-code/opus",
+    "runs_in": "local",
+    "today": {
+      "cost": 0.12,
+      "wakes": 1,
+      "acted": 1
+    }
+  },
+  "agents": [
+    {
+      "id": "research/front-desk",
+      "name": "front desk",
+      "area": "research",
+      "kind": "agent",
+      "state": "running",
+      "now": "reading three new papers on retrieval",
+      "woken_by": [
+        "every hour",
+        "a file lands in ~/reading/inbox"
+      ],
+      "model": "openrouter/deepseek/deepseek-chat",
+      "runs_in": "local",
+      "today": {
+        "cost": 0.33,
+        "wakes": 13,
+        "acted": 5,
+        "calls": 120
+      }
+    }
+  ],
+  "today": {
+    "cost": 0.45,
+    "wakes": 14,
+    "acted": 6
+  },
+  "timeline": [
+    {
+      "at": "2026-10-04T11:00:00Z",
+      "agent": "research/front-desk",
+      "text": "wrote a brief of two papers on retrieval",
+      "raised": false
+    },
+    {
+      "at": "2026-10-04T08:00:00Z",
+      "agent": "research/chair",
+      "text": "set the week's reading",
+      "raised": false
+    }
+  ]
+}

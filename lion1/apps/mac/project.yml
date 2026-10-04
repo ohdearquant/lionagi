@@ -1,0 +1,72 @@
+# xcodegen spec for Lion, the Mac app of the v2 contract. `build.sh` regenerates Lion.xcodeproj from
+# this file; the generated project is gitignored, never committed.
+#
+#   Lion       every source file of the app, its Info.plist, entitlements and assets
+#   Fixtures   one recorded answer per read route and one recorded event stream: the -demo launch
+#              reads them from the app bundle, and the tests decode the same files
+#   Tests      XCTest, hosted by the app
+#
+# Local.xcconfig (gitignored, copied from Local.xcconfig.example by build.sh when missing) supplies
+# LION_BUNDLE_PREFIX, so no bundle prefix or signing team is ever committed.
+name: Lion
+options:
+  bundleIdPrefix: $(LION_BUNDLE_PREFIX)
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # ad hoc: signed by no team, the app runs on the Mac that built it
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  Lion:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Lion
+      - path: Fixtures
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(LION_BUNDLE_PREFIX).mac
+        PRODUCT_NAME: Lion
+        PRODUCT_MODULE_NAME: Lion
+        INFOPLIST_FILE: Lion/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # sandboxed: the app connects out to the daemon and opens nothing on this Mac by itself;
+        # files and folders are opened by the daemon on request (Lion.entitlements)
+        ENABLE_APP_SANDBOX: YES
+        CODE_SIGN_ENTITLEMENTS: Lion/Lion.entitlements
+        ENABLE_HARDENED_RUNTIME: NO
+    scheme:
+      testTargets:
+        - LionTests
+  LionTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+      - path: Fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Lion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(LION_BUNDLE_PREFIX).mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Lion.app/Contents/MacOS/Lion"
+        BUNDLE_LOADER: "$(TEST_HOST)"

@@ -1,0 +1,37 @@
+{
+  "wakes": [
+    {
+      "id": "w-rs-2",
+      "at": "2026-10-04T11:00:00Z",
+      "seconds": 300,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "schedule",
+        "phrase": "every hour"
+      },
+      "turns": 22,
+      "cost": 0.09,
+      "outcome": "acted",
+      "text": "Wrote a brief of two retrieval papers; asked you which to keep for Friday.",
+      "commands": []
+    },
+    {
+      "id": "w-rs-1",
+      "at": "2026-10-04T10:00:00Z",
+      "seconds": 20,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "schedule",
+        "phrase": "every hour"
+      },
+      "turns": 2,
+      "cost": 0.01,
+      "outcome": "nothing",
+      "text": "Nothing new on the reading list.",
+      "commands": []
+    }
+  ],
+  "more": false
+}

@@ -1,0 +1,27 @@
+{
+  "wakes": [
+    {
+      "id": "w-ob-1",
+      "at": "2026-10-04T09:32:00Z",
+      "seconds": 900,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "file",
+        "phrase": "a deploy request for cache-fix"
+      },
+      "turns": 12,
+      "cost": 0.02,
+      "outcome": "failed",
+      "text": "The build step ran past 15 minutes and was stopped.",
+      "commands": [
+        {
+          "line": "make build BRANCH=cache-fix",
+          "result": "stopped after 900 s",
+          "ok": false
+        }
+      ]
+    }
+  ],
+  "more": false
+}

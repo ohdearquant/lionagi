@@ -1,0 +1,132 @@
+{
+  "row": {
+    "id": "platform/front-desk",
+    "name": "front desk",
+    "area": "platform",
+    "kind": "agent",
+    "state": "running",
+    "now": "reading a new issue on the sample app",
+    "woken_by": [
+      "mail arrives for help@example.com",
+      "an issue opens in example/app"
+    ],
+    "model": "claude-code/sonnet",
+    "runs_in": "local",
+    "today": {
+      "cost": 0.95,
+      "wakes": 45,
+      "acted": 13,
+      "calls": 61
+    }
+  },
+  "definition": {
+    "name": "front desk",
+    "area": "platform",
+    "built_from": {
+      "kind": "profile",
+      "ref": "front desk"
+    },
+    "runs_in": "local",
+    "model": "claude-code/sonnet",
+    "limits": {
+      "cost_per_day": 2.0,
+      "turns_per_wake": 100,
+      "time_per_wake_s": 900,
+      "fold_at_tokens": 60000,
+      "escalates_to": "chair"
+    },
+    "instructions": {
+      "from_role": "Answer what arrives, file what needs filing, and hand the rest on.",
+      "extra": "Reply in two short paragraphs at most."
+    },
+    "wake": {
+      "rules": [
+        {
+          "id": "r1",
+          "on": true,
+          "source": {
+            "kind": "mail"
+          },
+          "deliver": {
+            "kind": "now"
+          },
+          "phrase": {
+            "when": "mail arrives for help@example.com",
+            "then": "answer it or file an issue"
+          },
+          "today": {
+            "fired": 31,
+            "acted": 9,
+            "skipped": 22,
+            "cost": 0.58
+          }
+        },
+        {
+          "id": "r2",
+          "on": true,
+          "source": {
+            "kind": "repo",
+            "repo": "example/app",
+            "on": "an issue opened"
+          },
+          "deliver": {
+            "kind": "collect",
+            "items": 5,
+            "minutes": 30
+          },
+          "phrase": {
+            "when": "an issue opens in example/app",
+            "then": "label it and reply once"
+          },
+          "check": {
+            "kind": "label",
+            "about": "skips issues already labelled"
+          },
+          "today": {
+            "fired": 14,
+            "acted": 4,
+            "skipped": 10,
+            "cost": 0.37
+          }
+        }
+      ],
+      "at_most_per_hour": 12,
+      "quiet": null,
+      "at_cap": "hold_tell_chair",
+      "run": "fresh"
+    },
+    "plugins": [
+      {
+        "name": "lion",
+        "items": [
+          "Files",
+          "Code",
+          "Shell",
+          "Mail",
+          "Web"
+        ]
+      },
+      {
+        "name": "pr-triage"
+      },
+      {
+        "name": "issues"
+      }
+    ],
+    "shell_rules": "repo work"
+  },
+  "editable": [
+    "name",
+    "model",
+    "limits",
+    "instructions.extra",
+    "wake",
+    "plugins",
+    "shell_rules",
+    "runs_in"
+  ],
+  "files": {
+    "instance": "~/.lion/agents/platform/front-desk.toml",
+    "profile": "~/.lion/profiles/front-desk.md"
+  }
+}
