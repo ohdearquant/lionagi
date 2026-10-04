@@ -52,10 +52,10 @@ def test_a_turn_with_mermaid_writes_a_page_per_block_beside_the_log_and_links_it
 
 def test_the_console_prints_the_block_as_code_and_the_link_under_it(tmp_path, capsys):
     log = tmp_path / "c.jsonl"
-    say = Console("m", log, color=False, width=200)
+    uri = (tmp_path / "c-3-1.html").resolve().as_uri()
+    say = Console("m", log, color=False, width=len(uri) + 200)  # the link on one line, however long its path
     say(Entry(3, Kind.TEXT, f"Before.\n\n```mermaid\n{FLOW}\n```\n\nAfter."))
     out = capsys.readouterr().out
-    uri = (tmp_path / "c-3-1.html").resolve().as_uri()
     assert out.index("A-->B") < out.index(f"diagram 1: {uri}") < out.index("After.")
 
 

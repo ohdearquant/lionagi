@@ -447,6 +447,8 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
         raise ClaudeCodeError("claude exited 1: unrecognized model opus-5-5")
 
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: refusing)
+    # the closing line holds the log path: a console wider than any line, so nothing wraps
+    monkeypatch.setenv("COLUMNS", str(2 * len(str(tmp_path)) + 1000))
     log = tmp_path / "chat.jsonl"
     args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
     with pytest.raises(SystemExit) as died:
