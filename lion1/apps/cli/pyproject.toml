@@ -1,10 +1,10 @@
 [project]
 name = "lion-cli"
 version = "1.0.0a0"
-description = "`lion`: the command line of lionagi v1, one entry with subcommands."
+description = "`lion`: the command line of lion1, one entry with subcommands."
 requires-python = ">=3.11"
 dependencies = [
-    "lionagi",
+    "lion1",
     "prompt-toolkit>=3.0.36",
     "rich>=13",
 ]
@@ -19,7 +19,7 @@ voice = [
 ]
 
 [tool.uv.sources]
-lionagi = { workspace = true }
+lion1 = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

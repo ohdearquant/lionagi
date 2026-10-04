@@ -28,8 +28,8 @@ A message is what the model wrote in a turn ([[ADR-0002-the-run|ADR-0002]]); its
 dispatch ([[ADR-0005-command-handling|ADR-0005]]) and its reading errors to the notification
 ([[ADR-0006-the-notification|ADR-0006]]). `DO`, `if`, `DEF` and the semantic operators of the
 symbolic LNDL design are not part of this runtime; the program form is
-[[ADR-0008-the-program|ADR-0008]]. Source: `lionagi/lndl.py` and the reading half of `Actor.run` in
-`lionagi/actor.py`; a provider's own formats are read in the backend
+[[ADR-0008-the-program|ADR-0008]]. Source: `src/lion1/lndl.py` and the reading half of `Actor.run`
+in `src/lion1/actor.py`; a provider's own formats are read in the backend
 ([[ADR-0009-backends|ADR-0009]]).
 
 ## Definitions
@@ -134,7 +134,7 @@ runs on a message read by halves. A call named `lact...` or `lvar...` is the tag
 rebuilt with its arguments; any other becomes `<lact auto_hash>name(...)</lact>`, dispatched like a
 typed one (ADR-0005). DeepSeek's markup around a tag reads as the tag; a swallowed closer is closed.
 
-A message containing `<system round=`, in any case or spacing after `system`, is refused whole, even
+A message containing `<system turn=`, in any case or spacing after `system`, is refused whole, even
 inside backticks, naming its line. Only the loop writes that frame; its results were never observed
 (9 of 50 thinking-off runs, half their output).
 
@@ -161,7 +161,7 @@ line break escaped in a string is counted and carries no note.
 
 ### D2: Native tool calls are rebuilt at the backend boundary ^d2
 
-Serves C4. The backend adapts a provider's output before `parse` reads it, so `lionagi/lndl.py`
+Serves C4. The backend adapts a provider's output before `parse` reads it, so `src/lion1/lndl.py`
 reads LNDL and knows no provider. `tool_calls_text` is applied by the OpenRouter backend when the
 message content is empty ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `normalize`, which reads DeepSeek
 markup and closes a swallowed closer, lives in `hub/backend/markup.py` and runs in that backend. A
@@ -184,8 +184,8 @@ form, the pointer rule, and the turn rule; it is the second part of every system
 
 ### D4: `_read` names the frame's line, and the guidance says the alias rules the run keeps ^d4
 
-Serves C1 and C4. `_read` in `lionagi/actor.py` drops format characters (Unicode `Cf`) and raises on
-the first `<system round=` anywhere, in any case or spacing after `system`, its `<` also read as
+Serves C1 and C4. `_read` in `src/lion1/actor.py` drops format characters (Unicode `Cf`) and raises
+on the first `<system turn=` anywhere, in any case or spacing after `system`, its `<` also read as
 `&lt;`. It names the line number, a lone CR breaking a line too, and the line from the frame on, and
 tells the model to call it the notice and never write its tag. The guidance says a command's alias
 is unique for the whole run and a value declared again rebinds, the rules the actor keeps.
@@ -204,7 +204,7 @@ is unique for the whole run and a value declared again rebinds, the rules the ac
 | A raw-body form where the tag body is the value   | a command needs a name and fields to validate; a non-call body becomes a value instead (C3)      |
 | Native tool calling as the channel                | a provider's wire format, and no native form for a pointer from one call into another in the same message (ADR-0005) |
 | Substituting aliases into arguments               | reversed: pointers dereference at execution, so a value is never repeated in the text            |
-| Matching the tag's exact bytes                    | `<SYSTEM round=`, `&lt;system round=` and a zero-width space inside `system` each passed it      |
+| Matching the tag's exact bytes                    | `<SYSTEM turn=`, `&lt;system turn=` and a zero-width space inside `system` each passed it      |
 | Sparing the tag inside an inline code span        | a frame whose opener alone is in backticks is then read and its commands run; a rule on syntax cannot tell a mention from a frame made to look like one |
 | Python string literals inside the tags            | fought the model's JSON training on every multi-line or quoted value: 52 of 952 messages unreadable on a 50-instance SWE-bench run |
 

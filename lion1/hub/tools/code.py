@@ -15,7 +15,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 __all__ = ("ReadLines", "Search", "Edit", "Tree", "LocalTree", "numbered", "reend", "replace_once", "code")
 
@@ -177,7 +177,7 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 def code(actor: Actor, tree: Tree) -> set[str]:
     """Register `read_lines`, `search` and `edit` over `tree`."""
-    edits = asyncio.Lock()  # an edit is read-replace-write: two on one file in one round serialize
+    edits = asyncio.Lock()  # an edit is read-replace-write: two on one file in one turn serialize
 
     @actor.handler(ReadLines)
     async def read_lines(req: ReadLines, ctx: Context) -> str:

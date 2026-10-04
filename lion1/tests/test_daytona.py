@@ -21,8 +21,8 @@ import pytest
 
 from hub import BoxTree, DaytonaSandbox, code, shell
 from hub.tools import daytona as daytona_mod
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 
@@ -151,7 +151,7 @@ def test_the_shell_and_code_tools_run_in_the_box_through_the_same_registrations(
         '<lact e1>edit(path="pkg/m.py", old="return f()", new="return f() + 1")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["b1"].ok and r["b1"].value["stdout"] == "m.py\n" and r["b1"].value["rc"] == 0
     assert r["p1"].ok and r["p1"].value["stdout"] == "42\n"
@@ -249,11 +249,11 @@ def test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory(tmp_pa
                 '<lact s1>search(pattern="return a", path=".")</lact>'
                 '<lact p1>python(code="import sys; print(sys.version_info[:2])")</lact>'
                 '<lact t1>bash(command="sleep 30", timeout=2)</lact>',
-                '<lact e1>edit(path="calc.py", old="a - b", new="a + b")</lact>',  # its own round,
+                '<lact e1>edit(path="calc.py", old="a - b", new="a + b")</lact>',  # its own turn,
                 f'<lact b2>bash(command="{call}")</lact>',  # the test of it after
                 "done",
             )
-            return await actor.run(profile, RunRequest(inputs=("go",), max_rounds=4), backend)
+            return await actor.run(profile, RunRequest(inputs=("go",), max_turns=4), backend)
         finally:
             await box.stop()
 
@@ -471,7 +471,7 @@ def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(s
         '<lact e1>edit(path="calc.py", old="a - b", new="a + b")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["l1"].value == ["note.txt"] and r["r1"].value == "n\n" and r["e1"].ok
     assert (src / "calc.py").read_text().endswith("a - b\n")  # the person's tree is untouched so far
@@ -525,7 +525,7 @@ def box_chat(monkeypatch, make_box, directory: Path, *turns: str, **flags) -> Ba
 
     monkeypatch.setattr("lion_cli.view.stdin_ask", eof)
     a = dict(dir=str(directory), resume=None, log=None, shell=False, code=False, offline=False, model="x")
-    a |= dict(rounds=4, raw=True, say="hi", verbose=False, box="daytona", image="img", apply=False)
+    a |= dict(turns=4, raw=True, say="hi", verbose=False, box="daytona", image="img", apply=False)
     try:
         asyncio.run(chat_main(argparse.Namespace(**(a | flags))))
     except Exception as e:  # noqa: BLE001 - what the chat ended on is the evidence

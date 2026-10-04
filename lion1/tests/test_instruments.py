@@ -40,7 +40,7 @@ from hub.agent.instruments import (
     VerdictFreshness,
     Worktrees,
 )
-from lionagi import MemoryNoteStore
+from lion1 import MemoryNoteStore
 from tests.test_chores import FakeKhive
 
 

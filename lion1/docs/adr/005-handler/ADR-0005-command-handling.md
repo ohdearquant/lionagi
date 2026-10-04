@@ -28,7 +28,7 @@ A turn's commands ([[ADR-0004-the-language|ADR-0004]]) are dispatched by the act
 ([[ADR-0002-the-run#^c1|ADR-0002/C1]]). This record fixes the order a command goes through, the bus
 that observes it, the privilege gate, what a handler is given, and the hooks around a handler.
 Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Handler` in
-`lionagi/actor.py`; `lionagi/bus.py`; `hub/hooks/`.
+`src/lion1/actor.py`; `src/lion1/bus.py`; `hub/hooks/`.
 
 ## Definitions
 
@@ -50,8 +50,8 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
   run, refuses it with a reason, or replaces its arguments.
 - **after hook**: a function or a shell command shown what ran and its result; it may replace the
   result, never undo the command.
-- **turn hook**: a shell command run once per turn whose stdout is a notification line; the `round`
-  table in `hooks.toml` until that name is changed.
+- **turn hook**: a shell command run once per turn whose stdout is a notification line; the `turn`
+  table in `hooks.toml`.
 
 ## Assumptions
 
@@ -94,7 +94,7 @@ that blocks holds the emitter, so a subscriber returns at once or hands back a c
 bounded, and a tracked task leaves the set when it finishes; `drain` awaits the rest.
 
 Patterns match exactly, by prefix (`command.`), or everything (`*`). Events: `run.started`,
-`round.started`, `round.retry`, `command.requested`, `command.settled`, `inbox.queued`,
+`turn.started`, `turn.retry`, `command.requested`, `command.settled`, `inbox.queued`,
 `inbox.answered`, `run.completed`.
 
 ### C3: A handler reaches run state only through its `Context` _(enforced: mechanical)_ ^c3
@@ -167,14 +167,14 @@ measurement is what checks it.
 
 - **Subject**: every `install` of hooks carrying a `python -m hub.hooks.scripts.<name>` row.
 - **Violated when**: such a row is installed while its interpreter, that interpreter's prefix, the
-  `hub` or `lionagi` it would import, or one of its import paths lies inside the directory.
+  `hub` or `lion1` it would import, or one of its import paths lies inside the directory.
 
 `load` rewrites a bundled row to lion's own interpreter under `-I`, so neither the directory nor
 `PYTHONPATH` supplies its code. `install` checks that interpreter and its prefix, then asks it,
-without importing, where `hub` and `lionagi` resolve and what its import paths are. When one of
-those places lies inside the directory, it refuses every hook before registering any: the model
-writes there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with
-no bundled row install without the check.
+without importing, where `hub` and `lion1` resolve and what its import paths are. When one of those
+places lies inside the directory, it refuses every hook before registering any: the model writes
+there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with no
+bundled row install without the check.
 
 ### C8: The reference guard refuses what it cannot read, and the tree hook names what moved _(enforced: mechanical)_ ^c8
 
@@ -250,7 +250,7 @@ costs less than a missing one.
   `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
   `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
 
-### D2: The bus is `lionagi/bus.py` ^d2
+### D2: The bus is `src/lion1/bus.py` ^d2
 
 Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded log of events.
 
@@ -258,7 +258,7 @@ Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded 
 
 ### D3: `hub/hooks/`: `hooks.toml`, shell commands, JSON on stdin, the exit code as the verdict ^d3
 
-Serves C4, C5, C7 to C10 for a person. Three array tables, `before`, `after` and `round`, each row
+Serves C4, C5, C7 to C10 for a person. Three array tables, `before`, `after` and `turn`, each row
 with `run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a
 command run, a JSON object on stdout replacing its arguments and other stdout a log line; exit 2
 refuses with stdout as the reason; a turn hook's stdout is a notification line. `lion chat` reads
@@ -315,7 +315,8 @@ runs under `-I` with lion's own interpreter (C7).
   `-c`, `--git-dir`, `--work-tree` and `--` before the subcommand (C8).
 - **S5**: A directory's `hooks.toml` is executable configuration: `lion chat` runs what the
   directory holds, so opening a directory is trusting its hooks, as with any tool that reads a local
-  config.
+  config. A table that names no event is refused by name, so a misspelled one never loads as nothing
+  (`test_a_slow_before_hook_refuses_at_its_timeout_and_a_bad_file_says_which_table`).
 - **S6**: `Context.get` reads only what is settled: an alias's value, a record name or a note. A
   pending alias raises `KeyError` at once, as an unknown name does, so no handler waits on another
   through `get`; a value a handler needs from a pending command reaches it as a pointer in its call,

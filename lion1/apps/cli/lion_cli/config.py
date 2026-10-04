@@ -13,7 +13,7 @@ __all__ = ("CHAT", "chat_config", "config_main", "instructions")
 # directory, the first message, the log and the chat to continue name one run, so no file sets them.
 CHAT: dict[str, type | tuple[str, ...]] = {
     "model": str,
-    "rounds": int,
+    "turns": int,
     "shell": bool,
     "offline": bool,
     "box": ("vm", "daytona"),
