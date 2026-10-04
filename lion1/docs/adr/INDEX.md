@@ -24,6 +24,7 @@
 | [ADR-0020](020-experience/ADR-0020-the-experience.md) | 020-experience | withdrawn | retired (the runtime seam is removed; the record, the stores and the lesson's Spec are in `hub/experience.py`, wired to nothing) | ADR-0002, ADR-0005, ADR-0006, ADR-0007, ADR-0012 |
 | [ADR-0021](021-serve/ADR-0021-the-served-actor.md) | 021-serve | proposed | operating (the service, its logs, the transport over real loopback sockets and the example are pinned by tests, and each mechanism S1 names turned a named test red) | ADR-0001, ADR-0002, ADR-0003, ADR-0005, ADR-0007, ADR-0010, ADR-0017, ADR-0018 |
 | [ADR-0023](023-web/ADR-0023-the-web-tools.md) | 023-web | proposed | operating (two commands, four provider adapters, the address check, the checked dial, and every request's bounds and deadline, save the steps S9 leaves out of it, are pinned by tests; the live provider tests are opt-in, S1) | ADR-0003, ADR-0005, ADR-0007 |
+| [ADR-0024](024-accounts/ADR-0024-accounts-and-the-pick.md) | 024-accounts | proposed | unimplemented (nothing is built; every mechanism is owed, S1) | ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 
 ## By topic
 
@@ -49,3 +50,4 @@
 - **020-experience**, ADR-0020: Experience across runs
 - **021-serve**, ADR-0021: The served actor
 - **023-web**, ADR-0023: The web tools
+- **024-accounts**, ADR-0024: Accounts and the pick

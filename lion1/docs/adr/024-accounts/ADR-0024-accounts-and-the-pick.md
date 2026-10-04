@@ -1,0 +1,353 @@
+---
+adr: ADR-0024
+status: proposed
+liveness: unimplemented (nothing is built; every mechanism is owed, S1)
+date: "2026-10-04"
+area: accounts
+kind: new
+depends_on:
+  - "[[ADR-0009-backends|ADR-0009]]"
+  - "[[ADR-0013-the-agent|ADR-0013]]"
+  - "[[ADR-0016-the-lion-command|ADR-0016]]"
+  - "[[ADR-0017-the-desk|ADR-0017]]"
+tags:
+  - adr
+  - runtime
+  - accounts
+---
+
+# ADR-0024: Accounts and the pick
+
+## Context
+
+This record serves the author's request of 2026-10-04:
+
+- 11:40:29: Claude Code and Codex can each sign in to many accounts; build a load balancer across
+  them
+
+The same line asks that the earlier tool's work move into this repository.
+
+An agent on Claude Code or Codex runs today on the sign-in its process inherited: each backend gives
+its child the whole environment. The Claude Code backend runs the CLI's one-envelope form, which
+carries no limit figure (measured 2026-10-04). No failure is read as a spent account.
+
+An earlier tool outside this repository does part of this for interactive sessions. It ranks an
+account it never observed at 50 percent, reads an expired figure as 0, keeps tokens in plain files
+and learns a running session's account from the process table.
+
+This record fixes one runtime part: the accounts of the two CLI providers, the evidence about each,
+the pick at a wake, what a refusal does, how a run's account is known, and the commands. Interactive
+sessions, API providers' keys and the app's screen are later records (S2 to S4). Source:
+`hub/backend/claude_code/__init__.py` (`_exec`), `hub/backend/codex.py` (`TRANSIENT`, `_env`,
+`_meter`), `hub/agent/agent.py` (`wake`, `_spend`), `apps/cli/lion_cli/agent.py` (`arm`).
+
+## Definitions
+
+- **account**: one sign-in of Claude Code or Codex, named in the pool with its provider, its
+  credential reference and, optionally, its plan group.
+- **pool**: the accounts `accounts.toml` declares for every agent on the machine.
+- **credential reference**: where an account's credential is kept: `keychain` for a Claude Code
+  token in a keychain item named by the account, a home directory for Codex, or `default` for the
+  CLI's own sign-in.
+- **plan group**: accounts that draw on one limit.
+- **window**: a period over which a provider limits use: five hours or seven days.
+- **limit reading**: for each window, the used fraction and the reset instant, with the instant
+  observed and the source, a call or a probe.
+- **probe**: one small call on a provider's cheapest model, made only to take a limit reading.
+- **pick**: the choice of one account for a wake.
+- **mark**: what a refusal leaves on an account: out of quota until an instant, or needing its
+  person.
+- **launch record**: the note naming a wake's account, written before the wake's first child starts.
+- **evidence file**: the one file of every account's limit readings, probes, marks and last use on
+  the machine.
+
+## Assumptions
+
+| # | statement | source | if false |
+| - | --------- | ------ | -------- |
+| A1 | Claude Code's stream form carries its limit row under a token sign-in as it does under the CLI's stored login. | two stream calls under the stored login each carried it (2026-10-04); a token sign-in was not measured | Claude Code accounts with a token are usable with figures unknown, and a refusal is their only signal |
+| A2 | A keychain item can be read by a job the operating system starts in the background, with the screen locked. | the router's key is read from a keychain item by name (`api_key` in `hub/backend/openrouter.py`); a locked screen was not measured | a served agent cannot set a token, so its Claude Code accounts other than `default` hold its wakes until custody is amended |
+| A3 | Two Codex homes keep separate sign-ins, and the CLI writes a refreshed credential back into the home it read it from. | the backend's private home reads one login through a link the CLI writes in place (`hub/backend/codex.py`); two real homes were not measured | Codex accounts cannot be told apart by home, and Codex runs on `default` alone |
+| A4 | A Codex `token_count` row names each window's length and the instant it resets. | the session tests' rows carry `used_percent` and `window_minutes` (`tests/test_codex_session.py`); no code here reads a reset | a Codex limit reading has no reset, and only `max_age` ends it |
+
+## Claims
+
+### C1: A credential is written once and shown nowhere _(enforced: mechanical; owed, S1)_ ^c1
+
+- **Subject**: every command's output, route answer, log line, error, envelope, state file and
+  screen of the runtime, and every child's arguments.
+- **Violated when**: any of them holds a Claude Code token, any part of one, its length or its
+  prefix; or the runtime opens the credential file in a Codex home.
+
+A token is written once, by `lion account add`, which reads it without echo (D8). The runtime reads
+it back only to build a child's environment (C2), never onto a command line. Text a CLI prints that
+reaches an error or an envelope has the chosen token replaced before it is kept.
+
+A Codex account's credential is the CLI's own file in its home, written by the CLI's sign-in and
+read by the CLI alone. A test puts a made-up token through every command, route, log and error and
+finds it in nothing they wrote (S1).
+
+### C2: A child's environment holds the chosen account's credential and no competing one _(enforced: mechanical; owed, S1)_ ^c2
+
+- **Subject**: the environment of every Claude Code and Codex child a wake or a probe starts.
+- **Violated when**: a child inherits a credential variable the pick did not set; a Claude Code
+  child of an account with a token lacks it; or a Codex child runs on another account's login.
+
+The environment starts from the process's own, removes every variable the CLI takes a credential
+from, then sets the chosen one. For Claude Code these are `ANTHROPIC_API_KEY`, which the CLI prefers
+when it is set (`arm` in `apps/cli/lion_cli/agent.py`), and `CLAUDE_CODE_OAUTH_TOKEN`, which carries
+a token. `CC_ACCOUNT`, the earlier tool's name for an account, goes too.
+
+For Codex, `CODEX_ACCESS_TOKEN` goes (named in `hub/backend/codex.py`), and `CODEX_HOME` is the
+agent's private home, whose login the pick points at the account's (D2). The `default` account sets
+nothing. The list is completed before D3 lands (S9).
+
+### C3: A limit reading comes from its source, and an unknown figure is never a number _(enforced: mechanical; owed, S1)_ ^c3
+
+- **Subject**: every limit reading the runtime keeps, ranks or shows.
+- **Violated when**: a figure its source did not report is kept, ranked or shown as a number; a
+  reading lacks its instant observed or its source; or a reading whose reset has passed, or one
+  older than `max_age`, counts as fresh.
+
+Claude Code's source is the `rate_limit_event` row of its stream form: each window's `utilization`
+and `resetsAt` under `unifiedWindows`, observed when the row is read. Codex's is the `rate_limits`
+of the rollout's last `token_count` row, observed at that row's own `timestamp`, its percentage read
+as a fraction.
+
+A reading whose reset has passed is no reading. The earlier tool's 0 for an expired figure and its
+50 for a missing seven-day one are rejected by name, and so is its 0 for a missing five-hour one.
+Accounts of one plan group share one limit, so a reading of one is a reading of all.
+
+### C4: The pick happens once at a wake's start and binds every child of that wake _(enforced: mechanical; owed, S1)_ ^c4
+
+- **Subject**: every wake on a Claude Code or Codex model, each burst of a continuous run included,
+  and every child it starts.
+- **Violated when**: a child runs on an account other than its wake's pick; a wake picks twice; the
+  account used within `keep` is left while a fresh reading says it is usable; or D5's order is
+  broken.
+
+A wake picks after it found work and before it writes `taking` or marks its batch read
+([[ADR-0013-the-agent#^c2|ADR-0013/C2]]), so an idle poll picks nothing. An account the agent used
+within `keep` is kept while the prompt cache is warm. After that the pick ranks every candidate
+again, so use spreads.
+
+Usable is under 0.97 of seven days and under 0.95 of five hours. A candidate whose probe gave no
+figure ranks after every one with figures, and one whose probe failed is out.
+
+A change of account starts the session from the whole view, as the fold does
+([[ADR-0009-backends#^c4|ADR-0009/C4]]).
+
+### C5: A pick with no usable account holds the wake, and the mail waits unread _(enforced: mechanical; owed, S1)_ ^c5
+
+- **Subject**: every pick, and the agent's `accounts` key.
+- **Violated when**: a pinned account that is not usable gives way to another; a wake with no usable
+  candidate starts a child or marks its batch read; or the hold does not say why.
+
+An agent's `accounts` narrows the pool, and one name pins it. A pin that is not usable holds the
+wake and never falls back, and so does a pool with no usable candidate. The hold names each
+candidate and why it was passed over, as the caps' hold names its cap
+([[ADR-0013-the-agent#^c5|ADR-0013/C5]]), and the mail is there for the next wake.
+
+### C6: Probes are bounded across the machine _(enforced: mechanical; owed, S1)_ ^c6
+
+- **Subject**: every probe any agent or command on the machine starts.
+- **Violated when**: one account is probed twice within `max_age`; a probe runs during an idle poll;
+  or two picks probe at once.
+
+Readings and probes live in one evidence file, written under an exclusive lock. A pick holds the
+lock from its first read to its decision, probes included, so a second pick waits and then reads
+what the first learned. A probe is made only by a pick or by `lion account probe`, never by a poll
+that found nothing.
+
+### C7: A refusal is classified, the account is marked, and no call moves to another account _(enforced: mechanical; owed, S1)_ ^c7
+
+- **Subject**: every failed Claude Code or Codex call of a wake, and every probe that fails.
+- **Violated when**: a failure is read as out of quota with no evidence for it; one with evidence
+  leaves its account unmarked; a marked account is picked before its mark ends; or a call is sent
+  again on another account.
+
+A failure is out of quota, sign-in failed or passing (D6). The Codex backend retries any failure
+holding "429" that `AUTH` does not match. That rule has no class for a spent account, so a quota
+refusal holding "429" is retried as a busy server is. D6 says what the class reads instead (S6).
+
+Out of quota marks the account until the reset the refusal names, else until a later probe succeeds.
+The wake ends as today, its batch told to the owner ([[ADR-0013-the-agent#^c3|ADR-0013/C3]]), and
+the next wake picks again. Sign-in failed marks the account as needing its person.
+
+### C8: A run's account is known from what the runtime wrote _(enforced: mechanical; owed, S1)_ ^c8
+
+- **Subject**: every wake's launch record, every envelope of a Claude Code or Codex call, and the
+  spend row.
+- **Violated when**: a child starts before its launch record is written; such an envelope lacks its
+  account's name; the spend row cannot say what each account spent that day; or anything takes an
+  account from another process's environment.
+
+The launch record is a note in the agent's own store, where the cursor is kept
+([[ADR-0013-the-agent#^d3|ADR-0013/D3]]). The spend row is built from the envelopes
+([[ADR-0016-the-lion-command#^c3|ADR-0016/C3]]), so the name rides each envelope into it. A probe's
+envelope names its account and lands in the evidence file, never in an agent's spend.
+
+### C9: A Codex account in the pool authorises nothing _(enforced: process)_ ^c9
+
+Serving an agent on a Codex model takes the operator's own word. No earlier record says so, and this
+one does. Such an agent has no cost cap, since no Codex call carries a cost
+([[ADR-0016-the-lion-command|ADR-0016]] S11), only its wakes per hour, and Codex accounts of one
+plan group draw on one limit. Declaring a Codex account in the pool changes none of this.
+
+## Decisions
+
+### D1: `accounts.toml` beside the areas registry, and the agent's `accounts` key ^d1
+
+Serves C4, C5 and C9. The file sits beside `areas.toml` ([[ADR-0017-the-desk|ADR-0017]]). Each table
+in its `account` array holds the keys below, and a `[pick]` table holds the settings. A repeated
+name, an unknown key or a value outside its rule refuses the file by name. An agent's definition
+takes `accounts`, a list of names of its model's provider. With no file, each provider's pool is one
+account on `default`, as today.
+
+| key | rule |
+| --- | ---- |
+| `name` | unique; letters, digits, `.`, `_` and `-` |
+| `provider` | `claude_code` or `codex` |
+| `credential` | the credential reference: `keychain` for Claude Code, a home directory for Codex, or `default` |
+| `group` | optional; the plan group's name |
+| `[pick]` `max_age` | seconds a limit reading stays fresh; 600 |
+| `[pick]` `keep` | seconds after its last use an agent keeps its account; 3600, the prompt cache's life (`_CACHE_TTL_S`) |
+| `[pick]` `seven_day`, `five_hour` | the fractions under which an account is usable; 0.97 and 0.95 |
+| `[pick]` `probe_model` | the model a probe calls, per provider; `haiku` for Claude Code, the CLI's default for Codex |
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D2: A keychain item per Claude Code account, a home per Codex account ^d2
+
+Serves C1 and C2. `lion account add` writes a Claude Code token, read without echo, to a keychain
+item named by the account. The runtime reads it as the router's key is read (`api_key` in
+`hub/backend/openrouter.py`), only to build a child's environment. A Codex account's home is one the
+person signs the CLI in under. The agent's private home ([[ADR-0009-backends#^d3|ADR-0009/D3]])
+keeps its login as a link, which the pick points at the chosen home's while no child runs. An agent
+with no private home runs on `default` alone.
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D3: Each backend builds its child's environment from the pick ^d3
+
+Serves C2 and C4. The agent hands its backend the pick at each wake. The backend builds every
+child's environment from it as C2 says, and writes the account's name on each envelope. A backend
+built with no pick, as a chat's or the bench's is, keeps today's inherited environment (S10). A pick
+that differs from the last call's account makes the next call start the session over from the whole
+view.
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D4: The evidence file under one lock ^d4
+
+Serves C3 and C6. `evidence.json` beside `accounts.toml` holds, per account, its last limit reading
+per window, its last probe and how it ended, its mark and its last use. Every read and write takes
+an exclusive `flock` on it, as the agent's pid file is held
+([[ADR-0013-the-agent#^d2|ADR-0013/D2]]). A pick holds it until its decision. Its probes run
+together, each within 60 seconds, and a pick that waits past 120 seconds for the lock holds its
+wake. After each call the backend writes the call's reading under the lock.
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D5: The pick, in order ^d5
+
+Serves C4 and C5. A pick runs these steps under the evidence file's lock and writes the chosen
+account's last use before it returns.
+
+| step | rule |
+| ---- | ---- |
+| candidates | the pool's accounts of the model's provider, narrowed by `accounts`; a marked account is out |
+| keep | the account this agent used within `keep`, while a fresh reading says it is usable |
+| read | every other candidate with no fresh reading is probed once, within C6's bound; one whose probe failed is out |
+| usable | under `seven_day` of seven days and under `five_hour` of five hours |
+| order | lowest seven-day fraction, then five-hour, then name; after them, candidates whose probe gave no figure, least recently used first |
+| none | the wake is held, naming each candidate and why it is out |
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D6: Three classes of refusal, and their marks ^d6
+
+Serves C7. The backend decides the class once per failed call and writes it to the evidence file
+before the error goes on. No class sends the call to another account.
+
+| class | read from | does |
+| ----- | --------- | ---- |
+| out of quota | a limit reading from the failed call at a window's limit, or the CLI stating a usage limit (S6) | marks the account and its plan group until the reset named, else until a later probe succeeds; the wake ends |
+| sign-in failed | what `AUTH` in `hub/backend/codex.py` matches: 401, 403, unauthorized or forbidden | marks the account as needing its person until `lion account add` writes it again or a probe succeeds |
+| passing | any other failure | retried as today; a call that still fails ends the wake; no mark |
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D7: The launch record, the envelope's account and the spend row by account ^d7
+
+Serves C8. Before a wake's first child starts, the agent writes `launch` in its own store: the
+wake's number, the account's name, its provider and the time. Each Claude Code and Codex envelope
+carries `account`. The spend row gains `accounts`, mapping each name to that day's calls, tokens in
+and out, and calls of unknown cost. `arm` names the pool's accounts where it now reads `CC_ACCOUNT`.
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+### D8: `lion account` and its four forms ^d8
+
+Serves C1 and C3. `add <name> --provider P --credential R [--group G]` writes the entry, and for
+`keychain` reads the token without echo into its item. `list` shows each account's name, provider,
+group, readings with their age and source, and marks; never a credential or where one is kept.
+`probe [<name>]` probes now unless C6's bound was reached, and then says when it can. `remove
+<name>` deletes the entry and a Claude Code account's keychain item, and leaves a Codex home to its
+person.
+
+- **Landing evidence**: none yet; owed with the code (S1).
+
+## Alternatives
+
+| approach | rejected because |
+| -------- | ---------------- |
+| A pick per model call | a session's turns would cross accounts, and each change loses the provider's prompt cache and starts the session over (C4) |
+| A pick per serving process | a served agent runs for days and would stay on an account long after its limit was reached |
+| Keeping the last account until it is no longer usable | one account is spent to its threshold before the next is touched, and the person's own sessions on it find it spent |
+| Ranking a missing reading in the middle of the table | an account never observed may be spent or empty, and a middle rank treats a guess as a figure (C3) |
+| Probing every candidate at every pick | at 60 wakes an hour and five candidates it is 300 calls an hour for one agent, while the kept account's own calls already carry its reading (C6) |
+| Reading a run's account from the process table | another process's environment is not readable for every process, and the earlier tool's reads missed live ones; the runtime's own record answers (C8) |
+| Tokens in plain files | a file travels with every copy and backup of its directory, and its mode is its only guard (C1) |
+| Retrying a refused call on another account | the lost call's effects are not known, so a second call may repeat them (C7) |
+| One record for this and for moving interactive sessions | the two are separate state machines with separate failures; that record reads this one's pool and evidence (S2) |
+
+## Consequences
+
+- **S1**: Nothing is built. D1 to D8 land with tests named when they land, and each claim marked
+  owed names this row. Among them is the canary of C1: a made-up token put through every command,
+  route, log and error and asserted absent from all of them.
+- **S2**: Moving a person's interactive sessions between accounts is a later record, and so is the
+  rest of what the earlier tool does. The earlier tool stays in use until the part that record fixes
+  has run and moved a real session.
+- **S3**: API providers' keys and limits are a later record. This record takes only the accounts of
+  the two CLI providers from what ADR-0022 S15 defers.
+- **S4**: The app's screen for accounts is an amendment to ADR-0022. It shows what `lion account
+  list` shows and nothing more.
+- **S5**: [[ADR-0016-the-lion-command|ADR-0016]] is amended with the code: `lion account` and its
+  four forms in C1 and D1 there, the spend row's `accounts` in C3, and `arm`'s account line.
+- **S6**: [[ADR-0009-backends|ADR-0009]] is amended with the code. The Claude Code backend runs the
+  CLI's stream form and keeps its result row as the envelope, and both backends classify a refusal.
+  The fields and wording of a quota refusal and of a failed sign-in are unmeasured for both CLIs, so
+  one of each is recorded as a test fixture before D6 lands.
+- **S7**: [[ADR-0013-the-agent|ADR-0013]] is amended with the code: the agent's `accounts` key, and
+  the pick in both paths that take mail, a wake's and a continuous run's burst. The pick comes
+  before `taking` is written and the batch is marked read, since recovery reads a batch left under
+  `taking` as lost. A batch carried to a fresh run keeps the pick made when its mail was taken.
+- **S8**: A1 to A4 are measured before the code that rests on each lands. `max_age` is a first
+  value: one account's five-hour figure rose 0.03 in four minutes (measured 2026-10-04), and the
+  default is set again from more such readings.
+- **S9**: C2 names the credential variables this tree's code confirms. The rest of each CLI's list
+  is taken from its own documentation, each variable with a test, before D3 lands.
+- **S10**: The pick serves agents. A chat ([[ADR-0018-chat-in-a-box|ADR-0018]]), the bench and every
+  other caller build their backend as today, on the CLI's own sign-in and the inherited environment.
+- **S11**: Two agents on one Codex account read one credential file through their links, and a
+  refresh by either is written in place for both, as every private home shares the CLI's login
+  today. Nothing here orders two refreshes that land at once.
+- **S12**: A person's own use of an account spends it unseen, and the runtime learns of it at the
+  next call or probe. Two accounts of one plan the person did not group are two limits to the pick,
+  which can move between them for nothing.
+- **S13**: A probe's cost on a subscription is unknown. It is bounded by count: at most one per
+  account per `max_age`, six an hour at the default, however many agents share the machine.
+- **S14**: Which account `default` is cannot be told from inside the runtime, so a pool entry with a
+  token may be the same account. Grouping the two is the person's act.
