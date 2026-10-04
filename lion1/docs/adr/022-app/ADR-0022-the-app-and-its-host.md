@@ -37,8 +37,11 @@ and restarts them ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). This record fixes t
 release over them: a Mac app that speaks to one host, the `/v2` routes the host answers, and what
 each route reads and writes.
 
-It fixes no plugin format, shell policy, provider credential, shared limit or subagent tool; each
-waits for its own record (S13 to S16). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in
+The author's 08:09:12 puts a usable release first, so this record defers five instructions of the
+same morning, each to a later record. They are the desk served through the actor (07:34:15, S17),
+the subagent tool (07:45:44, S16), provider keys and limits in settings (08:05:56 and 08:10:21,
+S15), the plugin as the smallest unit, with marketplaces (08:19:00, S13), and per-agent shell
+control (08:20:37, S14). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in
 `apps/cli/lion_cli/areas.py`, `hub/areas.py`, `apps/mac/`.
 
 ## Definitions
@@ -175,11 +178,12 @@ shows its key field only under that name.
 
 A model's price, context size and image input come from the provider's list, and are null when it
 lists none. A router's price, which OpenRouter does not fix, is null. A usage field OpenRouter does
-not report is absent, and its log is empty for an ordinary key. Without an identity the For you
-count is null, never 0. A CLI's sign-in is `unknown`, since the host does not ask it.
+not report is absent. Without an identity the For you count is null, never 0. A CLI's sign-in is
+`unknown`, since the host does not ask it.
 
 A cost missing calls the resident counted as of unknown cost is null, for a day or a wake, as is
-every sum over one. So is the day's cap when a resident's budget is refused (S5).
+every sum over one. So is the day's cap over a refused budget (S5), and the count of wakes that
+acted with no `serve.log` (S18).
 
 ### C9: Demo mode is chosen at launch, labelled on every screen, and reaches no host _(enforced: mechanical; owed, S1)_ ^c9
 
@@ -226,7 +230,7 @@ missing; the example's prefix is `com.example.lion`. The generated project is ig
 
 Every screen has one header of one height, with back and forward, and back returns to the page shown
 before. Moving between pages never resizes the window, and a pane that overflows scrolls inside it.
-The side panels collapse.
+The side panels collapse. The library is under Settings, behind one item of the sidebar.
 
 Every scrolling pane has the one thin scrollbar the For you list has. Adding a model, a plugin or a
 provider is one form. Nothing asks for attention that is not the person's: For you keeps a fixed
@@ -300,7 +304,8 @@ list (D7).
   `test_the_v2_event_stream_refuses_what_every_v2_route_refuses`, and the unknowns of C8:
   `test_an_agents_partial_cost_is_unknown_and_so_is_every_sum_over_it`,
   `test_the_days_cap_is_unknown_when_a_residents_budget_is_refused`,
-  `test_a_wake_that_missed_calls_of_unknown_cost_has_no_cost`.
+  `test_a_wake_that_missed_calls_of_unknown_cost_has_no_cost`,
+  `test_the_wakes_that_acted_are_unknown_for_a_resident_whose_directory_holds_no_log`.
 
 ### D3: An agent's id is its area and its directory's name ^d3
 
@@ -451,14 +456,15 @@ or XCTest.
   route.
 - **S15**: Providers, credentials and shared limits are a later record. Until it lands the app shows
   each provider read only: its state, whether a key is set, codex's release after a check and
-  OpenRouter's usage figures. It offers no key entry (S4) and no limits, which the host answers as
-  null.
+  OpenRouter's usage figures, whose log is empty for an ordinary key. It offers no key entry (S4)
+  and no limits, which the host answers as null.
 - **S16**: The subagent tool is a later record. Until it lands the app shows nothing for it.
 - **S17**: The host is the areas server, and the residents run their own loops; the two servers of
   [[ADR-0021-the-served-actor|ADR-0021]] S2 still stand. A desk served through the actor, reached by
   the app through the host, changes D2's table and amends this record.
 - **S18**: An agent's count of wakes is read from its notes and its list of them from `serve.log` in
-  its directory. A resident whose output is kept elsewhere shows the count and an empty list.
+  its directory. A resident whose output is kept elsewhere shows the count, an empty list, and no
+  count of the wakes that acted.
 - **S19**: An agent's read runs the loaders its write runs. A file they refuse answers no definition
   and no editable path, with the reason as `refused`, and a write of it answers 409 before a key is
   weighed. The host reads every resident with this tree's loaders, so one run by another tree's
