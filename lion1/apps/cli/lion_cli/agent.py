@@ -367,9 +367,12 @@ async def agent_main(a: argparse.Namespace) -> None:
             print(text)
             print(f"landed: {land(directory, 'arm', text)}")
             raise SystemExit(rc)
+        # a chair runs no chore: no digest, no aged pass, no tick in its box (each would be a model call)
+        created = [] if "chair" in cfg else await chores.ensure_ticks()
         if a.once or a.rerun:
             # one wake: the mail that arrives, or (--rerun) mail already read, back through a wake by id,
-            # the batch a killed turn left unanswered
+            # the batch a killed turn left unanswered; the ticks are read first, as a start reads them,
+            # so a digest wake sees the first due of a tick already pending
             run = await agent.rerun(list(a.rerun)) if a.rerun else await agent.wake(wait_ms=a.wait * 1000)
             if run is None:
                 print(f"no mail within {a.wait}s")
@@ -380,8 +383,6 @@ async def agent_main(a: argparse.Namespace) -> None:
                     str(e.content)[:600].replace("\n", "\n" + " " * 18),
                 )
             return
-        # a chair runs no chore: no digest, no aged pass, no tick in its box (each would be a model call)
-        created = [] if "chair" in cfg else await chores.ensure_ticks()
         settings = (  # the values this process holds; the file may say otherwise until a restart
             f"; claude_code timeout={backend.timeout:.0f}s" if isinstance(backend, ClaudeCodeSession) else ""
         )

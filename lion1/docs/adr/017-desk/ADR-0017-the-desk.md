@@ -241,9 +241,9 @@ notes; a spend row of another day counts as none. What could not be read is name
 ### C11: The areas server reads and changes registered residents only, for loopback and the tailnet _(enforced: mechanical)_ ^c11
 
 - **Subject**: every route of `lion areas --serve`.
-- **Violated when**: a request from outside loopback and `100.64.0.0/10`, or with a foreign Host or
-  Origin, is served; a directory the registry does not name is read, written or mailed; a recipient
-  comes from the form; a replayed control acts twice.
+- **Violated when**: a request from neither loopback nor `100.64.0.0/10`, one with a foreign Host,
+  or a POST with a foreign Origin, is served; an unregistered directory is read, written or mailed;
+  a recipient comes from the form; a replayed control acts twice.
 
 `/` is a page with a meta refresh and `/api/areas` the rows as JSON. `/r` and `/api/resident` give
 one resident with its wakes, log tail and conversation; `/events` streams rows and logs; `/app` is a
@@ -253,7 +253,7 @@ phone shell over those; the checkpoint routes sit under `/api/context/`
 `POST /send` mails the resident's own actor, read from its `chores.toml`, as the `--as` identity,
 the page's token as the idempotency key. `POST /control` holds, resumes, wakes, restarts or rewrites
 `[budget]`, and answers a replayed token, among the last 100, with the first result. Every request
-that reads or changes a resident re-reads the registry and the files; `/events` re-reads them each
+that reads or changes a resident re-reads the registry and files; `/events` re-reads them each
 second.
 
 ### C12: A reply is one send, on the thread of the message it answers _(enforced: mechanical)_ ^c12
@@ -576,3 +576,6 @@ least two and at most all of them.
   `Agent.wake` and
   `test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and_answers_it_once` for
   a chair's in-run wait.
+- **S16**: A GET is served whatever its Origin, as C11 names a POST, and no answer, `/events`
+  included, carries an `Access-Control-*` header, so a page elsewhere cannot read one; pinned by
+  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.

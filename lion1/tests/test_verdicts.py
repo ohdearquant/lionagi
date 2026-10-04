@@ -17,9 +17,9 @@ import pytest
 from hub.agent import Posture
 from hub.agent import desk as dm
 from hub.agent.chores import Bounded
-from hub.agent.instruments import GH, VerdictFreshness
+from hub.agent.instruments import GH, CiRed, VerdictFreshness
 from hub.khive import KhiveError
-from lion1 import RunRequest
+from lion1 import MemoryNoteStore, RunRequest
 from lion1.notes import FileNoteStore
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Scripted
 from tests.test_desk import (
@@ -351,6 +351,123 @@ def test_an_artifact_naming_another_pr_is_undecided_before_any_gh_read(tmp_path)
     got = triage(d, sh, notice(d))
     assert got["errors"] == ["artifact names o/other#7 @ f00dcafe, notice names o/r#7 @ f00dcafe"]
     assert sh.calls == []
+
+
+@pytest.mark.parametrize(
+    ("named", "repo", "number", "renamed", "said"),
+    [
+        ("o/r#07", "O/R", 7, False, None),  # the artifact spells the repo in another case
+        ("o/r#7", "o/r", "07", False, None),  # the artifact pads the number
+        ("O/R#07", "o/r", 7, False, None),  # the notice spells it another way; gh answers in its own case
+        ("O/R#07", "o/r", 7, True, "O/R: gh does not resolve it as itself"),  # gh names another repo
+        ("o/r#7", "O/Other", 7, False, "artifact names O/Other#7 @ f00dcafe, notice names o/r#7 @ f00dcafe"),
+        ("o/r#7", "o/r", "070", False, "artifact names o/r#070 @ f00dcafe, notice names o/r#7 @ f00dcafe"),
+    ],
+    ids=[
+        "artifact-case",
+        "artifact-padding",
+        "notice-case-and-padding",
+        "renamed",
+        "another-repo",
+        "another-number",
+    ],
+)
+def test_a_notice_meets_its_artifact_by_the_case_blind_unpadded_identity(
+    tmp_path, monkeypatch, named, repo, number, renamed, said
+):
+    """A notice and its artifact name one PR when they agree as `VerdictFreshness` matches a PR, the repo
+    case-blind and the number unpadded: the artifact is looked up under the notice's spelling, then under
+    that identity, on a volume that tells case apart, and compared by it. Another repo or another number
+    stays undecided before any gh read. The gh reads go under the notice's spelling; gh names the repo in
+    its own case, which the destination check takes case-blind, and a name gh gives back that is another
+    repo's (a rename) stays undecided there."""
+    d = tmp_path / "verdicts"
+    pair(d, repo=repo)
+    body = json.loads((d / "o-r-7-f00dcafe.json").read_text())
+    (d / "o-r-7-f00dcafe.json").write_text(json.dumps(body | {"number": number}))
+    real = os.path.exists
+
+    def exists(p):  # the verdict dir as a case-sensitive volume holds it: a name only as it is spelled
+        if os.path.dirname(os.fspath(p)) != os.path.realpath(d):
+            return real(p)
+        return os.path.basename(os.fspath(p)) in os.listdir(d)
+
+    monkeypatch.setattr(os.path, "exists", exists)
+    sh = gh()
+    gh_name = "o/renamed" if renamed else "o/r"  # gh answers for a repo spelled in any case
+    sh.set("api repos/O/R --jq", json.dumps({"full_name": gh_name, "id": 42, "admin": False}))
+    view = " ".join(VIEW[1:])
+    sh.set(view.replace("o/r", "O/R"), sh.answers[view])
+    text = f"PR review verdict: {named} @ f00dcafe -> REQUEST-CHANGES [NOT POSTED: off-list] (2 blocking)."
+    got = triage(d, sh, text)
+    spelled = named.split("#")[0]
+    if said is None:
+        assert got["errors"] == [] and got["line"] == (
+            f"{spelled}#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner lambda:x by "
+            f"branch prefix, json: {d}/o-r-7-f00dcafe.json"
+        )
+        assert sh.calls[-1] == [*VIEW[:5], spelled, *VIEW[6:]] and len(sh.calls) == 2
+    elif said.startswith("artifact names"):
+        assert got["errors"] == [said] and sh.calls == []
+    else:  # the artifact is this PR's; the destination check fails closed on another repo's name
+        assert got["errors"] == [f"{said}: {json.dumps({'full_name': gh_name, 'id': 42, 'admin': False})}"]
+        assert got["decision"] == "REQUEST-CHANGES" and [c[:3] for c in sh.calls] == [
+            [GH, "api", "repos/O/R"]
+        ]
+
+
+def test_an_instruments_destination_check_stays_exact_on_a_case_only_difference():
+    """Only the triage takes the repo's name case-blind: an instrument configured as `O/R`, which gh names
+    `o/r`, still fails its control at the destination check."""
+    sh = FakeSh(
+        **{
+            "api repos/O/R --jq": json.dumps({"full_name": "o/r", "id": 42, "admin": True}),
+            "pr list -R O/R": "[]",
+        }
+    )
+    out = asyncio.run(
+        CiRed([{"name": "O/R", "channel": "actions"}], MemoryNoteStore(), every=None, run=sh).run({})
+    )
+    said = json.dumps({"full_name": "o/r", "id": 42, "admin": True})
+    assert not out.control and out.findings == (f"O/R: gh does not resolve it as itself: {said}",)
+
+
+@pytest.mark.parametrize(
+    ("named", "actor_map", "mapped", "said"),
+    [
+        ("O/R#07", {"o/r": "team:x"}, "team:x", None),  # the notice spells the repo in another case
+        ("O/R#07", {"o/r": "team:x", "O/R": "team:b"}, "team:b, team:x", "ownership disagreement"),
+        ("o/r#7", {"o/r": "team:x"}, "team:x", None),  # the map spells it as the notice does
+        ("o/r#7", {"o/r": ""}, "no actor", "ownership: no rung names an actor"),  # an empty value
+    ],
+    ids=["notice-case", "two-keys-one-repo", "exact-case", "empty-value"],
+)
+def test_the_actor_map_meets_the_notices_repo_by_the_case_blind_identity(
+    tmp_path, named, actor_map, mapped, said
+):
+    """The actor map names the notice's repo as the notice meets its artifact, case-blind: a notice in
+    another case finds the map's key, and two keys that differ only in case and name different actors
+    fail closed as a disagreement, never one of them picked. No other rung names an actor here."""
+    d = tmp_path / "verdicts"
+    pair(d)
+    sh = gh(branch="dev/fix")
+    spelled = named.split("#")[0]
+    sh.set(f"api repos/{spelled} --jq", json.dumps({"full_name": "o/r", "id": 42, "admin": False}))
+    view = " ".join(VIEW[1:])
+    sh.set(view.replace("o/r", spelled), sh.answers[view])
+    text = f"PR review verdict: {named} @ f00dcafe -> REQUEST-CHANGES [NOT POSTED: off-list] (2 blocking)."
+    got = triage(d, sh, text + f" Artifact: {d}/o-r-7-f00dcafe.md", actor_map=actor_map)
+    assert got["rungs"]["actor map"] == f"{spelled} -> {mapped}" and got["repo"] == spelled
+    if said is None:
+        assert got["errors"] == [] and got["line"] == (
+            f"{spelled}#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner team:x by "
+            f"actor map, json: {d}/o-r-7-f00dcafe.json"
+        )
+    else:
+        assert got["owner"] is None and got["errors"] == [
+            f"{said}: branch prefix dev -> no actor; commit author Pat -> no actor; "
+            f"actor map {spelled} -> {mapped}"
+        ]
 
 
 @pytest.mark.parametrize("shape", ["absolute", "dotdot", "symlink"])

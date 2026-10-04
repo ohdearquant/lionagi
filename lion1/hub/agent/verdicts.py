@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .instruments import GH, Runner, VerdictFreshness, _resolve, sh
+from .instruments import GH, Runner, VerdictFreshness, _pr_id, _resolve, sh
 
 __all__ = ("Verdicts",)
 
@@ -58,6 +58,8 @@ class Verdicts:
             return undecided("no PR in the notice")
         repo, n, head8 = m.group(1), int(m.group(2)), m.group(3)
         got |= {"repo": repo, "number": n}
+        # the PR as `VerdictFreshness` matches one: the repo case-blind, the number unpadded
+        own = _pr_id(f"{repo}#{n}")
         root = os.path.realpath(self.dir)
         if a := _ARTIFACT.search(text):
             named = a.group(1)
@@ -67,24 +69,32 @@ class Verdicts:
             v = _VERDICT.match(os.path.basename(real))
             if v is None:
                 return undecided(f"artifact {named} is not a verdict .json or .md")
-            stem = os.path.splitext(real)[0]  # the file named, never another round's under the bare stem
-        else:
-            stem = os.path.join(root, f"{repo.replace('/', '-')}-{n}-{head8}")
+            stems = [os.path.splitext(real)[0]]  # the file named, never another round's under the bare stem
+        else:  # the notice's own spelling, then the identity's: the producer may spell the repo another way
+            stems = list(
+                dict.fromkeys(
+                    os.path.join(root, f"{r.replace('/', '-')}-{n}-{head8}")
+                    for r in (repo, own.rpartition("#")[0])
+                )
+            )
         files: dict[str, tuple[str, float]] = {}
-        for ext in ("json", "md"):
-            p = f"{stem}.{ext}"
-            if not os.path.exists(p):
-                continue
-            if os.path.commonpath([root, os.path.realpath(p)]) != root:
-                return undecided(f"artifact outside the verdict dir: {p}")
-            files[ext] = (p, os.stat(p).st_mtime)
+        for stem in stems:
+            for ext in ("json", "md"):
+                p = f"{stem}.{ext}"
+                if not os.path.exists(p):
+                    continue
+                if os.path.commonpath([root, os.path.realpath(p)]) != root:
+                    return undecided(f"artifact outside the verdict dir: {p}")
+                files[ext] = (p, os.stat(p).st_mtime)
+            if files:
+                break
         if not files:
-            return undecided(f"no verdict artifact at {stem}.json or .md")
+            return undecided(f"no verdict artifact at {' or '.join(f'{s}.json or .md' for s in stems)}")
         rec = VerdictFreshness._read(files)
         if "error" in rec:
             return undecided(f"artifact unreadable: {rec['path']}: {rec['error']}")
         ev = str(rec["evaluated_head"])
-        if (rec["repo"], rec["number"], ev[:8]) != (repo, n, head8):
+        if (_pr_id(f"{rec['repo']}#{rec['number']}"), ev[:8]) != (own, head8):
             return undecided(
                 f"artifact names {rec['repo']}#{rec['number']} @ {ev[:8]}, notice names {repo}#{n} @ {head8}"
             )
@@ -107,7 +117,8 @@ class Verdicts:
                     got["coverage"] = c.group(0)
             except OSError as e:
                 got["coverage"] = f"coverage: the .md is unreadable ({e})"
-        info, err = await _resolve(self.sh, repo)
+        # gh names the repo in its own case: a notice in another case is the same repo, a rename is not
+        info, err = await _resolve(self.sh, repo, case_blind=True)
         if info is None:
             return undecided(f"{repo}: gh does not resolve it as itself: {err}")
         rc, out, err = await self.sh(
@@ -137,9 +148,10 @@ class Verdicts:
             ", ".join(f"{x} -> {self.author_actor.get(x, 'no actor')}" for x in names) or "no author name"
         )
         answers += [("commit author", s) for s in sorted(actors)]
-        if actor := self.actor_map.get(repo):
-            answers.append(("actor map", actor))
-        got["rungs"]["actor map"] = f"{repo} -> {actor or 'no actor'}"
+        # the map names the repo case-blind, as gh does: two keys of one repo naming two actors disagree
+        mapped = sorted({a for r, a in self.actor_map.items() if a and r.lower() == repo.lower()})
+        answers += [("actor map", a) for a in mapped]
+        got["rungs"]["actor map"] = f"{repo} -> {', '.join(mapped) or 'no actor'}"
         said = "; ".join(f"{k} {v}" for k, v in got["rungs"].items())
         problem = (
             f"ownership disagreement: {said}"
