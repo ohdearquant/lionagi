@@ -914,16 +914,79 @@ def test_a_wait_on_a_task_that_already_failed_raises_its_failure_at_once(site, m
         target = asyncio.ensure_future(fails())
         await asyncio.gather(target, return_exceptions=True)
         waiter = asyncio.ensure_future(WAITS[site](target))
-        for _ in range(
-            3
-        ):  # its own first step, and a write's task one more: never a turn waiting on the task
+        turns = 0
+        while not waiter.done():
             await asyncio.sleep(0)
-        done = waiter.done()
+            turns += 1
         (raised,) = await asyncio.gather(waiter, return_exceptions=True)
-        return done, raised
+        return turns, raised
 
-    done, raised = asyncio.run(asyncio.wait_for(main(), 5))
-    assert done and isinstance(raised, Defect)
+    turns, raised = asyncio.run(asyncio.wait_for(main(), 5))
+    # the waiter's own first step, and for a write the two more its task takes to start: the wait
+    # itself takes no turn of the loop
+    assert turns == (3 if site == "a note's earlier write, written after" else 1)
+    assert isinstance(raised, Defect)
+
+
+class Holds(BaseModel):
+    pass
+
+
+class Reads(BaseModel):
+    value: str
+
+
+def test_a_run_cancelled_while_a_pointer_waits_on_a_command_that_then_fails_tells_the_loop_nothing():
+    """A whole run, `asyncio.shield` left as it is. One command waits on another's result through a
+    pointer, the run is cancelled there, and the awaited command then fails in its cleanup. The run
+    raises that failure, which the reap read, and the loop's exception handler hears nothing. With a
+    shield at that wait CPython 3.14.7 reports the failure there as a shielded future's."""
+    actor = Actor("pointer-waits")
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Holds, effect="pure")
+    async def holds(req: Holds, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            raise Defect("the cleanup")
+        return ""
+
+    @actor.handler(Reads, effect="pure")
+    async def reads(req: Reads, ctx) -> str:
+        return req.value
+
+    async def backend(messages):
+        return "<lact source>holds()</lact><lact reader>reads(value=*source)</lact> OUT{answer: [reader]}"
+
+    async def main():
+        told: list = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: told.append(context["message"])
+        )
+        running = asyncio.ensure_future(
+            actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend)
+        )
+        await entered.wait()
+        (run,) = actor.runs.values()
+        source, reader = run.pending["source"], run.pending["reader"]
+        while reader._fut_waiter is None:  # the reader is at its wait on the source
+            await asyncio.sleep(0)
+        running.cancel()
+        await cleaning.wait()
+        release.set()
+        (result,) = await asyncio.gather(running, return_exceptions=True)
+        ended = source.done() and reader.done()
+        del source, reader, run
+        gc.collect()
+        await asyncio.sleep(0)
+        return result, ended, told
+
+    result, ended, told = asyncio.run(asyncio.wait_for(main(), 5))
+    assert isinstance(result, Defect) and ended and told == []
 
 
 class Fails(BaseModel):
