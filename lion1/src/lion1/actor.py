@@ -2202,7 +2202,12 @@ class _Walk:
             # whichever turn bound it (ADR-0008/D4)
             reader = _Reader(self, self._before(name, self.writes if writes is None else writes))
             self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, reader))
-        return await asyncio.shield(self.computed[name])
+        task = self.computed[name]
+        # `wait` never cancels what it waits on, so a reader cut here leaves the value computing; a
+        # shield would too, and would have the loop log the value's later failure as nobody's
+        if not task.done():
+            await asyncio.wait((task,))
+        return task.result()
 
     def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
         """The writes a value reads after, of the notes it reads. A write that reads the value comes
