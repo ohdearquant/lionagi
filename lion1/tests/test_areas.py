@@ -708,6 +708,18 @@ def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_a
         assert control(port, {**hold, "action": "resume"}, {"Origin": origin})[0] == 200
     code, doc = control(port, hold)  # no Origin header at all
     assert code == 200 and doc["ok"] is True and (d / "hold").exists()
+    # a GET's Origin is not checked (C11 names a POST): its answer carries no CORS header, so a page
+    # on another site cannot read it
+    foreign = {"Host": f"localhost:{port}", "Origin": "http://evil.example"}
+    code, _, head = call(port, "GET", "/api/areas", headers=foreign)
+    assert code == 200 and not [k for k in head if k.lower().startswith("access-control-")]
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)  # `/events` writes its own head
+    conn.request("GET", "/events", headers=foreign)
+    resp = conn.getresponse()
+    head = dict(resp.getheaders())
+    resp.close()
+    conn.close()
+    assert resp.status == 200 and not [k for k in head if k.lower().startswith("access-control-")]
     # a peer off the tailnet: refused before the body is read, nothing done
     (d / "hold").unlink()
     seen: list[str] = []
