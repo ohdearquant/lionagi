@@ -513,14 +513,18 @@ def test_a_same_size_rewrite_of_the_transcript_that_restores_the_mtime_is_read_a
 
 
 def test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     # the newest was the greatest float mtime, which cannot tell two writes a nanosecond apart, and a
     # tie went to whichever the directory listed first. A transcript's name is its session id, a random
     # UUID, so no name says which of two is newer
-    d = tmp_path / "actor"
-    d.mkdir()
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
     projects = tmp_path / "projects"
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: newest_transcript(directory, projects))
     one, two = (
         write(projects / slug(d.resolve()) / f"{u}.jsonl", [typed("placeholder", "u1")])
         for u in ("0a000000-0000-4000-8000-000000000001", "0b000000-0000-4000-8000-000000000002")
@@ -540,3 +544,14 @@ def test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_
             CheckpointError, match=f"^2 Claude Code transcripts under .* nanosecond \\({one.name}, "
         ):
             newest_transcript(d, projects)
+        # and the take that meets the tie takes nothing: no checkpoint written, nothing answered
+        with pytest.raises(SystemExit) as out:
+            main(["context", "checkpoint", "--dir", str(d)])
+        said_out, said_err = capsys.readouterr()
+        assert out.value.code == 1 and said_out == ""
+        assert one.name in said_err and two.name in said_err and "same nanosecond" in said_err
+        assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
+    os.utime(two, ns=(ns + 1, ns + 1))  # the control: the same take, the tie broken, is taken
+    main(["context", "checkpoint", "--dir", str(d)])
+    done = json.loads(capsys.readouterr().out)
+    assert [f.name for f in context_dir(d).iterdir() if done["id"] in f.name] and done["id"]
