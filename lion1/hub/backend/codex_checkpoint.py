@@ -1,20 +1,23 @@
 """A Codex session's checkpoint (ADR-0019/D5): the scan of its rollout file, the take and the restore
 prompt, on the Codex session's vocabulary (`CODEX_KINDS`, `CODEX_WHYS`). The rollout is
 `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl`: one JSON row per line, each a `type`
-and a `payload`, the first the thread's own `session_meta`. It is read once per file state (its size
-and mtime) for every source.
+and a `payload`, the first the thread's own `session_meta`. A take reads it once, as one `Snapshot`:
+the file's size, times and inode captured once, its bytes read to that size and no further, a last
+line cut mid-write left unread. The scan keeps what the take's readers read and nothing else.
 
 A prompt is the text items of a user `message` that the row's own `content_item_kinds` marks
-`user.text`; the CLI marks what it writes there itself (the environment, AGENTS.md, the plugin list)
-by other kinds, so none of it is read as the person's. A turn's text is the last assistant text before
-the next prompt: tool calls and their output, reasoning and compactions are never read into a turn. The
-`SubAgentActivity` rows name the agents the thread spawned, and the last `token_count` is the figure. A
-forked thread's rows before its own history starts are its parent's and are not read. The sources no
-harness owns are `hub.backend.checkpoint`'s.
+`user.text`, as typed; the CLI marks what it writes there itself (the environment, AGENTS.md, the
+plugin list) by other kinds, so none of it is read as the person's. A turn's text is the last assistant
+text before the next message the person sent or nothing marked: tool calls and their output, reasoning
+and compactions are never read into a turn. The `SubAgentActivity` rows name the agents the thread
+spawned, and the last `token_count` is the figure. A forked thread's rows before its own history starts
+are its parent's and are not read. The sources no harness owns are `hub.backend.checkpoint`'s.
 """
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import functools
 import json
 import os
@@ -32,6 +35,9 @@ from .codex import _THREAD
 __all__ = (
     "CODEX_KINDS",
     "CODEX_WHYS",
+    "OWNERS",
+    "Snapshot",
+    "snapshot",
     "is_rollout",
     "newest_rollout",
     "rollout_of",
@@ -63,13 +69,44 @@ _INJECTED = (
 # a sub-agent's last activity while it holds work: spawned, or handed more
 _RUNNING = ("started", "interacted")
 _NONE = {"used": None, "window": None, "pct": None}
+# the keys of the thread's own session_meta its readers read; the rest (the base instructions among
+# them) is never kept
+_META = (
+    "id",
+    "cwd",
+    "model_provider",
+    "cli_version",
+    "originator",
+    "thread_source",
+    "parent_thread_id",
+    "agent_path",
+)
+# the thread_source of a thread whose owner is known: a person's, or a sub-agent's
+OWNERS = ("user", "subagent")
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """One file state of a rollout, captured once: every read of a take reads exactly its `size`
+    bytes, and its scan keeps the view `budget` folds to, none when it is None."""
+
+    path: str
+    size: int
+    mtime_ns: int
+    ino: int  # a file put in its place
+    ctime_ns: int  # a rewrite in place keeps the size and can restore the mtime, never this
+    budget: int | None = None
+
+    def __fspath__(self) -> str:
+        return self.path
 
 
 @dataclass
 class _Scan:
-    meta: dict = field(default_factory=dict)  # the thread's own session_meta
+    meta: dict = field(default_factory=dict)  # the thread's own session_meta, its `_META` keys
     model: str | None = None  # the newest turn_context's
-    prompts: list[dict] = field(default_factory=list)  # {turn, at, input, text, kind: person}
+    words: list[tuple[str, str]] = field(default_factory=list)  # the newest DIRECTIVES prompts, at
+    view: dict | None = None  # `fold_turns` of every prompt to the snapshot's budget
     last: tuple[str, str] | None = None  # the last assistant text and its row's time
     agents: dict[str, dict] = field(default_factory=dict)  # thread id -> {id, path, at, last}
     figure: dict = field(default_factory=lambda: dict(_NONE))
@@ -93,9 +130,10 @@ def _meta(path: Path) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _typed(p: dict) -> str | None:
-    """A user message's own words: its `input_text` items the row marks `user.text`, joined; None when
-    the row does not mark each item, so what wrote it is not known."""
+def _typed(p: dict) -> tuple[bool, str] | None:
+    """A user message's sender and words: whether the row marks any item the person's (`user.*`), and
+    its `input_text` items marked `user.text`, joined as typed; None when the row does not mark each
+    item, so what wrote it is not known."""
     content = p.get("content")
     marks = p.get("internal_chat_message_metadata_passthrough")
     kinds = marks.get("content_item_kinds") if isinstance(marks, dict) else None
@@ -106,7 +144,7 @@ def _typed(p: dict) -> str | None:
         for b, k in zip(content, kinds, strict=True)
         if k == "user.text" and isinstance(b, dict) and b.get("type") == "input_text"
     ]
-    return "\n".join(said).strip()
+    return any(isinstance(k, str) and k.startswith("user.") for k in kinds), "\n".join(said)
 
 
 def _count(n: Any) -> bool:
@@ -124,12 +162,22 @@ def _figure(info: dict) -> dict:
 
 
 @functools.lru_cache(maxsize=4)
-def _read(path: str, size: int, mtime_ns: int) -> _Scan:
+def _read(snap: Snapshot) -> _Scan:
     s = _Scan()
+    seen = False  # a session_meta read: the first is the thread's own, a fork's parent's follow it
     start: Any = None  # a forked thread's first own ordinal: the rows before it are its parent's
+    prompts: list[dict] = []  # {turn, at, input, text, kind: person}
     turn: dict | None = None
-    with open(path, "rb") as f:
-        for raw in f:
+    with open(snap.path, "rb") as f:
+        left = snap.size  # a row appended after the snapshot is after the take
+        while left > 0:
+            raw = f.readline(left)
+            if not raw:
+                break
+            left -= len(raw)
+            if not raw.endswith(b"\n"):  # the snapshot's last line, cut mid-write: never read
+                s.unread += 1
+                break
             if not raw.strip():
                 continue
             try:
@@ -142,8 +190,9 @@ def _read(path: str, size: int, mtime_ns: int) -> _Scan:
             kind = r.get("type")
             p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
             if kind == "session_meta":
-                if not s.meta:  # the thread's own; a forked thread carries its parent's after it
-                    s.meta, start = p, p.get("subagent_history_start_ordinal")
+                if not seen:
+                    seen, start = True, p.get("subagent_history_start_ordinal")
+                    s.meta = {k: p[k] for k in _META if k in p}
                 continue
             ordinal = r.get("ordinal")
             if isinstance(start, int) and isinstance(ordinal, int) and ordinal < start:
@@ -152,11 +201,13 @@ def _read(path: str, size: int, mtime_ns: int) -> _Scan:
             if kind == "turn_context":
                 s.model = p.get("model") or s.model
             elif kind == "response_item" and p.get("type") == "message" and p.get("role") == "user":
-                text = _typed(p)
-                if text is None:
+                typed = _typed(p)
+                if typed is None:  # what wrote it is not known: the exchange before it ends there
                     s.unmarked += 1
-                elif text:
-                    turn = _open(s.prompts, p.get("id"), at, text, "person")
+                    turn = None
+                elif typed[0]:  # the person's, an image alone included: it ends the one before it
+                    words = typed[1]
+                    turn = _open(prompts, p.get("id"), at, words, "person") if words.strip() else None
             elif kind == "response_item" and p.get("type") == "message" and p.get("role") == "assistant":
                 for b in p.get("content") or []:
                     said = (
@@ -184,13 +235,21 @@ def _read(path: str, size: int, mtime_ns: int) -> _Scan:
                     }
                 elif thread in s.agents:  # an agent another thread spawned is not this one's
                     s.agents[thread]["last"] = item.get("kind")
+    s.words = [(p["input"], p["at"]) for p in prompts[-DIRECTIVES:]]
+    s.view = fold_turns(prompts, snap.budget) if snap.budget is not None else None
     return s
 
 
-def _scan(path: str | Path) -> _Scan:
+def snapshot(path: str | Path, budget: int | None = None) -> Snapshot:
+    """The rollout's file state now, for a take whose view folds to `budget`."""
     p = Path(path)
     st = p.stat()
-    return _read(str(p), st.st_size, st.st_mtime_ns)
+    return Snapshot(str(p), st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns, budget)
+
+
+def _scan(path: str | Path | Snapshot, budget: int | None = None) -> _Scan:
+    snap = path if isinstance(path, Snapshot) else snapshot(path)
+    return _read(snap if budget is None else dataclasses.replace(snap, budget=budget))
 
 
 def is_rollout(path: str | Path) -> bool:
@@ -199,20 +258,25 @@ def is_rollout(path: str | Path) -> bool:
     return _meta(Path(path)) is not None
 
 
-def newest_rollout(directory: str | Path, sessions: Path | None = None) -> Path:
-    """The most recently written rollout whose thread ran in `directory` and is no sub-agent's (a
-    sub-agent runs in its parent's directory and writes as often)."""
+def newest_rollout(directory: str | Path, sessions: Path | None = None) -> tuple[Path, int]:
+    """The most recently written rollout of a person's thread that ran in `directory`, and how many of
+    the directory's rollouts written after it were skipped because their first row names no owner. A
+    sub-agent runs in its parent's directory and writes as often. Of two written in the same
+    nanosecond the later name is the newer: a name holds the thread's start time, then its id."""
     root, want = sessions or _sessions(), Path(directory).resolve()
-    for p in sorted(root.glob("*/*/*/rollout-*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True):
+    found = root.glob("*/*/*/rollout-*.jsonl")
+    skipped = 0
+    for p in sorted(found, key=lambda f: (f.stat().st_mtime_ns, f.name), reverse=True):
         meta = _meta(p)
-        if (
-            meta is not None
-            and meta.get("thread_source") != "subagent"
-            and isinstance(meta.get("cwd"), str)
-            and Path(meta["cwd"]).resolve() == want
-        ):
-            return p
-    raise CheckpointError(f"no Codex rollout under {root} whose cwd is {want}, a sub-agent's aside")
+        if meta is None or not isinstance(meta.get("cwd"), str) or Path(meta["cwd"]).resolve() != want:
+            continue
+        if meta.get("thread_source") == "user":
+            return p, skipped
+        skipped += meta.get("thread_source") not in OWNERS
+    raise CheckpointError(
+        f"no Codex rollout under {root} whose cwd is {want} and whose first row says a person's "
+        f"thread; {skipped} whose first row names no owner skipped"
+    )
 
 
 def rollout_of(thread: str, sessions: Path | None = None) -> Path:
@@ -235,7 +299,7 @@ def rollout_source(path: str | Path) -> dict:
     m = s.meta
     return {
         "session_id": m.get("id"),
-        "transcript": str(path),
+        "transcript": os.fspath(path),
         "session_cwd": m.get("cwd"),
         "model": s.model,
         "model_provider": m.get("model_provider"),
@@ -252,18 +316,17 @@ def rollout_source(path: str | Path) -> dict:
 def rollout_turns(path: str | Path, budget: int) -> dict:
     """The session's view: each prompt with its turn's final text, folded oldest-first to half the
     budget, the latest always kept (`fold_turns`)."""
-    return fold_turns(_scan(path).prompts, budget)
+    return copy.deepcopy(_scan(path, budget).view)
 
 
 def directives(path: str | Path) -> list[Var]:
-    """The person's words, oldest first, never more than DIRECTIVES: the newest prompts of a thread a
-    person or a program started. A sub-agent's thread has none: its prompts are its parent's."""
+    """The person's words, oldest first, never more than DIRECTIVES: the newest prompts of a thread
+    whose first row says a person's. Any other has none: a sub-agent's prompts are its parent's."""
     s = _scan(path)
-    if s.meta.get("thread_source") == "subagent":
+    if s.meta.get("thread_source") != "user":
         return []
     return [
-        Var(f"directive.{i}", "directive", p["input"], "rollout", p["at"])
-        for i, p in enumerate(s.prompts[-DIRECTIVES:], 1)
+        Var(f"directive.{i}", "directive", text, "rollout", at) for i, (text, at) in enumerate(s.words, 1)
     ]
 
 

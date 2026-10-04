@@ -122,9 +122,11 @@ def checkpoint(
     codex: bool = False,
 ) -> dict:
     """Take and save a Claude Code or Codex session's checkpoint: `{id, path, context, vars, kept,
-    hidden}`. A Codex session is `codex`, its rollout `session`'s or the directory's newest, or a
-    transcript whose first row says it is a rollout. The gitignore assertion runs before anything is
-    read; lanes khive cannot give are a value, not a refusal."""
+    hidden}`. A Codex session is `codex`, its rollout `session`'s or the directory's newest person's
+    thread, or a transcript whose first row says it is a rollout; its take adds `skipped_unowned`, the
+    newer rollouts of the directory passed over because their first row names no owner, and refuses a
+    rollout named whose first row names none. The gitignore assertion runs before anything is read;
+    lanes khive cannot give are a value, not a refusal."""
     d = Path(directory).resolve()
     if why not in SESSION_WHYS:
         raise CheckpointError(f"why {why!r}: one of {', '.join(SESSION_WHYS)}")
@@ -133,10 +135,13 @@ def checkpoint(
     # after the take, and status calls it so
     now = now or datetime.now().astimezone()
     actor = actor_id(d)
+    skipped = 0  # the directory's rollouts newer than the one taken whose first row names no owner
     if transcript:
         path = Path(transcript).expanduser()
+    elif codex and session:
+        path = codex_checkpoint.rollout_of(session)
     elif codex:
-        path = codex_checkpoint.rollout_of(session) if session else codex_checkpoint.newest_rollout(d)
+        path, skipped = codex_checkpoint.newest_rollout(d)
     else:
         path = newest_transcript(d)
     if not path.is_file():
@@ -148,7 +153,13 @@ def checkpoint(
         if why not in codex_checkpoint.CODEX_WHYS:
             whys = ", ".join(codex_checkpoint.CODEX_WHYS)
             raise CheckpointError(f"why {why!r}: a Codex session's is one of {whys}")
-        found = codex_checkpoint.rollout_source(path)
+        snap = codex_checkpoint.snapshot(path, budget)  # one file state for every read of the take
+        found = codex_checkpoint.rollout_source(snap)
+        if found["thread_source"] not in codex_checkpoint.OWNERS:
+            raise CheckpointError(
+                f"{path}: its first row names no owner (thread_source {found['thread_source']!r}), so "
+                "whether its prompts are a person's is not known; nothing was taken"
+            )
         if session is not None and session != found["session_id"]:
             raise CheckpointError(f"{path} is the rollout of thread {found['session_id']}, not {session}")
     lane_vars: list[Var] = []
@@ -162,11 +173,11 @@ def checkpoint(
     pr_vars, pr_note = asyncio.run(pulls(d))
     declared, taken = _pending(d)
     if rollout:
-        own = [*codex_checkpoint.directives(path), *codex_checkpoint.spawns(path, now)]
-        last = codex_checkpoint.posture(path)
-        figure = codex_checkpoint.context_figure(path)
+        own = [*codex_checkpoint.directives(snap), *codex_checkpoint.spawns(snap, now)]
+        last = codex_checkpoint.posture(snap)
+        figure = codex_checkpoint.context_figure(snap)
         source = {"kind": "codex", **found, "cwd": str(d), "context": figure}
-        view, taker = codex_checkpoint.rollout_turns(path, budget), codex_checkpoint.take_codex
+        view, taker = codex_checkpoint.rollout_turns(snap, budget), codex_checkpoint.take_codex
     else:
         sid = session or path.stem
         own = [
@@ -190,7 +201,7 @@ def checkpoint(
     # the load lists are the Claude Code session's, which hold the Codex session's
     written = save(ckpt, context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
     _drain(d, taken)
-    return {
+    done = {
         "id": written.stem,
         "path": str(written),
         "context": source["context"],
@@ -198,6 +209,7 @@ def checkpoint(
         "kept": len(view["kept"]),
         "hidden": len(view["hidden"]),
     }
+    return {**done, "skipped_unowned": skipped} if rollout else done
 
 
 def restore(directory: str | Path, id: str | None = None) -> dict:
@@ -224,7 +236,9 @@ def status(directory: str | Path, *, session: str | None = None, codex: bool = F
         c = None
     if codex:
         try:
-            rollout = codex_checkpoint.rollout_of(session) if session else codex_checkpoint.newest_rollout(d)
+            rollout = (
+                codex_checkpoint.rollout_of(session) if session else codex_checkpoint.newest_rollout(d)[0]
+            )
         except CheckpointError:
             rollout = None
         now = codex_checkpoint.context_figure(rollout)

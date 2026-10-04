@@ -13,11 +13,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from lion_cli.context import status
+from lion_cli.context import checkpoint, status
 from lion_cli.main import main
 
 from hub.backend import codex_checkpoint as cx
-from hub.backend.checkpoint import SPAWN_HOURS, fold_turns
+from hub.backend.checkpoint import DIRECTIVES, SPAWN_HOURS, fold_turns
 from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
 from hub.backend.codex_checkpoint import (
     CODEX_KINDS,
@@ -332,15 +332,141 @@ def test_a_user_message_whose_row_does_not_mark_each_item_is_counted_and_never_r
 def test_a_rollout_is_read_once_per_file_state(tmp_path):
     path = write(tmp_path / "r.jsonl", session_rows())
     cx._read.cache_clear()
+    snap = cx.snapshot(path, 9)  # a take's: its one file state and its view's budget
     for read in (rollout_source, directives, spawns, posture, context_figure):
-        read(path)
-    rollout_turns(path, 9)
+        read(snap)
+    rollout_turns(snap, 9)
     assert cx._read.cache_info().misses == 1
     with path.open("a") as f:  # a prompt lands: the file's size and time change, so it is read again
         f.write(
             json.dumps({"timestamp": at(40), "ordinal": 40, **typed("placeholder prompt four", "u4")}) + "\n"
         )
     assert directives(path)[-1].value == "placeholder prompt four" and cx._read.cache_info().misses == 2
+    # the same size rewritten with a later mtime: read again too
+    before = path.stat()
+    path.write_text(path.read_text().replace("placeholder prompt four", "placeholder prompt FOUR"))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 10**9))
+    assert path.stat().st_size == before.st_size
+    assert directives(path)[-1].value == "placeholder prompt FOUR" and cx._read.cache_info().misses == 3
+
+
+def test_a_same_size_rewrite_that_restores_the_mtime_is_read_anew(tmp_path):
+    path = write(tmp_path / "r.jsonl", [meta(), typed("placeholder alpha", "m")])
+    cx._read.cache_clear()
+    assert [v.value for v in directives(path)] == ["placeholder alpha"]
+    before = path.stat()
+    path.write_text(path.read_text().replace("placeholder alpha", "placeholder bravo"))
+    while path.stat().st_ctime_ns == before.st_ctime_ns:  # a coarse clock: wait out its tick
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns, after.st_ino) == (
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ino,
+    )
+    assert [v.value for v in directives(path)] == ["placeholder bravo"]
+
+
+def test_a_typed_prompt_is_kept_as_typed_and_trimming_says_only_whether_it_is_empty(tmp_path):
+    code = "  def f():\n    return 1\n\n"
+    rows = [
+        meta(),
+        typed(code, "msg_u1"),
+        said("placeholder final text one"),
+        typed(" \n\t", "msg_u2"),  # the person's, with no words: no exchange, and it ends the one before
+        said("placeholder final text two"),
+    ]
+    path = write(tmp_path / "r.jsonl", rows)
+    view = rollout_turns(path, 10**6)
+    assert [(t["input"], t["text"]) for t in view["kept"]] == [(code, "placeholder final text one")]
+    c = take_codex(rollout_source(path), directives(path), actor=ONE, why="manual", budget=10**6, view=view)
+    assert [v.value for v in c.vars] == [code] and c.view["kept"][0]["input"] == code
+    assert f"```\n{code}\n```" in render_prompt(c)
+
+
+def test_a_message_the_person_sent_or_nothing_marked_ends_the_exchange_before_it(tmp_path):
+    unmarked = {"type": "response_item", "payload": {"type": "message", "role": "user", "content": []}}
+    rows = [
+        meta(),
+        typed(PROMPTS[0], "msg_u1"),
+        message("user", [text("IMAGE-MARK", "input_image")], ["user.image"], "msg_i"),  # an image alone
+        said("ANSWER-TO-THE-IMAGE-MARK"),
+        typed(PROMPTS[1], "msg_u2"),
+        unmarked,  # what wrote it is not known
+        said("ANSWER-TO-THE-UNMARKED-MARK"),
+        typed(PROMPTS[2], "msg_u3"),
+        # the CLI's own, inside the turn (its environment, a goal, a skill): the turn goes on
+        message("user", [text("<environment_context>x")], ["environments.environment_context"], "msg_e"),
+        said("placeholder final text three"),
+    ]
+    path = write(tmp_path / "r.jsonl", rows)
+    assert [(t["input"], t["text"]) for t in rollout_turns(path, 10**6)["kept"]] == [
+        (PROMPTS[0], ""),
+        (PROMPTS[1], ""),
+        (PROMPTS[2], "placeholder final text three"),
+    ]
+    assert rollout_source(path)["unmarked_messages"] == 1
+    assert posture(path)[0].value == "placeholder final text three"
+
+
+def test_a_row_appended_while_the_take_reads_is_after_the_take(tmp_path, monkeypatch, capsys):
+    late = json.dumps({"timestamp": at(40), "ordinal": 40, **typed("LATE-PROMPT-MARK", "msg_late")}) + "\n"
+    path = write(tmp_path / "r.jsonl", [meta(), typed(PROMPTS[0], "msg_u1")])
+    opened = open
+
+    def open_then_append(name, *a, **k):
+        f = opened(name, *a, **k)
+        with opened(path, "a") as w:
+            w.write(late)
+        return f
+
+    cx._read.cache_clear()
+    monkeypatch.setattr(cx, "open", open_then_append, raising=False)
+    assert [t["input"] for t in rollout_turns(path, 10**6)["kept"]] == [PROMPTS[0]]
+    monkeypatch.delattr(cx, "open")
+    assert directives(path)[-1].value == "LATE-PROMPT-MARK"  # the next file state holds it
+    # a whole row with no line end yet is the snapshot's last line, cut mid-write
+    cut = write(tmp_path / "cut.jsonl", [meta(), typed(PROMPTS[0], "msg_u1")], tail=late.rstrip("\n"))
+    assert [t["input"] for t in rollout_turns(cut, 10**6)["kept"]] == [PROMPTS[0]]
+    assert rollout_source(cut)["unread_lines"] == 1
+    # a take: a prompt landing after its first read of the rollout is in none of its reads
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    live = write(tmp_path / "live.jsonl", session_rows(str(d)))
+    pulls = cli.pulls
+
+    async def pulls_then_a_prompt(*a, **k):
+        with live.open("a") as f:
+            f.write(late)
+        return await pulls(*a, **k)
+
+    monkeypatch.setattr(cli, "pulls", pulls_then_a_prompt)
+    main(["context", "checkpoint", "--dir", str(d), "--transcript", str(live)])
+    done = json.loads(capsys.readouterr().out)
+    c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    assert "LATE-PROMPT-MARK" in live.read_text()
+    assert "LATE-PROMPT-MARK" not in json.dumps([dataclasses.asdict(v) for v in c.vars]) + json.dumps(c.view)
+
+
+def test_a_scan_keeps_only_what_the_takes_readers_read(tmp_path):
+    old = "OLD-BODY-MARK " * 1_000
+    newer = [
+        (typed(f"placeholder prompt {i}", f"m{i}"), said(f"placeholder text {i}")) for i in range(DIRECTIVES)
+    ]
+    rows = [meta(), typed(old, "msg_old"), said("OLD-ANSWER-MARK"), *(r for pair in newer for r in pair)]
+    path = write(tmp_path / "r.jsonl", rows)
+    kept = json.dumps(dataclasses.asdict(cx._scan(path)))
+    assert [m for m in ("BASE-INSTRUCTIONS-MARK", "OLD-BODY-MARK", "OLD-ANSWER-MARK") if m in kept] == []
+    view = rollout_turns(path, 400)  # the old exchange folds at this budget: its name stays, its body goes
+    assert view["hidden"] == [f"msg_old@{at(1)}"] and len(view["kept"]) == DIRECTIVES
+    folded = json.dumps(dataclasses.asdict(cx._scan(path, 400)))
+    assert "OLD-BODY-MARK" not in folded and "OLD-ANSWER-MARK" not in folded
+    assert [v.value for v in directives(path)] == [f"placeholder prompt {i}" for i in range(DIRECTIVES)]
+    assert rollout_turns(path, 10**6)["kept"][0]["input"] == old  # a budget that holds it keeps it
 
 
 def test_a_forked_sub_agents_rollout_reads_its_own_rows_and_its_words_are_not_the_persons(tmp_path):
@@ -552,10 +678,10 @@ def test_the_newest_rollout_is_the_directorys_own_thread_and_a_thread_id_names_o
     (day / f"rollout-2026-10-04T10-00-00-{AGENTS[7]}.jsonl").write_text("")  # an empty file: no meta
     claude = day / "rollout-claude.jsonl"
     claude.write_text(json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n")
-    assert newest_rollout(here, sessions) == mine
+    assert newest_rollout(here, sessions) == (mine, 0)
     assert rollout_of(THREAD, sessions) == mine
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))  # the CLI's home, read at the call
-    assert newest_rollout(here) == mine and rollout_of(THREAD) == mine
+    assert newest_rollout(here) == (mine, 0) and rollout_of(THREAD) == mine
     assert is_rollout(mine) and not is_rollout(claude) and not is_rollout(tmp_path / "absent.jsonl")
     with pytest.raises(CheckpointError, match="no Codex rollout under .* whose cwd is .*elsewhere"):
         newest_rollout(tmp_path / "elsewhere", sessions)
@@ -693,4 +819,66 @@ def test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing(t
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--hook"])
     assert out.value.code == 1 and "why 'precompact': a Codex session's is one of" in capsys.readouterr().err
-    assert not list(context_dir(d).glob("ckpt-*.json"))
+    assert not context_dir(d).exists() or not any(context_dir(d).iterdir())
+
+
+def test_a_rollout_whose_first_row_names_no_owner_is_skipped_and_refused_by_name(
+    tmp_path, monkeypatch, capsys
+):
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    d = actor_dir(tmp_path)
+    day = home / "sessions" / "2026" / "10" / "04"
+    mine = write(
+        day / f"rollout-2026-10-04T10-00-00-{THREAD}.jsonl", [meta(THREAD, str(d)), typed("mine", "u")]
+    )
+    nobody = meta(OTHER, str(d))
+    del nobody["payload"]["thread_source"]
+    unowned = write(
+        day / f"rollout-2026-10-04T10-00-09-{OTHER}.jsonl", [nobody, typed("INHERITED-MARK", "p")]
+    )
+    os.utime(unowned, (mine.stat().st_mtime + 60, mine.stat().st_mtime + 60))
+    main(["context", "checkpoint", "--dir", str(d), "--codex"])
+    done = json.loads(capsys.readouterr().out)
+    c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    assert c.source["session_id"] == THREAD and "INHERITED-MARK" not in json.dumps(c.view)
+    assert done["skipped_unowned"] == 1
+    assert directives(unowned) == []
+    for argv in (["--session", OTHER], ["--transcript", str(unowned)]):
+        with pytest.raises(SystemExit) as out:
+            main(["context", "checkpoint", "--dir", str(d), "--codex", *argv])
+        assert out.value.code == 1 and "its first row names no owner (thread_source None)" in (
+            capsys.readouterr().err
+        ), argv
+    only = tmp_path / "only"
+    only.mkdir()
+    write(day / f"rollout-2026-10-04T10-00-10-{AGENTS[0]}.jsonl", [{**nobody, "payload": {"cwd": str(only)}}])
+    with pytest.raises(CheckpointError, match="names no owner skipped$"):
+        newest_rollout(only, home / "sessions")
+    with pytest.raises(CheckpointError, match="; 1 whose first row"):
+        newest_rollout(only, home / "sessions")
+
+
+def test_rollouts_written_in_the_same_nanosecond_are_ordered_by_name_the_later_first(tmp_path, monkeypatch):
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    names = {
+        THREAD: f"rollout-2026-10-04T09-00-00-{THREAD}.jsonl",
+        PARENT: f"rollout-2026-10-04T10-00-00-{PARENT}.jsonl",  # started an hour later
+    }
+    for order in (
+        (PARENT, THREAD),
+        (THREAD, PARENT),
+    ):  # made in each order: the order on disk decides nothing
+        home = tmp_path / f"home-{order[0]}"
+        monkeypatch.setenv("CODEX_HOME", str(home))
+        for thread in order:
+            p = write(home / "sessions" / "2026" / "10" / "04" / names[thread], [meta(thread, str(d))])
+            os.utime(p, ns=(10**18, 10**18))
+        done = checkpoint(d, "manual", codex=True, khive=TaskKhive([TASK]))
+        taken = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+        assert taken.source["session_id"] == PARENT, order
