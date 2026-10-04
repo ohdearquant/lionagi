@@ -53,8 +53,8 @@ and [[ADR-0017-the-desk|ADR-0017]]. Source: `src/lion1/checkpoint.py`, `hub/back
 - **named value**: one `Var` of a checkpoint: a name, a kind, the value, where it was read from and
   when.
 - **exchange**: one prompt of a Claude Code or Codex session, typed by the person or, in Claude
-  Code, opened by a task notification, with the last text the session wrote before the next prompt.
-  A Codex one ends at the person's next message or one marking no item.
+  Code, opened by a task notification, with the session's last text before it ends. It ends at the
+  next prompt, the person's message without words, or a Codex one marking no item.
 - **injected text**: what a hook or the Claude Code harness writes into a user row: a slash command
   with its caveat and output, a task notification, a system reminder, an interrupt mark. For Codex,
   what its CLI writes into a user message: the environment, AGENTS.md, the plugin list.
@@ -101,13 +101,13 @@ of a name replaces an earlier, so a declared value stands over one read from the
 - **Subject**: the transcript scan in `hub/backend/claude_code/checkpoint.py` (`_read`, `_prompt`,
   `_clean`), and `take_session`.
 - **Violated when**: a tool call or result, thinking, a compaction summary, a meta or system-sourced
-  row, or injected text is read as a prompt; an earlier text stands as the exchange's; or a take
-  keeps an input or `directive` holding injected text.
+  row, or injected text is read as a prompt; another text stands as the exchange's; or a take keeps
+  an input or `directive` holding injected text.
 
 A prompt is a `user` row whose content is a string, or text blocks beside an image, that no hook or
-harness wrote. A row opening with a slash command's name is not a prompt; a system reminder inside a
-typed prompt is cut out. The session's last text block before the next prompt is the exchange's
-text.
+harness wrote, as typed. A row opening with a slash command's name is not a prompt; a system
+reminder inside a typed prompt is cut out. The session's last text block before the exchange ends is
+its text.
 
 A task notification opens an exchange of its own, labelled `[event]` in 200 characters at most,
 never a `directive`. The same words again with no answer between are one exchange. The take's
@@ -257,7 +257,7 @@ record is refused. The replay checks content: a row's text and a result's fields
 
 Serves C2 to C5 and C7. `take_session` takes on the session's lists over `fold_turns` and refuses
 injected text; `render_prompt` is the restore. The transcript is the newest under Claude Code's
-project directory for its directory, never a pre-compaction copy, read once per size and time.
+project directory for its directory (S15), never a pre-compaction copy, read once per take (S13).
 Beside it: the hook ring, the typing log, `active_topic` in the project's sessions registry, the
 actor's lanes (S4), and the statusline's per-session file. The newest loop file's header is a `fact`
 and its `## Posture` a `posture`, as is the last text less its LNDL.
@@ -270,7 +270,12 @@ and its `## Posture` a `posture`, as is the last text less its LNDL.
   `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`,
   `test_legs_are_agents_the_transcript_shows_running`; `tests/test_claude_code_checkpoint.py`:
   `test_the_first_line_re_arms_each_watch_verbatim_before_any_work`,
-  `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`;
+  `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`,
+  `test_a_transcripts_prompt_is_kept_as_typed_and_trimming_says_only_whether_it_is_empty`,
+  `test_the_persons_row_with_no_words_an_image_alone_ends_the_exchange_before_it`,
+  `test_a_row_appended_while_the_transcript_is_read_is_after_the_take`,
+  `test_a_same_size_rewrite_of_the_transcript_that_restores_the_mtime_is_read_anew`,
+  `test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest`;
   `tests/test_context.py`:
   `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
   `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`,
@@ -283,8 +288,8 @@ Serves C1, C4, C6 and C7. `apps/cli/lion_cli/context.py` holds `set`, `checkpoin
 and exits 1. `checkpoint --hook` is the PreCompact hook's entry (S1). The areas server's
 `context_api` routes all but `show` to the same functions for a directory its registry names, 404
 for any other and 409 on a refusal, behind the server's guards
-([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). `status` says stale when no checkpoint exists or the file
-it points at changed after it.
+([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). `status` says stale when no checkpoint exists, the file
+it points at changed after it, or its rollout fails (S17).
 
 - **Landing evidence**: `tests/test_context.py`:
   `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
@@ -317,7 +322,7 @@ because [[ADR-0009-backends|ADR-0009]] and its tests name that file. The lanes, 
 the loop file, the fold and the restore's body live in `hub/backend/checkpoint.py`; the Claude Code
 module re-exports their names. `lion context checkpoint --codex` reads `--session`'s rollout, else
 the directory's newest whose first row says a person's, the later name first on a tie; a
-`--transcript` whose first row is a `session_meta` is a Codex session's. `restore` renders by
+`--transcript` whose first row is a `session_meta` is a Codex session's (S16). `restore` renders by
 `source.kind`.
 
 - **Landing evidence**: `tests/test_codex_checkpoint.py`:
@@ -338,8 +343,12 @@ the directory's newest whose first row says a person's, the later name first on 
   `test_a_rollout_rewritten_while_it_is_read_is_taken_again`,
   `test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken`,
   `test_a_session_meta_after_the_first_row_is_never_the_threads_own`,
-  `test_rollouts_written_in_the_same_nanosecond_are_ordered_by_name_the_later_first`; the Claude
-  Code tests in `tests/test_context.py` and `tests/test_claude_code_checkpoint.py`, unchanged.
+  `test_rollouts_written_in_the_same_nanosecond_are_ordered_by_name_the_later_first`,
+  `test_a_file_whose_kind_changed_after_the_route_peeked_at_it_is_refused`,
+  `test_a_rollout_whose_first_row_names_no_thread_id_at_the_read_is_refused_on_every_route`,
+  `test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen`;
+  the Claude Code tests in `tests/test_context.py`, unchanged, and
+  `tests/test_claude_code_checkpoint.py`.
 
 ## Alternatives
 
@@ -400,8 +409,8 @@ the directory's newest whose first row says a person's, the later name first on 
 - **S9**: `taken_at` keeps the take's fraction of a second, so `status` calls a file written in the
   take's second stale only when written after it, to the microsecond. A `taken_at` with no fraction
   reads as its second's start. The stamp is read before the transcript is, so a prompt that lands
-  while the take reads is after it. Every read of a Codex take stops at the size one stat saw (S13),
-  a last line with no end left unread; the scan keeps only what its readers read.
+  while the take reads is after it. Every take's read stops at the size one stat saw (S13), a last
+  line with no end left unread and counted; a Codex scan keeps only what its readers read.
 - **S10**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
   given, is an object; a pull request's number is a positive int, never a bool. A row of another
   shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
@@ -417,12 +426,26 @@ the directory's newest whose first row says a person's, the later name first on 
 - **S12**: A Codex checkpoint is saved and loaded on a Claude Code session's lists, which hold a
   Codex session's; its restore checks it on the Codex session's own. Like a Claude Code one (S5), it
   becomes the latest in a resident's directory and the resident's next process refuses it.
-- **S13**: A Codex take's read is of the file its stat saw. The file opened is compared with that
-  state, its device and inode included, before the first byte and after the last. One put in its
-  place, cut, or rewritten at the same size is stat and read again, twice at most, then refused with
-  nothing taken. The same file grown is taken as appended to, so a rewrite that also grows it is not
-  told from an append.
+- **S13**: A take's read, of a transcript or a rollout, is of the file its stat saw (`Snapshot` in
+  `hub/backend/checkpoint.py`). The file opened is compared with that state, its device and inode
+  included, before the first byte and after the last. One put in its place, cut, or rewritten at the
+  same size is stat and read again, twice at most, then refused with nothing taken. The same file
+  grown is taken as appended to, so a rewrite that also grows it is not told from an append.
 - **S14**: The owner, the thread and the directory of a Codex take are those of the first row its
   one read saw. The directory's own choice rests on an earlier read of that row, so the take refuses
   a chosen rollout whose row no longer says a person's thread in the directory. One that still says
-  so is taken, whatever thread it now names, and `source` names that thread.
+  so is taken, whatever thread it now names, and `source` names that thread. A row naming no thread
+  id is refused on every route, the file named. Pinned by
+  `test_a_rollout_whose_first_row_names_no_thread_id_at_the_read_is_refused_on_every_route`.
+- **S15**: Claude Code names a transcript by its session id, a random UUID, so no name orders two.
+  The directory's newest is the last written, to the nanosecond; a tie for it is refused, the tied
+  files named, and nothing is taken. Pinned by
+  `test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest`.
+- **S16**: `--transcript` chooses its reader on a peek at the file's first row, so the take's own
+  read must find the same kind. The Claude Code reader refuses a first row that is a `session_meta`,
+  and a Codex take one naming no owner, nothing taken. Pinned by
+  `test_a_file_whose_kind_changed_after_the_route_peeked_at_it_is_refused`.
+- **S17**: `status --codex` reads its figure from one read of the rollout it chose, that read's
+  first row checked as a take's (S14), so the figure is only ever of a rollout the status would
+  choose. One that fails gives a figure not known, and stale. Pinned by
+  `test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen`.
