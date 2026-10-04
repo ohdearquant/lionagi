@@ -2091,10 +2091,10 @@ class _Walk:
             finally:
                 # a value still computing now has no reader left (each was cancelled): it stops with
                 # them, whether the settle returned or raised
-                computing = [c for c in self.computed.values() if not c.done()]
-                for c in computing:
+                for c in self.computed.values():
                     c.cancel()
-                await asyncio.gather(*computing, return_exceptions=True)
+                # every value is seen through: one that failed after its readers were cut told no one
+                await asyncio.gather(*self.computed.values(), return_exceptions=True)
             for alias, reads in self.reads.items():
                 entry = self.run.record.get(alias)
                 if entry.content.ok:
@@ -2490,11 +2490,13 @@ async def _settle(
     is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
     settle did not wait for (a command `OUT{}` did not name) is seen through by the reap. The tasks its
     own deadline cancelled are returned, with the time budget that deadline came from. A walk hands in
-    the `_Limit` it settles under, so its writes can ask whether that deadline fired."""
+    the `_Limit` it settles under, so its writes can ask whether that deadline fired, and its own list
+    of tasks, which grows while it settles: a value a command's argument reads may launch a command.
+    One launched before the deadline is waited for and cut as the rest are; one launched after it is
+    refused where it starts."""
     cut: list[asyncio.Task] = []
     budget = None
     if tasks:
-        waited = set(tasks)
         if limit is None:
             limit = _Limit(run) if by_deadline else asyncio.timeout_at(None)
         try:
@@ -2502,16 +2504,21 @@ async def _settle(
                 if by_deadline:
                     run.timeouts.add(limit)
                 try:
-                    await asyncio.wait(waited)
+                    # only tasks still running are waited on, so each pass yields to the loop
+                    while waited := [task for task in tasks if not task.done()]:
+                        await asyncio.wait(waited)
                 finally:
                     run.timeouts.discard(limit)
         except TimeoutError:  # only this limit raises it: the wait itself never does
             budget = limit.budget  # the run's deadline fired, so this limit is the run's `_Limit`
-            for task in waited:
+            for task in list(tasks):
                 if not task.done():
                     task.cancel()
                     cut.append(task)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        seen = 0
+        while seen < len(tasks):  # a task the cut let start is refused there, and is seen through too
+            seen = len(tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
         run.tasks.difference_update(tasks)
         for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):

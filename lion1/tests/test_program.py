@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import gc
 import json
 import re
 import time
@@ -364,6 +365,146 @@ def test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_ta
     assert [e.turn for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
     assert sorted(calls) == [("echo", "deferred"), ("echo", "deferred"), ("echo", "kept")]
     assert "later is bound already: a name is bound once for the whole run" in _notices(run)
+
+
+class Wait(BaseModel):
+    seconds: float
+
+
+class Stubborn(BaseModel):
+    seconds: float
+
+
+class Drop(BaseModel):
+    target: str
+    after: float
+
+
+def _waiting_actor(name: str, ends: list) -> Actor:
+    actor = _actor(name, ends)
+
+    @actor.handler(Wait)
+    async def wait(req: Wait, ctx) -> str:
+        try:
+            await asyncio.sleep(req.seconds)
+        except asyncio.CancelledError:
+            ends.append(("wait", req.seconds, "cut"))
+            raise
+        ends.append(("wait", req.seconds, "ran"))
+        return "rested"
+
+    @actor.handler(Drop)
+    async def drop(req: Drop, ctx) -> str:
+        await asyncio.sleep(req.after)
+        ctx.run.pending[req.target].cancel()
+        return "dropped"
+
+    @actor.handler(Stubborn)
+    async def stubborn(req: Stubborn, ctx) -> str:
+        try:
+            await asyncio.sleep(req.seconds)
+        except asyncio.CancelledError:
+            ends.append(("stubborn", "cut and returned"))
+        return "kept"
+
+    return actor
+
+
+def _results(run) -> dict:
+    return {
+        e.alias: (e.content.ok, e.content.error, e.meta["execution"])
+        for e in run.record
+        if e.kind is Kind.RESULT
+    }
+
+
+def test_a_command_a_value_launched_while_the_turn_settled_is_cut_at_the_deadline_with_the_rest():
+    ends: list = []
+    actor = _waiting_actor("late-launch", ends)
+    # the walk is past its last line and settling when gate lands; only then does the last command's
+    # argument read v, whose DO launches the long wait: a command the settle had not seen when it began
+    turn = fenced("gate = wait(seconds=0.1)", "v = [DO wait(seconds=3)][0]", "out = echo(text=*gate + *v)")
+    run = _run(actor, turn, time_budget=0.5)
+    assert ends == [("wait", 0.1, "ran"), ("wait", 3.0, "cut")] and run.elapsed < 2
+    assert _results(run) == {
+        "gate": (True, None, "started"),
+        "out": (False, "cancelled before it finished", "not executed"),
+        "r2.2": (False, "cancelled before it finished", "completion unknown"),
+    }
+    assert run.pending == {} and run.tasks == set()
+
+
+def test_a_late_launch_outliving_every_command_the_settle_began_with_is_cut_at_the_deadline():
+    ends: list = []
+    actor = _waiting_actor("late-launch-orphaned", ends)
+    # out launches the long wait through v and is then cancelled by drop: every command the walk itself
+    # launched is done at 0.2 s, and the wait v launched is the only one still running at the deadline
+    turn = fenced(
+        "gate = wait(seconds=0.1)",
+        "v = [DO wait(seconds=3)][0]",
+        "out = echo(text=*gate + *v)",
+        'drop(target="out", after=0.2)',
+    )
+    run = _run(actor, turn, time_budget=0.5)
+    assert ends == [("wait", 0.1, "ran"), ("wait", 3.0, "cut")] and 0.5 <= run.elapsed < 2
+    assert _results(run) == {
+        "gate": (True, None, "started"),
+        "out": (False, "cancelled before it finished", "not executed"),
+        "r2.2": (True, None, "started"),
+        "r2.3": (False, "cancelled before it finished", "completion unknown"),
+    }
+    assert run.pending == {} and run.tasks == set()
+
+
+def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through(caplog):
+    ends: list = []
+    actor = _waiting_actor("launch-after-cut", ends)
+    # the first DO outlives its cancel and returns, so the value goes on to its second DO after the cut
+    turn = fenced(
+        "gate = wait(seconds=0.1)",
+        'v = [DO stubborn(seconds=3), DO echo(text="late")][1]',
+        "out = echo(text=*gate + *v)",
+    )
+    run = _run(actor, turn, time_budget=0.5)
+    assert ends == [("wait", 0.1, "ran"), ("stubborn", "cut and returned")] and run.elapsed < 2
+    # the late echo is refused where it starts and never reaches its handler; its refusal is on the record
+    # when the run returns, and the value it failed, with no reader left to tell, is seen through
+    assert _results(run) == {
+        "gate": (True, None, "started"),
+        "out": (False, "cancelled before it finished", "not executed"),
+        "r2.2": (True, None, "started"),
+        "r2.3": (False, "refused: the time_budget of 0.5 is spent", "not executed"),
+    }
+    assert run.pending == {} and run.tasks == set()
+    del run, actor
+    gc.collect()
+    assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
+def test_a_settle_sees_through_a_task_that_joined_its_list_after_the_cut():
+    async def main() -> None:
+        run = actor_module.Run(_actor("settle-grows", []), PROGRAM, RunRequest(time_budget=0.2))
+        tasks: list[asyncio.Task] = []
+
+        async def late() -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("a defect in a task the cut let start")
+
+        async def first() -> None:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                tasks.append(asyncio.ensure_future(late()))  # as a walk's list grows while it settles
+                raise
+
+        tasks.append(asyncio.ensure_future(first()))
+        # the list grew while the settle waited for what it cut: the task that joined is waited for as
+        # the rest are, and its defect is raised here, not dropped
+        with pytest.raises(RuntimeError, match="a defect in a task the cut let start"):
+            await actor_module._settle(run, tasks)
+        assert all(task.done() for task in tasks) and len(tasks) == 2
+
+    asyncio.run(main())
 
 
 def test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns():
