@@ -317,7 +317,13 @@ class Service:
             refusal = await asyncio.shield(held.begun)
             if refusal is not None:
                 raise refusal
-            return self.state(held.id), False
+            try:
+                return self.state(held.id), False
+            except ServeError as e:
+                if e.code != "unknown_run":
+                    raise
+                # the key outlived the memory of its run's id (C14): a repeat is gone, never unknown
+                raise ServeError("gone", f"run {held.id} is no longer held") from None
         offer = self.offers.get(name)
         if offer is None:
             raise ServeError("unknown_offer", f"no offer is named {name!r}")
@@ -1263,6 +1269,8 @@ async def _through(coro: Any) -> None:
     alive what it was ending."""
     task = asyncio.ensure_future(coro)
     while not task.done():
+        # `wait` cancels nothing; a shield would have the loop report the task's later failure as
+        # nobody's (CPython 3.14.7), though the last line reads it
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.shield(task)
+            await asyncio.wait((task,))
     task.result()

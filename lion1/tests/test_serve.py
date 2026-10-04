@@ -551,6 +551,34 @@ def test_a_repeated_once_key_starts_nothing_and_answers_the_first_run_while_it_i
     assert anew_made and anew["id"] != one["id"]
 
 
+def test_a_repeated_start_whose_runs_id_was_forgotten_is_gone_and_never_an_unknown_run(monkeypatch):
+    """A `once` key can outlive the memory of its run's id: starts with no key drop runs and push the id
+    out. The repeat is still a repeat of a run that existed, so it answers gone as D13 says."""
+    monkeypatch.setattr(serve, "_GONE", 1)
+    a, _ = actor("serve-once-forgotten")
+    service = Service(a, keep=0)
+    service.offer(Profile("p"), turns(FINISH, FINISH), RunRequest(emits=(Answer,)))
+
+    async def main():
+        fields = {"offer": "p", "inputs": ["go"], "once": "first"}
+        one, _ = await service.start(fields)
+        await to_end(service.events(one["id"]))
+        with pytest.raises(ServeError) as remembered:
+            await service.start(fields)
+        other, _ = await service.start({"offer": "p", "inputs": ["go"]})
+        await to_end(service.events(other["id"]))
+        with pytest.raises(ServeError) as forgotten:
+            await service.start(fields)
+        with pytest.raises(ServeError) as read:
+            service.state(one["id"])
+        return one["id"], remembered.value, forgotten.value, read.value
+
+    sid, remembered, forgotten, read = bounded(main)
+    assert list(service._dropped) != [sid] and sid not in service._dropped
+    assert (remembered.code, forgotten.code, read.code) == ("gone", "gone", "unknown_run")
+    assert sid in forgotten.reason
+
+
 # --- C3, C8, D3 -------------------------------------------------------------------------------------
 
 

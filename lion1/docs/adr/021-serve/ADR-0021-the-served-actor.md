@@ -536,6 +536,7 @@ connections and 32 subscribers are open at once.
   `test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each_run`,
   `test_a_cancel_that_lands_as_a_bounded_write_finishes_is_never_lost`,
   `test_a_write_or_a_close_a_peer_never_takes_ends_at_its_bound`,
+  `test_an_ending_seen_through_a_cancel_that_then_fails_reaches_its_caller_and_no_one_else`,
   `test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_never_waits`,
   `test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not`,
   `test_a_stream_past_the_subscriber_cap_is_refused_busy`,
@@ -576,7 +577,8 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **Landing evidence**: `tests/test_serve.py`:
   `test_a_repeated_once_key_starts_nothing_and_answers_the_first_run_while_it_is_readable`,
   `test_a_start_actor_run_refuses_is_refused_with_its_reason_and_leaves_no_run_log_or_key`,
-  `test_an_input_once_key_past_the_last_held_acts_again`.
+  `test_an_input_once_key_past_the_last_held_acts_again`,
+  `test_a_repeated_start_whose_runs_id_was_forgotten_is_gone_and_never_an_unknown_run`.
 
 ## Alternatives
 
@@ -662,3 +664,6 @@ the key unchanged; only the refusal of the act that took a key releases it.
   changes nothing; D6 names the test. Nothing is awaited between the reap and the return.
 - **S21**: A dropped run whose id is forgotten reads as after a restart: from its log as the log has
   it, a failure while it was held unremembered, or with no log as an unknown run.
+- **S22**: A run's rows carry the model's text as it is published, an `OUT{}` in it included, before
+  the run ends. Only an ended state's outcome and output say what the run committed. A run aborted
+  during its last reap keeps those rows, in its record and in its log.

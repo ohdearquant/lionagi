@@ -4,6 +4,7 @@ running. Every test here speaks to a real socket on loopback."""
 
 import asyncio
 import contextlib
+import gc
 import json
 import socket
 from types import SimpleNamespace
@@ -1052,6 +1053,43 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
         assert log_lines(tmp_path / f"{sid}.jsonl")[-1] == {"kind": "END", "state": service.state(sid)}
     # the idle stream was cut before its run ended: its one frame is the state it opened with
     assert [(n, d["phase"]) for n, d in seen] == [("state", "working")]
+
+
+def test_an_ending_seen_through_a_cancel_that_then_fails_reaches_its_caller_and_no_one_else(monkeypatch):
+    """`_through` waits for a shutdown step whatever cancels its caller. A step that fails after such a
+    cancel is raised to the caller, and the loop's exception handler hears nothing: the wait is never a
+    shield, which reports that failure as nobody's on CPython 3.14.7."""
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the service waits on a task without a shield")
+
+    monkeypatch.setattr(asyncio, "shield", refuse)
+
+    async def main():
+        told: list = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: told.append(context["message"])
+        )
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def step():
+            started.set()
+            await release.wait()
+            raise RuntimeError("the step failed")
+
+        waiter = asyncio.ensure_future(serve._through(step()))
+        await started.wait()
+        waiter.cancel()
+        await asyncio.sleep(0)  # the cancel lands on the wait, which waits again
+        still = not waiter.done()
+        release.set()
+        (raised,) = await asyncio.gather(waiter, return_exceptions=True)
+        gc.collect()
+        await asyncio.sleep(0)
+        return still, raised, told
+
+    still, raised, told = bounded(main, seconds=5.0)
+    assert still and isinstance(raised, RuntimeError) and told == []
 
 
 @pytest.mark.parametrize("step", ["write", "close"])
