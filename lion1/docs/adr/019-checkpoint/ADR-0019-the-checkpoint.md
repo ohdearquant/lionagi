@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -22,6 +22,9 @@ tags:
 # ADR-0019: The checkpoint and the restore
 
 ## Context
+
+The Codex half of this record serves the author's request of 2026-10-04 that a Codex session support
+the checkpoint feature too.
 
 A Claude Code session's state is its transcript and the files around it: the Monitors it armed, the
 Agents it spawned, the words the person typed, the figure its statusline shows. A Codex session's is
