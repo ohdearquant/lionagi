@@ -469,3 +469,6 @@ or XCTest.
   and no editable path, with the reason as `refused`, and a write of it answers 409 before a key is
   weighed. The host reads every resident with this tree's loaders, so one run by another tree's
   `lion`, on a file that tree accepts, shows the reason while it runs.
+- **S20**: Loopback names no sender (S2), so the host prints one line for each write it admits: the
+  time, the method, the path and the status, never the body. That line is the only record of when a
+  write came, and it says nothing of who sent it.
