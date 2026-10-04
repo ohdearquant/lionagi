@@ -66,7 +66,7 @@ run, and no client. Source: `src/lion1/actor.py` (`run`, `Run.inbox`, `Run.inter
 | A2 | One event loop carries the actor, its runs and the transport, and the owner's handlers and awaited backend calls give it back within a second, which nothing in the core enforces; an offer's synchronous backend holds it for its whole call (S6). | the bus and the actor are single-loop; the OpenRouter backend calls out on a thread and the Claude Code and Codex backends await their subprocesses, while `Actor.run` calls a synchronous backend inline | one slow handler or synchronous backend stalls every stream; the transport moves to a thread and bridges to the loop |
 | A3 | A reader of one origin-form HTTP/1.1 request per connection, with a counted body, is small enough that its tests reach every line and branch, as the core's coverage gate requires (S10). | C10 and D8 name every form taken and refused; the reader's own checks run before the standard library parses the lines | the transport is rebuilt on the standard library's threaded server; the service is unchanged |
 | A4 | A local client needs the rows it missed and the state as it stands, and can do without the bus events it missed. | every row carries its sequence number and a stream opens with the state; an event that leaves no row is a progress mark | the stream gains event ids and a bounded replay |
-| A5 | A row is complete at `run.started`, at each `turn.started`, at each `command.` event, when the run waits and when it ends. | `Actor.run` attaches a notification's fold after it emits `memory.recalled`; `chat` in `hub/chat.py` hands each entry to its `say` callback at these points | the runtime gains an event that marks an entry final, and D3 publishes on it |
+| A5 | A row is complete at `run.started`, at each `turn.started`, at each `command.` event, when the run waits and when it ends. | `Actor.run` attaches a notification's fold as it appends the notification, with no event between; `chat` in `hub/chat.py` hands each entry to its `say` callback at these points | the runtime gains an event that marks an entry final, and D3 publishes on it |
 
 ## Claims
 
@@ -576,7 +576,7 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | A web framework | a dependency in the core, or `Actor.serve` absent without an extra |
 | The transport in the hub | `Actor.serve` would need the hub installed; the service itself knows no HTTP and a later transport may live there |
 | A client that sends its own profile, prompt or tools | the actor would run what any local page or process hands it; the owner's offer is the gate (C1) |
-| Publishing rows at every bus event | the runtime attaches a notification's fold after `memory.recalled`, so a row published there stays incomplete in the log and on every stream (A5) |
+| Publishing rows at every bus event | every event falls on a complete row today, and nothing holds the runtime to that: an event added between a notification and its fold would publish half a row to the log and every stream; the named points are the ones `chat` uses (A5) |
 | The runtime's 8-hex run id as the served run's id | a directory outlives the process and 32 bits collide across kept logs; the id is known only once the run began, too late to reserve its log |
 | Replay of missed events by id | a second ordered store beside the record; the state frame and the record read recover the rows and the end (A4) |
 | A failed append that only marks the state | rows would stream that no log holds, and a resume would replay less than the client saw (C8) |
@@ -640,9 +640,12 @@ the key unchanged; only the refusal of the act that took a key releases it.
   of large rows fills memory up to 1,000 frames a subscriber.
 - **S17**: A `once` key is scoped to its operation: starts across the service, inputs within one
   run. The last 100 of each are held in memory, and a key past that acts again, as after a restart.
-- **S18**: A resumed view equals the earlier run's rows only in what `entry_of` keeps: its filter of
-  a row's meta (`src/lion1/checkpoint.py`) drops a recall's receipt on a SYSTEM row, so the receipt
-  is not carried into history.
+- **S18**: A resumed view equals the earlier run's rows only in what `entry_of` keeps. Its filter of
+  a row's meta (`src/lion1/checkpoint.py`) keeps the keys it names and drops any other, so a key an
+  app added to a row's meta is not carried into history.
 - **S19**: `_deliver` answers a consumed inbound to the actor its origin names
   ([[ADR-0010-delegation#^c3|ADR-0010/C3]]). A client's input names `client`, so it is answered to
   no one while no actor has that name, and the service refuses a start while one is registered.
+- **S20**: No test lands a stop or a cancel between a run's committed outcome and its return (C6):
+  the runtime awaits nothing between the reap and the return, so neither can land there. A change
+  that adds an await in that span owes the test.
