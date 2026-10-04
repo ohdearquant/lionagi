@@ -54,6 +54,7 @@ _MIB = 1 << 20  # an input, a body
 _INPUTS = 16  # inputs one start carries
 _UNTAKEN = 64  # inputs a run holds not yet taken
 _KEYS = 100  # `once` keys held per operation
+_GONE = 10_000  # ids of dropped runs remembered, the oldest forgotten first
 _FRAMES = 1_000  # frames queued for one subscriber
 _PAGE = 500  # rows one record read returns
 _CONNECTIONS = 64
@@ -62,6 +63,7 @@ _DEADLINE = 10.0  # seconds for a whole request, however its bytes arrive
 _WRITE = 5.0  # seconds for one write, or for a connection to close
 _PING = 15.0  # seconds between a stream's comment lines
 _HEAD = 16 * 1024
+_LINES = 64  # header fields in one head
 _DEPTH = 32  # how deep a value pydantic cannot project as a whole is projected part by part
 _COMMENT = (None, None)  # a stream's keep-alive, written as a comment line
 _STATUS = {
@@ -95,7 +97,7 @@ _REQUEST_LINE = re.compile(
 _FIELD = re.compile(r"([!#$%&'*+\-.^_`|~0-9A-Za-z]+):([\x20-\x7e]*)")
 _ONE = ("host", "origin", "content-type", "content-length")
 _DIGITS = re.compile(r"[0-9]+")
-_START = re.compile(r"start=([0-9]+)")
+_START = re.compile(r"start=([0-9]{1,18})")  # a row count: never a number `int` refuses to read
 _ROUTES = {  # route -> the method it answers
     "card": "GET",
     "all": "GET",
@@ -208,6 +210,9 @@ class Service:
     `<dir>/<id>.jsonl`; `max_live` counts runs not ended, `keep` the ended runs held in memory."""
 
     def __init__(self, actor: Actor, *, dir: str | Path | None = None, max_live: int = 8, keep: int = 100):
+        for name, count, least in (("max_live", max_live, 1), ("keep", keep, 0)):
+            if type(count) is not int or count < least:
+                raise ValueError(f"{name} is a count of at least {least}, got {count!r}")
         self.actor = actor
         self.dir = Path(dir) if dir is not None else None
         self.max_live = max_live
@@ -216,8 +221,9 @@ class Service:
         self.runs: dict[str, _Served] = {}  # live and kept, in the order they were held
         self.port: int | None = None  # the port `serve` bound, once it has
         self._ended: OrderedDict[str, None] = OrderedDict()  # the kept runs, the first to end first
-        self._dropped: set[str] = set()  # ids no longer held: read from the log, or gone
-        self._latched: set[str] = set()  # dropped runs whose log failed while they were held: gone
+        # the last `_GONE` ids no longer held, each with whether its log failed while it was: read from
+        # the log, or gone; one forgotten reads as its log has it, or as an unknown run
+        self._dropped: OrderedDict[str, bool] = OrderedDict()
         self._starts: OrderedDict[str, tuple[dict, _Served]] = OrderedDict()  # once key -> first start
         self._by_run: dict[str, _Served] = {}  # live runs by the runtime's id, which routes events (S11)
         self._all: set[_Sub] = set()  # the streams of every run
@@ -532,10 +538,9 @@ class Service:
         self._ended[s.id] = None
         while len(self._ended) > self.keep:
             sid, _ = self._ended.popitem(last=False)
-            dropped = self.runs.pop(sid)
-            self._dropped.add(sid)
-            if dropped.latched:
-                self._latched.add(sid)
+            self._dropped[sid] = self.runs.pop(sid).latched
+            if len(self._dropped) > _GONE:
+                self._dropped.popitem(last=False)
         if not s.begun.done():  # cancelled before it began: the start answers with the aborted run
             s.begun.set_result(None)
 
@@ -607,7 +612,7 @@ class Service:
             return held
         if not _ID.fullmatch(sid):  # never a path: only an id reaches the directory
             raise ServeError("unknown_run", f"no run {sid!r}")
-        if sid in self._latched:
+        if self._dropped.get(sid):
             raise ServeError("gone", f"run {sid} is no longer held, and its log failed while it was")
         if self.dir is not None:
             ends = _ends(self.dir / f"{sid}.jsonl")
@@ -852,19 +857,22 @@ class Service:
         query = query if "?" in target else None
         body, length = buf[end + 4 :], fields.get("content-length")
         if method == "GET":
-            if body or (length is not None and not (_DIGITS.fullmatch(length) and int(length) == 0)):
+            if body or (length is not None and not (_DIGITS.fullmatch(length) and not length.strip("0"))):
                 raise ServeError("bad_request", "a GET carries no body")
             return method, path, query, None
         if (fields.get("content-type") or "").lower() != "application/json":
             raise ServeError("unsupported_type", "a POST carries application/json")
         if length is None or not _DIGITS.fullmatch(length):
             raise ServeError("bad_request", "a POST carries one decimal Content-Length")
-        if int(length) > _MIB:
+        # the digits decide before `int` reads them: a length of thousands of digits is past the cap, and
+        # `int` would raise on it where no refusal is written
+        digits = length.lstrip("0")
+        if len(digits) > len(str(_MIB)) or (size := int(digits or "0")) > _MIB:
             raise ServeError("too_large", f"the body is past {_MIB} bytes")
-        if len(body) > int(length):
+        if len(body) > size:
             raise ServeError("bad_request", "bytes follow the body; one request per connection")
         try:
-            body += await reader.readexactly(int(length) - len(body))
+            body += await reader.readexactly(size - len(body))
         except asyncio.IncompleteReadError:
             return None
         return method, path, query, _object(body)
@@ -1131,6 +1139,8 @@ def _head(raw: bytes) -> tuple[str, str, dict[str, str]]:
     request = _REQUEST_LINE.fullmatch(lines[0])
     if request is None:
         raise ServeError("bad_request", "the request line is GET or POST, an origin-form target and HTTP/1.1")
+    if len(lines) - 1 > _LINES:
+        raise ServeError("too_large", f"the head is past {_LINES} header fields")
     fields: dict[str, str] = {}
     for line in lines[1:]:
         if line[:1] in (" ", "\t"):

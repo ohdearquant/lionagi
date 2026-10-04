@@ -316,6 +316,7 @@ def post(body: bytes, *, path: bytes = b"/runs", length: bytes | None = None, ki
 
 
 START = b'{"offer": "p"}'
+LONG = "start=" + "9" * 5000  # past the digits `int` reads from a string
 REFUSED = [
     ("HTTP/1.0", b"GET / HTTP/1.0\r\n" + HOST + b"\r\n", "bad_request"),
     ("another method", b"PUT / HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
@@ -388,7 +389,18 @@ REFUSED = [
     ("another type", post(START, kind=b"Content-Type: text/plain\r\n"), "unsupported_type"),
     ("a head past 16 KiB", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: " + b"a" * 16384, "too_large"),
     ("a head one byte past 16 KiB", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: {pad1}\r\n\r\n", "too_large"),
-    ("100 headers", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n" * 99 + b"\r\n", "bad_request"),
+    ("65 header fields", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n" * 64 + b"\r\n", "too_large"),
+    ("a length of 5,000 digits", post(START, length=b"9" * 5000), "too_large"),
+    (
+        "a GET with a length of 5,000 digits",
+        b"GET / HTTP/1.1\r\n" + HOST + b"Content-Length: " + b"9" * 5000 + b"\r\n\r\n",
+        "bad_request",
+    ),
+    (
+        "a number of 5,000 digits in the body",
+        post(b'{"offer": "p", "bounds": {"max_turns": ' + b"9" * 5000 + b"}}"),
+        "bad_request",
+    ),
 ]
 # the refusals that only the body decides; every other one is decided by the head
 BY_BODY = {
@@ -398,6 +410,7 @@ BY_BODY = {
     "a key twice",
     "NaN",
     "Infinity",
+    "a number of 5,000 digits in the body",
 }
 assert BY_BODY <= {name for name, *_ in REFUSED}
 # only the bytes that arrive with the head show a body where none may be: sent in pieces, what follows
@@ -454,6 +467,26 @@ def test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatc
     assert_safe(fields)
 
 
+def test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request(monkeypatch):
+    """D8's own field cap sits under the parser's, so the parser's refusal is reached here by lowering
+    the parser's: whatever it refuses is answered, never left to end the connection's task."""
+    monkeypatch.setattr(serve.http.client, "_MAXHEADERS", 1)
+    a = Actor("http-parser-refuses")
+    service = Service(a)
+    service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
+
+    async def main():
+        async with serving(service) as port:
+            return await ask(port, with_port(b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n\r\n", port))
+
+    status, fields, body = bounded(main)
+    doc = json.loads(body)
+    assert (status, doc["error"]) == (400, "bad_request") and doc["reason"].startswith(
+        "the headers do not parse"
+    )
+    assert_safe(fields)
+
+
 @pytest.mark.parametrize("name, raw, code", WHOLE_ONLY, ids=[c[0] for c in WHOLE_ONLY])
 def test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused(name, raw, code):
     test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(name, raw, code, "whole")
@@ -464,7 +497,13 @@ ACCEPTED = [
     ("the type in capitals", post(START, kind=b"Content-Type: APPLICATION/JSON\r\n"), 201),
     ("spaces around a value", post(START).replace(b"Content-Length: 14", b"Content-Length:   14  "), 201),
     ("a head of exactly 16 KiB", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: {pad}\r\n\r\n", 200),
-    ("99 headers", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n" * 98 + b"\r\n", 200),
+    ("64 header fields", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n" * 63 + b"\r\n", 200),
+    ("a length under 5,000 zeros", post(START, length=b"0" * 5000 + b"14"), 201),
+    (
+        "a GET with a length of 5,000 zeros",
+        b"GET / HTTP/1.1\r\n" + HOST + b"Content-Length: " + b"0" * 5000 + b"\r\n\r\n",
+        200,
+    ),
 ]
 
 
@@ -521,7 +560,16 @@ def test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused():
             await drained(*(await stream_open(port, f"/runs/{sid}/events"))[:2])
             for path in ("/?a=1", "/runs?start=1", "/runs?", f"/runs/{sid}?x", f"/runs/{sid}/events?x"):
                 got[path] = await call(port, "GET", path)
-            for query in ("start=x", "foo=1", "start=", "start=1&start=2", "start=-1", "start=4"):
+            for query in (
+                "start=x",
+                "foo=1",
+                "start=",
+                "start=1&start=2",
+                "start=-1",
+                "start=4",
+                LONG,
+                "start=" + "1" * 19,
+            ):
                 got[query] = await call(port, "GET", f"/runs/{sid}/record?{query}")
             for path in ("/runs/", f"/runs/{sid}/nope", "//", "/runs/x/y/z", "/events/", "/run"):
                 got[path] = await call(port, "GET", path)
@@ -540,6 +588,7 @@ def test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused():
     want = {
         **dict.fromkeys(["/?a=1", "/runs?start=1", "/runs?", f"/runs/{sid}?x", f"/runs/{sid}/events?x"], 400),
         **dict.fromkeys(["start=x", "foo=1", "start=", "start=1&start=2", "start=-1", "start=4"], 400),
+        **dict.fromkeys([LONG, "start=" + "1" * 19], 400),  # a start `int` would refuse to read is no start
         "/runs/": 404,
         f"/runs/{sid}/nope": 404,
         "//": 404,
@@ -1003,6 +1052,40 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
         assert log_lines(tmp_path / f"{sid}.jsonl")[-1] == {"kind": "END", "state": service.state(sid)}
     # the idle stream was cut before its run ended: its one frame is the state it opened with
     assert [(n, d["phase"]) for n, d in seen] == [("state", "working")]
+
+
+@pytest.mark.parametrize("step", ["write", "close"])
+def test_a_write_or_a_close_a_peer_never_takes_ends_at_its_bound(step, monkeypatch):
+    """A peer that takes nothing holds no connection past the bound: the write raises, the close cuts."""
+    monkeypatch.setattr(serve, "_WRITE", 0.05)
+
+    async def main():
+        never = asyncio.get_running_loop().create_future()
+        cut = []
+
+        async def held():
+            await never
+
+        writer = SimpleNamespace(
+            write=lambda data: None,
+            drain=held,
+            close=lambda: None,
+            wait_closed=held,
+            transport=SimpleNamespace(abort=lambda: cut.append(True)),
+        )
+        begun = asyncio.get_running_loop().time()
+        try:
+            await (serve._write(writer, b"x") if step == "write" else serve._close(writer))
+            raised = None
+        except TimeoutError as e:
+            raised = type(e)
+        took = asyncio.get_running_loop().time() - begun
+        never.cancel()
+        return raised, cut, took
+
+    raised, cut, took = bounded(main, seconds=2.0)
+    assert (raised, cut) == ((TimeoutError, []) if step == "write" else (None, [True]))
+    assert 0.05 <= took < 1.0
 
 
 @pytest.mark.parametrize("step", ["write", "close"])

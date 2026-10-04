@@ -1179,6 +1179,75 @@ def test_a_cancel_before_the_commit_is_an_abort_with_no_outcome_even_with_an_int
     assert log_lines(tmp_path / f"{sid}.jsonl")[-1] == {"kind": "END", "state": cancelled}
 
 
+@pytest.mark.parametrize("control", ["cancel", "stop"])
+def test_a_cancel_in_the_last_reap_aborts_with_no_outcome_ever_shown_and_a_stop_changes_nothing(
+    control,
+):
+    """The runtime sets a run's outcome, then reaps what `OUT{}` did not name, then returns. A command
+    that absorbs its cancel holds that reap open: a cancel landing there is before the commit, an abort
+    whose outcome no state ever showed; a stop there leaves the outcome as it was."""
+    a = Actor(f"serve-last-reap-{control}")
+    entered, absorbed, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @a.handler(Wait)
+    async def wait(req: Wait, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            absorbed.set()
+            await release.wait()
+        return "settled"
+
+    async def accept(run, fields):
+        await entered.wait()
+
+    service = Service(a)
+    service.offer(
+        Profile("p"),
+        turns('<lact a1>wait(key="x")</lact>' + FINISH),
+        RunRequest(emits=(Answer,), accept=accept),
+    )
+
+    async def main():
+        state, _ = await service.start({"offer": "p", "inputs": ["go"]})
+        sid = state["id"]
+        frames = asyncio.ensure_future(to_end(service.events(sid)))
+        await absorbed.wait()  # the output was accepted, and the reap waits on the command it cancelled
+        held = service.runs[sid]
+        during = (service.state(sid), type(held.run.outcome).__name__)
+        if control == "cancel":
+            ending = asyncio.ensure_future(service.cancel(sid))
+            await asyncio.sleep(0)
+        else:
+            service.stop(sid)
+        release.set()
+        final = await ending if control == "cancel" else None
+        seen = await frames
+        return sid, during, final, seen
+
+    sid, (during, inside), final, seen = bounded(main)
+    assert inside == "Success" and (during["phase"], during["outcome"], during["output"]) == (
+        "working",
+        None,
+        None,
+    )
+    states = [data for name, data in seen if name == "state"]
+    if control == "cancel":
+        assert (final["phase"], final["outcome"], final["output"], final["error"]) == (
+            "aborted",
+            None,
+            None,
+            None,
+        )
+        assert states[-1] == final and all(st["outcome"] is None and st["output"] is None for st in states)
+    else:
+        assert all(st["outcome"] is None for st in states[:-1])
+        assert (states[-1]["phase"], states[-1]["outcome"]["kind"]) == ("ended", "Success")
+        assert states[-1]["output"] == {"answer": {"text": "done"}}
+    assert service.state(sid) == states[-1]
+
+
 def test_a_starting_run_takes_a_cancel_only_and_ends_aborted_with_no_runtime_id(tmp_path):
     a, _ = actor("serve-starting")
     service = Service(a, dir=tmp_path)
@@ -1447,6 +1516,74 @@ def test_a_dropped_run_reads_whole_from_its_log_and_one_whose_log_failed_is_gone
 
 
 # --- C14 --------------------------------------------------------------------------------------------
+
+
+def test_the_ids_of_dropped_runs_are_remembered_to_a_count_and_one_forgotten_is_an_unknown_run(monkeypatch):
+    monkeypatch.setattr(serve, "_GONE", 2)
+    a, _ = actor("serve-forgotten")
+    service = Service(a, keep=0)
+    service.offer(Profile("p"), turns(FINISH, FINISH, FINISH), RunRequest(emits=(Answer,)))
+
+    async def main():
+        ids = []
+        for _ in range(3):
+            state, _ = await service.start({"offer": "p", "inputs": ["go"]})
+            await to_end(service.events(state["id"]))
+            ids.append(state["id"])
+        return ids
+
+    ids = bounded(main)
+    codes = []
+    for sid in ids:
+        with pytest.raises(ServeError) as refused:
+            service.state(sid)
+        codes.append(refused.value.code)
+    assert service.runs == {} and list(service._dropped) == ids[1:]
+    assert codes == ["unknown_run", "gone", "gone"]
+
+
+def test_a_dropped_run_whose_id_is_forgotten_reads_from_its_log_as_after_a_restart(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "_GONE", 1)
+    a, _ = actor("serve-forgotten-logged")
+    service = Service(a, dir=tmp_path, keep=0)
+    service.offer(Profile("p"), turns(FINISH, FINISH), RunRequest(emits=(Answer,)))
+
+    async def main():
+        ids = []
+        for _ in range(2):
+            state, _ = await service.start({"offer": "p", "inputs": ["go"]})
+            await to_end(service.events(state["id"]))
+            ids.append(state["id"])
+        return ids
+
+    first, second = bounded(main)
+    assert service.runs == {} and list(service._dropped) == [second]
+    for sid in (first, second):
+        state = service.state(sid)
+        assert (state["phase"], state["outcome"]["kind"]) == ("ended", "Success")
+        assert service.record(sid)["rows"] == [json.loads(json.dumps(r)) for r in service.record(sid)["rows"]]
+        assert len(service.record(sid)["rows"]) == state["rows"] > 0
+
+
+@pytest.mark.parametrize(
+    "capacity",
+    [
+        {"max_live": 0},
+        {"max_live": -1},
+        {"max_live": True},
+        {"max_live": 2.0},
+        {"keep": -1},
+        {"keep": True},
+        {"keep": 1.5},
+    ],
+    ids=repr,
+)
+def test_a_capacity_that_is_no_count_is_refused_when_the_service_is_made(capacity):
+    (name,) = capacity
+    with pytest.raises(ValueError, match=f"^{name} is a count of at least"):
+        Service(Actor("serve-capacity"), **capacity)
+    made = Service(Actor("serve-capacity-least"), max_live=1, keep=0)
+    assert (made.max_live, made.keep) == (1, 0)
 
 
 @pytest.mark.parametrize("with_dir", [False, True])

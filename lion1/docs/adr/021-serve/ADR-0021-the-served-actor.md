@@ -154,8 +154,10 @@ ends the turn with no message; one that catches it makes its message; a synchron
 Stop wakes a waiting run, whose wait answers false, and cancels an awaited call; pending commands
 settle, and the run ends `Stopped` at its next turn unless it ended first.
 
-Cancel cancels the task: an abort with no outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). A cancel
-with an interrupt is the cancel ([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
+Cancel cancels the task: an abort with no outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). The
+terminal commit follows the last reap ([[ADR-0020-the-experience|ADR-0020]]), so a cancel during
+that reap is before it (S20). A cancel with an interrupt is the cancel
+([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
 
 ### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical)_ ^c7
 
@@ -256,14 +258,14 @@ conversations. It names the actor and protocol version 1.
 
 - **Subject**: ended runs kept in memory, inputs queued on a run, and frames queued for a
   subscriber.
-- **Violated when**: a read of a run no longer kept answers as an unknown run or as an empty one; a
-  record read with a directory lacks rows its unlatched log holds; or an input past the cap is
-  accepted.
+- **Violated when**: a read of a dropped run the service remembers answers as an unknown run or as
+  an empty one; a record read with a directory lacks rows its unlatched log holds; or an input past
+  the cap is accepted.
 
 Live runs are always held. Ended runs are held up to a count, the oldest dropped first. With a
 directory, a dropped run's state and record are read from its log, unless it was latched while the
 service ran (C7, C8). With none, a dropped run answers `gone`, between two pages as on a first read,
-and a client starts over from what it holds.
+and a client starts over from what it holds. It remembers the last 10,000 dropped ids (S21).
 
 A run holds at most 64 inputs not yet taken, and one more is refused. The bounds are counts, and a
 row's size is not bounded (S16).
@@ -288,16 +290,19 @@ on any other run is refused.
 ### D1: `src/lion1/serve.py` holds `Service` and `Offer`; `entry_row` moves beside `entry_of` ^d1
 
 Serves C1, C12 and C13. `Service(actor, *, dir=None, max_live=8, keep=100)`; `keep` counts ended
-runs held in memory. `Service.offer(profile, backend, request=RunRequest(), *, converse=False)`
-raises `ValueError`, naming which, for a template setting `wait` or `reply_on_commands` or a name
-already offered. It keeps a copy of the profile with its own `defaults` dict, and of the template;
-the stores the profile names and the callbacks a request carries stay the caller's, live.
-`Service.card()` builds the card from `Actor.subset` and `model_json_schema`. `entry_row` and
-`load_log` move from `hub/chat.py` to `src/lion1/checkpoint.py`, and the hub imports them.
+runs held, and `max_live` under 1, `keep` under 0 or a non-integer raises `ValueError`.
+
+`Service.offer(profile, backend, request=RunRequest(), *, converse=False)` raises `ValueError`,
+naming which, for a template setting `wait` or `reply_on_commands` or a name already offered. It
+copies the profile, with its own `defaults`, and the template; the profile's stores and a request's
+callbacks stay the caller's, live. `Service.card()` builds the card from `Actor.subset` and
+`model_json_schema`. `entry_row` and `load_log` move from `hub/chat.py` to
+`src/lion1/checkpoint.py`; the hub imports them.
 
 - **Landing evidence**: `tests/test_serve.py`:
   `test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_prompt`,
   `test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused_by_name`,
+  `test_a_capacity_that_is_no_count_is_refused_when_the_service_is_made`,
   `test_serve_imports_the_standard_library_pydantic_and_lion1_only_and_adds_no_dependency`.
 
 ### D2: `Service.start` checks, reserves an id and a log, then reads the run from the bus ^d2
@@ -356,7 +361,9 @@ run's end puts the last rows, the final state and a close on its own streams' qu
   `test_a_stream_opened_after_the_end_is_the_final_state_and_one_racing_the_end_takes_the_rest`,
   `test_an_aborted_run_closes_its_stream_with_a_final_state_naming_the_error_and_no_outcome`,
   `test_a_stream_that_overflows_is_closed_never_waited_for_and_a_new_one_opens_with_the_state`,
-  `test_an_ended_run_past_keep_is_dropped_oldest_first_and_a_read_between_two_pages_says_so`.
+  `test_an_ended_run_past_keep_is_dropped_oldest_first_and_a_read_between_two_pages_says_so`,
+  `test_the_ids_of_dropped_runs_are_remembered_to_a_count_and_one_forgotten_is_an_unknown_run`,
+  `test_a_dropped_run_whose_id_is_forgotten_reads_from_its_log_as_after_a_restart`.
 
 ### D5: `say`, `end` and the service's `wait` ^d5
 
@@ -389,6 +396,7 @@ all three, a starting run all but `cancel`.
   `test_an_interrupt_cuts_the_call_in_flight_and_the_run_goes_on_or_waits_for_input`,
   `test_an_interrupt_with_no_call_in_flight_cuts_nothing`,
   `test_a_cancel_before_the_commit_is_an_abort_with_no_outcome_even_with_an_interrupt`,
+  `test_a_cancel_in_the_last_reap_aborts_with_no_outcome_ever_shown_and_a_stop_changes_nothing`,
   `test_a_starting_run_takes_a_cancel_only_and_ends_aborted_with_no_runtime_id`.
 
 ### D7: The log's `SERVE` and `END` rows ^d7
@@ -435,11 +443,13 @@ blank line under the cap, checked against the second table, and only then parsed
 | Transfer-Encoding, Expect | refused when present |
 | Host | `127.0.0.1:<port>` or `localhost:<port>` on a `127.0.0.1` bind; `[::1]:<port>` or `localhost:<port>` on a `::1` bind; `localhost` in any letter case |
 | body | a POST's is exactly Content-Length bytes of UTF-8 holding one JSON object, at most 1 MiB; a GET with a Content-Length other than 0 is refused |
-| head | at most 16 KiB |
+| head | at most 16 KiB and 64 header fields |
+| Content-Length, `start` | decimal digits of any length, decided by the digits: a length past the body's cap is refused as too large, a `start` past 18 digits as a bad request |
 
 - **Landing evidence**: `tests/test_serve_http.py`:
   `test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched`,
   `test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused`,
+  `test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request`,
   `test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive`,
   `test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route`,
   `test_a_peer_off_loopback_is_forbidden_before_any_byte_of_its_request_is_read`,
@@ -525,6 +535,7 @@ connections and 32 subscribers are open at once.
 - **Landing evidence**: `tests/test_serve_http.py`:
   `test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each_run`,
   `test_a_cancel_that_lands_as_a_bounded_write_finishes_is_never_lost`,
+  `test_a_write_or_a_close_a_peer_never_takes_ends_at_its_bound`,
   `test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_never_waits`,
   `test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not`,
   `test_a_stream_past_the_subscriber_cap_is_refused_busy`,
@@ -646,6 +657,8 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S19**: `_deliver` answers a consumed inbound to the actor its origin names
   ([[ADR-0010-delegation#^c3|ADR-0010/C3]]). A client's input names `client`, so it is answered to
   no one while no actor has that name, and the service refuses a start while one is registered.
-- **S20**: No test lands a stop or a cancel between a run's committed outcome and its return (C6):
-  the runtime awaits nothing between the reap and the return, so neither can land there. A change
-  that adds an await in that span owes the test.
+- **S20**: Between naming a run's outcome and its return the runtime awaits the last reap, and a
+  command that absorbs its cancel holds that reap open. A cancel there is an abort and a stop
+  changes nothing; D6 names the test. Nothing is awaited between the reap and the return.
+- **S21**: A dropped run whose id is forgotten reads as after a restart: from its log as the log has
+  it, a failure while it was held unremembered, or with no log as an unknown run.
