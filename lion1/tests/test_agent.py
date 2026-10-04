@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -1010,11 +1012,20 @@ def test_new_failure_preserves_older_owed_batch():
     assert state.get("unreported").value == [] and len(khive.sent) == 1
 
 
-def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeypatch):
-    """--rerun ID...: the batch a killed turn left read and unanswered, back through Agent.rerun."""
+@pytest.mark.parametrize(
+    ("chair", "order"), [("", ["ticks", "rerun"]), ("\n[chair]\n", ["rerun"])], ids=["chores", "chair"]
+)
+def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeypatch, chair, order):
+    """--rerun ID...: the batch a killed turn left read and unanswered, back through Agent.rerun, after
+    the missing ticks are made as a start makes them, and none for a chair."""
     from types import SimpleNamespace
 
-    seen: dict = {}
+    seen: dict = {"order": []}
+
+    class Ticks:
+        async def ensure_ticks(self):
+            seen["order"].append("ticks")
+            return []
 
     class Held:
         khive = SimpleNamespace(actor="lambda:x")
@@ -1026,16 +1037,56 @@ def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeyp
             seen["released"] = True
 
         async def rerun(self, ids):
+            seen["order"].append("rerun")
             seen["ids"] = ids
             return SimpleNamespace(record=[])
 
-    (tmp_path / "chores.toml").write_text('model = "deepseek/deepseek-v4.1-flash"\n')
-    monkeypatch.setattr("lion_cli.agent.build", lambda directory, backend: (None, Held()))
+    (tmp_path / "chores.toml").write_text('model = "deepseek/deepseek-v4.1-flash"\n' + chair)
+    monkeypatch.setattr("lion_cli.agent.build", lambda directory, backend: (Ticks(), Held()))
     a = argparse.Namespace(
         dir=str(tmp_path), stats=False, model=None, check=None, ticks=False, arm=False, once=False, wait=0
     )
     asyncio.run(agent_main(argparse.Namespace(**{**vars(a), "rerun": ["12345678", "0ff1ce00"]})))
-    assert seen == {"ids": ["12345678", "0ff1ce00"], "released": True}
+    assert seen == {"ids": ["12345678", "0ff1ce00"], "released": True, "order": order}
+
+
+@pytest.mark.parametrize("flag", ["once", "rerun"])
+def test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for(tmp_path, monkeypatch, flag):
+    """--once and --rerun make the missing ticks first, as a start does: an agenda read that fails
+    raises there, before any wake, and the identity is released."""
+    from types import SimpleNamespace
+
+    seen: dict = {"order": []}
+
+    class Ticks:
+        async def ensure_ticks(self):
+            seen["order"].append("ticks")
+            raise RuntimeError("agenda: boom")
+
+    class Held:
+        khive = SimpleNamespace(actor="lambda:x")
+
+        def _claim(self):
+            return None
+
+        def _release(self, pid):
+            seen["released"] = True
+
+        async def rerun(self, ids):
+            seen["order"].append("rerun")
+
+        async def wake(self, wait_ms):
+            seen["order"].append("wake")
+
+    (tmp_path / "chores.toml").write_text('model = "deepseek/deepseek-v4.1-flash"\n')
+    monkeypatch.setattr("lion_cli.agent.build", lambda directory, backend: (Ticks(), Held()))
+    a = argparse.Namespace(
+        dir=str(tmp_path), stats=False, model=None, check=None, ticks=False, arm=False, once=False, wait=0
+    )
+    asked = {"once": True} if flag == "once" else {"rerun": ["12345678"]}
+    with pytest.raises(RuntimeError, match="agenda: boom"):
+        asyncio.run(agent_main(argparse.Namespace(**{**vars(a), "rerun": [], **asked})))
+    assert seen == {"order": ["ticks"], "released": True}
 
 
 def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
@@ -1103,6 +1154,83 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
         [],
         [".khive/config.toml", "agent.pid", "chores.toml"],
     )
+
+
+def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_is_not_missing(
+    tmp_path, kkernel_stub, monkeypatch
+):
+    """--once makes the missing ticks before its wake, as a start does, so a digest wake sees the first due
+    of a tick already pending: a chore with no run yet is inside its first grace, not missing."""
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n'
+        '[chores.gtd-inbox]\nevery = "every:1h"\n'
+    )
+
+    def at(t: float) -> str:
+        return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    now = time.time()
+    tick = {  # made a moment ago, first firing a minute out
+        "id": "ev1",
+        "content": "tick: gtd-inbox",
+        "created_at": at(now),
+        "properties": {
+            "status": "pending",
+            "created_by_actor": "lambda:x:agent",
+            "trigger_at": at(now + 60),
+            "repeat": "every:1h",
+        },
+    }
+    ops: list[str] = []
+    boxes = [[mail("lambda:x:agent", "tick: digest")]]
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        if op.startswith("schedule.agenda("):
+            return [{"events": [tick]}]
+        if op.startswith("comm.inbox("):
+            return [{"messages": boxes.pop(0) if boxes else []}]
+        if op.startswith("comm.send("):
+            return [{"id": "m1", "thread_id": THREAD}]
+        return [{"messages": [], "events": [], "items": []}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    monkeypatch.setattr(
+        "lion_cli.agent.backend_for", lambda *a, **k: Scripted("<lact d1>digest()</lact>", DONE)
+    )
+    base = dict(dir=str(d), stats=False, model=None, check=None, ticks=False, arm=False, rerun=None, wait=0)
+    asyncio.run(agent_main(argparse.Namespace(**base, once=True)))
+    (sent,) = [op for op in ops if op.startswith("comm.send(")]
+    assert "lambda:x gtd-inbox no run yet, first due by " in sent and "MISSING: " not in sent
+    order = [op.split("(")[0] for op in ops]
+    assert order.index("schedule.agenda") < order.index("comm.inbox")  # the ticks first, as a start has it
+
+
+def test_a_once_wake_of_a_chair_makes_no_tick(tmp_path, kkernel_stub, monkeypatch):
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:v1"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n[chair]\n'
+    )
+    ops: list[str] = []
+    boxes = [[mail("lambda:x", "hello")]]
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        if op.startswith("comm.inbox("):
+            return [{"messages": boxes.pop(0) if boxes else []}]
+        return [{"messages": [], "events": [], "items": []}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    monkeypatch.setattr("lion_cli.agent.backend_for", lambda *a, **k: Scripted(DONE))
+    base = dict(dir=str(d), stats=False, model=None, check=None, ticks=False, arm=False, rerun=None, wait=0)
+    asyncio.run(agent_main(argparse.Namespace(**base, once=True)))
+    assert any(op.startswith("comm.inbox(") for op in ops)  # the wake ran
+    assert not [op for op in ops if op.startswith("schedule.")]  # and a chair's box holds no tick
 
 
 class Measured:
