@@ -1,17 +1,19 @@
 """What a harness session's checkpoint reads and renders whatever the harness (ADR-0019): the
 directory's actor, its lanes (active gtd rows, the threads its unread mail awaits a reply on, its open
-pull requests), its loop cursor, the fold of a session's exchanges, and the restore prompt's body.
-Each harness's own scan and its first line are its module's: `claude_code.checkpoint` for a Claude
-Code session, `codex_checkpoint` for a Codex one. A source that is absent is a value, never a failed
-take.
+pull requests), its loop cursor, the fold of a session's exchanges, the restore prompt's body, and the
+one file state a take reads its session's file in (`Snapshot`). Each harness's own scan and its first
+line are its module's: `claude_code.checkpoint` for a Claude Code session, `codex_checkpoint` for a
+Codex one. A source that is absent is a value, never a failed take.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,9 @@ __all__ = (
     "DIRECTIVES",
     "SPAWN_HOURS",
     "MAIL_PAGE",
+    "RETAKES",
+    "Snapshot",
+    "snapshot_of",
     "actor_id",
     "lanes",
     "pulls",
@@ -39,6 +44,77 @@ __all__ = (
 DIRECTIVES = 8  # the person's words a restore carries, never more: a prompt hook's ring length
 SPAWN_HOURS = 12  # a spawn older than this with nothing ending it is taken as dead
 MAIL_PAGE = 50  # unread messages one read returns; a full page is not every thread awaiting a reply
+RETAKES = 2  # a session's file that changed under its read is stat and read again this many times
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """One file state of a session's file, a transcript or a rollout, captured once: every read of a
+    take reads exactly its `size` bytes, and a rollout's scan keeps the view `budget` folds to, none
+    when it is None."""
+
+    path: str
+    size: int
+    mtime_ns: int
+    dev: int  # an inode names a file on its own device only
+    ino: int  # a file put in its place
+    ctime_ns: int  # a rewrite in place keeps the size and can restore the mtime, never this
+    budget: int | None = None
+
+    def __fspath__(self) -> str:
+        return self.path
+
+
+class _Moved(CheckpointError):
+    """The file a snapshot names is not in the snapshot's state: put in its place, cut, or rewritten."""
+
+
+def _state(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    return st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino, st.st_ctime_ns
+
+
+def _same(f: Any, snap: Snapshot) -> bool:
+    """Whether the open file is the snapshot's: in its very state, or the same file grown since. One
+    grown is taken as appended to, its bytes to the snapshot's size the snapshot's own."""
+    st = os.fstat(f.fileno())
+    return _state(st) == (snap.size, snap.mtime_ns, snap.dev, snap.ino, snap.ctime_ns) or (
+        (st.st_dev, st.st_ino) == (snap.dev, snap.ino) and st.st_size > snap.size
+    )
+
+
+def _lines(f: Any, snap: Snapshot) -> Iterator[bytes]:
+    """The lines of the open file `f` to the snapshot's size and no further, the last one without its
+    end when the snapshot cut it mid-write. The file is checked against the snapshot before the first
+    byte is read and after the last."""
+    if not _same(f, snap):  # another file put in its place, or this one cut or rewritten
+        raise _Moved(f"{snap.path} is not the file its snapshot was taken of")
+    left = snap.size  # a row appended after the snapshot is after the take
+    while left > 0:
+        raw = f.readline(left)
+        if not raw:  # cut while it was read: the check after the last byte refuses it
+            break
+        left -= len(raw)
+        yield raw
+    if not _same(f, snap):
+        raise _Moved(f"{snap.path} was rewritten while it was read")
+
+
+def snapshot_of(path: str | Path, read: Callable[[Snapshot], Any], budget: int | None = None) -> Snapshot:
+    """The file's state now, for a take whose view folds to `budget`, read at once by the harness's
+    `read`: the scan every reader of the snapshot gets is of that state. A file that changes between
+    its stat and its read is taken again, RETAKES times at most."""
+    p = Path(path)
+    tries = 0
+    while True:
+        snap = Snapshot(str(p), *_state(p.stat()), budget)
+        try:
+            read(snap)
+        except _Moved:
+            tries += 1
+            if tries > RETAKES:
+                raise
+        else:
+            return snap
 
 
 def _now() -> str:
