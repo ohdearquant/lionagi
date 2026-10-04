@@ -23,7 +23,6 @@ struct ProvidersPage: View {
                     .boxed()
                 }
             }
-            .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
         }

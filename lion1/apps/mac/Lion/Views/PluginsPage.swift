@@ -49,7 +49,6 @@ struct PluginsPage: View {
             }
             ScrollView {
                 detail
-                    .frame(maxWidth: 900, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 18)

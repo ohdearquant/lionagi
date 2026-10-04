@@ -46,7 +46,7 @@ struct Sidebar: View {
                     Text(daemonLine).lineLimit(1)
                 }
                 if let totals = store.today?.totals {
-                    Text("today \(Format.money(totals.cost)) · \(Format.count(totals.wakes, "wake", "wakes"))")
+                    Text("today \(Format.money(totals.cost)) · \(Format.wakes(totals.wakes))")
                         .lineLimit(1)
                 }
             }

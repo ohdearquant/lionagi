@@ -193,7 +193,7 @@ private struct ModelDetail: View {
                 }
             }
         }
-        .frame(maxWidth: 900, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: model) { _, fresh in draft = fresh }
     }
 

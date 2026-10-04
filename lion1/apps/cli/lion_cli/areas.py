@@ -305,13 +305,15 @@ def make_server(
             refusal = ""
             v2_route = urlsplit(self.path).path.startswith("/v2/")  # the test each do_* routes by
             if v2_route:
-                origin = self.headers.get("Origin")
+                # every Host and Origin the request carries is weighed, so a second one refuses it
+                named = self.headers.get_all("Host") or [""]
+                sent = self.headers.get_all("Origin") or []
                 if not _peer_allowed(peer, tailnet=False):
                     refusal = f"{peer} is not loopback: /v2 answers this machine only; nothing was done"
-                elif (host := self.headers.get("Host", "")) not in v2_hosts:
-                    refusal = f"host {host!r} is not this server on loopback; nothing was done"
-                elif origin is not None and origin not in v2_origins:
-                    refusal = f"origin {origin!r} is not this server on loopback; nothing was done"
+                elif len(named) != 1 or named[0] not in v2_hosts:
+                    refusal = f"host {', '.join(named)!r} is not this server on loopback; nothing was done"
+                elif len(sent) > 1 or any(o not in v2_origins for o in sent):
+                    refusal = f"origin {', '.join(sent)!r} is not this server on loopback; nothing was done"
             elif not _peer_allowed(peer):
                 refusal = f"{peer} is outside loopback/Tailscale; nothing was done"
             elif (host := self.headers.get("Host", "")) not in hosts:

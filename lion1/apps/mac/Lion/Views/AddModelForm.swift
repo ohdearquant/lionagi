@@ -50,7 +50,7 @@ struct AddModelForm: View {
                 done(nil)
             }
         }
-        .frame(maxWidth: 900, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             if provider.isEmpty {
                 provider = store.providers.first?.name ?? ""
@@ -99,7 +99,7 @@ struct AddModelForm: View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("", text: $query, prompt: Text(catalogue.map { "search \($0.models.count) models" } ?? "search"))
                 .textFieldStyle(.roundedBorder)
-            ScrollView {
+            FitScroll(limit: 360, floor: 96) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
                         ForEach(catalogue?.models ?? []) { entry in
@@ -130,7 +130,6 @@ struct AddModelForm: View {
                     }
                 }
             }
-            .frame(height: 168)
             .boxed(8)
         }
         .padding(.bottom, 12)

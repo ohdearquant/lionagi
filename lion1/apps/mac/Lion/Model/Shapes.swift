@@ -6,7 +6,8 @@ import Foundation
 
 struct DayFigures: Codable, Hashable {
     var cost: Double?
-    var wakes: Int
+    /// nil when the agent's notes are there and do not read
+    var wakes: Int?
     var acted: Int?
     var calls: Int?
 }

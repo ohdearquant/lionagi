@@ -349,7 +349,7 @@ private struct Glance: View {
     /// "37 wakes · 33 acted · $0.42 of $2.00"
     private var today: String {
         let figures = agent.row.today
-        var parts = [Format.count(figures.wakes, "wake", "wakes")]
+        var parts = [Format.wakes(figures.wakes)]
         if let acted = figures.acted {
             parts.append("\(acted) acted")
         }

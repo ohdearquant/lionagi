@@ -141,6 +141,10 @@ final class DecodingTests: XCTestCase {
         XCTAssertNil(library.models[0].images)
         XCTAssertNil(library.providers[0].limits)
 
+        let unread = try JSONDecoder().decode(DayFigures.self, from: Data(#"{"cost": null, "wakes": null, "acted": 1}"#.utf8))
+        XCTAssertNil(unread.wakes)
+        XCTAssertEqual(Format.wakes(unread.wakes), "wakes not known")
+
         let added = try JSONDecoder().decode(NewModelAnswer.self, from: Data(#"{"ok": true, "model": null, "check": null}"#.utf8))
         XCTAssertTrue(added.ok)
         XCTAssertNil(added.check)

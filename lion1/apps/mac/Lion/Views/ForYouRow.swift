@@ -69,7 +69,7 @@ struct ForYouRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(item.body)
                 .foregroundStyle(Palette.tx2)
-                .frame(maxWidth: 640, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .padding(.top, 4)
@@ -99,7 +99,7 @@ struct ForYouRow: View {
                     Text("↩").font(.small12).foregroundStyle(Palette.tx3)
                 }
                 .padding(.vertical, 4)
-                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity)
                 .hairline()
             }
             if let failure {

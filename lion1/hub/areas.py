@@ -31,6 +31,7 @@ from .khive import Khive, lit
 
 __all__ = (
     "DEFAULT_REGISTRY",
+    "NOTES_UNREAD",
     "partial",
     "Area",
     "Resident",
@@ -104,6 +105,10 @@ class Area:
     desks: list[str] = field(default_factory=list)  # the desks' directories, one resident each
 
 
+# how a resident's `problem` opens when its notes are there and do not read: its day is then unknown
+NOTES_UNREAD = "notes/agent.json: "
+
+
 @dataclass
 class Resident:
     area: str
@@ -132,11 +137,17 @@ def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
     if not path.exists():
         return []
     doc = tomllib.loads(path.read_text())
+    areas = doc.get("area") or {}
+    if not isinstance(areas, dict):
+        raise ValueError("areas.toml: area is not a table of areas")
     out = []
-    for name, t in (doc.get("area") or {}).items():
-        if "chair" not in t:
+    for name, t in areas.items():
+        if not isinstance(t, dict) or "chair" not in t:
             raise ValueError(f"areas.toml: [area.{name}] has no chair")
-        out.append(Area(name, str(t["chair"]), [str(a) for a in t.get("desks", [])]))
+        desks = t.get("desks", [])
+        if not isinstance(desks, list):
+            raise ValueError(f"areas.toml: [area.{name}] desks is not a list of directories")
+        out.append(Area(name, str(t["chair"]), [str(a) for a in desks]))
     return out
 
 
@@ -193,7 +204,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
             cursor = (store.get("cursor") or {}).get("value") or {}
             spend = (store.get("spend") or {}).get("value") or {}
         except (OSError, ValueError) as e:
-            problem.append(f"notes/agent.json: {e}")
+            problem.append(f"{NOTES_UNREAD}{e}")
     else:
         problem.append("no notes yet: never ran from this directory")
     if spend.get("day") != today:

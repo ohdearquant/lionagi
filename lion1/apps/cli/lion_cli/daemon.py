@@ -41,7 +41,7 @@ from xml.parsers.expat import ExpatError
 from hub.agent.agent import Agent, Budget, Gtd, Send, Wake, claude_code_options, codex_options
 from hub.agent.chores import Aged, Check, Chores, Digest
 from hub.agent.desk import Answer, Clarify, Desk, Leave, Route, Sweep, Task
-from hub.areas import Area, area_rows, chores_toml, load_areas, status, wake_row, wakes
+from hub.areas import NOTES_UNREAD, Area, area_rows, chores_toml, load_areas, status, wake_row, wakes
 from hub.backend.codex import MEASURED
 from hub.backend.openrouter import OpenRouterError, api_key
 from hub.khive import Khive, KhiveError
@@ -118,9 +118,20 @@ def agent_ids(areas: list[Area]) -> list[tuple[str, Area, str]]:
         names = [Path(d).name for d in a.desks]
         for d, name in zip(a.desks, names, strict=True):
             if not name or names.count(name) > 1:
-                name += "~" + hashlib.sha256(str(Path(d)).encode()).hexdigest()[:6]
+                name += "~" + _mark(d, [o for o, n in zip(a.desks, names, strict=True) if n == name])
             out.append((f"{a.name}/{name}", a, d))
     return out
+
+
+def _mark(directory: str, same: list[str]) -> str:
+    """A directory's digest cut to six characters, or to as many more as it takes for no other
+    directory of the same name in the area to share them."""
+    mine = hashlib.sha256(str(Path(directory)).encode()).hexdigest()
+    others = [hashlib.sha256(str(Path(o)).encode()).hexdigest() for o in same if Path(o) != Path(directory)]
+    n = 6
+    while n < len(mine) and any(o[:n] == mine[:n] for o in others):
+        n += 1
+    return mine[:n]
 
 
 def _model(runtime: str) -> str:
@@ -290,6 +301,7 @@ def agent_row(area: Area, directory: str, row: dict, ident: str, day: str) -> di
     """One resident as the contract's AgentRow, from its `area_rows` row and its own files."""
     cfg = chores_toml(directory)
     controls = row["controls"]
+    unread = NOTES_UNREAD in row["problem"]
     if row["problem"] and not row["problem"].startswith("no notes yet"):
         state = "error"
     elif not row["serving"]:
@@ -323,9 +335,10 @@ def agent_row(area: Area, directory: str, row: dict, ident: str, day: str) -> di
         "model": _model_of(directory, cfg),
         "runs_in": "local",
         "today": {
-            # partial, so unknown: the day missed calls of unknown cost, or its row predates their count
-            "cost": row["cost_today"] if row["unknown_today"] == 0 else None,
-            "wakes": row["runs_today"],
+            # partial, so unknown: the day missed calls of unknown cost, or its row predates their count;
+            # notes that are there and do not read leave the whole day unknown
+            "cost": row["cost_today"] if row["unknown_today"] == 0 and not unread else None,
+            "wakes": None if unread else row["runs_today"],
             "acted": _acted(directory, day),
         },
     }
@@ -688,7 +701,7 @@ class Daemon:
             "date": day,
             "totals": {
                 "running": sum(1 for _, r in rows if r["state"] == "running"),
-                "wakes": sum(r["today"]["wakes"] for _, r in rows),
+                "wakes": _total([r["today"]["wakes"] for _, r in rows]),
                 "acted": _total([r["today"]["acted"] for _, r in rows]),
                 "cost": _total([r["today"]["cost"] for _, r in rows]),
                 "cap": _total(caps),
@@ -921,11 +934,11 @@ class Daemon:
                 return f"{value} is not a model of the library; add it first"
             return None, "model", runtime
         if p == "limits.cost_per_day":
-            if not number or not math.isfinite(value) or value < 0:
+            if not number or not _finite(value) or value < 0:
                 return "a number of dollars, finite and >= 0"
             return "budget", "cost_per_day", float(value)
         if p == "wake.at_most_per_hour":
-            if not number or not float(value).is_integer() or value < 1:
+            if not number or not _finite(value) or not float(value).is_integer() or value < 1:
                 return "a whole number >= 1 (hold stops wakes)"
             return "budget", "wakes_per_hour", int(value)
         if p == "wake.quiet":
@@ -1431,8 +1444,11 @@ class Daemon:
             return _no(400, "with is editor or finder", "with")
         if not isinstance(raw, str) or not raw:
             return _no(400, "path names a file or a folder", "path")
-        target = Path(raw).expanduser().resolve()
-        roots = [Path(d).expanduser().resolve() for a in load_areas(self.registry) for d in a.desks]
+        try:
+            target = Path(raw).expanduser().resolve()
+            roots = [Path(d).expanduser().resolve() for a in load_areas(self.registry) for d in a.desks]
+        except RuntimeError:  # a link that loops on itself, which 3.12 and older raise on
+            return _no(404, f"{raw} does not resolve to a file or a folder; nothing was opened", "path")
         if not any(target == r or r in target.parents for r in roots):
             return _no(404, f"{raw} is under no directory the registry names; nothing was opened", "path")
         if not target.exists():
@@ -1471,6 +1487,14 @@ def _cap(d: str) -> float | None:
         return None
 
 
+def _finite(value: int | float) -> bool:
+    """Whether a number of a body is one a float holds: a whole number past a float's range is not."""
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _total(figures: list[float | None]) -> float | None:
     """A sum of the day's figures, rounded as the page prints it; None when one of them is unknown."""
     return None if any(f is None for f in figures) else round(sum(figures), 4)
@@ -1487,7 +1511,7 @@ def _split(rows: list[dict]) -> dict:
 def _sum(rows: list[dict]) -> dict:
     return {
         "cost": _total([r["today"]["cost"] for r in rows]),
-        "wakes": sum(r["today"]["wakes"] for r in rows),
+        "wakes": _total([r["today"]["wakes"] for r in rows]),
     }
 
 
@@ -1537,10 +1561,26 @@ def _price(m: dict) -> dict | None:
     return {"in": float(prompt * 1_000_000), "out": float(completion * 1_000_000)}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error and is never followed: a followed one carries the request's headers, a
+    key among them, to whatever address it names."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_FETCH = urllib.request.build_opener(_NoRedirect)
+
+
 def _get(url: str, headers: dict) -> Any:
-    """A JSON GET; the answer read to `_MAX_LIST` bytes at most."""
+    """A JSON GET that follows no redirect; the answer read to `_MAX_LIST` bytes at most."""
     req = urllib.request.Request(url, headers={"Accept": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    try:
+        resp = _FETCH.open(req, timeout=30)
+    except urllib.error.HTTPError as e:
+        e.close()  # the refusal's code and reason outlive its socket
+        raise
+    with resp:
         raw = resp.read(_MAX_LIST + 1)
     if len(raw) > _MAX_LIST:
         raise ValueError(f"the answer is over {_MAX_LIST} bytes")

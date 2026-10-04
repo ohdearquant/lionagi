@@ -44,7 +44,6 @@ struct ConfigureForm: View {
                                                     set: { draft.shellRules = $0.isEmpty ? nil : $0 }),
                                 editPlugins: editable("plugins"), editRules: editable("shell_rules"))
                 }
-                .frame(maxWidth: 900, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
             }

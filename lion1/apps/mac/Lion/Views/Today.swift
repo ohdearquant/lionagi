@@ -15,19 +15,23 @@ struct TodayView: View {
                         .buttonStyle(.accent)
                 }
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    totals
-                    SectionTitle("For you", note: forYouNote)
-                    forYouList
-                    SectionTitle("Areas")
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())], spacing: 12) {
-                        ForEach(store.today?.areas ?? []) { area in
-                            AreaCard(area: area) { store.visit(.area(area.name)) }
+            GeometryReader { page in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        totals
+                        SectionTitle("For you", note: forYouNote)
+                        // as tall as its rows, up to half the page
+                        forYouList(limit: page.size.height * 0.5)
+                        SectionTitle("Areas")
+                        // as many columns as the page has room for
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12)], spacing: 12) {
+                            ForEach(store.today?.areas ?? []) { area in
+                                AreaCard(area: area) { store.visit(.area(area.name)) }
+                            }
                         }
                     }
+                    .padding(18)
                 }
-                .padding(18)
             }
         }
     }
@@ -42,12 +46,13 @@ struct TodayView: View {
     private var totals: some View {
         let figures = store.today?.totals
         let running = store.allRows.filter { $0.state == "running" }.map { "\($0.area) \($0.name)" }
-        let wakes = figures?.wakes ?? 0
+        let wakes = figures?.wakes
         return HStack(alignment: .top, spacing: 12) {
             Figure(label: "Running now", value: "\(figures?.running ?? 0)",
                    note: running.isEmpty ? "nothing is running" : running.joined(separator: " · "))
-            Figure(label: "Wakes today", value: Format.whole(wakes),
-                   note: figures?.acted.map { "\(Format.whole(max(0, wakes - $0))) did nothing" }
+            Figure(label: "Wakes today", value: wakes.map { Format.whole($0) } ?? "—",
+                   note: wakes == nil ? "an agent's notes do not read"
+                       : figures?.acted.map { "\(Format.whole(max(0, (wakes ?? 0) - $0))) did nothing" }
                        ?? "what they did is not known")
             Figure(label: "Spend today", value: Format.money(figures?.cost), note: capNote)
             Figure(label: "For you", value: "\(store.today?.forYou.open ?? 0)", note: openKinds)
@@ -83,14 +88,14 @@ struct TodayView: View {
         return "\(open) open"
     }
 
-    private var forYouList: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
+    private func forYouList(limit: CGFloat) -> some View {
+        FitScroll(limit: limit) {
+            VStack(spacing: 0) {
                 if store.forYou.isEmpty {
                     Text("Nothing waits on you.")
                         .foregroundStyle(Palette.tx3)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 70)
+                        .padding(.vertical, 22)
                 }
                 ForEach(store.forYou) { item in
                     ForYouRow(item: item, openID: $openItem)
@@ -102,7 +107,6 @@ struct TodayView: View {
                 }
             }
         }
-        .frame(height: 248)
         .boxed()
     }
 
@@ -145,7 +149,7 @@ private struct AreaCard: View {
                         Text("no agents yet")
                     }
                     ForEach(area.agents) { row in
-                        Text("\(row.name) · \(row.state) · \(Format.count(row.today.wakes, "wake", "wakes"))")
+                        Text("\(row.name) · \(row.state) · \(Format.wakes(row.today.wakes))")
                             .lineLimit(1)
                     }
                 }

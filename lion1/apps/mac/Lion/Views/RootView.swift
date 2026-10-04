@@ -23,8 +23,7 @@ struct RootView: View {
             .background(Palette.win)
         }
         // the hidden title bar still adds its height to the window: the content takes it back
-        .frame(width: 1240)
-        .frame(minHeight: 728, maxHeight: .infinity)
+        .frame(minWidth: 960, idealWidth: 1240, maxWidth: .infinity, minHeight: 600, idealHeight: 728, maxHeight: .infinity)
         .background(Palette.win)
         .background(WindowGrip())
         .font(.body13)

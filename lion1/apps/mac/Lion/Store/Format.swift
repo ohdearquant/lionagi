@@ -146,6 +146,11 @@ enum Format {
         "\(n) \(n == 1 ? one : many)"
     }
 
+    /// "37 wakes"; a count the daemon could not read is said so, never shown as 0
+    static func wakes(_ n: Int?) -> String {
+        n.map { count($0, "wake", "wakes") } ?? "wakes not known"
+    }
+
     /// A number typed into a field: "$2.00", "60,000 tokens" and "15" all read; empty is nil.
     static func number(_ text: String) -> Double? {
         let kept = text.filter { $0.isNumber || $0 == "." }

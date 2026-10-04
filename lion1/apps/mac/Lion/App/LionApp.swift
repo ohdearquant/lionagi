@@ -37,7 +37,8 @@ struct LionApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1240, height: 760)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { store.visit(.settings(.providers)) }

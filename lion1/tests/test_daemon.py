@@ -3,13 +3,16 @@ refusal and its replay under one `once`, the loopback admission in front of them
 `daemon.can` names exactly the writes a route serves. No test reaches the network or the keychain:
 OpenRouter answers with recorded bodies and `security` is a script that reads its items from a file."""
 
+import hashlib
 import http.client
 import json
 import re
 import sys
+import threading
 import time
+import urllib.error
 import uuid
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import lion_cli.areas as areas_cli
@@ -29,6 +32,7 @@ from tests.test_areas import (  # noqa: F401 (a fixture)
 )
 
 DAY = time.strftime("%Y-%m-%d")
+FETCH = daemon._get  # the server's own fetch: the `keychain` fixture puts recorded answers in its place
 CHORES = (
     "# the resident's own file\n"
     'actor = "agent:x:desk"\n'
@@ -1007,3 +1011,124 @@ def test_can_names_exactly_the_writes_a_route_serves(tmp_path):
         code, doc = write(port, method, path, {"once": once()})
         served = not (code == 404 and doc["errors"][0]["message"].startswith("no route"))
         assert served is (name in CAN), (name, code, doc)
+
+
+def test_a_day_whose_notes_cannot_be_read_is_unknown_never_zero(tmp_path):
+    d = resident(tmp_path, lines=LOG)
+    (d / "notes" / "agent.json").write_text("{not json")
+    port = serve_on(reg(tmp_path, d))
+    code, doc = get(port, "/v2/agents/x/desk")
+    assert code == 200 and doc["row"]["state"] == "error"
+    assert doc["row"]["today"] == {"cost": None, "wakes": None, "acted": 1}  # the log still reads
+    today = get(port, "/v2/today")[1]
+    assert (today["totals"]["cost"], today["totals"]["wakes"]) == (None, None)
+    assert today["areas"][0]["today"] == {"cost": None, "wakes": None}
+    (d / "notes" / "agent.json").unlink()  # never ran from here: a day of nothing, which is known
+    assert get(port, "/v2/agents/x/desk")[1]["row"]["today"]["wakes"] == 0
+
+
+def test_a_number_too_large_to_weigh_is_refused_as_any_other_bad_number(tmp_path):
+    d = resident(tmp_path)
+    raw = (d / "chores.toml").read_bytes()
+    port = serve_on(reg(tmp_path, d))
+    for want, where in [
+        ({"limits": {"cost_per_day": 10**1000}}, "limits.cost_per_day"),
+        ({"wake": {"at_most_per_hour": 10**1000}}, "wake.at_most_per_hour"),
+    ]:
+        code, doc = write(port, "PUT", "/v2/agents/x/desk/definition", {"definition": want, "once": once()})
+        assert code == 400 and doc["errors"][0].get("path") == where, doc
+        assert (d / "chores.toml").read_bytes() == raw
+
+
+def test_a_registry_whose_desks_are_no_list_is_answered_as_unreadable(tmp_path):
+    registry = tmp_path / "areas.toml"
+    registry.write_text('[area.x]\nchair = "agent:x"\ndesks = 7\n')
+    port = serve_on(registry)
+    code, doc = get(port, "/v2/today")
+    assert code == 500 and doc["ok"] is False and "desks" in doc["errors"][0]["message"]
+
+
+def test_v2_refuses_a_request_that_names_its_host_or_its_origin_twice(tmp_path):
+    port = serve_on(reg(tmp_path, resident(tmp_path)))
+    here = f"127.0.0.1:{port}"
+
+    def status(headers: list[tuple[str, str]]) -> int:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("GET", "/v2/today", skip_host=True)
+        for k, v in headers:
+            conn.putheader(k, v)
+        conn.endheaders()
+        r = conn.getresponse()
+        r.read()
+        conn.close()
+        return r.status
+
+    assert status([("Host", here), ("Origin", "http://" + here)]) == 200
+    assert status([("Host", here), ("Host", "elsewhere.example")]) == 403
+    assert (
+        status([("Host", here), ("Origin", "http://" + here), ("Origin", "http://elsewhere.example")]) == 403
+    )
+
+
+def test_two_directories_of_one_name_never_share_an_id():
+    seen: dict[str, str] = {}
+    pair = None
+    for i in range(1_000_000):  # two paths whose digests open with the same six characters
+        path = f"/r/{i}/desk"
+        mark = hashlib.sha256(path.encode()).hexdigest()[:6]
+        if mark in seen:
+            pair = [seen[mark], path]
+            break
+        seen[mark] = path
+    assert pair is not None
+    ids = [i for i, _, _ in agent_ids([Area("x", "agent:x", pair)])]
+    assert len(set(ids)) == 2 and all(i.startswith("x/desk~") for i in ids)
+
+
+def test_open_answers_a_path_that_loops_on_itself(tmp_path, monkeypatch):
+    record = tmp_path / "opened"
+    monkeypatch.setattr(daemon, "_OPEN", str(recorder(tmp_path / "open", record, 0)))
+    d = resident(tmp_path)
+    (d / "loop").symlink_to(d / "loop")
+    port = serve_on(reg(tmp_path, d))
+    code, doc = write(port, "POST", "/v2/open", {"path": str(d / "loop"), "with": "finder", "once": once()})
+    assert code == 404 and doc["ok"] is False and not record.exists()
+
+
+def test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address():
+    seen = []
+
+    class Sink(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    sink = ThreadingHTTPServer(("127.0.0.1", 0), Sink)
+
+    class Turn(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{sink.server_address[1]}/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    turn = ThreadingHTTPServer(("127.0.0.1", 0), Turn)
+    for s in (sink, turn):
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            FETCH(f"http://127.0.0.1:{turn.server_address[1]}/", {"Authorization": "Bearer made-up"})
+        assert e.value.code == 302 and seen == []
+    finally:
+        for s in (sink, turn):
+            s.shutdown()
+            s.server_close()

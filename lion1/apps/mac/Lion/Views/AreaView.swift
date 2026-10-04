@@ -33,7 +33,7 @@ struct AreaView: View {
     private var sub: String? {
         guard let area = store.areas[name] else { return nil }
         return "a chair and \(Format.count(area.agents.count, "agent", "agents")) · \(Format.money(area.today.cost)) today · "
-            + Format.count(area.today.wakes, "wake", "wakes")
+            + Format.wakes(area.today.wakes)
     }
 
     private func list(_ area: Area) -> some View {
@@ -134,9 +134,9 @@ private struct AgentLine: View {
                 .lineLimit(1)
                 .frame(width: 110, alignment: .leading)
             VStack(alignment: .trailing, spacing: 0) {
-                if row.today.cost != nil || row.today.wakes > 0 {
+                if row.today.cost != nil || row.today.wakes != 0 {
                     Text(Format.money(row.today.cost)).font(.small12).foregroundStyle(Palette.tx2)
-                    Text(row.today.calls.map { Format.count($0, "call", "calls") } ?? Format.count(row.today.wakes, "wake", "wakes"))
+                    Text(row.today.calls.map { Format.count($0, "call", "calls") } ?? Format.wakes(row.today.wakes))
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.tx3)
                 }

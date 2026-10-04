@@ -287,6 +287,31 @@ struct Hint: View {
     }
 }
 
+/// A scrolling box as tall as what it holds, between a floor and a limit; past the limit it scrolls.
+struct FitScroll<Content: View>: View {
+    var limit: CGFloat
+    var floor: CGFloat = 0
+    @ViewBuilder var content: Content
+    @State private var height: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content.background(GeometryReader { box in
+                Color.clear.preference(key: HeldHeight.self, value: box.size.height)
+            })
+        }
+        .onPreferenceChange(HeldHeight.self) { height = $0 }
+        .frame(height: min(max(height, floor), max(limit, floor)))
+    }
+}
+
+private struct HeldHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 extension View {
     /// A card: a hairline border and rounded corners on the window colour.
     func card() -> some View {
