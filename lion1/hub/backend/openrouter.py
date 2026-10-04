@@ -1,7 +1,7 @@
 """OpenRouter as a chat-completion backend (ADR-0009): the view in as a real message array, text out.
 
 Unlike the CLI shapes, this one sends the view as separate messages with their roles, so the
-provider's prefix cache can hit on everything that did not change since the last round. Usage and
+provider's prefix cache can hit on everything that did not change since the last turn. Usage and
 cost come back on the response (`usage.cost` when `usage: {include: true}` is asked for), so the
 bench reads them off the envelope like the CLI's.
 
@@ -23,7 +23,7 @@ import urllib.request
 from asyncio import CancelledError  # by name: tests stand in for the module's `asyncio`
 from dataclasses import dataclass, field
 
-from lionagi.actor import Message, Reply
+from lion1.actor import Message, Reply
 
 from .markup import normalize, tool_calls_text
 
@@ -269,7 +269,7 @@ def _post(body: dict, timeout: float) -> dict:
             "Authorization": f"Bearer {api_key()}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/ohdearquant/lionagi",
-            "X-Title": "lionagi v1 bench",
+            "X-Title": "lion1 bench",
         },
         method="POST",
     )

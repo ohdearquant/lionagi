@@ -32,8 +32,8 @@ turn ([[ADR-0002-the-run|ADR-0002]]); a native tool call in its answer is read b
 ([[ADR-0004-the-language|ADR-0004]]); the fold it must follow is [[ADR-0007-the-record|ADR-0007]].
 Which model a name resolves to, through which route and on whose key, and whether the model that
 answered is the one named, are decided below this boundary: here a backend is built with a model
-name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionagi/actor.py`;
-`hub/backend/openrouter.py`, `hub/backend/claude_code.py`, `hub/backend/codex.py`.
+name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/lion1/actor.py`;
+`hub/backend/openrouter.py`, `hub/backend/claude_code/__init__.py`, `hub/backend/codex.py`.
 
 ## Definitions
 
@@ -60,8 +60,9 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionag
 | #  | statement                                                                                                                         | source                                                                                                                                                                                                    | if false                                                                                              |
 | -- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | A1 | A provider's prompt count is the size of the context the model saw on that attempt.                                               | the router's `usage.prompt_tokens`; the session CLI's input, cache read and cache write per turn; on 4,240 bench calls the count read 1.20 times the view estimate plus 1,695 ([[ADR-0006-the-notification#Assumptions\|ADR-0006/A3]]) | the anchor is exact about the wrong prompt; the figure returns to the estimate                        |
-| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags in `hub/backend/codex.py` the CLI cannot run a command, search or spawn, measured on its 0.153 release; the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
+| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags and the rebuilt catalogue of `hub/backend/codex.py` the model lists no tool and can run no command, search or spawn, measured on its 0.156.1 release (S19 to S21), every other release refused (S22); the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
 | A3 | What a count stands above the view at its least is fixed context; what it later stands above that is history the record never saw. | the session CLI reads 34k cached input per call with its settings loaded against 3.9k without; on a served run one call read 14.8M tokens over its tool turns while the estimate never moved (2026-09-24) | the fold fires every turn past a budget the fixed context exceeds, or never sees the tool turns       |
+| A4 | On the subscription CLI, input its provider's cache holds costs a tenth of fresh input, and the cache lives 5 to 10 minutes from its last read: 300 seconds, the low end, is the figure taken. | the provider's published terms, not measured: a subscription bills neither, and on one thread the second call read 3,840 of 4,305 input tokens from the cache and the third none | a changed view starts a new thread too early or too late; nothing is billed either way |
 
 ## Claims
 
@@ -166,6 +167,21 @@ the CLI's session, past subset, after hooks and bus (S11). `lion chat` and `lion
 ([[ADR-0016-the-lion-command#^d3|ADR-0016/D3]]). Without an actor it is trusted as configured. The
 bench's host-side baseline is no backend ([[ADR-0012-the-bench|ADR-0012]] S6).
 
+### C7: A session that cannot fork goes on in place, never from a thread a failed call touched _(enforced: mechanical)_ ^c7
+
+- **Subject**: every call of the subscription CLI's session backend and the notice before it.
+- **Violated when**: a call resumes a thread a failed or cancelled call touched, a retry sends again
+  to the thread it failed on, a restart is taken or skipped against A4's price, the fold goes on, or
+  two runs share a thread.
+
+The subscription CLI cannot fork a thread (S24), so C4's forks are not open to it. Its session keeps
+one thread per run and goes on in place, sending what the view gained. On a changed view it prices
+going on against starting over from the whole view, at A4's price, and it always starts over on the
+fold (A3).
+
+A failed attempt may have left its prompt in the thread (S27): the retry starts a new thread, and a
+failed or cancelled call there leaves no point.
+
 ## Decisions
 
 ### D1: The router backend in `hub/backend/openrouter.py` ^d1
@@ -182,7 +198,7 @@ native call when the content is empty; `calls` keeps the envelopes.
   response refused
   (`test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`).
 
-### D2: The two CLI shapes in `hub/backend/claude_code.py` ^d2
+### D2: The two CLI shapes in `hub/backend/claude_code/__init__.py` ^d2
 
 Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, no settings,
 strict MCP config. `ClaudeCodeSession` forks a point per call unless it has tools, one session per
@@ -198,15 +214,18 @@ child; the gate settles (C6).
 ### D3: The subscription CLI backend in `hub/backend/codex.py` ^d3
 
 Serves C1 and C5. `Codex` runs the CLI once per turn in a scratch directory with every acting
-feature disabled: spawning removed by `agents.max_depth=0` (the feature flag alone does not), web
-search off, a chat framing replacing the base instructions, the environment context dropped. A
+feature off: by flag, by a rebuilt catalogue (S20), by refusing an unmeasured CLI release (S22). Web
+search is off, a chat framing replaces the base instructions, the environment context dropped. A
 private home holding a symlinked login is used when given. The view goes in as one transcript; usage
 comes from the `turn.completed` event; cost is unknown. It hands back that event's input count for
 the answering attempt (S3).
 
-- **Landing evidence**: `tests/test_codex.py`: the transcript in and the usage shaped, the transient
-  retry with attempts recorded, the empty answer retried with both attempts counted, the failed
-  envelope, cancellation joining the child, the count handed back and anchoring the next figure
+- **Landing evidence**: `tests/test_codex.py`: the transcript and usage shaped, the transient retry,
+  the empty answer retried, both attempts counted, the failed envelope, cancellation joining the
+  child, the catalogue (`test_each_call_hands_the_cli_a_catalogue_holding_only_what_a_chat_needs`),
+  the release refused
+  (`test_a_cli_release_the_claim_was_not_measured_on_is_refused_before_any_prompt_goes_out`), the
+  count handed back and anchoring the next figure
   (`test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it`).
 
 ### D4: The anchor at the call site and the floor in `_notify` ^d4
@@ -235,6 +254,18 @@ swallowed too: a spin.
   the call returns at the bound with the warning, under a caller cancelling every turn too, and the
   real hook exits 2 while the abandoned ask's later allow reaches nothing.
 
+### D6: The subscription CLI's session in `hub/backend/codex.py` ^d6
+
+Serves C2, C5 and C7. `CodexSession` keeps one CLI thread per run: a start is a persisted `exec`,
+each later call `exec resume` with what the view gained, under D3's flags, catalogue and release
+guard. The run's system prompt is the CLI's instructions; every child runs in one directory (S25).
+`_step` prices a changed view against the whole view; `plan` answers it for `_notify`; `base` seeds
+a first figure. A call's usage is the thread's totals less the call before's (S26).
+
+- **Landing evidence**: `tests/test_codex_session.py`: resumed with only the new entries, a small
+  hide waiting, a large one and the fold starting over, the cache life, the plan's figure, the
+  unknown share, the retry's new thread, failed and cancelled calls, one thread per run.
+
 ## Alternatives
 
 | approach                                                        | rejected because                                                                                                                       |
@@ -243,7 +274,7 @@ swallowed too: a spin.
 | One backend                                                     | the bench needs the same model through two harnesses, and a served run works on a subscription CLI                                    |
 | Counting the prompt in the runtime with a tokenizer             | a dependency per provider; the provider's count is exact for the prompt it saw, and free (ADR-0006)                                   |
 | Anchoring on the envelope's summed usage                        | a retried call bills two prompts; the sum is the size of neither                                                                       |
-| Resending the whole transcript to the CLI each turn             | the prefix never caches: 160k tokens in for one five-round exchange, measured 2026-09-23                                               |
+| Resending the whole transcript to the CLI each turn             | the prefix never caches: 160k tokens in for one five-turn exchange, measured 2026-09-23                                               |
 | Scaling a shrunk count by the view's ratio                      | it scales the fixed context too, which never shrinks: up to 96% off at a fold in simulation, 5% by the run's rate                      |
 | Folding by editing the CLI's history                            | the conversation is the CLI's; a fork from a point before the change applies the fold and reads that point from the cache              |
 | Starting over on every context directive                        | a hide of about 730 estimated tokens wrote 25.7k again; one chat's four restarts added about 29% of its whole cost over going on, re-derived from its bills |
@@ -341,3 +372,56 @@ swallowed too: a spin.
   2.1.288 runs a tool outside `--allowedTools` when a hook answers `allow` for it, and denies it
   given no decision. A probe hook measured this for built-in and MCP tools. The tests pin the hook's
   answers only.
+- **S19**: On the subscription CLI's 0.156.1 release the flags alone made no chat completion (A2).
+  Its model catalogue names a tool mode and a sub-agent version per model, and no flag removes the
+  tools those give. With every flag set, gpt-6-luna listed a code-execution tool and six sub-agent
+  tools and started a sub-agent when asked; the event stream showed neither call.
+  `agents.max_depth=0` still removes the first sub-agent version's spawn tool, which its feature
+  flag alone does not.
+- **S20**: Each call hands the subscription CLI a catalogue the backend rebuilds: each of the CLI's
+  entries (`codex debug models`, its answer kept) cut to the fifteen fields a chat needs. Its shell
+  type is disabled, no tool is listed, the chat framing is its base instructions. A later release's
+  new field is not carried over: the CLI's parser takes an unknown field without complaint, so the
+  filter is the backend's. The goal tools and the bundled skill list are switched off; two settings
+  the release refuses are dropped.
+- **S21**: Measured after S20, on gpt-6-luna and gpt-6-sol: no tool listed, none run when asked, a
+  one-line prompt at 189 input tokens against 4,795. No test runs the live CLI.
+- **S22**: S19's failure is silent: A2 was measured on the 0.153 release and broke on 0.156.1 with
+  no error and no event. So the backend reads the CLI's release and refuses any the claim was not
+  measured on, before any prompt; a warning would be a note beside a model that can act with no
+  gate. Each CLI upgrade stops the backend until its release is measured.
+- **S23**: A release is measured by asking the model for its tools through the backend built with
+  `unmeasured`, which notes every call, then added to `MEASURED`. Only that measuring path builds a
+  backend with `unmeasured`, never a served chat or an agent: the switch is the one way back to the
+  silent state.
+- **S24**: Measured on the subscription CLI's 0.156.1 release: `exec resume <thread>` goes on in a
+  thread a persisted `exec` started, under the same flags and catalogue, read-only by its config key
+  since the resume form takes no sandbox flag. The instructions file is read again at each resume,
+  so the run's system prompt is written for every call. `exec` has no fork: a thread goes on in
+  place and holds every prompt it was sent.
+- **S25**: A thread resumed in another directory is sent that directory's AGENTS.md again and keeps
+  it: a second turn read 270 input tokens from a new directory against 170 from the same one. So
+  every child of a session runs in one directory, which goes with the backend; each call's own files
+  stay in its scratch, named by path.
+- **S26**: On a resumed thread `turn.completed` carries the thread's running totals (456 input
+  tokens after turns of 177 and 279). A call's share is the difference from the call before, and its
+  count the input's difference. A total missing on either side, or below the one before, leaves that
+  figure out and flags the envelope; the input and its cached part go together.
+- **S27**: A failed attempt on a resumed thread may have left its prompt in the thread, which the
+  stream does not say. Its retry starts a new thread from the whole view, and a call that fails or
+  is cancelled on a resumed thread leaves no point: the next call starts over. A new thread's
+  failure leaves the thread held as it was. A stream that names no thread leaves no point either.
+- **S28**: The stream carries no context window and no rate limit. The session's envelope reads
+  both, best effort, from the tail of the thread's session file under the CLI's home; a file not
+  found or not readable adds nothing. The envelope also names the thread, the step taken, the
+  characters the prompt stood in and the thread's totals.
+- **S29**: A turn that ends with no message is billed and retried, so a call's `usage` can sum two
+  attempts. The session's envelope names the answering attempt's count apart, as `prompt_tokens`,
+  with no figure where S26 left it out. The chat's log keeps it, and a continued chat seeds its
+  first figure from that count and the characters it stood in, never from the sum.
+- **S30**: No acting shape is built on the subscription CLI: C6's gate cannot hold there. Measured
+  on 0.156.1, seven calls: a pre-tool hook in a private home fires under `exec`, exit 2 stops the
+  call, a replacement input is taken, and a hook that crashes or times out lets the tool run. Under
+  every shell type the model has `exec_command` and `write_stdin`; `write_stdin` reaches a running
+  command with no hook call, and the hook sees the command alone. Not measured: MCP tools, the
+  post-tool hook, the escalation parameters.

@@ -1,8 +1,9 @@
-"""What a Claude Code actor's checkpoint reads (ADR-0019/D2). Each source is a small function that
-returns `Var`s: the transcript's own prompts, final texts and Monitor, TaskStop and Agent calls; the
-hook tracker's directive ring; the sessions registry's topic; the actor's active gtd rows and the
-threads its unread mail awaits a reply on; its open pull requests; the statusline's per-session
-figure. A source that is absent is a value, never a failed take.
+"""A Claude Code session's checkpoint (ADR-0019/D2): what it reads, the take and the restore prompt,
+on the session's own vocabulary over the run's (`SESSION_KINDS`, `SESSION_WHYS`). Each source is a
+small function that returns `Var`s: the transcript's own prompts, final texts and Monitor, TaskStop
+and Agent calls; the hook tracker's directive ring; the sessions registry's topic; the actor's active
+gtd rows and the threads its unread mail awaits a reply on; its open pull requests; the statusline's
+per-session figure. A source that is absent is a value, never a failed take.
 
 The transcript is read once per file state (its size and mtime) for all of them. A prompt is a `user`
 row whose content is a string or text blocks and which no hook or harness wrote: never a tool result,
@@ -19,17 +20,22 @@ import os
 import re
 import shlex
 import tomllib
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-from lionagi.checkpoint import DIRECTIVES, CheckpointError, Var, fold_turns
-from lionagi.lndl import plain
+from lion1.checkpoint import KINDS, WHYS, Checkpoint, CheckpointError, Var, jsonable, listed, take
+from lion1.lndl import plain
 
-from .agent.instruments import GH, PR_PAGE, Runner, sh
-from .khive import Khive, lit
+from ...agent.instruments import GH, PR_PAGE, Runner, sh
+from ...khive import Khive, lit
 
 __all__ = (
+    "SESSION_KINDS",
+    "SESSION_WHYS",
+    "DIRECTIVES",
     "PROJECTS",
     "SESSIONS",
     "TYPED",
@@ -53,7 +59,16 @@ __all__ = (
     "context_figure",
     "cursor",
     "posture",
+    "fold_turns",
+    "take_session",
+    "render_prompt",
 )
+
+# the run's kinds and whys and the session's own: a watch to re-arm, a spawn, a lane, the person's
+# words, the topic; a take when the harness rotates the session or compacts it
+SESSION_KINDS = (*KINDS, "watch", "spawn", "lane", "directive", "topic")
+SESSION_WHYS = (*WHYS, "rotate", "precompact")
+DIRECTIVES = 8  # the prompt hook's ring length: the person's words a restore carries, never more
 
 PROJECTS = Path.home() / ".claude" / "projects"
 SESSIONS = Path.home() / ".khive" / "sessions"  # what the prompt hook persists per session
@@ -676,3 +691,166 @@ def posture(transcript_path: str | Path) -> list[Var]:
     last = _scan(transcript_path).last
     text = plain(last[0]) if last is not None else ""
     return [Var("posture", "posture", text, "transcript", last[1])] if last is not None and text else []
+
+
+def fold_turns(turns: Sequence[dict], budget: int) -> dict:
+    """A Claude Code session's view: its turns oldest-first, folded from the oldest until the rest fits
+    half the budget (the rule `_notify` folds by, on the same estimate); the latest turn always stays. A
+    folded turn is named `<turn>@<at>` (from a transcript: its user row's uuid and timestamp)."""
+    sizes = [(len(t.get("input") or "") + len(t.get("text") or "")) // 4 for t in turns]
+    total, cut = sum(sizes), 0
+    while cut < len(turns) - 1 and total > budget // 2:
+        total -= sizes[cut]
+        cut += 1
+    return {
+        "budget": budget,
+        "kept": [dict(t) for t in turns[cut:]],
+        "hidden": [f"{t.get('turn')}@{t.get('at')}" for t in turns[:cut]],
+        "summaries": [],
+    }
+
+
+def _hooked(text: Any) -> bool:
+    s = str(text)
+    return s.lstrip().startswith(_FRAMES) or _REMINDER.search(s) is not None
+
+
+def take_session(
+    source: dict,
+    vars: Iterable[Var],
+    *,
+    actor: str,
+    why: str,
+    budget: int,
+    view: dict | None = None,
+    now: datetime | None = None,
+) -> Checkpoint:
+    """The checkpoint of a Claude Code session: `take` on the session's kinds and whys, its view the
+    session's turns (`fold_turns`), a directive and a watch never lazy. A directive or a kept input
+    carrying a hook's frame is refused: whatever read it let it through."""
+    c = take(
+        {"kind": "claude-code", **source},
+        vars,
+        actor=actor,
+        why=why,
+        budget=budget,
+        view=view if view is not None else fold_turns((), budget),
+        now=now,
+        kinds=SESSION_KINDS,
+        whys=SESSION_WHYS,
+        eager=("directive", "watch"),
+    )
+    for v in c.vars:
+        if v.kind == "directive" and _hooked(v.value):
+            raise CheckpointError(
+                f"directive {v.name!r} carries a hook's frame; whatever read it let it through"
+            )
+    for t in c.view.get("kept", []):
+        if _hooked(t.get("input") or ""):
+            raise CheckpointError(f"turn {t.get('turn')}: its input carries a hook's frame")
+    return c
+
+
+def _fenced(text: str) -> str:
+    """The text between fences longer than any backtick run inside it, so it reads back byte for byte."""
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
+def _one(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=jsonable)
+
+
+def _shown(c: Checkpoint, v: Var) -> str:
+    """A var's value, or for a lazy one its size and how to load it."""
+    if v.size is None:
+        return _one(v.value)
+    how = v.ref or f"lion context show --id {c.id} --var {v.name}"
+    return f"{v.size} chars, not shown here; load it with `{how}`"
+
+
+def render_prompt(checkpoint: Checkpoint) -> str:
+    """The first prompt of the fresh session. Its first line names the checkpoint, the actor and the
+    context figure at the take, and asks for the watches to be re-armed before any other work; each
+    watch's command follows verbatim. Then the person's words verbatim (the newest DIRECTIVES), the
+    lanes, the running spawns, the topic, what was declared, the kept view, the posture, and what to do
+    first. A lazy var is its name, its size and how to load it, never its body."""
+    c = listed(checkpoint, "nothing was restored", kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    of = {k: [v for v in c.vars if v.kind == k] for k in SESSION_KINDS}
+    watches, facts = of["watch"], {v.name: v for v in of["fact"]}
+    ctx = c.source.get("context") or {}
+    figure = (
+        f"~{ctx.get('used')} of {ctx.get('window')} tokens ({ctx.get('pct')}%)"
+        if ctx.get("used") is not None or ctx.get("pct") is not None
+        else "not known"
+    )
+    head = f"Checkpoint {c.id} of {c.actor}, taken {c.taken_at} ({c.why}); context at the take {figure}. "
+    if watches:
+        head += (
+            f"Before any other work, re-arm these {len(watches)} watch(es) with the Monitor tool, "
+            "each command exactly as written:"
+        )
+    else:
+        head += "There is no watch to re-arm."
+    lines = [head]
+    for i, w in enumerate(watches, 1):
+        v = w.value if isinstance(w.value, dict) else {"command": _one(w.value)}
+        opts = ", ".join(f"{k} {v[k]}" for k in ("timeout_ms", "persistent") if v.get(k) is not None)
+        lines.append(f"{i}. {v.get('description') or w.name}" + (f" ({opts})" if opts else "") + ":")
+        lines.append(_fenced(str(v.get("command") or "")))
+    if "mcp" in facts:
+        lines.append(f"MCP servers expected: {_shown(c, facts['mcp'])}")
+    if "loop" in facts:
+        lines.append(f"Loop file: {_shown(c, facts['loop'])}")
+    directives = of["directive"][-DIRECTIVES:]
+    if directives:
+        lines += ["", f"The person's words, verbatim, oldest first ({len(directives)}):"]
+        for d in directives:
+            lines += [f"[{d.at}]", _fenced(str(d.value))]
+    lines += ["", f"Lanes ({c.source.get('lanes', 'not read')}):"]
+    lines += [f"- {_shown(c, v)}" for v in of["lane"]] or ["- none"]
+    if of["spawn"]:
+        lines += ["", "Spawned agents the transcript shows running at the take:"]
+        lines += [f"- {_shown(c, v)}" for v in of["spawn"]]
+    for v in of["topic"]:
+        lines += ["", f"Topic: {_shown(c, v)}"]
+    rest = [v for v in of["fact"] if v.name not in ("mcp", "loop", "next")]
+    if rest:
+        lines += ["", "Declared:"] + [f"- {v.name}: {_shown(c, v)}" for v in rest]
+    view = c.view or {}
+    kept, hidden = view.get("kept") or [], view.get("hidden") or []
+    lines.append("")
+    if c.source.get("kind") == "resident":
+        lines.append(
+            f"The record {c.source.get('record')} to seq {c.source.get('seq')}: {len(kept)} entries in "
+            f"view, {len(hidden)} out of it, {len(view.get('summaries') or [])} summaries; the run's "
+            "history replays it."
+        )
+    else:
+        lines.append(
+            f"The last {len(kept)} exchange(s) as they stood; {len(hidden)} earlier folded, the "
+            f"transcript keeps them: {c.source.get('transcript')}"
+        )
+        for t in kept:
+            opener = "wake" if t.get("kind") == "event" else "in"
+            lines += [f"[{t.get('at')}] {opener}:", _fenced(str(t.get("input") or ""))]
+            if t.get("text"):
+                lines += ["out:", _fenced(str(t["text"]))]
+    for v in of["posture"]:
+        label = (
+            "Your posture at the take:" if v.name == "posture" else f"Your loop file's posture ({v.name}):"
+        )
+        lines += ["", label, str(v.value) if v.size is None else _shown(c, v)]
+    first = facts.get("next")
+    lines += [
+        "",
+        "What to do first: "
+        + (
+            _shown(c, first)
+            if first is not None
+            else "re-arm the watches above, then take up the newest of the person's words and the lanes "
+            "from where the posture leaves them."
+        ),
+    ]
+    return "\n".join(lines)

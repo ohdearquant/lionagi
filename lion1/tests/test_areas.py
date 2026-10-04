@@ -6,6 +6,7 @@ mails it) and the served routes behind it."""
 import asyncio
 import fcntl
 import http.client
+import ipaddress
 import json
 import os
 import plistlib
@@ -46,7 +47,7 @@ from hub.khive import KhiveError, lit
 
 TODAY = "2026-09-22"
 WAKE_LINE = (
-    "2026-09-23 20:14:46 wake 1: Success after 1 rounds, 1 mail, 1 sent; 1 model call(s), 512345 in, "
+    "2026-09-23 20:14:46 wake 1: Success after 1 turns, 1 mail, 1 sent; 1 model call(s), 512345 in, "
     "4321 out, $0.1234; 39 idle poll(s) before it at 0 tokens"
 )
 RESTART = "serving lambda:x:desk from /x as pid 4321; ticks created: []; programs gh=/g git=/t"
@@ -224,7 +225,7 @@ def test_wakes_read_the_serve_log_keep_restarts_and_odd_wake_lines_and_a_missing
         "at": "2026-09-23 20:14:46",
         "wake": 1,
         "outcome": "Success",
-        "rounds": 1,
+        "turns": 1,
         "mail": 1,
         "sent": 1,
         "calls": 1,
@@ -515,7 +516,7 @@ class FailingKhive(FakeKhive):
 
 
 def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and_each_alone(tmp_path):
-    base = {"wake": 45, "outcome": "Quiet", "rounds": 1, "mail": ["a", "b"], "sent": 0, "idle_polls": 0}
+    base = {"wake": 45, "outcome": "Quiet", "turns": 1, "mail": ["a", "b"], "sent": 0, "idle_polls": 0}
     tokens = {"calls": 1, "in": 56129, "out": 1038, "cost": 0.0624}
     at = "2026-09-24 10:52:43"  # serve prints each line after the time (apps/cli/lion_cli/agent.py)
     old = f"{at} {_line({**base, 'tokens': tokens})}"
@@ -543,7 +544,7 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
         "at": at,
         "wake": 45,
         "outcome": "Quiet",
-        "rounds": 1,
+        "turns": 1,
         "mail": 2,
         "sent": 0,
         "calls": 1,
@@ -573,7 +574,7 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
     html = page([area], [r, whole])
     assert f"<td>2 run(s), 2 mail, {mark}</td>" in html and "<td>1 run(s), 1 mail, $0.3000</td>" in html
-    base = {"wake": 2, "outcome": "Success", "rounds": 1, "mail": ["a"], "sent": 1, "idle_polls": 4}
+    base = {"wake": 2, "outcome": "Success", "turns": 1, "mail": ["a"], "sent": 1, "idle_polls": 4}
     tokens = {"calls": 2, "in": 900, "out": 40, "cost": 0.3, "unknown": 1, "context": 800}
     line = f"{TODAY} 11:09:15 {_line({**base, 'tokens': tokens})}"
     m = _WAKE.match(line)
@@ -684,14 +685,15 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
 def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post(
     tmp_path, monkeypatch
 ):
-    inside = ("127.0.0.1", "::1", "100.64.0.1", "100.90.12.34", "100.127.255.254", "::ffff:100.70.1.2")
+    middle = str(ipaddress.ip_network("100.64.0.0/10")[1 << 21])  # the range's middle, no device's address
+    inside = ("127.0.0.1", "::1", "100.64.0.1", middle, "100.127.255.254", "::ffff:100.70.1.2")
     assert all(_peer_allowed(a) for a in inside)
     outside = ("100.63.255.255", "100.128.0.1", "192.168.1.20", "8.8.8.8", "::ffff:8.8.8.8", "", "x")
     assert not any(_peer_allowed(a) for a in outside)
     d = app_dir(tmp_path)
-    port = serve_on(registry(tmp_path, d), allow=["phone.tailnet.ts.net", "100.90.12.34"])
+    port = serve_on(registry(tmp_path, d), allow=["device.example.net", "100.64.0.1"])
     # Host: the bound host:port, 127.0.0.1, localhost and every --allow; nothing else
-    for host in (f"phone.tailnet.ts.net:{port}", f"100.90.12.34:{port}", f"localhost:{port}"):
+    for host in (f"device.example.net:{port}", f"100.64.0.1:{port}", f"localhost:{port}"):
         assert call(port, "GET", "/api/areas", headers={"Host": host})[0] == 200
     code, text, _ = call(port, "GET", "/api/areas", headers={"Host": f"evil.example:{port}"})
     assert code == 403 and "is not this server" in text
@@ -702,7 +704,7 @@ def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_a
     for origin in ("http://evil.example", f"http://evil.example:{port}", "null", f"ftp://127.0.0.1:{port}"):
         code, doc = control(port, hold, {"Origin": origin})
         assert code == 403 and "is not this server" in doc["detail"] and not (d / "hold").exists(), origin
-    for origin in (f"https://phone.tailnet.ts.net:{port}", f"http://127.0.0.1:{port}"):
+    for origin in (f"https://device.example.net:{port}", f"http://127.0.0.1:{port}"):
         assert control(port, {**hold, "action": "resume"}, {"Origin": origin})[0] == 200
     code, doc = control(port, hold)  # no Origin header at all
     assert code == 200 and doc["ok"] is True and (d / "hold").exists()
@@ -1072,7 +1074,7 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     history = [x for e, x in got[1:]]
     assert [x["line"] for x in history] == old[-20:]  # the last 20, the partial line not among them
     assert all(x["dir"] == str(d) and x["history"] is True for x in history)
-    new = "2026-09-24 11:00:00 wake 46: Quiet after 1 rounds, 1 mail, 0 sent; 1 model call(s), 1 in, 1 out"
+    new = "2026-09-24 11:00:00 wake 46: Quiet after 1 turns, 1 mail, 0 sent; 1 model call(s), 1 in, 1 out"
     started = time.monotonic()
     with open(d / "serve.log", "a") as f:
         f.write(" line\n" + new + "\n")
@@ -1292,7 +1294,7 @@ def test_the_log_tail_reads_history_then_whole_new_lines_and_starts_over_on_a_sh
 
 
 def test_the_wake_pattern_reads_the_task_suffix_with_and_without_the_other_two(tmp_path):
-    base = {"wake": 46, "outcome": "Quiet", "rounds": 1, "mail": [], "sent": 0, "idle_polls": 3}
+    base = {"wake": 46, "outcome": "Quiet", "turns": 1, "mail": [], "sent": 0, "idle_polls": 3}
     tokens = {"calls": 1, "in": 40000, "out": 900, "cost": 0.05}
     at = "2026-09-24 12:00:00"
     only = f"{at} {_line({**base, 'tokens': tokens, 'tasks': ['t1', 't2']})}"

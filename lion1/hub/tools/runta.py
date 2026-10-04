@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from lionagi.bus import Event
+from lion1.bus import Event
 
 from .box import BoxBase, pack
 from .daytona import SandboxDead

@@ -76,7 +76,7 @@ _STYLE = (
 # The phone app parses the `log` event's lines with this same pattern.
 _WAKE = re.compile(
     r"(?P<at>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) wake (?:(?P<wake>\d+): (?P<outcome>.+?) after "
-    r"(?P<rounds>\d+) rounds, (?P<mail>\d+) mail, (?P<sent>\d+) sent; (?P<calls>\d+) model call\(s\), "
+    r"(?P<turns>\d+) turns, (?P<mail>\d+) mail, (?P<sent>\d+) sent; (?P<calls>\d+) model call\(s\), "
     r"(?P<tokens_in>\d+) in, (?P<tokens_out>\d+) out, \$(?P<cost>[\d.]+)"
     r"(?: \(partial: (?P<unknown>\d+) call\(s\) of unknown cost\))?; (?P<idle>\d+) idle poll\(s\) "
     r"before it at 0 tokens"
@@ -553,7 +553,7 @@ def resident_page(
     parts.append("<h3>wakes</h3>")
     if wake_rows:
         parts.append(
-            "<table><tr><th>time</th><th>wake</th><th>outcome</th><th>rounds</th><th>mail</th><th>sent</th>"
+            "<table><tr><th>time</th><th>wake</th><th>outcome</th><th>turns</th><th>mail</th><th>sent</th>"
             "<th>calls</th><th>in</th><th>out</th><th>$</th><th>idle polls</th></tr>"
         )
         for w in wake_rows:
@@ -565,7 +565,7 @@ def resident_page(
                 else:
                     parts.append(f"<tr class=bad><td colspan=11>{h(w['raw'])}</td></tr>")
                 continue
-            cells = [w["at"], w["wake"], w["outcome"], w["rounds"], w["mail"], w["sent"], w["calls"]]
+            cells = [w["at"], w["wake"], w["outcome"], w["turns"], w["mail"], w["sent"], w["calls"]]
             cells += [
                 w["tokens_in"],
                 w["tokens_out"],

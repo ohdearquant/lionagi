@@ -27,7 +27,7 @@ from stat import S_ISREG
 from typing import Any
 from urllib.parse import quote
 
-from lionagi.notes import NoteStore
+from lion1.notes import NoteStore
 
 from ..khive import Khive, lit
 from .agent import LoopLock

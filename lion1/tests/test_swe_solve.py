@@ -21,7 +21,7 @@ class Box:
         return DIFF
 
 
-class DiesOnRoundTwo:
+class DiesOnTurnTwo:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
@@ -40,7 +40,7 @@ class DiesOnRoundTwo:
         return "Reading the code first.\n"  # a turn that runs nothing and declares nothing
 
 
-class RepairedThenDies(DiesOnRoundTwo):
+class RepairedThenDies(DiesOnTurnTwo):
     async def __call__(self, messages) -> str:
         await super().__call__(messages)
         return '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
@@ -51,7 +51,7 @@ def test_a_backend_failure_keeps_what_the_readings_before_it_counted(tmp_path: P
     rec = asyncio.run(
         run_swe.solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=RepairedThenDies())
     )
-    assert rec["error"].startswith("CodexError: codex exited 1") and rec["rounds"] == 1
+    assert rec["error"].startswith("CodexError: codex exited 1") and rec["turns"] == 1
     assert rec["repairs"] == {"closers": 1} and rec["unknown_names"] == [["bsh", "bash", 1]]
 
 
@@ -75,18 +75,18 @@ def test_the_thinking_flag_maps_to_the_reasoning_field():
         _reasoning("maybe")
 
 
-def test_a_backend_failure_keeps_the_rounds_that_ran_and_the_fix_on_disk(tmp_path: Path):
+def test_a_backend_failure_keeps_the_turns_that_ran_and_the_fix_on_disk(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
-    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "codex", box=Box(), backend=DiesOnRoundTwo()))
+    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "codex", box=Box(), backend=DiesOnTurnTwo()))
     assert rec["error"].startswith("CodexError: codex exited 1")
     assert rec["repairs"] == {} and rec["unknown_names"] == []  # a turn that read clean, then the failure
-    assert rec["rounds"] == 1 and len(rec["calls"]) == 1 and rec["calls"][0]["attempts"] == 1
+    assert rec["turns"] == 1 and len(rec["calls"]) == 1 and rec["calls"][0]["attempts"] == 1
     assert rec["tokens"] == {"input": 10, "cache_read": 3, "cache_create": 0, "output": 2}
     assert rec["model_patch"] == DIFF  # graded whatever ended the loop
     assert "watch" in rec and rec["outcome"] is None
     on_disk = json.loads((tmp_path / "pkg__pkg-1.json").read_text())
     assert on_disk["model_patch"] == DIFF and on_disk["error"] == rec["error"]
-    assert (tmp_path / "progress.log").read_text().count("pkg__pkg-1 round") == 2
+    assert (tmp_path / "progress.log").read_text().count("pkg__pkg-1 turn") == 2
 
 
 class ToolBox(Box):
@@ -146,7 +146,7 @@ def test_a_turn_cut_at_the_cap_or_blank_is_named_in_the_next_notice(tmp_path: Pa
     assert "came back with no readable text (2 output tokens, finish_reason=None)" in record
     assert rec["calls"][0]["finish"] == "length" and "message" not in rec["calls"][0]
     assert rec["calls"][1]["message"] == {"content": "   "}
-    assert rec["outcome"] == "Exhausted:rounds" and rec["rounds"] == 3
+    assert rec["outcome"] == "Exhausted:turns" and rec["turns"] == 3
 
 
 def test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name(tmp_path: Path):
@@ -174,12 +174,12 @@ class DyingBox(ToolBox):
         return ""
 
 
-def test_a_dead_box_ends_the_run_at_the_next_round_as_an_infrastructure_error(tmp_path: Path):
+def test_a_dead_box_ends_the_run_at_the_next_turn_as_an_infrastructure_error(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     backend = Turns(*[('<lact a1>bash(command="true")</lact>', {"finish_reason": "stop"})] * 5)
     rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "codex", box=DyingBox(), backend=backend))
     assert rec["error"] == "SandboxDead: failed to resolve container IP after 3 attempts"
-    assert rec["rounds"] == 1 and len(backend.turns) == 4  # one turn ran, the box was dead, no more
+    assert rec["turns"] == 1 and len(backend.turns) == 4  # one turn ran, the box was dead, no more
     assert rec["diff_error"].startswith("SandboxDead") and rec["model_patch"] == ""
 
 
@@ -274,11 +274,11 @@ class FailedEnvelopeThenRaise(Costs):
         return await super().__call__(messages)
 
 
-def test_a_failed_envelope_is_not_counted_as_a_round(tmp_path: Path):
+def test_a_failed_envelope_is_not_counted_as_a_turn(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     backend = FailedEnvelopeThenRaise(0.10, "fail")
     rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "openrouter", box=ToolBox(), backend=backend))
-    assert rec["rounds"] == 1 and len(rec["calls"]) == 2  # the failed call is spend, not a round
+    assert rec["turns"] == 1 and len(rec["calls"]) == 2  # the failed call is spend, not a turn
     assert rec["calls"][1]["error"] == "HTTP 400: bad" and rec["cost_usd"] == pytest.approx(0.15)
 
 
@@ -304,8 +304,8 @@ def test_a_finish_beside_an_edit_is_judged_before_the_edit_and_its_refusal_lets_
     assert box.files["a.py"] == "ONE\ntwo\n"
     record = (tmp_path / "pkg__pkg-1.record.txt").read_text()
     assert "the repository has no changes" in record
-    assert "no command has run since the source changed in round 1" in record
-    assert rec["outcome"] == "Success" and rec["rounds"] == 3 and rec["model_patch"] == DIFF
+    assert "no command has run since the source changed in turn 1" in record
+    assert rec["outcome"] == "Success" and rec["turns"] == 3 and rec["model_patch"] == DIFF
 
 
 class BaseBox(ToolBox):
