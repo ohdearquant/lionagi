@@ -33,6 +33,7 @@ from hub.backend.claude_code.checkpoint import (
     pulls,
     render_prompt,
     slug,
+    snapshot,
     spawns,
     take_session,
     topic,
@@ -40,6 +41,7 @@ from hub.backend.claude_code.checkpoint import (
     transcript_turns,
     watches,
 )
+from hub.backend.codex import _THREAD
 from hub.khive import Khive, KhiveError, assert_ignored, context_dir
 from lion1.checkpoint import CheckpointError, Var, load, save
 
@@ -110,6 +112,33 @@ def set_var(directory: str | Path, name: str, kind: str, value: Any) -> dict:
     return asdict(var)
 
 
+def _owned(path: Path, snap: Any, d: Path, session: str | None, chosen: bool) -> dict:
+    """The rollout's `source` as the snapshot's one read saw its first row, refused unless that row
+    names an owner and a thread id, the thread `session` when one is named, and, when the directory
+    `chosen` it, a person's thread in `d` still: the directory chose it on an earlier read."""
+    found = codex_checkpoint.rollout_source(snap)
+    if found["thread_source"] not in codex_checkpoint.OWNERS:
+        raise CheckpointError(
+            f"{path}: its first row names no owner (thread_source {found['thread_source']!r}), so "
+            "whether its prompts are a person's is not known; nothing was taken"
+        )
+    thread = found["session_id"]
+    if not isinstance(thread, str) or not _THREAD.fullmatch(thread):
+        raise CheckpointError(
+            f"{path}: its first row names no thread id (id {thread!r:.60}), so whose session it is "
+            "is not known; nothing was taken"
+        )
+    if session is not None and session != thread:
+        raise CheckpointError(f"{path} is the rollout of thread {thread}, not {session}")
+    cwd = found["session_cwd"]
+    if chosen and (found["thread_source"] != "user" or not isinstance(cwd, str) or Path(cwd).resolve() != d):
+        raise CheckpointError(
+            f"{path} changed after it was chosen: its first row no longer says a person's thread in "
+            f"{d}; nothing was taken"
+        )
+    return found
+
+
 def checkpoint(
     directory: str | Path,
     why: str,
@@ -125,7 +154,8 @@ def checkpoint(
     hidden}`. A Codex session is `codex`, its rollout `session`'s or the directory's newest person's
     thread, or a transcript whose first row says it is a rollout; its take adds `skipped_unowned`, the
     newer rollouts of the directory passed over because their first row names no owner, and refuses a
-    rollout named whose first row names none. The gitignore assertion runs before anything is read;
+    rollout whose first row its read saw names no owner or no thread id. A transcript whose first row
+    is a rollout's at its read is refused. The gitignore assertion runs before anything is read;
     lanes khive cannot give are a value, not a refusal."""
     d = Path(directory).resolve()
     if why not in SESSION_WHYS:
@@ -154,23 +184,10 @@ def checkpoint(
             whys = ", ".join(codex_checkpoint.CODEX_WHYS)
             raise CheckpointError(f"why {why!r}: a Codex session's is one of {whys}")
         snap = codex_checkpoint.snapshot(path, budget)  # one file state for every read of the take
-        found = codex_checkpoint.rollout_source(snap)
-        if found["thread_source"] not in codex_checkpoint.OWNERS:
-            raise CheckpointError(
-                f"{path}: its first row names no owner (thread_source {found['thread_source']!r}), so "
-                "whether its prompts are a person's is not known; nothing was taken"
-            )
-        if session is not None and session != found["session_id"]:
-            raise CheckpointError(f"{path} is the rollout of thread {found['session_id']}, not {session}")
-        if codex and not transcript and not session:
-            # the directory's choice was made on a first row read before this one: the row the take
-            # read must still say what chose it
-            cwd = found["session_cwd"]
-            if found["thread_source"] != "user" or not isinstance(cwd, str) or Path(cwd).resolve() != d:
-                raise CheckpointError(
-                    f"{path} changed after it was chosen: its first row no longer says a person's "
-                    f"thread in {d}; nothing was taken"
-                )
+        found = _owned(path, snap, d, session, chosen=codex and not transcript and not session)
+    else:
+        # one file state for every read of the take; a rollout by its read's first row is refused
+        snap = snapshot(path)
     lane_vars: list[Var] = []
     if khive is None:
         try:
@@ -191,19 +208,19 @@ def checkpoint(
         sid = session or path.stem
         own = [
             *topic(PROJECTS / slug(d) / "memory" / "sessions_registry.json"),
-            *directives(sid, path, TYPED),
-            *watches(path, actor, now),
-            *spawns(path, now),
+            *directives(sid, snap, TYPED),
+            *watches(snap, actor, now),
+            *spawns(snap, now),
         ]
-        last = posture(path)
+        last = posture(snap)
         source = {
             "kind": "claude-code",
             "session_id": sid,
-            **transcript_source(path),
+            **transcript_source(snap),
             "cwd": str(d),
             "context": context_figure(sid),
         }
-        view, taker = transcript_turns(path, budget), take_session
+        view, taker = transcript_turns(snap, budget), take_session
     source["lanes"] = f"{lane_note}; {pr_note}"
     harvested = [*own, *lane_vars, *pr_vars, *last, *cursor(d)]
     ckpt = taker(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now)
@@ -237,12 +254,14 @@ def restore(directory: str | Path, id: str | None = None) -> dict:
 def status(directory: str | Path, *, session: str | None = None, codex: bool = False) -> dict:
     """`{latest, taken_at, context_now, stale, pending_vars}`. Stale: no checkpoint, or the transcript or
     record it points at changed after the take. A `taken_at` with no fraction is its second's start. The
-    figure now is a Codex session's with `codex`: `session`'s rollout, or the directory's newest."""
+    figure now is a Codex session's with `codex`: `session`'s rollout, or the directory's newest, read
+    once and its first row checked as a take checks it; one that fails is not known, and stale."""
     d = Path(directory).resolve()
     try:
         c = load(context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
     except CheckpointError:
         c = None
+    held = True  # the rollout the figure is read from still says what chose it
     if codex:
         try:
             rollout = (
@@ -250,7 +269,14 @@ def status(directory: str | Path, *, session: str | None = None, codex: bool = F
             )
         except CheckpointError:
             rollout = None
-        now = codex_checkpoint.context_figure(rollout)
+        now = codex_checkpoint.context_figure(None)
+        if rollout is not None:
+            try:  # the figure of the one read whose first row is checked, never of a later read
+                snap = codex_checkpoint.snapshot(rollout)
+                _owned(rollout, snap, d, session, chosen=session is None)
+                now = codex_checkpoint.context_figure(snap)
+            except (OSError, CheckpointError):
+                held = False
     else:
         if session is None:
             try:
@@ -259,7 +285,7 @@ def status(directory: str | Path, *, session: str | None = None, codex: bool = F
                 session = None
         now = context_figure(session)
     stale = True
-    if c is not None:
+    if c is not None and held:
         pointed = c.source.get("transcript") or c.source.get("record")
         try:
             changed = datetime.fromtimestamp(Path(str(pointed)).stat().st_mtime).astimezone()

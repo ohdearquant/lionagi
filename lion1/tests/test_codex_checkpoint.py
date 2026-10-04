@@ -623,6 +623,151 @@ def test_a_rollout_changed_after_the_directory_chose_it_is_taken_only_if_it_woul
     assert changed and (not context_dir(d).exists() or not list(context_dir(d).iterdir()))
 
 
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("transcript", "rollout"),
+        ("rollout", "transcript"),
+        ("transcript", "transcript"),
+        ("rollout", "rollout"),
+    ],
+)
+def test_a_file_whose_kind_changed_after_the_route_peeked_at_it_is_refused(
+    tmp_path, monkeypatch, capsys, before, after
+):
+    # `--transcript` chose its reader on a peek at the first row, then handed the path on: a Claude
+    # Code transcript at the peek and a rollout at the read was saved as an empty Claude Code take
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    claude = {"type": "user", "uuid": "u", "promptSource": "typed", "message": {"content": "placeholder"}}
+    rows = {"transcript": [claude], "rollout": [meta(THREAD, str(d)), typed("placeholder rollout", "m1")]}
+    path = write(tmp_path / "given.jsonl", rows[before])
+    peek, changed = cx.is_rollout, []
+
+    def change_after_the_peek(p):
+        said = peek(p)
+        if not changed:
+            changed.append(p)
+            write(path, rows[after])
+        return said
+
+    monkeypatch.setattr(cx, "is_rollout", change_after_the_peek)
+    argv = ["context", "checkpoint", "--dir", str(d), "--transcript", str(path)]
+    if before == after:  # the control: the kind the peek saw is the read's, and its reader takes it
+        main(argv)
+        kind = {"transcript": "claude-code", "rollout": "codex"}[after]
+        assert changed and load_kind(d, json.loads(capsys.readouterr().out)) == (kind, "manual")
+        return
+    with pytest.raises(SystemExit) as out:
+        main(argv)
+    why = {
+        "rollout": "its first row is a session_meta, so it is a Codex rollout",
+        "transcript": "its first row names no owner (thread_source None)",
+    }[after]
+    assert out.value.code == 1 and f"{path}: {why}" in capsys.readouterr().err
+    assert changed and (not context_dir(d).exists() or not list(context_dir(d).iterdir()))
+
+
+@pytest.mark.parametrize("route", ["transcript", "session", "default"])
+@pytest.mark.parametrize("thread", [None, 7, THREAD])
+def test_a_rollout_whose_first_row_names_no_thread_id_at_the_read_is_refused_on_every_route(
+    tmp_path, monkeypatch, capsys, route, thread
+):
+    # only `--session` compared the read's thread with anything: `--codex` alone and `--transcript`
+    # took a rollout whose first row named no thread, and its `source.session_id` was null
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    d = actor_dir(tmp_path)
+    path = write(
+        home / "sessions" / "2026" / "10" / "04" / f"rollout-2026-10-04T10-00-00-{THREAD}.jsonl",
+        [meta(THREAD, str(d)), typed("placeholder chosen", "m1")],
+    )
+    peek, changed = cx.is_rollout, []
+
+    def change_after_the_choice(p):  # the first row rewritten between the choice and the take's read
+        said = peek(p)
+        if not changed:
+            changed.append(p)
+            row = meta(THREAD, str(d))
+            row["payload"]["id"] = thread
+            if thread is None:
+                del row["payload"]["id"]
+            write(path, [row, typed("placeholder changed", "m2")])
+        return said
+
+    monkeypatch.setattr(cx, "is_rollout", change_after_the_choice)
+    given = {"transcript": ["--transcript", str(path)], "session": ["--codex", "--session", THREAD]}
+    argv = ["context", "checkpoint", "--dir", str(d), *given.get(route, ["--codex"])]
+    if thread == THREAD:  # the control: a first row that still names its thread is taken on every route
+        main(argv)
+        c = core.load(context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
+        assert c.source["session_id"] == THREAD and c.view["kept"][0]["input"] == "placeholder changed"
+        return
+    with pytest.raises(SystemExit) as out:
+        main(argv)
+    err = capsys.readouterr().err
+    assert out.value.code == 1 and f"{path}: its first row names no thread id (id {thread!r})" in err
+    assert changed and (not context_dir(d).exists() or not list(context_dir(d).iterdir()))
+
+
+@pytest.mark.parametrize(
+    ("after", "owner", "elsewhere", "used"),
+    [
+        ("newest_rollout", "subagent", False, None),
+        ("newest_rollout", "user", True, None),
+        ("newest_rollout", "user", False, 9_000),  # another person's thread here: the directory's choice
+        ("rollout_of", "user", False, None),  # another thread than the one named
+        ("snapshot", "subagent", False, 1_000),  # changed after the one read: the figure is that read's
+    ],
+)
+def test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen(
+    tmp_path, monkeypatch, capsys, after, owner, elsewhere, used
+):
+    # the status chose a rollout, then read its figure from the path again: a file put in its place
+    # between the two gave another thread's figure
+    gh_says(monkeypatch)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    d = actor_dir(tmp_path)
+    path = write(
+        home / "sessions" / "2026" / "10" / "04" / f"rollout-2026-10-04T10-00-00-{THREAD}.jsonl",
+        [meta(THREAD, str(d)), typed("placeholder chosen", "m1"), counted(1_000, 10_000)],
+    )
+    checkpoint(d, "manual", codex=True, khive=TaskKhive([TASK]))  # the take the status is of
+    taken = path.stat()
+    step, changed = getattr(cx, after), []
+
+    def change_after_the_step(*a, **k):
+        done = step(*a, **k)
+        if not changed:
+            changed.append(1)
+            cwd = "/work/elsewhere" if elsewhere else str(d)
+            write(path, [meta(OTHER, cwd, thread_source=owner), counted(9_000, 10_000)])
+            # its time put back: only its first row says it changed after the take
+            os.utime(path, ns=(taken.st_atime_ns, taken.st_mtime_ns))
+        return done
+
+    monkeypatch.setattr(cx, after, change_after_the_step)
+    named = ["--session", THREAD] if after == "rollout_of" else []
+    main(["context", "status", "--dir", str(d), "--codex", *named])
+    now = json.loads(capsys.readouterr().out)
+    assert changed
+    if used is None:  # not known, and stale: never another thread's figure
+        assert now["context_now"] == {"used": None, "window": None, "pct": None} and now["stale"] is True
+        return
+    # the control: a file put back to its time at the take reads fresh, so the stale above is the check's
+    assert (
+        now["context_now"] == {"used": used, "window": 10_000, "pct": used // 100} and now["stale"] is False
+    )
+
+
 def test_a_session_meta_after_the_first_row_is_never_the_threads_own(tmp_path, monkeypatch, capsys):
     import lion_cli.context as cli
 
