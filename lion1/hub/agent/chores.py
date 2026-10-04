@@ -34,15 +34,17 @@ whatever the actor's own config adds.
 
 from __future__ import annotations
 
+import calendar
 import dataclasses
 import json
+import math
 import re
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -121,8 +123,10 @@ class Check(BaseModel):
 
 class Digest(BaseModel):
     """Tell the owner what the ledger holds for one day: one line per chore, every chore, MISSING
-    for a chore with a period that did not run, and `on ask: no run` for a chore run only on an ask
-    that did not run."""
+    for a chore with a period and no run within one period and the store's fire grace before the
+    digest's moment (a chore that has not run yet, only past its first due and the grace), `not judged`
+    for a cron chore and for a ledger that cannot be read, and `on ask: no run` for a chore run only on an
+    ask that did not run."""
 
     day: str | None = Field(default=None, description="YYYY-MM-DD; default today")
 
@@ -387,10 +391,11 @@ class Chores:
                         msg, thread = str(sent.get("id")), str(sent.get("thread_id") or sent.get("id"))
                 except AgentError as e:
                     undelivered.append(f"{to}: {e}")
+            ts = time.time()  # one read: the row's label is that instant's, so the two name one day
             self._append(
                 {
-                    "at": _now(),
-                    "ts": time.time(),  # the instant; `at` is the local label, twice in a repeated hour
+                    "at": _now(ts),
+                    "ts": ts,  # the instant; `at` is its local label, twice in a repeated hour
                     "chore": req.chore,
                     "args": req.args,
                     "findings": list(out.findings),
@@ -510,21 +515,133 @@ class Chores:
         return f"instrument dead after {len(streak)} unanswered run(s), told {sent}"
 
     async def digest(self, day: str | None, run: Run) -> str:
-        day = day or _now()[:10]
-        rows = [r for r in self.rows() if r["at"].startswith(day)]
+        now = self.agent.clock()
+        day = day or time.strftime("%Y-%m-%d", time.localtime(now))
+        named = datetime.strptime(day, "%Y-%m-%d")
+        day = named.date().isoformat()  # padded as a ledger label opens: `2026-9-4` is `2026-09-04`
+        # the moment a chore is judged at: now, or the next midnight for a past day the digest was asked about
+        end = (named + timedelta(days=1)).timestamp()
+        moment, ended = min(now, end), end <= now
+        try:  # a ledger unreadable or torn judges nothing: a missing subject is not an empty one. An absent
+            # file is an empty ledger: an agent whose chores have not run has not written one
+            ledger, unread = self.rows(), ""
+            # a row the judgment below cannot read judges nothing either: skipped, its run would read missing
+            for r in ledger:
+                row = r if isinstance(r, dict) else {}
+                usable = {  # each field the digest reads from a row, and whether it is one it can use
+                    "chore": isinstance(row.get("chore"), str) and bool(row["chore"].strip()),
+                    "at": isinstance(row.get("at"), str) and _is_label(row["at"]),
+                    # a row from before rows carried `ts` has none; one that has it holds a number to read
+                    "ts": "ts" not in row or _is_number(row["ts"]),
+                    "findings": isinstance(row.get("findings"), list)
+                    and all(isinstance(f, str) for f in row["findings"]),
+                    "control": isinstance(row.get("control"), bool),
+                    "escalate": isinstance(row.get("escalate"), bool),
+                    # a row from before the field has none, and its control says
+                    "answered": "answered" not in row or isinstance(row["answered"], bool),
+                }
+                if not all(usable.values()):
+                    bad = ", ".join(k for k, ok in usable.items() if not ok)
+                    raise ValueError(f"a ledger row has no usable {bad}: {str(r)[:80]}")
+                # a count must be a time the digest can step from, on the day the label it selects by names
+                t = _epoch(r)
+                if not 0 <= t < _TIME_END:
+                    raise ValueError(f"a ledger row's time is no instant the digest counts: {str(r)[:80]}")
+                if time.strftime("%Y-%m-%d", time.localtime(t)) != row["at"][:10]:
+                    raise ValueError(f"a ledger row's `at` and `ts` name different days: {str(r)[:80]}")
+        except (OSError, ValueError, OverflowError) as e:
+            ledger, unread = [], f"{type(e).__name__}: {e}"
+        rows = [r for r in ledger if r["at"].startswith(day)]
+        firsts = {  # chore -> the instant its tick first came due; a value that is no instant is no record
+            k: t for k, v in _val(self.agent.state, "first_due", {}).items() if (t := _instant(v)) is not None
+        }
         actor = self.owner
+        # the pending ticks' firings: read once, and only if a chore needs one (`ensure_ticks` reads the same)
+        pending: dict[Any, list[float]] | None = None
+        short, agenda_error = None, ""
         lines = [
-            f"[chores digest {day}] {self.agent.khive.actor}: {len(rows)} check(s); "
-            "a MISSING line is the finding"
+            f"[chores digest {day}] {self.agent.khive.actor}: "
+            + (f"ledger unreadable ({unread})" if unread else f"{len(rows)} check(s)")
+            + "; a MISSING line is the finding"
         ]
         for name in sorted(self.instruments):
+            every = self.instruments[name].every
             mine = [r for r in rows if r["chore"] == name]
-            if not mine and self.instruments[name].every is None:  # runs only when asked, so never due
-                lines.append(f"{actor} {name} on ask: no run")
+            if unread:
+                lines.append(f"{actor} {name} not judged: ledger unreadable")
                 continue
-            if not mine:
-                lines.append(f"MISSING: {name}")
+            # a cron is not judged: no parser here says when it is next due
+            cron = bool(every) and every not in _NAMED and _EVERY.fullmatch(every) is None
+            if not mine and (not every or cron):  # runs only when asked (no tick), so never due; or a cron
+                lines.append(f"{actor} {name} " + ("not judged: cron" if cron else "on ask: no run"))
                 continue
+            if every and not cron:  # judged against one period before the moment
+                # a past day is judged before its next midnight: a run stamped at it is the next day's
+                ran = [
+                    r
+                    for r in ledger
+                    if r["chore"] == name and (_epoch(r) < moment if ended else _epoch(r) <= moment)
+                ]
+                latest = max(ran, key=_epoch, default=None)
+                # a run without `ts` in the hour a clock change repeats names two instants: while one of them
+                # may be the last run, or fall either side of the moment, the period is unknown
+                if any(
+                    two[0] <= moment and (two[1] >= moment or two[1] >= _epoch(latest))
+                    for r in ledger
+                    if r["chore"] == name and (two := _readings(r)) is not None
+                ):
+                    lines.append(
+                        f"{actor} {name} not judged: a run without `ts` names an hour the clock repeats"
+                    )
+                    continue
+                first = firsts.get(name)
+                if latest is None:  # no run is missing only once its first due and the grace are past
+                    ticked = True
+                    if first is None:  # none on record: the tick's pending row gives it, read and not kept
+                        if pending is None and not agenda_error:
+                            try:  # a failed read judges each chore that needs it, and the digest goes out
+                                pending, short = await self._pending_firsts(now)
+                            except Exception as e:
+                                agenda_error = f"{type(e).__name__}: {e}"
+                        fires = (pending or {}).get(f"tick: {name}")
+                        if agenda_error or short:  # a row past the read's reach may give an earlier first due
+                            reason = f"agenda unreadable: {agenda_error}" if agenda_error else short
+                            lines.append(f"{actor} {name} not judged: {reason}")
+                            continue
+                        if fires and None in fires:  # a row naming no instant may be the earliest firing
+                            lines.append(f"{actor} {name} not judged: a pending tick row names no first due")
+                            continue
+                        first, ticked = (min(fires) if fires else None), fires is not None
+                    if first is not None and moment <= first + _FIRE_GRACE_S:
+                        lines.append(f"{actor} {name} no run yet, first due by {_now(first)}")
+                    else:
+                        lines.append(
+                            f"MISSING: {name}, no run recorded"
+                            + (f", first due by {_now(first)}" if first is not None else "")
+                            + ("" if ticked else ", no tick pending")
+                        )
+                    continue
+                if every == "monthly":  # a calendar month in UTC, as the store counts its monthly repeat
+                    t = datetime.fromtimestamp(_epoch(latest), UTC)
+                    y, m = divmod(t.year * 12 + t.month, 12)
+                    end = calendar.monthrange(y, m + 1)[1]
+                    if first is not None:  # the next month's anchor day: the first due's UTC day, clamped
+                        a = datetime.fromtimestamp(first, UTC)  # to that month's last, at its time of day
+                        due = a.replace(year=y, month=m + 1, day=min(a.day, end)).timestamp()
+                    else:
+                        # no first due on record: a run on its month's last day is due by the next
+                        # month's last (Jan 31, Feb 28, Mar 31)
+                        d = end if t.day == calendar.monthrange(t.year, t.month)[1] else min(t.day, end)
+                        due = t.replace(year=y, month=m + 1, day=d).timestamp()
+                else:
+                    due = _epoch(latest) + period_s(every)
+                since = f"last run {latest['at']}, due by {_now(due)}"
+                if moment > due + _FIRE_GRACE_S:
+                    lines.append(f"MISSING: {name}, {since}")
+                    continue
+                if not mine:
+                    lines.append(f"{actor} {name} not due: {since}")
+                    continue
             last = mine[-1]
             if not last["control"]:
                 state = f"instrument-failed:{name}"
@@ -544,6 +661,8 @@ class Chores:
             )
             if last["findings"]:
                 clause += f"; last: {last['findings'][0][:80]}"
+            if cron:
+                clause += "; not judged: cron"
             lines.append(f"{actor} {name} {last['at'][11:16]} {state} {clause}")
         spend = _val(self.agent.state, "spend", {})
         if spend.get("day") == day:  # the cost of the day, the number the actor's question is about
@@ -581,6 +700,7 @@ class Chores:
         async with self._aging:
             now, done, rows = time.time(), set(_val(self.agent.state, "aged_sent", [])), self.rows()
             due: list[tuple[dict, float, str]] = []
+            uncounted: list[dict] = []  # reports whose time is no instant to age from: named, never aged
             for r in rows:
                 if not r.get("msg") or not r["findings"] or self.steward in (r.get("sent_to") or []):
                     continue  # only reports the owner alone received; the steward has the rest already
@@ -591,7 +711,10 @@ class Chores:
                     continue
                 inst = self.instruments.get(r["chore"])
                 period = period_s(inst.every if inst else None)
-                age = now - _epoch(r)
+                if (t := _countable(r)) is None:
+                    uncounted.append(r)
+                    continue
+                age = now - t
                 if age < self.aged_after * period:
                     continue
                 acked, how = await self._acknowledged(r)
@@ -622,37 +745,105 @@ class Chores:
             # a marker lives as long as the ledger row it covers: no count of reports lets one be told twice
             live = {_aged_key(r) for r in rows}
             self.agent.state.put("aged_sent", sorted(done & live), run=run.id, seq=run.record.seq)
-            return f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
+            said = f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
+            if uncounted:
+                said += (
+                    f"; {len(uncounted)} report(s) not aged, their time is no instant to count from: "
+                    + ", ".join(f"{r['chore']} {r.get('at')!r}" for r in uncounted[:5])
+                )
+            return said
 
     # ticks
 
-    async def ensure_ticks(self, *, first_in_s: int = 60) -> list[str]:
+    async def ensure_ticks(self, *, first_in_s: int | None = None) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
-        a steward. Creates what is missing, returns what it created."""
-        (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
-        me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
-        pending = {
-            e.get("content")
-            for e in (agenda or {}).get("events", [])
-            if (e.get("properties") or {}).get("status", "pending") == "pending"
-            and (e.get("properties") or {}).get("created_by_actor") == me
-        }
+        a steward. Creates what is missing and returns what it created; after a short agenda read (capped or
+        stalled) it creates and records nothing, drops a record beside a row naming no instant, and names
+        each tick it left. A chore's first firing is kept
+        in the agent's state (`first_due`) for the digest: one on record stands, and where there is none the
+        tick's own firing is recorded when it was just made, else what its pending rows give
+        (`_first_firing`); a tick with a row naming no instant has none, and one on record is dropped."""
+        pending, short = await self._pending_firsts(self.agent.clock())
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
             wanted["tick: aged"] = self.aged_every
         wanted.update(self.extra_ticks)
-        created = []
-        at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + first_in_s))
-        for content, every in wanted.items():
-            if content in pending:
-                continue
-            await self.agent.khive.exec(
-                f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
+        # a row naming no instant may be the earliest firing: a tick with one has no first due on record,
+        # and one it had is dropped, from a short read too, since the row it saw stands; the digest reads
+        # the rows
+        blind = {c for c in self.instruments if None in pending.get(f"tick: {c}", ())}
+        firsts = _val(self.agent.state, "first_due", {})
+        if blind & firsts.keys():
+            self.agent.state.put(
+                "first_due", {k: v for k, v in firsts.items() if k not in blind}, run="-", seq=0
             )
-            created.append(content)
+        if short:  # a read that did not see every row says neither that a tick is absent nor its first due
+            return [f"{content}: not created, {short}" for content in wanted]
+        created = []
+        lead = _TICK_LEAD_S if first_in_s is None else first_in_s
+        for content, every in wanted.items():
+            fires = pending.get(content)
+            if fires is None:
+                # the clock is read for each call, so a row's stamp trails its own call's read alone
+                at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + lead))
+                await self.agent.khive.exec(
+                    f"schedule.remind(content={lit(content)}, at={lit(at)}, repeat={lit(every)})"
+                )
+                created.append(content)
+                fires = [_iso_epoch(at)]
+            chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
+            if chore not in self.instruments:
+                continue
+            if None in fires:  # its record was dropped above
+                continue
+            # a first due on record stands: a row cannot say what lead its tick was made with, so what it
+            # gives is no reason to lower one
+            if _instant(firsts.get(chore)) is None:
+                self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
         return created
+
+    async def _pending_firsts(self, now: float) -> tuple[dict[Any, list[float | None]], str | None]:
+        """content -> the first firing each of this actor's pending reminders' rows gives (`_first_firing`,
+        None for a row naming no instant), and why the read is short, if it is. The agenda answers at most
+        200 rows, earliest first, so while a page is full it is read again from its last row's `trigger_at`,
+        rows merged by id, up to 25 pages: a read ending on a full 25th page did not see every row
+        (`_CAPPED`). `from` is inclusive, so a full page of rows at one instant comes back whole on the
+        read after it: a full page that brings no new row is a stall, the read ends there, and the rows
+        past that instant are out of its reach. A read: it makes no reminder and records nothing, for
+        `ensure_ticks` and the digest alike."""
+        me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
+        pending: dict[Any, list[float | None]] = {}
+        seen: set[Any] = set()
+        after = ""
+        for _ in range(_AGENDA_PAGES):
+            (agenda,) = await self.agent.khive.exec(
+                f"schedule.agenda(limit={_AGENDA_PAGE}" + (f", from={lit(after)})" if after else ")")
+            )
+            events = agenda.get("events") if isinstance(agenda, dict) else None
+            if not isinstance(events, list):  # an answer that is no page is a failed read, not an empty one
+                raise ValueError(f"the agenda answer is no page: {str(agenda)[:80]}")
+            new = 0
+            for e in events:
+                if e["id"] in seen:  # the row a page ends on is the first of the next
+                    continue
+                seen.add(e["id"])
+                new += 1
+                p = e.get("properties") or {}
+                if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
+                    continue
+                pending.setdefault(e.get("content"), []).append(_first_firing(e, now))
+            if len(events) < _AGENDA_PAGE:
+                return pending, None
+            if not new:
+                return pending, f"the agenda read stalled at {after}: a full page of rows share that instant"
+            after = (events[-1].get("properties") or {}).get("trigger_at")
+            if not isinstance(after, str) or not after:
+                raise ValueError(
+                    f"a full agenda page ends at a row with no trigger_at: {str(events[-1])[:80]}"
+                )
+        return pending, _CAPPED
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
         """Once per run: the actor's own reminders khive marked missed (never fired) or failed, not
@@ -790,7 +981,11 @@ class Chores:
         return None
 
     async def _acknowledged(self, row: dict) -> tuple[bool, str]:
-        """Has the owner written on the report's thread since the report? Unreadable reads as no."""
+        """Has the owner written on the report's thread since the report, the instant the aged pass
+        counts from? Unreadable reads as no."""
+        since = _countable(row)
+        if since is None:
+            return False, "no instant to count from"
         thread = row.get("thread")
         if not thread:
             return False, "no thread recorded"
@@ -799,7 +994,6 @@ class Chores:
         except Exception as e:
             return False, f"thread unreadable: {type(e).__name__}: {e}"
         msgs = t.get("messages", []) if isinstance(t, dict) else []
-        since = _epoch(row)
         for m in msgs:
             if (
                 sender_of(m) == self.owner
@@ -869,18 +1063,29 @@ def sender_of(m: dict) -> str:
     return (m.get("properties") or {}).get("from_actor") or m.get("from") or "?"
 
 
+_EVERY = re.compile(r"every:(\d+)([smhd])")
+_NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
+_FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
+_TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the ceiling)
+_AGENDA_PAGE = 200  # the most rows one `schedule.agenda` read answers
+_AGENDA_PAGES = 25  # the pages one read of the agenda follows
+_CAPPED = f"the agenda read was capped at {_AGENDA_PAGE * _AGENDA_PAGES} rows"
+_TIME_END = datetime(9999, 1, 1, tzinfo=UTC).timestamp()  # a monthly chore steps a month past its last run
+
+
 def period_s(every: str | None) -> float:
-    """Seconds in one period of a khive repeat; a cron or nothing reads as a day."""
+    """Seconds in one period of a khive repeat, as the aged pass counts it; a cron or nothing reads as
+    a day. The digest judges a monthly chore by the calendar instead."""
     if not every:
         return 86400.0
-    m = re.fullmatch(r"every:(\d+)([smhd])", every)
+    m = _EVERY.fullmatch(every)
     if m:
         return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
-    return {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}.get(every, 86400.0)
+    return _NAMED.get(every, 86400.0)
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+def _now(t: float | None = None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
 
 
 def _aged_key(row: dict) -> str:
@@ -888,7 +1093,46 @@ def _aged_key(row: dict) -> str:
     two reports in the hour a clock change repeats are two markers."""
     ts = row.get("ts")
     key = f"{row['chore']}|{row['at']}"
-    return f"{key}|{ts:.6f}" if isinstance(ts, int | float) and not isinstance(ts, bool) else key
+    if not isinstance(ts, int | float) or isinstance(ts, bool):
+        return key
+    try:
+        return f"{key}|{ts:.6f}"
+    except OverflowError:  # an integer no float holds: `_countable` never ages that row
+        return key
+
+
+_LABEL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
+
+
+def _is_label(at: str) -> bool:
+    """`at` as `_now` writes it, in that form only (the digest selects a day by its first ten characters)
+    and naming a time that exists: it comes back from local time as itself, so the hour a clock change
+    skips names none, and a repeated hour names one. A year the digest cannot count names none either,
+    the same on every platform: some C libraries raise for it, others return an instant before 1970."""
+    try:
+        named = time.strptime(at, "%Y-%m-%d %H:%M:%S")
+        t = time.mktime(named)
+        back = time.localtime(t)[:6]
+    except (ValueError, OverflowError, OSError):
+        return False
+    return _LABEL.fullmatch(at) is not None and 0 <= t < _TIME_END and back == named[:6]
+
+
+def _is_number(v: Any) -> bool:
+    """A number that is no bool and no NaN or infinity, which a JSON line can spell."""
+    return (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and math.isfinite(v))
+
+
+def _instant(v: Any) -> float | None:
+    """A stored first due as an instant: a finite number, no bool, that a UTC date can name. Anything else is
+    none, to the digest that reads it and to `ensure_ticks` that keeps or replaces it."""
+    if not _is_number(v):
+        return None
+    try:
+        datetime.fromtimestamp(v, UTC)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return float(v)
 
 
 def _epoch(row: dict) -> float:
@@ -900,10 +1144,103 @@ def _epoch(row: dict) -> float:
     return time.mktime(time.strptime(row["at"], "%Y-%m-%d %H:%M:%S"))
 
 
+def _countable(row: dict) -> float | None:
+    """The row's instant as the digest counts one: its `at` a label `_is_label` admits, its `ts` a finite
+    number where it has one, and the time from 1970 to before `_TIME_END`, on the day the `at` names. A row
+    without `ts` in the hour a clock change repeats counts from the later of its two instants, so it ages
+    once both are old enough. None for any other row, on every platform alike."""
+    at = row.get("at")
+    if not isinstance(at, str) or not _is_label(at) or ("ts" in row and not _is_number(row["ts"])):
+        return None
+    try:
+        two = _readings(row)
+        t = two[1] if two else _epoch(row)
+    except OverflowError:  # an integer `ts` no float holds
+        return None
+    if not 0 <= t < _TIME_END or time.strftime("%Y-%m-%d", time.localtime(t)) != at[:10]:
+        return None
+    return t
+
+
+def _readings(row: dict) -> tuple[float, float] | None:
+    """The two instants a row without `ts` names when its local `at` is in the hour a clock change repeats,
+    earlier first; None for any other row."""
+    ts = row.get("ts")
+    if isinstance(ts, int | float) and not isinstance(ts, bool):
+        return None
+    named = time.strptime(row["at"], "%Y-%m-%d %H:%M:%S")
+    both = {time.mktime((*named[:8], dst)) for dst in (0, 1)}
+    both = {t for t in both if time.localtime(t)[:6] == named[:6]}
+    return (min(both), max(both)) if len(both) == 2 else None
+
+
 def _iso_epoch(iso: str | None) -> float:
     if not iso:
         return 0.0
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+def _months_before(t: datetime, n: int) -> datetime:
+    """`t` n calendar months earlier, its day clamped to that month's last, as the store clamps a month."""
+    y, m = divmod(t.year * 12 + t.month - 1 - n, 12)
+    return t.replace(year=y, month=m + 1, day=min(t.day, calendar.monthrange(y, m + 1)[1]))
+
+
+def _first_firing(row: dict, now: float) -> float | None:
+    """The first firing a pending reminder's row implies, or None when it names no instant. The store moves
+    `trigger_at` on to the next firing after each delivery and keeps the row pending, so it is no first
+    due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. Else
+    the first is the latest firing not after the ceiling of the row's creation (`created_at`, beside
+    `properties`): a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A
+    monthly firing on the last day of a month of fewer than 31 days may be a clamped later day: that month's
+    latest day at the firing's time not after the ceiling, or the ceiling itself, an upper bound, when the
+    step-back is already after it. A row naming no creation instant, or a period that is not fixed (a cron),
+    gives its firing or now, if that is earlier."""
+    p = row.get("properties") or {}
+    repeat = p.get("repeat")
+    anchor = p.get("repeat_anchor") if repeat == "monthly" else None
+    when = anchor or p.get("trigger_at")
+    if not isinstance(when, str) or not when:
+        return None
+    try:
+        first = _iso_epoch(when)
+    except (ValueError, OverflowError):
+        return None
+    if anchor:
+        return first
+    made = row.get("created_at")
+    try:
+        born = _iso_epoch(made) if isinstance(made, str) and made else None
+    except (ValueError, OverflowError):
+        born = None
+    # no tick first fires after this: `ensure_ticks` fixes a first firing the lead after its own clock read,
+    # to the whole second, and the store stamps the row after that read, a second more for a whole-second
+    # stamp. The stamp trails the read by the call's latency, which has no bound: a period no longer than
+    # that latency and up to two seconds may recover whole periods late, and a longer custom lead, early.
+    ceiling = None if born is None else born + _TICK_LEAD_S + 1
+    if repeat == "monthly" and ceiling is not None:
+        try:
+            t, c = datetime.fromtimestamp(first, UTC), datetime.fromtimestamp(ceiling, UTC)
+        except (ValueError, OverflowError, OSError):
+            return min(first, now)
+        if t <= c:
+            return first
+        n = (t.year - c.year) * 12 + t.month - c.month  # months from the ceiling's month to the firing's
+        step = _months_before(t, n)
+        last = calendar.monthrange(t.year, t.month)[1]
+        clamped = t.day == last and last < 31  # the month's firing may be a later day, clamped to this one
+        if step > c:  # that month's firing is after the ceiling
+            return ceiling if clamped else _months_before(t, n + 1).timestamp()
+        if not clamped:
+            return step.timestamp()
+        # the latest day the firing may have been on, at its time of day, not after the ceiling
+        latest = c.replace(hour=t.hour, minute=t.minute, second=t.second, microsecond=t.microsecond)
+        return (latest - timedelta(days=1) if latest > c else latest).timestamp()
+    fixed = isinstance(repeat, str) and (repeat in _NAMED or _EVERY.fullmatch(repeat) is not None)
+    period = period_s(repeat) if fixed else 0.0
+    if ceiling is None or period <= 0:
+        return min(first, now)
+    return first - max(0.0, -((ceiling - first) // period)) * period
 
 
 def _val(store: Any, key: str, default: Any) -> Any:

@@ -365,10 +365,13 @@ a first figure. A call's usage is the thread's totals less the call before's (S2
   acts on it, never that the tool ran. A log written before reads started there, and the log's
   readers keep either as written
   (`test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`).
-- **S18**: The hook answers `allow` only for a tool the CLI's `--allowedTools` names exactly; any
-  other admitted call goes back with its input and no decision, for the CLI's own rules
-  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). The rule holds whether or not
-  the CLI would skip its own check of that list on an `allow`.
+- **S18**: The hook answers `allow` only for a tool `--allowedTools` names exactly; any other
+  admitted call goes back with its input and no decision, for the CLI's own rules
+  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). The rule is needed: in this
+  backend's `-p` call (no settings source, deny or ask rule, or permission-prompt tool), Claude Code
+  2.1.288 runs a tool outside `--allowedTools` when a hook answers `allow` for it, and denies it
+  given no decision. A probe hook measured this for built-in and MCP tools. The tests pin the hook's
+  answers only.
 - **S19**: On the subscription CLI's 0.156.1 release the flags alone made no chat completion (A2).
   Its model catalogue names a tool mode and a sub-agent version per model, and no flag removes the
   tools those give. With every flag set, gpt-6-luna listed a code-execution tool and six sub-agent

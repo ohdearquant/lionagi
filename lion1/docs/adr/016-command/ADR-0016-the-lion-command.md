@@ -62,7 +62,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | form | what it runs | what it writes |
 | ---- | ------------ | -------------- |
 | `lion agent --dir D` | the agent built from `D`, serving until interrupted | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
-| `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | what a wake writes; the record printed |
+| `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | the missing reminders first, none for a chair, and a failed agenda read raises there, before the wake (`test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for`); what a wake writes; the record printed |
 | `lion agent --dir D --check NAME` | one instrument, outside its chore | a landing file; no ledger row, nothing sent |
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
@@ -159,6 +159,9 @@ quotes each refusal, and fails when `ANTHROPIC_API_KEY` is set in the environmen
 inherits.
 
 - **Landing evidence**: `tests/test_agent.py`: `test_once_refuses_served_identity`,
+  `test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_is_not_missing`,
+  `test_a_once_wake_of_a_chair_makes_no_tick`,
+  `test_the_rerun_flag_takes_read_mail_through_one_wake_by_id`,
   `test_the_identity_is_a_lock_the_process_keeps_not_a_pid_it_wrote`,
   `test_serve_keeps_the_lock_its_process_already_claimed`,
   `test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key`.

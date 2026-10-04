@@ -1008,7 +1008,17 @@ def delay_connect(monkeypatch, seconds):
 
 
 def real_sh(
-    monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0, hold=False, census=None
+    monkeypatch,
+    argv,
+    *,
+    timeout,
+    cancels=0,
+    pause=0.0,
+    pidfile=None,
+    settle=5.0,
+    hold=False,
+    land=False,
+    census=None,
 ):
     """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
     BOUND; the seconds it took, counted from the first cancel, which comes `pause` seconds in, when
@@ -1016,14 +1026,14 @@ def real_sh(
     it started are closing; whether each was reaped). The last two are read the moment the call
     ended, before this helper cleans up after it: the descendant is then killed and each command is
     closed and killed. A command is recorded where its process comes to exist, before anything is
-    awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the
-    start of every command never connects its pipes, until the helper releases it: right after the census
-    below, or when the call is hung. A `census` dict is filled in the step in which the call returns, before
-    its caller's next turn: `tasks`, the coroutines still pending beside the call; `fds`, the descriptors
-    open that were not before it; `ends`, the parent's pipe ends of the commands started. It then has
-    `group`, the commands' process groups with a member left after `settle` seconds. With `hold` it is
-    finally filled with `released`, the fds and tasks once the held connection has run, which nothing in
-    the helper helps to close."""
+    awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the start of
+    every command never connects its pipes, until the helper releases it: right after the census below, or
+    when the call is hung, or with `land` once the cancels are in. A `census` dict is filled in the step in
+    which the call returns, before its caller's next turn: `tasks`, the coroutines still pending beside the
+    call; `fds`, the descriptors open that were not before it; `ends`, the parent's pipe ends of the commands
+    started. It then has `group`, the commands' process groups with a member left after `settle` seconds. With
+    `hold` it is finally filled with `released`, the fds and tasks once the held connection has run, which
+    nothing in the helper helps to close."""
     started = []
     before: set[int] = set()
     runner: list[asyncio.Task] = []  # this helper's own task, which waits beside the call
@@ -1074,6 +1084,8 @@ def real_sh(
         for _ in range(cancels):  # a second cancel lands while the first one's cleanup runs
             task.cancel()
             await asyncio.sleep(0.05)
+        if land:
+            gate.set()
         done, _ = await asyncio.wait([task], timeout=BOUND)
         took = time.monotonic() - t0
         pipes = [t._pipes.get(fd) for t in started for fd in (1, 2)]  # None: never connected
@@ -1155,12 +1167,13 @@ def test_a_cancel_after_the_timeout_while_the_start_connects_is_not_the_timeouts
     monkeypatch, tmp_path
 ):
     # the deadline passed while the start was held: the command and its group are ended once it has
-    # started, and the cancel that came in meanwhile is raised then
-    delay_connect(monkeypatch, 1.0)
+    # started, and the cancel that came in meanwhile is raised then. The start is held until the cancel is
+    # in, and the grace outlasts the test's bound, so no clock decides the order, however slow the machine
+    monkeypatch.setattr(instr, "_GRACE", BOUND)
     pidfile = tmp_path / "descendant.pid"
     argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
     got, took, left, closed, reaped = real_sh(
-        monkeypatch, argv, timeout=0.2, cancels=1, pause=0.3, pidfile=pidfile
+        monkeypatch, argv, timeout=0.2, cancels=1, pause=0.3, pidfile=pidfile, hold=True, land=True
     )
     assert got == "cancelled" and took < 3
     assert left is False and closed and reaped
@@ -2882,6 +2895,45 @@ def test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_c
         )
 
 
+@pytest.mark.parametrize("kind", ["directory", "link to a directory", "link to a file"])
+def test_verdict_freshness_a_candidate_is_a_regular_file_and_a_link_is_read_as_its_target(tmp_path, kind):
+    """A directory named like #7's newest verdict is no verdict, and neither is a link to one: the older
+    verdict beside it is #7's. A link to a regular file is that file, as the scheduled-job instrument reads
+    an artifact through a link."""
+    d, elsewhere = tmp_path / "verdicts", tmp_path / "elsewhere"
+    d.mkdir()
+    elsewhere.mkdir()
+    verdict(d, 7, OLD, head8="00000000", mtime=1000)
+    verdict(d, 8, OLD, head8="88888888", mtime=3000)  # the directory's newest parses
+    named = d / "o-r-7-77777777.json"
+    if kind == "directory":
+        named.mkdir()
+    elif kind == "link to a directory":
+        named.symlink_to(elsewhere)
+    else:
+        verdict(elsewhere, 7, HEAD7, head8="77777777", mtime=2000)
+        named.symlink_to(elsewhere / "o-r-7-77777777.json")
+    os.utime(named, (2000, 2000))  # through a link, its target's: #7's newest by mtime
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(d),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.control and [r["state"] for r in out.data] == [
+        "AT-HEAD" if kind == "link to a file" else "STALE"
+    ]
+    if kind == "link to a file":
+        assert out.findings == (f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {named}",)
+    else:
+        assert out.findings == (
+            f"o/r#7 77777777: STALE (verdict at 00000000), REQUEST-CHANGES, blocking 1; read json: "
+            f"{d}/o-r-7-00000000.json",
+        )
+
+
 def test_verdict_freshness_an_enumerator_without_a_total_line_failed(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"/x/my_open_prs.sh": (2, "", "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n")})
@@ -3299,6 +3351,211 @@ def test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_
     assert set(store.get("verdict-freshness").value) == {"o/r#7", "o/r#8", "o/r#9"}
     assert out_a.control and out_b.control
     assert len(out_b.findings) == 1 and out_b.findings[0].startswith("o/r#9 99999999: NEVER-REVIEWED")
+
+
+@pytest.mark.parametrize("which", ["pr-state", "worktrees", "required-contexts", "ci-red"])
+def test_the_runs_of_one_snapshot_instrument_go_one_at_a_time(tmp_path, which):
+    """As for `verdict-freshness`: run A takes its list before #9 opens and waits; run B starts and lists
+    #9. Left to overlap, B writes first and A, seeing #9 absent from its complete list, reports it gone and
+    drops it. The runs of one instrument go one at a time, so #9 is B's first sight, never A's closure."""
+    store = MemoryNoteStore()
+    if which == "worktrees":
+        key, gone, first = "worktree list --porcelain", "worktree gone", f"{tmp_path}/wt9: new worktree"
+        snapshot, rows = f"worktrees:{tmp_path}/main", {f"{tmp_path}/wt{n}" for n in (7, 8, 9)}
+
+        def listing(ns):
+            trees = ("main", *(f"wt{n}" for n in ns))
+            return "".join(f"worktree {tmp_path}/{t}\0HEAD abc\0branch refs/heads/{t}\0\0" for t in trees)
+
+        answers = {
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head": "[]",
+        }
+
+        def build(sh):
+            return Worktrees([f"{tmp_path}/main"], store, every=None, run=sh)
+
+    else:
+        key, snapshot, rows = "pr list -R o/r", f"{which}:o/r", {"7", "8", "9"}
+        gone, first = (
+            ("closed or merged", "o/r#9: first sight")
+            if which == "pr-state"
+            else ("no longer open", "o/r#9 ")
+        )
+        row = {
+            "pr-state": lambda n: {**PR, "number": n, "title": f"pr {n}"},
+            "required-contexts": lambda n: {"number": n, "headRefOid": SHA, "baseRefName": "main"},
+            "ci-red": lambda n: {"number": n, "headRefOid": SHA},
+        }[which]
+
+        def listing(ns):
+            return json.dumps([row(n) for n in ns])
+
+        answers = {
+            "pr-state": lambda: {"api repos/o/r --jq": "o/r\n", "actions/runs?head_sha=": RUNS},
+            "required-contexts": lambda: required_sh().answers,
+            "ci-red": lambda: ci_sh().answers,
+        }[which]()
+
+        def build(sh):
+            if which == "pr-state":
+                return PrState(["o/r"], store, every=None, run=sh)
+            return required(sh, state=store) if which == "required-contexts" else ci_red(sh, state=store)
+
+    async def both():
+        sh = LateList(key, **{**answers, key: listing((7, 8))})
+        inst = build(sh)
+        first_run = asyncio.create_task(inst.run({}))
+        await asyncio.wait_for(sh.began.wait(), 5)  # A holds the list it took
+        sh.set(key, listing((7, 8, 9)))  # #9 opens
+        second = asyncio.create_task(inst.run({}))
+        await asyncio.wait({second}, timeout=0)  # B goes as far as nothing holds it: to its end, unserialized
+        sh.release.set()
+        return await first_run, await second
+
+    out_a, out_b = asyncio.run(both())
+    assert [f for o in (out_a, out_b) for f in o.findings if gone in f] == []
+    assert set(store.get(snapshot).value) == rows
+    assert out_a.control and out_b.control
+    assert out_b.findings and all(f.startswith(first) for f in out_b.findings), out_b.findings
+
+
+async def overlap(paused, gate: LateList, other):
+    """Run `paused` into its gated read, run `other`, an instrument over the same store, to its end, then let
+    the read answer."""
+    first = asyncio.create_task(paused.run({}))
+    await asyncio.wait_for(gate.began.wait(), 5)
+    out_other = await other.run({})
+    gate.release.set()
+    return await first, out_other
+
+
+@pytest.mark.parametrize("moved", ["a PR closed", "a PR opened"])
+def test_pr_state_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(monkeypatch, moved):
+    """Run A begins on a snapshot of #7 and #8, finds #7 absent from its full page and waits on its own read
+    of #7; run B reads #7 closed (or open, beside a new #10) and writes. A's read of #7 then fails, so it
+    keeps the rows it holds that its page lacks: the snapshot's as it stands then, not the copy it began
+    with."""
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    store = MemoryNoteStore()
+
+    def answers(*ns):
+        return {
+            "api repos/o/r --jq": "o/r\n",
+            "pr list -R o/r": json.dumps([{**PR, "number": n, "title": f"pr {n}"} for n in ns]),
+            "actions/runs?head_sha=": RUNS,
+        }
+
+    asyncio.run(PrState(["o/r"], store, every=None, run=FakeSh(**answers(7, 8))).run({}))
+    closed = moved == "a PR closed"
+    b_sh = FakeSh(
+        **answers(8, 9 if closed else 10), **{"pr view 7 -R o/r": "CLOSED\n" if closed else "OPEN\n"}
+    )
+
+    async def both():
+        gate = LateList("pr view 7 -R o/r", **answers(8, 9))  # no answer for a view: each of A's views fails
+        a = PrState(["o/r"], store, every=None, run=gate)
+        return await overlap(a, gate, PrState(["o/r"], store, every=None, run=b_sh))
+
+    out_a, out_b = asyncio.run(both())
+    assert out_b.control and ("o/r#7: closed or merged" in out_b.findings) is closed
+    snap = store.get("pr-state:o/r").value
+    assert set(snap) == ({"8", "9"} if closed else {"7", "8", "9", "10"})  # a closed #7 is not written back
+    assert "o/r#7: closed or merged" not in out_a.findings
+
+
+def test_worktrees_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(tmp_path):
+    """Run A begins on a snapshot of `wt` and `old` and waits on its first read of `wt`; run B finds `old`
+    gone and writes. A's reads of `old` then fail, so it keeps that tree's row: the snapshot's as it stands
+    then, which holds no `old`, not the copy A began with."""
+    main, wt, old = (f"{tmp_path}/{t}" for t in ("main", "wt", "old"))
+
+    def porcelain(*trees):
+        return "".join(f"worktree {t}\0HEAD abc\0branch refs/heads/{t.rsplit('/', 1)[1]}\0\0" for t in trees)
+
+    read = {
+        "remote get-url origin": "https://github.com/o/r.git\n",
+        f"-C {wt} status --porcelain": "",
+        f"-C {wt} log -1": f"{int(time.time())}\n",
+        "pr list -R o/r --head wt": "[]",
+    }
+    store = MemoryNoteStore()
+    seed = FakeSh(
+        **read, **{"worktree list --porcelain": porcelain(main, wt, old), "status": "", "log -1": "1\n"}
+    )
+    seed.set("pr list -R o/r --head old", "[]")
+    assert asyncio.run(Worktrees([main], store, every=None, run=seed).run({})).control
+
+    async def both():
+        gate = LateList(
+            f"-C {wt} status --porcelain", **read, **{"worktree list --porcelain": porcelain(main, wt, old)}
+        )
+        a = Worktrees([main], store, every=None, run=gate)
+        b = Worktrees(
+            [main],
+            store,
+            every=None,
+            run=FakeSh(**read, **{"worktree list --porcelain": porcelain(main, wt)}),
+        )
+        return await overlap(a, gate, b)
+
+    out_a, out_b = asyncio.run(both())
+    assert out_b.control and out_b.findings == (f"{old}: worktree gone",)
+    assert (
+        not out_a.control and f"{old}: the status, log, PR read failed; the tree is unread" in out_a.findings
+    )
+    assert set(store.get(f"worktrees:{main}").value) == {wt}  # a gone tree is not written back
+
+
+@pytest.mark.parametrize("moved", ["a PR closed", "a PR opened"])
+def test_required_contexts_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(monkeypatch, moved):
+    """Run A lists #7 without its head beside #8, a full page, and waits on #8's head; run B finds #7 closed
+    (or opens #9) and writes. A keeps #7's row and the rows its full page lacks: the snapshot's as it stands
+    then, not the copy it began with."""
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    store = MemoryNoteStore()
+
+    def listing(*prs):
+        return json.dumps([{"number": n, "headRefOid": h, "baseRefName": "main"} for n, h in prs])
+
+    asyncio.run(required(required_sh(**{"pr list -R o/r": listing((7, SHA), (8, SHA))}), state=store).run({}))
+    now = ((8, SHA),) if moved == "a PR closed" else ((7, SHA), (8, SHA), (9, SHA))
+
+    async def both():
+        gate = LateList(
+            f"commits/{SHA}/status", **required_sh(**{"pr list -R o/r": listing((7, ""), (8, SHA))}).answers
+        )
+        b = required(required_sh(**{"pr list -R o/r": listing(*now)}), state=store)
+        return await overlap(required(gate, state=store), gate, b)
+
+    out_a, out_b = asyncio.run(both())
+    assert out_b.control and not out_a.control  # B read every head; A did not read #7's
+    snap = store.get("required-contexts:o/r").value
+    assert set(snap) == {str(n) for n, _ in now}  # what B wrote, whole
+    assert ("7" in snap) is (moved == "a PR opened")  # a closed #7 is not written back
+
+
+@pytest.mark.parametrize("moved", ["a PR closed", "a PR opened"])
+def test_ci_red_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(monkeypatch, moved):
+    """Run A lists #7 without its head beside #8, a full page, and waits on #8's runs; run B finds #7 closed
+    (or opens #9) and writes. A keeps #7's last red and the rows its full page lacks: the snapshot's as it
+    stands then, not the copy it began with."""
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    store = MemoryNoteStore()
+    asyncio.run(ci_red(ci_sh(prs=((7, SHA), (8, SHA))), state=store).run({}))
+    now = ((8, SHA),) if moved == "a PR closed" else ((7, SHA), (8, SHA), (9, SHA))
+
+    async def both():
+        gate = LateList(f"actions/runs?head_sha={SHA}", **ci_sh(prs=((7, ""), (8, SHA))).answers)
+        return await overlap(ci_red(gate, state=store), gate, ci_red(ci_sh(prs=now), state=store))
+
+    out_a, out_b = asyncio.run(both())
+    assert out_b.control and not out_a.control  # B read every head; A did not read #7's
+    snap = store.get("ci-red:o/r").value
+    assert set(snap) == {str(n) for n, _ in now}  # what B wrote, whole
+    assert ("7" in snap) is (moved == "a PR opened")  # a closed #7 is not written back
 
 
 WORKFLOW_IDS = {"ci": 501, "lint": 502, "docs": 503, "bench": 504}
