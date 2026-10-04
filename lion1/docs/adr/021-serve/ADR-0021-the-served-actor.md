@@ -1,7 +1,7 @@
 ---
 adr: ADR-0021
 status: proposed
-liveness: unimplemented
+liveness: operating (the service, its logs, the transport over real loopback sockets and the example are pinned by tests, and each mechanism S1 names turned a named test red)
 date: "2026-10-02"
 area: serve
 kind: new
@@ -71,7 +71,7 @@ run, and no client. Source: `lionagi/actor.py` (`run`, `Run.inbox`, `Run.interru
 
 ## Claims
 
-### C1: A client starts only what the owner offered _(enforced: mechanical; owed, S1)_ ^c1
+### C1: A client starts only what the owner offered _(enforced: mechanical)_ ^c1
 
 - **Subject**: every run a client starts.
 - **Violated when**: a start names a profile not offered; carries a prompt, a class, a callable, an
@@ -87,7 +87,7 @@ A client's bound is the run's starting bound, at or below what the template reso
 that resolves to none takes any value in range (S12). A start past the service's count of live runs
 is refused. An offer is fixed when it is made (D1).
 
-### C2: A served run is the run `Actor.run` makes _(enforced: mechanical; owed, S1)_ ^c2
+### C2: A served run is the run `Actor.run` makes _(enforced: mechanical)_ ^c2
 
 - **Subject**: every served run's record, outcome and events.
 - **Violated when**: a record through the service differs from the one `Actor.run` gives for the
@@ -100,7 +100,7 @@ and the log reserved for it is removed; a cancel before then keeps it, aborted (
 state says how the run ended. Departures: a log that stops its run (C8), and `run.waiting`, the
 service's own event (D4). Rows and events are per run as far as ids differ (S11).
 
-### C3: A row is published complete, once, in order _(enforced: mechanical; owed, S1)_ ^c3
+### C3: A row is published complete, once, in order _(enforced: mechanical)_ ^c3
 
 - **Subject**: every row a record read returns or a stream carries.
 - **Violated when**: a published row differs from the record's row at the run's end; a row arrives
@@ -113,7 +113,7 @@ emitted, with or without rows.
 
 Each subscriber has a queue bounded in frames. One that overflows is closed and never waited for.
 
-### C4: A stream opens with the state, so a late client still learns the end _(enforced: mechanical; owed, S1)_ ^c4
+### C4: A stream opens with the state, so a late client still learns the end _(enforced: mechanical)_ ^c4
 
 - **Subject**: every stream and every state.
 - **Violated when**: a stream's first frame is not the state (on the stream of every run, the `runs`
@@ -129,7 +129,7 @@ final state, and close; the stream of every run takes the same and stays open. R
 after its first frame, a client has every row of a kept run (C14). Earlier bus events are not
 replayed (A4). A closed stream is resumed by subscribing again.
 
-### C5: Input is queued on the run it names, and the state says what was taken _(enforced: mechanical; owed, S1)_ ^c5
+### C5: Input is queued on the run it names, and the state says what was taken _(enforced: mechanical)_ ^c5
 
 - **Subject**: every input a client sends.
 - **Violated when**: an input lands on another run, on the actor's shared inbox or on an ended run;
@@ -142,7 +142,7 @@ waiting run in the same step. The run takes it at its next round as INPUT
 and the state lists the handles queued and not yet taken. A repeated `once` key returns the first
 answer.
 
-### C6: Interrupt, stop and cancel are the runtime's own, and so is the outcome _(enforced: mechanical; owed, S1)_ ^c6
+### C6: Interrupt, stop and cancel are the runtime's own, and so is the outcome _(enforced: mechanical)_ ^c6
 
 - **Subject**: the three controls on a live served run.
 - **Violated when**: an interrupt ends a run; a stop leaves a run waiting; a stop or a cancel
@@ -160,7 +160,7 @@ Cancel cancels the task: before the terminal commit an abort with no outcome
 ([[ADR-0020-the-experience#^c5|ADR-0020/C5]]). A cancel with an interrupt is the cancel
 ([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
 
-### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical; owed, S1)_ ^c7
+### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical)_ ^c7
 
 - **Subject**: a service started with a directory.
 - **Violated when**: a row is streamed that the log lacks; a log is created over an existing file;
@@ -176,7 +176,7 @@ A start naming an earlier run replays that log's entries as `history`
 one without as cut short, latched or not: read whole, it may hold one row no client was sent (S14).
 A file without a whole `SERVE` row is not listed. Without a directory a resume is refused.
 
-### C8: A log that cannot be written stops its run and is never written again _(enforced: mechanical; owed, S1)_ ^c8
+### C8: A log that cannot be written stops its run and is never written again _(enforced: mechanical)_ ^c8
 
 - **Subject**: a log file that cannot be created, and an append that fails.
 - **Violated when**: a row past a failed append is served; anything, the `END` row included, is
@@ -192,7 +192,7 @@ The run is stopped (C6) and its state names the failure. A failure at a `round.s
 round's stop check, so its backend call still goes out, and an output its turn makes accepted ends
 the run `Success`.
 
-### C9: The transport answers this machine's loopback only _(enforced: mechanical; owed, S1)_ ^c9
+### C9: The transport answers this machine's loopback only _(enforced: mechanical)_ ^c9
 
 - **Subject**: every connection to the HTTP transport.
 - **Violated when**: a bind off loopback succeeds; a peer off loopback is answered; a request whose
@@ -207,7 +207,7 @@ then that an Origin, when present, is `http://` followed by one of them. A POST 
 This admits any process on the machine that can open the port. There is no token, and the checks
 stop a web page while identifying no client (S3).
 
-### C10: One request per connection, in one strict form _(enforced: mechanical; owed, S1)_ ^c10
+### C10: One request per connection, in one strict form _(enforced: mechanical)_ ^c10
 
 - **Subject**: every request the transport reads.
 - **Violated when**: a request D8's table refuses is dispatched; a request is dispatched on the
@@ -222,7 +222,7 @@ request, however its bytes arrive.
 A plain response carries its length, and a stream ends when the connection closes. Connections and
 subscribers are capped, and one past the cap is refused.
 
-### C11: Ending the service ends everything it started _(enforced: mechanical; owed, S1)_ ^c11
+### C11: Ending the service ends everything it started _(enforced: mechanical)_ ^c11
 
 - **Subject**: `serve` returning, by cancellation or by an error.
 - **Violated when**: after it returns a request is answered; a connection, stream or ping task is
@@ -238,13 +238,13 @@ Cancellation is cooperative. A handler that will not yield holds the return, and
 not kill it (S6). The core does not wait for a slow experience store
 ([[ADR-0020-the-experience|ADR-0020]] S3), which may still be finishing when `serve` returns.
 
-### C12: The core gains no dependency and imports no provider _(enforced: mechanical; owed, S1)_ ^c12
+### C12: The core gains no dependency and imports no provider _(enforced: mechanical)_ ^c12
 
 - **Subject**: `lionagi/serve.py` and the package's dependency list.
 - **Violated when**: the module imports anything but the standard library, pydantic with its core
   and `lionagi`, or the dependency list changes.
 
-### C13: The card tells a client what the model is told, and nothing of the prompt _(enforced: mechanical; owed, S1)_ ^c13
+### C13: The card tells a client what the model is told, and nothing of the prompt _(enforced: mechanical)_ ^c13
 
 - **Subject**: the card.
 - **Violated when**: it lists a command the offer's profile lacks, a schema differs from the Spec's
@@ -256,7 +256,7 @@ Per offer the card holds the profile's name and language, each command of the pr
 privileges, each output's name and schema, the resolved bounds, and whether its runs are
 conversations. It names the actor and protocol version 1.
 
-### C14: What the service holds is bounded in count, and a run it no longer holds says so _(enforced: mechanical; owed, S1)_ ^c14
+### C14: What the service holds is bounded in count, and a run it no longer holds says so _(enforced: mechanical)_ ^c14
 
 - **Subject**: ended runs kept in memory, inputs queued on a run, and frames queued for a
   subscriber.
@@ -272,7 +272,7 @@ and a client starts over from what it holds.
 A run holds at most 64 inputs not yet taken, and one more is refused. The bounds are counts, and a
 row's size is not bounded (S16).
 
-### C15: A conversation waits for input, and `end` closes it _(enforced: mechanical; owed, S1)_ ^c15
+### C15: A conversation waits for input, and `end` closes it _(enforced: mechanical)_ ^c15
 
 - **Subject**: every run of an offer made as a conversation, and `end`.
 - **Violated when**: input is accepted after a run's `end`; an `end` leaves a run waiting; an `end`
@@ -299,8 +299,10 @@ the stores the profile names and the callbacks a request carries stay the caller
 `Service.card()` builds the card from `Actor.subset` and `model_json_schema`. `entry_row` and
 `load_log` move from `hub/chat.py` to `lionagi/checkpoint.py`, and the hub imports them.
 
-- **Landing evidence**: owed: `tests/test_serve.py` for the card against the model's own guidance,
-  the import boundary and the dependency list.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_prompt`,
+  `test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused_by_name`,
+  `test_serve_imports_the_standard_library_pydantic_and_lionagi_only_and_adds_no_dependency`.
 
 ### D2: `Service.start` checks, reserves an id and a log, then reads the run from the bus ^d2
 
@@ -320,8 +322,15 @@ run began, was refused or was cancelled first (D6); a refusal after the reservat
 | `resume` | string | 16 lowercase hex digits; the log of a run that ended or was cut short |
 | `once` | string | 1 to 64 characters of letters, digits, `.`, `_` and `-` |
 
-- **Landing evidence**: owed: the parity test of C2, a refusal per row of the table with no file
-  left, two starts in one loop turn, a start over an existing log, a history that does not replay.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_a_served_run_records_what_actor_run_records_for_the_same_request`,
+  `test_a_start_outside_the_table_is_refused_whole_before_an_id_or_a_log_is_reserved`,
+  `test_a_start_at_or_below_the_offers_bounds_runs_there_and_a_null_bound_takes_the_offers`,
+  `test_a_start_past_the_live_count_is_refused_and_the_next_after_an_end_is_not`,
+  `test_two_starts_in_one_loop_turn_reserve_two_ids_and_two_logs`,
+  `test_a_start_over_an_existing_log_is_refused_and_the_draw_skips_every_id_in_use`,
+  `test_a_start_actor_run_refuses_is_refused_with_its_reason_and_leaves_no_run_log_or_key`,
+  `test_a_serve_row_that_cannot_be_written_is_log_failed_and_leaves_no_file_run_or_key`.
 
 ### D3: One publisher per run, called at the publishing points ^d3
 
@@ -332,9 +341,11 @@ and `run.completed` call it, as do the service's `wait` and the task's end. A wr
 raises latches the log: the file is closed, the cursor stays, the state takes the failure, the run
 is stopped, and later calls publish nothing.
 
-- **Landing evidence**: owed: a recall and a fold in round one across record, log and stream; order
-  and once-only; an overflow; a short write, a failed flush, a failed first and later
-  `round.started` under both backend kinds, and calls after the latch.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_a_recall_and_a_fold_in_round_one_are_whole_on_the_row_the_log_the_read_and_the_stream`,
+  `test_rows_reach_the_log_the_record_read_and_every_stream_once_in_order_as_the_record_has_them`,
+  `test_a_stream_that_overflows_is_closed_never_waited_for_and_a_new_one_opens_with_the_state`,
+  `test_a_failed_append_latches_the_log_stops_the_run_and_nothing_is_served_or_written_after_it`.
 
 ### D4: The reads: `state`, `record` and `events` ^d4
 
@@ -345,8 +356,11 @@ run's end puts the last rows, the final state and a close on its own streams' qu
 `END` row; the stream of every run takes them too and stays open. The service's `wait` emits
 `run.waiting`.
 
-- **Landing evidence**: owed: a run that ends before its stream opens, a subscription racing the
-  end, an abort, a second subscription after an overflow, a read between two pages of a dropped run.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_a_stream_opened_after_the_end_is_the_final_state_and_one_racing_the_end_takes_the_rest`,
+  `test_an_aborted_run_closes_its_stream_with_a_final_state_naming_the_error_and_no_outcome`,
+  `test_a_stream_that_overflows_is_closed_never_waited_for_and_a_new_one_opens_with_the_state`,
+  `test_an_ended_run_past_keep_is_dropped_oldest_first_and_a_read_between_two_pages_says_so`.
 
 ### D5: `say`, `end` and the service's `wait` ^d5
 
@@ -357,9 +371,13 @@ alias (S19), sets the wake event, returns the handle. `end(id)` sets the ended f
 flag is set, read first; true when the inbox holds input; else it clears the wake event, checks
 again and sleeps on it.
 
-- **Landing evidence**: owed: input mid-round, before a wait and at the end; `end` while waiting,
-  mid-call, during command rounds, a retry and the first round, with input queued; a wake that finds
-  nothing; the 65th input.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_input_mid_round_waits_for_the_next_round_and_input_never_taken_is_listed_at_the_end`,
+  `test_input_lands_on_the_run_it_names_and_never_on_the_actors_shared_inbox`,
+  `test_input_outside_its_form_is_refused_and_nothing_is_queued`,
+  `test_end_closes_a_conversation_at_its_next_wait_wherever_it_lands`,
+  `test_end_is_refused_on_a_run_no_conversation_and_a_wake_that_finds_nothing_sleeps_again`,
+  `test_a_second_end_while_the_run_is_live_answers_its_state_and_sends_no_frame`.
 
 ### D6: `interrupt`, `stop` and `cancel` ^d6
 
@@ -370,8 +388,13 @@ between, then calls `Run.interrupt`. `cancel(id)` cancels the task and awaits it
 that is the reserved task, aborted with no runtime id. Each answers the state. An ended run refuses
 all three, a starting run all but `cancel`.
 
-- **Landing evidence**: owed: stop while waiting, mid-call, during a command and after an accepted
-  output; cancel before the commit and during it; cancel with an interrupt in both orders.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_stop_ends_a_run_stopped_at_its_next_round_unless_it_ended_first`,
+  `test_an_interrupt_cuts_the_call_in_flight_and_the_run_goes_on_or_waits_for_input`,
+  `test_an_interrupt_with_no_call_in_flight_cuts_nothing`,
+  `test_a_cancel_before_the_commit_is_an_abort_with_no_outcome_even_with_an_interrupt`,
+  `test_a_cancel_during_the_terminal_commit_keeps_the_outcome_and_writes_the_closure`,
+  `test_a_starting_run_takes_a_cancel_only_and_ends_aborted_with_no_runtime_id`.
 
 ### D7: The log's `SERVE` and `END` rows ^d7
 
@@ -381,17 +404,20 @@ task cancelled before its first step gets one in phase `aborted`. `entry_of` ski
 given a `torn` list, drops a last line that is not JSON as a cut write; one with lines after it
 makes the log unreadable. The listing after a restart reads each log's first and last line.
 
-- **Landing evidence**: owed: a resumed run aborting after an ancestor that succeeded, a cut `END`
-  row, a file with no whole `SERVE` row, a resume id that is a path, a dropped run's untaken input,
-  and a latched log after a restart.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_a_resume_replays_a_stored_runs_log_and_a_restart_reads_each_log_by_its_own_end_row`,
+  `test_after_a_restart_the_newest_logs_are_kept_by_end_row_and_one_without_a_serve_row_is_not`,
+  `test_a_resume_names_a_stored_runs_id_and_one_whose_log_cannot_be_replayed_is_refused`,
+  `test_a_dropped_run_reads_whole_from_its_log_and_one_whose_log_failed_is_gone_until_a_restart`,
+  `test_a_run_cancelled_while_starting_whose_end_row_fails_is_latched_and_stopped`.
 
 ### D8: The HTTP transport on `asyncio.start_server` ^d8
 
-Serves C9 and C10. `Service.serve(host="127.0.0.1", port=8710, grace=10.0)` runs until cancelled and
-reports the address it bound; a port of 0 takes a free one, and a `host` outside loopback is refused
-with `ValueError` before any bind (C9). The head is read to its blank line under the cap, checked
-against the second table, and only then parsed by `http.client.parse_headers`; a parsed message with
-a defect is refused.
+Serves C9 and C10. `Service.serve(host="127.0.0.1", port=8710, grace=10.0, *, ready=None)` runs
+until cancelled and reports the address it bound to `ready`; a port of 0 takes a free one, and a
+`host` outside loopback is refused with `ValueError` before any bind (C9). The head is read to its
+blank line under the cap, checked against the second table, and only then parsed by
+`http.client.parse_headers`; a parsed message with a defect is refused.
 
 | method and path | does | answers |
 | --------------- | ---- | ------- |
@@ -416,9 +442,14 @@ a defect is refused.
 | body | a POST's is exactly Content-Length bytes of UTF-8 holding one JSON object, at most 1 MiB; a GET with a Content-Length other than 0 is refused |
 | head | at most 16 KiB |
 
-- **Landing evidence**: owed: each row of the second table and each refusal of C9 over real loopback
-  sockets, raw requests sent whole and in pieces; the off-loopback peer with its address substituted
-  at the check; an off-loopback `host` refused before any bind.
+- **Landing evidence**: `tests/test_serve_http.py`:
+  `test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched`,
+  `test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused`,
+  `test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive`,
+  `test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route`,
+  `test_a_peer_off_loopback_is_forbidden_before_any_byte_of_its_request_is_read`,
+  `test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind`,
+  `test_a_request_not_whole_by_the_deadline_is_answered_timeout_however_its_bytes_arrive`.
 
 ### D9: Shapes, frames and errors ^d9
 
@@ -479,19 +510,31 @@ breaks a client raises the card's protocol version.
 | `log_failed` | 500 | a log that could not be created |
 | `busy` | 503 | connections or subscribers past the cap, or the service ending |
 
-- **Landing evidence**: owed: the example of D11, written against D8 and D9 alone, a table-driven
-  request per body and per code, and every outcome kind projected.
+- **Landing evidence**: `tests/test_serve_http.py`:
+  `test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives`,
+  `test_each_code_is_answered_with_its_status_and_a_reason`,
+  `test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused`; `tests/test_serve.py`:
+  `test_every_outcome_kind_is_projected_with_its_own_fields_and_the_output_beside_it`,
+  `test_a_value_json_cannot_hold_is_carried_by_its_repr_and_never_as_the_object`; and the example of
+  D11.
 
 ### D10: `Actor.serve`, and the order of shutdown ^d10
 
 Serves C11. `Actor.serve(profile, backend, **options)` is a service with one offer, served. In
 order: close the listener; refuse requests already read; cancel connection, stream and ping tasks,
 each write bounded by 5 seconds; stop every live run and await them under `grace`; cancel what
-remains and await it; append the `END` rows; remove the bus subscriptions. At most 64 connections
-and 32 subscribers are open at once.
+remains and await it; append the `END` rows; remove the bus subscriptions. A bound is
+`asyncio.timeout`, as `wait_for` on 3.11 drops a cancel that lands as the write ends. At most 64
+connections and 32 subscribers are open at once.
 
-- **Landing evidence**: owed: a shutdown with an idle stream, a stalled writer, a half-read request
-  and a run mid-command, which finds no task, socket or subscription left.
+- **Landing evidence**: `tests/test_serve_http.py`:
+  `test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each_run`,
+  `test_a_cancel_that_lands_as_a_bounded_write_finishes_is_never_lost`,
+  `test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_never_waits`,
+  `test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not`,
+  `test_a_stream_past_the_subscriber_cap_is_refused_busy`,
+  `test_a_request_read_whole_after_the_end_began_is_refused_busy`,
+  `test_a_start_while_the_service_ends_is_refused_busy`.
 
 ### D11: `examples/serve_an_actor.py` and its test ^d11
 
@@ -500,7 +543,8 @@ port, then acts as its own client over the socket. It reads the card, starts a r
 and finishes on the first state that says ended, whether that is the stream's first frame or a later
 one. `tests/test_examples.py` runs it offline.
 
-- **Landing evidence**: owed: the example in the scripted set, and its output pinned.
+- **Landing evidence**: `serve_an_actor` in the scripted set of `tests/test_examples.py`, and
+  `test_the_served_example_reads_the_card_a_run_and_its_end_over_the_socket`, which pins its output.
 
 ### D12: The stream's frames ^d12
 
@@ -509,8 +553,10 @@ its data one object of that shape. A `state` frame follows the first whenever it
 changes or its `closed` turns true, and the stream of every run gets one when a run starts. A
 comment line goes out every 15 seconds.
 
-- **Landing evidence**: owed: each phase change on one run's stream and on the stream of every run,
-  and the comment line under a stepped clock.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_a_conversation_waits_after_a_reply_takes_input_and_end_closes_it_on_both_streams`;
+  `tests/test_serve_http.py`:
+  `test_a_stream_sends_a_comment_line_each_time_its_clock_steps_and_frames_in_between`.
 
 
 ### D13: A repeated `once` key ^d13
@@ -521,9 +567,10 @@ readable, else `gone`; it never starts a run. A repeated input with the same tex
 handle. A repeat in flight waits for the first answer. Other fields or text are refused `conflict`,
 the key unchanged; only the refusal of the act that took a key releases it.
 
-- **Landing evidence**: owed: two starts with one key in one loop turn, a repeat after the run ended
-  or was dropped, a repeat with other fields and then the first's own, and a key reused after its
-  first start was refused.
+- **Landing evidence**: `tests/test_serve.py`:
+  `test_a_repeated_once_key_starts_nothing_and_answers_the_first_run_while_it_is_readable`,
+  `test_a_start_actor_run_refuses_is_refused_with_its_reason_and_leaves_no_run_log_or_key`,
+  `test_an_input_once_key_past_the_last_held_acts_again`.
 
 ## Alternatives
 
@@ -549,8 +596,11 @@ the key unchanged; only the refusal of the act that took a key releases it.
 
 ## Consequences
 
-- **S1**: Nothing is built. D1 to D13 land with the tests they name, and until then every claim is
-  owed here.
+- **S1**: D1 to D13 landed with the tests they name. Disabled alone, each mechanism turned a named
+  test red: the bound check, the publishing points and the latch (C1, C3, C8); a final state, the
+  run's inbox and the stop's wake (C4 to C6). So did the `END` row (C7), the Host check (C9), the
+  deadline (C10), the unsubscription and the write bound (C11), the dropped ids (C14), the status
+  table (D9), the comment line (D12) and the conflict check (D13).
 - **S2**: The areas server and the terminal chat are unchanged. Two servers stand until a client
   moves; a chat's box and its patch behind an offer are not decided here.
 - **S3**: Loopback is per machine: any process of any account on the machine that can open the port

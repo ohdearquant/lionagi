@@ -9,19 +9,19 @@ reads the results before it replies; the other side sees each round as it lands.
 
 `entry_row` and `load_log` are the log's two directions: one JSON object per entry, and a log read
 back as a run's history (`RunRequest.history`), so a conversation continues from its own record.
+They live in `lionagi.checkpoint`, beside `entry_of`, so a served run's log is the same; this module
+re-exports them.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
-from lionagi.actor import Actor, Handle, Inbound, Profile, Result, Run, RunRequest
-from lionagi.checkpoint import entry_of
-from lionagi.record import Directive, Entry, Kind
+from lionagi.actor import Actor, Handle, Inbound, Profile, Run, RunRequest
+from lionagi.checkpoint import entry_row, load_log
+from lionagi.record import Entry, Kind
 
 __all__ = ("END", "chat", "line", "entry_row", "load_log")
 
@@ -118,75 +118,3 @@ def line(e: Entry) -> str:
     if e.kind is Kind.INPUT and e.meta.get("inbound"):
         head += f" {e.meta['origin']}:"
     return head + " " + text.replace("\n", "\n" + " " * 18)
-
-
-def entry_row(e: Entry) -> dict:
-    """One entry as the log writes it: a result as its five fields, everything else as it is."""
-    content: Any = e.content
-    if e.kind is Kind.RESULT and hasattr(content, "spec"):
-        content = {
-            "spec": content.spec,
-            "ok": content.ok,
-            "value": content.value,
-            "error": content.error,
-            "reason": content.reason,
-        }
-    meta = dict(e.meta)
-
-    def row(d: Directive) -> dict:
-        return {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
-
-    # what this entry did to the view, as data: a directive, and the hides of what a program consumed
-    if isinstance(d := meta.get("directive"), Directive):
-        meta["directive"] = row(d)
-    if isinstance(ds := meta.get("consumed"), tuple):
-        meta["consumed"] = [row(d) for d in ds]
-    if isinstance(vs := meta.get("values"), tuple):  # a value that failed to compute: its error, fourth
-        meta["values"] = [
-            [a, seq, None, v.error] if isinstance(v, Result) else [a, seq, v] for a, seq, v in vs
-        ]
-    return {
-        "seq": e.seq,
-        "kind": e.kind.name,
-        "name": e.name,
-        "round": e.round,
-        "alias": e.alias,
-        "meta": meta,
-        "content": content,
-    }
-
-
-def load_log(
-    path: Path, torn: list[str] | None = None, ran: dict | None = None, usage: list[dict] | None = None
-) -> tuple[Entry, ...]:
-    """The entries a log holds, as a run's history: results back as Result, the inbound marks, each
-    result's execution fact and the context directives kept, the seqs as they were (a log is written
-    in order, from 0); rows of other kinds are skipped, and with `ran` given the BOX row, where the
-    chat ran, is copied there, with `usage` given each USAGE row, what each call cost, is appended
-    there. A last line that is not JSON is a write that was cut: with `torn` given it is dropped and
-    described there, else it raises; a bad line with lines after it always raises."""
-    entries: list[Entry] = []
-    # a row ends at a line feed: a row may carry U+2028 or NEL unescaped, where str.splitlines would
-    # break it, and a write cut inside a multi-byte character is a torn last row, not an unreadable file
-    rows = [(i, raw) for i, raw in enumerate(Path(path).read_bytes().split(b"\n"), 1) if raw.strip()]
-    for n, (i, raw) in enumerate(rows):
-        try:
-            r = json.loads(raw.decode())
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            if n == len(rows) - 1 and torn is not None:
-                why = e.reason if isinstance(e, UnicodeDecodeError) else e.msg
-                torn.append(f"line {i} of {path} is not JSON ({why}), a write that was cut; dropped")
-                break
-            where = "the last line" if n == len(rows) - 1 else f"line {i}, with {len(rows) - n - 1} after it"
-            why = e.reason if isinstance(e, UnicodeDecodeError) else e.msg
-            raise ValueError(
-                f"{path}: {where} is not JSON ({why}): {raw.decode(errors='replace')[:80]!r}"
-            ) from None
-        if ran is not None and r.get("kind") == "BOX":
-            ran.update(r)
-        if usage is not None and r.get("kind") == "USAGE":
-            usage.append(r)
-        entry = entry_of(r)  # the row back as its entry; the one reading a checkpoint's record uses too
-        if entry is not None:
-            entries.append(entry)
-    return tuple(entries)

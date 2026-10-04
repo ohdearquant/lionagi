@@ -24,6 +24,7 @@ SCRIPTED = (
     "budgets_and_outcomes",
     "structured_output",
     "experience_twice",
+    "serve_an_actor",
 )
 LIVE = ("backends",)
 # tests/test_bench_agent.py drives this one: a fake store, and a child that writes a ledger
@@ -67,6 +68,55 @@ def test_a_scripted_example_runs_to_its_end_and_takes_its_scratch_with_it(script
     assert done.stderr == ""
     assert done.stdout.count("\n") >= 5, done.stdout
     assert sorted(tmp_path.iterdir()) == []  # a scratch directory made on import is gone at exit
+
+
+SERVED = """\
+=== GET /: the card says what a client may start and what the model is told it may do
+200 | actor: extractor | protocol: 1 | offer: extractor
+command: route | pure | The standard name of a route as a note writes it.
+outputs: ['extraction'] | converse: False
+bounds: max_rounds 4, max_idle 3, context_budget 200000, max_refusals 3
+
+=== POST /runs for what the owner never offered: refused, and nothing starts
+404 {'error': 'unknown_offer', 'reason': "no offer is named 'writer'"}
+400 {'error': 'bad_request', 'reason': "max_rounds 9 is above the offer's 4"}
+
+=== POST /runs: the run starts with the note as its input
+201 | offer: extractor | resumed: None
+
+=== GET /runs/{id}/events: read to the first state that says ended
+the stream opened with: state
+phase: ended | outcome: Success | round: 2
+output: {
+ "extraction": {
+  "medications": [
+   {
+    "name": "metformin",
+    "dose": "500 mg",
+    "route": "oral",
+    "frequency": "twice daily"
+   },
+   {
+    "name": "lisinopril",
+    "dose": "10 mg",
+    "route": "oral",
+    "frequency": "once daily"
+   }
+  ]
+ }
+}
+
+=== GET /runs/{id}/record: the rows the log holds, by kind
+200 | more: False | ['INPUT', 'SYSTEM', 'TEXT', 'RESULT', 'RESULT', 'SYSTEM', 'TEXT', 'SYSTEM']
+"""
+
+
+def test_the_served_example_reads_the_card_a_run_and_its_end_over_the_socket(tmp_path, monkeypatch, capsys):
+    """Its output pinned: nothing in it depends on the port, the run's id, or whether the run ended
+    before its stream opened."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    asyncio.run(load("serve_an_actor").main())
+    assert capsys.readouterr().out == SERVED
 
 
 def test_the_live_example_says_what_the_calls_cost_when_a_later_call_fails(tmp_path, monkeypatch, capsys):
