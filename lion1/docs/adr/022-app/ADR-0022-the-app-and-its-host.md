@@ -31,18 +31,18 @@ This record serves the author's requests of 2026-10-04:
 - 08:14:36: configuration, rarely used, belongs in Settings
 - 08:15:21: never show an API key
 - 08:23:08: consistent header heights across pages
+- 11:38:27: dynamic page layout, box sizes for example
 
-The residents already serve from their directories, and the areas server already reads, holds, wakes
-and restarts them ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). This record fixes the first usable
-release over them: a Mac app that speaks to one host, the `/v2` routes the host answers, and what
-each route reads and writes.
+The residents already serve from their directories, and the areas server reads, holds, wakes and
+restarts them ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). This record fixes the first usable release
+over them: a Mac app on one host, the host's `/v2` routes, and what each reads and writes.
 
-The author's 08:09:12 puts a usable release first, so this record defers five instructions of the
-same morning, each to a later record. They are the desk served through the actor (07:34:15, S17),
-the subagent tool (07:45:44, S16), provider keys and limits in settings (08:05:56 and 08:10:21,
-S15), the plugin as the smallest unit, with marketplaces (08:19:00, S13), and per-agent shell
-control (08:20:37, S14). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in
-`apps/cli/lion_cli/areas.py`, `hub/areas.py`, `apps/mac/`.
+The author's 08:09:12 puts a usable release first, so this record defers five instructions of that
+morning to later records. They are the desk served through the actor (07:34:15, S17), the subagent
+tool (07:45:44, S16), provider keys and limits in settings (08:05:56 and 08:10:21, S15), the plugin
+as the smallest unit, with marketplaces (08:19:00, S13), and per-agent shell control (08:20:37,
+S14). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in `apps/cli/lion_cli/areas.py`, `hub/areas.py`,
+`apps/mac/`.
 
 ## Definitions
 
@@ -81,7 +81,7 @@ control (08:20:37, S14). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in
 
 The app shows each resident of the registry as an agent. Its id is `<area>/<directory name>`. When
 two directories of one area share a name, or the name is empty, each gets `~` and six hex digits of
-a hash of its path (D3).
+a hash of its path, or more until no two match (D3).
 
 The resident's own process holds its identity's lock ([[ADR-0013-the-agent#^c1|ADR-0013/C1]]), and
 the host starts no process. A restart kickstarts the launchd job of the one plist in the resident's
@@ -95,13 +95,13 @@ directory. It is refused when there is none or more than one, and during a wake 
   method; or a write without a well-formed once key acts.
 
 Before it reads a write's body, the host answers a route it does not serve with 404. A write then
-carries `once`, 32 hex digits with a UUID's hyphens allowed, or it is refused with 400 and nothing
-is done. Writes run one at a time, and a repeat of the same method, path and once key gets the first
-answer (S8).
+carries `once`, 32 hex digits with a UUID's hyphens allowed, or it is refused with 400. Writes run
+one at a time, and a repeat of the same method, path and once key gets the first answer (S8).
 
-A Host is `127.0.0.1:<port>` or `localhost:<port>`, and an Origin is `http://` and one of them.
-Refusal is 403, before anything is read or done. The older routes keep their guard
-([[ADR-0017-the-desk#^c11|ADR-0017/C11]]), which also admits the tailnet and `--allow` names (S2).
+A request carries one Host, `127.0.0.1:<port>` or `localhost:<port>`, and at most one Origin,
+`http://` and one of them. Refusal is 403, before anything is read or done. The older routes keep
+their guard ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]), which also admits the tailnet and `--allow`
+names (S2).
 
 ### C3: The app offers only what the capability list names, and the list is no grant _(enforced: mechanical; owed, S3)_ ^c3
 
@@ -168,7 +168,8 @@ answer's text, so no reply is taken as an approval.
 A provider answers only whether a key is set, as `key` with one field, `set`, read from the keychain
 without its value. Writing a key belongs to the record on providers and credentials (S15). Until it
 lands the host serves no key route and the capability list omits `provider_key`. The app already
-shows its key field only under that name.
+shows its key field only under that name. A request the host sends with the key follows no redirect,
+so the key reaches no second address.
 
 ### C8: A figure the host cannot read from its source is unknown, never estimated _(enforced: mechanical)_ ^c8
 
@@ -210,7 +211,7 @@ bundle and container, and an image dropped on a message box arrives as data.
 A file or a folder is opened by the host, after the person picks Open on an agent's menu or a
 plugin's page. The host resolves the path and every directory the registry names, and opens a file
 in the text editor (`open -t`) and a folder in the Finder (`open -R`). It refuses anything else with
-400 or 404.
+400 or 404, a link that loops on itself included.
 
 ### C11: The tree holds no signing identity, no bundle prefix and no machine's name _(enforced: mechanical; owed, S11)_ ^c11
 
@@ -230,11 +231,13 @@ missing; the example's prefix is `com.example.lion`. The generated project is ig
 
 Every screen has one header of one height, with back and forward, and back returns to the page shown
 before. Moving between pages never resizes the window, and a pane that overflows scrolls inside it.
-The side panels collapse. The library is under Settings, behind one item of the sidebar.
+The person resizes it, and a page fills it. The side panels collapse. The library is under Settings,
+behind one item of the sidebar.
 
 Every scrolling pane has the one thin scrollbar the For you list has. Adding a model, a plugin or a
-provider is one form. Nothing asks for attention that is not the person's: For you keeps a fixed
-height, and a reply field opens only when the person asks for it.
+provider is one form. A list is as tall as its rows up to a limit, then scrolls; For you takes half
+the page at most. Nothing asks for attention that is not the person's: a reply field opens only when
+the person asks for it.
 
 ### C13: After a reconnect the app shows current state with no row missing or doubled _(enforced: mechanical; owed, S10)_ ^c13
 
@@ -301,20 +304,27 @@ list (D7).
   `test_v2_refuses_a_host_name_added_with_allow_that_the_older_routes_answer`,
   `test_v2_refuses_a_foreign_origin_on_a_get_that_the_older_routes_answer`,
   `test_v2_refuses_a_foreign_origin_on_a_write_before_its_body_is_read`,
+  `test_v2_refuses_a_request_that_names_its_host_or_its_origin_twice`,
   `test_the_v2_event_stream_refuses_what_every_v2_route_refuses`, and the unknowns of C8:
   `test_an_agents_partial_cost_is_unknown_and_so_is_every_sum_over_it`,
   `test_the_days_cap_is_unknown_when_a_residents_budget_is_refused`,
   `test_a_wake_that_missed_calls_of_unknown_cost_has_no_cost`,
-  `test_the_wakes_that_acted_are_unknown_for_a_resident_whose_directory_holds_no_log`.
+  `test_the_wakes_that_acted_are_unknown_for_a_resident_whose_directory_holds_no_log`,
+  `test_a_day_whose_notes_cannot_be_read_is_unknown_never_zero`. Also
+  `test_a_registry_whose_desks_are_no_list_is_answered_as_unreadable`,
+  `test_open_answers_a_path_that_loops_on_itself` and
+  `test_a_fetch_follows_no_redirect_so_a_key_reaches_no_second_address`.
 
 ### D3: An agent's id is its area and its directory's name ^d3
 
 Serves C1. `agent_ids` walks the registry in order and names each directory `<area>/<name>`. When
 the name is empty or repeated in the area, it adds `~` and the first six hex digits of SHA-256 over
-the directory as the registry writes it. `agent_path` reads an id from two path segments or from one
-holding `%2F`. `Daemon.find` reads the registry again on every request.
+the directory as the registry writes it, or more until no other directory of that name shares them.
+`agent_path` reads an id from two path segments or from one holding `%2F`. `Daemon.find` reads the
+registry again on every request.
 
 - **Landing evidence**: `test_two_desks_of_one_area_with_one_name_get_ids_that_tell_them_apart`,
+  `test_two_directories_of_one_name_never_share_an_id`,
   `test_an_agent_answers_its_row_its_definition_and_what_the_app_may_change`, and in
   `tests/test_areas.py`,
   `test_restart_refuses_without_one_plist_or_in_a_wake_and_kickstarts_the_label`.
@@ -331,6 +341,7 @@ reads back as it, so a comment after it stays.
 - **Landing evidence**:
   `test_a_definition_write_changes_its_keys_and_keeps_every_other_byte_and_a_replay_writes_nothing`,
   `test_a_definition_the_loaders_or_the_app_shape_refuse_leaves_the_file_byte_identical`,
+  `test_a_number_too_large_to_weigh_is_refused_as_any_other_bad_number`,
   `test_a_definition_saved_elsewhere_after_the_read_is_refused_409_and_left_as_saved`.
 
 ### D5: For you is read from the person's mail through the host's identity ^d5
@@ -424,8 +435,9 @@ or XCTest.
 - **S5**: An agent's `today.cost` is null while `unknown_today` in `hub/areas.py` is not 0, a day's
   row from before that count included, and so are `totals.cost` and an area's `today.cost` over it.
   A wake's `cost` is null when its line counts such calls. `totals.cap` is null when a resident's
-  `chores.toml` does not read or `Budget.load` refuses its `[budget]`. A resident whose notes cannot
-  be read still answers 0 for its day, beside its `error` state.
+  `chores.toml` does not read or `Budget.load` refuses its `[budget]`. A resident whose notes are
+  there and do not read answers null for its day's cost and wakes, beside its `error` state, and so
+  does every sum over them.
 - **S6**: The compare before the rename is not a lock. A person's editor that saves between the two
   loses its save to the host's, and nothing reports it. A test saves the file after the host's read
   and before its compare, and gets 409 with the other writer's bytes left in place.
