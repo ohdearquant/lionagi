@@ -62,6 +62,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/li
 | A1 | A provider's prompt count is the size of the context the model saw on that attempt.                                               | the router's `usage.prompt_tokens`; the session CLI's input, cache read and cache write per turn; on 4,240 bench calls the count read 1.20 times the view estimate plus 1,695 ([[ADR-0006-the-notification#Assumptions\|ADR-0006/A3]]) | the anchor is exact about the wrong prompt; the figure returns to the estimate                        |
 | A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags and the rebuilt catalogue of `hub/backend/codex.py` the model lists no tool and can run no command, search or spawn, measured on its 0.156.1 release (S19 to S21), every other release refused (S22); the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
 | A3 | What a count stands above the view at its least is fixed context; what it later stands above that is history the record never saw. | the session CLI reads 34k cached input per call with its settings loaded against 3.9k without; on a served run one call read 14.8M tokens over its tool turns while the estimate never moved (2026-09-24) | the fold fires every turn past a budget the fixed context exceeds, or never sees the tool turns       |
+| A4 | On the subscription CLI, input its provider's cache holds costs a tenth of fresh input, and the cache lives 5 to 10 minutes from its last read: 300 seconds, the low end, is the figure taken. | the provider's published terms, not measured: a subscription bills neither, and on one thread the second call read 3,840 of 4,305 input tokens from the cache and the third none | a changed view starts a new thread too early or too late; nothing is billed either way |
 
 ## Claims
 
@@ -166,6 +167,21 @@ the CLI's session, past subset, after hooks and bus (S11). `lion chat` and `lion
 ([[ADR-0016-the-lion-command#^d3|ADR-0016/D3]]). Without an actor it is trusted as configured. The
 bench's host-side baseline is no backend ([[ADR-0012-the-bench|ADR-0012]] S6).
 
+### C7: A session that cannot fork goes on in place, never from a thread a failed call touched _(enforced: mechanical)_ ^c7
+
+- **Subject**: every call of the subscription CLI's session backend and the notice before it.
+- **Violated when**: a call resumes a thread a failed or cancelled call touched, a retry sends again
+  to the thread it failed on, a restart is taken or skipped against A4's price, the fold goes on, or
+  two runs share a thread.
+
+The subscription CLI cannot fork a thread (S24), so C4's forks are not open to it. Its session keeps
+one thread per run and goes on in place, sending what the view gained. On a changed view it prices
+going on against starting over from the whole view, at A4's price, and it always starts over on the
+fold (A3).
+
+A failed attempt may have left its prompt in the thread (S27): the retry starts a new thread, and a
+failed or cancelled call there leaves no point.
+
 ## Decisions
 
 ### D1: The router backend in `hub/backend/openrouter.py` ^d1
@@ -237,6 +253,18 @@ swallowed too: a spin.
   `test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_caller_still_returns`:
   the call returns at the bound with the warning, under a caller cancelling every turn too, and the
   real hook exits 2 while the abandoned ask's later allow reaches nothing.
+
+### D6: The subscription CLI's session in `hub/backend/codex.py` ^d6
+
+Serves C2, C5 and C7. `CodexSession` keeps one CLI thread per run: a start is a persisted `exec`,
+each later call `exec resume` with what the view gained, under D3's flags, catalogue and release
+guard. The run's system prompt is the CLI's instructions; every child runs in one directory (S25).
+`_step` prices a changed view against the whole view; `plan` answers it for `_notify`; `base` seeds
+a first figure. A call's usage is the thread's totals less the call before's (S26).
+
+- **Landing evidence**: `tests/test_codex_session.py`: resumed with only the new entries, a small
+  hide waiting, a large one and the fold starting over, the cache life, the plan's figure, the
+  unknown share, the retry's new thread, failed and cancelled calls, one thread per run.
 
 ## Alternatives
 
@@ -358,6 +386,29 @@ swallowed too: a spin.
 - **S22**: S19's failure is silent: A2 was measured on the 0.153 release and broke on 0.156.1 with
   no error and no event. So the backend reads the CLI's release and refuses any the claim was not
   measured on, before any prompt; a warning would be a note beside a model that can act with no
-  gate. A release is measured by asking the model for its tools through the backend built with
-  `unmeasured`, which notes every call, then added to `MEASURED`; each CLI upgrade stops the backend
-  until then.
+  gate. Each CLI upgrade stops the backend until its release is measured.
+- **S23**: A release is measured by asking the model for its tools through the backend built with
+  `unmeasured`, which notes every call, then added to `MEASURED`. Only that measuring path builds a
+  backend with `unmeasured`, never a served chat or an agent: the switch is the one way back to the
+  silent state.
+- **S24**: Measured on the subscription CLI's 0.156.1 release: `exec resume <thread>` goes on in a
+  thread a persisted `exec` started, under the same flags and catalogue, read-only by its config key
+  since the resume form takes no sandbox flag. The instructions file is read again at each resume,
+  so the run's system prompt is written for every call. `exec` has no fork: a thread goes on in
+  place and holds every prompt it was sent.
+- **S25**: A thread resumed in another directory is sent that directory's AGENTS.md again and keeps
+  it: a second turn read 270 input tokens from a new directory against 170 from the same one. So
+  every child of a session runs in one directory, which goes with the backend; each call's own files
+  stay in its scratch, named by path.
+- **S26**: On a resumed thread `turn.completed` carries the thread's running totals (456 input
+  tokens after turns of 177 and 279). A call's share is the difference from the call before, and its
+  count the input's difference. A total missing on either side, or below the one before, leaves that
+  figure out and flags the envelope; the input and its cached part go together.
+- **S27**: A failed attempt on a resumed thread may have left its prompt in the thread, which the
+  stream does not say. Its retry starts a new thread from the whole view, and a call that fails or
+  is cancelled on a resumed thread leaves no point: the next call starts over. A new thread's
+  failure leaves the thread held as it was. A stream that names no thread leaves no point either.
+- **S28**: The stream carries no context window and no rate limit. The session's envelope reads
+  both, best effort, from the tail of the thread's session file under the CLI's home; a file not
+  found or not readable adds nothing. The envelope also names the thread, the step taken, the
+  characters the prompt stood in and the thread's totals.
