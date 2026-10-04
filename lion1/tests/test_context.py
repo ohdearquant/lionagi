@@ -172,7 +172,7 @@ def gh_says(monkeypatch, rc: int = 0, out: str = "[]", err: str = "") -> list:
         calls.append((argv, kw.get("cwd")))
         return rc, out, err
 
-    monkeypatch.setattr("hub.backend.claude_code.checkpoint.sh", run)
+    monkeypatch.setattr("hub.backend.checkpoint.sh", run)
     return calls
 
 
@@ -1266,7 +1266,7 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
 
 
 def test_only_the_first_invalid_row_is_spelled_out():
-    from hub.backend.claude_code.checkpoint import _valid
+    from hub.backend.checkpoint import _valid
 
     class Counted:
         calls = 0
