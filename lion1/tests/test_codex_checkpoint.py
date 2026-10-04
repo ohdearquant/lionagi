@@ -395,6 +395,9 @@ def test_a_message_the_person_sent_or_nothing_marked_ends_the_exchange_before_it
         typed(PROMPTS[1], "msg_u2"),
         unmarked,  # what wrote it is not known
         said("ANSWER-TO-THE-UNMARKED-MARK"),
+        typed("placeholder prompt four", "msg_u4"),
+        message("user", [], [], "msg_x"),  # a mark for each item, and no item: nothing is marked
+        said("ANSWER-TO-THE-EMPTY-MARK"),
         typed(PROMPTS[2], "msg_u3"),
         # the CLI's own, inside the turn (its environment, a goal, a skill): the turn goes on
         message("user", [text("<environment_context>x")], ["environments.environment_context"], "msg_e"),
@@ -404,9 +407,10 @@ def test_a_message_the_person_sent_or_nothing_marked_ends_the_exchange_before_it
     assert [(t["input"], t["text"]) for t in rollout_turns(path, 10**6)["kept"]] == [
         (PROMPTS[0], ""),
         (PROMPTS[1], ""),
+        ("placeholder prompt four", ""),
         (PROMPTS[2], "placeholder final text three"),
     ]
-    assert rollout_source(path)["unmarked_messages"] == 1
+    assert rollout_source(path)["unmarked_messages"] == 2
     assert posture(path)[0].value == "placeholder final text three"
 
 
@@ -450,6 +454,137 @@ def test_a_row_appended_while_the_take_reads_is_after_the_take(tmp_path, monkeyp
     c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
     assert "LATE-PROMPT-MARK" in live.read_text()
     assert "LATE-PROMPT-MARK" not in json.dumps([dataclasses.asdict(v) for v in c.vars]) + json.dumps(c.view)
+
+
+@pytest.mark.parametrize("field", ["size", "mtime_ns", "ino", "ctime_ns"])
+def test_a_snapshot_that_differs_from_its_file_in_one_field_is_never_read(tmp_path, field):
+    path = write(tmp_path / "r.jsonl", [meta(), typed(PROMPTS[0], "msg_u1")])
+    cx._read.cache_clear()
+    snap = cx.snapshot(path, 9)
+    other = dataclasses.replace(snap, **{field: getattr(snap, field) + 1})
+    with pytest.raises(CheckpointError, match="is not the file its snapshot was taken of$"):
+        cx._read(other)
+    assert [v.value for v in directives(snap)] == [PROMPTS[0]]  # the file's own state is read
+
+
+@pytest.mark.parametrize("change", ["replaced", "cut"])
+def test_a_rollout_replaced_or_cut_between_its_stat_and_its_read_is_taken_again(
+    tmp_path, monkeypatch, change
+):
+    path = write(
+        tmp_path / "r.jsonl", [meta(), typed("placeholder old", "u1"), typed("placeholder older", "u0")]
+    )
+    new = write(
+        tmp_path / "new.jsonl",
+        [
+            meta(),
+            typed("placeholder new, longer than the old one was", "u2"),
+            typed("placeholder newest", "u3"),
+        ],
+    )
+    opened, opens = open, []
+
+    def change_then_open(name, *a, **k):
+        if not opens and change == "replaced":
+            os.replace(new, path)
+        elif not opens:
+            path.write_text("".join(path.read_text().splitlines(keepends=True)[:2]))
+        opens.append(name)
+        return opened(name, *a, **k)
+
+    cx._read.cache_clear()
+    monkeypatch.setattr(cx, "open", change_then_open, raising=False)
+    snap = cx.snapshot(path, 10**6)
+    monkeypatch.delattr(cx, "open")
+    assert len(opens) == 2  # the first read refused, the second of the file as it then is
+    assert (snap.size, snap.ino) == (path.stat().st_size, path.stat().st_ino)
+    want = ["placeholder new, longer than the old one was", "placeholder newest"]
+    assert [t["input"] for t in rollout_turns(snap, 10**6)["kept"]] == (
+        want if change == "replaced" else ["placeholder old"]
+    )
+    assert rollout_source(snap)["unread_lines"] == 0
+
+
+def test_a_rollout_rewritten_while_it_is_read_is_taken_again(tmp_path, monkeypatch):
+    path = write(tmp_path / "r.jsonl", [meta(), typed("placeholder alpha", "u1")])
+    opened, done = open, []
+
+    def rewrite():  # the same size, in place: only its times say so
+        if done:
+            return
+        done.append(1)
+        before = path.stat()
+        path.write_text(path.read_text().replace("placeholder alpha", "placeholder bravo"))
+        while path.stat().st_ctime_ns == before.st_ctime_ns:  # a coarse clock: wait out its tick
+            os.utime(path)
+        assert path.stat().st_size == before.st_size
+
+    class Rewritten:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return self.f.__exit__(*a)
+
+        def fileno(self):
+            return self.f.fileno()
+
+        def readline(self, n):
+            raw = self.f.readline(n)  # the whole file is in the reader's buffer by now
+            rewrite()
+            return raw
+
+    cx._read.cache_clear()
+    monkeypatch.setattr(cx, "open", lambda *a, **k: Rewritten(opened(*a, **k)), raising=False)
+    assert [v.value for v in directives(path)] == ["placeholder bravo"]
+    assert cx._read.cache_info().currsize == 1 and done  # the read of the old bytes was never kept
+
+
+def test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken(
+    tmp_path, monkeypatch, capsys
+):
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    live = write(tmp_path / "live.jsonl", session_rows(str(d)))
+    opened, opens = open, []
+
+    def touch_then_open(name, *a, **k):
+        opens.append(name)
+        st = live.stat()
+        os.utime(live, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # the same bytes, another state
+        return opened(name, *a, **k)
+
+    cx._read.cache_clear()
+    monkeypatch.setattr(cx, "open", touch_then_open, raising=False)
+    assert context_figure(live) == {"used": None, "window": None, "pct": None}
+    assert len(opens) == cx.RETAKES + 1
+    with pytest.raises(SystemExit) as out:
+        main(["context", "checkpoint", "--dir", str(d), "--transcript", str(live)])
+    assert out.value.code == 1 and "is not the file its snapshot was taken of" in capsys.readouterr().err
+    assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
+
+
+def test_a_session_meta_after_the_first_row_is_never_the_threads_own(tmp_path, monkeypatch, capsys):
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    late = write(tmp_path / "late.jsonl", [typed("INHERITED-MARK", "u1"), meta(THREAD, str(d))])
+    assert not is_rollout(late)
+    assert rollout_source(late)["session_id"] is None and directives(late) == []
+    # a file that stopped being a rollout after the take chose its reader: the snapshot's first row decides
+    monkeypatch.setattr(cx, "is_rollout", lambda p: True)
+    with pytest.raises(SystemExit) as out:
+        main(["context", "checkpoint", "--dir", str(d), "--transcript", str(late)])
+    assert out.value.code == 1 and "its first row names no owner" in capsys.readouterr().err
+    assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
 
 
 def test_a_scan_keeps_only_what_the_takes_readers_read(tmp_path):

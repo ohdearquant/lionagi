@@ -3,7 +3,9 @@ prompt, on the Codex session's vocabulary (`CODEX_KINDS`, `CODEX_WHYS`). The rol
 `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl`: one JSON row per line, each a `type`
 and a `payload`, the first the thread's own `session_meta`. A take reads it once, as one `Snapshot`:
 the file's size, times and inode captured once, its bytes read to that size and no further, a last
-line cut mid-write left unread. The scan keeps what the take's readers read and nothing else.
+line cut mid-write left unread. The read is of that state or is not kept: the file opened is checked
+against it before a byte is read and after the last. The scan keeps what the take's readers read and
+nothing else.
 
 A prompt is the text items of a user `message` that the row's own `content_item_kinds` marks
 `user.text`, as typed; the CLI marks what it writes there itself (the environment, AGENTS.md, the
@@ -83,6 +85,7 @@ _META = (
 )
 # the thread_source of a thread whose owner is known: a person's, or a sub-agent's
 OWNERS = ("user", "subagent")
+RETAKES = 2  # a rollout that changed under its read is stat and read again this many times
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,10 @@ class Snapshot:
 
     def __fspath__(self) -> str:
         return self.path
+
+
+class _Moved(CheckpointError):
+    """The file a snapshot names is not in the snapshot's state: put in its place, cut, or rewritten."""
 
 
 @dataclass
@@ -133,11 +140,13 @@ def _meta(path: Path) -> dict | None:
 def _typed(p: dict) -> tuple[bool, str] | None:
     """A user message's sender and words: whether the row marks any item the person's (`user.*`), and
     its `input_text` items marked `user.text`, joined as typed; None when the row does not mark each
-    item, so what wrote it is not known."""
+    item or marks none, so what wrote it is not known."""
     content = p.get("content")
     marks = p.get("internal_chat_message_metadata_passthrough")
     kinds = marks.get("content_item_kinds") if isinstance(marks, dict) else None
     if not isinstance(content, list) or not isinstance(kinds, list) or len(kinds) != len(content):
+        return None
+    if not kinds:  # nothing marked: not the CLI's by any mark either
         return None
     said = [
         str(b.get("text") or "")
@@ -161,20 +170,36 @@ def _figure(info: dict) -> dict:
     return {"used": used, "window": window, "pct": pct}
 
 
+def _state(st: os.stat_result) -> tuple[int, int, int, int]:
+    return st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns
+
+
+def _same(f: Any, snap: Snapshot) -> bool:
+    """Whether the open file is the snapshot's: in its very state, or the same file grown since. One
+    grown is taken as appended to, its bytes to the snapshot's size the snapshot's own."""
+    st = os.fstat(f.fileno())
+    return _state(st) == (snap.size, snap.mtime_ns, snap.ino, snap.ctime_ns) or (
+        st.st_ino == snap.ino and st.st_size > snap.size
+    )
+
+
 @functools.lru_cache(maxsize=4)
 def _read(snap: Snapshot) -> _Scan:
     s = _Scan()
-    seen = False  # a session_meta read: the first is the thread's own, a fork's parent's follow it
+    lines = 0  # the first is the thread's own session_meta; a later one is a fork's parent's
     start: Any = None  # a forked thread's first own ordinal: the rows before it are its parent's
     prompts: list[dict] = []  # {turn, at, input, text, kind: person}
     turn: dict | None = None
     with open(snap.path, "rb") as f:
+        if not _same(f, snap):  # another file put in its place, or this one cut or rewritten
+            raise _Moved(f"{snap.path} is not the file its snapshot was taken of")
         left = snap.size  # a row appended after the snapshot is after the take
         while left > 0:
             raw = f.readline(left)
-            if not raw:
+            if not raw:  # cut while it was read: the check after the last byte refuses it
                 break
             left -= len(raw)
+            lines += 1
             if not raw.endswith(b"\n"):  # the snapshot's last line, cut mid-write: never read
                 s.unread += 1
                 break
@@ -190,8 +215,8 @@ def _read(snap: Snapshot) -> _Scan:
             kind = r.get("type")
             p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
             if kind == "session_meta":
-                if not seen:
-                    seen, start = True, p.get("subagent_history_start_ordinal")
+                if lines == 1:
+                    start = p.get("subagent_history_start_ordinal")
                     s.meta = {k: p[k] for k in _META if k in p}
                 continue
             ordinal = r.get("ordinal")
@@ -235,21 +260,35 @@ def _read(snap: Snapshot) -> _Scan:
                     }
                 elif thread in s.agents:  # an agent another thread spawned is not this one's
                     s.agents[thread]["last"] = item.get("kind")
+        if not _same(f, snap):
+            raise _Moved(f"{snap.path} was rewritten while it was read")
     s.words = [(p["input"], p["at"]) for p in prompts[-DIRECTIVES:]]
     s.view = fold_turns(prompts, snap.budget) if snap.budget is not None else None
     return s
 
 
 def snapshot(path: str | Path, budget: int | None = None) -> Snapshot:
-    """The rollout's file state now, for a take whose view folds to `budget`."""
+    """The rollout's file state now, for a take whose view folds to `budget`, read at once: the scan
+    every reader of the snapshot gets is of that state. A file that changes between its stat and its
+    read is taken again, RETAKES times at most."""
     p = Path(path)
-    st = p.stat()
-    return Snapshot(str(p), st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns, budget)
+    tries = 0
+    while True:
+        snap = Snapshot(str(p), *_state(p.stat()), budget)
+        try:
+            _read(snap)
+        except _Moved:
+            tries += 1
+            if tries > RETAKES:
+                raise
+        else:
+            return snap
 
 
 def _scan(path: str | Path | Snapshot, budget: int | None = None) -> _Scan:
-    snap = path if isinstance(path, Snapshot) else snapshot(path)
-    return _read(snap if budget is None else dataclasses.replace(snap, budget=budget))
+    if not isinstance(path, Snapshot):
+        return _read(snapshot(path, budget))
+    return _read(path if budget is None else dataclasses.replace(path, budget=budget))
 
 
 def is_rollout(path: str | Path) -> bool:
@@ -353,7 +392,7 @@ def context_figure(path: str | Path | None) -> dict:
         return dict(_NONE)
     try:
         return dict(_scan(path).figure)
-    except OSError:
+    except (OSError, CheckpointError):  # absent, or changing under every read of it
         return dict(_NONE)
 
 

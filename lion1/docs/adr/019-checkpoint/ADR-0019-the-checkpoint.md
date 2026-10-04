@@ -207,9 +207,9 @@ A prompt is the `input_text` items of a user message its row marks `user.text` (
 turn's text is the last assistant text before the exchange ends; reasoning, tool calls and
 compactions are never read into one. The same words again with no answer between are one exchange.
 
-The first `session_meta` is the thread's own. A forked thread's rows before its own history starts
-are its parent's and are not read. The `directive` values are the newest eight prompts, none in a
-thread a sub-agent runs. Pinned by
+A `session_meta` in the first row is the thread's own, and one after it never is. A forked thread's
+rows before its own history starts are its parent's and are not read. The `directive` values are the
+newest eight prompts, none in a thread a sub-agent runs. Pinned by
 `test_a_rollout_reads_each_typed_prompt_with_its_turns_last_text_and_nothing_the_cli_wrote` and
 `test_a_forked_sub_agents_rollout_reads_its_own_rows_and_its_words_are_not_the_persons`.
 
@@ -331,6 +331,11 @@ the directory's newest whose first row says a person's, the later name first on 
   `test_a_same_size_rewrite_that_restores_the_mtime_is_read_anew`,
   `test_a_rollout_whose_first_row_names_no_owner_is_skipped_and_refused_by_name`,
   `test_a_scan_keeps_only_what_the_takes_readers_read`,
+  `test_a_snapshot_that_differs_from_its_file_in_one_field_is_never_read`,
+  `test_a_rollout_replaced_or_cut_between_its_stat_and_its_read_is_taken_again`,
+  `test_a_rollout_rewritten_while_it_is_read_is_taken_again`,
+  `test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken`,
+  `test_a_session_meta_after_the_first_row_is_never_the_threads_own`,
   `test_rollouts_written_in_the_same_nanosecond_are_ordered_by_name_the_later_first`; the Claude
   Code tests in `tests/test_context.py` and `tests/test_claude_code_checkpoint.py`, unchanged.
 
@@ -393,8 +398,8 @@ the directory's newest whose first row says a person's, the later name first on 
 - **S9**: `taken_at` keeps the take's fraction of a second, so `status` calls a file written in the
   take's second stale only when written after it, to the microsecond. A `taken_at` with no fraction
   reads as its second's start. The stamp is read before the transcript is, so a prompt that lands
-  while the take reads is after it. A Codex take stats its rollout once and every read stops at that
-  size, a last line with no end left unread; the scan keeps only what the take's readers read.
+  while the take reads is after it. Every read of a Codex take stops at the size one stat saw (S13),
+  a last line with no end left unread; the scan keeps only what its readers read.
 - **S10**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
   given, is an object; a pull request's number is a positive int, never a bool. A row of another
   shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
@@ -410,3 +415,8 @@ the directory's newest whose first row says a person's, the later name first on 
 - **S12**: A Codex checkpoint is saved and loaded on a Claude Code session's lists, which hold a
   Codex session's; its restore checks it on the Codex session's own. Like a Claude Code one (S5), it
   becomes the latest in a resident's directory and the resident's next process refuses it.
+- **S13**: A Codex take's read is of the file its stat saw. The file opened is compared with that
+  state before the first byte and after the last. One put in its place, cut, or rewritten at the
+  same size is stat and read again, twice at most, then refused with nothing taken. One that only
+  grew is taken as appended to, so a rewrite that also grows the file is not told from an append.
+  The owner and the thread are read from that same read's first row.
