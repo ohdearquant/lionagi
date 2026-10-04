@@ -130,9 +130,10 @@ reads it in a second run of the same profile through the store alone (S1).
 
 ### D1: Five tables beside the graph, and no entity yet ^d1
 
-Serves C1 to C5. The pack (D4) owns five tables and registers no entity type: the record that writes
-a profile or a flow to the graph (S4) registers it. A row is not a note: it is read by its id, never
-embedded, indexed or linked. The actor is the namespace, no entity.
+Serves C1 to C5. The pack (D4) owns five tables and registers no entity type: a profile and a flow
+are files read at submission ([[ADR-0026-the-submission|ADR-0026]] D2, D3), nothing of the graph. A
+row is not a note: it is read by its id, never embedded, indexed or linked. The actor is the
+namespace, no entity.
 
 | name | class | fields |
 | ---- | ----- | ------ |
