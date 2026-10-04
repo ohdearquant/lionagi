@@ -19,7 +19,7 @@ from typing import Any
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import SPAWN_SALIENCE, Bounded
 from hub.areas import partial
-from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, OpenRouterError
+from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, CodexSession, OpenRouterError
 from hub.backend.claude_code import _prompt_tokens
 from hub.chat import chat, load_log
 from hub.hooks import install, load
@@ -477,15 +477,19 @@ async def _chat_main(
         about_box=about_box,
         khive_config=khive_config,
     )
-    # a claude_code model gets no tools of its own: one turn per call, resumed, and everything it does
-    # is a command in its text that this console runs, gates and records
+    # a claude_code or codex model gets no tools of its own: one turn per call, resumed, and everything
+    # it does is a command in its text that this console runs, gates and records
     backend = backend_for(a.model)
-    if isinstance(backend, ClaudeCodeSession):
+    if isinstance(backend, ClaudeCodeSession | CodexSession):
         # a continued chat's new session starts from the whole view: its first figure stands on the
-        # count the last session call reported and the characters it stood in (ADR-0009/C4)
+        # count the last session call reported and the characters it stood in (ADR-0009/C4, C7). A
+        # codex row names its answering attempt's count, `None` when its share of the thread's totals
+        # was unknown: its `usage` sums the attempts
         last = next((r for r in reversed(billed) if "prompt_chars" in r), None)
-        if last is not None and (count := _prompt_tokens(last)) is not None:
-            backend.base = (count, int(last["prompt_chars"]))
+        if last is not None:
+            count = last["prompt_tokens"] if "prompt_tokens" in last else _prompt_tokens(last)
+            if count is not None:
+                backend.base = (count, int(last["prompt_chars"]))
     runs: list[Run] = []
     say = Console(
         a.model,

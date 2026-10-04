@@ -303,7 +303,18 @@ class Console:
         for c in (self.calls or [])[self.billed :]:
             row = {"kind": "USAGE", "turn": turn_no, "model": c.get("model")}
             row.update(
-                {k: c[k] for k in ("usage", "total_cost_usd", "attempt_usage", "prompt_chars") if k in c}
+                {
+                    k: c[k]
+                    for k in (
+                        "usage",
+                        "total_cost_usd",
+                        "attempt_usage",
+                        "prompt_chars",
+                        "prompt_tokens",
+                        "usage_unknown",
+                    )
+                    if k in c
+                }
             )
             row["cost_complete"] = cost_whole(c)  # a CLI's call has no such key; a row without it is older
             fh.write(json.dumps(row, default=str) + "\n")

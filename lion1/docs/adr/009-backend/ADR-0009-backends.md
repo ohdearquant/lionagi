@@ -412,3 +412,7 @@ a first figure. A call's usage is the thread's totals less the call before's (S2
   both, best effort, from the tail of the thread's session file under the CLI's home; a file not
   found or not readable adds nothing. The envelope also names the thread, the step taken, the
   characters the prompt stood in and the thread's totals.
+- **S29**: A turn that ends with no message is billed and retried, so a call's `usage` can sum two
+  attempts. The session's envelope names the answering attempt's count apart, as `prompt_tokens`,
+  with no figure where S26 left it out. The chat's log keeps it, and a continued chat seeds its
+  first figure from that count and the characters it stood in, never from the sum.

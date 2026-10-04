@@ -1349,6 +1349,102 @@ def test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own(tmp
             build(d, backend)
 
 
+def test_backend_for_codex_is_the_session_on_the_named_model_on_a_measured_release_only(
+    monkeypatch, tmp_path
+):
+    from lion_cli.agent import backend_for
+
+    from hub.backend import CodexSession
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: "/opt/bin/codex")
+    b = backend_for("codex/gpt-6-luna")
+    assert isinstance(b, CodexSession) and (b.model, b.cli) == ("gpt-6-luna", "/opt/bin/codex")
+    assert (b.timeout, b.effort, b.home) == (300.0, None, None)
+    assert isinstance(backend_for("codex"), CodexSession) and backend_for("codex").model is None
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "auth.json").write_text("{}")
+    options = {"timeout": 1800, "effort": "high", "cli": "/opt/bin/codex-named", "home": str(home)}
+    p = backend_for("codex/gpt-6-sol", codex=options, cwd=Path("/a"))
+    assert (p.timeout, p.effort, p.cli, p.home) == (1800.0, "high", "/opt/bin/codex-named", str(home))
+    # no name and no key reaches a CLI release the tools-off claim was not measured on
+    assert not b.unmeasured and not p.unmeasured
+    assert type(backend_for("codexx/gpt-6-luna")).__name__ == "OpenRouter"  # a name that only starts so
+    # the two tables are apart: `[claude_code]` configures nothing of a codex model
+    assert backend_for("codex/gpt-6-luna", {"timeout": 1800}).timeout == 300.0
+
+
+@pytest.mark.parametrize("model", ["codex/gpt-6-luna", "claude_code", "deepseek/deepseek-v4.1-flash"])
+@pytest.mark.parametrize("key", ["unmeasured", "tools", "sandbox", "retries", "mcp_config"])
+def test_a_codex_key_that_is_not_timeout_effort_cli_or_home_is_refused_by_name_whatever_the_model(
+    monkeypatch, model, key
+):
+    """`unmeasured` is the one way back to a model that may act unseen: no config sets it, and a
+    `--model` that is not codex does not make the table ignored."""
+    from lion_cli.agent import backend_for
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: f"/opt/bin/{name}")
+    says = rf"\[codex\] {key}: a codex model has no tools of its own \(ADR-0016/D3\); the keys are "
+    with pytest.raises(ValueError, match=says + "timeout, effort, cli, home$"):
+        backend_for(model, codex={"timeout": 600, key: True})
+    with pytest.raises(ValueError, match=r"\[codex\] is a table of timeout, effort, cli and home, not 'x'"):
+        backend_for(model, codex="x")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("timeout", True),  # an int to Python: one second, off a typo
+        ("timeout", "fast"),
+        ("timeout", 0),
+        ("timeout", -5),
+        ("timeout", float("inf")),
+        ("timeout", float("nan")),
+        ("effort", 3),
+        ("effort", ""),
+        ("cli", ""),
+        ("cli", ["codex"]),
+        ("home", ""),  # an empty home would be read as the directory the process stands in
+        ("home", 7),
+    ],
+)
+def test_a_codex_value_that_is_not_what_its_key_takes_is_refused_by_the_key(monkeypatch, key, value):
+    from lion_cli.agent import backend_for
+
+    from hub.agent.agent import codex_options
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: f"/opt/bin/{name}")
+    with pytest.raises(ValueError, match=rf"^\[codex\] {key} is a "):
+        codex_options({key: value})
+    with pytest.raises(ValueError, match=rf"^\[codex\] {key} is a "):
+        backend_for("codex", codex={key: value})
+    good = {"timeout": 0.5, "effort": "low", "cli": "codex", "home": "/h"}
+    assert codex_options(good) == good and codex_options({"timeout": 1800}) == {"timeout": 1800}
+
+
+def test_build_refuses_a_codex_backend_built_for_an_unmeasured_release(tmp_path, kkernel_stub):
+    """`build` takes a backend from anywhere: one built to run a CLI release nobody measured may let
+    the model act outside every gate, so it is refused, as is the config key that would ask for it."""
+    from lion_cli.agent import build
+
+    from hub.backend import CodexSession
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    with pytest.raises(ValueError, match="a codex backend built to run an unmeasured CLI release"):
+        build(d, CodexSession(cli="/bin/codex", unmeasured=True))
+    backend = CodexSession(cli="/bin/codex")
+    _, agent = build(d, backend)
+    assert agent.backend is backend
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[codex]\nunmeasured = true\n'
+    )
+    with pytest.raises(ValueError, match=r"\[codex\] unmeasured: a codex model has no tools of its own"):
+        build(d, backend)
+
+
 def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread(
     tmp_path, kkernel_stub, monkeypatch
 ):
@@ -1833,6 +1929,12 @@ def test_budget_and_wake_rules_follow_the_config_file_while_serving(tmp_path):
     agent._reload()
     assert agent.budget.cost_per_day == 9.0
     said = "reload failed, the values in force stay: ValueError: [claude_code] tools: a claude_code model has"
+    assert lines[-1].startswith(said + " no tools of its own")
+    cfg.write_text("[budget]\ncost_per_day = 3.0\n\n[codex]\nunmeasured = true\n")
+    os.utime(cfg, (time.time() + 20, time.time() + 20))
+    agent._reload()
+    assert agent.budget.cost_per_day == 9.0
+    said = "reload failed, the values in force stay: ValueError: [codex] unmeasured: a codex model has"
     assert lines[-1].startswith(said + " no tools of its own")
 
 

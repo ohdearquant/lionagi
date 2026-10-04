@@ -620,10 +620,12 @@ class CodexSession(Codex):
             )
             raise CodexError(error)
         envelope.update(self._meter(thread))
-        self.calls.append(envelope)
         # the answering attempt's own input count, cache read included (ADR-0009/C2): with no tools a
-        # call is one request, so its share of the thread's input is the prompt it stood in
+        # call is one request, so its share of the thread's input is the prompt it stood in. The
+        # envelope carries it too: its `usage` sums the attempts, and a log's reader needs this one
         count = usage.get("input_tokens")
+        envelope["prompt_tokens"] = count
+        self.calls.append(envelope)
         if thread is None:
             # a stream that named no thread leaves nothing to resume: the next call starts over
             self._keep(run, _NO_THREAD)

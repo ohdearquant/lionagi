@@ -76,6 +76,10 @@ if "LOWER" in prompt:  # a thread whose totals came back below the call before
     printed["input_tokens"] = 7
 if "NOINPUT" in prompt:
     del printed["input_tokens"]
+if "MUTEONCE" in prompt and not os.path.exists(os.path.join(here, "muted")):
+    open(os.path.join(here, "muted"), "w").close()  # one turn that is billed and says nothing
+    ev(type="turn.completed", usage=printed)
+    sys.exit(0)
 ev(type="item.completed", item={"type": "agent_message", "text": text})
 ev(type="turn.completed", usage=printed)
 open(out, "w").write(text)
@@ -318,11 +322,25 @@ def test_a_total_below_the_call_before_or_missing_leaves_the_share_unknown(cli, 
     second = asyncio.run(s([*view, Message("user", f"[_in2] {marker}", name="_in2")]))
     call = s.calls[1]
     assert second.prompt_tokens is None  # never a negative count, never the thread's total
-    assert call["usage_unknown"] is True
+    assert call["usage_unknown"] is True and call["prompt_tokens"] is None
     # the input is left out with its cached part, so the fresh figure is not their difference gone wrong
     assert call["usage"]["input_tokens"] == 0 and call["usage"]["cache_read_input_tokens"] == 0
     assert call["usage"]["output_tokens"] == 5  # the totals that did go up are still told
     assert s.plan([*view[1:], Message("user", f"[_in2] {marker}", name="_in2")]).tokens is None
+
+
+def test_a_call_of_two_billed_attempts_names_the_answering_attempts_count_beside_their_sum(cli, observed):
+    """A turn that ends with no message is billed and retried. `usage` is what the call spent, both
+    attempts; the count the next call stands on is the answering attempt's alone."""
+    s = CodexSession(cli=cli)
+    reply = asyncio.run(s([SYSTEM, Message("user", "[_in0] MUTEONCE", name="_in0")]))
+    a, b = observed()
+    [call] = s.calls
+    one = 100 + len(b["prompt"]) // 4
+    assert call["attempts"] == 2 and a["thread"] != b["thread"] and a["prompt"] == b["prompt"]
+    assert call["usage"]["input_tokens"] == 2 * one
+    assert call["prompt_tokens"] == reply.prompt_tokens == one
+    assert s.base == (one, call["prompt_chars"])
 
 
 def test_a_retry_after_a_failure_on_a_resumed_thread_starts_a_new_thread_from_the_whole_view(cli, observed):
@@ -500,6 +518,71 @@ def test_no_session_file_adds_nothing(cli, tmp_path):
     s = CodexSession(cli=cli, home=str(tmp_path))  # the fake wrote none
     asyncio.run(s([SYSTEM, Message("user", "[_in0] hello", name="_in0")]))
     assert "context_window" not in s.calls[0] and s.calls[0]["thread_id"]
+
+
+def test_a_chat_on_a_codex_model_keeps_one_thread_and_a_continued_chat_stands_on_its_last_count(
+    cli, observed, tmp_path, monkeypatch
+):
+    """`lion chat --model codex/<model>`: the console's system prompt is the CLI's instructions, the
+    model has no tools of its own, and a chat continued from its log seeds the new session's first
+    figure with the count the last call's answering attempt reported and the characters it stood in:
+    never the sum over a retried call's attempts, and nothing when that count was unknown."""
+    import shutil
+
+    import lion_cli.agent as agent_mod
+    from lion_cli.chat import chat_main
+    from lion_cli.main import parser
+
+    which, seeds = shutil.which, []
+
+    class Spy(CodexSession):
+        async def __call__(self, messages):
+            seeds.append(self.base)
+            return await super().__call__(messages)
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: cli if name == "codex" else which(name, *a, **k)
+    )
+    monkeypatch.setattr(agent_mod, "CodexSession", Spy)
+    work = tmp_path / "work"
+    work.mkdir()
+    args, log = ["chat", "--dir", str(work), "--model", "codex/gpt-6-luna"], str(tmp_path / "c.jsonl")
+    said = ["--say", "MUTEONCE hi", "--turns", "1"]  # the first attempt is billed and says nothing
+    asyncio.run(chat_main(parser().parse_args([*args, "--log", log, *said])))
+    muted, a = observed()
+    assert muted["prompt"] == a["prompt"]
+    assert not a["resumed"] and a["argv"][a["argv"].index("-m") + 1] == "gpt-6-luna"
+    assert a["instructions"] != INSTRUCTIONS and len(a["instructions"]) > 500  # the console's own prompt
+    assert "hi" in a["prompt"] and a["instructions"] not in a["prompt"]
+    assert {"--disable", "shell_tool"} <= set(a["argv"]) and 'sandbox_mode="read-only"' in a["argv"]
+    assert seeds == [None]
+    one = 100 + len(a["prompt"]) // 4
+    usage = lambda f: [json.loads(x) for x in Path(f).read_text().splitlines() if '"USAGE"' in x]  # noqa: E731
+    [row] = usage(log)
+    assert row["usage"]["input_tokens"] == 2 * one and row["prompt_tokens"] == one
+    log2 = str(tmp_path / "c2.jsonl")  # a continued chat keeps its own log
+    again = ["-r", log, "--log", log2, "--say", "and again NOINPUT", "--turns", "1"]
+    asyncio.run(chat_main(parser().parse_args([*args, *again])))
+    b = observed()[2]
+    assert not b["resumed"] and b["thread"] != a["thread"]  # a new process: a new thread, the whole view
+    assert "hi" in b["prompt"] and "and again" in b["prompt"]
+    assert seeds[1] == (one, len(a["prompt"]))
+    # the figure the model is shown stands on that count: the view it was asked on, before its note
+    asked, _, note = b["prompt"].rpartition("\n\n<SYSTEM>")
+    asked += note.rpartition("</SYSTEM>")[2]  # the transcript's closing cue stood there too
+    assert f"context: ~{one + (len(asked) - len(a['prompt'])) // 4} / " in note
+    # that call's count was unknown: its row says so and seeds nothing
+    assert usage(log2)[-1]["prompt_tokens"] is None
+    asyncio.run(chat_main(parser().parse_args([*args, "-r", log2, "--say", "once more", "--turns", "1"])))
+    assert seeds[2] is None
+    # a call whose share of its thread's totals was unknown says that in its row too
+    import io
+
+    from lion_cli.view import Console
+
+    rows = io.StringIO()
+    Console("codex", calls=[{"model": "codex", "usage_unknown": True, "prompt_tokens": None}])._bill(rows, 1)
+    assert json.loads(rows.getvalue())["usage_unknown"] is True
 
 
 def test_an_unmeasured_release_is_refused_before_a_thread_is_started(cli, observed, monkeypatch):
