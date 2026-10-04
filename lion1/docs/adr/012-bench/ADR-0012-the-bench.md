@@ -83,10 +83,10 @@ patch, because a command it started may still be writing the tree.
 - **Violated when**: an unreported spend reads as a complete number, a dead box's attempt drops its
   spend, or a failed call counts as a turn.
 
-A loop row carries the outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]) and what stopped it, turns
-(the code's `rounds`), and one entry per call from its envelope
-([[ADR-0009-backends#^c5|ADR-0009/C5]]): time, serving provider, attempts, tokens, finish reason,
-cost. Token sums follow, then `cost_usd` as the known subtotal beside `cost_complete`.
+A loop row carries the outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]) and what stopped it, its
+turns, and one entry per call from its envelope ([[ADR-0009-backends#^c5|ADR-0009/C5]]): time,
+serving provider, attempts, tokens, finish reason, cost. Token sums follow, then `cost_usd` as the
+known subtotal beside `cost_complete`.
 
 A box that dies is replaced once, and the first attempt's spend stays on the row. The summary adds
 only known cost and counts the rows that are not whole. The ledger keeps the row without its calls
@@ -125,8 +125,9 @@ loopback and an HTTPS fetch of each must fail. Otherwise the instance's row reco
 work starts.
 
 Both arms' prompt says the run is unaided and the published fix out of bounds. The CLI arm installs
-its binary before the closure. The lines are removed before grading, since an eval script may
-install. `--aided` leaves the hosts open; every row carries `aided`. Only the named hosts close.
+its binary before the closure, except on Runta under `--unaided`, where it is refused (D2). The
+lines are removed before grading, since an eval script may install. `--aided` leaves the hosts open;
+every row carries `aided`. Only the named hosts close.
 
 ### C5: Unaided is the number; an aided number measures access to the answer _(enforced: process)_ ^c5
 
@@ -159,7 +160,7 @@ their checks and 6 of those failed the grader.
 ### C7: The router arm thinks under a 2000-token budget and stops at the notification frame _(enforced: process)_ ^c7
 
 The loop arm's router backend runs the model's own thinking under a 2000-token budget and ends each
-completion where the model starts writing the loop's own frame, `<system round=`. On Mini-50 that
+completion where the model starts writing the loop's own frame, `<system turn=`. On Mini-50 that
 setting resolved 42 of 50 against 33 with thinking off, both with the stop; unbounded thinking
 without the stop resolved 35.
 
@@ -177,7 +178,7 @@ does not judge a change.
 
 The recorded pair on the hard set with the code hosts closed, not unaided since the CLI arm could
 reach the package indexes (S2), shares one head but ran the loop under a 2400 s budget and the CLI
-under 3600 s. A CLI arm's `rounds` counts the commands it ran, and its calls are one entry per exec,
+under 3600 s. A CLI arm's `turns` counts the commands it ran, and its calls are one entry per exec,
 so turns and calls compare within an arm only. The gate: a quoted comparison names both bench runs
 and states every difference their manifests show.
 
@@ -198,11 +199,11 @@ is cited with its bench run.
 
 ### D1: The set runner in `bench/swe/run_set.py` ^d1
 
-Serves C1 to C5. One box per instance from its evaluation image, local or remote, `--parallel` wide.
-The hosts close unless `--aided`; the arm runs; the hosts reopen; the box grades the patch and the
-row is appended under a lock. A dead box gets one fresh box. A head not a full commit id (40 or 64
-hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time budget,
-100 turns as a backstop, a cost cap on a metered arm only.
+Serves C1 to C5. One box per instance from its evaluation image (S11), local or remote, `--parallel`
+wide. The hosts close unless `--aided`; the arm runs; the hosts reopen; the box grades the patch and
+the row is appended under a lock. A dead box gets one fresh box. A head not a full commit id (40 or
+64 hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time
+budget, 100 turns as a backstop, a cost cap on a metered arm only.
 
 - **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, an unmetered arm's cap
   refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a matching
@@ -217,10 +218,22 @@ hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1
 Serves C1 and C4. `grade` mirrors the harness's `run_instance` in the box: reset, three apply
 attempts, the eval script under a timeout, the harness's report function, a status on every early
 stop. `close_code_hosts` writes marked `/etc/hosts` lines and probes from inside; `open_code_hosts`
-rewrites the file in place, since it is a bind mount, and proves no marked line is left.
+rewrites the file in place, since it is a bind mount, and proves no marked line is left. An unaided
+Runta runtime carries the code-host policy; reopening empties it, waits for the probed hosts (S12),
+else refuses the grade. The codex arm is refused there.
 
 - **Landing evidence**: `tests/test_swe_sandbox.py`: `test_failed_reset_is_not_graded`, the probe
-  test refusing a reachable or elsewhere-resolving host.
+  test refusing a reachable or elsewhere-resolving host. `tests/test_swe_runta.py`:
+  `test_the_codex_arm_on_an_unaided_runta_launch_is_refused_before_any_box`,
+  `test_testbed_runta_carries_the_code_hosts_as_its_policy_only_when_unaided`,
+  `test_a_runta_run_sends_the_code_host_denylist_with_the_create_only_when_unaided`,
+  `test_an_unaided_runta_runtime_with_another_policy_is_refused_before_the_model_runs`,
+  `test_reopening_a_runta_box_empties_its_policy_and_waits_until_the_hosts_answer`,
+  `test_a_runta_policy_that_does_not_lift_in_time_refuses_the_grade`,
+  `test_the_runner_does_not_grade_a_run_whose_hosts_did_not_reopen_and_names_the_refusal`,
+  `test_a_probe_that_outlasts_the_wait_refuses_the_grade_within_it`,
+  `test_the_wait_between_passes_never_runs_past_the_bound`,
+  `test_reopening_a_runta_box_without_a_policy_only_rewrites_the_hosts_file`.
 
 ### D3: The loop arm in `bench/swe/run_swe.py` ^d3
 
@@ -229,7 +242,7 @@ adds the watch's section and a section naming a turn cut at the output cap or bl
 a dead box, the watch and the cost cap, then harvests every call. `--criteria`, `--tdd` and
 `--deliberate` change the profile's text.
 
-- **Landing evidence**: `tests/test_swe_solve.py`: rounds and patch kept on a backend failure,
+- **Landing evidence**: `tests/test_swe_solve.py`: turns and patch kept on a backend failure,
   missing usage incomplete, a failed envelope not a turn, a dead box ending the run;
   `test_the_thinking_flag_maps_to_the_reasoning_field`.
 
@@ -292,3 +305,17 @@ model has no cost.
   `test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_predictions`,
   `test_the_snapshot_the_harness_reads_is_whole_or_absent`,
   `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).
+- **S10**: Only on Runta is the unaided closure enforced outside the box. An unaided Daytona or
+  Docker run carries the `/etc/hosts` closure alone, which a root shell in the box can undo: the
+  closure is written through that shell, and the Daytona box runs as root.
+- **S11**: On Runta the instance's image is named `swe-` and the id after its owner, built from the
+  row's image as x86_64 when no successful build of that name is found, and reused by that name for
+  the next run ([[ADR-0011-the-box#^d5|ADR-0011/D5]]). Pinned in `tests/test_swe_runta.py`:
+  `test_runta_name_is_swe_prefixed_lowercase_after_the_owner`,
+  `test_runta_image_builds_from_the_rows_image_when_none_is_found`,
+  `test_runta_image_returns_a_found_image_without_building`.
+- **S12**: The reopen wait on Runta is 120 s, then the probe in flight when it fell ends within the
+  15 s of request grace `RuntaSandbox.exec` adds to a command's own timeout; no later probe starts.
+  Pinned in `tests/test_swe_runta.py`:
+  `test_a_probe_that_outlasts_the_wait_refuses_the_grade_within_it`; and in `tests/test_runta.py`:
+  `test_exec_wraps_a_finite_timeout_and_hands_the_sdk_timeout_plus_15`.

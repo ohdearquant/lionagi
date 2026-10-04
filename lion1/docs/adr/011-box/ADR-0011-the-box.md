@@ -1,7 +1,7 @@
 ---
 adr: ADR-0011
 status: draft
-liveness: operating (three boxes under tests and live runs, each box's answer to a missing deadline pinned, the coding tools under tests and one live console run, the box tree's bound resolved in the box, the watch under tests and on the bench; the real-box tests are opt-in)
+liveness: operating (four boxes under tests and live runs, each box's answer to a missing deadline pinned, the coding tools under tests and one live console run, the box tree's bound resolved in the box, the watch under tests and on the bench; the real-box tests are opt-in)
 date: "2026-09-25"
 area: box
 kind: new
@@ -22,16 +22,16 @@ tags:
 ## Context
 
 A model that reads well next needs to run what it reads, and a model that edits needs the system to
-watch the tree rather than believe its claims. Three places run a model's commands: a VM over the
-console's directory, a container from an evaluation image, and a remote sandbox from any image. This
-record fixes one shape for the three, what a command may touch, the three tools a fix is found and
+watch the tree rather than believe its claims. Four places run a model's commands: a VM over the
+console's directory, a container from an evaluation image, and remote boxes on two services. This
+record fixes one shape for the four, what a command may touch, the three tools a fix is found and
 written with, and the watch that ends a run on the tree's evidence.
 
 The commands are handlers ([[ADR-0005-command-handling|ADR-0005]]); the watch is a section of the
 notification ([[ADR-0006-the-notification#^c3|ADR-0006/C3]]) and its gate is the job's `accept`
 ([[ADR-0003-the-bounds#^c4|ADR-0003/C4]]); a whole value stays whole and the view budget is the only
 size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.py`, `shell.py`,
-`docker.py`, `daytona.py`, `code.py`, `fs.py`, `watch.py`; the box half of
+`docker.py`, `daytona.py`, `runta.py`, `code.py`, `fs.py`, `watch.py`; the box half of
 `apps/cli/lion_cli/chat.py`; `bench/swe/sandbox.py`.
 
 ## Definitions
@@ -158,14 +158,14 @@ idle stop.
 
 ## Decisions
 
-### D1: `hub/tools/box.py` and three boxes ^d1
+### D1: `hub/tools/box.py` and four boxes ^d1
 
 Serves C1, C2 and C6. `Box`, `BoxBase`, `git_diff`, `inside` and `BoxTree` in `box.py`. The VM
 (`shell.py`) is one container per conversation over the mounted directory. The docker box, named
-`lion-` and eight hex characters, runs any image under `sleep infinity`. The remote box sends stderr
-to a file behind a per-call marker and splits its one stream on it. It is replaced up to three times
-when it never comes up; a box that dies later is named in `dead`, and the bench retries once on a
-fresh box.
+`lion-` and eight hex characters, runs any image under `sleep infinity`. The Daytona box sends
+stderr to a file behind a per-call marker and splits its one stream on it. It is replaced up to
+three times when it never comes up; a box that dies later is named in `dead`, and the bench retries
+once on a fresh box.
 
 - **Landing evidence**: `tests/test_box.py` (the derived verbs, the timeout seam on both transports,
   no deadline reaching `exec` bare), `tests/test_shell.py` and `tests/test_daytona.py` (stubs; the
@@ -176,13 +176,17 @@ fresh box.
 Serves C3. `code(actor, tree)` registers the three handlers and `files(actor, root)` the two
 readers; the console passes a tree of its directory or of the box, the bench a tree of the box. The
 tools do not know which. Both trees list a directory alike: every entry, hidden ones included,
-sorted, `/` after a directory. An edit gives a new line the ending of the line before it, so a file
-with mixed endings stays mixed.
+sorted, `/` after a directory. An edit gives a new line the ending of the line before it, so mixed
+endings stay mixed. A line ends in CRLF, else LF, else none if last; a bare CR is data.
 
-- **Landing evidence**: `tests/test_code_tools.py` (nine: exactness, the single-file filename, the
-  empty file, CRLF and mixed endings, hidden files, paths that leave the tree, the listing);
-  `tests/test_daytona.py`, the box tree's listing; `tests/test_box.py`, symlinks out refused in both
-  trees.
+- **Landing evidence**: `tests/test_code_tools.py` (fourteen: exactness, the single-file filename,
+  the empty file, CRLF and mixed endings
+  (`test_an_edit_reads_each_crlf_of_the_replacement_as_a_line_end`), bare CRs
+  (`test_an_edit_leaves_a_bare_carriage_return_where_it_was`,
+  `test_read_lines_shows_a_bare_carriage_return_as_text`,
+  `test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line`), hidden files, paths
+  that leave the tree, the listing); `tests/test_daytona.py`, the box tree's listing;
+  `tests/test_box.py`, symlinks out refused in both trees.
 
 ### D3: `hub/tools/watch.py`: `Watch`, `Criteria`, `criteria`, `accept` ^d3
 
@@ -204,11 +208,39 @@ to; the person picks `--offline` when the directory holds what the network must 
 
 - **Landing evidence**: the internal network measured without DNS, egress or host reach, 2026-09-21.
 
+### D5: `hub/tools/runta.py`, a box under an egress policy ^d5
+
+Serves C1 and C2. `RuntaSandbox` starts a runtime from a Runta image or checkpoint under an egress
+policy the service enforces outside the guest; a box with a policy starts only one reporting it
+(S16). The bench's launcher builds the image once (S18), finds it by name later (S19), and hands it
+to `start`. `exec` keeps the remote box's timeout seam, files use the runtime's file API, and
+`workdir` raises `SandboxDead` for an ended runtime. Its records come back as bus events and need
+`capture` set.
+
+- **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
+  under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test), among them
+  `test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_deletes_it`,
+  `test_resume_refuses_a_suspended_runtime_under_another_policy_before_it_runs_and_deletes_it`,
+  `test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_deletes_it`,
+  `test_resume_whose_sdk_call_fails_deletes_the_runtime_and_raises_that_error`,
+  `test_a_run_past_a_fractional_deadline_is_timed_out_though_its_rounded_time_is_under_it`,
+  `test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error`,
+  `test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_attached`,
+  `test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion`,
+  `test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion`,
+  `test_close_errors_ride_a_cancelled_close_as_notes`,
+  `test_find_image_asks_the_documented_maximum_once_and_finds_the_match_on_the_last_row`,
+  `test_a_runtime_made_but_never_resolved_is_deleted_through_the_sdk_with_its_revision`,
+  `test_a_poll_that_hangs_past_the_deadline_is_cut_there_and_the_build_times_out`,
+  `test_a_request_that_keeps_arriving_is_ended_at_the_deadline_by_the_wall_clock`,
+  `test_a_create_that_outlives_the_timeout_is_the_builds_timeout_and_no_poll_follows` and
+  `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
+
 ## Alternatives
 
 | approach                                            | rejected because                                                                              |
 | --------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| One box class with a backend switch                 | three transports differ in exec, files and liveness; a switch hides that                       |
+| One box class with a backend switch                 | four transports differ in exec, files and liveness; a switch hides that                        |
 | A VM per command                                    | 1.4 s per call and no state between calls; an exec into one VM is 60 ms                        |
 | A host sandbox profile                              | a deprecated, undocumented profile language, and the host's kernel and tools exposed           |
 | `bash` with `sed` and heredocs only                 | a shell line per look, and heredoc edits fought the model's tool-call training                 |
@@ -250,9 +282,9 @@ to; the person picks `--offline` when the directory holds what the network must 
   `python:3.12-slim` with git, ripgrep, jq, curl and `uv`, whose project environment is `/opt/venv`
   on the `/opt` volume, never the directory's own `.venv`.
 - **S11**: No console path installs the watch. A chat over its own directory whose hooks carry the
-  `tree-changed` round hook ([[ADR-0005-command-handling|ADR-0005]] S4) hears the files changed
-  since the last turn and a moved HEAD; in a boxed chat that hook reads this machine's tree, which
-  the model's tools do not change.
+  `tree-changed` turn hook ([[ADR-0005-command-handling|ADR-0005]] S4) hears the files changed since
+  the last turn and a moved HEAD; in a boxed chat that hook reads this machine's tree, which the
+  model's tools do not change.
 - **S12**: The derived `read` carries a file out of the box as base64. `git_diff` lists the new
   files NUL-separated, so a name git would quote reaches the diff as it is; no test pins such a
   name.
@@ -274,3 +306,23 @@ to; the person picks `--offline` when the directory holds what the network must 
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
+- **S16**: A box sends its policy with the create, starts only a runtime reporting it, and with none
+  sends and checks none. A resume reads the policy first, so a mismatch is deleted unwoken, then
+  again (S17). A runtime that reports another policy, cannot be read, or fails to resume is deleted,
+  raising `SandboxDead` naming both policies, else the error, and any failed deletion. `stop()`
+  tries both clients and the deletion, raising a cancellation, else a failed deletion, else the
+  first close error, the rest riding it as notes.
+- **S17**: A policy set on a running runtime, as after a restore, leaves its processes a window
+  under the old one, and the change can read back before it holds. A resume that changes the policy
+  itself is caught only by the read after it. A closure that matters is proven from inside the box.
+- **S18**: An image build is awaited to its timeout, counted from before the create request. Each
+  request ends at it at the latest, by wall clock, as does each 15 s wait, and a failed request is
+  retried only while time is left. The build is reported timed out at the deadline plus scheduling
+  latency, and a build that succeeded is reported as such; decoding a response that arrived in time
+  is outside the bound. Two concurrent first builds may both build.
+- **S19**: The service lists at most 100 builds per request, with no cursor. The lookup sorts the
+  page it returns by `updated_at`, read as instants, and reuses the newest matching build; a row
+  whose time is missing, malformed or without an offset sorts oldest. A matching build the page
+  omits is not found and the image is built again
+  (`test_find_image_does_not_find_a_build_the_page_leaves_out`,
+  `test_find_image_orders_builds_by_the_instant_and_a_row_without_one_is_the_oldest`).

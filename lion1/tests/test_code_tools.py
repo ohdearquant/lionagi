@@ -2,14 +2,15 @@
 match, an edit that lands only where `old` is unique and serializes with another edit of the same file."""
 
 import asyncio
+import itertools
 from pathlib import Path
 
 import pytest
 
 from hub import LocalTree, code
-from hub.tools.code import numbered, replace_once
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from hub.tools.code import Edit, numbered, replace_once
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 
@@ -47,7 +48,7 @@ def test_read_lines_search_and_edit_over_a_tree(tmp_path):
         '<lact e3>edit(path="pkg/m.py", old="return", new="yield")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=3), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=3), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["r1"].value == "pkg/m.py lines 5-6 of 6\n5: def g():\n6:     return f() + 1"
     assert r["s1"].value.splitlines() == ["pkg/m.py:6:    return f() + 1"]  # build/ is ignored
@@ -56,7 +57,7 @@ def test_read_lines_search_and_edit_over_a_tree(tmp_path):
     assert r["s3"].ok is False and any(
         w in r["s3"].error.lower() for w in ("unclosed", "unmatched", "balanced")
     )
-    assert r["e1"].ok and r["e2"].ok  # two edits of one file in one round: both land
+    assert r["e1"].ok and r["e2"].ok  # two edits of one file in one turn: both land
     assert r["e3"].ok is False and "occurs 2 times" in r["e3"].error
     assert (
         tmp_path / "pkg" / "m.py"
@@ -70,7 +71,7 @@ def test_search_over_a_single_file_still_prints_the_filename(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact s>search(pattern="return f", path="pkg/m.py")</lact>', "done"),
         )
     )
@@ -86,7 +87,7 @@ def test_read_lines_on_an_empty_file_says_so(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r>read_lines(path="empty.py")</lact>', "done"),
         )
     )
@@ -101,7 +102,7 @@ def test_an_edit_keeps_a_crlf_files_other_bytes(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact e>edit(path="win.txt", old="b = 1", new="b = 2")</lact>', "done"),
         )
     )
@@ -120,7 +121,7 @@ def test_an_edit_keeps_each_line_of_a_mixed_endings_file(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact e>edit(path="mixed.txt", old="c = 1", new="c = 2\nc2 = 3")</lact>', "done"),
         )
     )
@@ -128,6 +129,129 @@ def test_an_edit_keeps_each_line_of_a_mixed_endings_file(tmp_path):
     assert r["e"].ok, r["e"].error
     assert (tmp_path / "mixed.txt").read_bytes() == b"a = 1\r\nb = 1\nc = 2\r\nc2 = 3\r\nd = 1"
     assert reend("x\r\ny\n", "x\ny\nz\n") == "x\r\ny\nz\n" and reend("x\r\n", "w\nx\n") == "w\r\nx\r\n"
+
+
+def test_an_edit_leaves_a_bare_carriage_return_where_it_was(tmp_path):
+    # a line's ending was stripped as any run of CR and LF while the edit folded only CRLF, so a CR
+    # not before an LF read as part of the ending and was written back once more on every edit
+    actor, profile = tree(tmp_path)
+    (tmp_path / "one.txt").write_bytes(b"a\r\nb\r")
+    (tmp_path / "two.txt").write_bytes(b"x\r\r\ny\r\n")
+    run = asyncio.run(
+        actor.run(
+            profile,
+            RunRequest(inputs=("go",), max_turns=2),
+            scripted(
+                '<lact e1>edit(path="one.txt", old="a", new="A")</lact>'
+                '<lact e2>edit(path="two.txt", old="y", new="Y")</lact>',
+                "done",
+            ),
+        )
+    )
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["e1"].ok and r["e2"].ok, (r["e1"].error, r["e2"].error)
+    written = ((tmp_path / "one.txt").read_bytes(), (tmp_path / "two.txt").read_bytes())
+    assert written == (b"A\r\nb\r", b"x\r\r\nY\r\n")
+
+
+def test_read_lines_shows_a_bare_carriage_return_as_text(tmp_path):
+    # the read dropped it with the ending, so an `old` copied from the read missed the line
+    actor, profile = tree(tmp_path)
+    (tmp_path / "one.txt").write_bytes(b"a\r\nb\r")
+    (tmp_path / "two.txt").write_bytes(b"x\r\r\ny\r\n")
+    run = asyncio.run(
+        actor.run(
+            profile,
+            RunRequest(inputs=("go",), max_turns=2),
+            scripted(
+                '<lact r1>read_lines(path="one.txt")</lact><lact r2>read_lines(path="two.txt")</lact>',
+                "done",
+            ),
+        )
+    )
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["r1"].value == "one.txt lines 1-2 of 2\n1: a\n2: b\r"
+    assert r["r2"].value == "two.txt lines 1-2 of 2\n1: x\r\n2: y"
+
+
+@pytest.mark.parametrize(
+    ("file", "new", "want"),
+    [
+        (b"a\r\nb\r\n", "B\r\nC", b"a\r\nB\r\nC\r\n"),
+        (b"a\r\nb\r\n", "B\nC", b"a\r\nB\r\nC\r\n"),
+        (b"a\r\nb\r\n", "B\rC", b"a\r\nB\rC\r\n"),
+        (b"a\r\nb\r\n", "B\r\r\nC", b"a\r\nB\r\r\nC\r\n"),
+        (b"a\nb\n", "B\r\nC", b"a\nB\nC\n"),
+        (b"a\nb\n", "B\nC", b"a\nB\nC\n"),
+        (b"a\nb\n", "B\rC", b"a\nB\rC\n"),
+        (b"a\r\nb\nc\r\n", "B\r\nC", b"a\r\nB\nC\nc\r\n"),
+        (b"a\r\nb", "B\r\nC", b"a\r\nB\r\nC"),
+    ],
+    ids=[
+        "crlf-file-crlf-new",
+        "crlf-file-lf-new",
+        "crlf-file-bare-cr-new",
+        "crlf-file-bare-cr-then-crlf-new",
+        "lf-file-crlf-new",
+        "lf-file-lf-new",
+        "lf-file-bare-cr-new",
+        "mixed-file-crlf-new",
+        "unterminated-last-line-crlf-new",
+    ],
+)
+def test_an_edit_reads_each_crlf_of_the_replacement_as_a_line_end(tmp_path, file, new, want):
+    # `a\r\nb\r\n` with `b` replaced by `B\r\nC` was written `a\r\nB\r\r\nC\r\n`: the CRLF of the
+    # replacement was split at its LF, so its CR stayed on the line and took a second one; a bare CR in
+    # the replacement stays text, and every new line takes the ending of the line before it
+    actor = Actor("c")
+    code(actor, LocalTree(tmp_path))
+    (tmp_path / "f.txt").write_bytes(file)
+    asyncio.run(actor.handlers["edit"].fn(Edit(path="f.txt", old="b", new=new), None))
+    assert (tmp_path / "f.txt").read_bytes() == want
+
+
+def test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line(tmp_path):
+    # every string of length 0..6 over a, CR and LF holding a CRLF: the file as read_lines shows it is
+    # what an edit matches, an edit of it to itself writes the same bytes, and in a file whose LFs all
+    # follow a CR an edit of one line leaves every other line byte-identical (with mixed endings the
+    # diff may pair an untouched line with an equal line ending otherwise, so those take only the first).
+    # The replacement is spelled with CRLF line ends, and with LF ones where no row ends in a CR of its
+    # own: an LF after a CR in the replacement is a CRLF, a line end, and the CR is not kept as text.
+    actor = Actor("c")
+    code(actor, LocalTree(tmp_path))
+    edit, f = actor.handlers["edit"].fn, tmp_path / "f.txt"
+
+    async def corpus() -> int:
+        edits = 0
+        for chars in itertools.chain.from_iterable(itertools.product("a\r\n", repeat=n) for n in range(7)):
+            text = "".join(chars)
+            if "\r\n" not in text:
+                continue
+            shown = [row.partition(": ")[2] for row in numbered(text)[0].split("\n")]
+            tail = "\n" if text.endswith("\n") else ""
+            read = "\n".join(shown) + tail
+            f.write_bytes(text.encode())
+            await edit(Edit(path="f.txt", old=read, new=text), None)  # spelled as the file spells it
+            assert f.read_bytes().decode() == text, repr(text)
+            edits += 1
+            if text.count("\n") != text.count("\r\n"):
+                continue
+            lines = text.split("\n")
+            for i in range(len(shown)):
+                want = [*lines[:i], "Z\r" if i < len(lines) - 1 else "Z", *lines[i + 1 :]]
+                for end in ("\r\n", "\n"):
+                    new = end.join([*shown[:i], "Z", *shown[i + 1 :]]) + (end if tail else "")
+                    if end == "\n" and "\r\n" in new:
+                        continue
+                    f.write_bytes(text.encode())
+                    await edit(Edit(path="f.txt", old=read, new=new), None)
+                    assert f.read_bytes().decode().split("\n") == want, (repr(text), i, end)
+                    edits += 1
+        return edits
+
+    # every string once, then each line of the 161 CRLF-only ones with a CRLF replacement and, in 254 of
+    # those lines, with an LF one
+    assert asyncio.run(corpus()) == 484 + 306 + 254
 
 
 def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):
@@ -140,7 +264,7 @@ def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact s>search(pattern="needle", path=".")</lact>', "done"),
         )
     )

@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from lionagi.record import Directive, Entry, Kind, Record, ViewEntry, directives, fold
+from lion1.record import Directive, Entry, Kind, Record, ViewEntry, directives, fold
 
 # The record's own names, spelled out here so the tests do not borrow the module's table (ADR-0007/C1).
 PREFIX = {Kind.INPUT: "_in", Kind.SYSTEM: "_sys", Kind.TEXT: "_m", Kind.RESULT: "_r"}
@@ -60,14 +60,14 @@ def test_seq_is_the_number_the_next_append_takes():
     assert r.seq == 2
 
 
-def test_append_keeps_content_alias_round_and_meta():
+def test_append_keeps_content_alias_turn_and_meta():
     r = Record("run-1")
     plain = r.append(Kind.TEXT, "hello")
-    assert (plain.alias, plain.round, plain.meta) == (None, 0, {})
-    e = r.append(Kind.RESULT, {"lines": 3}, alias="f", round=2, request="read_file", ok=True)
+    assert (plain.alias, plain.turn, plain.meta) == (None, 0, {})
+    e = r.append(Kind.RESULT, {"lines": 3}, alias="f", turn=2, request="read_file", ok=True)
     assert e.kind is Kind.RESULT
     assert e.content == {"lines": 3}
-    assert (e.alias, e.round) == ("f", 2)
+    assert (e.alias, e.turn) == ("f", 2)
     assert e.meta == {"request": "read_file", "ok": True}
 
 
@@ -387,6 +387,15 @@ def test_a_pinned_seq_that_names_no_entry_is_skipped_and_cannot_crash_the_fold()
     r = make(Kind.RESULT)
     direct(r, "hide", seqs=(-3,))
     assert shape(fold(r)) == ["_r0", "_r1"]
+
+
+def test_a_pin_past_the_record_under_a_date_past_it_is_skipped_and_cannot_crash_the_fold():
+    # a row read back from a log carries its own date and pins, and neither is held to the record's
+    # length: the pin indexed the entries and raised IndexError while the input was protected
+    r = make(Kind.INPUT, Kind.RESULT)
+    r.append(Kind.SYSTEM, "notice", directive=Directive("hide", (), at=100, seqs=(50, 1)))
+    assert shape(fold(r)) == ["_in0", "_r1 hidden", "_sys2"]
+    assert shape(fold(r, protect_input=False)) == ["_in0", "_r1 hidden", "_sys2"]
 
 
 def test_a_summary_pinned_beside_a_seq_that_names_no_entry_still_stands_in_front_of_its_target():

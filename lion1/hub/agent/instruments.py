@@ -18,6 +18,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -26,9 +27,10 @@ from stat import S_ISREG
 from typing import Any
 from urllib.parse import quote
 
-from lionagi.notes import NoteStore
+from lion1.notes import NoteStore
 
 from ..khive import Khive, lit
+from .agent import LoopLock
 from .chores import Outcome
 
 __all__ = (
@@ -87,31 +89,126 @@ LAUNCHCTL = "/bin/launchctl"
 LSOF = _bin("lsof", "/usr/sbin/lsof", "/usr/bin/lsof")
 
 
+_GRACE = 5  # seconds a stopped command's process group gets to close its pipes and be reaped
+
+
 async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) -> tuple[int, str, str]:
     """One read-only command: rc, stdout, stderr. Every program path is the caller's; nothing here
-    is a shell."""
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=cwd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    is a shell. The `timeout` runs from the call and covers the command's start. Past it, or on a
+    cancel, the command's process group is killed and its pipes drained for up to `_GRACE` seconds
+    and then closed. A start still unlanded at the timeout gets `_GRACE` seconds to land, and is
+    then cancelled, twice if it must be, and the group of the process it began, if it began one, is
+    killed. A descendant that left the group is not killed, and its pipe is abandoned at the grace.
+    A drain that outlasts the grace is no error: the call returns its timeout answer or raises its
+    cancel. A start that failed, a second `EPERM` (the only refusal retried) and any other error while
+    signalling, draining or closing the pipes raise."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    # asyncio keeps this dict as the transport's extra info and puts the Popen in it as it forks the
+    # process, before the start can land: the one handle a start cut short leaves on that process
+    holder: dict[str, Any] = {}
+    # the start is a task of its own: cut short while asyncio connects the pipes, it would end the
+    # command's leader alone, leaving the group it leads (and on 3.11 and 3.12 waiting for its pipes)
+    launch = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            *argv,
+            cwd=cwd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # the command's whole process group: a timeout ends its children too
+            extra=holder,
+        )
     )
+    lapsed = 124, "", f"{argv[0]} did not finish within {timeout}s"
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        await asyncio.wait([launch], timeout=timeout)  # a cancel stops this wait and never reaches the start
+    except BaseException:
+        await _landed(launch, holder)
+        raise
+    if not launch.done():
+        await _landed(launch, holder)
+        if launch.done() and not launch.cancelled():
+            launch.result()  # a start that failed is a failure, whenever it failed, and not a timeout
+        return lapsed
+    proc = launch.result()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), max(deadline - loop.time(), 0))
     except TimeoutError:
         await _stop(proc)
-        return 124, "", f"{argv[0]} did not finish within {timeout}s"
+        return lapsed
     except BaseException:  # a cancelled read still stops the child it started
         await _stop(proc)
         raise
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+async def _landed(launch: asyncio.Future[asyncio.subprocess.Process], holder: dict[str, Any]) -> None:
+    """Stop what a start still running has begun. It is given `_GRACE` seconds to land, then is
+    cancelled and given `_GRACE` more to take the cancel, then cancelled again and given as long to
+    take that one: on 3.11 and 3.12 a start that began its process waits for its pipes after the
+    first. A cancel of the caller is absorbed meanwhile. A start that landed is stopped, the group it
+    began ended. One that did not land, cancelled or given up on, has its process's group killed by
+    the pid of the Popen in `holder`, when there is one, a refused signal retried once as `_stop` does;
+    asyncio reaps the leader. A cancel that came in while waiting is raised after that. The pipe ends
+    asyncio has not connected by then are its own connection task's, out of the runner's reach: that
+    task closes them once the loop runs it."""
+    loop = asyncio.get_running_loop()
+    cancelled = False
+    for attempt in range(3):
+        end = loop.time() + _GRACE
+        while not launch.done() and (left := end - loop.time()) > 0:
+            try:
+                await asyncio.wait([launch], timeout=left)
+            except asyncio.CancelledError:
+                cancelled = True
+        if attempt < 2:
+            launch.cancel()  # a start that has not landed is cancelled; one that has is left as it is
+    if launch.done() and not launch.cancelled() and launch.exception() is None:
+        await _stop(launch.result())
+    elif (popen := holder.get("subprocess")) is not None:  # the group leads under the leader's pid
+        try:
+            os.killpg(popen.pid, signal.SIGKILL)
+        except ProcessLookupError:  # the group ended on its own
+            pass
+        except PermissionError:
+            # as in `_stop`: macOS answers EPERM for a group whose only member is its leader, exited and
+            # not yet reaped, and the retry is read once the leader is reaped. There is no Process to drain
+            # here, only the held Popen, whose `poll` reaps an exited leader without blocking and leaves
+            # one that still runs alone. EPERM again means a member this process may not signal: it raises
+            popen.poll()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(popen.pid, signal.SIGKILL)
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 async def _stop(proc: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(ProcessLookupError):  # it may have exited on its own
-        proc.kill()
-    await proc.wait()
+    refused = False
+    try:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:  # the group ended on its own
+            pass
+        except PermissionError:  # told apart below, once the drain has reaped the leader
+            refused = True
+        # drain, then reap: a command that filled its pipe holds it paused, and on 3.11 and 3.12 `wait`
+        # returns only once every pipe has closed, so waiting before draining never returns
+        try:
+            await asyncio.wait_for(proc.communicate(), _GRACE)
+        except TimeoutError:  # a descendant that left the group holds a pipe, and is not ours to end
+            pass
+    finally:
+        try:
+            if refused:
+                # macOS answers EPERM for a group whose only member is its leader, exited and not yet
+                # reaped: that group is gone once the drain has reaped it. EPERM again means a member
+                # still runs that this process may not signal, and the caller is told. A drain cut short
+                # by a cancel is read the same way, and the cancel is raised after
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+        finally:  # the pipes close here, not whenever that descendant lets go of them
+            proc._transport.close()
 
 
 def _age_h(iso: str, now: float | None = None) -> float:
@@ -1013,6 +1110,11 @@ _GITHUB_ORIGIN = re.compile(
 )
 
 
+def _head(branch: str | None) -> str:
+    # git's own label for a detached HEAD, which no branch can carry: it holds a space
+    return "(detached HEAD)" if branch is None else branch
+
+
 def _pr_number(p: Any) -> bool:
     # a pull request's number is a positive integer; a bool is an int to Python and is not one
     n = p.get("number") if isinstance(p, dict) else None
@@ -1087,9 +1189,11 @@ class Worktrees:
             prev = _snapshot(self.state, f"worktrees:{repo}")
             snap = {}
             for t in trees[1:]:  # the first entry is the main checkout
+                # a detached HEAD is a record without a branch attribute, kept as no branch: a branch
+                # named `detached` is a branch
                 path, branch = (
                     t.get("worktree", "?"),
-                    (t.get("branch") or "detached").removeprefix("refs/heads/"),
+                    t["branch"].removeprefix("refs/heads/") if "branch" in t else None,
                 )
                 failed = []
                 rc, st, _ = await self.sh([GIT, "-C", path, "status", "--porcelain"])
@@ -1102,9 +1206,9 @@ class Worktrees:
                 if not logged:
                     failed.append("log")
                 pr = "?"
-                if slug is None and branch != "detached":
+                if slug is None and branch is not None:
                     failed.append("PR")
-                elif branch != "detached":
+                elif branch is not None:
                     rc, prs, _ = await self.sh(
                         [
                             GH,
@@ -1131,7 +1235,7 @@ class Worktrees:
                         failed.append("PR")
                 parked = dirty > 0 and age_d > self.parked_days and pr == "none"
                 lines.append(
-                    f"{path} | {branch} | dirty {dirty} | HEAD {age_d:.1f}d | PR {pr}"
+                    f"{path} | {_head(branch)} | dirty {dirty} | HEAD {age_d:.1f}d | PR {pr}"
                     + (" | PARKED" if parked else "")
                 )
                 if failed:  # the last good reading stands until a read succeeds
@@ -1151,7 +1255,7 @@ class Worktrees:
                     findings.append(f"{p}: worktree gone")
                 elif a is None:
                     findings.append(
-                        f"{p}: new worktree on {b['branch']}"
+                        f"{p}: new worktree on {_head(b['branch'])}"
                         + (", parked: dirty, old, no PR" if b["parked"] else "")
                         if prev is not None
                         else f"{p} ({b['branch']}): parked: dirty, HEAD older than {self.parked_days:g} "
@@ -1160,8 +1264,14 @@ class Worktrees:
                         else ""
                     )
                 else:
-                    if a.get("pr") != b["pr"] or a.get("branch") != b["branch"]:
-                        was, now_ = f"{a.get('branch')}/{a.get('pr')}", f"{b['branch']}/{b['pr']}"
+                    # a row stored before a detached HEAD was kept as no branch reads `detached` with PR
+                    # `?` in either state: its branch is unknown, so only its PR is compared and the
+                    # report says the row could be either
+                    known = not (a.get("branch") == "detached" and a.get("pr") == "?")
+                    if a.get("pr") != b["pr"] or (known and a.get("branch") != b["branch"]):
+                        label = _head(a.get("branch")) if known else "detached or (detached HEAD)"
+                        was = f"{label}/{a.get('pr')}"
+                        now_ = f"{_head(b['branch'])}/{b['pr']}"
                         findings.append(f"{p}: {was} -> {now_}")
                     if b["parked"] and not a.get("parked"):
                         findings.append(
@@ -1566,11 +1676,17 @@ class RequiredContexts:
         )
 
 
-_VERDICT_FILE = re.compile(r"^(.+-\d+)-([0-9a-f]{8})\.(json|md)$")
+_VERDICT_FILE = re.compile(r"^((.+)-(\d+)-[0-9a-f]{8})\.(json|md)$")
 _TOTAL = re.compile(
     r"^TOTAL (\d+) open PRs authored by (\S+) \(control: closed-PR search returned (\d+)", re.M
 )
 _LISTED = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)\b", re.M)
+
+
+def _pr_id(key: str) -> str:
+    """A PR row's key as rows are matched: its repo case-blind, its number unpadded."""
+    repo, _, n = key.rpartition("#")
+    return f"{repo.lower()}#{n.lstrip('0') or '0'}"
 
 
 class VerdictFreshness:
@@ -1611,6 +1727,7 @@ class VerdictFreshness:
         self.state, self.every, self.dir, self.sh = state, every, Path(verdict_dir), run
         self.repos, self.enumerator = list(repos or []), list(enumerator or [])
         self.empty_expected = empty_expected
+        self._running = LoopLock()
 
     @staticmethod
     def _read(files: dict[str, tuple[str, float]]) -> dict[str, Any]:
@@ -1664,26 +1781,36 @@ class VerdictFreshness:
             rec["error"] = f"{type(e).__name__}: {e}"
         return rec
 
-    def _newest(self, heads: dict[str, dict[str, tuple[str, float]]], repo: str, n: int) -> dict | None:
-        """The newest of a PR's verdicts by mtime, then round; a file whose own repo and number are
+    def _newest(self, stems: dict[str, dict[str, tuple[str, float]]], repo: str, n: int) -> dict | None:
+        """The newest of a PR's verdicts, one per file stem however the stem spells the repo or the
+        number, by mtime, then round, then the greatest path; a file whose own repo and number are
         another PR's is not a candidate, an unreadable one stays one (it may be the newest)."""
-        recs = [self._read(files) for files in heads.values()]
-        recs = [r for r in recs if "error" in r or (r["repo"] == repo and r["number"] == n)]
-        return max(recs, key=lambda r: (r["mtime"], r["round_no"]), default=None)
+        recs = [self._read(files) for files in stems.values()]
+        own = _pr_id(f"{repo}#{n}")
+        recs = [r for r in recs if "error" in r or _pr_id(f"{r['repo']}#{r['number']}") == own]
+        return max(recs, key=lambda r: (r["mtime"], r["round_no"], r["path"]), default=None)
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time: the chore tick and a desk answer share this object, and a run that took its
+        list before another run wrote its snapshot would retire what that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         try:
             entries = [(e.name, e.path, e.stat().st_mtime) for e in os.scandir(self.dir)]
         except OSError as e:
             return Outcome(
                 findings=(f"{self.dir}: unreadable ({e}); no PR is judged",), evidence=str(e), control=False
             )
-        index: dict[str, dict[str, dict[str, tuple[str, float]]]] = {}
+        index: dict[tuple[str, int], dict[str, dict[str, tuple[str, float]]]] = {}  # (slug, n) -> stem -> ext
         for name, p, m in entries:
-            if v := _VERDICT_FILE.match(name):
-                index.setdefault(v.group(1), {}).setdefault(v.group(2), {})[v.group(3)] = (p, m)
+            if v := _VERDICT_FILE.match(name):  # a file is kept under its own stem, however it is spelled
+                index.setdefault((v.group(2).lower(), int(v.group(3))), {}).setdefault(v.group(1), {})[
+                    v.group(4)
+                ] = (p, m)
         # the known-positive from the world: the daemon's newest verdict parses, read as a PR's is read
-        pairs = [files for heads in index.values() for files in heads.values()]
+        pairs = [files for stems in index.values() for files in stems.values()]
         newest = self._read(max(pairs, key=lambda f: (f.get("json") or f["md"])[::-1])) if pairs else None
         name = Path(newest["path"]).name if newest else ""
         if newest is None or "error" in newest or not isinstance(newest["evaluated_head"], str):
@@ -1699,7 +1826,11 @@ class VerdictFreshness:
         positives = [f"{self.dir}: newest verdict {name} parses{md}; {len(entries)} entries"]
         findings, table, control = [], [f"control: {positives[0]}"], True
         prs: list[tuple[str, int, str]] = []
-        unread: set[str] = set()  # PRs or repos whose last row is kept: this run could not read them
+        unread: set[str] = (
+            set()
+        )  # repos, and PRs as `_pr_id`, whose last row is kept: this run did not read them
+        incomplete = False  # an enumerated list that does not reach its TOTAL
+        closed: set[str] = set()  # PRs, as `_pr_id`, whose own read says they are no longer open
         if self.enumerator:
             rc, out, err = await self.sh(list(self.enumerator), timeout=180)
             last = next((ln for ln in reversed(out.splitlines()) if ln.strip()), "")
@@ -1727,10 +1858,18 @@ class VerdictFreshness:
                     evidence=m.group(0),
                     control=False,
                 )
-            listed = _LISTED.findall(out)
-            if len(listed) != int(m.group(1)):
+            parsed = _LISTED.findall(out)
+            ids: dict[str, tuple[str, str]] = {}  # a PR is counted once, however often or spelled
+            for repo, n in parsed:
+                ids.setdefault(_pr_id(f"{repo}#{n}"), (repo, n))
+            listed = list(ids.values())
+            if len(parsed) != int(m.group(1)) or len(listed) != len(parsed):
                 control = False
-                findings.append(f"enumerator: TOTAL {m.group(1)} beside {len(listed)} PR line(s) parsed")
+                findings.append(
+                    f"enumerator: TOTAL {m.group(1)} beside {len(parsed)} PR line(s) parsed"
+                    + (f", {len(listed)} distinct" if len(listed) != len(parsed) else "")
+                )
+                incomplete = True
             positives.append(
                 f"enumerator TOTAL {m.group(1)} open PR(s) by {m.group(2)}; closed-PR control {m.group(3)}"
             )
@@ -1739,10 +1878,11 @@ class VerdictFreshness:
                 pr = json.loads(out) if rc == 0 else {}
                 if pr.get("state") not in (None, "OPEN"):  # closed since the search indexed it
                     table.append(f"{repo}#{n}: listed open, {pr['state']} now; not judged")
+                    closed.add(_pr_id(f"{repo}#{n}"))
                     continue
                 if not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
                     control = False
-                    unread.add(f"{repo}#{n}")
+                    unread.add(_pr_id(f"{repo}#{n}"))
                     findings.append(f"{repo}#{n}: head not read: {err.strip()[:120] or out[:120]}")
                     continue
                 prs.append((repo, int(n), pr["headRefOid"]))
@@ -1752,17 +1892,36 @@ class VerdictFreshness:
                 rows, err = await _open_prs(self.sh, repo, "number,headRefOid") if info else (None, err)
                 if rows is None:
                     control = False
-                    unread.add(repo)
+                    unread.add(repo.lower())
                     findings.append(f"{repo}: {err if info else 'gh does not resolve it as itself: ' + err}")
                     continue
                 positives.append(f"{repo} resolved as itself; pr list answered {len(rows)} row(s)")
                 prs += [(repo, p["number"], p["headRefOid"]) for p in rows]
+                if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
+                    unread.add(repo.lower())
+        # The snapshot is read here, after the last awaited call, and put below with no await between the
+        # two: the rows kept for an unread repo are the current ones, not the ones this run began with.
         prev = _snapshot(self.state, "verdict-freshness") or {}
-        snap = {k: v for k, v in prev.items() if k in unread or k.split("#")[0] in unread}
+        if incomplete:  # an incomplete list closes nothing it did not read closed
+            unread.update(_pr_id(k) for k in prev if _pr_id(k) not in closed)
+        now = {_pr_id(f"{repo}#{n}"): (f"{repo}#{n}", head[:8]) for repo, n, head in prs}
+
+        def rank(k: str) -> tuple[bool, bool, str]:
+            """Of the rows one PR holds, the one recording the head it has now comes first, then the
+            spelling read now, then the smaller key: a row carries no clock and snapshot order is no
+            evidence."""
+            spelled, head8 = now.get(_pr_id(k), ("", ""))
+            return (not str(prev[k]).startswith(f"{k} {head8}:"), k != spelled, k)
+
+        keys: dict[str, str] = {}  # a PR keeps its row's key however it is spelled now
+        for k in sorted(prev, key=rank):
+            keys.setdefault(_pr_id(k), k)
+        prev = {k: v for k, v in prev.items() if keys[_pr_id(k)] == k}  # one row per PR; an alias is retired
+        snap = {k: v for k, v in prev.items() if _pr_id(k) in unread or k.split("#")[0].lower() in unread}
         data, stale_n = [], 0
         for repo, n, head in prs:
-            key = f"{repo}#{n}"
-            rec = self._newest(index.get(f"{repo.replace('/', '-')}-{n}", {}), repo, n)
+            key = keys.get(_pr_id(f"{repo}#{n}"), f"{repo}#{n}")
+            rec = self._newest(index.get((repo.replace("/", "-").lower(), n), {}), repo, n)
             if rec is None:
                 state, line = "NEVER-REVIEWED", f"{key} {head[:8]}: NEVER-REVIEWED"
             elif "error" in rec:

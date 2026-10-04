@@ -1,7 +1,7 @@
 import pytest
 
-from lionagi import lndl
-from lionagi.lndl import Aliases, LNDLError, Pointer, guidance, parse
+from lion1 import lndl
+from lion1.lndl import Aliases, LNDLError, Pointer, guidance, parse
 
 
 def test_prose_with_the_three_constructs():
@@ -382,7 +382,7 @@ def test_a_lact_holding_a_value_instead_of_a_call_is_kept_as_an_lvar_and_named()
 
 
 def test_stray_command_tags_are_reported():
-    from lionagi.lndl import stray_tags
+    from lion1.lndl import stray_tags
 
     assert stray_tags("<edit>\npath: a\n</edit>", {"edit", "run"}) == ["edit"]
     assert stray_tags("<lact e>edit(path='a', old='b', new='c')</lact>", {"edit"}) == []
@@ -401,7 +401,7 @@ def test_json_words_read_as_python_literals():
 
 
 def test_guidance_names_the_runs_outputs_in_the_out_example():
-    from lionagi.lndl import guidance
+    from lion1.lndl import guidance
 
     assert "OUT{done: [a1, ...]}" in guidance(("done",))
     assert "OUT{done: {field: value, ...}}" in guidance(("done",))

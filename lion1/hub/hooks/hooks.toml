@@ -1,5 +1,5 @@
 # Hooks for `lion chat`: copy to <directory>/.lion/hooks.toml (for `lion agent`, <agent dir>/hooks.toml).
-# Each hook is a shell line run from that directory with one JSON object on stdin: event, run, round;
+# Each hook is a shell line run from that directory with one JSON object on stdin: event, run, turn;
 # for a command alias, command, args; for `after` the result. before: exit 0 lets it run (a JSON object
 # on stdout replaces the arguments), 2 refuses (stdout is the reason), anything else refuses too.
 # A `python -m hub.hooks.scripts.<name>` row runs with lion's own interpreter under -I, from the directory,
@@ -28,11 +28,11 @@ name = "audit"
 match = "khive_ops"
 run = "cat >> .lion/khive_ops.log"
 
-[[round]]
+[[turn]]
 name = "clock"
 run = "date '+now: %H:%M %Z'"
 
-[[round]]
+[[turn]]
 name = "tree-changed"
 run = "python -m hub.hooks.scripts.tree_changed"
 timeout = 10

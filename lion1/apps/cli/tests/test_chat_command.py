@@ -11,8 +11,10 @@ import pytest
 from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
 from lion_cli.main import parser
 from lion_cli.view import RESULT_LINES, Console
+from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, model_serializer
 
-from hub.chat import chat, load_log
+from hub.chat import chat, entry_row, load_log
+from lion1 import Actor, Profile
 from tests.test_actor import scripted
 
 
@@ -131,17 +133,17 @@ def test_unsettled_never_reports_an_alias_the_records_own_namespace_refused(tmp_
     log = tmp_path / "cut.jsonl"
     text = '<lact _x>read(path="a")</lact><lact r1>read(path="b")</lact>'
     rows = [
-        {"seq": 0, "kind": "INPUT", "name": "_in0", "round": 0, "alias": None, "meta": {}, "content": "go"},
+        {"seq": 0, "kind": "INPUT", "name": "_in0", "turn": 0, "alias": None, "meta": {}, "content": "go"},
         {
             "seq": 1,
             "kind": "SYSTEM",
             "name": "_sys1",
-            "round": 1,
+            "turn": 1,
             "alias": None,
             "meta": {},
             "content": "<s>",
         },
-        {"seq": 2, "kind": "TEXT", "name": "_m2", "round": 1, "alias": None, "meta": {}, "content": text},
+        {"seq": 2, "kind": "TEXT", "name": "_m2", "turn": 1, "alias": None, "meta": {}, "content": text},
     ]
     log.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     assert unsettled(load_log(log)) == ["r1"]
@@ -167,7 +169,7 @@ def test_the_console_shows_prose_calls_and_results_and_logs_every_entry_whole(tm
     assert "✓ r1 read · 40 line(s), 310 chars" in out and "    line 0\n" in out
     assert f"(+{40 - RESULT_LINES} lines in the log)" in out
     assert "✗ r2 read " in out and "nope.txt" in out and "It is not there." in out
-    assert "· round 2" in out and "settled:" in out and "<system" not in out and "context:" not in out
+    assert "· turn 2" in out and "settled:" in out and "<system" not in out and "context:" not in out
     rows = [json.loads(ln) for ln in log.read_text().splitlines()]
     assert len(rows) == len(run.record) == say.written and [r["seq"] for r in rows] == list(range(len(rows)))
     whole = next(
@@ -242,7 +244,7 @@ def test_results_collapse_to_one_line_and_prose_renders_as_markdown_by_default(t
     assert (
         "✓ r1 read · 1 line(s), 6 chars" in out and "alpha\n" not in out.split("✓ r1 read")[1].split("m ▸")[0]
     )
-    assert "· round" not in out and "settled:" not in out  # the loop's notices are verbose-only
+    assert "· turn" not in out and "settled:" not in out  # the loop's notices are verbose-only
     assert "• alpha" in out and "**" not in out  # markdown rendered: a bullet, no raw emphasis marks
 
 
@@ -250,7 +252,7 @@ def test_the_console_cuts_constructs_where_the_parser_does_and_shows_a_value_as_
     actor, profile = console(tmp_path, model="m")
     turn = (
         "Writing the note.\n<lvar note.f>P4: <lvar x>inner</lvar> kept whole; `<lvar q>` quoted</lvar>\n"
-        'Then the read.\n<lact r1>read(path="a.txt")</lact>\nDone for this round.'
+        'Then the read.\n<lact r1>read(path="a.txt")</lact>\nDone for this turn.'
     )
     (tmp_path / "a.txt").write_text("alpha\n")
     backend = scripted(turn, "ok")
@@ -260,7 +262,7 @@ def test_the_console_cuts_constructs_where_the_parser_does_and_shows_a_value_as_
     assert (
         "= note.f · 54 chars" in out and "inner" not in out and "kept whole" not in out
     )  # the value is cut whole
-    assert "Writing the note." in out and "Then the read." in out and "Done for this round." in out
+    assert "Writing the note." in out and "Then the read." in out and "Done for this turn." in out
     assert "<lvar" not in out and "</lvar>" not in out
 
 
@@ -269,18 +271,18 @@ def test_a_resumed_log_names_the_commands_that_never_settled(tmp_path):
     text = '<lact r1>read(path="a")</lact><lact r2>read(path="b")</lact>'
     result = {"spec": "read", "ok": True, "value": "x", "error": None, "reason": None}
     rows = [
-        {"seq": 0, "kind": "INPUT", "name": "_in0", "round": 0, "alias": None, "meta": {}, "content": "go"},
+        {"seq": 0, "kind": "INPUT", "name": "_in0", "turn": 0, "alias": None, "meta": {}, "content": "go"},
         {
             "seq": 1,
             "kind": "SYSTEM",
             "name": "_sys1",
-            "round": 1,
+            "turn": 1,
             "alias": None,
             "meta": {},
             "content": "<s>",
         },
-        {"seq": 2, "kind": "TEXT", "name": "_m2", "round": 1, "alias": None, "meta": {}, "content": text},
-        {"seq": 3, "kind": "RESULT", "name": "_r3", "round": 1, "alias": "r1", "meta": {}, "content": result},
+        {"seq": 2, "kind": "TEXT", "name": "_m2", "turn": 1, "alias": None, "meta": {}, "content": text},
+        {"seq": 3, "kind": "RESULT", "name": "_r3", "turn": 1, "alias": "r1", "meta": {}, "content": result},
     ]
     log.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     assert unsettled(load_log(log)) == ["r2"]
@@ -313,14 +315,14 @@ def test_ctrl_c_cuts_the_call_once_then_quits_and_quits_at_the_prompt(capsys):
     press()
     assert task.cancelled == 2  # at the prompt, one press is a quit
     press.presses, say.asking = 0, False
-    press()  # nothing in flight to cut: the round finishes first
+    press()  # nothing in flight to cut: the turn finishes first
     assert run.cut == 2 and task.cancelled == 2
-    assert "stopping after this round" in capsys.readouterr().out
+    assert "stopping after this turn" in capsys.readouterr().out
 
 
 def test_the_console_installs_the_directorys_hooks(tmp_path):
     (tmp_path / ".lion").mkdir()
-    (tmp_path / ".lion" / "hooks.toml").write_text('[[before]]\nrun = "true"\n[[round]]\nrun = "echo hi"\n')
+    (tmp_path / ".lion" / "hooks.toml").write_text('[[before]]\nrun = "true"\n[[turn]]\nrun = "echo hi"\n')
     actor, _ = console(tmp_path)
     assert len(actor.befores) == 1 and len(actor.sections) == 1
 
@@ -350,12 +352,12 @@ def test_a_command_that_never_ran_and_a_broken_hook_show_without_verbose(tmp_pat
     assert "✗ r1 not run · alias 'r1' already names" in out  # the → line above it would read as run
     assert "! r2 hook failed · " in out and "audit down" in out and "✓ r2 read" in out
     assert out.count("✗ r3") == 1 and "✗ r3 read refused: closed" in out  # the notice's copy is not printed
-    assert "· round" not in out and "settled:" not in out  # the rest of the notice stays verbose-only
+    assert "· turn" not in out and "settled:" not in out  # the rest of the notice stays verbose-only
 
 
 def test_a_shell_result_is_marked_by_its_own_rc_not_by_the_handlers_success():
-    from lionagi.actor import Result
-    from lionagi.record import Entry, Kind
+    from lion1.actor import Result
+    from lion1.record import Entry, Kind
 
     say = Console("m", None, color=False, width=200)
     fine = {"rc": 0, "stdout": "a\nb\n", "stderr": "", "elapsed": 1.25}
@@ -445,6 +447,8 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
         raise ClaudeCodeError("claude exited 1: unrecognized model opus-5-5")
 
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: refusing)
+    # the closing line holds the log path: a console wider than any line, so nothing wraps
+    monkeypatch.setenv("COLUMNS", str(2 * len(str(tmp_path)) + 1000))
     log = tmp_path / "chat.jsonl"
     args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
     with pytest.raises(SystemExit) as died:
@@ -470,6 +474,120 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
 
 
+def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(
+    tmp_path, monkeypatch, capsys
+):
+    """A router call whose known subtotal misses an attempt is partial live and on its USAGE row
+    alike: the row keeps `cost_complete`, the failed last call's row too, which the close writes."""
+    import lion_cli.chat as cli
+    from lion_cli.chat import spent
+
+    from hub.backend import OpenRouter, OpenRouterError
+    from hub.backend import openrouter as router
+    from tests.test_openrouter import _answers, _NoSleep
+
+    answer = {
+        "choices": [{"message": {"content": "Hello."}, "finish_reason": "stop"}],
+        "usage": {"cost": 0.1},
+    }
+    blank = {"choices": [{"message": {"content": None}, "finish_reason": "stop"}], "usage": {"cost": 0.25}}
+    # the second call is billed for a blank attempt, then its retry goes out and nothing readable
+    # comes back: its known subtotal misses that attempt, and the call fails
+    cut = OpenRouterError("request failed: ConnectionResetError")
+    monkeypatch.setattr(router, "asyncio", _NoSleep)
+    monkeypatch.setattr(router, "_post", _answers(answer, blank, cut))
+    backend = OpenRouter(model="m", retries=1)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: backend)
+    typed = iter(["again"])
+
+    async def ask(prompt: str = "", out=None) -> str | None:
+        return next(typed, None)
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", ask)
+    log = tmp_path / "chat.jsonl"
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
+    with pytest.raises(SystemExit):
+        asyncio.run(chat_main(parser().parse_args(args)))
+    live = spent(backend.calls)
+    assert live == (pytest.approx(0.35), 1)
+    assert "$0.3500 (partial: 1 call(s) of unknown cost)" in capsys.readouterr().out
+    rows: list[dict] = []
+    load_log(log, usage=rows)
+    assert [(r["turn"], r["total_cost_usd"], r.get("cost_complete")) for r in rows] == [
+        (1, 0.1, True),
+        (0, 0.25, False),  # written by the close: no entry landed after the failed call
+    ]
+    assert spent(rows) == live
+
+
+def test_a_row_from_before_cost_complete_counts_among_the_calls_the_sum_may_miss(
+    tmp_path,
+):
+    """A log from before the key holds rows with a known subtotal and no word on whether every
+    attempt is in it. Read back, each counts as a call the sum may miss, beside the calls the newer
+    rows say are incomplete or priced at nothing, and none reads as complete. The log is only read."""
+    from lion_cli.chat import spent
+
+    def row(n: int, cost, **more) -> dict:
+        return {"kind": "USAGE", "turn": n, "model": "m", "total_cost_usd": cost, **more}
+
+    rows = [
+        row(1, 0.1),  # from before the key: a subtotal, no word on whether it is whole
+        row(2, 0.3),
+        row(3, None),  # no figure at all, whenever it was written
+        row(4, 0.2, cost_complete=True),
+        row(5, 0.25, cost_complete=False),
+    ]
+    log = tmp_path / "old.jsonl"
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    before = log.read_bytes()
+    read: list[dict] = []
+    load_log(log, usage=read)
+    assert read == rows
+    assert spent(read) == (pytest.approx(0.85), 4)  # two of unknown completeness, one unpriced, one cut
+    assert spent(read[3:4]) == (pytest.approx(0.2), 0)  # a row that says it is whole still is
+    assert log.read_bytes() == before
+
+
+def test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not(tmp_path, monkeypatch):
+    """A CLI's call has a figure or none and no `cost_complete`: its row says which, so the sum read
+    back from the log is the live one, and a row without the key is only ever one from before it."""
+    import lion_cli.chat as cli
+    from lion_cli.chat import spent
+
+    class Metered:
+        def __init__(self, envelopes: list[dict]) -> None:
+            self.envelopes, self.calls = iter(envelopes), []
+
+        async def __call__(self, messages) -> str:
+            self.calls.append(next(self.envelopes))
+            return "Hello."
+
+    backend = Metered(
+        [
+            {"model": "m", "total_cost_usd": 0.02, "usage": {"input_tokens": 5}},
+            {"model": "m", "total_cost_usd": None},  # a subscription's call: no figure
+            {"model": "m", "total_cost_usd": None, "usage": {"cost": 0.05}},  # only the usage's own
+        ]
+    )
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: backend)
+    typed = iter(["two", "three"])
+
+    async def ask(prompt: str = "", out=None) -> str | None:
+        return next(typed, None)
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", ask)
+    log = tmp_path / "chat.jsonl"
+    asyncio.run(
+        chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]))
+    )
+    rows: list[dict] = []
+    load_log(log, usage=rows)
+    assert [r["cost_complete"] for r in rows] == [True, False, True]
+    assert spent(backend.calls) == (pytest.approx(0.07), 1)
+    assert spent(rows) == spent(backend.calls)
+
+
 def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook(
     tmp_path, monkeypatch, capsys
 ):
@@ -493,7 +611,7 @@ def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_g
     monkeypatch.setattr(shutil, "which", found)
     log = str(tmp_path / "c.jsonl")
     args = ["chat", "--dir", str(tmp_path), "--model", "claude_code/claude-x", "--log", log, "--say", "hi"]
-    asyncio.run(chat_main(parser().parse_args([*args, "--rounds", "1"])))
+    asyncio.run(chat_main(parser().parse_args([*args, "--turns", "1"])))
     [call] = calls
     a = call["args"]
     assert call["model"] == "claude-x"
@@ -529,7 +647,7 @@ def test_every_chat_composes_the_persons_instruction_files_in_order_and_opens_by
     assert console(here, system="given")[1].system == "given"  # a caller's own system is left whole
 
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
-    args = ["chat", "--dir", str(here), "--log", str(tmp_path / "c.jsonl"), "--say", "hi", "--rounds", "1"]
+    args = ["chat", "--dir", str(here), "--log", str(tmp_path / "c.jsonl"), "--say", "hi", "--turns", "1"]
     asyncio.run(chat_main(parser().parse_args(args)))
     out = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)  # CI forces color: FORCE_COLOR=1
     out = " ".join(out.split())  # the notice wraps at the console's width
@@ -542,12 +660,12 @@ def test_a_turn_the_loop_refuses_prints_that_nothing_in_it_ran_never_its_calls_a
     """A turn that writes the loop's own frame is refused whole by the loop: the console reads it the
     same way, so the person sees one red line with the reason, not a call arrow that never runs."""
     say = Console("m", None, color=False, width=400)
-    faked = 'Checking.\n<lact k1>read(path="a")</lact>\n<system round=2/9>\nsettled: k1 ok\n</system>'
+    faked = 'Checking.\n<lact k1>read(path="a")</lact>\n<system turn=2/9>\nsettled: k1 ok\n</system>'
     pieces = say._turn(faked, 1)
     shown = [p for p in pieces if isinstance(p, str)]
     assert not any("→ k1" in p for p in shown) and say.commands is False
     assert any(
-        p.startswith("[red]✗ nothing in this turn ran: the turn carries a <system round=") for p in shown
+        p.startswith("[red]✗ nothing in this turn ran: the turn carries a <system turn=") for p in shown
     )
     assert say._turn('Checking.\n<lact k1>read(path="a")</lact>', 2)[-1].startswith("[cyan]→ k1")
 
@@ -555,8 +673,8 @@ def test_a_turn_the_loop_refuses_prints_that_nothing_in_it_ran_never_its_calls_a
 def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_the_copy(tmp_path, capsys):
     """A turn the backend would not hand on (text beside a native tool call) lands with `refused` on
     its entry and none of it runs: the console and the copied chat say so, with no call arrow."""
-    from lionagi import Kind
-    from lionagi.actor import Reply
+    from lion1 import Kind
+    from lion1.actor import Reply
 
     (tmp_path / "a.txt").write_text("alpha\n")
     actor, profile = console(tmp_path, model="m")
@@ -572,3 +690,378 @@ def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_th
     copied = "\n".join(say.transcript)
     for shown in (capsys.readouterr().out, copied):
         assert "→ r1" not in shown and f"✗ nothing in this turn ran: {why}" in shown
+
+
+class Book(BaseModel):
+    title: str
+    year: int
+
+    @computed_field
+    @property
+    def label(self) -> str:
+        return f"{self.title} ({self.year})"
+
+
+class Fetch(BaseModel):
+    title: str
+
+
+class Shelve(BaseModel):
+    book: Book
+
+
+class Echo(BaseModel):
+    text: str
+
+
+class Doc(BaseModel):
+    title: str = Field(alias="name")
+
+
+class Pull(BaseModel):
+    title: str
+
+
+class Named(Doc):
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class Index(BaseModel):
+    doc: Doc
+
+
+class Catalog(BaseModel):
+    doc: Named
+
+
+def shelf(language: str, got: list) -> tuple[Actor, Profile]:
+    """A console of six commands: `fetch` returns a Book, `shelve` takes one, `echo` takes text, `pull`
+    returns a Doc, whose field is read under an alias, `index` takes a Doc and `catalog` a Named one,
+    which validates by the field's name too; `got` collects what `shelve`, `echo`, `index` and
+    `catalog` were handed."""
+    actor = Actor("shelf")
+
+    @actor.handler(Fetch)
+    async def fetch(req: Fetch, ctx) -> Book:
+        return Book(title=req.title, year=1965)
+
+    @actor.handler(Shelve)
+    async def shelve(req: Shelve, ctx) -> str:
+        got.append(req.book)
+        return "shelved"
+
+    @actor.handler(Echo)
+    async def echo(req: Echo, ctx) -> str:
+        got.append(req.text)
+        return req.text
+
+    @actor.handler(Pull)
+    async def pull(req: Pull, ctx) -> Doc:
+        return Doc(name=req.title)
+
+    @actor.handler(Index)
+    async def index(req: Index, ctx) -> str:
+        got.append(req.doc)
+        return "indexed"
+
+    @actor.handler(Catalog)
+    async def catalog(req: Catalog, ctx) -> str:
+        got.append(req.doc)
+        return "cataloged"
+
+    return actor, Profile(
+        "shelf", specs=frozenset({"fetch", "shelve", "echo", "pull", "index", "catalog"}), language=language
+    )
+
+
+def lion_chat(monkeypatch, tmp_path, made, turns: tuple[str, ...], log, *flags: str) -> list[dict]:
+    """One `lion chat` in `tmp_path` writing `log`, over the console `made` builds, the model saying
+    `turns` and the person ending it after the reply; the rows the log holds."""
+    import lion_cli.chat as cli
+
+    async def typed(prompt: str = "", out=None) -> str | None:
+        return None
+
+    monkeypatch.setattr(cli, "console", lambda directory, **kw: made())
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted(*turns))
+    monkeypatch.setattr("lion_cli.view.stdin_ask", typed)
+    asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--log", str(log), *flags])))
+    return [json.loads(ln) for ln in log.read_text().splitlines()]
+
+
+def by_alias(rows: list[dict], alias: str) -> dict:
+    return next(r for r in rows if r.get("kind") == "RESULT" and r["alias"] == alias)["content"]
+
+
+def test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model(
+    tmp_path, monkeypatch
+):
+    """The log holds a model value as its fields, a computed one included; `lion chat -r` replays it
+    as that dict, and a command whose argument is typed as the model is handed the model again,
+    validated from the dict, the computed field's key ignored."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ('<lact b>fetch(title="Dune")</lact>', "Fetched."),
+        first,
+        "--say",
+        "fetch Dune",
+    )
+    fields = {"title": "Dune", "year": 1965, "label": "Dune (1965)"}
+    assert by_alias(rows, "b")["value"] == fields
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ("<lact s>shelve(book=*b)</lact>", "Shelved."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "shelve it",
+    )
+    assert [type(g) for g in got] == [Book] and got == [Book(title="Dune", year=1965)]
+    assert (by_alias(rows, "s")["ok"], by_alias(rows, "s")["value"]) == (True, "shelved")
+    assert by_alias(rows, "b")["value"] == fields  # the replayed row is logged again as it was read
+
+
+def test_a_resumed_program_reads_a_field_of_a_logged_model_value(tmp_path, monkeypatch):
+    """`*v.title` on a model value from the previous session, a command's result and a value the
+    program computed from it: its str had no field to read."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("program", got),
+        ('```\nb = fetch(title="Dune")\nv = *b\nf = echo(text=*v.title)\n```', "Fetched."),
+        first,
+        "--say",
+        "fetch Dune",
+    )
+    computed = next(r for r in rows if r.get("meta", {}).get("values"))["meta"]["values"]
+    assert computed == [["v", 2, {"title": "Dune", "year": 1965, "label": "Dune (1965)"}]]
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("program", got),
+        ('```\nt = echo(text=*v.title + " " + *b.title)\ns = shelve(book=*v)\n```', "Done."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "its title?",
+    )
+    assert by_alias(rows, "t")["value"] == "Dune Dune" and by_alias(rows, "s")["ok"]
+    assert got == ["Dune", "Dune Dune", Book(title="Dune", year=1965)] and type(got[2]) is Book
+
+
+def test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string(
+    tmp_path, monkeypatch
+):
+    """An older log holds a model value as its str; it resumes as that string, as it always did."""
+    from lion1 import Kind, Record
+    from lion1.actor import Result
+
+    rec = Record("old")
+    rec.append(Kind.INPUT, "fetch Dune")
+    rec.append(Kind.TEXT, '<lact b>fetch(title="Dune")</lact>', turn=1)
+    rec.append(Kind.RESULT, Result("fetch", True, Book(title="Dune", year=1965)), alias="b", turn=1)
+    rec.append(Kind.TEXT, "Fetched.", turn=2)
+    old = tmp_path / "old.jsonl"
+    old.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in rec))  # the old writer
+    was = "title='Dune' year=1965 label='Dune (1965)'"
+    assert by_alias([json.loads(ln) for ln in old.read_text().splitlines()], "b")["value"] == was
+    got: list = []
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ("<lact e>echo(text=*b)</lact>", "Echoed."),
+        tmp_path / "new.jsonl",
+        "-r",
+        str(old),
+        "--say",
+        "echo it",
+    )
+    assert got == [was] and by_alias(rows, "e")["value"] == was and by_alias(rows, "b")["value"] == was
+
+
+def test_a_logged_aliased_model_replays_under_its_field_names_which_only_a_by_name_command_accepts(
+    tmp_path, monkeypatch
+):
+    """The log holds the model by its field names, not by the alias a handler typed as it validates by;
+    `lion chat -r` replays that dict, a command typed as the model is refused as invalid arguments
+    naming the field, and one typed as a model that validates by name too is handed the model."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ('<lact d>pull(title="Dune")</lact>', "Pulled."),
+        first,
+        "--say",
+        "pull Dune",
+    )
+    assert by_alias(rows, "d")["value"] == {"title": "Dune"}  # the field's name; its alias is `name`
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ("<lact i>index(doc=*d)</lact><lact c>catalog(doc=*d)</lact>", "Filed."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "file it",
+    )
+    refused = by_alias(rows, "i")
+    assert (refused["ok"], refused["reason"]) == (False, "invalid")
+    assert refused["error"] == "invalid arguments: doc.name: Field required"
+    assert (by_alias(rows, "c")["ok"], by_alias(rows, "c")["value"]) == (True, "cataloged")
+    assert [type(g) for g in got] == [Named] and got[0].title == "Dune"
+    assert by_alias(rows, "d")["value"] == {"title": "Dune"}
+
+
+class Tags(RootModel[list[str]]):
+    pass
+
+
+class Mark(BaseModel):
+    title: str
+
+    @model_serializer
+    def as_title(self) -> str:
+        return self.title
+
+
+class Sealed(BaseModel):
+    title: str
+    key: str = Field(exclude=True)
+
+
+class Make(BaseModel):
+    kind: str
+
+
+class Filing(BaseModel):
+    tags: Tags
+
+
+class Cite(BaseModel):
+    mark: Mark
+
+
+class Unseal(BaseModel):
+    sealed: Sealed
+
+
+def vault(got: list) -> tuple[Actor, Profile]:
+    """A console of four commands: `make` returns a model by kind, a `Tags` root model, a `Mark` whose
+    serializer returns its title, or a `Sealed` whose key its dump leaves out; `filing`, `cite` and
+    `unseal` take one each and put what they were handed in `got`."""
+    actor = Actor("vault")
+
+    @actor.handler(Make)
+    async def make(req: Make, ctx) -> BaseModel:
+        return {
+            "tags": Tags(["Dune", "sf"]),
+            "mark": Mark(title="Dune"),
+            "sealed": Sealed(title="Dune", key="k"),
+        }[req.kind]
+
+    @actor.handler(Filing)
+    async def filing(req: Filing, ctx) -> str:
+        got.append(req.tags)
+        return "filed"
+
+    @actor.handler(Cite)
+    async def cite(req: Cite, ctx) -> str:
+        got.append(req.mark)
+        return "cited"
+
+    @actor.handler(Unseal)
+    async def unseal(req: Unseal, ctx) -> str:
+        got.append(req.sealed)
+        return "unsealed"
+
+    return actor, Profile("vault", specs=frozenset({"make", "filing", "cite", "unseal"}), language="core")
+
+
+def test_a_logged_root_model_resumes_as_its_root_and_a_command_typed_as_it_gets_the_model(
+    tmp_path, monkeypatch
+):
+    """A root model's dump is its root, here a list; `lion chat -r` replays that list and a command
+    whose argument is typed as the model is handed the model again, validated from it."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        ('<lact t>make(kind="tags")</lact>', "Made."),
+        first,
+        "--say",
+        "make tags",
+    )
+    assert by_alias(rows, "t")["value"] == ["Dune", "sf"]
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        ("<lact f>filing(tags=*t)</lact>", "Filed."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "file it",
+    )
+    assert [type(g) for g in got] == [Tags] and got == [Tags(["Dune", "sf"])]
+    assert (by_alias(rows, "f")["ok"], by_alias(rows, "f")["value"]) == (True, "filed")
+    assert by_alias(rows, "t")["value"] == ["Dune", "sf"]  # the replayed row is logged again as it was read
+
+
+def test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments(
+    tmp_path, monkeypatch
+):
+    """A serializer that returns a scalar the model does not validate, and a required field the dump
+    leaves out, are logged as that dump; the command typed as the model is handed the model live, and
+    refused after `lion chat -r` by its own validation, which names what it did not accept."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        (
+            '<lact m>make(kind="mark")</lact><lact s>make(kind="sealed")</lact><lact l>cite(mark=*m)</lact>',
+            "Made.",
+        ),
+        first,
+        "--say",
+        "make them",
+    )
+    assert (by_alias(rows, "m")["value"], by_alias(rows, "s")["value"]) == ("Dune", {"title": "Dune"})
+    assert (by_alias(rows, "l")["ok"], got) == (True, [Mark(title="Dune")])  # live, the pointer is the model
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        ("<lact c>cite(mark=*m)</lact><lact u>unseal(sealed=*s)</lact>", "Tried."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "use them",
+    )
+    for alias, error in (
+        ("c", "invalid arguments: mark: Input should be a valid dictionary or instance of Mark"),
+        ("u", "invalid arguments: sealed.key: Field required"),
+    ):
+        refused = by_alias(rows, alias)
+        assert (refused["ok"], refused["reason"], refused["error"]) == (False, "invalid", error)
+    assert got == [Mark(title="Dune")]  # neither refused command ran

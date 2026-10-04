@@ -5,13 +5,19 @@ later runs report transitions, and a floor is read with the budget of the instru
 it."""
 
 import asyncio
+import asyncio.base_subprocess as base_subprocess
+import contextlib
+import errno
 import hashlib
 import json
 import os
 import re
+import signal
+import sys
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from lion_cli import agent as cli_agent
@@ -34,7 +40,7 @@ from hub.agent.instruments import (
     VerdictFreshness,
     Worktrees,
 )
-from lionagi import MemoryNoteStore
+from lion1 import MemoryNoteStore
 from tests.test_chores import FakeKhive
 
 
@@ -544,36 +550,72 @@ def test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_
     )
 
 
-class Child:
-    """A child whose output never comes: records the kill and whether it was waited for."""
+class Transport:
+    """What `proc._transport.close()` reaches: records that the pipes were closed."""
 
-    def __init__(self, gone: bool = False):
-        self.killed = self.waited = False
-        self.gone, self.returncode = gone, None
+    closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class Child:
+    """A command's leader as the OS treats its process group. Running, it ends at the kill and its pipes
+    drain. `gone` has it leave just as the kill arrives: "reaped" is already collected, so the group no
+    longer exists (ESRCH); "unreaped" is exited and not yet collected, the only member left, so macOS
+    answers EPERM until the drain has reaped it. `blocked` is a live group this process may not signal:
+    EPERM every time, and nothing ends it."""
+
+    pid = 424242
+
+    def __init__(self, gone=None, blocked=False, drain_error=None):
+        self.gone, self.blocked, self.drain_error = gone, blocked, drain_error
+        self.exited = self.killed = self.drained = False
+        self.reaped = gone == "reaped"
+        self.kills = 0
+        self.returncode = None
+        self._transport = Transport()
+
+    def killpg(self, pid, sig):
+        assert (pid, sig) == (self.pid, signal.SIGKILL)
+        self.kills += 1
+        self.exited = self.exited or self.gone is not None
+        if self.exited:
+            if self.reaped:
+                raise ProcessLookupError(errno.ESRCH, "No such process")
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        if self.blocked:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        self.killed = True
 
     async def communicate(self):
-        await asyncio.sleep(60)
-
-    def kill(self):
-        self.killed = True
-        if self.gone:
-            raise ProcessLookupError
-
-    async def wait(self):
-        self.waited, self.returncode = True, -9
-        return -9
+        while not (self.killed or self.exited):  # the pipes stay open while the group lives
+            await asyncio.sleep(0.005)
+        if self.drain_error is not None:
+            raise self.drain_error
+        self.drained, self.reaped, self.returncode = True, True, -9
+        return b"", b""
 
 
-@pytest.mark.parametrize("gone", [False, True], ids=["running", "exited-on-its-own"])
-def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeypatch, gone):
-    child = Child(gone)
-
+def stub_child(monkeypatch, child):
     async def spawn(*argv, **kw):
         return child
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(os, "killpg", child.killpg)
+
+
+@pytest.mark.parametrize(
+    ("gone", "kills"),
+    [(None, 1), ("reaped", 1), ("unreaped", 2)],
+    ids=["running", "exited-on-its-own", "exited-not-yet-reaped"],
+)
+def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeypatch, gone, kills):
+    child = Child(gone)
+    stub_child(monkeypatch, child)
     assert asyncio.run(instr.sh(["/bin/x"], timeout=0.01)) == (124, "", "/bin/x did not finish within 0.01s")
-    assert child.killed and child.waited
+    # an EPERM is read once the drain has reaped the leader: the group is gone, and a second kill says so
+    assert child.drained and child.kills == kills and child._transport.closed
 
     async def cancelled():
         task = asyncio.create_task(instr.sh(["/bin/x"]))
@@ -582,9 +624,625 @@ def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeyp
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    child.killed = child.waited = False
+    child = Child(gone)
+    stub_child(monkeypatch, child)
     asyncio.run(cancelled())
-    assert child.killed and child.waited
+    assert child.drained and child.kills == kills and child._transport.closed
+
+
+@pytest.mark.parametrize("by", ["a-timeout", "a-cancel"])
+def test_sh_raises_when_a_live_group_cannot_be_signalled_and_still_closes_its_pipes(monkeypatch, by):
+    # EPERM before the drain and after it: a member still runs that this process may not signal, which
+    # is not the exited-unreaped leader. The caller is told, and a cancel in flight gives way to it
+    monkeypatch.setattr(instr, "_GRACE", 0.05)
+    child = Child(blocked=True)
+    stub_child(monkeypatch, child)
+
+    async def run():
+        if by == "a-timeout":
+            return await instr.sh(["/bin/x"], timeout=0.01)
+        task = asyncio.create_task(instr.sh(["/bin/x"]))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        await task
+
+    with pytest.raises(PermissionError):
+        asyncio.run(run())
+    assert child.kills == 2 and not child.drained and child._transport.closed
+
+
+def test_sh_retries_a_refused_signal_when_a_cancel_ends_the_drain_and_then_raises_the_cancel(monkeypatch):
+    # EPERM is an exited leader not yet reaped or a member this process may not signal, and the drain tells
+    # which: a cancel that ends the drain first still gets the second signal, with the pipes still open
+    child = Child(blocked=True)
+    stub_child(monkeypatch, child)
+    sent = []
+
+    def killpg(pid, sig):
+        sent.append("closed" if child._transport.closed else "open")
+        if len(sent) == 1:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        raise ProcessLookupError(errno.ESRCH, "No such process")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+
+    async def run():
+        task = asyncio.create_task(instr.sh(["/bin/x"]))
+        await asyncio.sleep(0.05)
+        task.cancel()  # the first signal is refused, and the drain is waiting
+        await asyncio.sleep(0.05)
+        assert sent == ["open"] and not child._transport.closed
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert sent == ["open", "open"] and child._transport.closed
+
+
+@pytest.mark.parametrize("fault", ["kill", "drain"])
+def test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes(monkeypatch, fault):
+    child = Child(drain_error=ConnectionResetError(errno.ECONNRESET, "Connection reset by peer"))
+    stub_child(monkeypatch, child)
+    if fault == "kill":  # not the documented answers: nothing is drained that could hang, the pipes close
+
+        def killpg(pid, sig):
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+        monkeypatch.setattr(os, "killpg", killpg)
+    with pytest.raises(OSError) as raised:
+        asyncio.run(instr.sh(["/bin/x"], timeout=0.01))
+    assert raised.value.errno == (errno.EINVAL if fault == "kill" else errno.ECONNRESET)
+    assert child._transport.closed
+
+
+class Start:
+    """The start of a command, replaced: it waits `delay` seconds, or on a future nobody sets when there is
+    no `delay`, then fails with `fault` when it has one. A cancel is recorded in `seen`; a start with
+    `child` has begun that process before the cancel reaches it, and hands it back instead of raising; one
+    that `ignores` n cancels goes on waiting through them, and takes the next. `ended` says it is over. A
+    start with `popen` has forked that process, which it keeps in the `extra` dict it is given, as asyncio
+    does, before it waits."""
+
+    def __init__(self, monkeypatch, delay=None, fault=None, child=None, ignores=0, popen=None):
+        self.delay, self.fault, self.child, self.seen, self.gate = delay, fault, child, [], None
+        self.ignores, self.ended, self.popen = ignores, False, popen
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", self.spawn)
+        if child is not None:
+            monkeypatch.setattr(os, "killpg", child.killpg)
+
+    async def spawn(self, *argv, **kw):
+        if self.popen is not None:
+            kw.get("extra", {})["subprocess"] = self.popen
+        try:
+            if self.delay is None:
+                self.gate = asyncio.get_running_loop().create_future()
+                await self.gate
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.seen.append("cancelled")
+            while len(self.seen) <= self.ignores:
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    self.seen.append("cancelled")
+            if self.child is not None:
+                return self.child
+            raise
+        else:
+            if self.fault is not None:
+                raise self.fault
+        finally:
+            self.ended = True
+
+    def release(self):
+        """Ends a start that never lands, so that a runner stuck waiting for it can return."""
+        if self.gate is not None and not self.gate.done():
+            self.gate.set_exception(RuntimeError("released"))
+
+
+STUB_BOUND = 3.0  # seconds: a call over a stubbed start still running then is a regression that fails
+
+
+def sh_over(start, *, timeout, cancel_after=None):
+    """sh over a stubbed start: (what it gave or the exception it raised, "cancelled", or "hung" past
+    STUB_BOUND; the seconds it took, counted from the cancel when there is one). A call that does not end
+    is released and cancelled, so that it fails the test and does not hang it."""
+
+    async def go():
+        task = asyncio.create_task(instr.sh(["/bin/x"], timeout=timeout))
+        t0 = time.monotonic()
+        if cancel_after is not None:
+            await asyncio.sleep(cancel_after)
+            t0 = time.monotonic()
+            task.cancel()
+        done, _ = await asyncio.wait([task], timeout=STUB_BOUND)
+        took = time.monotonic() - t0
+        if task not in done:
+            start.release()
+            task.cancel()
+            _, pending = await asyncio.wait([task], timeout=STUB_BOUND)
+            assert not pending, "sh outlived its release and a cancel"
+            return "hung", took
+        if task.cancelled():
+            return "cancelled", took
+        return (task.exception() or task.result()), took
+
+    return asyncio.run(go())
+
+
+def test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts_answer(monkeypatch):
+    # the start's future is never set: it is waited for the grace past the timeout, so that a process it
+    # began can land and be ended, and then cancelled
+    monkeypatch.setattr(instr, "_GRACE", 0.2)
+    start = Start(monkeypatch)
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append(pid))
+    got, took = sh_over(start, timeout=0.05)
+    assert got == (124, "", "/bin/x did not finish within 0.05s")
+    assert start.seen == ["cancelled"] and 0.2 <= took < 0.05 + 0.2 + 0.2 + 1
+    assert sent == []  # a start that began no process leaves no group to signal
+
+
+@pytest.mark.parametrize("ignores", [0, 2], ids=["cancelled", "abandoned"])
+@pytest.mark.parametrize("answer", ["kills", "finds-it-gone", "fails"])
+def test_sh_kills_the_group_of_a_start_that_never_lands_by_the_pid_its_popen_holds(
+    monkeypatch, answer, ignores
+):
+    # the start never returns, cancelled or given up on, but it has forked its process and keeps it in the
+    # extra dict asyncio hands it: that process leads a group of its own, which is ended by its pid. Any
+    # answer but ESRCH and EPERM is the caller's to be told, and is not tried again: this Popen has no `poll`
+    monkeypatch.setattr(instr, "_GRACE", 0.1)
+    start = Start(monkeypatch, ignores=ignores, popen=SimpleNamespace(pid=424242))
+    sent = []
+
+    def killpg(pid, sig):
+        sent.append((pid, sig))
+        if answer == "finds-it-gone":
+            raise ProcessLookupError(errno.ESRCH, "No such process")
+        if answer == "fails":
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    got, _ = sh_over(start, timeout=0.05)
+    assert sent == [(424242, signal.SIGKILL)]
+    if answer == "fails":
+        assert type(got) is OSError and got.errno == errno.EINVAL
+    else:
+        assert got == (124, "", "/bin/x did not finish within 0.05s")
+
+
+class Leader:
+    """The Popen of a start that never lands, as the OS treats the group it leads. `exited` leaves the leader
+    the group's only member, exited and not yet reaped: macOS answers EPERM to the signal until `poll` reaps
+    it, and ESRCH after. One that still runs is a live member this process may not signal: EPERM every time,
+    whatever `poll` says. `events` is the order of the calls."""
+
+    pid = 424242
+
+    def __init__(self, exited):
+        self.exited, self.reaped, self.events = exited, False, []
+
+    def killpg(self, pid, sig):
+        assert (pid, sig) == (self.pid, signal.SIGKILL)
+        self.events.append("killpg")
+        if self.reaped:
+            raise ProcessLookupError(errno.ESRCH, "No such process")
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    def poll(self):
+        self.events.append("poll")
+        self.reaped = self.exited
+        return -9 if self.exited else None
+
+
+@pytest.mark.parametrize("by", ["a-timeout", "a-cancel"])
+@pytest.mark.parametrize("leader", ["exited", "running"])
+def test_a_refused_signal_to_a_start_that_never_lands_is_retried_once_its_leader_is_reaped(
+    monkeypatch, leader, by
+):
+    # macOS answers EPERM to a group whose only member is its exited, unreaped leader: `poll` reaps it
+    # between the two signals, and the second finds the group gone. A leader that still runs answers EPERM
+    # again, which is the caller's to be told, and a cancel in flight gives way to it
+    monkeypatch.setattr(instr, "_GRACE", 0.1)
+    popen = Leader(exited=leader == "exited")
+    start = Start(monkeypatch, popen=popen)
+    monkeypatch.setattr(os, "killpg", popen.killpg)
+    if by == "a-timeout":
+        got, _ = sh_over(start, timeout=0.05)
+        expected = (124, "", "/bin/x did not finish within 0.05s")
+    else:
+        got, _ = sh_over(start, timeout=0.05, cancel_after=0.1)  # inside the wait for the landing
+        expected = "cancelled"
+    if leader == "exited":
+        assert got == expected
+    else:
+        assert isinstance(got, PermissionError)
+    assert popen.events == ["killpg", "poll", "killpg"]
+
+
+def test_a_cancel_in_the_wait_for_a_start_that_never_lands_still_ends_its_group(monkeypatch):
+    monkeypatch.setattr(instr, "_GRACE", 0.1)
+    start = Start(monkeypatch, popen=SimpleNamespace(pid=424242))
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    got, _ = sh_over(start, timeout=0.05, cancel_after=0.1)  # inside the wait for the landing
+    assert got == "cancelled" and sent == [(424242, signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("ignores", [1, 2], ids=["takes-the-second-cancel", "takes-neither"])
+def test_sh_returns_once_a_start_has_taken_its_second_cancel_and_gives_up_on_one_that_takes_neither(
+    monkeypatch, ignores
+):
+    # on 3.11 and 3.12 a cancelled start that began its process waits for its pipes, and takes the second
+    # cancel: the call returns with that start over, not one loop turn short of it. A start that takes
+    # neither is given up on after a grace of its own, and the call is not held by it
+    monkeypatch.setattr(instr, "_GRACE", 0.3)
+    start = Start(monkeypatch, ignores=ignores)
+
+    async def call():
+        t0 = time.monotonic()
+        got = await instr.sh(["/bin/x"], timeout=0.05)
+        return got, time.monotonic() - t0, start.ended, list(start.seen)  # read in the step it returned
+
+    async def go():
+        task = asyncio.create_task(call())
+        done, _ = await asyncio.wait([task], timeout=STUB_BOUND)
+        if task not in done:  # a regression that fails this test and does not hang it
+            start.ignores = 0
+            start.release()
+            task.cancel()
+            await asyncio.wait([task], timeout=STUB_BOUND)
+            pytest.fail("sh outlived its bound")
+        return task.result()
+
+    got, took, ended, seen = asyncio.run(go())
+    assert got == (124, "", "/bin/x did not finish within 0.05s")
+    assert seen == ["cancelled", "cancelled"]  # two cancels, and none from the runner after the call
+    if ignores == 1:
+        assert ended and 0.05 + 0.3 + 0.3 <= took < 0.05 + 0.3 + 0.3 + 0.2
+    else:
+        assert not ended and 0.05 + 0.3 + 0.3 + 0.3 <= took < 0.05 + 0.3 + 0.3 + 0.3 + 1
+
+
+def test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel(monkeypatch):
+    monkeypatch.setattr(instr, "_GRACE", 0.2)
+    start = Start(monkeypatch)
+    got, took = sh_over(start, timeout=0.05, cancel_after=0.1)  # inside the wait for the landing
+    assert got == "cancelled" and start.seen == ["cancelled"] and took < 0.2 + 0.2 + 1
+
+
+def test_a_process_a_cancelled_start_had_begun_is_stopped_like_one_that_landed(monkeypatch):
+    # the cancel reaches a start that has begun its process: the start hands it back, and it is ended
+    monkeypatch.setattr(instr, "_GRACE", 0.2)
+    child = Child()
+    start = Start(monkeypatch, child=child)
+    got, _ = sh_over(start, timeout=0.05)
+    assert got == (124, "", "/bin/x did not finish within 0.05s")
+    assert start.seen == ["cancelled"] and child.drained and child.kills == 1 and child._transport.closed
+
+
+@pytest.mark.parametrize("delay", [0.0, 0.15], ids=["before-the-timeout", "after-the-timeout"])
+def test_a_start_that_failed_is_raised_on_either_side_of_the_timeout(monkeypatch, delay):
+    # a start that failed is a failure and not a timeout, whichever side of the deadline it failed on
+    fault = FileNotFoundError(errno.ENOENT, "No such file or directory", "/bin/x")
+    monkeypatch.setattr(instr, "_GRACE", 1)
+    got, _ = sh_over(Start(monkeypatch, delay=delay, fault=fault), timeout=0.05)
+    assert got is fault
+
+
+# a command writing without end: past its timeout its pipe stays full until something reads it
+FLOOD = "import os, sys\nb = b'y' * 65536\nwhile True:\n    os.write(int(sys.argv[1]), b)"
+# a command that starts a sleeping descendant on its own stdout and stderr and writes the
+# descendant's pid, then sleeps on or exits; a descendant `apart` leads a session of its own
+FAMILY = (
+    "import subprocess, sys, time\n"
+    "p = subprocess.Popen(['sleep', '30'], start_new_session=sys.argv[3] == 'apart')\n"
+    "open(sys.argv[1], 'w').write(str(p.pid))\n"
+    "if sys.argv[2] == 'running':\n"
+    "    time.sleep(30)\n"
+)
+BOUND = 10.0  # seconds: a call still running then is a regression that fails, never one that hangs
+
+
+def alive(pid: int, settle: float = 0.0) -> bool:
+    """Whether the pid still runs once `settle` seconds have let a killed one be reaped."""
+    end = time.monotonic() + settle
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        if time.monotonic() >= end:
+            return True
+        time.sleep(0.02)
+
+
+async def groups_left(pgids: list[int], settle: float) -> list[int]:
+    """The process groups among `pgids` with a member left once `settle` seconds have let the killed ones be
+    reaped: an exited member not yet reaped answers EPERM on macOS, and is still a member."""
+    end = time.monotonic() + settle
+    while True:
+        left = []
+        for pgid in pgids:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                pass
+            left.append(pgid)
+        if not left or time.monotonic() >= end:
+            return left
+        await asyncio.sleep(0.02)
+
+
+def open_fds() -> set[int]:
+    """The descriptors this process has open (the listing's own is closed by the time it is read)."""
+    fds = set()
+    for name in os.listdir("/dev/fd"):
+        with contextlib.suppress(OSError):
+            os.fstat(int(name))
+            fds.add(int(name))
+    return fds
+
+
+def other_tasks(*skip: asyncio.Task) -> list[str]:
+    """The coroutines of every task still pending beside the running one and `skip`."""
+    running = asyncio.current_task()
+    return sorted(
+        t.get_coro().__qualname__ for t in asyncio.all_tasks() if t is not running and t not in skip
+    )
+
+
+def delay_connect(monkeypatch, seconds):
+    """Hold open the start of every command: asyncio connects a new process's pipes in loop turns after
+    it has forked, and a loaded machine stretches them."""
+    connect = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+    async def late(self, waiter):
+        await asyncio.sleep(seconds)
+        await connect(self, waiter)
+
+    monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", late)
+
+
+def real_sh(
+    monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0, hold=False, census=None
+):
+    """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
+    BOUND; the seconds it took, counted from the first cancel, which comes `pause` seconds in, when
+    there is one; whether the descendant in `pidfile` still runs; whether the pipes of every command
+    it started are closing; whether each was reaped). The last two are read the moment the call
+    ended, before this helper cleans up after it: the descendant is then killed and each command is
+    closed and killed. A command is recorded where its process comes to exist, before anything is
+    awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the
+    start of every command never connects its pipes, until the helper releases it: right after the census
+    below, or when the call is hung. A `census` dict is filled in the step in which the call returns, before
+    its caller's next turn: `tasks`, the coroutines still pending beside the call; `fds`, the descriptors
+    open that were not before it; `ends`, the parent's pipe ends of the commands started. It then has
+    `group`, the commands' process groups with a member left after `settle` seconds. With `hold` it is
+    finally filled with `released`, the fds and tasks once the held connection has run, which nothing in
+    the helper helps to close."""
+    started = []
+    before: set[int] = set()
+    runner: list[asyncio.Task] = []  # this helper's own task, which waits beside the call
+    create = base_subprocess.BaseSubprocessTransport.__init__
+    gate = asyncio.Event()
+
+    def record(self, *args, **kwargs):
+        create(self, *args, **kwargs)
+        started.append(self)
+
+    monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "__init__", record)
+    if hold:
+        connect = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+        async def held(self, waiter):
+            await gate.wait()
+            await connect(self, waiter)
+
+        monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", held)
+
+    async def written() -> int:
+        while not (pidfile.exists() and pidfile.read_text()):
+            await asyncio.sleep(0.01)
+        return int(pidfile.read_text())
+
+    async def call():
+        try:
+            return await instr.sh(argv, timeout=timeout)
+        finally:
+            if census is not None:
+                census["tasks"] = other_tasks(*runner)
+                census["fds"] = open_fds() - before
+                procs = [t._proc for t in started if t._proc is not None]
+                ends = [end for proc in procs for end in (proc.stdout, proc.stderr)]
+                census["ends"] = {end.fileno() for end in ends if not end.closed}
+
+    async def go():
+        nonlocal before
+        t0 = time.monotonic()
+        before = open_fds()
+        runner.append(asyncio.current_task())
+        task = asyncio.create_task(call())
+        # the descendant runs before the call is timed out or cancelled
+        pid = await asyncio.wait_for(written(), BOUND) if pidfile is not None else None
+        if cancels:
+            await asyncio.sleep(pause)
+            t0 = time.monotonic()
+        for _ in range(cancels):  # a second cancel lands while the first one's cleanup runs
+            task.cancel()
+            await asyncio.sleep(0.05)
+        done, _ = await asyncio.wait([task], timeout=BOUND)
+        took = time.monotonic() - t0
+        pipes = [t._pipes.get(fd) for t in started for fd in (1, 2)]  # None: never connected
+        closed = all(pipe is not None and pipe.pipe.is_closing() for pipe in pipes)
+        reaped = all(t.get_returncode() is not None for t in started)
+        if task in done:
+            got = "cancelled" if task.cancelled() else task.result()
+            if census is not None:
+                census["group"] = await groups_left([t.get_pid() for t in started], settle)
+            if census is not None and hold:
+                gate.set()
+                stop = time.monotonic() + BOUND
+                while (open_fds() - before or other_tasks(task)) and time.monotonic() < stop:
+                    await asyncio.sleep(0.01)
+                census["released"] = open_fds() - before, other_tasks(task)
+        else:
+            got = "hung"
+            gate.set()
+            task.cancel()
+            _, pending = await asyncio.wait([task], timeout=BOUND)
+            assert not pending, "sh outlived its release and a cancel"
+        assert started, "no command was started"
+        left = None
+        if pid is not None:
+            left = alive(pid, settle)
+            if left:
+                os.kill(pid, signal.SIGKILL)
+        for t in started:
+            with contextlib.suppress(ProcessLookupError):
+                t.kill()
+            t.close()
+        stop = time.monotonic() + 5
+        while any(t.get_returncode() is None for t in started):
+            assert time.monotonic() < stop, "a killed command was not reaped"
+            await asyncio.sleep(0.01)
+        return got, took, left, closed, reaped
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("fd", ["1", "2"], ids=["stdout", "stderr"])
+def test_sh_returns_at_its_timeout_when_the_command_filled_its_pipe(monkeypatch, fd):
+    # the kill alone frees nothing: the full pipe is paused, and on 3.11 and 3.12 a wait returns only
+    # once every pipe has closed
+    got, took, _, closed, reaped = real_sh(monkeypatch, [sys.executable, "-c", FLOOD, fd], timeout=0.05)
+    assert got == (124, "", f"{sys.executable} did not finish within 0.05s")
+    assert took < 0.05 + 3 and closed and reaped
+
+
+@pytest.mark.parametrize("leader", ["running", "exited"])
+def test_sh_ends_the_descendant_holding_its_pipe_at_the_timeout(monkeypatch, tmp_path, leader):
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), leader, "in-group"]
+    got, took, left, closed, reaped = real_sh(monkeypatch, argv, timeout=1.0, pidfile=pidfile)
+    assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+    assert took < 1.0 + 3  # the group is killed, so the pipe closes without waiting out the grace
+    assert left is False and closed and reaped
+
+
+def test_a_cancelled_sh_ends_the_descendant_holding_its_pipe_and_stays_cancelled(monkeypatch, tmp_path):
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    got, took, left, closed, reaped = real_sh(monkeypatch, argv, timeout=30, cancels=1, pidfile=pidfile)
+    assert got == "cancelled" and took < 3
+    assert left is False and closed and reaped
+
+
+def test_sh_counts_the_start_of_its_command_inside_its_timeout(monkeypatch):
+    # the start is held 1.2 s and the timeout runs from the call: the command is ended when it has
+    # started, not a whole timeout after
+    delay_connect(monkeypatch, 1.2)
+    argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+    got, took, _, closed, reaped = real_sh(monkeypatch, argv, timeout=1.0)
+    assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+    assert took < 1.2 + 0.5 and closed and reaped
+
+
+def test_a_cancel_after_the_timeout_while_the_start_connects_is_not_the_timeouts_answer(
+    monkeypatch, tmp_path
+):
+    # the deadline passed while the start was held: the command and its group are ended once it has
+    # started, and the cancel that came in meanwhile is raised then
+    delay_connect(monkeypatch, 1.0)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    got, took, left, closed, reaped = real_sh(
+        monkeypatch, argv, timeout=0.2, cancels=1, pause=0.3, pidfile=pidfile
+    )
+    assert got == "cancelled" and took < 3
+    assert left is False and closed and reaped
+
+
+def test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it(monkeypatch):
+    # the start is stuck connecting for good with its process begun: past the timeout and the grace the
+    # start is cancelled, which ends the process, and the call returns the timeout's answer
+    monkeypatch.setattr(instr, "_GRACE", 0.5)
+    argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+    census = {}
+    got, took, _, _, reaped = real_sh(monkeypatch, argv, timeout=0.2, hold=True, census=census)
+    assert got == (124, "", f"{sys.executable} did not finish within 0.2s")
+    assert reaped and 0.2 + 0.5 <= took < 0.2 + 0.5 + 0.5 + 2
+    # the start has taken its cancel on every interpreter: what is left pending is asyncio's own connection
+    # of the pipes, held by this test, and its two parent ends are the only descriptors open
+    assert census["tasks"] == ["real_sh.<locals>.held"]
+    assert len(census["ends"]) == 2 and census["fds"] == census["ends"]
+    # and when the connection runs it closes them, the leader already killed: nothing helps it
+    assert census["released"] == (set(), [])
+
+
+def test_sh_ends_the_group_of_a_command_whose_pipes_never_connect(monkeypatch, tmp_path):
+    # the start is stuck connecting for good with its process begun, and a descendant of it runs in its
+    # group: the start is cancelled and the group is ended by the pid asyncio forked it under, not left
+    monkeypatch.setattr(instr, "_GRACE", 0.3)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    census = {}
+    got, _, left, _, _ = real_sh(monkeypatch, argv, timeout=1.0, pidfile=pidfile, hold=True, census=census)
+    assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+    assert left is False and census["group"] == []
+    # the descendant held the pipe: with it gone the held connection closes the ends when it runs
+    assert census["released"] == (set(), [])
+
+
+def test_a_cancel_that_lands_over_a_start_that_failed_is_still_the_cancel():
+    # no such program: the start raises in the turn the cancel is delivered; the caller gets the cancel
+    async def run():
+        task = asyncio.create_task(instr.sh(["/no/such/program"]))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancels", [1, 2], ids=["a-cancel", "a-second-cancel"])
+def test_a_cancel_while_the_start_connects_its_pipes_leaves_no_child_running(monkeypatch, tmp_path, cancels):
+    # asyncio ends the leader alone when a cancel lands in that window; the group it leads kept running,
+    # and on 3.11 and 3.12 the cancel waited out the pipes it held
+    delay_connect(monkeypatch, 0.4)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    got, took, left, closed, reaped = real_sh(monkeypatch, argv, timeout=30, cancels=cancels, pidfile=pidfile)
+    assert got == "cancelled" and took < 3
+    assert left is False and closed and reaped
+
+
+@pytest.mark.parametrize("cancels", [0, 1, 2], ids=["a-timeout", "a-cancel", "a-second-cancel"])
+def test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds_the_pipe(
+    monkeypatch, tmp_path, cancels
+):
+    # the bound on the caller holds; ending every descendant does not: one in a session of its own is
+    # out of the group's reach, and is left running
+    monkeypatch.setattr(instr, "_GRACE", 1, raising=False)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "apart"]
+    timeout = 30 if cancels else 1.0
+    got, took, left, closed, reaped = real_sh(
+        monkeypatch, argv, timeout=timeout, cancels=cancels, pidfile=pidfile, settle=0
+    )
+    if cancels:
+        assert got == "cancelled" and took < 1 + 3
+    else:
+        assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+        assert took < 1.0 + 1 + 3
+    # the parent's ends of the pipes the descendant holds are closed when the call ends, not whenever it
+    # lets go of them: read before the helper's own cleanup, so a runner that leaves them open fails here
+    assert left is True and closed
+    assert reaped or cancels == 2  # a second cancel ends the drain, and the leader's exit is read later
 
 
 class ExecKhive:
@@ -931,6 +1589,98 @@ def test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread(tmp_p
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings == (f"{tmp_path}/wt: the PR read failed; the tree is unread",)
     assert f"{tmp_path}/wt | feat | dirty 0 | HEAD 0.0d | PR not a PR list" in out.evidence
+    assert store.get(f"worktrees:{tmp_path}/main").value == kept
+
+
+def _named_and_loose(tmp_path, named: str = "named", loose: str = "loose") -> str:
+    """The main checkout, a tree on a branch named `detached`, and a tree whose HEAD is detached."""
+    return (
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/{named}\0HEAD d\0branch refs/heads/detached\0\0"
+        f"worktree {tmp_path}/{loose}\0HEAD e\0detached\0\0"
+    )
+
+
+def _old_dirty_answers(tmp_path) -> dict:
+    return {
+        "worktree list --porcelain -z": _named_and_loose(tmp_path),
+        "remote get-url origin": "https://github.com/o/r.git\n",
+        "status --porcelain": " M a.py\n",
+        "log -1": f"{int(time.time()) - 10 * 86400}\n",
+        "pr list -R o/r --head detached": "[]",
+    }
+
+
+def test_worktrees_a_branch_named_detached_is_queried_and_parks_beside_a_detached_head(tmp_path):
+    sh = FakeSh(**_old_dirty_answers(tmp_path))
+    store = MemoryNoteStore()
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=sh).run({}))
+    assert out.control and out.count == 2
+    assert [c[1:] for c in sh.calls if "pr" in c] == [
+        ["pr", "list", "-R", "o/r", "--head", "detached", "--state", "open", "--json", "number"]
+    ]  # one query, for the branch; the detached HEAD has no branch to ask about
+    assert out.findings == (
+        f"{tmp_path}/main: first snapshot, 2 worktree(s)",
+        f"{tmp_path}/named (detached): parked: dirty, HEAD older than 3 days, no open PR",
+    )
+    assert out.predicate == "dirty, HEAD older than 3 days, no open PR (1 match)"
+    lines = out.evidence.splitlines()
+    assert f"{tmp_path}/named | detached | dirty 1 | HEAD 10.0d | PR none | PARKED" in lines
+    assert f"{tmp_path}/loose | (detached HEAD) | dirty 1 | HEAD 10.0d | PR ?" in lines
+    assert store.get(f"worktrees:{tmp_path}/main").value == {
+        f"{tmp_path}/named": {"branch": "detached", "dirty": 1, "pr": "none", "parked": True},
+        f"{tmp_path}/loose": {"branch": None, "dirty": 1, "pr": "?", "parked": False},
+    }
+
+
+def test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_pr_alone(tmp_path):
+    # rows stored before a detached HEAD was kept as no branch hold `detached` with PR `?` for both a
+    # detached HEAD and a branch of that name: such a row is guessed into neither
+    sh = FakeSh(**_old_dirty_answers(tmp_path))
+    store = MemoryNoteStore()
+    old = {"branch": "detached", "dirty": 1, "pr": "?", "parked": False}
+    rows = {f"{tmp_path}/named": old, f"{tmp_path}/loose": old}
+    store.put(f"worktrees:{tmp_path}/main", rows, run="-", seq=0)
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"{tmp_path}/named: detached or (detached HEAD)/? -> detached/none",
+        f"{tmp_path}/named (detached): parked: dirty, HEAD older than 3 days, no open PR",
+    )
+    sh.set("worktree list --porcelain -z", _named_and_loose(tmp_path, named="loose", loose="named"))
+    out = asyncio.run(inst.run({}))  # the two trees swap states, and a row stored now tells which
+    assert out.control and out.findings == (
+        f"{tmp_path}/loose: (detached HEAD)/? -> detached/none",
+        f"{tmp_path}/loose (detached): parked: dirty, HEAD older than 3 days, no open PR",
+        f"{tmp_path}/named: detached/none -> (detached HEAD)/?",
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "answer"),
+    [
+        ("remote get-url origin", (1, "", "No such remote 'origin'")),
+        ("pr list -R o/r --head detached", (1, "", "HTTP 502")),
+        ("pr list -R o/r --head detached", "not json"),
+        ("pr list -R o/r --head detached", "null"),
+    ],
+)
+def test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unread(tmp_path, key, answer):
+    good = _old_dirty_answers(tmp_path)
+    store = MemoryNoteStore()
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
+    assert asyncio.run(inst.run({})).control
+    kept = store.get(f"worktrees:{tmp_path}/main").value
+    inst.sh = FakeSh(**good)
+    inst.sh.set(key, answer)
+    out = asyncio.run(inst.run({}))
+    origin = (f"{tmp_path}/main: origin failed: No such remote 'origin'",) if key.startswith("remote") else ()
+    assert not out.control and out.findings == (
+        *origin,
+        f"{tmp_path}/named: the PR read failed; the tree is unread",
+    )  # never confirmed PR-less, so never parked; the detached HEAD beside it is read
+    heads = [c[c.index("--head") + 1] for c in inst.sh.calls if "--head" in c]
+    assert heads == ([] if origin else ["detached"])
     assert store.get(f"worktrees:{tmp_path}/main").value == kept
 
 
@@ -1858,13 +2608,35 @@ def verdict(d, n: int, evaluated: str, *, head8: str, mtime: float, round_no=1, 
         f"- degraded: {body['degraded']} ()\n- evaluated head: {evaluated}\n- evaluated base: main\n\n"
         "## Blocking\n" + "".join(f"- {b}\n" for b in blocking or ["none"]) + "\n## Issues (0)\n"
     )
-    paths = [d / f"o-r-{n}-{head8}.md"]
+    slug = kw.get("named", body["repo"]).replace("/", "-")  # the daemon names the file as the repo is spelled
+    num = kw.get("filed_as", n)  # and as the number is spelled
+    paths = [d / f"{slug}-{num}-{head8}.md"]
     paths[0].write_text(md)
     if json_file:
-        paths.append(d / f"o-r-{n}-{head8}.json")
+        paths.append(d / f"{slug}-{num}-{head8}.json")
         paths[1].write_text(json.dumps(body))
     for p in paths:
         os.utime(p, (mtime, mtime))
+
+
+def listed_as(monkeypatch, d, spell, *, reverse=False):
+    """List d's files under spell(name), in name order or reversed: a case-sensitive directory holds two
+    files that differ only in case, and the filesystems a run may sit on do not all."""
+    real = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self._entry, self.name, self.path = entry, spell(entry.name), entry.path
+
+        def stat(self):
+            return self._entry.stat()
+
+    def scandir(path):
+        if os.fspath(path) != os.fspath(d):
+            return real(path)
+        return iter([Entry(e) for e in sorted(real(path), key=lambda e: e.name, reverse=reverse)])
+
+    monkeypatch.setattr(os, "scandir", scandir)
 
 
 def freshness_sh(prs=((7, HEAD7), (8, HEAD8), (9, HEAD9))) -> FakeSh:
@@ -1891,7 +2663,8 @@ def test_verdict_freshness_at_head_stale_never_reviewed_newest_by_mtime_then_rou
     )  # same mtime as round 3: the later round is the newest
     verdict(tmp_path, 8, HEAD8, head8="88888888", mtime=900)
     verdict(tmp_path, 8, OLD, head8="0000aaaa", mtime=950, decision="APPROVE", blocking=[])
-    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other")  # its own repo is not o/r
+    # named as o/r's, its own repo is not o/r
+    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other", named="o/r")
     inst = VerdictFreshness(
         MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
     )
@@ -1931,6 +2704,49 @@ def test_verdict_freshness_first_sight_then_transitions(tmp_path):
     )
     sh.set("pr list -R o/r", json.dumps([{"number": 9, "headRefOid": HEAD9}]))
     assert asyncio.run(inst.run({})).findings == ("o/r#7: no longer open",)
+
+
+def test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until_a_short_page(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    sh = freshness_sh(prs=((7, HEAD7), (8, HEAD8)))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    asyncio.run(inst.run({}))
+    kept = inst.state.get("verdict-freshness").value["o/r#7"]
+    sh.set(
+        "pr list -R o/r",
+        json.dumps([{"number": 8, "headRefOid": HEAD8}, {"number": 9, "headRefOid": HEAD9}]),
+    )  # #7 fell off a full page
+    told = []
+    for _ in range(2):  # twice: a kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        assert out.control and inst.state.get("verdict-freshness").value["o/r#7"] == kept
+        assert kept not in out.evidence and [d["number"] for d in out.data] == [8, 9]  # not a fresh read
+        told.append(out.findings)
+    assert told == [("o/r#9 99999999: NEVER-REVIEWED",), ()]
+    sh.set("pr list -R o/r", json.dumps([{"number": 9, "headRefOid": HEAD9}]))  # a short page is the list
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#7: no longer open", "o/r#8: no longer open")
+    assert set(inst.state.get("verdict-freshness").value) == {"o/r#9"}
+
+
+def test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way(
+    monkeypatch, tmp_path
+):
+    """The repo is configured as `o/r`; an older snapshot holds `O/R#7`. A full page without #7 keeps
+    that row, as it keeps one spelled as configured."""
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    kept = "O/R#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: x"
+    store.put("verdict-freshness", {"O/R#7": kept}, run="-", seq=0)
+    sh = freshness_sh(prs=((8, HEAD8), (9, HEAD9)))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and store.get("verdict-freshness").value["O/R#7"] == kept
+    assert not any("no longer open" in f for f in out.findings)
 
 
 def test_verdict_freshness_an_empty_verdict_dir_fails_the_instrument_and_judges_no_pr(tmp_path):
@@ -2035,6 +2851,37 @@ def test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_co
     )
 
 
+@pytest.mark.parametrize("newer", [True, False])
+def test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest(
+    tmp_path, newer
+):
+    """A file that cannot be read cannot name its PR, so it stays a candidate by its file name: when it is
+    the PR's newest, the run reports it unreadable rather than reading the older verdict beside it."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    bad = tmp_path / "o-r-7-12345678.json"
+    bad.write_text("{not json")
+    os.utime(bad, (1500, 1500) if newer else (500, 500))
+    verdict(tmp_path, 8, OLD, head8="88888888", mtime=2000)  # the directory's newest parses
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(tmp_path),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    if newer:
+        assert not out.control and [d["state"] for d in out.data] == ["UNREADABLE"]
+        assert out.findings[0].startswith(
+            f"o/r#7 77777777: newest verdict unreadable: {bad}: JSONDecodeError"
+        )
+    else:
+        assert out.control and out.findings == (
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+        )
+
+
 def test_verdict_freshness_an_enumerator_without_a_total_line_failed(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"/x/my_open_prs.sh": (2, "", "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n")})
@@ -2113,6 +2960,275 @@ def test_verdict_freshness_reads_each_enumerated_prs_head_on_its_own(tmp_path):
     assert sh.calls[0] == ["/x/my_open_prs.sh"]  # run as the chores.toml names it, nothing added
 
 
+def test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_pr_read_closed(tmp_path):
+    """A TOTAL the listed PRs do not reach is an incomplete list: a prior row it lacks is kept, a PR it
+    lists is read and merged, and a PR read MERGED retires its own row."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED", "o/r#9": "o/r#9 99999999: NEVER-REVIEWED"}
+    store.put("verdict-freshness", prior, run="-", seq=0)
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    listed = "o/r#7 draft=false  a title\no/r#9 draft=false  merged\n"
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": listed + total.format(n=3),
+            "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+            "pr view 9 -R o/r": json.dumps({"headRefOid": HEAD9, "state": "MERGED"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    told = []
+    for _ in range(2):  # twice: the kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        snap = store.get("verdict-freshness").value
+        assert not out.control and snap["o/r#8"] == prior["o/r#8"] and "o/r#9" not in snap
+        assert snap["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+        told.append(out.findings)
+    assert told == [
+        (
+            "enumerator: TOTAL 3 beside 2 PR line(s) parsed",
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+            "o/r#9: no longer open",
+        ),
+        ("enumerator: TOTAL 3 beside 2 PR line(s) parsed",),
+    ]
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n" + total.format(n=1))  # the count agrees
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#8: no longer open",)
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+
+
+@pytest.mark.parametrize("again", ["o/r#7", "o/r#07", "O/R#7"])
+def test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_unseen_pr(tmp_path, again):
+    """Lines that reach the TOTAL by listing one PR twice, however its repo or number is spelled, are an
+    incomplete list: the PR they omit keeps its row, and the PR they repeat is read once."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED"}
+    store.put("verdict-freshness", prior, run="-", seq=0)
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": f"o/r#7 draft=false  a title\n{again} draft=false  a title\n"
+            + total.format(n=2),
+            "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    told = []
+    for _ in range(2):  # twice: the kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        assert not out.control and store.get("verdict-freshness").value["o/r#8"] == prior["o/r#8"]
+        assert out.count == 1 and [d["number"] for d in out.data] == [7]
+        told.append(out.findings)
+    assert told == [
+        (
+            "enumerator: TOTAL 2 beside 2 PR line(s) parsed, 1 distinct",
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+        ),
+        ("enumerator: TOTAL 2 beside 2 PR line(s) parsed, 1 distinct",),
+    ]
+    assert [c[2:6] for c in sh.calls if "view" in c] == [["view", "7", "-R", "o/r"]] * 2  # once a run
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n" + total.format(n=1))  # a complete list
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#8: no longer open",)
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+
+
+@pytest.mark.parametrize("listed", ["O/R#07", "o/r#007"])
+def test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_spells_it(tmp_path, listed):
+    """A PR's row is matched by its repo case-blind and its number unpadded: a closed read retires it
+    from an incomplete list, an unread head keeps it, and an open read keeps its key."""
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    shown = listed.split("#")[1]
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, repo="O/R")  # the file spelled another way
+
+    def inst_with(prior, lines, n, view):
+        store = MemoryNoteStore()
+        store.put("verdict-freshness", prior, run="-", seq=0)
+        sh = FakeSh(**{"/x/my_open_prs.sh": lines + total.format(n=n), f"pr view {shown} -R": view})
+        return store, VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+        )
+
+    seven, eight = "o/r#7 77777777: NEVER-REVIEWED", "o/r#8 88888888: NEVER-REVIEWED"
+    # closed, in a list that repeats it: its own read retires its row; the unseen #8 keeps its row
+    store, inst = inst_with(
+        {"o/r#7": seven, "o/r#8": eight},
+        f"{listed} draft=false  a title\no/r#7 draft=false  a title\n",
+        2,
+        json.dumps({"headRefOid": HEAD7, "state": "CLOSED"}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"o/r#8": eight}
+    assert "o/r#7: no longer open" in out.findings and not out.control
+    # its head not read, in a complete list: the row is kept and nothing says it closed
+    store, inst = inst_with({"o/r#7": seven}, f"{listed} draft=false  a title\n", 1, (1, "", "boom"))
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"o/r#7": seven}
+    assert not any("no longer open" in f for f in out.findings) and not out.control
+    # open and read: the row keeps its key, so the PR is neither closed nor new
+    store, inst = inst_with(
+        {"o/r#7": seven},
+        f"{listed} draft=false  a title\n",
+        1,
+        json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+    assert not any("no longer open" in f for f in out.findings) and out.control
+    # and its verdict is found however the PR is spelled, in the file name and in the verdict's own say
+    assert store.get("verdict-freshness").value["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+
+
+def test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure(tmp_path):
+    """An older snapshot that held a PR under two spellings keeps one row; the other is retired
+    silently, since the PR is still open."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    seven = "o/r#7 77777777: NEVER-REVIEWED"
+    store.put(
+        "verdict-freshness", {"o/r#7": seven, "O/R#07": seven.replace("o/r#7", "O/R#07")}, run="-", seq=0
+    )
+    total = "TOTAL 1 open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": "o/r#7 draft=false  a title\n" + total,
+            "pr view 7 -R": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    rows = store.get("verdict-freshness").value
+    assert len(rows) == 1 and " 77777777: AT-HEAD, " in next(iter(rows.values()))
+    assert not any("no longer open" in f for f in out.findings) and out.control
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates(
+    monkeypatch, tmp_path, reverse
+):
+    """One PR's verdicts can be filed as `o-r-7-<head8>` and `O-R-7-<head8>`: the newer is the verdict
+    however the directory lists them, so an older approval filed as the lookup spells the repo never hides
+    a newer request for changes filed in another case."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=2000, named="new/r")
+    listed_as(
+        monkeypatch,
+        tmp_path,
+        lambda name: name.replace("old-r", "o-r").replace("new-r", "O-R"),
+        reverse=reverse,
+    )
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {tmp_path}/new-r-7-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order(
+    monkeypatch, tmp_path, reverse
+):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, named="new/r")
+    listed_as(
+        monkeypatch,
+        tmp_path,
+        lambda name: name.replace("old-r", "O-R").replace("new-r", "o-r"),
+        reverse=reverse,
+    )
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, APPROVE, blocking 0; read json: {tmp_path}/old-r-7-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("filed_as", ["007", "07"])
+def test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number(tmp_path, filed_as):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, filed_as=filed_as)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+        f"{tmp_path}/o-r-{filed_as}-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("first", ["o/r#7", "O/R#07"])
+def test_verdict_freshness_of_two_conflicting_rows_for_one_pr_the_one_at_its_head_now_is_the_row(
+    tmp_path, first
+):
+    """An older snapshot's rows for one PR disagree: the one that read the head the PR has now is the
+    later observation, whichever the snapshot lists first."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    path = f"{tmp_path}/o-r-7-77777777.json"
+    rows = {
+        "o/r#7": "o/r#7 00000000: STALE (verdict at 00000000), APPROVE, blocking 0; read json: x",
+        "O/R#07": f"O/R#07 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {path}",
+    }
+    store = MemoryNoteStore()
+    snapshot = {k: rows[k] for k in sorted(rows, key=lambda k: k != first)}  # `first` is listed first
+    store.put("verdict-freshness", snapshot, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"O/R#07": rows["O/R#07"]}
+    assert out.control and out.findings == ()  # the row it was told is the row it reads again
+
+
+@pytest.mark.parametrize("flip", [False, True])
+@pytest.mark.parametrize(
+    ("aliases", "winner"),
+    [(("O/R#07", "o/r#7"), "o/r#7"), (("o/R#07", "O/R#7"), "O/R#7")],
+    ids=["the-spelling-read-now", "the-smaller-key"],
+)
+def test_verdict_freshness_two_rows_at_one_head_keep_the_spelling_read_now_then_the_smaller_key(
+    tmp_path, aliases, winner, flip
+):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    rows = {k: f"{k} 00000000: NEVER-REVIEWED" for k in (reversed(aliases) if flip else aliases)}
+    store.put("verdict-freshness", rows, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert set(store.get("verdict-freshness").value) == {winner}
+    assert out.control and not any("no longer open" in f for f in out.findings)
+
+
+def test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_another_case(tmp_path):
+    """The page is short, so nothing retains the row: the PR's own read finds it, its repo case-blind."""
+    assert instr.PR_PAGE > 1
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    store.put("verdict-freshness", {"O/R#7": "O/R#7 77777777: NEVER-REVIEWED"}, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    rows = store.get("verdict-freshness").value
+    assert out.control and set(rows) == {"O/R#7"} and rows["O/R#7"].startswith("O/R#7 77777777: AT-HEAD")
+    assert not any("no longer open" in f for f in out.findings)
+
+
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
@@ -2121,6 +3237,68 @@ def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(
     assert not out.control and out.findings[0].startswith("o/r: gh does not resolve it as itself")
     with pytest.raises(ValueError, match="exactly one of them"):
         VerdictFreshness(MemoryNoteStore(), every=None, repos=["o/r"], enumerator=["x"])
+
+
+class LateList(FakeSh):
+    """A runner whose first call to `gated` takes its answer when it is made and delivers it only once
+    released: a list that is complete when read and old by the time its run goes on."""
+
+    def __init__(self, gated: str, **answers: tuple[int, str, str] | str):
+        super().__init__(**answers)
+        self.gated, self.began, self.release = gated, asyncio.Event(), asyncio.Event()
+
+    async def __call__(self, argv: list[str], *, timeout: float = 60, cwd: str | None = None):
+        answer = await super().__call__(argv, timeout=timeout, cwd=cwd)
+        if self.gated in " ".join(argv) and not self.began.is_set():
+            self.began.set()
+            await self.release.wait()
+        return answer
+
+
+@pytest.mark.parametrize("channel", ["repos", "enumerator"])
+def test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_listed(tmp_path, channel):
+    """Run A takes its list before #9 opens and waits; run B starts and lists #9. Left to overlap, B writes
+    first and A, finding #9 absent from its complete list, reports it closed and drops it. The runs of one
+    instrument go one at a time, so B runs on the snapshot A put: #9 is B's first sight, never A's closure."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    heads = {7: HEAD7, 8: HEAD8, 9: HEAD9}
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+
+    def listing(prs):
+        if channel == "repos":
+            return json.dumps([{"number": n, "headRefOid": heads[n]} for n in prs])
+        return "".join(f"o/r#{n} draft=false  a title\n" for n in prs) + total.format(n=len(prs))
+
+    key = "pr list -R o/r" if channel == "repos" else "/x/my_open_prs.sh"
+    answers = {key: listing((7, 8))}
+    if channel == "repos":
+        answers["api repos/o/r --jq"] = json.dumps({"full_name": "o/r", "id": 42, "admin": True})
+        where = {"repos": ["o/r"]}
+    else:
+        answers |= {
+            f"pr view {n} -R o/r": json.dumps({"headRefOid": h, "state": "OPEN"}) for n, h in heads.items()
+        }
+        where = {"enumerator": ["/x/my_open_prs.sh"]}
+    store = MemoryNoteStore()
+
+    async def both():
+        sh = LateList(key, **answers)
+        inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), run=sh, **where)
+        first = asyncio.create_task(inst.run({}))
+        await sh.began.wait()  # A holds the list it took
+        sh.set(key, listing((7, 8, 9)))  # #9 opens
+        second = asyncio.create_task(inst.run({}))
+        await asyncio.wait({second}, timeout=0)  # B goes as far as nothing holds it: to its end, unserialized
+        sh.release.set()
+        return await first, await second
+
+    out_a, out_b = asyncio.run(both())
+    assert [f for o in (out_a, out_b) for f in o.findings if "no longer open" in f] == []
+    assert set(store.get("verdict-freshness").value) == {"o/r#7", "o/r#8", "o/r#9"}
+    assert out_a.control and out_b.control
+    assert len(out_b.findings) == 1 and out_b.findings[0].startswith("o/r#9 99999999: NEVER-REVIEWED")
 
 
 WORKFLOW_IDS = {"ci": 501, "lint": 502, "docs": 503, "bench": 504}

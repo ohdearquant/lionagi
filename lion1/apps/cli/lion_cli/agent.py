@@ -11,19 +11,19 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from hub.agent.agent import Agent, AgentError, Budget, Gtd, Wake, claude_code_options
+from hub.agent.agent import Agent, AgentError, Budget, Gtd, Wake, claude_code_options, codex_options
 from hub.agent.chores import SPAWN_SALIENCE, Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
 from hub.areas import partial
-from hub.backend import ClaudeCodeSession, OpenRouter
+from hub.backend import ClaudeCodeSession, Codex, CodexSession, OpenRouter
 from hub.guidance import guidance
 from hub.hooks import install, load
 from hub.khive import Khive
 from hub.tools import LocalTree, files, khive_ops
-from lionagi import Actor, Profile
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Profile
+from lion1.actor import DEFAULT_HANDLERS
 
 __all__ = (
     "build",
@@ -47,6 +47,10 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
     if isinstance(backend, ClaudeCodeSession) and (backend.tools or backend.allowed or backend.mcp_config):
         # `backend_for` builds none; a session handed in with tools would act outside every gate
         raise ValueError("a claude_code session with tools of its own: the model gets none (ADR-0016/D3)")
+    codex_options(cfg.get("codex"))
+    if isinstance(backend, Codex) and backend.unmeasured:
+        # `backend_for` builds none; on an unmeasured CLI release the model may act unseen (ADR-0009/S23)
+        raise ValueError("a codex backend built to run an unmeasured CLI release: never served (ADR-0016/D3)")
     actor_id = cfg["actor"]
     trusted = frozenset({cfg["owner"], cfg.get("steward"), actor_id, *cfg.get("trusted", [])} - {None})
     routes = dict((cfg.get("desk") or {}).get("routes", {}))  # the desk forwards to these; `Desk` checks them
@@ -69,8 +73,8 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         if isinstance(cfg.get("chair"), dict) and cfg["chair"].get("admit") == "all"
         else (lambda m: m is not None and chores.admit(m)),
         owner=cfg["owner"],
-        # sweep, route, OUT is three clean rounds; a slip (measured: an unquoted dict key) costs one each
-        max_rounds=6,
+        # sweep, route, OUT is three clean turns; a slip (measured: an unquoted dict key) costs one each
+        max_turns=6,
         batch=int(cfg.get("batch", 5)),
         budget=budget,
         # the chair is one conversation for the life of the process: a burst of mail, a plain reply,
@@ -258,7 +262,7 @@ def stats(directory: Path) -> str:
             else "per handled message: no mail handled today"
         ),
         f"last wake {cursor.get('wake')} at {cursor.get('at')}: {cursor.get('outcome')} after "
-        f"{cursor.get('rounds')} round(s), {len(cursor.get('mail') or [])} mail, {cursor.get('sent')} sent; "
+        f"{cursor.get('turns')} turn(s), {len(cursor.get('mail') or [])} mail, {cursor.get('sent')} sent; "
         f"{tokens.get('calls', 0)} call(s), {tokens.get('in', 0)} in, {tokens.get('out', 0)} out, "
         f"${tokens.get('cost', 0.0):.4f}"
         + partial(tokens.get("unknown", 0))
@@ -282,18 +286,31 @@ def stats(directory: Path) -> str:
 
 
 def backend_for(
-    model: str, options: dict | None = None, *, cwd: Path | None = None
-) -> OpenRouter | ClaudeCodeSession:
+    model: str, options: dict | None = None, *, cwd: Path | None = None, codex: dict | None = None
+) -> OpenRouter | ClaudeCodeSession | CodexSession:
     """The console and agent backend: DeepSeek models route to CoreWeave, then DeepInfra or Fireworks,
     never the first-party endpoint; other models take OpenRouter's own routing. `claude_code` or
     `claude_code/<model>` is the claude CLI on the subscription, never an API key, on one resumed
-    session per run: each round sends only what the view gained, so the prefix caches (the chat shape
-    resent the whole transcript every round). `options` is the config's `[claude_code]` table:
-    `timeout` seconds a round may take (a round of real work can run past the default, 300), `effort`
+    session per run: each turn sends only what the view gained, so the prefix caches (the chat shape
+    resent the whole transcript every turn). `options` is the config's `[claude_code]` table:
+    `timeout` seconds a turn may take (a turn of real work can run past the default, 300), `effort`
     the CLI's effort level, `cli` the binary. The model gets no tools of its own, as in the chat: one
     turn per call in `cwd`, and everything it does is a command the runtime runs, gates and records.
-    Any other key, `tools` among them, is refused by name whatever the model, never ignored."""
+    Any other key, `tools` among them, is refused by name whatever the model, never ignored.
+    `codex` or `codex/<model>` is the codex CLI on its subscription, one resumed thread per run, the
+    model again without tools of its own; `codex` is the config's `[codex]` table: `timeout`,
+    `effort`, `cli`, and `home`, a private CODEX_HOME holding the login. It runs only on a CLI
+    release the tools-off claim was measured on (ADR-0009/S22): no key here lifts that."""
     o = claude_code_options(options)
+    c = codex_options(codex)
+    if model == "codex" or model.startswith("codex/"):
+        return CodexSession(
+            model=model.partition("/")[2] or None,
+            timeout=float(c.get("timeout", 300.0)),
+            effort=c.get("effort"),
+            cli=c.get("cli"),
+            home=c.get("home"),
+        )
     if model == "claude_code" or model.startswith("claude_code/"):
         return ClaudeCodeSession(
             model=model.partition("/")[2] or None,
@@ -316,7 +333,7 @@ def backend_for(
             else None
         ),
         reasoning={"max_tokens": 2000},
-        stop=["<system round="],
+        stop=["<system turn="],
     )
 
 
@@ -327,7 +344,10 @@ async def agent_main(a: argparse.Namespace) -> None:
         return
     cfg = tomllib.loads((directory / "chores.toml").read_text())
     backend = backend_for(
-        a.model or cfg.get("model") or "deepseek/deepseek-v4.1-flash", cfg.get("claude_code"), cwd=directory
+        a.model or cfg.get("model") or "deepseek/deepseek-v4.1-flash",
+        cfg.get("claude_code"),
+        cwd=directory,
+        codex=cfg.get("codex"),
     )
     chores, agent = build(directory, backend)
     pid = agent._claim()  # one process per identity: every branch below acts as it, and serve keeps the lock
@@ -351,7 +371,7 @@ async def agent_main(a: argparse.Namespace) -> None:
         created = [] if "chair" in cfg else await chores.ensure_ticks()
         if a.once or a.rerun:
             # one wake: the mail that arrives, or (--rerun) mail already read, back through a wake by id,
-            # the batch a killed round left unanswered; the ticks are read first, as a start reads them,
+            # the batch a killed turn left unanswered; the ticks are read first, as a start reads them,
             # so a digest wake sees the first due of a tick already pending
             run = await agent.rerun(list(a.rerun)) if a.rerun else await agent.wake(wait_ms=a.wait * 1000)
             if run is None:
@@ -359,13 +379,15 @@ async def agent_main(a: argparse.Namespace) -> None:
                 return
             for e in run.record:
                 print(
-                    f"[{e.seq:>3} {e.name:>6} r{e.round}]",
+                    f"[{e.seq:>3} {e.name:>6} t{e.turn}]",
                     str(e.content)[:600].replace("\n", "\n" + " " * 18),
                 )
             return
         settings = (  # the values this process holds; the file may say otherwise until a restart
             f"; claude_code timeout={backend.timeout:.0f}s" if isinstance(backend, ClaudeCodeSession) else ""
         )
+        if isinstance(backend, CodexSession):
+            settings = f"; codex timeout={backend.timeout:.0f}s"
         rules = agent.wake_rules  # [budget] and [wake] follow the file while serving; the start values here
         settings += (
             f"; budget cost_per_day={agent.budget.cost_per_day} wakes_per_hour={agent.budget.wakes_per_hour}"

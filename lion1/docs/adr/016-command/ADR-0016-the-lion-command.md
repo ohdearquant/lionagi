@@ -173,7 +173,7 @@ denied; any other name the router's own routing; both a 2,000-token reasoning bu
 the notification frame ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `claude_code[/<model>]` is the
 session CLI in the agent directory without tools of its own: `[claude_code]` takes `timeout`,
 `effort` and `cli`, refusing any other by name, and `build` refuses one handed in with tools. The
-subscription CLI of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
+subscription CLI is D6.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model`,
@@ -198,20 +198,43 @@ session restarts when present.
 ### D5: The readers `stats`, `resident`, `wakes` and the chat's `spent` ^d5
 
 Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `resident` takes a
-resident's row from its own `chores.toml`, notes and lock, drops a row of another day, and names
-what it could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log
-with the pattern the page shares. `spent` sums each call's `total_cost_usd`, its `usage.cost` only
-when the total is null, and counts the calls with neither or with `cost_complete` false; the chat
-log keeps each envelope's cost as it came.
+resident's row from its `chores.toml`, notes and lock, drops another day's row, and names what it
+could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log with
+the page's pattern. `spent` sums each call's `total_cost_usd`, its `usage.cost` only when the total
+is null, and counts the calls with neither or with `cost_complete` false. Chat-log rows state
+`cost_complete`; a reader of them (`load_log(..., usage=rows)`, `spent(rows)`) counts an older one
+without it.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
   as the lock, the serve log's wake lines,
   `test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_every_view`;
   `tests/test_chat.py`: the cost line over every attempt,
   `test_the_cost_line_marks_a_sum_that_misses_calls_of_unknown_or_incomplete_cost`,
-  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`; `tests/test_agent.py`:
-  `test_once_refuses_served_identity`, `--stats` under a held lock;
-  `test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text`, the text it prints.
+  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`;
+  `apps/cli/tests/test_chat_command.py`:
+  `test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses`,
+  `test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not`,
+  `test_a_row_from_before_cost_complete_counts_among_the_calls_the_sum_may_miss`;
+  `tests/test_agent.py`: `test_once_refuses_served_identity`, `--stats` under a held lock;
+  `test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text`.
+
+### D6: `backend_for` offers the subscription CLI's session as `codex[/<model>]` ^d6
+
+Serves C3. `codex` or `codex/<model>` is the subscription CLI on one thread per run
+([[ADR-0009-backends#^d6|ADR-0009/D6]]), the model without tools of its own. `[codex]` takes
+`timeout`, `effort`, `cli` and `home`. Any other key is refused by name, `unmeasured` among them, as
+is a value its key does not take; `build` refuses a backend built with `unmeasured`. So no served
+path runs a CLI release the tools-off claim was not measured on ([[ADR-0009-backends|ADR-0009]]
+S23). The chat seeds a continued session's first figure from its last call's answering attempt (S29
+there).
+
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_backend_for_codex_is_the_session_on_the_named_model_on_a_measured_release_only`,
+  `test_a_codex_key_that_is_not_timeout_effort_cli_or_home_is_refused_by_name_whatever_the_model`,
+  `test_a_codex_value_that_is_not_what_its_key_takes_is_refused_by_the_key`,
+  `test_build_refuses_a_codex_backend_built_for_an_unmeasured_release`;
+  `tests/test_codex_session.py`:
+  `test_a_chat_on_a_codex_model_keeps_one_thread_and_a_continued_chat_stands_on_its_last_count`.
 
 ## Alternatives
 
@@ -267,3 +290,10 @@ log keeps each envelope's cost as it came.
   `tests/test_areas.py`:
   `test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view`; the
   digest test in `tests/test_chores.py`.
+- **S11**: For `codex` no call carries a cost figure: a subscription prints none. The row's dollars
+  do not move and every call counts as of unknown cost (S2), so the day's cost cap never holds a
+  codex agent; its wakes per hour still do.
+- **S12**: A `[claude_code]` value its key does not take is refused by the key's name, as D6 says of
+  `[codex]`: `timeout` is a number of seconds above zero, since `true` read as one second, and
+  `effort` and `cli` are strings that are not empty. Pinned by `tests/test_agent.py`:
+  `test_a_claude_code_value_that_is_not_what_its_key_takes_is_refused_by_the_key`.

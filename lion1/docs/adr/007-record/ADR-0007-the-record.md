@@ -24,8 +24,8 @@ cache, and a model with no notes starts every run from nothing. This record fixe
 
 The record belongs to the run ([[ADR-0002-the-run|ADR-0002]]); the notification that reads it each
 turn is [[ADR-0006-the-notification|ADR-0006]]; the context and note commands are dispatched like
-any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py`, `fold`,
-`Context.direct` and the default handlers in `lionagi/actor.py`, `lionagi/notes.py`.
+any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `src/lion1/record.py`, `fold`,
+`Context.direct` and the default handlers in `src/lion1/actor.py`, `src/lion1/notes.py`.
 
 ## Definitions
 
@@ -166,14 +166,20 @@ without `seqs` can carry, so no directive crashes it;
 
 - **Subject**: every put to a note store, and every `note.find`.
 - **Violated when**: an overwrite removes a key, the file store writes or coerces a value JSON
-  cannot carry, or `note.find` misses a note whose key or value holds the query in another case.
+  cannot carry whole, or `note.find` misses a note whose key or value holds the query in another
+  case.
 
 A put replaces the value whole and raises the note's version, an empty value included, so a key
 leaves the store only by a delete, `note.delete` for the model. The file store refuses a value JSON
-cannot carry before it writes anything. `note.find` returns each hit's first 120 characters as its
-preview, with its size, run and version. A store the profile brings (`Profile.notes`) replaces the
-actor's for every run of that profile. No test pins the empty overwrite, the 120-character cut or a
-brought store.
+cannot carry whole, like NaN, a tuple or a non-string key, before it writes anything. `note.find`
+folds case as Unicode does and returns each hit's first 120 characters as its preview, with its
+size, run and version. A store the profile brings (`Profile.notes`) replaces the actor's for every
+run of that profile.
+
+`test_a_memory_store_counts_every_write_and_an_empty_overwrite_keeps_the_key` pins the empty
+overwrite on the memory store, whose put the file store calls, and
+`test_a_profile_that_brings_its_own_note_store_writes_its_notes_there` the brought store; no test
+pins the 120-character cut.
 
 ### C8: The first notification names the notes already kept _(enforced: mechanical)_ ^c8
 
@@ -232,17 +238,37 @@ on writing, when decided, sits on those two.
   pointers and its handler's `Context.get` share one read per note, and its RESULT names each
   version read under `notes`, kept through the log
   (`test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`);
-  the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
+  the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`,
+  `test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_and_files_as_they_were`,
+  `test_note_read_reads_a_profiles_file_this_actor_never_opened_and_keeps_no_store_for_it`.
 
-### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
+### D4: The file store keeps the copy it checked and reads only standard JSON ^d4
 
-Serves C7. `put` on either store keeps the value it is handed; the file store first tries
-`json.dumps` on it and raises `ValueError` before it takes its lock. `_note_find` slices the value's
-text at 120 characters, and `Actor.notes_for` returns `Profile.notes` before it looks for a store of
-its own.
+Serves C7. `FileNoteStore.put` renders the value and an int `seq`, not a bool, with
+`json.dumps(allow_nan=False)`, encodes key, run and text as UTF-8, reads it back with `json.loads`,
+and stores that copy: a later change, even during the lock wait, reaches nothing stored. Every write
+renders the same way. `_load` refuses NaN, Infinity, overflowing floats, integers past the digit
+limit, a `seq` or a file `version` that is not an int, non-UTF-8 bytes and a lone surrogate, naming
+the file and the place, repairing nothing. Underflow loads as a signed zero.
 
-- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry` and
-  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
+- **Landing evidence**:
+  `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
+  `test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in_the_file`,
+  `test_a_value_changed_after_put_returns_changes_nothing_stored`,
+  `test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant`,
+  `test_a_file_whose_version_is_not_an_integer_is_refused_on_load_naming_the_file`,
+  `test_a_negative_integer_past_the_digit_limit_is_counted_without_its_sign`,
+  `test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number`,
+  `test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them`,
+  `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`,
+  `test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is`,
+  `test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is`,
+  `test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byte_offset`,
+  `test_an_integer_past_the_digit_limit_is_refused_on_load_naming_the_file`,
+  `test_a_file_whose_seq_is_not_an_integer_is_refused_on_load_naming_the_file_and_the_note`,
+  `test_a_file_holding_a_lone_surrogate_is_refused_on_load_naming_where_and_the_file_stays`,
+  `test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the_store_changes` and
+  `test_put_refuses_a_seq_the_file_cannot_carry_before_the_store_changes`.
 
 ### D5: `_notify` lists the store on the first turn ^d5
 
@@ -258,6 +284,39 @@ or said to be unprintable. A resumed chat is a new run and is told again.
   `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises`.
   Controls: dropping the block, the catch, the sort, the plain string, the quoting, either cut, the
   escaping or the inner catch, or skipping a resumed run, fails a test.
+
+### D6: `put` refuses what JSON cannot carry, `find` folds case, and `_note_find` cuts the preview ^d6
+
+Serves C7. `MemoryNoteStore.put` keeps the value it is handed; `FileNoteStore.put` raises
+`ValueError` before the lock when a step of its round trip raises `TypeError`, `ValueError` or
+`RecursionError`, or the copy is unequal to the value. `MemoryNoteStore.find`, which `FileNoteStore`
+inherits, casefolds the query, each key and each value's text, so `STRASSE` finds `Straße`.
+`_note_find` calls `find` on the profile's store, and `Actor.notes_for` returns `Profile.notes`
+before it looks for a store of its own, so a store a profile brings answers for itself. `_note_find`
+slices each value's text at 120 characters.
+
+- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry`,
+  `test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_lock`,
+  `test_a_value_json_cannot_carry_whole_is_refused_before_the_lock`,
+  `test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error` and
+  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
+
+### D7: A note declared into a store the loader refuses ends the run ^d7
+
+Serves C5 and C8. The store loads its file at construction and under `put`'s lock, so a file `_load`
+refuses (D4) raises the loader's error. A tag-form `note.` declaration (`_declare`, then `put`) ends
+the run with no outcome. A program assignment is caught at settle and recorded not written
+([[ADR-0008-the-program#^d3|ADR-0008/D3]]); the first notification says the store could not be read
+and goes on (C8). The note commands reach the loader too and fail as Results
+([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). The model cannot repair the file, and a write over
+it would clobber it.
+
+- **Landing evidence**:
+  `test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error`; a
+  program assignment:
+  `test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on`; the
+  notification:
+  `test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store`.
 
 ## Alternatives
 
@@ -290,7 +349,8 @@ or said to be unprintable. A resumed chat is a new run and is told again.
 - **S6**: Reading another profile's notes is decided as its own default command, naming the profile
   and gated by a privilege ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]). `note.read(profile, key)`
   requires `note.read`, checked before the handler reads anything, and reads the store the actor
-  keeps under that profile's name, never one a profile brought. A profile lacking the privilege is
+  keeps under that profile's name, never one a profile brought. A name with neither a store nor a
+  file reads as no note, and the read keeps no store for it. A profile lacking the privilege is
   refused with nothing read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
 - **S7**: A fold event makes the provider re-read, once, what stays in view after the first entry it
   hides, and spares every later turn the hidden tokens. Folding to half the budget keeps that

@@ -39,16 +39,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lionagi.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
-from lionagi.checkpoint import Var, assert_ignored, load, save, take, to_history
-from lionagi.lndl import plain
-from lionagi.notes import FileNoteStore, MemoryNoteStore, NoteStore
-from lionagi.record import Directive, Entry, Kind
+from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
+from lion1.checkpoint import Var, jsonable, load, save, take, to_history
+from lion1.lndl import plain
+from lion1.notes import FileNoteStore, MemoryNoteStore, NoteStore
+from lion1.record import Directive, Entry, Kind
 
 from ..areas import partial
 from ..backend.claude_code import _prompt_tokens
 from ..chat import entry_row
-from ..khive import Khive, lit
+from ..khive import Khive, assert_ignored, context_dir, lit
 
 __all__ = (
     "AgentError",
@@ -61,6 +61,7 @@ __all__ = (
     "Gtd",
     "CLAUDE_CODE",
     "claude_code_options",
+    "codex_options",
     "Agent",
 )
 
@@ -245,7 +246,7 @@ class Gtd:
     due: str = "now"  # now | off: a task past its `at`
     work: str = "off"  # off | idle: self-driven work on the queue's top when quiet
     idle_after: float = 900.0  # seconds since the last wake before a quiet chair works its queue
-    notice: int = 5  # tasks named in each round's notification
+    notice: int = 5  # tasks named in each turn's notification
     limit: int = 20  # tasks read per poll
 
     @classmethod
@@ -292,6 +293,41 @@ def claude_code_options(table: dict | None) -> dict:
             f"[claude_code] {', '.join(extra)}: a claude_code model has no tools of its own "
             f"(ADR-0016/D3); the keys are {', '.join(CLAUDE_CODE)}"
         )
+    timeout = options.get("timeout")
+    if "timeout" in options and (  # `true` is an int to Python: one second, read off a typo
+        isinstance(timeout, bool) or not isinstance(timeout, int | float) or not 0 < timeout < float("inf")
+    ):
+        raise ValueError(f"[claude_code] timeout is a number of seconds above zero, not {timeout!r}")
+    for key in ("effort", "cli"):
+        if key in options and not (isinstance(options[key], str) and options[key]):
+            raise ValueError(f"[claude_code] {key} is a string that is not empty, not {options[key]!r}")
+    return options
+
+
+CODEX = ("timeout", "effort", "cli", "home")  # the `[codex]` keys: none of them gives the model a tool
+
+
+def codex_options(table: dict | None) -> dict:
+    """`[codex]` as an agent takes it: `timeout`, `effort`, `cli` and `home`. A codex model has no
+    tools of its own and runs only on a CLI release its tools-off claim was measured on
+    (ADR-0016/D3), so any other key, `unmeasured` among them, refuses by name, whatever the model,
+    at load and at a reload, never ignored."""
+    if table is not None and not isinstance(table, dict):
+        raise ValueError(f"[codex] is a table of timeout, effort, cli and home, not {table!r}")
+    options = dict(table or {})
+    if extra := sorted(set(options) - set(CODEX)):
+        raise ValueError(
+            f"[codex] {', '.join(extra)}: a codex model has no tools of its own "
+            f"(ADR-0016/D3); the keys are {', '.join(CODEX)}"
+        )
+    timeout = options.get("timeout")
+    if "timeout" in options and (  # `true` is an int to Python: one second, read off a typo
+        isinstance(timeout, bool) or not isinstance(timeout, int | float) or not 0 < timeout < float("inf")
+    ):
+        raise ValueError(f"[codex] timeout is a number of seconds above zero, not {timeout!r}")
+    for key in ("effort", "cli", "home"):
+        if key in options and not (isinstance(options[key], str) and options[key]):
+            raise ValueError(f"[codex] {key} is a string that is not empty, not {options[key]!r}")
     return options
 
 
@@ -343,7 +379,7 @@ class Agent:
     budget: Budget = Budget()
     owner: str | None = None  # the actor told when a batch is lost or a wake fails; None tells nobody
     state: NoteStore | None = None  # the agent's own notes; None: notes/agent.json in the khive directory
-    max_rounds: int = 6
+    max_turns: int = 6
     # the gate on OUT{} (RunRequest.accept): why the wake may not end yet, or None; a refusal is a retry
     accept: Callable[[Run, Any], Awaitable[str | None] | str | None] | None = None
     poll_ms: int = 5000  # how long one inbox call waits for mail before the loop asks again
@@ -368,7 +404,7 @@ class Agent:
     continuous: bool = False
     _say: Callable[[str], None] = field(default=lambda line: None, repr=False)
     _until: Callable[[], bool] | None = field(default=None, repr=False)
-    _burst: dict = field(default_factory=dict, repr=False)  # the running burst: mail, before, round0, sent0
+    _burst: dict = field(default_factory=dict, repr=False)  # the running burst: mail, before, turn0, sent0
     _serving: bool = field(default=False, repr=False)  # inside serve(): the only place a run may go on
     _carry: tuple[list[dict], list[dict]] | None = field(default=None, repr=False)  # taken, for a fresh run
     idle: int = 0  # polls since the last wake that found no mail: each one cost no model call
@@ -512,6 +548,7 @@ class Agent:
             claude_code_options(
                 cfg.get("claude_code")
             )  # the backend stays until a restart: said, not ignored
+            codex_options(cfg.get("codex"))
         except (OSError, tomllib.TOMLDecodeError, ValueError, TypeError) as e:
             self.errors.append(f"reload failed: {type(e).__name__}: {e}")
             self._say(f"reload failed, the values in force stay: {type(e).__name__}: {e}")
@@ -712,8 +749,10 @@ class Agent:
             self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
             await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
         if self.admit is not None:  # refused mail is read, recorded on the cursor, and never run
-            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m in mail if not self.admit(m)]
-            mail = [m for m in mail if self.admit(m)]
+            # one answer per message: a gate may do work per call, and a second call may answer otherwise
+            verdicts = [(m, self.admit(m)) for m in mail]
+            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+            mail = [m for m, ok in verdicts if ok]
         mail = self._triage(mail, woken=bool(notices))
         # `taking` names only what runs: deferred mail sits under its own note, dropped mail on the cursor
         self.state.put("taking", {"mail": [m.get("id") for m in mail]} if mail else {}, run="-", seq=0)
@@ -761,8 +800,9 @@ class Agent:
             raise AgentError(f"not in the read box: {sorted(wanted)}")
         self._dropped = []
         if self.admit is not None:  # the gate stands on this path as on `wake`: a rerun is a wake
-            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m in found if not self.admit(m)]
-            found = [m for m in found if self.admit(m)]
+            verdicts = [(m, self.admit(m)) for m in found]  # asked once per message, as on `wake`
+            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+            found = [m for m, ok in verdicts if ok]
             if not found:
                 prior = _value(self.state, "cursor", {})
                 facts = {**prior, "dropped": self._dropped, "dropped_at": _stamp(self.clock())}
@@ -842,21 +882,21 @@ class Agent:
             "mail": list(mail),
             "notices": notices,
             "before": before,
-            "round0": 0,
+            "turn0": 0,
             "sent0": 0,
             "restarts0": int(getattr(self.backend, "restarts", 0) or 0),
             "seq0": len(history),  # the burst's first entry: a replayed history is not this burst's
         }
         if self.continuous and self._serving:
-            # rounds run on across bursts; `_stop` ends the run at a burst past max_rounds or the day's
+            # turns run on across bursts; `_stop` ends the run at a burst past max_turns or the day's
             # cap. No declared output: the runtime would ask for OUT{} at every turn, and a batch ends in
             # plain text; an OUT{} is the model's stop, taken as a literal that ends the run.
             request = RunRequest(
                 inputs=inputs,
                 emits=(),
-                max_rounds=1_000_000,
+                max_turns=1_000_000,
                 accept=None,
-                # the model has no tools of its own: its commands' results reach it next round, and a turn
+                # the model has no tools of its own: its commands' results reach it next turn, and a turn
                 # of plain text, the posture, ends the batch
                 wait=self._wait,
                 fold_inputs=True,  # a day of mail and replies folds too; the latest batch stays
@@ -871,7 +911,7 @@ class Agent:
             request = RunRequest(
                 inputs=inputs,
                 emits=(Posture,),
-                max_rounds=self.max_rounds,
+                max_turns=self.max_turns,
                 accept=self.accept,
                 history=history,
             )
@@ -920,13 +960,13 @@ class Agent:
         return run
 
     def _burst_facts(self, run: Run | None, outcome: str, profile: Profile, done: int | None = None) -> dict:
-        """The cursor for the running burst: its own mail, rounds and sends, not the run's whole.
-        `done` = rounds completed so far when the run is still going (at the wait point `run.round`
-        is the round about to start); an ended run's `run.round` is its last."""
+        """The cursor for the running burst: its own mail, turns and sends, not the run's whole.
+        `done` = turns completed so far when the run is still going (at the wait point `run.turn`
+        is the turn about to start); an ended run's `run.turn` is its last."""
         b = self._burst
         facts = self._facts(run, b["mail"], outcome, profile, b["before"], notices=b["notices"])
         if run is not None:
-            facts["rounds"] = (run.round if done is None else done) - b["round0"]
+            facts["turns"] = (run.turn if done is None else done) - b["turn0"]
             facts["sent"] = facts["sent"] - b["sent0"]
             if "tokens" in facts:  # sessions the backend started over from a folded view this burst
                 facts["tokens"]["restarts"] = int(getattr(self.backend, "restarts", 0) or 0) - b.get(
@@ -935,12 +975,12 @@ class Agent:
         return facts
 
     def _stop(self, run: Run) -> bool:
-        """Asked each round of a continuous run: a burst past max_rounds, or the day's cost at cap with
+        """Asked each turn of a continuous run: a burst past max_turns, or the day's cost at cap with
         this burst's calls counted, ends the run; serve() starts a fresh one on the next mail."""
         b = self._burst
         spend = _value(self.state, "spend", {})
         today = spend.get("cost", 0.0) if spend.get("day") == _day(self.clock()) else 0.0
-        if run.round - b["round0"] > self.max_rounds or (
+        if run.turn - b["turn0"] > self.max_turns or (
             today + self._usage(b["before"])["cost"] >= self.budget.cost_per_day
         ):
             self._checkpoint(run, "end")  # the run ends here: the next one starts from what it held
@@ -955,10 +995,10 @@ class Agent:
             return ()
         self._restored = True
         cwd = getattr(self.khive, "cwd", None)
-        if cwd is None or not (Path(cwd) / ".khive" / "context" / "latest.json").exists():
+        if cwd is None or not (context_dir(cwd) / "latest.json").exists():
             return ()
         try:
-            return to_history(load(Path(cwd)))
+            return to_history(load(context_dir(cwd)))
         except Exception as e:
             self.errors.append(f"restore: {type(e).__name__}: {e}")
             self._say(f"restore failed, the run starts fresh: {self.errors[-1]}")
@@ -975,11 +1015,11 @@ class Agent:
         d = Path(cwd)
         try:
             assert_ignored(d)
-            ctx = d / ".khive" / "context"
+            ctx = context_dir(d)
             ctx.mkdir(parents=True, exist_ok=True)
             log = ctx / f"record-{run.id}.jsonl"
             tmp = log.with_name(f".{log.name}.{os.getpid()}.tmp")
-            tmp.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in run.record))
+            tmp.write_text("".join(json.dumps(entry_row(e), default=jsonable) + "\n" for e in run.record))
             os.replace(tmp, log)
             # a note over LAZY is carried by its key (`take`): the model's note.get reaches the profile's
             # notes; the agent's own (the cursor) are a file the model never reads, named by its path
@@ -1036,7 +1076,7 @@ class Agent:
                 record=run.record,
                 fold_inputs=run.request.fold_inputs,
             )
-            self._say(f"checkpoint {save(ckpt, d).stem} ({why}) at seq {run.record.seq}")
+            self._say(f"checkpoint {save(ckpt, ctx).stem} ({why}) at seq {run.record.seq}")
         except Exception as e:
             self.errors.append(f"checkpoint {why}: {type(e).__name__}: {e}")
             self._say(self.errors[-1])
@@ -1049,7 +1089,7 @@ class Agent:
         if not self._serving:
             return False
         b = self._burst
-        done = run.round - 1  # the wait comes at the start of a round; the burst ended with the last
+        done = run.turn - 1  # the wait comes at the start of a turn; the burst ended with the last
         self._spend(mail=len(b["mail"]) + len(b["notices"]), **self._usage(b["before"]))
         facts = self._burst_facts(run, "Quiet", run.profile, done=done)
         self.state.put("cursor", facts, run=run.id, seq=run.record.seq)
@@ -1111,10 +1151,9 @@ class Agent:
                     self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
                     await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
                 if self.admit is not None:
-                    self._dropped = [
-                        {"id": m.get("id"), "from": _sender(m)} for m in mail if not self.admit(m)
-                    ]
-                    mail = [m for m in mail if self.admit(m)]
+                    verdicts = [(m, self.admit(m)) for m in mail]  # asked once per message, as on `wake`
+                    self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+                    mail = [m for m, ok in verdicts if ok]
                 mail = self._triage(mail, woken=bool(notices))
                 self.state.put(
                     "taking", {"mail": [m.get("id") for m in mail]} if mail else {}, run="-", seq=0
@@ -1151,7 +1190,7 @@ class Agent:
                 "mail": list(mail),
                 "notices": notices,
                 "before": len(getattr(self.backend, "calls", ())),
-                "round0": run.round - 1,
+                "turn0": run.turn - 1,
                 "sent0": self._delivered.get(run.id, 0),
                 "restarts0": int(getattr(self.backend, "restarts", 0) or 0),
                 "seq0": run.record.seq,
@@ -1353,7 +1392,7 @@ class Agent:
             "profile": profile.name,
             "run": run.id if run is not None else None,
             "outcome": outcome,
-            "rounds": run.round if run is not None else 0,
+            "turns": run.turn if run is not None else 0,
             "mail": [m.get("id") for m in mail],
             "sent": sent,
         }
@@ -1390,8 +1429,8 @@ class Agent:
         if self.continuous and self._serving:
             head.append(
                 "Deal with the mail as your role says, with the commands: each one's result reaches you "
-                "next round. When the work is done, a turn of plain text, your posture, ends this batch, "
-                f"and the next mail arrives in this same conversation. You have {self.max_rounds} rounds "
+                "next turn. When the work is done, a turn of plain text, your posture, ends this batch, "
+                f"and the next mail arrives in this same conversation. You have {self.max_turns} turns "
                 "for this batch."
             )
         else:
@@ -1403,7 +1442,7 @@ def _line(c: dict) -> str:
     """The serve log's line for a wake, from its cursor."""
     t = c.get("tokens") or {}
     return (
-        f"wake {c.get('wake')}: {c.get('outcome')} after {c.get('rounds')} rounds, "
+        f"wake {c.get('wake')}: {c.get('outcome')} after {c.get('turns')} turns, "
         f"{len(c.get('mail', []))} mail, {c.get('sent')} sent; {t.get('calls', 0)} model "
         f"call(s), {t.get('in', 0)} in, {t.get('out', 0)} out, ${t.get('cost', 0.0):.4f}"
         + partial(t.get("unknown", 0))

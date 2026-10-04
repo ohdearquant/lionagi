@@ -51,7 +51,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from hub import guidance
-from lionagi.actor import Context, Profile, Run
+from lion1.actor import Context, Profile, Run
 
 from ..areas import partial
 from ..khive import KhiveError, lit

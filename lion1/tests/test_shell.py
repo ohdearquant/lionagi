@@ -11,8 +11,8 @@ import time
 import pytest
 
 from hub import Sandbox, files, shell
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 
@@ -35,7 +35,7 @@ def test_the_handlers_hand_the_sandbox_a_shell_line_and_a_script_on_stdin():
     backend = scripted(
         '<lact b1>bash(command="ls -la", timeout=7)</lact><lact p1>python(code="print(1)")</lact>', "ok"
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["b1"].ok and r["b1"].value["stdout"] == "out" and r["p1"].ok
     by_stdin = {c[1]: c for c in box.calls}
@@ -66,7 +66,7 @@ def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and
                 '<lact t1>bash(command="sleep 30", timeout=1)</lact>',
                 "ok",
             )
-            return await actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend)
+            return await actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend)
         finally:
             await box.stop()
 
@@ -87,6 +87,7 @@ def test_every_real_box_test_is_opt_in():
     # a test that boots a real VM or box is
     # skipped unless its opt-in variable is set (the original asserted both variables unset instead)
     import tests.test_daytona as daytona
+    import tests.test_runta as runta
 
     for var, fn in (
         ("LION_DAYTONA_E2E", daytona.test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory),
@@ -94,6 +95,7 @@ def test_every_real_box_test_is_opt_in():
             "LION_CONTAINER_E2E",
             test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and_stops,
         ),
+        ("LION_RUNTA_E2E", runta.test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops),
     ):
         (mark,) = [m for m in fn.pytestmark if m.name == "skipif"]
         assert os.environ.get(var) == "1" or mark.args[0], f"{fn.__name__} runs without {var}=1"

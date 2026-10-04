@@ -6,8 +6,11 @@
 `--where local` runs the eval image under docker on this machine (amd64 emulation: one at a time is
 what it can bear) and streams images: pull, solve, grade, remove. `--where daytona` creates one
 Daytona sandbox per instance from the same image, natively x86_64, `--parallel` wide; nothing lands
-on this machine but the records. Grading happens inside the instance's own box either way
-(sandbox.grade mirrors the official harness), so there is no second container and no oracle pass.
+on this machine but the records. `--where runta` (the `runta` extra: `--with runta-sdk`) does the
+same on Runta, from a Runta image built
+over the eval image the first time an instance runs there
+(`sandbox.runta_image`). Grading happens inside the instance's own box either way (sandbox.grade
+mirrors the official harness), so there is no second container and no oracle pass.
 
 The ledger (one JSON line per instance) is the resumable state: instances already in it are
 skipped, so a run can be stopped and restarted under the same run id. A run id is one run: its
@@ -43,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_cli import solve as solve_codex_cli  # noqa: E402
 from run_swe import HERE, RESULTS, solve  # noqa: E402
 from run_swe import cost_known as _cost_known  # noqa: E402
-from sandbox import close_code_hosts, grade, open_code_hosts, testbed  # noqa: E402
+from sandbox import close_code_hosts, grade, open_code_hosts, runta_image, testbed  # noqa: E402
 
 from hub.tools import docker  # noqa: E402
 
@@ -120,12 +123,14 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                 box = testbed(row["image"], "local")
                 eval_timeout = 3600.0  # emulated
             else:
+                image = await runta_image(row) if args.where == "runta" else row["image"]
                 box = testbed(
-                    row["image"],
-                    "daytona",
+                    image,
+                    args.where,
                     cpu=args.cpu,
                     memory=args.memory,
                     label=f"lionagi-swe-{args.run_id}",
+                    unaided=args.unaided,
                 )
                 eval_timeout = 1800.0
             await box.start()
@@ -143,7 +148,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                 rec = await solve(
                     row,
                     args.model,
-                    args.max_rounds,
+                    args.max_turns,
                     out_dir,
                     args.backend,
                     box=box,
@@ -221,7 +226,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
     spent = rec.get("cost_usd", 0.0)
     cost = "unknown" if spent is None else f"${spent:.3f}" + ("" if _cost_known(rec) else "+?")
     print(
-        f"{iid}: resolved={rec['resolved']} {rec.get('outcome')} rounds={rec.get('rounds')} "
+        f"{iid}: resolved={rec['resolved']} {rec.get('outcome')} turns={rec.get('turns')} "
         f"cost={cost} {rec['total_seconds']:.0f}s "
         f"{rec.get('grade', {}).get('status', '')} {rec.get('error', '')}",
         flush=True,
@@ -313,6 +318,9 @@ async def main(args: argparse.Namespace) -> None:
             f"--cost-budget {args.cost_budget}: this arm has no cost meter to cap against (the codex "
             "CLI and the codex backend report tokens, not dollars); run it with no --cost-budget"
         )
+    if args.where == "runta" and args.harness == "codex-cli" and args.unaided:
+        # its binary is downloaded from github.com, which an unaided Runta box's policy denies
+        raise SystemExit("--harness codex-cli on --where runta installs from github.com: run it with --aided")
     if args.cost_budget is None and not unmetered:
         args.cost_budget = 1.0
     data = SETS[args.set].read_bytes()  # one read: the manifest digests the bytes these rows came from
@@ -419,7 +427,7 @@ async def _run(
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", choices=sorted(SETS), default="mini50")
-    ap.add_argument("--where", choices=["local", "daytona"], default="daytona")
+    ap.add_argument("--where", choices=["local", "daytona", "runta"], default="daytona")
     ap.add_argument("--repo", default=None)
     ap.add_argument("--instances", nargs="*")
     ap.add_argument("--limit", type=int, default=None)
@@ -430,7 +438,7 @@ if __name__ == "__main__":
         help="who runs the loop: this runtime (LNDL, `--backend` says which model API) or the codex CLI "
         "inside the box on the same model through OpenRouter (bench/swe/codex_cli.py)",
     )
-    ap.add_argument("--backend", choices=["rounds", "session", "openrouter", "codex"], default="openrouter")
+    ap.add_argument("--backend", choices=["turns", "session", "openrouter", "codex"], default="openrouter")
     ap.add_argument("--model", default="deepseek/deepseek-v4.1-flash")
     ap.add_argument("--effort", default=None, help="codex only: model_reasoning_effort, e.g. xhigh")
     ap.add_argument(
@@ -439,9 +447,9 @@ if __name__ == "__main__":
         help="openrouter only: a reasoning token budget (default 2000: 42/50 on Mini-50 against 33/50 "
         "off), off, on (the provider's default), low, medium, high",
     )
-    # rounds are the backstop: with the model's thinking off a round is one or two actions, and a
+    # turns are the backstop: with the model's thinking off a turn is one or two actions, and a
     # lower cap cut the longest instances mid-edit; settle, time and cost do the stopping
-    ap.add_argument("--max-rounds", type=int, default=100)
+    ap.add_argument("--max-turns", type=int, default=100)
     ap.add_argument(
         "--criteria",
         action="store_true",
@@ -451,7 +459,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--deliberate",
         action="store_true",
-        help="open each round with written reasoning lines; the arm for the no-thinking regime",
+        help="open each turn with written reasoning lines; the arm for the no-thinking regime",
     )
     ap.add_argument(
         "--tdd",
@@ -463,7 +471,7 @@ if __name__ == "__main__":
         "--settle",
         type=int,
         default=0,
-        help="rounds the fix may stand unchanged before the run stops; 0 (default) never: the run ends on "
+        help="turns the fix may stand unchanged before the run stops; 0 (default) never: the run ends on "
         "OUT{} or a budget (on the hard set most runs settled, some mid-verification)",
     )
     ap.add_argument(
@@ -489,8 +497,8 @@ if __name__ == "__main__":
         "arms (they have no meter, and a cap there is refused)",
     )
     ap.add_argument("--parallel", type=int, default=4)
-    ap.add_argument("--cpu", type=int, default=2, help="vCPU per Daytona sandbox")
-    ap.add_argument("--memory", type=int, default=2, help="GiB per Daytona sandbox; the org pool is shared")
+    ap.add_argument("--cpu", type=int, default=2, help="vCPU per Daytona sandbox or Runta runtime")
+    ap.add_argument("--memory", type=int, default=2, help="GiB per remote box; Daytona's org pool is shared")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--keep-images", action="store_true")
     asyncio.run(main(ap.parse_args()))

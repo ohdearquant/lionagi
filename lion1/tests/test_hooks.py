@@ -1,10 +1,11 @@
 """Shell hooks from `hooks.toml`: a `before` script gates a command by its exit code (2 refuses, its
 stdout the reason; 0 with a JSON object on stdout replaces the arguments; a timeout refuses), an
-`after` script sees the result, a `round` script's stdout lands in the notice."""
+`after` script sees the result, a `turn` script's stdout lands in the notice."""
 
 import asyncio
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,14 +16,14 @@ import pytest
 from hub import files, shell
 from hub.hooks import install, load, run_hook
 from hub.hooks.shell import HERE
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 GATE = """
 import json, sys
 p = json.load(sys.stdin)
-assert p["event"] == "before" and p["command"] == "read" and "round" in p
+assert p["event"] == "before" and p["command"] == "read" and "turn" in p
 path = p["args"]["path"]
 if "secret" in path:
     print("secrets stay closed"); sys.exit(2)
@@ -46,7 +47,7 @@ def setup(tmp_path: Path, extra: str = "") -> tuple[Actor, Profile]:
     (tmp_path / "hooks.toml").write_text(
         f'[[before]]\nname = "gate"\nmatch = "read"\nrun = "{py} gate.py"\n\n'
         f'[[after]]\nname = "audit"\nrun = "{py} audit.py"\n\n'
-        '[[round]]\nname = "clock"\nrun = "echo clock: tick"\n' + extra
+        '[[turn]]\nname = "clock"\nrun = "echo clock: tick"\n' + extra
     )
     actor = Actor("h", notes_dir=tmp_path / "notes")
     hooks = load(tmp_path / "hooks.toml")
@@ -62,7 +63,7 @@ def test_shell_hooks_gate_observe_and_report(tmp_path):
         '<lact l1>list_dir(path=".")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["s1"].ok is False and r["s1"].error == "refused: secrets stay closed"
     assert r["r1"].ok and r["r1"].value == "alpha\n"  # the gate rewrote the path
@@ -78,7 +79,7 @@ def test_a_slow_before_hook_refuses_at_its_timeout_and_a_bad_file_says_which_tab
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r1>read(path="a.txt")</lact>', "x"),
         )
     )
@@ -91,6 +92,10 @@ def test_a_slow_before_hook_refuses_at_its_timeout_and_a_bad_file_says_which_tab
         assert "[[after]] #1 has no `run`" in str(e)
     else:
         raise AssertionError("a hook without `run` loaded")
+    # a table no event names is refused by name: the spelling before the rename ran nothing in silence
+    (tmp_path / "old.toml").write_text('[[round]]\nrun = "true"\n')
+    with pytest.raises(ValueError, match=r"old\.toml: no event 'round'; the events are before, after, turn$"):
+        load(tmp_path / "old.toml")
 
 
 def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_does_too(tmp_path):
@@ -102,8 +107,8 @@ def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_d
         ("before", "no-secrets-search"),
         ("before", "guard-bash"),
         ("after", "audit"),
-        ("round", "clock"),
-        ("round", "tree-changed"),
+        ("turn", "clock"),
+        ("turn", "tree-changed"),
     ]
     repo = tmp_path / "repo"  # tracked() asks git in the hook's cwd: a repository of its own, not pytest's
     repo.mkdir()
@@ -188,7 +193,7 @@ def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_d
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r1>read(path="id_rsa")</lact>', "x"),
         )
     )
@@ -204,7 +209,7 @@ def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_d
     run = asyncio.run(
         actor.run(
             Profile(name="g2", specs=frozenset(specs), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact a>read(path=".env")</lact><lact b>read_lines(path=".env")</lact>', "x"),
         )
     )
@@ -223,7 +228,7 @@ def test_a_timed_out_hook_takes_its_children_with_it(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r1>read(path="a.txt")</lact>', "x"),
         )
     )
@@ -241,7 +246,7 @@ def test_a_timed_out_hook_that_filled_its_pipe_still_returns(tmp_path, line):
 
     async def timed():  # a hook writing without end holds its pipe full; the kill alone never frees it
         return await asyncio.wait_for(
-            run_hook(Hook("round", line, "flood", "*", 0.3), {"event": "x"}, tmp_path), 10
+            run_hook(Hook("turn", line, "flood", "*", 0.3), {"event": "x"}, tmp_path), 10
         )
 
     assert asyncio.run(timed()) == (None, "", "")
@@ -410,7 +415,7 @@ def test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_res
     run = asyncio.run(
         actor.run(
             Profile(name="loop", specs=frozenset({"loop"} | {h.name for h in DEFAULT_HANDLERS}), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted("<lact a>loop(n=1)</lact>", "x"),
         )
     )
@@ -474,13 +479,24 @@ def test_a_descendant_that_left_the_hooks_group_is_abandoned_at_the_grace_and_th
 TREE_HOOK = "hub.hooks.scripts.tree_changed"
 
 
-def tree_call(tmp_path: Path, run: str, round_: int) -> str:
-    payload = json.dumps({"event": "round", "run": run, "round": round_})
+def tree_call(tmp_path: Path, run: str, turn_: int) -> str:
+    payload = json.dumps({"event": "turn", "run": run, "turn": turn_})
     done = subprocess.run(
-        [sys.executable, "-m", TREE_HOOK], input=payload, capture_output=True, text=True, cwd=tmp_path
+        [sys.executable, "-m", TREE_HOOK], input=payload.encode(), capture_output=True, cwd=tmp_path
     )
     assert done.returncode == 0, done.stderr
-    return done.stdout.strip()
+    return os.fsdecode(done.stdout).strip()  # the hook's bytes: text mode reads a carriage return as \n
+
+
+def tree_notice(tmp_path: Path, run: str, turn_: int) -> str | None:
+    """What the actor adds to its notice for this turn: the tree hook run by `run_hook`, its stdout
+    decoded and stripped by the turn section `install` registers."""
+    import types
+
+    from hub.hooks.shell import Hook, _turn
+
+    hook = Hook("turn", f"{sys.executable} -m {TREE_HOOK}", "tree-changed", "*", 30)
+    return asyncio.run(_turn(hook, tmp_path)(types.SimpleNamespace(id=run, turn=turn_)))
 
 
 def git(tmp_path: Path, *args: str) -> str:
@@ -500,14 +516,14 @@ def test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved(tmp_
     git(tmp_path, "add", "a.txt")
     git(tmp_path, "commit", "-qm", "one")
     moved_from = git(tmp_path, "rev-parse", "HEAD")[:7]
-    assert tree_call(tmp_path, "run-1", 4) == ""  # the first round records the tree and says nothing
+    assert tree_call(tmp_path, "run-1", 4) == ""  # the first turn records the tree and says nothing
     (tmp_path / "a.txt").write_text("two\n")
     (tmp_path / "b.txt").write_text("new\n")
     git(tmp_path, "add", "a.txt", "b.txt")
     git(tmp_path, "commit", "-qm", "two")
     moved_to = git(tmp_path, "rev-parse", "HEAD")[:7]
     assert tree_call(tmp_path, "run-1", 5).splitlines() == [
-        "tree: 2 file(s) changed since round 4: a.txt, b.txt",
+        "tree: 2 file(s) changed since turn 4: a.txt, b.txt",
         f"tree: HEAD moved {moved_from} -> {moved_to}",
     ]
 
@@ -529,7 +545,7 @@ def test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run(
     run = asyncio.run(
         actor.run(
             Profile(name="h", specs=frozenset(specs), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r>read(path="f.txt")</lact>', "x"),
         )
     )
@@ -562,7 +578,7 @@ def test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field(tmp_pat
     run = asyncio.run(
         actor.run(
             Profile("h"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact w>wire(wire_text="asked")</lact>', "x"),
         )
     )
@@ -571,7 +587,7 @@ def test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field(tmp_pat
 
 
 def test_the_tree_hook_survives_a_cut_state_file(tmp_path):
-    # a state file cut mid-write raised on every later round; it starts over and writes whole
+    # a state file cut mid-write raised on every later turn; it starts over and writes whole
     from hub.hooks.scripts.tree_changed import state_path
 
     git(tmp_path, "init", "-q")
@@ -580,9 +596,9 @@ def test_the_tree_hook_survives_a_cut_state_file(tmp_path):
     git(tmp_path, "commit", "-qm", "one")
     path = tmp_path / state_path("r")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"round": 1, "hea')
+    path.write_text('{"turn": 1, "hea')
     assert tree_call(tmp_path, "r", 2) == ""
-    assert json.loads(path.read_text())["round"] == 2 and not list(path.parent.glob("*.tmp"))
+    assert json.loads(path.read_text())["turn"] == 2 and not list(path.parent.glob("*.tmp"))
     (tmp_path / "a.txt").write_text("two\n")
     assert "a.txt" in tree_call(tmp_path, "r", 3)
 
@@ -594,7 +610,7 @@ def test_the_tree_hook_is_silent_when_nothing_changed(tmp_path):
     git(tmp_path, "commit", "-qm", "one")
     assert tree_call(tmp_path, "run-2", 1) == ""
     assert tree_call(tmp_path, "run-2", 2) == ""
-    assert tree_call(tmp_path, "run-3", 2) == ""  # another run's first round is quiet too
+    assert tree_call(tmp_path, "run-3", 2) == ""  # another run's first turn is quiet too
 
 
 def test_the_tree_hook_sees_a_file_inside_a_new_untracked_directory(tmp_path):
@@ -607,7 +623,7 @@ def test_the_tree_hook_sees_a_file_inside_a_new_untracked_directory(tmp_path):
     (tmp_path / "newpkg" / "calc.py").write_text("x = 1\n")
     assert tree_call(tmp_path, "run-4", 1) == ""
     (tmp_path / "newpkg" / "calc.py").write_text("x = 2\n")
-    assert tree_call(tmp_path, "run-4", 2) == "tree: 1 file(s) changed since round 1: newpkg/calc.py"
+    assert tree_call(tmp_path, "run-4", 2) == "tree: 1 file(s) changed since turn 1: newpkg/calc.py"
 
 
 def test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files(tmp_path):
@@ -629,17 +645,17 @@ def test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files(tmp_pat
     index.write_bytes(b"not an index")
     listing = subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True)
     assert listing.returncode == 128 and git(tmp_path, "rev-parse", "HEAD")  # HEAD resolves, the list fails
-    unread = "tree: could not be read (git ls-files failed); round 1 stays the baseline"
+    unread = "tree: could not be read (git ls-files failed); turn 1 stays the baseline"
     assert tree_call(tmp_path, "r", 2) == unread
     assert state.read_bytes() == baseline
-    assert tree_call(tmp_path, "q", 1) == "" and not (tmp_path / state_path("q")).exists()  # first round
+    assert tree_call(tmp_path, "q", 1) == "" and not (tmp_path / state_path("q")).exists()  # first turn
     index.write_bytes(kept)
     assert tree_call(tmp_path, "r", 3) == ""  # git is back and nothing moved: nothing is said to have
     (tmp_path / "a.txt").write_text("two\n")
-    assert tree_call(tmp_path, "r", 4) == "tree: 1 file(s) changed since round 3: a.txt"
+    assert tree_call(tmp_path, "r", 4) == "tree: 1 file(s) changed since turn 3: a.txt"
     git(tmp_path, "rm", "-qf", "a.txt", "b.txt")
     assert git(tmp_path, "ls-files") == ""  # an empty listing that git made is data
-    assert tree_call(tmp_path, "r", 5) == "tree: 2 file(s) changed since round 4: a.txt, b.txt"
+    assert tree_call(tmp_path, "r", 5) == "tree: 2 file(s) changed since turn 4: a.txt, b.txt"
     assert json.loads(state.read_text())["files"] == {}
     bare = tmp_path / "no-head"
     bare.mkdir()
@@ -659,6 +675,207 @@ def test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state(tmp_path
     named = [hashlib.blake2b(r.encode(), digest_size=8).hexdigest() + ".json" for r in ("run-a", "run-b")]
     assert sorted(p.name for p in (tmp_path / ".lion" / "tree_state").iterdir()) == sorted(named)
     assert sorted(p.name for p in (tmp_path / ".lion").iterdir()) == ["tree_state"]  # no shared map
+
+
+def test_the_tree_hook_keeps_a_carriage_return_in_a_file_name(tmp_path):
+    # git's names were read as text, whose newline translation turned a carriage return into \n: a
+    # change to `a\rb.txt` was never named, and it and `a\nb.txt` were one key
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    for name in ("a\rb.txt", "a\nb.txt", "c.txt"):
+        (tmp_path / name).write_text("one\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    (tmp_path / "new\r.txt").write_text("one\n")  # untracked
+    assert tree_call(tmp_path, "r", 1) == ""
+    kept = json.loads((tmp_path / state_path("r")).read_text())["files"]
+    assert sorted(kept) == ["a\nb.txt", "a\rb.txt", "c.txt", "new\r.txt"]
+    (tmp_path / "a\rb.txt").write_text("two\n")
+    (tmp_path / "new\r.txt").write_text("two\n")
+    # a name that holds a carriage return is printed quoted and escaped
+    assert tree_call(tmp_path, "r", 2) == "tree: 2 file(s) changed since turn 1: 'a\\rb.txt', 'new\\r.txt'"
+
+
+def test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8(tmp_path):
+    # such a name raised UnicodeDecodeError out of the hook (exit 1), past the line that says git
+    # could not list the files; here it is in the index and not on disk, as a checkout leaves it on a
+    # file system that refuses the name
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("one\n")
+    git(tmp_path, "add", "a.txt")
+    git(tmp_path, "commit", "-qm", "one")
+    blob, name = git(tmp_path, "hash-object", "-w", "a.txt"), os.fsdecode(b"bad\xff.txt")
+    git(tmp_path, "update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True).stdout
+    assert listed == b"a.txt\0bad\xff.txt\0"
+    assert tree_call(tmp_path, "r", 1) == ""
+    assert sorted(json.loads((tmp_path / state_path("r")).read_text())["files"]) == ["a.txt"]
+    (tmp_path / "a.txt").write_text("two\n")
+    assert tree_call(tmp_path, "r", 2) == "tree: 1 file(s) changed since turn 1: a.txt"
+
+
+def test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8(tmp_path):
+    # the name goes out escaped, byte by byte; printed as text it raised UnicodeEncodeError
+    from hub.hooks.scripts.tree_changed import state_path
+
+    name = os.fsdecode(b"bad\xff.txt")
+    try:
+        (tmp_path / name).write_bytes(b"one\n")
+    except OSError as e:  # APFS, for one: no file can carry the name
+        pytest.skip(f"this file system refuses a name that is not UTF-8: {e}")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_call(tmp_path, "r", 1) == ""
+    assert list(json.loads((tmp_path / state_path("r")).read_text())["files"]) == [name]
+    (tmp_path / name).write_bytes(b"two\n")
+    assert tree_call(tmp_path, "r", 2) == "tree: 1 file(s) changed since turn 1: 'bad\\xff.txt'"
+
+
+def test_the_tree_hook_reads_a_conflicted_file_once(tmp_path, monkeypatch):
+    # `git ls-files` lists a conflicted path once per index stage, and each row was read and hashed
+    import hashlib
+    from collections import Counter
+
+    from hub.hooks.scripts import tree_changed
+
+    git(tmp_path, "init", "-q")
+    for name in ("c.txt", "same.txt"):  # same.txt: another path with c.txt's content stays a key
+        (tmp_path / name).write_text("base\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+    git(tmp_path, "checkout", "-qb", "other")
+    (tmp_path / "c.txt").write_text("other\n")
+    git(tmp_path, "commit", "-qam", "other")
+    git(tmp_path, "checkout", "-q", "-")
+    (tmp_path / "c.txt").write_text("ours\n")
+    git(tmp_path, "commit", "-qam", "ours")
+    who = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+    merge = subprocess.run(["git", *who, "merge", "-q", "other"], cwd=tmp_path, capture_output=True)
+    assert merge.returncode == 1 and b"CONFLICT" in merge.stdout + merge.stderr
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True).stdout
+    assert listed.split(b"\0").count(b"c.txt") == 3  # stages 1, 2 and 3
+    reads: Counter[str] = Counter()
+    real = Path.read_bytes
+
+    def counted(self: Path) -> bytes:
+        reads[self.relative_to(tmp_path).as_posix()] += 1
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counted)
+    _, kept = tree_changed.snapshot(tmp_path)
+    monkeypatch.undo()
+    assert reads == {"c.txt": 1, "same.txt": 1}
+    digest = {n: hashlib.blake2b((tmp_path / n).read_bytes(), digest_size=16).hexdigest() for n in reads}
+    assert kept == digest
+
+
+SHOWN = [  # (a file name, how the notice prints it; None: as it is); some characters are built, not typed
+    pytest.param("plain.txt", None, id="plain"),
+    pytest.param("caf" + chr(0xE9) + chr(0x65E5) + ".txt", None, id="text"),
+    pytest.param("a" + chr(0xA0) + "b.txt", None, id="no-break-space"),
+    pytest.param("it's.txt", None, id="single-quote-alone"),
+    pytest.param('say "x".txt', None, id="double-quote-alone"),
+    pytest.param("a\\rb.txt", None, id="backslash-r-alone"),
+    pytest.param("name\r", "'name\\r'", id="carriage-return"),
+    pytest.param("a\tb", "'a\\tb'", id="tab"),
+    pytest.param("a\nb", "'a\\nb'", id="line-feed"),
+    pytest.param("esc\x1b[0m", "'esc\\x1b[0m'", id="escape"),
+    pytest.param("del\x7f", "'del\\x7f'", id="delete"),
+    pytest.param("zw" + chr(0x200B) + "sp", "'zw\\u200bsp'", id="format-character"),
+    pytest.param("rtl" + chr(0x202E) + "txt", "'rtl\\u202etxt'", id="bidi-override"),
+    pytest.param("line" + chr(0x2028) + "sep", "'line\\u2028sep'", id="line-separator"),
+    pytest.param("para" + chr(0x2029) + "sep", "'para\\u2029sep'", id="paragraph-separator"),
+    pytest.param(os.fsdecode(b"bad\xff"), "'bad\\xff'", id="byte-not-utf8"),
+    pytest.param(os.fsdecode(b"\xc3("), "'\\xc3('", id="cut-sequence"),
+    pytest.param("it's\r", "'it\\'s\\r'", id="quote-in-a-quoted-name"),
+    pytest.param("back\\slash\r", "'back\\\\slash\\r'", id="backslash-in-a-quoted-name"),
+    pytest.param("caf" + chr(0xE9) + "\r", "'caf" + chr(0xE9) + "\\r'", id="text-in-a-quoted-name"),
+    pytest.param("a\r" + os.fsdecode(b"\xff"), "'a\\r\\xff'", id="both"),
+    pytest.param("name ", "'name '", id="trailing-space"),
+    pytest.param(chr(0xA0) + "name", "'\\xa0name'", id="leading-no-break-space"),
+    pytest.param(chr(0x3000), "'\\u3000'", id="ideographic-space-alone"),
+]
+
+
+@pytest.mark.parametrize(("name", "shown"), SHOWN)
+def test_the_tree_hook_shows_a_name_as_it_is_or_quoted_and_escaped(name, shown):
+    # the turn's output is decoded and stripped on its way to the model, so a name that holds a control
+    # character (Cc, Cf, Zl, Zp) or a byte that is not UTF-8 is quoted with those escaped; others stay
+    from hub.hooks.scripts.tree_changed import notice
+
+    assert notice({"turn": 1, "head": "h", "files": {}}, "h", {name: "d"}) == [
+        f"tree: 1 file(s) changed since turn 1: {name if shown is None else shown}"
+    ]
+
+
+def test_the_notice_the_actor_gets_keeps_a_carriage_return_ending_a_file_name(tmp_path):
+    # the turn section strips what the hook prints, so a sole changed file `name\r` lost its last
+    # character there; the name now reaches the notice quoted and escaped
+    git(tmp_path, "init", "-q")
+    (tmp_path / "name\r").write_text("one\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    (tmp_path / "name\r").write_text("two\n")
+    assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since turn 1: 'name\\r'"
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        pytest.param("name ", "'name '", id="trailing-space"),
+        pytest.param(chr(0xA0) + "name", "'\\xa0name'", id="leading-no-break-space"),
+        pytest.param(chr(0x3000), "'\\u3000'", id="ideographic-space-alone"),
+        pytest.param("a" + chr(0xA0) + "b", "a" + chr(0xA0) + "b", id="interior-no-break-space-stays-plain"),
+    ],
+)
+def test_the_notice_the_actor_gets_keeps_a_file_name_whole_where_whitespace_edges_it(tmp_path, name, shown):
+    # the turn section strips what the hook prints, so a sole changed file `name ` lost its last
+    # character there, and one that is a single ideographic space left nothing after the colon; a name
+    # with whitespace at either edge is quoted, one with it only inside stays as it is
+    git(tmp_path, "init", "-q")
+    (tmp_path / name).write_text("one\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    (tmp_path / name).write_text("two\n")
+    assert tree_notice(tmp_path, "r", 2) == f"tree: 1 file(s) changed since turn 1: {shown}"
+
+
+def test_the_notice_the_actor_gets_shows_a_changed_file_name_that_is_not_utf8_escaped(tmp_path):
+    # run_hook decodes the hook's stdout with errors="replace": the byte reached the notice as U+FFFD
+    name = os.fsdecode(b"bad\xff.txt")
+    try:
+        (tmp_path / name).write_bytes(b"one\n")
+    except OSError as e:  # APFS, for one: no file can carry the name
+        pytest.skip(f"this file system refuses a name that is not UTF-8: {e}")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    (tmp_path / name).write_bytes(b"two\n")
+    assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since turn 1: 'bad\\xff.txt'"
+
+
+def test_the_notice_the_actor_gets_shows_a_removed_file_name_that_is_not_utf8_escaped(tmp_path):
+    # the same notice on a file system that refuses the name: the last turn's map, as a file system
+    # that keeps it wrote it, holds a file that is gone now
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("one\n")
+    git(tmp_path, "add", "a.txt")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    state = tmp_path / state_path("r")
+    kept = json.loads(state.read_text())
+    kept["files"][os.fsdecode(b"bad\xff.txt")] = "0" * 32
+    state.write_text(json.dumps(kept))
+    assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since turn 1: 'bad\\xff.txt'"
 
 
 def plant_hub(proj: Path, escaped: Path) -> None:
@@ -691,7 +908,7 @@ def test_builtin_hook_origin_ignores_cwd_and_pythonpath(tmp_path, monkeypatch):
     run = asyncio.run(
         actor.run(
             Profile(name="o", specs=frozenset(specs), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted(
                 '<lact b>bash(command="git push origin main")</lact><lact r>read(path=".env")</lact>', "x"
             ),
@@ -794,7 +1011,7 @@ def test_builtin_hook_still_checks_project_paths(tmp_path):
     run = asyncio.run(
         actor.run(
             Profile(name="p", specs=frozenset(specs), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted(
                 '<lact t>read(path="secret_rules.md")</lact><lact s>read(path="secret.txt")</lact>'
                 '<lact e>edit(path="a.txt", old="one", new="two")</lact>',
@@ -807,7 +1024,7 @@ def test_builtin_hook_still_checks_project_paths(tmp_path):
     assert r["s"].ok is False and "looks like a secret" in r["s"].error
     assert r["e"].ok, r["e"].error
     notice = "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
-    assert "file(s) changed since round" in notice and "a.txt" in notice, notice
+    assert "file(s) changed since turn" in notice and "a.txt" in notice, notice
 
 
 def test_files_the_sandboxed_model_writes_do_not_run_on_the_host(tmp_path):
@@ -816,7 +1033,7 @@ def test_files_the_sandboxed_model_writes_do_not_run_on_the_host(tmp_path):
     shutil.copy(HERE / "hooks.toml", proj / ".lion" / "hooks.toml")
     plant_hub(proj, escaped)
     guard = next(h for h in load(proj / ".lion" / "hooks.toml") if h.name == "guard-bash")
-    payload = {"event": "before", "command": "bash", "args": {"command": "ls"}, "run": "r", "round": 1}
+    payload = {"event": "before", "command": "bash", "args": {"command": "ls"}, "run": "r", "turn": 1}
     rc, out, err = asyncio.run(run_hook(guard, payload, proj))  # what `install(actor, hooks, directory)` runs
     assert not escaped.exists(), f"rc={rc}: a file the VM wrote ran on the host and wrote {escaped}"
 
@@ -851,23 +1068,23 @@ def test_hook_failure_reasons_reach_the_record_whole(tmp_path):
     hooks = [
         Hook("before", f"{run_line} before", "gate", "read", 5),
         Hook("after", f"{run_line} after", "audit", "list_dir", 5),
-        Hook("round", f"{run_line} round", "clock", "*", 5),
+        Hook("turn", f"{run_line} turn", "clock", "*", 5),
     ]
     install(actor, hooks, tmp_path)
     specs = files(actor, tmp_path) | {h.name for h in DEFAULT_HANDLERS}
     run = asyncio.run(
         actor.run(
             Profile(name="f", specs=frozenset(specs), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r>read(path="a.txt")</lact><lact l>list_dir(path=".")</lact>', "x"),
         )
     )
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     notice = "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
-    seen = {"before": r["r"].error, "after": notice, "round": notice}
+    seen = {"before": r["r"].error, "after": notice, "turn": notice}
     assert r["r"].ok is False and "refused: gate failed (exit 1): before x" in seen["before"]  # control
     assert "l: audit: RuntimeError: exit 1: after x" in notice
-    assert "hook clock failed (exit 1): round x" in notice
+    assert "hook clock failed (exit 1): turn x" in notice
     assert {phase: f"END-OF-{phase}" in text for phase, text in seen.items()} == dict.fromkeys(seen, True)
 
 
@@ -883,7 +1100,7 @@ def test_shell_and_file_output_reaches_the_record_whole(tmp_path):
     run = asyncio.run(
         actor.run(
             Profile(name="w", specs=frozenset(specs), system="x"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact b>bash(command="cat big")</lact><lact f>read(path="long.txt")</lact>', "x"),
         )
     )
@@ -905,16 +1122,16 @@ def test_a_failed_hooks_reason_reaches_the_model_whole(tmp_path):
     tail = "THE-END-OF-THE-REASON"
     h = Hook("before", f"python3 -c \"import sys; sys.stderr.write('x' * 400 + '{tail}'); sys.exit(1)\"", "g")
     gate = _before(h, tmp_path)
-    run = types.SimpleNamespace(id="r", round=1)
+    run = types.SimpleNamespace(id="r", turn=1)
     la = types.SimpleNamespace(alias="b1", name="bash")
     reason = asyncio.run(gate(run, la, Req22(command="ls")))
     assert isinstance(reason, str) and "failed (exit 1)" in reason  # control: the gate refused
     assert tail in reason, f"{len(reason)} chars, tail cut: ...{reason[-40:]}"
 
 
-def test_two_runs_whose_tree_hooks_interleave_keep_each_others_round(tmp_path, monkeypatch, capsys):
+def test_two_runs_whose_tree_hooks_interleave_keep_each_others_turn(tmp_path, monkeypatch, capsys):
     # every run's state was one JSON map read, changed and written whole: a hook for run B that ran
-    # between run A's read and A's write lost B's round, and B's next notice counted from the wrong one
+    # between run A's read and A's write lost B's turn, and B's next notice counted from the wrong one
     from hub.hooks.scripts import tree_changed
 
     git(tmp_path, "init", "-q")
@@ -923,9 +1140,9 @@ def test_two_runs_whose_tree_hooks_interleave_keep_each_others_round(tmp_path, m
     git(tmp_path, "commit", "-qm", "one")
     monkeypatch.chdir(tmp_path)
 
-    def hook(run: str, round_: int) -> str:
+    def hook(run: str, turn_: int) -> str:
         monkeypatch.setattr(
-            sys, "stdin", io.StringIO(json.dumps({"event": "round", "run": run, "round": round_}))
+            sys, "stdin", io.StringIO(json.dumps({"event": "turn", "run": run, "turn": turn_}))
         )
         assert tree_changed.main() == 0
         return capsys.readouterr().out.strip()
@@ -946,8 +1163,8 @@ def test_two_runs_whose_tree_hooks_interleave_keep_each_others_round(tmp_path, m
     monkeypatch.setattr(tree_changed, "notice", real)
     assert ran == [""]
     (tmp_path / "a.txt").write_text("two\n")
-    assert hook("B", 3) == "tree: 1 file(s) changed since round 2: a.txt"
-    assert hook("A", 3) == "tree: 1 file(s) changed since round 2: a.txt"
+    assert hook("B", 3) == "tree: 1 file(s) changed since turn 2: a.txt"
+    assert hook("A", 3) == "tree: 1 file(s) changed since turn 2: a.txt"
 
 
 def test_a_secret_glob_is_refused_even_when_a_file_it_matches_is_tracked(tmp_path):

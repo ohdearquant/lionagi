@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from hub.agent import Agent, AgentError
 from hub.backend import OpenRouter
 from hub.khive import Khive, lit
-from lionagi import Actor, Context, Profile
+from lion1 import Actor, Context, Profile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIR = ROOT / ".khive" / "agents" / "bench"
@@ -192,7 +192,7 @@ def build(khive: Khive, backend) -> Agent:
     (DIR / "notes").mkdir(parents=True, exist_ok=True)
     (DIR / "jobs").mkdir(parents=True, exist_ok=True)
     actor = Actor("bench", privileges={"comm.send", "shell"}, notes_dir=DIR / "notes")
-    agent = Agent(actor, khive, backend, profile_for, owner=OWNER, max_rounds=4)
+    agent = Agent(actor, khive, backend, profile_for, owner=OWNER, max_turns=4)
     state = agent.state
 
     @actor.handler(Launch, requires={"shell"})
@@ -299,7 +299,7 @@ async def main(model: str | None, once: bool, wait: int) -> None:
         timeout=120,
         provider={"order": ["deepinfra", "fireworks"], "allow_fallbacks": False, "data_collection": "deny"},
         reasoning={"max_tokens": 2000},
-        stop=["<system round="],
+        stop=["<system turn="],
     )
     agent = build(Khive(DIR, ACTOR_ID), backend)
     if once:
@@ -308,7 +308,7 @@ async def main(model: str | None, once: bool, wait: int) -> None:
             print(f"no mail within {wait}s")
             return
         for e in run.record:
-            print(f"[{e.seq:>3} {e.name:>6} r{e.round}]", str(e.content)[:400].replace("\n", "\n" + " " * 18))
+            print(f"[{e.seq:>3} {e.name:>6} t{e.turn}]", str(e.content)[:400].replace("\n", "\n" + " " * 18))
         for n in agent.state.list():
             print(f"=== state {n.key} (v{n.version}): {n.value}")
         return

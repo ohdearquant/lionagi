@@ -25,14 +25,24 @@ from rich.text import Text
 
 from hub.areas import partial
 from hub.chat import entry_row, line
-from lionagi import lndl
-from lionagi.actor import _read
-from lionagi.record import Entry, Kind
+from lion1 import lndl
+from lion1.actor import _read
+from lion1.checkpoint import jsonable
+from lion1.record import Entry, Kind
 
 from .clipboard import to_clipboard
 from .voice import Voice
 
-__all__ = ("RESULT_LINES", "Console", "linked", "mermaid_blocks", "diagram_page", "Editor", "stdin_ask")
+__all__ = (
+    "RESULT_LINES",
+    "Console",
+    "cost_whole",
+    "linked",
+    "mermaid_blocks",
+    "diagram_page",
+    "Editor",
+    "stdin_ask",
+)
 
 _SYSTEM_TAGS = re.compile(r"</?system[^>]*>")
 _COPY = re.compile(r"/copy(?:\s+(.*))?", re.S)  # the console's own command: never sent to the model
@@ -93,12 +103,12 @@ class Console:
         self.verbose = verbose
         self.quiet_until = -1  # entries up to this seq are logged, not printed: a resumed history
         self.asking = False  # at the `you ▸` prompt: an interrupt there is a quit
-        # the round in flight: a spinner with the elapsed time at the bottom of the screen, and under
+        # the turn in flight: a spinner with the elapsed time at the bottom of the screen, and under
         # it the last result's detail until the next lands, so the scrollback keeps one line per action
         self.live: Live | None = None
         self.doing: _Working | None = None
         self.detail: str | None = None
-        self.commands = False  # the last turn printed asked for commands: the round runs them next
+        self.commands = False  # the last message printed asked for commands: the turn runs them next
         self.status = status
         self.editor = (
             Editor(history, status=status, copy_last=self.copy, voice=Voice())
@@ -132,8 +142,8 @@ class Console:
         )
 
     def working(self, what: str) -> None:
-        """The round is in flight: `what` the loop is waiting on (the model, its commands), with the
-        seconds since the round started; on a terminal only, where the line can be redrawn."""
+        """The turn is in flight: `what` the loop is waiting on (the model, its commands), with the
+        seconds since the turn started; on a terminal only, where the line can be redrawn."""
         if self.doing is None:
             self.doing = _Working(what)
         else:
@@ -266,8 +276,8 @@ class Console:
             with self.log.open("a") as fh:
                 if self.head is not None and not self.written:
                     fh.write(json.dumps(self.head) + "\n")
-                fh.write(json.dumps(entry_row(e), default=str) + "\n")
-                self._bill(fh, e.round)
+                fh.write(json.dumps(entry_row(e), default=jsonable) + "\n")
+                self._bill(fh, e.turn)
             self.written += 1
         if e.kind is Kind.TEXT and (prose := _prose(str(e.content))):  # a replayed reply counts too
             self.responses.append(prose)
@@ -289,12 +299,24 @@ class Console:
         if e.kind is Kind.TEXT and self.doing is not None and self.commands:
             self.working("running")
 
-    def _bill(self, fh, round_no: int) -> None:
+    def _bill(self, fh, turn_no: int) -> None:
         for c in (self.calls or [])[self.billed :]:
-            row = {"kind": "USAGE", "round": round_no, "model": c.get("model")}
+            row = {"kind": "USAGE", "turn": turn_no, "model": c.get("model")}
             row.update(
-                {k: c[k] for k in ("usage", "total_cost_usd", "attempt_usage", "prompt_chars") if k in c}
+                {
+                    k: c[k]
+                    for k in (
+                        "usage",
+                        "total_cost_usd",
+                        "attempt_usage",
+                        "prompt_chars",
+                        "prompt_tokens",
+                        "usage_unknown",
+                    )
+                    if k in c
+                }
             )
+            row["cost_complete"] = cost_whole(c)  # a CLI's call has no such key; a row without it is older
             fh.write(json.dumps(row, default=str) + "\n")
             self.billed += 1
 
@@ -317,10 +339,10 @@ class Console:
                 self.resulted.clear()
                 return items
             pieces = [
-                "[dim]" + escape("\n".join([f"· round {e.round}"] + ["  " + ln for ln in lines])) + "[/dim]"
+                "[dim]" + escape("\n".join([f"· turn {e.turn}"] + ["  " + ln for ln in lines])) + "[/dim]"
             ]
-            # a round's own notice, not a cut or the closure: once per round boundary
-            if self.status is not None and str(e.content).startswith("<system round="):
+            # a turn's own notice, not a cut or the closure: once per turn boundary
+            if self.status is not None and str(e.content).startswith("<system turn="):
                 pieces.append(f"[dim]{escape(self.status())}[/dim]")
             return pieces
         if e.kind is Kind.TEXT:
@@ -417,6 +439,15 @@ class Console:
             out += [escape(run), f"[link={target}]{escape(shown)}[/link]"]
             run = ""
         return "".join(out) + escape(run)
+
+
+def cost_whole(call: dict) -> bool:
+    """Whether a call's cost is wholly known: it has a figure (its total, else its usage's own cost)
+    and, where the backend says, every attempt is in it (`cost_complete`)."""
+    figure = call.get("total_cost_usd")
+    if figure is None:
+        figure = (call.get("usage") or {}).get("cost")
+    return figure is not None and call.get("cost_complete") is not False
 
 
 def _prose(text: str) -> str:
@@ -549,7 +580,7 @@ def _trim_url(url: str) -> str:
 
 
 class _Working:
-    """`⠋ thinking · 12s`: what the round waits on and for how long, redrawn by the live region."""
+    """`⠋ thinking · 12s`: what the turn waits on and for how long, redrawn by the live region."""
 
     def __init__(self, what: str):
         self.what, self.since = what, time.monotonic()
@@ -683,7 +714,7 @@ class Editor:
         """One message, or None when the person is done (Ctrl-D, or Ctrl-C on an empty line)."""
         try:
             # Ctrl-C reaches the editor as a key (raw mode); with handle_sigint the prompt would
-            # replace the loop's SIGINT handler and remove it on exit, leaving a mid-round Ctrl-C ignored
+            # replace the loop's SIGINT handler and remove it on exit, leaving a mid-turn Ctrl-C ignored
             return await self.session.prompt_async([("bold", prompt)], handle_sigint=False)
         except (EOFError, KeyboardInterrupt):
             return None

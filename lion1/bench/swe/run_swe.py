@@ -1,7 +1,7 @@
 """SWE-bench Verified through the LNDL loop: the model fixes real issues inside the instance sandbox.
 
 Per instance: start the eval image as a box, give the model the issue and the hub's tools (bash,
-python, read_lines, search, edit), let it work in rounds, take `git diff` as the patch when it
+python, read_lines, search, edit), let it work in turns, take `git diff` as the patch when it
 finishes with OUT{}, write predictions.jsonl. `--oracle` then scores with the official harness.
 
     uv run python bench/swe/run_swe.py --instances django__django-11119 [--model sonnet] [--oracle]
@@ -29,7 +29,7 @@ from hub.backend import ClaudeCode, ClaudeCodeSession, Codex, OpenRouter
 from hub.tools import Box, BoxTree, SandboxDead, code, shell
 from hub.tools import watch as watching
 from hub.tools.watch import Watch
-from lionagi import Actor, Exhausted, Kind, Profile, RunRequest, Success
+from lion1 import Actor, Exhausted, Kind, Profile, RunRequest, Success
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox import testbed  # noqa: E402
@@ -83,12 +83,12 @@ FIXER = Profile(
     name="fixer",
     privileges=frozenset({"sandbox"}),
     system=(
-        "You fix one GitHub issue in the repository at your commands' root. Work in rounds: locate the "
+        "You fix one GitHub issue in the repository at your commands' root. Work in turns: locate the "
         "code the issue is about, reproduce the problem with a small script or an existing test when "
         "you can, make the minimal correct edit, then run the nearest existing tests. You need not add "
         "tests to the repository; a short script or the existing suite is verification enough. Issue "
         "several commands in "
-        "one round when they do not depend on each other; every alias is unique for the whole run. Keep "
+        "one turn when they do not depend on each other; every alias is unique for the whole run. Keep "
         "notes of what you have established (note.<key>) and hide large results you no longer need. "
         "Finish with OUT{} only when the fix is in place; never finish with the repository unchanged."
     ),
@@ -111,9 +111,9 @@ CRITERIA = (  # the run ends on the model's own checks, not on its word
     " itself when they all pass after your edit, so you need not declare done."
 )
 DELIBERATE = (  # with the model's own thinking off, the written turn is where the work gets done
-    " Open each round with one to three plain lines, before any action: what the last results"
-    " established, what is still uncertain, and what this round will settle. Those lines stay in view"
-    " for later rounds; act on them in the same turn."
+    " Open each turn with one to three plain lines, before any action: what the last results"
+    " established, what is still uncertain, and what this turn will settle. Those lines stay in view"
+    " for later turns; act on them in the same turn."
 )
 
 
@@ -152,7 +152,7 @@ async def baseline(box: Any) -> str:
 
 
 def _harvest(rec: dict, backend: Any) -> None:
-    """What the backend spent, per round, so the cache curve over a long run can be read back. A call
+    """What the backend spent, per turn, so the cache curve over a long run can be read back. A call
     whose cost nobody reported is unknown, never $0: `cost_usd` is the known subtotal (None when no
     call's cost is known) and `cost_complete` says whether every call is in it. A failed call's
     envelope is spend like any other."""
@@ -183,7 +183,7 @@ def _harvest(rec: dict, backend: Any) -> None:
         if c.get("tool_calls") is not None:
             entry["tool_calls"] = c["tool_calls"]  # a turn the provider parsed as native tool calls
         if c.get("error") is not None:
-            entry["error"] = c["error"]  # a failed call: spend, not a round
+            entry["error"] = c["error"]  # a failed call: spend, not a turn
         rec["calls"].append(entry)
     rec["tokens"] = {
         "input": sum(x.get("input_tokens", 0) for x in u),
@@ -196,9 +196,9 @@ def _harvest(rec: dict, backend: Any) -> None:
 async def solve(
     row: dict,
     model: str,
-    max_rounds: int,
+    max_turns: int,
     out_dir: Path,
-    backend_kind: str = "rounds",
+    backend_kind: str = "turns",
     box: Box | None = None,
     settle: int = 0,
     unaided: bool = False,
@@ -214,7 +214,7 @@ async def solve(
     """One instance through the loop. A caller-supplied `box` is already started and stays open
     afterwards (so it can be graded in place); otherwise a local docker box is made and closed here.
 
-    Three budgets end a run early, the diff graded as it stands: `settle` rounds with the fix
+    Three budgets end a run early, the diff graded as it stands: `settle` turns with the fix
     unchanged (0: never), `time_budget` seconds of wall clock, `cost_budget` dollars on the backend.
     One instance without a cap is one parallel slot gone for as long as the model cares to go on.
     The codex backend has no meter (a subscription), so a cost cap there is refused before anything
@@ -242,12 +242,12 @@ async def solve(
         watch = Watch(box, settle_after=settle, base=rec["base"])
         actor = build_actor(box, watch if criteria else None)
         actor.section(watch.section)
-        progress = out_dir / "progress.log"  # one line per round across the whole set, appended
+        progress = out_dir / "progress.log"  # one line per turn across the whole set, appended
 
-        @actor.bus.on("round.started")
+        @actor.bus.on("turn.started")
         def _progress(event) -> None:
             with progress.open("a") as f:
-                f.write(f"{time.strftime('%H:%M:%S')} {iid} round {event.payload['round']}\n")
+                f.write(f"{time.strftime('%H:%M:%S')} {iid} turn {event.payload['turn']}\n")
 
         if backend is not None:
             pass
@@ -279,7 +279,7 @@ async def solve(
                 timeout=600,
                 provider=provider,
                 reasoning=_reasoning(thinking),
-                stop=["<system round="],
+                stop=["<system turn="],
             )
         elif backend_kind == "codex":
             backend = Codex(model=model, effort=effort, timeout=900, home=CODEX_HOME)
@@ -295,7 +295,7 @@ async def solve(
             # What the backend saw of the model's last turn and the loop could not. A turn cut at
             # the output cap ran only in part and was read as a parse error; a blank turn was read
             # as prose with no program. Either way the model was told the wrong thing and did it
-            # again (thinking on: round after round of long programs cut at the cap, then time).
+            # again (thinking on: turn after turn of long programs cut at the cap, then time).
             calls = getattr(backend, "calls", None)
             if not calls:
                 return None
@@ -321,7 +321,7 @@ async def solve(
         req = RunRequest(
             inputs=(PROMPT.format(problem=row["problem_statement"]) + (UNAIDED if unaided else ""),),
             emits=(Done,),
-            max_rounds=max_rounds,
+            max_turns=max_turns,
             time_budget=time_budget,
             accept=accept,
         )
@@ -351,7 +351,7 @@ async def solve(
             rec["outcome"] += f":{run.outcome.reason}"
         if stopped_by:
             rec["stopped_by"] = stopped_by[0]
-        rec["rounds"] = run.round
+        rec["turns"] = run.turn
         rec["repairs"] = dict(run.repairs)  # the slips the reading repaired, counted by name
         # each unknown command with the nearest known name and its edit distance, measured while the
         # name repair is off
@@ -365,8 +365,8 @@ async def solve(
         (out_dir / f"{iid}.record.txt").write_text(_dump(run))
     except Exception as e:
         rec["error"] = f"{type(e).__name__}: {e}"
-        if backend is not None:  # the rounds that ran before the failure are still evidence
-            rec.setdefault("rounds", sum(1 for c in backend.calls if "error" not in c))
+        if backend is not None:  # the turns that ran before the failure are still evidence
+            rec.setdefault("turns", sum(1 for c in backend.calls if "error" not in c))
             _harvest(rec, backend)
             run = next(iter(live.values()), None)  # none: the failure came before any reading
             rec.setdefault("repairs", dict(run.repairs) if run else {})
@@ -387,14 +387,14 @@ async def solve(
 
 
 def _dump(run) -> str:
-    lines = [f"run {run.id}: {type(run.outcome).__name__} after {run.round} rounds"]
+    lines = [f"run {run.id}: {type(run.outcome).__name__} after {run.turn} turns"]
     for e in run.record:
         if e.kind is Kind.RESULT:
             res = e.content
             body = f"{e.alias} <- {res.spec}: " + (res.preview(400) if res.ok else "ERR " + str(res.error))
         else:
             body = str(e.content)
-        lines.append(f"[{e.seq} {e.name} r{e.round}] {body}")
+        lines.append(f"[{e.seq} {e.name} t{e.turn}] {body}")
     return "\n".join(lines)
 
 
@@ -525,10 +525,10 @@ async def main(args: argparse.Namespace) -> None:
 
     async def one(iid: str) -> dict:
         async with sem:
-            rec = await solve(rows[iid], args.model, args.max_rounds, out_dir, args.backend, cost_budget=1.0)
+            rec = await solve(rows[iid], args.model, args.max_turns, out_dir, args.backend, cost_budget=1.0)
             spent = rec.get("cost_usd", 0.0)
             print(
-                f"{iid}: {rec.get('outcome')} rounds={rec.get('rounds')} patch={len(rec['model_patch'])}c "
+                f"{iid}: {rec.get('outcome')} turns={rec.get('turns')} patch={len(rec['model_patch'])}c "
                 f"cost={'unknown' if spent is None else f'${spent:.3f}'} {rec['seconds']:.0f}s "
                 f"{rec.get('error', '')}"
             )
@@ -555,9 +555,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--instances", nargs="*")
     ap.add_argument("--model", default="sonnet")
-    ap.add_argument("--max-rounds", type=int, default=30)
+    ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--parallel", type=int, default=2)
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--oracle", action="store_true")
-    ap.add_argument("--backend", choices=["rounds", "session", "openrouter"], default="rounds")
+    ap.add_argument("--backend", choices=["turns", "session", "openrouter"], default="turns")
     asyncio.run(main(ap.parse_args()))

@@ -3,8 +3,8 @@ import asyncio
 from lion_cli.view import Console
 from pydantic import BaseModel
 
-from lionagi import Actor, Profile, RunRequest, lndl
-from lionagi.record import Kind
+from lion1 import Actor, Profile, RunRequest, lndl
+from lion1.record import Kind
 from tests.test_actor import scripted
 from tests.test_actor_execution import Mark, _exec_actor, _exec_run
 
@@ -41,7 +41,7 @@ def test_call_shaped_body_text_does_not_invoke_a_handler():
 
     body = 'literal </lact>\nexample=<<EOF\n<lact x>run(cmd="only example text")</lact>'
     turn = f"<lact e>edit(new=<<EOF\n{body}\nEOF)</lact>"
-    asyncio.run(actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn)))
+    asyncio.run(actor.run(Profile("p"), RunRequest(max_turns=1), scripted(turn)))
     assert executed == [], executed
     assert written == [body]
 

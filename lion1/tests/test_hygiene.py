@@ -7,7 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LABELS = re.compile(
-    r"review\)|round-[0-9]|\bP[0-9]-[0-9]+\b|\bF[0-9]{2}:|tests-quality|ported from|night review|apps review"
+    r"review\)|round-[0-9]|\bP[0-9]-[0-9]+\b|\bF[0-9]{2}:|tests-quality|\bported from"
+    r"|night review|apps review"
 )
 
 
@@ -35,6 +36,7 @@ def test_a_labelled_line_in_a_tracked_file_is_found(tmp_path):
         "(night review, a date)",
         "(apps review, a date)",
         "the explanation alone",
+        "a name exported from the package",
     ]
     (tmp_path / "a.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (tmp_path / "untracked.py").write_text(lines[0] + "\n", encoding="utf-8")

@@ -69,7 +69,7 @@ Source: `hub/agent/desk.py`, `hub/agent/lookups.py`, `hub/agent/verdicts.py`; `A
 | A4 | A serving agent holds an exclusive lock on its `agent.pid` for its life. | `Agent._claim`; `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` | a row reads a dead resident as serving, or a live one as stopped (C10) |
 | A5 | An actor may send on a thread it never received, and the message lands on that thread for its sender. | `_deliver` in `hub/agent/desk.py` replies as the agent on a thread of the owner's box; the tests stand in for the store (assumption) | no answer or clarify reaches its sender, and the desk only escalates, routes, files and leaves (C12) |
 | A6 | The owner's box listing carries each message's content, so the desk reads no thread to list a message. | `_discover` in `hub/agent/desk.py` keeps a row's `content`, its first 2,000 characters, and `sweep` lists it; the tests' reader stands in for the store (assumption) | the sweep lists subjects with empty bodies, the model routes on subjects, and a clarify can quote only the subject (C5) |
-| A7 | A cheap model may write `OUT{}` in the round that called `sweep()`, before the listing is in front of it. | observed on one live wake, as the docstring of `Desk._accept` says; no bench measures it (assumption) | the gate on `OUT{}` in C6 never fires and costs nothing |
+| A7 | A cheap model may write `OUT{}` in the turn that called `sweep()`, before the listing is in front of it. | observed on one live wake, as the docstring of `Desk._accept` says; no bench measures it (assumption) | the gate on `OUT{}` in C6 never fires and costs nothing |
 
 ## Claims
 
@@ -142,7 +142,7 @@ then a repository map, never the login.
 
 | command | gate, in code, before anything is sent |
 | ------- | -------------------------------------- |
-| `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) |
+| `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) with nothing pending on its thread, after a scan that fit one page |
 | `answer(msg, chore, args)` | an id this run's sweep listed, held by no other handler, with no recorded send or task; the chore's `senders` (`record`: `Record.senders` only); `answers_per_hour` (10), shared with `route`; a void outcome is left with the instrument's reason |
 | `leave(msg, why)` | a listed id; `why` one of six tests, else kept as other |
 | `clarify(msg, a, b)` | two different readings, each the message's own words or a chore or test name; `CLARIFY_SENDERS` only; once per thread; never a message that is itself a clarify |
@@ -303,6 +303,40 @@ not to do.
 lookup given no `args.query` raises, `Record` counts a part that raises as a failed control, and the
 desk leaves the message.
 
+### C15: The phone page keeps its newest log lines and its draft _(enforced: mechanical)_ ^c15
+
+- **Subject**: the script `/app` serves, run by a browser.
+- **Violated when**: a log box holds over 400 lines or shifts lines a scrolled-up reader still has,
+  a re-render included. Typed words are lost, outlive their send or show on another page.
+
+A resident's log buffer and box each hold 400 lines. A reader at the bottom follows the newest line;
+one scrolled up keeps the lines in view, except those the oldest-first eviction removes. A re-render
+of the same page, after a control or a send, restores the reader's place the same way; a navigation
+starts at the bottom.
+
+A `history` batch, the server's tail when the stream connects, replaces that resident's buffer and
+dropped-line count; a box on show is rebuilt from it, so a reconnect repeats no line.
+
+The composer's text is the page's draft: a re-render restores it, a send's accepted answer clears it
+unless an edit followed the send, and a navigation clears it.
+
+### C16: The phone page shows the newest rows, whichever of the poll and the stream brings them _(enforced: mechanical)_ ^c16
+
+- **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
+- **Violated when**: older rows replace newer ones shown, or later rows are refused.
+
+A read whose rows differ from the last takes as its revision the microsecond wall clock, or the last
+plus one if larger, the event `id` and the `X-Areas-Revision` header. An unchanged read keeps the
+revision; a read after a failed one is changed. Other pages carry none. `/api/areas` reads for
+itself; `/events` sends the last read when its revision exceeds the last sent.
+
+Each stream `open` starts the comparison over: its first rows are shown whatever their revision, and
+after them a read not above the last shown is refused. Stream down, a poll's answer is shown as it
+arrives.
+
+Polls run one at a time from a stream error until a connection's first rows; `open` or ten seconds
+aborts the one out, and an aborted or failed poll frees the next.
+
 ## Decisions
 
 ### D1: `Desk` in `hub/agent/desk.py`: six handlers, the gate on `OUT{}`, the watch ^d1
@@ -311,12 +345,16 @@ Serves C2, C5 and C6. `lion agent` builds `Desk` when `chores.toml` has a `[desk
 is not false. It registers `sweep`, `answer`, `leave`, `clarify`, `route` and `task` on the agent's
 actor, each requiring `comm.send`, adds them and the desk guidance to the chores profile, and sets
 the agent's `accept` and `watch`. No tick is scheduled: the watch wakes the desk. Caps and routes
-come from `[desk]`. `build` gives a wake six rounds: sweep, route and `OUT{}` take three, and each
+come from `[desk]`. `build` gives a wake six turns: sweep, route and `OUT{}` take three, and each
 slip one more; no test pins the six.
 
-- **Landing evidence**: `tests/test_desk.py` (89 tests), among them
+- **Landing evidence**: `tests/test_desk.py` (115 tests), among them
   `test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads` (the nine-command
-  profile, the watch) and `test_failed_selected_message_blocks_success_and_remains_pending`.
+  profile, the watch), `test_failed_selected_message_blocks_success_and_remains_pending`,
+  `test_a_clarify_whose_answer_is_pending_at_the_cap_is_resolved_by_it_and_never_left_unanswered`,
+  `test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_cap`,
+  `test_a_sweep_whose_read_paged_past_a_clarifys_answer_leaves_no_clarify` and
+  `test_a_clarify_past_the_cap_is_left_by_the_first_sweep_whose_read_fits_one_page`.
 
 ### D2: The reader is built from the owner's directory, beside the agent's own client ^d2
 
@@ -347,13 +385,17 @@ replay is neither capped nor charged again. `_file` keys its task write the same
 Serves C3. `Agent.admit` is a field, `None` admitting all; `build` sets it to the trusted-set test
 unless `[chair] admit = "all"`. The trusted set is fixed at build: the owner, the steward, the
 agent's actor and `trusted`. With `[desk] admit_replies`, `Desk` asks `Desk.admit` before that test
-(S8).
+(S8). A wake, a rerun and a continuous wait ask the gate once per message, and that one answer drops
+the message or lets it run.
 
 - **Landing evidence**:
   `test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs` in
   `tests/test_chores.py`;
-  `test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted` in
-  `tests/test_agent.py`.
+  `test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted`,
+  `test_the_gate_answers_once_per_message_and_that_answer_alone_drops_it_or_runs_it`,
+  `test_with_no_gate_every_message_runs_and_none_is_dropped` and
+  `test_a_gate_that_raises_runs_none_of_the_batch_records_none_dropped_and_leaves_it_taken` in
+  `tests/test_agent.py`; `test_a_wake_asks_the_desks_gate_once_per_message` in `tests/test_desk.py`.
 
 ### D5: Escalation and triage in `_discover`; `Verdicts` in `hub/agent/verdicts.py` ^d5
 
@@ -390,16 +432,45 @@ tick.
 
 ### D8: `hub/areas.py` and `lion areas` ^d8
 
-Serves C10 and C11. `load_areas`, `resident`, `status`, `table` and `page` read files and one lock;
-`controls_info` adds a process check, which a restart reads before it acts. The server in
+Serves C10, C11, C15 and C16. `load_areas`, `resident`, `status`, `table` and `page` read files and
+one lock; `controls_info` adds a process check, which a restart reads before it acts. The server in
 `apps/cli/lion_cli/areas.py` is a stdlib `ThreadingHTTPServer` on `127.0.0.1` by default, `--allow`
 adding a name it answers to; the phone shell is `hub/app.py`. The registry defaults to
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (22 tests), among them
-  `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` and
-  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
+- **Landing evidence**: `tests/test_areas.py`:
+  `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file`,
+  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`,
+  `test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll`,
+  `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision`,
+  `test_the_stream_sends_a_read_above_the_last_it_sent_though_its_rows_are_those_it_sent`,
+  `test_a_read_whose_rows_are_unchanged_keeps_the_revision_and_the_stream_stays_quiet` and
+  `test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back`;
+  `tests/app_page_harness.js` runs the served script under node:
+  `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
+  `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
+  `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
+  `test_the_app_shows_a_history_batch_in_the_box_of_the_page_already_open`,
+  `test_the_app_replaces_a_residents_log_with_the_tail_a_reconnect_replays`,
+  `test_the_app_restarts_the_dropped_line_count_of_a_log_a_history_batch_replaces`,
+  `test_the_app_takes_an_event_or_a_live_poll_answer_only_above_the_revision_shown`,
+  `test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it`,
+  `test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows`,
+  `test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown`,
+  `test_the_app_takes_a_poll_answer_above_the_stream_rows_shown_while_it_was_out`,
+  `test_the_app_refuses_a_poll_answer_not_above_the_revision_shown_while_the_stream_is_live`,
+  `test_the_app_takes_a_poll_answer_whatever_its_revision_while_the_stream_is_down`,
+  `test_the_app_shows_the_streams_rows_again_above_a_poll_answer_that_showed_others`,
+  `test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision`,
+  `test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between`,
+  `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,
+  `test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload`,
+  `test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty`,
+  `test_the_app_composer_keeps_the_words_of_a_refused_send_and_clears_them_once_one_is_accepted`,
+  `test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll`,
+  `test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next` and
+  `test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_again`.
 
 ### D9: `Bounded.reply` grants a reply; `_spent` counts every cap ^d9
 
@@ -452,10 +523,11 @@ least two and at most all of them.
 - **S2**: The desk handles mail that arrives after it went live; the backlog is the owner's. A row
   the owner marks read before discovery reads it is never pending, since discovery lists unread
   rows.
-- **S3**: A clarify asks the sender to answer the owner on the thread. A reply mailed to the desk's
-  own actor meets C3's gate and is dropped unless its sender is trusted or S8's gate lets it
-  through. The next message handled on the thread resolves the clarify; otherwise `clarify_hours`
-  leaves it as unanswered.
+- **S3**: A clarify asks the sender to answer on the thread. A reply mailed to the desk's own actor
+  is dropped at C3's gate unless its sender is trusted or S8 admits it. An answer or a leave of a
+  later message there resolves it; a route, task or escalation does not. Otherwise `clarify_hours`,
+  judged at the sweep's read instant, leaves it unanswered, unless a message on its thread is
+  pending (a route or task of it leaves the cap to the next sweep) or the scan paged (C2).
 - **S4**: Nothing checks a desk's owner against its area's chair, and the registry's `desks` lists
   every resident's directory whatever its role; only a directory whose `chores.toml` has `[desk]`
   runs a desk.
@@ -496,3 +568,11 @@ least two and at most all of them.
 - **S14**: No test drives a second send inside one reply grant, an ADR finding past two headings or
   two Alternatives rows, a `Record` part that raises, or an unknown send that started before its
   cap's window.
+- **S15**: The listing wins over `[wake]` (S8): the gate runs before the rules, so `Desk.admit`
+  stages a clarify's answer whatever a rule does with the mail; `drop` does not keep it from the
+  desk and `batch` does not delay its listing. The batched mail still runs when its window opens;
+  its run finds the answer's row and resolves nothing twice. Pinned in `tests/test_desk.py` by
+  `test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice` for
+  `Agent.wake` and
+  `test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and_answers_it_once` for
+  a chair's in-run wait.

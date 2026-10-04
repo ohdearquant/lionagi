@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from lionagi import (
+from lion1 import (
     Actor,
     Exhausted,
     Handle,
@@ -82,7 +82,7 @@ def notices(run) -> list[str]:
 
 def once(actor: Actor, profile: Profile, *turns: str, **request):
     request.setdefault("inputs", ("go",))
-    request.setdefault("max_rounds", len(turns))
+    request.setdefault("max_turns", len(turns))
     return asyncio.run(actor.run(profile, RunRequest(**request), scripted(*turns)))
 
 
@@ -107,7 +107,7 @@ def test_a_reply_under_wait_with_no_command_still_writes_the_note_it_declares():
         seen.append(store.get("plan"))  # the note is on the store before the wait is asked
         return False
 
-    run = once(actor, Profile("own", notes=store), "<lvar note.plan>ship</lvar>", wait=wait, max_rounds=3)
+    run = once(actor, Profile("own", notes=store), "<lvar note.plan>ship</lvar>", wait=wait, max_turns=3)
     assert run.outcome == Stopped(2) and run.notes_written == ["note.plan"]
     assert seen[0] is not None and seen[0].value == "ship" and store.get("plan").value == "ship"
 
@@ -186,7 +186,7 @@ def test_a_backend_that_returns_its_text_directly_is_not_awaited():
     def backend(messages) -> str:
         return 'OUT{answer: "sync"}'
 
-    run = asyncio.run(Actor("edge-sync").run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    run = asyncio.run(Actor("edge-sync").run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend))
     assert run.outcome == Success({"answer": "sync"})
 
 
@@ -200,7 +200,7 @@ def test_a_backend_that_hands_back_something_other_than_text_aborts_the_run():
         return None
 
     with pytest.raises(TypeError):
-        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), backend))
     (run,) = live
     assert run.outcome is None and actor.runs == {}
     assert run.record.latest(Kind.TEXT).content is None
@@ -218,7 +218,7 @@ def test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_an
     mail = iter(["second", "third"])
 
     async def wait(run) -> bool:
-        asked.append(run.round)
+        asked.append(run.turn)
         text = next(mail, None)
         if text is None:
             return False
@@ -233,12 +233,12 @@ def test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_an
         "the disk is full",
         "bye",
         inputs=("first",),
-        max_rounds=5,
+        max_turns=5,
         wait=wait,
         reply_on_commands=True,
     )
     assert asked == [2, 4, 5]
-    assert run.outcome == Stopped(5) and run.round == 4
+    assert run.outcome == Stopped(5) and run.turn == 4
     # the false wait ends the run before a notification: the reply is the record's last entry before
     # the closure the outcome writes (ADR-0006/C1)
     *body, closure = run.record.entries
@@ -275,7 +275,7 @@ def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
 @pytest.mark.parametrize(
     "reasons, told",
     [
-        (["not yet", "not yet"], "(the same error 2 rounds running): OUT{} refused: not yet"),
+        (["not yet", "not yet"], "(the same error 2 turns running): OUT{} refused: not yet"),
         (["not yet", "still not"], "could not be read: OUT{} refused: still not"),
     ],
 )
@@ -291,12 +291,12 @@ def test_the_same_refusal_on_consecutive_turns_is_told_with_its_count(reasons, t
         emits=(Done,),
         accept=lambda run, output: next(judged),
     )
-    assert "rounds running" not in notices(run)[1] and "OUT{} refused: not yet" in notices(run)[1]
+    assert "turns running" not in notices(run)[1] and "OUT{} refused: not yet" in notices(run)[1]
     assert told in notices(run)[2]
     assert isinstance(run.outcome, Success) and run.retry_error is None and run.same_errors == 0
 
 
-def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_round():
+def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_turn():
     actor = _echo_actor("edge-auto-alias")
     run = once(
         actor, Profile("p"), '<lact auto_1>echo(text="a")</lact>', '<lact auto_1>echo(text="b")</lact>', "x"
@@ -415,10 +415,23 @@ def test_a_field_typed_any_reads_its_text_as_a_literal_when_it_is_one(text, expe
     assert value == expected and type(value) is type(expected)
 
 
+def test_a_spec_rebuilt_with_a_text_field_keeps_the_text_it_read_as_a_list_before():
+    class Shape(BaseModel):
+        value: list[int]
+
+    turn = "<lvar shape.value v>[1]</lvar>OUT{shape: [v]}"
+    run = once(Actor("edge-rebuilt"), Profile("p"), turn, emits=(Shape,))
+    assert run.output["shape"].value == [1]  # a field that cannot take text reads it as a literal
+    Shape.model_fields["value"].annotation = str
+    Shape.model_rebuild(force=True)  # the same class, its field now text
+    run = once(Actor("edge-rebuilt"), Profile("p"), turn, emits=(Shape,))
+    assert isinstance(run.outcome, Success) and run.output["shape"].value == "[1]"
+
+
 def test_a_command_pointing_into_a_circle_it_is_not_part_of_waits_and_is_not_blamed_for_it():
     actor = _echo_actor("edge-circle-bystander")
     turn = "<lact z>echo(text=*x)</lact><lact x>echo(text=*y)</lact><lact y>echo(text=*x)</lact>"
-    run = asyncio.run(asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn)), 5))
+    run = asyncio.run(asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_turns=1), scripted(turn)), 5))
     r = results(run)
     assert list(r) == ["x", "y", "z"]  # z waited for x, although it was dispatched first
     assert r["x"].error == (
@@ -477,7 +490,7 @@ def test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run()
     with pytest.raises(Halt, match="out by a door the loop does not watch"):
         once(actor, Profile("p"), "<lact h1>halter()</lact>", "never read")
     (run,) = live
-    assert run.outcome is None and run.round == 1 and run.record.get("h1") is None
+    assert run.outcome is None and run.turn == 1 and run.record.get("h1") is None
     assert actor.runs == {} and "run.completed" not in [e.kind for e in actor.bus.log]
 
 
@@ -495,7 +508,7 @@ def test_an_answer_carrying_models_in_a_list_reaches_the_asker_as_plain_data():
             asyncio.create_task(
                 peer.run(
                     Profile("p"),
-                    RunRequest(max_rounds=2),
+                    RunRequest(max_turns=2),
                     scripted(
                         '<lact f1>find(text="x")</lact><lact f2>find(text="y")</lact><lvar n>a note</lvar>',
                         "OUT{found: [f1, f2, n]}",
@@ -509,7 +522,7 @@ def test_an_answer_carrying_models_in_a_list_reaches_the_asker_as_plain_data():
         run = await asyncio.wait_for(
             asker.run(
                 Profile("p"),
-                RunRequest(inputs=("go",), max_rounds=2),
+                RunRequest(inputs=("go",), max_turns=2),
                 scripted('<lact q1>ask(question="x")</lact>', "done"),
             ),
             5,
@@ -535,7 +548,7 @@ def test_an_answer_whose_asking_run_has_ended_comes_back_as_a_reply_and_only_a_s
         return once(asker, Profile("p"), f'<lact q>ask(question="{question}")</lact>')
 
     def answer(turn: str):
-        return asyncio.run(peer.run(Profile("p"), RunRequest(emits=(Answer,), max_rounds=1), scripted(turn)))
+        return asyncio.run(peer.run(Profile("p"), RunRequest(emits=(Answer,), max_turns=1), scripted(turn)))
 
     first = ask_once("first")
     assert first.asked[handles[0].id][1].cancelled()  # the ask closed with the run
@@ -555,7 +568,7 @@ def test_an_answer_whose_asking_run_has_ended_comes_back_as_a_reply_and_only_a_s
     assert [e.payload["handle"] for e in peer.bus.log if e.kind == "inbox.answered"] == [handles[1].id]
 
     thanks = scripted('OUT{answer: "thanks"}')
-    third = asyncio.run(asker.run(Profile("p"), RunRequest(max_rounds=1), thanks))
+    third = asyncio.run(asker.run(Profile("p"), RunRequest(max_turns=1), thanks))
     assert f"answer from edge-late-peer (handle {handles[1].id})" in notices(third)[0]
     assert third.consumed == [reply] and isinstance(third.outcome, Success)
     assert asker.inbox == [] and peer.inbox == []  # a reply is never answered back
@@ -573,7 +586,7 @@ def test_an_inbound_from_an_actor_no_longer_in_the_registry_is_consumed_and_answ
             origin_alias="q1",
         )
     )
-    request = RunRequest(emits=(Answer,), max_rounds=1)
+    request = RunRequest(emits=(Answer,), max_turns=1)
     run = asyncio.run(actor.run(Profile("p"), request, scripted('OUT{answer: "yes"}')))
     assert run.outcome == Success({"answer": Answer(text="yes")})
     assert "request from edge-never-registered (handle orphan01)" in notices(run)[0]
@@ -597,7 +610,7 @@ def test_a_late_answer_to_an_ask_whose_command_was_cancelled_leaves_the_peers_ru
             await asyncio.sleep(0)
         ctx.run.pending[req.target].cancel()  # the asking command stops while its answer is out
         late = scripted('OUT{answer: "late"}')
-        answered.append(await peer.run(Profile("p"), RunRequest(emits=(Answer,), max_rounds=1), late))
+        answered.append(await peer.run(Profile("p"), RunRequest(emits=(Answer,), max_turns=1), late))
         return type(answered[-1].outcome).__name__
 
     run = once(
@@ -634,6 +647,7 @@ def test_a_command_cancelled_before_it_started_settles_as_cancelled_and_nothing_
     assert r["k"].value == "cut" and held == []
     assert r["h"] == Result("hold", False, error="cancelled before it started", reason="cancelled")
     assert run.record.get("h").meta["execution"] == "not executed" and run.pending == {}
+    assert run.pointing == {} and run.waits == {}  # a settled command leaves no row behind it
     assert "h: cancelled before it started" in notices(run)[1] and "still running" not in notices(run)[1]
     settled = [e.payload for e in actor.bus.log if e.kind == "command.settled" and e.payload["alias"] == "h"]
     assert [(s["ok"], s["reason"], s["execution"]) for s in settled] == [(False, "cancelled", "not executed")]
@@ -666,7 +680,7 @@ def test_a_value_nested_past_what_the_reader_walks_is_a_retry(turn, emits):
     finish = 'OUT{done: {summary: "ok", files: ["a"]}}' if emits is Done else "OUT{tally: {value: 3}}"
     run = once(Actor("edge-too-deep"), Profile("p"), turn, finish, emits=(emits,))
     assert "your last turn could not be read: OUT{" in notices(run)[1]
-    assert isinstance(run.outcome, Success) and run.round == 2
+    assert isinstance(run.outcome, Success) and run.turn == 2
 
 
 class Said(BaseModel):
@@ -695,7 +709,7 @@ def test_every_command_of_a_turn_is_admitted_before_any_of_them_runs(eager, forw
         loop.set_exception_handler(lambda _loop, c: errors.append(repr(c.get("exception"))))
         if eager:
             loop.set_task_factory(asyncio.eager_task_factory)
-        run = await actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn))
+        run = await actor.run(Profile("p"), RunRequest(max_turns=1), scripted(turn))
         await asyncio.sleep(0)  # any callback on a task that was already complete lands here
         await asyncio.sleep(0)
         rows = [(e.alias, e.content.ok, e.content.value) for e in run.record if e.kind is Kind.RESULT]
@@ -723,7 +737,7 @@ def test_a_backend_that_raises_leaves_the_run_with_no_outcome(settled):
         raise RuntimeError("backend down")
 
     with pytest.raises(RuntimeError, match="backend down"):
-        asyncio.run(actor.run(Profile("p"), RunRequest(max_rounds=settled + 1), backend))
+        asyncio.run(actor.run(Profile("p"), RunRequest(max_turns=settled + 1), backend))
     assert len(seen) == 1 and actor.runs == {} and seen[0].outcome is None
     assert not any(e.kind == "run.completed" for e in actor.bus.log)
     if settled:
@@ -742,7 +756,7 @@ def test_a_history_that_does_not_replay_leaves_no_live_run(twice):
         calls.append(1)
         return 'OUT{answer: "ok"}'
 
-    request = RunRequest(max_rounds=1, history=(entry, entry) if twice else (entry,))
+    request = RunRequest(max_turns=1, history=(entry, entry) if twice else (entry,))
     if twice:
         with pytest.raises(ValueError):
             asyncio.run(actor.run(Profile("p"), request, backend))
@@ -762,7 +776,7 @@ def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
         hex = "5eed5eed" + "0" * 24
 
     real, forced = uuid.uuid4, iter([Drawn, Drawn])  # the first two draws are the same id
-    monkeypatch.setattr("lionagi.actor.uuid.uuid4", lambda: next(forced, None) or real())
+    monkeypatch.setattr("lion1.actor.uuid.uuid4", lambda: next(forced, None) or real())
     actor = Actor("ids")
 
     async def both():

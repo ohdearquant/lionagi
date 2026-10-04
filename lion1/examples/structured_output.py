@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from lionagi import Actor, Kind, Message, Profile, RunRequest, render_guidance
+from lion1 import Actor, Kind, Message, Profile, RunRequest, render_guidance
 
 NOTE = (
     "58-year-old man with type 2 diabetes and hypertension, seen for follow-up. Takes metformin 500 mg "
@@ -151,7 +151,7 @@ BY_FIELD = (
 async def main() -> None:
     actor = Actor("extractor")
     profile = Profile("extractor", system=SYSTEM)
-    request = RunRequest(inputs=(NOTE,), emits=(Extraction,), max_rounds=5, accept=evidence_is_in_the_note)
+    request = RunRequest(inputs=(NOTE,), emits=(Extraction,), max_turns=5, accept=evidence_is_in_the_note)
 
     seen: list[list[Message]] = []
     run = await actor.run(profile, request, scripted(*TURNS, seen=seen))
@@ -167,15 +167,13 @@ async def main() -> None:
 
     print("\n=== turn 3 ended the run in the object")
     extraction: Extraction = run.output["extraction"]
-    print(
-        "outcome:", type(run.outcome).__name__, "| rounds:", run.round, "| type:", type(extraction).__name__
-    )
+    print("outcome:", type(run.outcome).__name__, "| turns:", run.turn, "| type:", type(extraction).__name__)
     print(extraction.model_dump_json(indent=1))
 
     print("\n=== the output declared field by field, across two turns, and finished by naming the aliases")
     again = await actor.run(profile, request, scripted(*BY_FIELD, seen=[]))
     extraction = again.output["extraction"]
-    print("outcome:", type(again.outcome).__name__, "| rounds:", again.round)
+    print("outcome:", type(again.outcome).__name__, "| turns:", again.turn)
     print(
         "medications:",
         [m.name for m in extraction.medications],

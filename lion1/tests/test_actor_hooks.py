@@ -9,9 +9,9 @@ from typing import Any
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from lionagi import Actor, Kind, Message, Profile, Result, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS
-from lionagi.spec import spec_name
+from lion1 import Actor, Kind, Message, Profile, Result, RunRequest
+from lion1.actor import DEFAULT_HANDLERS
+from lion1.spec import spec_name
 from tests.test_actor import scripted
 
 
@@ -108,7 +108,7 @@ def make() -> tuple[Actor, Profile]:
 
 
 def run(actor: Actor, profile: Profile, *turns: str):
-    request = RunRequest(inputs=("go",), max_rounds=len(turns) + 1)
+    request = RunRequest(inputs=("go",), max_turns=len(turns) + 1)
     return asyncio.run(actor.run(profile, request, scripted(*turns, "still here")))
 
 
@@ -362,7 +362,7 @@ def test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entr
         views.append(messages)
         return await inner(messages)
 
-    out = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+    out = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), backend))
     kept[0].append("the handler kept its return")
     entry = out.record.get("g1")
     assert seen == [("scribble", ["a"], ["a", "found"]), ("replace", ["a"], ["a", "found"])]
@@ -413,7 +413,7 @@ def _diamond(k: int, shape: str) -> tuple[Any, list]:
 
 @pytest.mark.parametrize("shape", ["tuple", "model"])
 def test_a_capture_copies_a_value_reached_twice_once(shape):
-    from lionagi.actor import _captured
+    from lion1.actor import _captured
 
     value, leaf = _diamond(20, shape)
     calls: list[int] = []

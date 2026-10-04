@@ -64,15 +64,18 @@ table.wakes th,table.wakes td{text-align:left;padding:.3em .4em;border-bottom:1p
 #toast.show{transform:translate(-50%,0);opacity:1}
 """
 
-# Kept to stdlib-only browser APIs (EventSource, fetch, URLSearchParams, crypto.randomUUID); no
-# framework, no build step. Event delegation on #screen means the one listener survives every
-# innerHTML re-render.
+# Kept to stdlib-only browser APIs (EventSource, fetch, AbortController, URLSearchParams,
+# crypto.randomUUID); no framework, no build step. Event delegation on #screen means the one listener
+# survives every innerHTML re-render.
 _JS = """
 (function () {
 'use strict';
 var state = {
   areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, view: 0, logs: {}, pending: {},
+  draft: null, typed: 0,  // the composer's words on this page, and a count of every edit to them
+  place: null, shed: {},  // the reader's place in a log box to be rebuilt; the lines each buffer dropped
 };
+var LOG_LINES = 400;  // one resident's log lines kept: its buffer and its box hold no more
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -110,38 +113,83 @@ function setConn(live) {
 }
 
 // ---- live data: SSE, with a 5s polling fallback when it errors ----
-var pollTimer = null;
+var POLL_MS = 5000;
+var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
+var shown = 0;  // the revision of the last read shown, a poll's or the stream's
+var streamLive = false;  // an `open` since the last error, and no error since
+var replaying = {};  // the residents whose history batch this connection has begun
+// the server stamps each `areas` event and `/api/areas` answer with the revision of the read it came from.
+// A stream connection is a server epoch, as a restarted server may count below the rows shown: the page
+// forgets them when the stream opens, and within it a read not above the last one shown is refused.
+// Polls run one at a time, so with the stream down a later one is a later read of whichever server
+// answered: each answer is taken and its revision becomes the one shown. The stream's `open` gives up the
+// poll out; its `areas` events never do, a poll's answer is compared with them as it arrives
+function takeAreas(rows, rev) {
+  if (!(rev > shown)) return;
+  shown = rev;
+  state.areas = rows;
+  if (state.mode === 'list') renderList();
+}
 function startPoll() {
   setConn(false);
   if (pollTimer) return;
   pollTimer = setInterval(function () {
-    fetch('/api/areas').then(function (r) { return r.json(); }).then(function (rows) {
-      state.areas = rows;
-      if (state.mode === 'list') renderList();
-    }).catch(function () {});
-  }, 5000);
+    if (polling) return;  // one poll in flight at a time
+    var ctl = polling = new AbortController();
+    function free() { if (polling === ctl) polling = null; }  // a poll given up frees no later poll's latch
+    var cut = setTimeout(function () { ctl.abort(); free(); }, 2 * POLL_MS);  // never settles: give up
+    fetch('/api/areas', { signal: ctl.signal }).then(function (r) {
+      var rev = Number(r.headers.get('X-Areas-Revision'));
+      return r.json().then(function (rows) {
+        if (ctl.signal.aborted) return;  // given up, by the clock or by the stream's open
+        // stream live: taken only above the one shown. Down: the last poll is the current read, set and not
+        // raised, though a restarted server counts lower
+        if (streamLive) { takeAreas(rows, rev); return; }
+        shown = rev;
+        state.areas = rows;
+        if (state.mode === 'list') renderList();
+      });
+    }).catch(function () {}).then(function () { clearTimeout(cut); free(); });
+  }, POLL_MS);
 }
 function connect() {
   var es = new EventSource('/events');
+  es.addEventListener('open', function () {  // each connect, each reconnect
+    streamLive = true;
+    if (polling) polling.abort();  // a poll out may have asked the server before its restart: given up
+    shown = 0;
+    replaying = {};
+  });
   es.addEventListener('areas', function (ev) {
+    // a connection's first rows end the polling, shown or not
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     setConn(true);
-    state.areas = JSON.parse(ev.data);
-    if (state.mode === 'list') renderList();
+    takeAreas(JSON.parse(ev.data), Number(ev.lastEventId));
   });
   es.addEventListener('log', function (ev) {
     var d = JSON.parse(ev.data);
     var buf = state.logs[d.dir] || (state.logs[d.dir] = []);
+    var showing = state.mode === 'detail' && state.dir === d.dir;
+    if (d.history && !replaying[d.dir]) {
+      // a history batch is the server's tail when the stream connected: it replaces the buffer, and the box
+      // on show is emptied to be filled again from it
+      replaying[d.dir] = true;
+      buf = state.logs[d.dir] = [];
+      state.shed[d.dir] = 0;
+      var box = showing && document.getElementById('log-box');
+      if (box) box.innerHTML = '';
+    }
     buf.push(d.line);
-    if (buf.length > 400) buf.shift();
-    if (state.mode === 'detail' && state.dir === d.dir && !d.history) appendLogLine(d.line);
+    if (buf.length > LOG_LINES) { buf.shift(); state.shed[d.dir] = (state.shed[d.dir] || 0) + 1; }
+    if (showing) appendLogLine(d.line);
   });
-  es.onerror = function () { startPoll(); };
+  es.onerror = function () { streamLive = false; startPoll(); };
 }
 
 // ---- routing ----
 function route() {
   state.view++;  // each navigation is a new page, a return to the same resident included
+  state.draft = null;  // a draft belongs to the page it was typed on
   var m = /^#r=(.+)$/.exec(location.hash);
   if (m) { state.mode = 'detail'; state.dir = decodeURIComponent(m[1]); loadDetail(); }
   else { state.mode = 'list'; state.dir = null; renderList(); }
@@ -175,9 +223,12 @@ function renderList() {
 }
 
 // ---- screen 2: one resident ----
-function loadDetail() {
+// `same` is a re-render of the page the reader is on, which puts them back where they were in the log box;
+// a page reached by navigation starts at the bottom
+function loadDetail(same) {
   // a response lands only on the route that asked for it: a later navigation makes it stale
   var dir = state.dir, gen = ++state.gen;
+  state.place = same ? logPlace() || state.place : null;  // the box is gone once the page is cleared below
   function current() { return gen === state.gen && state.mode === 'detail' && state.dir === dir; }
   state.detailDir = null;  // no action targets a resident until its own page is shown
   document.getElementById('screen').innerHTML = '<p class="meta">loading\\u2026</p>';
@@ -213,12 +264,25 @@ function logLineHtml(line) {
     (w.ctx ? ' \\u00b7 ctx ' + w.ctx : '') + (w.rst > 0 ? ' \\u00b7 ' + w.rst + ' restart(s)' : '') +
     '</div>';
 }
+function atBottom(box) { return box.scrollTop + box.clientHeight >= box.scrollHeight - 8; }
+// where the reader is in the log box: how far down, whether at the bottom, how many lines the buffer had
+// dropped and how tall each line stood, or null when the page has no box
+function logPlace() {
+  var box = document.getElementById('log-box');
+  if (!box) return null;
+  return { top: box.scrollTop, bottom: atBottom(box), shed: state.shed[state.dir] || 0,
+    heights: Array.prototype.map.call(box.children, function (c) { return c.offsetHeight; }) };
+}
 function appendLogLine(line) {
   var box = document.getElementById('log-box');
   if (!box) return;
-  var atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  var bottom = atBottom(box);
   box.insertAdjacentHTML('beforeend', logLineHtml(line));
-  if (atBottom) box.scrollTop = box.scrollHeight;
+  // the oldest lines go, and a reader scrolled up keeps the lines in view where they were
+  var top = box.scrollTop, height = box.scrollHeight;
+  while (box.childElementCount > LOG_LINES) box.removeChild(box.firstElementChild);
+  if (bottom) box.scrollTop = box.scrollHeight;
+  else if (box.scrollHeight < height) box.scrollTop = top - (height - box.scrollHeight);
 }
 
 function renderDetail() {
@@ -283,8 +347,18 @@ function renderDetail() {
     '<div class="row"><textarea id="talk-content" rows="3" placeholder="message"></textarea></div>' +
     '<div class="row"><button id="talk-send">send</button></div>' +
     '</div>';
-  var box = document.getElementById('log-box');
-  if (box) box.scrollTop = box.scrollHeight;
+  var box = document.getElementById('log-box'), at = state.place;
+  state.place = null;
+  if (at && !at.bottom) {
+    // a reader scrolled up keeps their lines: the oldest ones the buffer dropped since were above them
+    var top = at.top, gone = (state.shed[state.dir] || 0) - at.shed;
+    for (var i = 0; i < gone && i < at.heights.length; i++) top -= at.heights[i];
+    box.scrollTop = Math.max(0, top);
+  } else box.scrollTop = box.scrollHeight;
+  if (state.draft) {  // a re-render keeps what was typed
+    document.getElementById('talk-subject').value = state.draft.subject;
+    document.getElementById('talk-content').value = state.draft.content;
+  }
 }
 
 function toggleInline(id, show, force) {
@@ -317,7 +391,7 @@ function sendControl(action, extra) {
     if (state.view !== view) return;  // the page that asked is gone
     toggleInline('hold-inline', false);
     toggleInline('restart-inline', false);
-    loadDetail();
+    loadDetail(true);
   }).catch(function (e) { toast(String(e)); });
 }
 
@@ -329,7 +403,7 @@ function sendTalk() {
   btn.disabled = true;
   // an unsent message keeps its token: the same words to the same resident replay it, never mail twice
   var dir = state.detailDir, view = state.view, key = JSON.stringify(['send', dir, subject, content]);
-  var once = token(key);
+  var once = token(key), rev = state.draft && state.draft.rev;
   var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: once });
   fetch('/send', {
     method: 'POST',
@@ -340,10 +414,21 @@ function sendTalk() {
     if (state.pending[key] === once) delete state.pending[key];  // never a newer ask's token
     toast('sent');
     if (state.view !== view) return;  // the page that asked is gone
-    document.getElementById('talk-content').value = '';
-    loadDetail();
+    if (state.draft && state.draft.rev === rev) state.draft = null;  // nothing typed since: it was sent
+    loadDetail(true);
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
 }
+
+// every edit in the composer is the page's draft under a new revision: a send's answer clears the
+// draft only if it is still the revision that was sent
+document.getElementById('screen').addEventListener('input', function (e) {
+  if (e.target.id !== 'talk-subject' && e.target.id !== 'talk-content') return;
+  state.draft = {
+    subject: document.getElementById('talk-subject').value,
+    content: document.getElementById('talk-content').value,
+    rev: ++state.typed,
+  };
+});
 
 document.getElementById('screen').addEventListener('click', function (e) {
   var t = e.target;

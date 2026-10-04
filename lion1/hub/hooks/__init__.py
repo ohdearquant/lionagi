@@ -1,4 +1,4 @@
-"""Hooks: what runs before a command, after it, and each round, beside the actor's own loop.
+"""Hooks: what runs before a command, after it, and each turn, beside the actor's own loop.
 
 `shell` reads `hooks.toml` and runs shell lines with JSON on stdin (exit code = verdict); `gates`
 are the same rules as Python callables for an app that composes its actor in code; `scripts/` holds

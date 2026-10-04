@@ -60,7 +60,7 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **status line**: `model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read
   off the live run each time it is drawn; `actor` is the id `.khive/config.toml` under the directory
   signs as, or `no actor`.
-- **working indicator**: `⠋ thinking · 12s` under the scrollback while a round's call is in flight,
+- **working indicator**: `⠋ thinking · 12s` under the scrollback while a turn's call is in flight,
   `running` once the turn's commands run; a finished result folds to its head, its detail parked
   under the indicator until the next result lands.
 - **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
@@ -86,7 +86,7 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 | A1 | The files git lists, tracked ones and untracked ones not ignored, are the directory the person means; `.git` is never among them. | `DaytonaSandbox.push` lists with `git ls-files --cached --others --exclude-standard`; every file when the directory is not a repository | the copy lacks a file the work needs, or carries one that should have stayed home |
 | A2 | The copy's diff against the baseline, committed, staged, unstaged and untracked, is the whole change the model made. | `git_diff` in `hub/tools/box.py`; `test_baseline_diff_keeps_committed_and_uncommitted_edits` | a change never reaches the person, and the chat says there was none |
 | A3 | `git apply` checks every hunk before it writes one. | git; `test_a_patch_that_will_not_apply_is_saved_whole_and_lands_nothing` | `--apply` can land half a patch in the person's tree |
-| A4 | One session fits one run's turn budget, 200 by default. | `--rounds` in the parser | the chat ends `Exhausted` mid-work and the person continues it with `-c` |
+| A4 | One session fits one run's turn budget, 200 by default. | `--turns` in the parser | the chat ends `Exhausted` mid-work and the person continues it with `-c` |
 
 ## Claims
 
@@ -173,8 +173,8 @@ the box before the model works; a saved patch, an empty one and a refused apply 
   the old log is written to, or an unsettled command or an unapplied chat patch goes unnamed.
 
 `-c` continues the last log; `-r` takes an id, a unique prefix or a path. The rows come back as
-entries with sequences, results, inbound marks and directives; usage and `BOX` rows are skipped. The
-loop admits each turn's values in order, and the fold lands where it did
+entries with sequences, results (C19), inbound marks and directives; usage and `BOX` rows are
+skipped. The loop admits each turn's values in order, and the fold lands where it did
 ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). A refused turn admits nothing; one an older reader ran
 and today's refuses admits what that reader did.
 
@@ -204,18 +204,18 @@ coding guidance, `hub/guidance/code.md`, names the run it was tried on.
 On a terminal a paste of many lines is one message, Enter sends, Alt-Enter breaks a line, Up recalls
 earlier messages from `.lion/history`, and Ctrl-C clears the line or, on an empty one, ends the
 chat. A pipe keeps the plain line reader. The status line sits under the prompt and prints at each
-round notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
+turn notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
 per key, a flag on the line over both.
 
 ### C9: A first Ctrl-C cuts the call; a failed directive leaves a session as it was _(enforced: mechanical)_ ^c9
 
 - **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session.
-- **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a cancel arriving
+- **Violated when**: a Ctrl-C mid-call waits for the turn, a cut ends the run, a cancel arriving
   with a cut is lost, a failed directive restarts the session, or the session's CLI is handed a tool
   of its own.
 
-Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
-the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
+Mid-turn a first Ctrl-C cuts the backend call in flight: the turn ends with a notice and no message,
+the run goes on, and a `claude_code` session resumes where it was; with no call in flight the turn
 settles first. Only a result that changed the view carries its `spec`, so a failed directive leaves
 the session as it was.
 
@@ -229,7 +229,7 @@ does is a command in its text that the console runs, gates and records.
 - **Violated when**: a call in flight shows nothing moving, a finished result stays open above the
   next, or the status line names no model.
 
-On a terminal the working indicator runs under the scrollback from a round's start until its turn
+On a terminal the working indicator runs under the scrollback from a turn's start until its message
 lands, `running` while the turn's commands run. With `--verbose` a result prints its head to the
 scrollback and parks its detail under the indicator until the next lands. The status line leads with
 the model and the actor. A pipe gets none of this.
@@ -331,15 +331,46 @@ are: results are read only in the notice the loop writes. A turn that writes the
 The line lists the client's allow list by name, sorted, then the salience cap on `memory.remember`.
 It gave a count and a summary before, and a model learned a verb was allowed only by calling it.
 
+### C19: A model value in the chat log comes back as its JSON form _(enforced: mechanical)_ ^c19
+
+- **Subject**: `jsonable`, the `default=` of every chat log entry writer and of the checkpoint's
+  file.
+- **Violated when**: a model value is logged as anything but its `model_dump(mode="json")`, a
+  command typed as a model that accepts its own dump is handed anything but the model, or a value an
+  older log holds as a string resumes as anything else.
+
+A model value, a command's result or a program's value, is logged as `model_dump(mode="json")`,
+whatever that is: an object of its fields, computed ones included, a list or a scalar. A `RootModel`
+dumps its root, and a serializer may return any JSON. A resume reads that JSON back. A program reads
+the fields of an object (`*b.title`), and a command typed as the model is handed the model,
+validated from the JSON.
+
+A model whose fields JSON cannot hold is logged as its string.
+
+### C20: A model replays when its own validation accepts its own dump _(enforced: mechanical)_ ^c20
+
+- **Subject**: a command typed as a model, in a chat resumed from a log that holds a value of it.
+- **Violated when**: a command typed as a model is refused for a dump its validation accepts, runs
+  on one it refuses, or is refused as anything but invalid arguments.
+
+A model round-trips when its own validation accepts its own dump, which a `RootModel` and a plain
+model do. One whose serializer and validation disagree, or whose dump leaves out a required field,
+is that model's defect: the command typed as it is refused in the resumed chat (C6) as invalid
+arguments, and the run goes on.
+
+On that validation a computed field's key is ignored, refused if the model forbids extra fields,
+kept as extra data if it allows them. A model with aliased fields replays under its field names,
+which a command typed as it accepts only if the model validates by name.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
 
-Serves C1 and C6. `chat` runs the actor once with `wait`, `history`, `accept` and the round budget,
-and hands each entry to `say` from the bus's `run.started`, `round.started` and `command.` events,
+Serves C1 and C6. `chat` runs the actor once with `wait`, `history`, `accept` and the turn budget,
+and hands each entry to `say` from the bus's `run.started`, `turn.started` and `command.` events,
 from `wait`, and once more at the end. `entry_row` writes a result as its five fields and a
 directive as data; `load_log` reads rows back through `entry_of`, the reader the checkpoint in
-`lionagi/checkpoint.py` also uses.
+`src/lion1/checkpoint.py` also uses.
 
 - **Landing evidence**: `tests/test_chat.py`: a plain turn and the next line on one record, each
   entry said as it lands, `OUT{}` refused, the pause, the log read back as history, the directives
@@ -353,22 +384,27 @@ registers the tools over the `Tree`: `LocalTree` of the directory, or a `BoxTree
 `--box` is `vm` or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for `--shell` or
 `--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own path, `--image`
 defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and image.
-`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
+`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]). `--code` asks git for the branch
+within one `GIT_TIMEOUT`.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py` (khive only in an actor's directory,
   the root rules, the hooks);
   `test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance`;
-  `test_the_local_tree_refuses_paths_that_leave_it`.
+  `test_the_local_tree_refuses_paths_that_leave_it`; `tests/test_chat.py`:
+  `test_a_resumed_coding_chat_whose_git_hangs_starts_with_the_branch_said_unknown_within_its_bound`.
 
 ### D3: `prepare_box` and `take_patch`, the patch before the stop ^d3
 
 Serves C3, C4 and C5. `prepare_box` starts the box, pushes, and commits the baseline, returning its
 hash. At the end `chat_main` takes the patch under `asyncio.shield`, then stops the box; a failure
-taking it keeps the box and names it. The default is print and save; `--apply` lands.
+taking it keeps the box and names it. The default is print and save; `--apply` lands. `take_patch`'s
+host git calls have `GIT_TIMEOUT` (30 s) each, the box's diff calls 120 s each; an apply stopped at
+it may have written part of the patch, so the directory is said to be unknown, and the box stops.
 
 - **Landing evidence**: `tests/test_daytona.py`: the chat in a box end to end, the subdirectory
   apply, committed edits, the ignored tracked file, the kept box named; `tests/test_chat.py`: failed
-  preparation and push stop the box.
+  preparation and push stop the box;
+  `test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_unknown`.
 
 ### D4: `resolve_chat`, `fresh_log` and `unsettled` for the resume ^d4
 
@@ -376,10 +412,13 @@ Serves C6. `fresh_log` creates the chat log exclusively, with `-02`, `-03` when 
 took that second's id; a start that fails before logging removes its empty log so `-c` keeps the old
 one; `--log` refuses an existing path. `unsettled` parses each logged turn and names the aliases
 with no RESULT. `load_log` hands back the `BOX` row, whose box and image stand in for a flag not
-given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued session's patch.
+given, else `vm` and `python:3.12`; `git apply --check`, reversed then forward, tests the continued
+session's patch within one `GIT_TIMEOUT`.
 
 - **Landing evidence**: `tests/test_chat.py` (the exact id beside its sibling, the failed start,
-  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch`);
+  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch`,
+  `test_a_resumed_chat_tells_a_patch_git_could_not_check_as_unknown_with_gits_reason`,
+  `test_a_resumed_chat_whose_git_hangs_is_told_its_patch_could_not_be_checked_within_one_bound`);
   `apps/cli/tests/test_chat_command.py` (the whole record logged again, the unsettled commands, the
   missing log).
 
@@ -416,7 +455,7 @@ so the session runs `--tools ""` and `--max-turns 1`. On `-c`, `chat_main` seeds
 
 Serves C10. `Console.working(what)` starts a transient rich `Live` at eight frames a second holding
 a `_Working` (frame, what, elapsed) and any parked detail; `idle()` stops it. `chat_main` subscribes
-`round.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
+`turn.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
 carries commands. `signer(directory)` reads the actor id for the status line.
 
 - **Landing evidence**: `tests/test_chat.py`:
@@ -514,6 +553,24 @@ set.
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`. Control:
   the old line fails both.
 
+### D16: `jsonable` in `src/lion1/checkpoint.py`, the writers' `default=` ^d16
+
+Serves C19 and C20. `jsonable` returns `model_dump(mode="json")` for a pydantic model, whatever form
+that takes, and the `str` of anything else, or of a model whose dump raises pydantic's serialization
+error. `Console` writes each chat log entry row with it, the long-running agent its checkpointed
+record, and the checkpoint its file and each value its restore shows; a usage row is written with
+`str`. `entry_of` hands the JSON back as written, and a Spec field typed as the model validates it
+into the model again.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
+  `test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model`,
+  `test_a_logged_aliased_model_replays_under_its_field_names_which_only_a_by_name_command_accepts`,
+  `test_a_resumed_program_reads_a_field_of_a_logged_model_value`,
+  `test_a_logged_root_model_resumes_as_its_root_and_a_command_typed_as_it_gets_the_model`,
+  `test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments`,
+  `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
+  the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -525,7 +582,7 @@ set.
 | A summary of the session as what resumes | the record is the memory; a summary is the model's opinion of it and folds nothing |
 | Rerunning unsettled commands on resume | one may have had its effect before the session ended; the model is told and asks again |
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
-| A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
+| A first Ctrl-C that waits for the turn to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
 | Falling back to the directory's khive config when the explicit one is missing | the chat would sign as someone the person did not name; a refusal by file name is what they can act on |
 | A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
@@ -537,7 +594,7 @@ set.
 | Letting the claude CLI read CLAUDE.md itself (its setting sources) | only one backend would get the files, and with them every setting and hook the CLI finds; composing them into the guidance serves every model alike |
 | Every CLAUDE.md from the directory up to the filesystem root | the directories above a repository hold other projects' rules; the home file is the one every chat means to share |
 | Copying the whole chat from the terminal's scrollback | the terminal wraps and indents what it shows; the copy is built from the entries, unwrapped |
-| The claude CLI's own tools inside each round (`--tools`) | a second channel beside the commands: a model that called a command natively was told it did not exist, then wrote the loop's result frame itself with invented results |
+| The claude CLI's own tools inside each turn (`--tools`) | a second channel beside the commands: a model that called a command natively was told it did not exist, then wrote the loop's result frame itself with invented results |
 
 ## Consequences
 
@@ -545,12 +602,12 @@ set.
   declares, its receipts and what it may reach are the kernel's ([[ADR-0011-the-box|ADR-0011]], the
   box). The chat reaches them only through the tools the console registers.
 - **S2**: What resumes is the record. The notes outlive every chat anyway, one file per profile
-  under `.lion/notes/`. The VM is new per chat, the round budget and the spend count start again,
-  and a boxed chat starts from a fresh push of the directory as it stands: an earlier chat patch
-  left unapplied is not in the new copy.
+  under `.lion/notes/`. The VM is new per chat, the turn budget and the spend count start again, and
+  a boxed chat starts from a fresh push of the directory as it stands: an earlier chat patch left
+  unapplied is not in the new copy.
 - **S3**: A run ended mid-turn does not resume ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). Beside the
-  chat, `lionagi/checkpoint.py` and `lion context` take and restore checkpoints of named values and
-  a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
+  chat, `src/lion1/checkpoint.py` and `lion context` take and restore checkpoints of named values
+  and a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
   ([[ADR-0013-the-agent|ADR-0013]]) replays its last checkpointed record as history, and refuses one
   that no longer folds to the checkpoint's view.
 - **S4**: The chat log holds every value whole; the console prints a result as one line. The closing
@@ -569,11 +626,11 @@ set.
 - **S9**: The chat log's first row, `BOX`, names where the chat ran, and a resume runs there unless
   its flags say otherwise; a log older than the row resumes under `vm`. An unapplied chat patch is
   told, not built on: the new copy is a fresh push (S2). When the continued session's saved patch
-  does not come off the directory, or cannot be checked without git, the resume notice says so to
-  the model and the person; only that session's patch is checked.
+  goes on but not off, or git cannot tell, the resume notice says so to the model and the person,
+  with git's reason; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
-- **S11**: A cut round leaves no turn on the record, only a notice. A `claude_code` session killed
+- **S11**: A cut turn leaves no message on the record, only a notice. A `claude_code` session killed
   mid-call resumes on the next call from the CLI's own persisted session, which keeps its own
   transcript until a restart that pays, or the fold, starts it over from the folded view.
 - **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a

@@ -1,7 +1,7 @@
 ---
 adr: ADR-0005
 status: draft
-liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; no handler in `hub/` declares a class, so each runs as a `write`)
+liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; under `hub/` only the web commands declare a class, `read`, and every other handler runs as a `write`)
 date: "2026-09-23"
 area: handler
 kind: new
@@ -28,7 +28,7 @@ A turn's commands ([[ADR-0004-the-language|ADR-0004]]) are dispatched by the act
 ([[ADR-0002-the-run#^c1|ADR-0002/C1]]). This record fixes the order a command goes through, the bus
 that observes it, the privilege gate, what a handler is given, and the hooks around a handler.
 Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Handler` in
-`lionagi/actor.py`; `lionagi/bus.py`; `hub/hooks/`.
+`src/lion1/actor.py`; `src/lion1/bus.py`; `hub/hooks/`.
 
 ## Definitions
 
@@ -41,7 +41,8 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 - **`RESULT`**: the record entry the result lands on, under the command's alias.
 - **execution**: the RESULT's mark of whether the handler was called: `not executed`, `started`, or
   `completion unknown` when cancelled after the call; set by the loop, never by a handler or a hook;
-  it says what the loop did, never what the world did.
+  it says what the loop did, never what the world did. The session gate writes `admitted`
+  ([[ADR-0009-backends#^c6|ADR-0009/C6]]).
 - **reason**: the closed set on a failed `RESULT`: `unknown`, `invalid`, `privilege`, `refused`,
   `failed`, `cancelled`.
 - **bus**: the in-process observer of events; it records and notifies, and decides nothing.
@@ -49,8 +50,8 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
   run, refuses it with a reason, or replaces its arguments.
 - **after hook**: a function or a shell command shown what ran and its result; it may replace the
   result, never undo the command.
-- **turn hook**: a shell command run once per turn whose stdout is a notification line; the `round`
-  table in `hooks.toml` until that name is changed.
+- **turn hook**: a shell command run once per turn whose stdout is a notification line; the `turn`
+  table in `hooks.toml`.
 
 ## Assumptions
 
@@ -93,7 +94,7 @@ that blocks holds the emitter, so a subscriber returns at once or hands back a c
 bounded, and a tracked task leaves the set when it finishes; `drain` awaits the rest.
 
 Patterns match exactly, by prefix (`command.`), or everything (`*`). Events: `run.started`,
-`round.started`, `round.retry`, `command.requested`, `command.settled`, `inbox.queued`,
+`turn.started`, `turn.retry`, `command.requested`, `command.settled`, `inbox.queued`,
 `inbox.answered`, `run.completed`.
 
 ### C3: A handler reaches run state only through its `Context` _(enforced: mechanical)_ ^c3
@@ -166,14 +167,14 @@ measurement is what checks it.
 
 - **Subject**: every `install` of hooks carrying a `python -m hub.hooks.scripts.<name>` row.
 - **Violated when**: such a row is installed while its interpreter, that interpreter's prefix, the
-  `hub` or `lionagi` it would import, or one of its import paths lies inside the directory.
+  `hub` or `lion1` it would import, or one of its import paths lies inside the directory.
 
 `load` rewrites a bundled row to lion's own interpreter under `-I`, so neither the directory nor
 `PYTHONPATH` supplies its code. `install` checks that interpreter and its prefix, then asks it,
-without importing, where `hub` and `lionagi` resolve and what its import paths are. When one of
-those places lies inside the directory, it refuses every hook before registering any: the model
-writes there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with
-no bundled row install without the check.
+without importing, where `hub` and `lion1` resolve and what its import paths are. When one of those
+places lies inside the directory, it refuses every hook before registering any: the model writes
+there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with no
+bundled row install without the check.
 
 ### C8: The reference guard refuses what it cannot read, and the tree hook names what moved _(enforced: mechanical)_ ^c8
 
@@ -200,6 +201,22 @@ compares against or rewrites another's map.
 A hook runs in its own process group; a timeout, a cancel or an exception kills the group, then
 tries five seconds each to drain and reap it, filled pipe included; a descendant that left is
 abandoned.
+
+### C10: The tree hook keeps a file name whole from git to the notice _(enforced: mechanical)_ ^c10
+
+- **Subject**: the file names `tree-changed` reads from git and prints.
+- **Violated when**: a name git lists is altered or refused on the way in, a conflicted path is read
+  twice, or the notice shows a name with a control character, a byte that is not UTF-8 or edge
+  whitespace other than quoted and escaped.
+
+`tree-changed` reads `git ls-files -z` as bytes, splits on NUL alone and decodes each name as the
+file system does, keeping a carriage return or a byte that is not UTF-8. A conflicted path, which
+git lists once per index stage, is read once.
+
+The notice shows a name as it is. One that holds a control character (Unicode category Cc, Cf, Zl or
+Zp) or a byte that is not UTF-8, or starts or ends in whitespace, is quoted and escaped: `'name\r'`,
+`'bad\xff'`, `'name '`. The hook's output is decoded and stripped on its way to the notice; a quoted
+name survives both.
 
 ## Decisions
 
@@ -233,7 +250,7 @@ costs less than a missing one.
   `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
   `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
 
-### D2: The bus is `lionagi/bus.py` ^d2
+### D2: The bus is `src/lion1/bus.py` ^d2
 
 Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded log of events.
 
@@ -241,7 +258,7 @@ Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded 
 
 ### D3: `hub/hooks/`: `hooks.toml`, shell commands, JSON on stdin, the exit code as the verdict ^d3
 
-Serves C4, C5, C7 to C9 for a person. Three array tables, `before`, `after` and `round`, each row
+Serves C4, C5, C7 to C10 for a person. Three array tables, `before`, `after` and `turn`, each row
 with `run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a
 command run, a JSON object on stdout replacing its arguments and other stdout a log line; exit 2
 refuses with stdout as the reason; a turn hook's stdout is a notification line. `lion chat` reads
@@ -258,8 +275,17 @@ runs under `-I` with lion's own interpreter (C7).
   `test_git_global_options_cannot_hide_push_or_destructive_subcommand`,
   `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved`,
   `test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files` and
-  `test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state` (C8); the console test that
-  installs a directory's hooks.
+  `test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state` (C8),
+  `test_the_tree_hook_keeps_a_carriage_return_in_a_file_name`,
+  `test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8`,
+  `test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8`,
+  `test_the_tree_hook_reads_a_conflicted_file_once`,
+  `test_the_tree_hook_shows_a_name_as_it_is_or_quoted_and_escaped`,
+  `test_the_notice_the_actor_gets_keeps_a_carriage_return_ending_a_file_name`,
+  `test_the_notice_the_actor_gets_keeps_a_file_name_whole_where_whitespace_edges_it`,
+  `test_the_notice_the_actor_gets_shows_a_changed_file_name_that_is_not_utf8_escaped` and
+  `test_the_notice_the_actor_gets_shows_a_removed_file_name_that_is_not_utf8_escaped` (C10); the
+  console test that installs a directory's hooks.
 
 ## Alternatives
 
@@ -289,7 +315,8 @@ runs under `-I` with lion's own interpreter (C7).
   `-c`, `--git-dir`, `--work-tree` and `--` before the subcommand (C8).
 - **S5**: A directory's `hooks.toml` is executable configuration: `lion chat` runs what the
   directory holds, so opening a directory is trusting its hooks, as with any tool that reads a local
-  config.
+  config. A table that names no event is refused by name, so a misspelled one never loads as nothing
+  (`test_a_slow_before_hook_refuses_at_its_timeout_and_a_bad_file_says_which_table`).
 - **S6**: `Context.get` reads only what is settled: an alias's value, a record name or a note. A
   pending alias raises `KeyError` at once, as an unknown name does, so no handler waits on another
   through `get`; a value a handler needs from a pending command reaches it as a pointer in its call,
@@ -308,5 +335,6 @@ runs under `-I` with lion's own interpreter (C7).
 
 - **S9**: Owed with D1, landed with it: the effect wait of C6, with the class on `Handler`. Before
   it landed, every command waited on its pointers only, as C6 says a `pure` one does. A write that
-  points at a later write of its turn now closes a circle and is refused `invalid`, and no handler
-  in `hub/` declares a class, so every command of a hub turn waits for the one before it.
+  points at a later write of its turn now closes a circle and is refused `invalid`. Under `hub/`
+  only the web commands declare a class, `read` ([[ADR-0023-the-web-tools#^c1|ADR-0023/C1]]); every
+  other command of a hub turn waits for the one before it.

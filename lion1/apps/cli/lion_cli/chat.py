@@ -19,21 +19,22 @@ from typing import Any
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import SPAWN_SALIENCE, Bounded
 from hub.areas import partial
-from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, OpenRouterError
+from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, CodexSession, OpenRouterError
 from hub.backend.claude_code import _prompt_tokens
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
 from hub.tools.code import Tree
-from lionagi import Actor, Kind, Profile, lndl
-from lionagi.actor import DEFAULT_HANDLERS, Run, _text
-from lionagi.record import Entry
+from lion1 import Actor, Kind, Profile, lndl
+from lion1.actor import DEFAULT_HANDLERS, Run, _text
+from lion1.record import Entry
 
 from .agent import backend_for
 from .config import instructions
-from .view import Console
+from .view import Console, cost_whole
 
 __all__ = (
+    "GIT_TIMEOUT",
     "console",
     "prepare_box",
     "take_patch",
@@ -47,6 +48,10 @@ __all__ = (
     "chat_main",
 )
 
+# seconds: a resume's patch check, git's own lookup included; the branch `--code` names; each of
+# take_patch's calls on this machine (the box's own git for the diff runs under the box's exec timeout)
+GIT_TIMEOUT = 30.0
+
 
 def console(
     directory: Path,
@@ -54,7 +59,7 @@ def console(
     name: str = "console",
     system: str = "",
     model: str = "an unnamed model",
-    rounds: int = 200,
+    turns: int = 200,
     sandbox: Box | None = None,
     coding: bool = False,
     notify: Callable[[str], None] | None = None,
@@ -112,7 +117,7 @@ def console(
                     f"{SPAWN_SALIENCE})"
                 )
     if not system:
-        system = guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox)
+        system = guidance("console", model=model, tools=tools, turns=turns, sandbox=about_sandbox)
         for path, text in instructions(directory):
             system += f"\n\n{_shown(path, directory)} says:\n{text}"
     profile = Profile(name=name, specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS}, system=system)
@@ -167,7 +172,9 @@ async def take_patch(
     the chat log as `<chat_id>.patch`; with `apply` it is also applied to `directory` by `git apply`,
     from the top of the repository `directory` sits in (a patch from a subdirectory gets its prefix),
     which lands whole or not at all. None when nothing changed; a diff that fails raises. A patch that
-    will not apply is still saved, the failure is said, and the directory is left as it was."""
+    will not apply is still saved, the failure is said, and the directory is left as it was. Each git
+    call on this machine has `GIT_TIMEOUT`; an apply stopped at it is said to leave the directory
+    unknown. The diff is the box's own git, each call under the box's `exec` timeout (120 s)."""
     patch = await box.diff(baseline)
     if not patch.strip():
         say("box: no change in the copy")
@@ -177,9 +184,20 @@ async def take_patch(
     path.write_text(patch)
     say(f"box: the copy's diff, {patch.count(chr(10))} line(s), saved as {path}")
     print(patch, end="" if patch.endswith("\n") else "\n")
-    argv = _git_apply(directory, str(path))
+    try:
+        argv = _git_apply(directory, str(path), timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:  # nothing ran on the directory
+        say(f"box: not applied; git rev-parse did not answer within {GIT_TIMEOUT:g}s")
+        return path
     if apply:
-        done = subprocess.run(argv, capture_output=True, text=True)
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        except subprocess.TimeoutExpired:  # stopped mid-way: what it wrote is unknown, never undone
+            say(
+                f"box: git apply did not finish within {GIT_TIMEOUT:g}s and was stopped; whether it "
+                f"changed {directory} is unknown: read the files before applying {path} again"
+            )
+            return path
         if done.returncode == 0:
             say(f"box: applied to {directory} (git apply)")
         else:
@@ -189,13 +207,14 @@ async def take_patch(
     return path
 
 
-def _git_apply(directory: Path, *args: str) -> list[str]:
+def _git_apply(directory: Path, *args: str, timeout: float) -> list[str]:
     """`git apply <args>` for a chat patch over `directory`: from the top of the repository it sits in,
-    with its prefix, or over plain files when it sits in none."""
+    with its prefix, or over plain files when it sits in none. Finding the top takes `timeout` at most."""
     top = subprocess.run(
         ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--show-prefix"],
         capture_output=True,
         text=True,
+        timeout=timeout,
     )
     if top.returncode == 0:  # from a subdirectory `git apply` skips every path and exits 0
         root, prefix = top.stdout.split("\n")[:2]
@@ -208,16 +227,15 @@ def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
     too), falling back to the last attempt's `usage.cost` for a backend that reports only that, a
     total of 0 being a bill of 0 so only an absent total falls back; and how many calls that sum
-    misses, with no figure at all or the router's `cost_complete` false."""
+    misses, with no figure at all or the router's `cost_complete` false. A USAGE row read back from a
+    log with no `cost_complete` is from before the key: whether its subtotal is whole is unknown, so
+    it counts with them."""
     cost = 0.0
     for c in calls:
         billed = c.get("total_cost_usd")
         cost += float(billed if billed is not None else (c.get("usage") or {}).get("cost") or 0)
     unknown = sum(
-        1
-        for c in calls
-        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
-        or c.get("cost_complete") is False
+        1 for c in calls if not cost_whole(c) or (c.get("kind") == "USAGE" and "cost_complete" not in c)
     )
     return cost, unknown
 
@@ -235,7 +253,7 @@ def status_line(
     actor: Actor, profile: Profile, runs: list[Run], backend: Any, model: str = "", who: str | None = None
 ) -> str:
     """`model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live
-    objects each time: inbound not yet taken into a round, the context figure the round notice told
+    objects each time: inbound not yet taken into a turn, the context figure the turn notice told
     against its budget (and the prompt the backend last reported), the profile's notes, what was
     billed. Before a run starts there is no context to tell."""
     parts = [f"inbox {len(actor.inbox) + sum(len(r.inbox) for r in runs)}"]
@@ -265,15 +283,18 @@ def _k(n: float) -> str:
 
 def _branch(directory: Path) -> str:
     """The checked-out branch, from git itself (so a linked worktree's `.git` file and a
-    subdirectory both resolve), or `(no git)`."""
+    subdirectory both resolve), `(no git)`, or that git did not answer within `GIT_TIMEOUT`."""
     try:
         result = subprocess.run(
             ["git", "-C", str(directory), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
+            timeout=GIT_TIMEOUT,
         )
     except FileNotFoundError:
         return "(no git)"
+    except subprocess.TimeoutExpired:
+        return f"(git did not answer within {GIT_TIMEOUT:g}s)"
     if result.returncode != 0:
         return "(no git)"
     return result.stdout.strip()
@@ -317,7 +338,7 @@ def fresh_log(chats: Path, chat_id: str) -> tuple[str, Path]:
 
 def unsettled(history: tuple[Entry, ...]) -> list[str]:
     """The commands a logged session asked for and never saw settle: their aliases, in order. A
-    session that ended mid-round leaves them; the model is told, and nothing runs again on its own."""
+    session that ended mid-turn leaves them; the model is told, and nothing runs again on its own."""
     asked: list[str] = []
     settled = {e.alias for e in history if e.kind is Kind.RESULT}
     for e in history:
@@ -332,7 +353,7 @@ def unsettled(history: tuple[Entry, ...]) -> list[str]:
 
 class Interrupt:
     """Ctrl-C. Mid-run, the first one cuts the model's call short and hands the turn back now (or,
-    with no call in flight, at the round's end once its results land); the second one, or one at the
+    with no call in flight, at the turn's end once its results land); the second one, or one at the
     prompt, ends the conversation now. The counter resets each time the person is asked."""
 
     def __init__(self, runs: list[Run], task: asyncio.Task, say: Console):
@@ -345,7 +366,7 @@ class Interrupt:
             if self.runs[0].interrupt():
                 self.say.notice("cut: the model's call was abandoned; Ctrl-C again to quit")
             else:
-                self.say.notice("stopping after this round; Ctrl-C again to quit now")
+                self.say.notice("stopping after this turn; Ctrl-C again to quit now")
             return
         self.task.cancel()
 
@@ -396,18 +417,34 @@ async def _chat_main(
             )
         patch = chats / f"{prior.stem}.patch"
         if patch.exists():
-            try:  # does the saved patch come off the directory as it stands?
+            # does the saved patch come off the directory as it stands (applied), or go on whole (not
+            # applied)? Anything else is unknown, told with git's reason; one bound covers every call
+            deadline = time.monotonic() + GIT_TIMEOUT
+            standing, why = None, ""  # applied: nothing to tell
+            try:
+                check = _git_apply(directory, "--check", timeout=GIT_TIMEOUT)
                 off = subprocess.run(
-                    _git_apply(directory, "--check", "-R", str(patch)), capture_output=True
-                ).returncode
-                standing = "are not applied to" if off else None
+                    [*check, "-R", str(patch)], capture_output=True, timeout=deadline - time.monotonic()
+                )
+                if off.returncode != 0:
+                    on = subprocess.run(
+                        [*check, str(patch)], capture_output=True, timeout=deadline - time.monotonic()
+                    )
+                    standing = "are not applied to"
+                    if on.returncode != 0:  # unreadable, a file changed since, a broken repository
+                        first = (off.stderr.decode(errors="replace").strip().splitlines() or [""])[0]
+                        why = f" (git apply exited {off.returncode}: {first[:300]})"
             except FileNotFoundError:  # no git here: unchecked, and the model is told that much
+                why = " (no git)"
+            except subprocess.TimeoutExpired:
+                why = f" (git did not answer within {GIT_TIMEOUT:g}s)"
+            if why:
                 standing = "could not be checked against"
             if standing is not None:
                 notes.append(
                     f"the previous session's changes, saved as {patch}, {standing} {directory} as "
-                    "it stands, so edits the record shows may be missing from the files you work now; "
-                    "read a file before relying on an edit to it."
+                    f"it stands{why}, so edits the record shows may be missing from the files you work "
+                    "now; read a file before relying on an edit to it."
                 )
         notice = " ".join(notes) or None
     box = getattr(a, "box", None) or ran.get("box", "vm")
@@ -432,7 +469,7 @@ async def _chat_main(
     actor, profile = console(
         directory,
         model=a.model,
-        rounds=a.rounds,
+        turns=a.turns,
         sandbox=sandbox,
         coding=a.code,
         notify=degraded.append,
@@ -440,15 +477,19 @@ async def _chat_main(
         about_box=about_box,
         khive_config=khive_config,
     )
-    # a claude_code model gets no tools of its own: one turn per call, resumed, and everything it does
-    # is a command in its text that this console runs, gates and records
+    # a claude_code or codex model gets no tools of its own: one turn per call, resumed, and everything
+    # it does is a command in its text that this console runs, gates and records
     backend = backend_for(a.model)
-    if isinstance(backend, ClaudeCodeSession):
+    if isinstance(backend, ClaudeCodeSession | CodexSession):
         # a continued chat's new session starts from the whole view: its first figure stands on the
-        # count the last session call reported and the characters it stood in (ADR-0009/C4)
+        # count the last session call reported and the characters it stood in (ADR-0009/C4, C7). A
+        # codex row names its answering attempt's count, `None` when its share of the thread's totals
+        # was unknown: its `usage` sums the attempts
         last = next((r for r in reversed(billed) if "prompt_chars" in r), None)
-        if last is not None and (count := _prompt_tokens(last)) is not None:
-            backend.base = (count, int(last["prompt_chars"]))
+        if last is not None:
+            count = last["prompt_tokens"] if "prompt_tokens" in last else _prompt_tokens(last)
+            if count is not None:
+                backend.base = (count, int(last["prompt_chars"]))
     runs: list[Run] = []
     say = Console(
         a.model,
@@ -487,7 +528,7 @@ async def _chat_main(
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
         await sandbox.start()
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
-    off_round = actor.bus.subscribe("round.started", lambda ev: say.working("thinking"))
+    off_turn = actor.bus.subscribe("turn.started", lambda ev: say.working("thinking"))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)
 
@@ -507,11 +548,11 @@ async def _chat_main(
             ask,
             say=say,
             first=a.say,
-            max_rounds=a.rounds,
+            max_turns=a.turns,
             history=history,
             notice=notice,
         )
-        ended = f"ended {type(run.outcome).__name__} after {run.round} round(s)"
+        ended = f"ended {type(run.outcome).__name__} after {run.turn} turn(s)"
     except (KeyboardInterrupt, asyncio.CancelledError):
         ended, interrupted = "interrupted", True
     except (ClaudeCodeError, CodexError, OpenRouterError) as e:
@@ -521,7 +562,7 @@ async def _chat_main(
         ended, failed = "failed", True
     finally:
         off()
-        off_round()
+        off_turn()
         if sandbox is not None:
             try:
                 if boxed and sandbox.dead is not None:

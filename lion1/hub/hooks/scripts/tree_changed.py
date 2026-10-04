@@ -1,10 +1,10 @@
-"""A round hook: name the tracked files whose content changed since the previous round of this run,
-and HEAD when it moved. stdin: {"event": "round", "run": ..., "round": ...}; stdout is the notice.
+"""A turn hook: name the tracked files whose content changed since the previous turn of this run,
+and HEAD when it moved. stdin: {"event": "turn", "run": ..., "turn": ...}; stdout is the notice.
 Run as `python -m hub.hooks.scripts.tree_changed` from a `hooks.toml`.
 
 The tree moves under a long conversation: a model that reads a green test as its own misread is
 reading a tree someone else edited. State lives under `.lion/tree_state/`, one file per run id, so
-two runs (two chats) never compare against each other's round, and two hooks running at once never
+two runs (two chats) never compare against each other's turn, and two hooks running at once never
 write one file.
 """
 
@@ -15,12 +15,15 @@ import json
 import os
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 __all__ = ("STATE", "IGNORED", "state_path", "snapshot", "notice", "main")
 
 STATE = Path(".lion/tree_state")
 IGNORED = (".lion/",)
+_CONTROL = ("Cc", "Cf", "Zl", "Zp")  # control and format characters, line and paragraph separators
+_RAW = range(0xDC80, 0xDD00)  # what os.fsdecode makes of a byte that is not UTF-8
 
 
 def state_path(run: str) -> Path:
@@ -28,9 +31,10 @@ def state_path(run: str) -> Path:
     return STATE / (hashlib.blake2b(run.encode(), digest_size=8).hexdigest() + ".json")
 
 
-def _git(cwd: Path, *args: str) -> str | None:
-    """A git line's stdout, None when git refuses (not a work tree, no HEAD yet, a lock, a bad index)."""
-    done = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+def _git(cwd: Path, *args: str) -> bytes | None:
+    """A git line's stdout as bytes (text mode reads a carriage return in a name as \\n and raises on a
+    name not UTF-8), None when git refuses (not a work tree, no HEAD yet, a lock, a bad index)."""
+    done = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True)
     return done.stdout if done.returncode == 0 else None
 
 
@@ -38,7 +42,7 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
     """(HEAD sha, path -> blake2b digest) over what a reader could see: tracked files present in the
     work tree plus untracked-but-present ones, `.lion/` out. None outside a git work tree; the map is
     None when git could not list the files, which is no observation, never an empty tree."""
-    head = (_git(cwd, "rev-parse", "HEAD") or "").strip()
+    head = (_git(cwd, "rev-parse", "HEAD") or b"").decode().strip()
     if not head:
         return None
     listed = _git(cwd, "ls-files", "-z")
@@ -46,7 +50,9 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
     if listed is None or untracked is None:
         return head, None
     files: dict[str, str] = {}
-    for rel in listed.split("\0") + untracked.split("\0"):
+    # a name is git's bytes up to a NUL, decoded as the file system does; a conflicted path is listed
+    # once per index stage and read once
+    for rel in dict.fromkeys(map(os.fsdecode, listed.split(b"\0") + untracked.split(b"\0"))):
         if not rel or rel.startswith(IGNORED):
             continue
         f = cwd / rel
@@ -55,15 +61,40 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
     return head, files
 
 
+def _shown(name: str) -> str:
+    """A file name as the notice prints it: as it is, or, when it holds a control character or a byte
+    that is not UTF-8, or starts or ends in whitespace, quoted with those escaped (`'name\\r'`,
+    `'bad\\xff'`, `'name '`, `'\\xa0name'`). The hook's output is decoded and stripped on its way to the
+    model; an escaped name is plain text that neither can change. The edges matter because the strip
+    removes whatever `str.strip` does (a space, a no-break space, an ideographic space) from the end of
+    the notice, so a last name loses its own end, a name that is one such character vanishes, and at a
+    name's start the whitespace runs into the list's `, `. Inside a name it changes nothing and stays."""
+    if not (
+        any(unicodedata.category(c) in _CONTROL or ord(c) in _RAW for c in name)
+        or name[:1].isspace()
+        or name[-1:].isspace()
+    ):
+        return name
+    out = []
+    for c in name:
+        if ord(c) in _RAW:
+            out.append(f"\\x{ord(c) - 0xDC00:02x}")
+        elif unicodedata.category(c) in _CONTROL or (c.isspace() and c != " "):
+            out.append(repr(c)[1:-1])
+        else:
+            out.append("\\" + c if c in "\\'" else c)
+    return "'" + "".join(out) + "'"
+
+
 def notice(prev: dict, head: str, files: dict[str, str]) -> list[str]:
-    """The lines this round adds: the files whose content differs from the last round, then HEAD when
-    it moved. A run with no previous round is compared against nothing."""
+    """The lines this turn adds: the files whose content differs from the last turn, then HEAD when
+    it moved. A run with no previous turn is compared against nothing."""
     was = prev.get("files", {})
     changed = sorted(p for p in set(was) | set(files) if was.get(p) != files.get(p))
     lines: list[str] = []
     if changed:
-        named = ", ".join(changed)
-        lines.append(f"tree: {len(changed)} file(s) changed since round {prev.get('round')}: {named}")
+        named = ", ".join(map(_shown, changed))
+        lines.append(f"tree: {len(changed)} file(s) changed since turn {prev.get('turn')}: {named}")
     old = str(prev.get("head", ""))
     if old != head:
         lines.append(f"tree: HEAD moved {old[:7] or '?'} -> {head[:7]}")
@@ -72,7 +103,7 @@ def notice(prev: dict, head: str, files: dict[str, str]) -> list[str]:
 
 def main() -> int:
     payload = json.load(sys.stdin)
-    if payload.get("event") != "round":
+    if payload.get("event") != "turn":
         return 0
     run = str(payload.get("run", ""))
     cwd = Path.cwd()
@@ -83,19 +114,19 @@ def main() -> int:
     path = cwd / state_path(run)
     try:
         prev = json.loads(path.read_text()) if path.is_file() else None
-    except ValueError:  # a write cut short: start over rather than fail every later round
+    except ValueError:  # a write cut short: start over rather than fail every later turn
         prev = None
-    if files is None:  # the last snapshot stays the baseline; a run's first round stays quiet
+    if files is None:  # the last snapshot stays the baseline; a run's first turn stays quiet
         if isinstance(prev, dict):
             print(
-                f"tree: could not be read (git ls-files failed); round {prev.get('round')} stays the baseline"
+                f"tree: could not be read (git ls-files failed); turn {prev.get('turn')} stays the baseline"
             )
         return 0
     for line in notice(prev, head, files) if isinstance(prev, dict) else []:
         print(line)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # this process's own: no other hook replaces it
-    tmp.write_text(json.dumps({"round": payload.get("round", 0), "head": head, "files": files}, indent=1))
+    tmp.write_text(json.dumps({"turn": payload.get("turn", 0), "head": head, "files": files}, indent=1))
     tmp.replace(path)  # whole or absent, never cut
     return 0
 

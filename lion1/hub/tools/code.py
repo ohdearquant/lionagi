@@ -15,7 +15,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 __all__ = ("ReadLines", "Search", "Edit", "Tree", "LocalTree", "numbered", "reend", "replace_once", "code")
 
@@ -44,7 +44,7 @@ class Edit(BaseModel):
 
     path: str = Field(description="absolute, or relative to the console's directory")
     old: str = Field(min_length=1, description="the exact text to replace, as read_lines showed it")
-    new: str = Field(description="what replaces it; empty deletes")
+    new: str = Field(description="what replaces it, its lines ended by \\n or \\r\\n; empty deletes")
 
 
 class Tree(Protocol):
@@ -119,9 +119,15 @@ def physical(text: str) -> list[str]:
     return [line for line in re.split(r"(?<=\n)", text) if line]
 
 
+def unended(line: str) -> str:
+    """A physical line without its ending, which is one CRLF, else one LF, else none: a CR anywhere
+    else, the last line's final one included, is text, read as it is and kept by an edit."""
+    return line[:-2] if line.endswith("\r\n") else line[:-1] if line.endswith("\n") else line
+
+
 def numbered(text: str, start: int = 1, end: int | None = None) -> tuple[str, int, int, int]:
     """(body, start, end, total): lines `start..end` as `n: line`, clipped to the file."""
-    lines = [line.rstrip("\r\n") for line in physical(text)]
+    lines = [unended(line) for line in physical(text)]
     total = len(lines)
     start = max(start, 1)
     end = min(end, total) if end is not None else total
@@ -135,7 +141,7 @@ def reend(before: str, after: str) -> str:
     line takes the ending of the line before it (the file's first line's, for a new first line). A
     file with mixed endings stays mixed."""
     old = physical(before)
-    bodies = [line.rstrip("\r\n") for line in old]
+    bodies = [unended(line) for line in old]
     ends = [line[len(body) :] for line, body in zip(old, bodies, strict=True)]
     new = after.split("\n")
     final = new[-1] == ""  # the text ends with a newline
@@ -156,10 +162,9 @@ def reend(before: str, after: str) -> str:
         elif op == "insert":
             for k in range(j1, j2):
                 out.append(new[k] + last)
-    text = "".join(out)
-    if not final and text.endswith(("\r\n", "\n")):
-        text = text[: -2 if text.endswith("\r\n") else -1]
-    return text
+    if not final:  # its last line has no ending, so it drops the one given it, never a CR of its own
+        out[-1] = new[-1]
+    return "".join(out)
 
 
 def replace_once(text: str, old: str, new: str) -> str:
@@ -172,7 +177,7 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 def code(actor: Actor, tree: Tree) -> set[str]:
     """Register `read_lines`, `search` and `edit` over `tree`."""
-    edits = asyncio.Lock()  # an edit is read-replace-write: two on one file in one round serialize
+    edits = asyncio.Lock()  # an edit is read-replace-write: two on one file in one turn serialize
 
     @actor.handler(ReadLines)
     async def read_lines(req: ReadLines, ctx: Context) -> str:
@@ -188,10 +193,11 @@ def code(actor: Actor, tree: Tree) -> set[str]:
 
     @actor.handler(Edit)
     async def edit(req: Edit, ctx: Context) -> str:
+        new = req.new.replace("\r\n", "\n")  # a CRLF here is a line end, written as the file's own
         async with edits:
             before = await tree.read(req.path)
             crlf = "\r\n" in before  # matched as read_lines showed it; written with each line's own ending
-            after = replace_once(before.replace("\r\n", "\n") if crlf else before, req.old, req.new)
+            after = replace_once(before.replace("\r\n", "\n") if crlf else before, req.old, new)
             await tree.write(req.path, reend(before, after) if crlf else after)
         return f"edited {req.path}: {before.count(chr(10))} -> {after.count(chr(10))} lines"
 

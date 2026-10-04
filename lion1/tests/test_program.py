@@ -4,17 +4,30 @@ import ast
 import asyncio
 import json
 import re
+import time
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
 
+import lion1.actor as actor_module
 from hub.chat import entry_row
-from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Success, program
-from lionagi.actor import ProfileError, Result
-from lionagi.checkpoint import entry_of
-from lionagi.lndl import LNDLError
-from lionagi.notes import FileNoteStore, MemoryNoteStore
-from lionagi.program import LIMIT, Command, EvalError, Script, Value, Write, evaluate, guidance, read
+from lion1 import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, lndl
+from lion1.actor import ProfileError, Result, _Reader
+from lion1.checkpoint import entry_of
+from lion1.lndl import (
+    LIMIT,
+    Command,
+    EvalError,
+    LNDLError,
+    Script,
+    Value,
+    Write,
+    evaluate,
+    program_guidance,
+    read,
+)
+from lion1.notes import FileNoteStore, MemoryNoteStore
 
 PROGRAM = Profile("p", language="program")
 
@@ -94,7 +107,7 @@ EXAMPLE = (
 
 def _run(actor: Actor, *turns: str, profile: Profile = PROGRAM, seen: list | None = None, **request):
     request.setdefault("inputs", ("go",))
-    request.setdefault("max_rounds", len(turns))
+    request.setdefault("max_turns", len(turns))
     return asyncio.run(actor.run(profile, RunRequest(**request), scripted(*turns, seen=seen)))
 
 
@@ -102,12 +115,47 @@ def _notices(run) -> str:
     return "\n".join(e.content for e in run.record if e.kind is Kind.SYSTEM)
 
 
+class Cut(BaseModel):
+    target: str
+
+
+class Hold(BaseModel):
+    pass
+
+
+def test_a_command_cancelled_before_it_started_leaves_no_arguments_held_for_the_run():
+    # its arguments are computed when its handler is about to run; one that never got there kept
+    # them, and the walk they close over, until the run ended
+    actor = Actor("never-started")
+    seen: list[dict] = []
+
+    @actor.handler(Cut)
+    async def cut(req: Cut, ctx) -> str:
+        ctx.run.pending[req.target].cancel()  # launched after this one: its coroutine has not run
+        seen.append(dict(ctx.run.thunks))
+        return "cut"
+
+    @actor.handler(Hold)
+    async def hold(req: Hold, ctx) -> str:
+        return "held"
+
+    @actor.handler(Echo)
+    async def echo(req: Echo, ctx) -> str:
+        seen.append(dict(ctx.run.thunks))
+        return req.text
+
+    run = _run(actor, fenced('k = cut(target="h")', "h = hold()"), fenced('e = echo(text="after")'))
+    assert run.record.get("h").content.error == "cancelled before it started"
+    assert list(seen[0]) == ["h"] and seen[1] == {}
+    assert run.thunks == {} and run.pointing == {}
+
+
 def test_the_records_example_resolves_in_one_turn():
     calls: list = []
     actor = _actor("example", calls)
     seen: list = []
     run = _run(actor, fenced(*EXAMPLE), history=HISTORY, seen=seen)
-    assert isinstance(run.outcome, Success) and run.round == 1 and len(seen) == 1
+    assert isinstance(run.outcome, Success) and run.turn == 1 and len(seen) == 1
     assert run.output == {
         "similar_books": [
             {"title": "Dune Messiah", "similarity": 1.0},
@@ -276,6 +324,15 @@ def test_an_output_that_cannot_be_computed_is_a_retry_after_its_commands_settle(
     assert run.record.get("a").content.ok
 
 
+def test_a_turn_whose_output_fails_to_compute_is_no_idle_turn():
+    # the retry is classed like any turn its walk acted in: it breaks a row of idle turns, so the third
+    # turn here is the first of a new row, not the second, and max_idle=2 is not spent
+    turns = ("thinking", fenced("OUT{x: 1 / 0}"), "still thinking", fenced("OUT{x: 1}"))
+    run = _run(_actor("idle-row", []), *turns, max_idle=2)
+    assert isinstance(run.outcome, Success) and run.output == {"x": 1}
+    assert "line 1: division by zero" in _notices(run)
+
+
 def test_a_value_is_computed_once_when_first_read_and_bound_for_later_turns():
     calls: list = []
     actor = _actor("values", calls)
@@ -304,7 +361,7 @@ def test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_ta
     assert run.record.get("consumer").content.value == "kept" and run.values["later"] == (2, "kept")
     assert run.record.get("first").content.value == "deferred"
     # the DO in the value ran once, when the second turn first read it
-    assert [e.round for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
+    assert [e.turn for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
     assert sorted(calls) == [("echo", "deferred"), ("echo", "deferred"), ("echo", "kept")]
     assert "later is bound already: a name is bound once for the whole run" in _notices(run)
 
@@ -336,6 +393,64 @@ def test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns()
     run = asyncio.run(main())
     a = run.record.get("a").content
     assert not a.ok and a.reason == "cancelled" and run.outcome is None
+
+
+@pytest.mark.parametrize(
+    "lines, cancels",
+    [
+        # the walk is past its block and settling its command when the cancel lands
+        (("a = hang()",), 1),
+        # the walk cancels the command it waits on; a second cancel lands while the walk settles it
+        (("a = hang()", "OUT{x: *a}"), 2),
+        # each write is a task of its own, waiting on the one before: the last outlives the command
+        (("note.k = hang()", *(f'note.k = "w{i}"' for i in range(8))), 1),
+    ],
+)
+def test_a_cancelled_program_returns_only_once_every_task_it_launched_is_through(lines, cancels):
+    actor = _actor("cancel-settles", [])
+    entered, cleaning, release, cleaned = (asyncio.Event() for _ in range(4))
+
+    class Hang(BaseModel):
+        pass
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:  # a cleanup that sees itself through, whatever cancels it meanwhile
+            cleaning.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    pass
+            cleaned.set()
+        return "never"
+
+    async def main():
+        before = asyncio.all_tasks()
+        task = asyncio.create_task(actor.run(PROGRAM, RunRequest(inputs=("go",)), scripted(fenced(*lines))))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            (run,) = actor.runs.values()
+            task.cancel()
+            if cancels == 2:
+                await asyncio.wait_for(cleaning.wait(), 2)
+                task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=0.05)
+            assert not done  # the run waits for the command still cleaning up
+        finally:
+            release.set()  # a failed assert must not leave the cleanup waiting out the loop's close
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert cleaned.is_set() and asyncio.all_tasks() - before == set()
+        return run
+
+    run = asyncio.run(main())
+    (result,) = run.record.of_kind(Kind.RESULT)
+    assert result.content.reason == "cancelled" and run.pending == {} and run.outcome is None
+    assert run.notes.get("k") is None
 
 
 def test_a_value_whose_input_failed_fails_every_reader():
@@ -404,6 +519,24 @@ def test_a_store_that_refuses_keeps_the_result_and_claims_no_write(tmp_path):
     assert [e.content.ok for e in run.record if e.kind is Kind.RESULT] == [True]
 
 
+def test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    path = notes / "p.json"
+    row = '{"key": "k", "value": "Crème Brûlée", "run": "r", "seq": 1, "version": 1}'
+    encoded = f'{{"version": 1, "notes": {{"k": {row}}}}}'.encode("latin-1")
+    path.write_bytes(encoded)
+    offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
+    run = _run(Actor("loader-refuses", notes_dir=notes), fenced('note.k = "new"'), "idle")
+    # the tag form ends the run on this file (ADR-0007/D7); a program's write is caught at settle
+    assert run.outcome is not None and run.turn == 2 and run.notes_written == []
+    assert (
+        f"note.k: not written: ValueError: {path}: the file is not UTF-8 "
+        f"(the byte at offset {offset} cannot be decoded); re-encode it as UTF-8 by hand"
+    ) in _notices(run)
+    assert path.read_bytes() == encoded and not list(notes.glob("*.tmp"))
+
+
 def test_a_dotted_path_writes_into_a_json_note_and_creates_what_is_missing():
     actor = _actor("path", [])
     store = actor.notes_for(PROGRAM)
@@ -468,7 +601,7 @@ def test_a_result_the_output_names_is_never_consumed():
     # `b` read `a` and settled ok, but OUT{} points at `a`: the refused candidate's next turn sees it whole
     notices = [e for e in run.record if e.kind is Kind.SYSTEM and not e.content.startswith("<system closure")]
     assert [e.meta.get("consumed") for e in notices] == [None, None]
-    assert run.round == 2 and run.output == {"x": "again"}
+    assert run.turn == 2 and run.output == {"x": "again"}
 
 
 def test_the_consumed_hide_survives_the_log_as_a_directive():
@@ -552,13 +685,13 @@ def test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_
 )
 def test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash_or_infinity(expr, sign):
     run = _run(_actor("overflow", []), fenced(f"OUT{{x: {expr}}}"), "idle")
-    assert run.outcome == Exhausted(2, "rounds")
+    assert run.outcome == Exhausted(2, "turns")
     assert f"line 1: the result of {sign} is too large for a number" in _notices(run)
 
 
 def test_a_number_too_large_to_write_is_refused_with_the_message():
     run = _run(_actor("inf-literal", []), fenced("OUT{x: 1e999}"), "idle")
-    assert run.outcome == Exhausted(2, "rounds")
+    assert run.outcome == Exhausted(2, "turns")
     assert "line 1: inf is not a value: a number is finite" in _notices(run)
 
 
@@ -650,10 +783,46 @@ def test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_neve
     calls: list = []
     actor = _actor("write-reads-value", calls)
     actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
-    request = RunRequest(inputs=("go",), max_rounds=len(turns) + 1)
+    request = RunRequest(inputs=("go",), max_turns=len(turns) + 1)
     # bounded: a wait cycle between the write and the value fails here, never hangs the suite
     asyncio.run(asyncio.wait_for(actor.run(PROGRAM, request, scripted(*turns, "idle")), 5))
     assert calls == [("echo", "old")] and actor.notes_for(PROGRAM).get("k").value == written
+
+
+def _held(monkeypatch) -> list[int]:
+    """How many note writes each reader holds, in the order the readers are made."""
+    sizes: list[int] = []
+    made = _Reader.__init__
+
+    def counted(self, *args):
+        made(self, *args)
+        sizes.append(len(self.writes))
+
+    monkeypatch.setattr(_Reader, "__init__", counted)
+    return sizes
+
+
+def test_a_reader_holds_only_the_writes_of_the_notes_it_reads_however_many_the_program_makes(monkeypatch):
+    sizes = _held(monkeypatch)
+    n = 400
+    writes = [f'note.k{i} = "v{i}"' for i in range(n)]
+    lines = (*writes, 'a = echo(text=note["k7"])', 'if note["k9"] == "v9":', "    OUT{x: *a}")
+    run = _run(_actor("many-writes", []), fenced(*lines))
+    assert run.output == {"x": "v7"}
+    # a literal write reads no note; the command and the branch each wait for the one write they read
+    assert sizes == [0] * n + [1, 1, 0]
+
+
+def test_a_value_holds_only_the_writes_of_the_notes_it_reads_whatever_its_first_reader_holds(monkeypatch):
+    sizes = _held(monkeypatch)
+    n = 300
+    writes = [f'note.k{i} = "v{i}"' for i in range(n)]
+    values = [f'v{i} = note["k{i}"]' for i in range(n)]
+    out = "OUT{x: [" + ", ".join(f"*v{i}" for i in range(n)) + "]}"
+    run = _run(_actor("many-values", []), fenced(*writes, *values, out))
+    assert run.output == {"x": [f"v{i}" for i in range(n)]}
+    # the output reads every note through the values; each value, computed for it, holds its own one
+    assert sizes == [0] * n + [n] + [1] * n
 
 
 @pytest.mark.parametrize(
@@ -831,11 +1000,11 @@ def test_a_profile_sees_only_its_languages_guidance():
 
 
 def test_the_guidance_names_the_outputs_and_context_show_only_when_the_profile_has_it():
-    text = guidance(("done",), commands=["echo", "context.show"])
+    text = program_guidance(("done",), commands=["echo", "context.show"])
     assert "return {done: *t1}" in text and "outputs: done" in text and "*name or context.show" in text
-    bare = guidance(commands=["echo"])
+    bare = program_guidance(commands=["echo"])
     assert "outputs: listed below" in bare and "context.show" not in bare
-    assert "*name or context.show" in guidance()
+    assert "*name or context.show" in program_guidance()
 
 
 def test_a_core_profile_runs_nothing_from_a_fenced_program():
@@ -850,11 +1019,96 @@ def test_a_turn_without_a_block_is_idle_and_under_a_conversation_is_the_reply():
     replies: list = []
 
     async def wait(run):
-        replies.append(run.round)
+        replies.append(run.turn)
         return False
 
     run = _run(_actor("chat", []), "hello there", "unused", wait=wait)
     assert replies == [2] and run.outcome.__class__.__name__ == "Stopped"
+
+
+def _asking():
+    asked: list = []
+
+    async def wait(run):
+        asked.append(run.turn)
+        return False
+
+    return asked, wait
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("a = 3",),
+        ('note["k"] = {x: 1}',),
+        ("a = 3 if true else 4",),
+        ("if true:", "    a = 3", "else:", "    b = 4"),
+    ],
+)
+def test_a_program_that_runs_no_command_and_gives_no_out_is_a_reply_under_wait(lines):
+    # a program's turn acts when its walk launches a command or reaches OUT{}, and a value or a note
+    # write of data does neither, so the turn is the reply and wait is asked at the next turn's start
+    asked, wait = _asking()
+    run = _run(_actor("no-act", []), fenced(*lines), "unused", wait=wait)
+    assert asked == [2] and run.outcome == Stopped(2)
+
+
+@pytest.mark.parametrize(
+    ("lines", "ran", "acted"),
+    [
+        ('a = echo(text="x")', [("echo", "x")], True),
+        ('note["k"] = echo(text="x")', [("echo", "x")], True),
+        ('if (DO echo(text="x")) == "x":\n    a = 1', [("echo", "x")], True),
+        ('OUT{answer: "x"}', [], True),
+        ('return {answer: "x"}', [], True),
+        ("OUT{answer: 1 / 0}", [], True),
+        ('if false:\n    DO echo(text="x")', [], False),
+        ('if true:\n    a = 1\nelse:\n    DO echo(text="x")', [], False),
+        ('v = false and DO echo(text="x")', [], False),
+        ('note["k"] = false and DO echo(text="x")', [], False),
+        ('if false:\n    OUT{answer: "x"}', [], False),
+        ('if false:\n    return {answer: "x"}', [], False),
+    ],
+)
+def test_a_program_is_a_reply_under_wait_unless_its_walk_launches_a_command_or_reaches_out(lines, ran, acted):
+    # the turn's class is what its walk did, never the program's text: a command launched, or OUT{}
+    # reached though the gate refuses it or its fields fail, is a turn that acted and the next turn
+    # follows; a command or an OUT{} control flow does not reach is neither, and the turn is the reply
+    calls: list = []
+    asked, wait = _asking()
+
+    def refuse(run, fields):
+        return "not yet" if "answer" in fields else None
+
+    run = _run(
+        _actor("act", calls), fenced(*lines.split("\n")), fenced('OUT{ok: "yes"}'), wait=wait, accept=refuse
+    )
+    assert calls == ran and asked == ([] if acted else [2])
+    assert isinstance(run.outcome, Success) if acted else run.outcome == Stopped(2)
+
+
+def test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_under_wait():
+    # the value is computed when a later turn first reads it, and computing it runs a command: that turn
+    # wrote no command, yet its walk launched one, so it acted and the model sees the result next turn
+    calls: list = []
+    asked: list = []
+
+    async def wait(run):  # the other side answers the binding turn's reply, and nothing after it
+        asked.append(run.turn)
+        return run.turn == 2
+
+    bind, read = fenced('x = DO echo(text="x") if true else 0'), fenced('note["k"] = *x')
+    seen: list = []
+    run = _run(_actor("deferred", calls), bind, read, fenced('OUT{k: *note["k"]}'), wait=wait, seen=seen)
+    assert calls == [("echo", "x")] and asked == [2] and run.output == {"k": "x"} and len(seen) == 3
+    told = seen[2][-1].content  # the third turn's notification: the command settled, the note written
+    assert "echo): str[1], consumed" in told and "notes written: note.k" in told
+    # a value nothing read rides the log, so a resumed run reading it runs the command and acts the same
+    first = _run(_actor("first", []), bind, "idle")
+    history = tuple(entry_of(json.loads(json.dumps(entry_row(e), default=str))) for e in first.record)
+    asked, wait = _asking()
+    run = _run(_actor("resumed", calls), read, fenced('OUT{k: *note["k"]}'), history=history, wait=wait)
+    assert asked == [] and run.output == {"k": "x"} and calls == [("echo", "x")] * 2
 
 
 def test_two_fenced_blocks_are_refused():
@@ -1012,9 +1266,9 @@ def test_the_evaluator_computes_over_data(expr, want):
 )
 def test_the_evaluator_names_what_it_could_not_compute(expr, said, monkeypatch):
     # a product past the limit is refused before it is built: the multiplication itself never runs
-    sign, mul = program._ARITH[ast.Mult]
+    sign, mul = lndl._ARITH[ast.Mult]
     monkeypatch.setitem(
-        program._ARITH,
+        lndl._ARITH,
         ast.Mult,
         (sign, lambda a, b: pytest.fail("built") if tuple in (type(a), type(b)) else mul(a, b)),
     )
@@ -1027,6 +1281,39 @@ def test_the_evaluator_names_what_it_could_not_compute(expr, said, monkeypatch):
             big=list(range(LIMIT // 2 + 1)),
             t=(0,),
         )
+
+
+def test_a_container_already_past_the_size_limit_is_counted_and_not_walked():
+    # the count stops there either way; its children were pushed first, every one of them
+    class Dict(dict):
+        def values(self):
+            raise AssertionError("walked")
+
+    class List(list):
+        def __iter__(self):
+            raise AssertionError("walked")
+
+        def __getitem__(self, item):  # a slice of it is a walk too
+            raise AssertionError("walked")
+
+    assert lndl._size(Dict({"k" * (LIMIT + 1): 1})) == LIMIT + 2
+    assert lndl._size(List([0] * (LIMIT + 1))) == LIMIT + 1
+
+
+def test_a_long_whole_number_counts_as_its_digits_and_a_product_past_the_limit_is_never_built(monkeypatch):
+    # a number was one item whatever its length: twenty lines squaring one held the loop 2.7 s under
+    # a 0.5 s time budget, each further line three times longer, and no deadline lands in arithmetic
+    n = 10 ** (LIMIT * 2 // 3)
+    assert value("*n + 1", n=n) == n + 1 and value("*n * 2", n=n) == 2 * n and value("7 * 6") == 42
+    edge = 2 ** (3 * LIMIT + 1)  # as many digits as the limit holds, by the count: its double is one past
+    assert value("*edge - 1", edge=edge) == edge - 1
+    for expr in ("*edge + *edge", "[*n, *n]"):
+        with pytest.raises(EvalError, match="past the size limit"):
+            value(expr, n=n, edge=edge)
+    sign, _ = lndl._ARITH[ast.Mult]
+    monkeypatch.setitem(lndl._ARITH, ast.Mult, (sign, lambda a, b: pytest.fail("built")))
+    with pytest.raises(EvalError, match="past the size limit"):
+        value("*n * *n", n=n)
 
 
 @pytest.mark.parametrize(
@@ -1168,6 +1455,835 @@ def test_a_dicts_keys_count_toward_the_size_limit():
     a, b = run.record.get("a").content, run.record.get("b").content
     assert not a.ok and "line 2: the value built here is past the size limit" in a.error
     assert b.ok and b.value == "v"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        '[DO echo(text=*s), DO echo(text=*s), DO echo(text="after")]',
+        '{a: DO echo(text=*s), b: DO echo(text=*s), c: DO echo(text="after")}',
+    ],
+)
+def test_a_list_or_dict_past_the_size_limit_runs_no_part_after_the_one_that_took_it_there(build):
+    calls: list = []
+    turn = fenced(f's = "a" * {LIMIT // 2 + 1}', f"OUT{{x: {build}}}")
+    run = _run(_actor("prefix", calls), turn, "idle")
+    # the second part took the build past the limit and has run; the part after it never runs
+    assert [text if text == "after" else len(text) for _, text in calls] == [LIMIT // 2 + 1] * 2
+    assert "line 2: the value built here is past the size limit" in _notices(run)
+
+
+def test_a_list_at_exactly_the_size_limit_is_built_and_one_character_more_is_not():
+    n = (LIMIT - 2) // 2
+    s, t = "a" * n, "a" * (LIMIT - 2 - n)  # two items and their characters: LIMIT exactly
+    assert value("[*s, *t]", s=s, t=t) == [s, t]
+    with pytest.raises(EvalError, match="past the size limit"):
+        value("[*s, *t]", s=s, t=t + "a")
+
+
+def test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit():
+    s = "a" * (LIMIT // 2 + 1)  # either value fits alone, the two together would not
+    assert value('{k: *s, k: *s + "b"}', s=s) == {"k": s + "b"}
+    # counted by its value at the time: one that passes the limit on the way is refused, though the value
+    # the key ends with would fit
+    with pytest.raises(EvalError, match="past the size limit"):
+        value('{k: *s, k: "b"}', s="a" * LIMIT)
+
+
+@pytest.mark.parametrize(
+    ("size", "fits"),
+    [(40_000, True), (60_000, False)],
+    ids=["two 40,000-character fields", "two 60,000-character fields"],
+)
+def test_the_fields_of_out_are_held_together_to_the_size_limit_as_a_dict_literal_is(size, fits):
+    run = _run(_actor("out-size", []), fenced(f'OUT{{a: "x" * {size}, b: "y" * {size}}}'))
+    # each field is under the limit alone: the output is the dict the model wrote, and it is counted as
+    # one, so the pair that passes the limit is the turn's failure, a retry that names the limit
+    if fits:
+        assert isinstance(run.outcome, Success) and run.output == {"a": "x" * size, "b": "y" * size}
+    else:
+        assert run.output is None and not isinstance(run.outcome, Success)
+        assert run.retry_error == f"line 1: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+class Rows(BaseModel):
+    n: int
+
+
+class Grow(BaseModel):
+    rows: Any
+    n: int
+    after: float = 0  # seconds the handler waits before it grows the list
+
+
+class Shrink(BaseModel):
+    rows: Any
+
+
+class Blob(BaseModel):
+    text: str
+
+
+class Poke(BaseModel):
+    blob: Any
+    after: float = 0
+
+
+def _growing_actor(name: str) -> Actor:
+    actor = Actor(name)
+
+    @actor.handler(Rows)
+    async def rows(req: Rows, ctx) -> list[str]:
+        return ["r"] * req.n
+
+    @actor.handler(Grow)
+    async def grow(req: Grow, ctx) -> str:
+        if req.after:
+            await asyncio.sleep(req.after)
+        req.rows.append("x" * req.n)  # the list the earlier field holds, reached through the pointer
+        return "grown"
+
+    @actor.handler(Shrink)
+    async def shrink(req: Shrink, ctx) -> str:
+        req.rows.clear()
+        return "shrunk"
+
+    @actor.handler(Blob)
+    async def blob(req: Blob, ctx) -> bytearray:
+        return bytearray(req.text.encode())
+
+    @actor.handler(Poke)
+    async def poke(req: Poke, ctx) -> str:
+        if req.after:
+            await asyncio.sleep(req.after)
+        req.blob.extend(b"!")
+        return "poked"
+
+    return actor
+
+
+def test_a_part_a_command_shrank_after_it_was_counted_still_counts_at_the_size_it_landed_with():
+    # a is counted as it lands, near the limit; b empties the list a holds; c would fit beside the emptied
+    # list, but the running size counts a as it landed and the pair with c passes the limit: refused, as
+    # a dict literal built of those parts is (S6)
+    n = (LIMIT - 50) // 2
+    run = _run(
+        _growing_actor("out-shrunk"),
+        fenced(f"rows = rows(n={n})", 'OUT{a: *rows, b: DO shrink(rows=*rows), c: "y" * 100}'),
+    )
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+def test_a_value_of_a_kind_a_capture_shares_is_shared_in_the_output():
+    # the output is a copy as a capture is (ADR-0007/C1): a list, dict, set, tuple, model or result is
+    # copied, a value of another kind is shared, and the size limit counts it as one whatever it holds
+    run = _run(
+        _growing_actor("out-blob"),
+        fenced('blob = blob(text="ab")', "late = poke(blob=*blob, after=0.05)", "OUT{a: *blob}"),
+    )
+    assert isinstance(run.outcome, Success)
+    assert run.output["a"] is run.record.get("blob").content.value and run.output["a"] == bytearray(b"ab!")
+
+
+def test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_output_is_emitted():
+    run = _run(
+        _growing_actor("out-grown"),
+        fenced("rows = rows(n=3)", f"OUT{{a: *rows, b: DO grow(rows=*rows, n={LIMIT})}}"),
+    )
+    # field a was counted at three items; the command b runs grew that list past the limit, so the running
+    # size reads fit while the dict does not: the whole is measured once more as it is emitted
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+@pytest.mark.parametrize("site", ["literal", "out"])
+def test_a_key_written_again_gives_back_what_it_landed_as_whatever_a_command_made_of_it_since(site):
+    # k lands holding the big list; the command between clears that list through the pointer; k is written
+    # again with a string that fits only if what leaves the count is the size k landed with, not the size
+    # of the emptied list it holds by then
+    big, text = LIMIT // 4, "b" * (LIMIT - 20)  # the list counts two per one-character row
+    inner = f'{{k: *rows, s: DO shrink(rows=*rows), k: "{text}"}}'
+    turn = fenced(f"rows = rows(n={big})", f"OUT{{c: {inner}}}" if site == "literal" else f"OUT{inner}")
+    run = _run(_growing_actor(f"landed-{site}"), turn)
+    assert isinstance(run.outcome, Success), run.retry_error
+    out = run.output["c"] if site == "literal" else run.output
+    assert out == {"k": text, "s": "shrunk"}
+
+
+@pytest.mark.parametrize("site", ["literal", "out"])
+def test_a_key_written_again_after_its_list_grew_lets_no_part_past_the_limit_run(site):
+    # k landed small; the command grew its list past the limit through the pointer; k is written again, and
+    # what leaves the count is the small size it landed with, so the big field after it is refused as it
+    # lands and the command after that never runs
+    inner = (
+        f'{{k: *rows, g: DO grow(rows=*rows, n={LIMIT}), k: "b", big: "c" * {LIMIT}, '
+        "late: DO grow(rows=*rows, n=1)}"
+    )
+    turn = fenced("rows = rows(n=3)", f"OUT{{c: {inner}}}" if site == "literal" else f"OUT{inner}")
+    run = _run(_growing_actor(f"grown-{site}"), turn)
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert "past the size limit" in run.retry_error
+    assert len(run.record.get("rows").content.value) == 4  # grown once; the late command never ran
+
+
+def test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on(monkeypatch):
+    real = actor_module._captured
+
+    def captured(value, memo=None):
+        if isinstance(value, dict) and "deep" in value:  # a nesting past the interpreter's depth
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(value, memo)
+
+    monkeypatch.setattr(actor_module, "_captured", captured)
+    run = _run(_actor("out-uncopyable", []), fenced('OUT{deep: "x"}'))
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == (
+        "line 1: the OUT{} fields cannot be copied, RecursionError: maximum recursion depth exceeded"
+    )
+
+
+def test_an_output_field_that_runs_past_the_deadline_between_two_yields_commits_nothing(monkeypatch):
+    real = actor_module._size
+
+    def size(value):
+        if value == "slow":
+            time.sleep(0.3)  # sized synchronously: the deadline passes with no yield after it
+        return real(value)
+
+    monkeypatch.setattr(actor_module, "_size", size)
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_turns=1)
+    actor = _actor("out-past-deadline-unyielded", [])
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced('note.k = "w"', 'OUT{a: "slow"}'))))
+    # the field's evaluation runs on to its end with no yield to cut it, and what it built commits nothing:
+    # the write queued before it finds the budget spent and the output is refused at its handler
+    assert run.elapsed >= 0.3 and run.output is None and not isinstance(run.outcome, Success)
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", "the time_budget of 0.1 is spent; nothing after it ran")]
+
+
+def test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output():
+    # the command is launched before OUT{} and settles after the walk: the output emitted is a copy of the
+    # list, and the settling command grows the stored one
+    run = _run(
+        _growing_actor("out-settled"),
+        fenced("rows = rows(n=3)", f"late = grow(rows=*rows, n={LIMIT}, after=0.05)", "OUT{a: *rows}"),
+    )
+    assert isinstance(run.outcome, Success) and run.output == {"a": ["r", "r", "r"]}
+    assert len(run.record.get("rows").content.value) == 4  # the stored value did grow
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        f"[*rows, DO grow(rows=*rows, n={LIMIT})]",
+        f"{{a: *rows, b: DO grow(rows=*rows, n={LIMIT})}}",
+        # the second item grows the list the first holds past the limit and is itself left out
+        f"(*rows for x in [1, 2] if DO grow(rows=*rows, n={LIMIT // 2}) and x == 1)",
+    ],
+    ids=["list", "dict", "comprehension"],
+)
+def test_a_part_of_a_literal_a_command_grew_after_it_was_counted_is_caught_as_it_is_built(literal):
+    # a binding is read where it is used: the literal is built under OUT{} and refused as itself, before
+    # the fields are measured together
+    run = _run(_growing_actor("literal-grown"), fenced("rows = rows(n=3)", f"OUT{{c: {literal}}}"))
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == f"line 2: the value built here is past the size limit of {LIMIT}"
+
+
+def test_the_fields_of_out_are_each_sized_once_as_they_land_and_never_all_again_after_each(monkeypatch):
+    sized: list[int] = []
+    real = lndl._size
+
+    def counted(value):
+        sized.append(real(value))
+        return sized[-1]
+
+    monkeypatch.setattr(lndl, "_size", counted)
+    monkeypatch.setattr(actor_module, "_size", counted)
+    n = 2000
+    run = _run(_actor("out-many", []), fenced("OUT{" + ", ".join(f'k{i}: "a"' for i in range(n)) + "}"))
+    # what the sizing visits, summed: a field once as it lands and the whole once more as it is emitted,
+    # so a few per field twice over. Sizing the whole dict after every field visits every field before it
+    # again, some 12,000,000 visits for these
+    assert isinstance(run.outcome, Success) and len(run.output) == n
+    assert sum(sized) < 8 * n
+
+
+@pytest.mark.parametrize(
+    ("first", "fits"),
+    [('"x" * 60000', True), (f'"x" * {LIMIT - 1}', False)],
+    ids=["a first value that fits alone", "a first value past the limit alone"],
+)
+def test_a_field_of_out_written_twice_counts_by_its_value_at_the_time_as_a_dict_literals_key_does(
+    first, fits
+):
+    run = _run(_actor("out-twice", []), fenced(f'OUT{{k: {first}, k: "y" * 60000}}'))
+    # the second value replaces the first: the pair held at once would pass the limit, the dict the output
+    # is does not. One that passed the limit on the way is refused, as it is in a dict literal
+    if fits:
+        assert isinstance(run.outcome, Success) and run.output == {"k": "y" * 60000}
+    else:
+        assert run.output is None and not isinstance(run.outcome, Success)
+        assert run.retry_error == f"line 1: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+def test_a_field_of_out_past_the_size_limit_runs_no_field_after_the_one_that_took_it_there():
+    calls: list = []
+    turn = fenced(
+        f's = "a" * {LIMIT // 2 + 1}',
+        'OUT{a: DO echo(text=*s), b: DO echo(text=*s), c: DO echo(text="after")}',
+    )
+    run = _run(_actor("out-prefix", calls), turn)
+    # the second field took the fields past the limit and has run; the field after it never runs
+    assert [len(text) for _, text in calls] == [LIMIT // 2 + 1] * 2
+    assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+class Reads(Env):
+    """Counts pointer reads: a filter reading *keep reads it once for each item it examines."""
+
+    def __init__(self, **values):
+        super().__init__(**values)
+        self.reads = 0
+
+    async def point(self, name):
+        self.reads += 1
+        return self.values[name]
+
+
+@pytest.mark.parametrize(
+    ("expr", "values"),
+    [
+        ("(x for x in *xs if *keep)", {"xs": [0] * (2 * LIMIT + 1)}),
+        # neither comprehension reaches LIMIT items alone; together they examine three times that
+        ("(x for x in *xs if (y for y in *ys if *keep))", {"xs": [0] * 300, "ys": [0] * (LIMIT // 100)}),
+    ],
+)
+def test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too(
+    expr, values
+):
+    (node,) = read(fenced(f"x = {expr}")).body
+    env = Reads(keep=False, **values)
+    turns: list[int] = []  # the reads done by each time another task had a turn
+
+    async def other():
+        while True:
+            turns.append(env.reads)
+            await asyncio.sleep(0)
+
+    async def main():
+        task = asyncio.create_task(other())
+        await asyncio.sleep(0)
+        try:
+            return await evaluate(node.expr, env)
+        finally:
+            task.cancel()
+
+    assert asyncio.run(main()) == []
+    gaps = [b - a for a, b in zip(turns, [*turns[1:], env.reads], strict=True)]
+    assert env.reads > 2 * LIMIT and max(gaps) <= LIMIT + 1
+
+
+class Count(BaseModel):
+    items: list[int]
+
+
+# a nested comprehension that examines 300 * `inner` items of the listings below and keeps none
+LONG = "(x for x in *outer if (y for y in *inner if false))"
+
+
+def _spent(turn: str, inner: int = LIMIT // 100):
+    """A one-turn request over two listings and a backend whose turn arrives once its 0.2 s time
+    budget is spent."""
+    history = (
+        Entry(seq=0, kind=Kind.RESULT, content=Result("listing", True, [0] * 300), alias="outer"),
+        Entry(seq=1, kind=Kind.RESULT, content=Result("listing", True, [0] * inner), alias="inner"),
+    )
+
+    async def late(messages: list[Message]) -> str:
+        await asyncio.sleep(0.3)
+        return turn
+
+    return RunRequest(inputs=("go",), history=history, time_budget=0.2, max_turns=1), late
+
+
+def test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension():
+    calls: list = []
+    actor = _actor("deadline", calls)
+
+    @actor.handler(Count)
+    async def count(req: Count, ctx) -> int:
+        calls.append(("count", len(req.items)))
+        return len(req.items)
+
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced(f"n = count(items={LONG})"))))
+    # three LIMITs of items to examine: the deadline beside the turn's wait cancels the command
+    # inside its comprehension, which before ran to its end so that only the handler was refused
+    n = run.record.get("n").content
+    assert n.reason == "cancelled" and calls == []
+
+
+@pytest.mark.parametrize(
+    "turn",
+    [(f"if not {LONG}:", '    a = echo(text="after")'), (f'OUT{{n: {LONG}, a: DO echo(text="after")}}',)],
+)
+def test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension(turn):
+    calls: list = []
+    run = asyncio.run(_actor("walk-deadline", calls).run(PROGRAM, *_spent(fenced(*turn))))
+    # the program computes these itself, in no command: the comprehension ran to its end past the
+    # deadline and the command after it was launched; the deadline stops it there now
+    assert ("turn", "the time_budget of 0.2 is spent; nothing after it ran") in run.refused
+    assert [e.alias for e in run.record if e.kind is Kind.RESULT] == ["outer", "inner"] and calls == []
+    # the refusal is on the run's list only: the spent budget ends the run before a notification tells it,
+    # and the closure names the outcome and the cancelled commands, never a refusal
+    assert "nothing after it ran" not in _notices(run)
+
+
+def test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns():
+    async def main():
+        run = await _actor("value-deadline", []).run(
+            PROGRAM, *_spent(fenced(f"v = {LONG}", "n = echo(text=*v)"), inner=LIMIT // 10)
+        )
+        return run, [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    run, alive = asyncio.run(main())
+    # thirty LIMITs of items: the deadline cancels the command reading *v, and the value, computed in
+    # a task of its own, went on computing for nobody after the run returned
+    assert run.record.get("n").content.reason == "cancelled" and alive == []
+
+
+SPENT = ("turn", "the time_budget of 0.2 is spent; nothing after it ran")
+
+
+@pytest.mark.parametrize("keys", [("k",), ("a", "b")], ids=["one write", "two writes"])
+def test_a_write_reached_past_the_deadline_with_nothing_yielding_commits_nothing(keys):
+    actor = _actor("late-write", [])
+    turn = fenced(*(f'note.{key} = "v"' for key in keys))
+    run = asyncio.run(actor.run(PROGRAM, *_spent(turn)))
+    # the backend answered after the budget and nothing in the program yields: the deadline lands at
+    # the walk's next yield, which these writes never wait for, so they were committed past it
+    notes = actor.notes_for(PROGRAM)
+    assert [notes.get(key) for key in keys] == [None] * len(keys) and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+def test_a_write_on_a_spent_budget_and_the_walks_cut_in_a_comprehension_refuse_the_turn_once():
+    actor = _actor("cut-write", [])
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced('note.k = "v"', f"OUT{{n: {LONG}}}"))))
+    # the budget is spent before the walk begins: the write is reached on it and refused as spent, and the
+    # walk, cut inside its comprehension, finds it spent again and says nothing more
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+def test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read():
+    actor = _actor("late-read", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        time.sleep(req.seconds)  # holds the loop past the 0.2 s budget, then settles ok
+        return req.seconds
+
+    turn = fenced("n = nap(seconds=0.3)", "note.k = *n")
+    run = asyncio.run(
+        actor.run(PROGRAM, RunRequest(inputs=("go",), time_budget=0.2, max_turns=1), scripted(turn))
+    )
+    # the result is ok and the write that read it is reached after the budget: nothing is written, and the
+    # result stays in view for the next notification, which only a note that took it would have hidden
+    assert run.record.get("n").content.ok and actor.notes_for(PROGRAM).get("k") is None
+    assert run.notes_written == [] and run.intermediates == {} and run.refused == [SPENT]
+
+
+def test_a_write_reached_past_the_deadline_is_refused_as_spent_whatever_its_evaluation_would_raise():
+    actor = _actor("late-failing-write", [])
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced('note.k = note["missing"]'))))
+    # reading a note the store does not hold would have refused the write as "not written", and the turn
+    # would have carried no word of the spent budget: the write is refused as spent before it reads
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+@pytest.mark.parametrize(
+    "write",
+    ['note.k = echo(text=note["missing"])', 'note.k = echo(text="v")'],
+    ids=["an argument that would raise", "a valid command"],
+)
+def test_a_write_reached_past_the_deadline_launches_no_command_and_runs_no_hook(write):
+    calls: list = []
+    hooks: list = []
+    actor = _actor("late-command-write", calls)
+    actor.before(lambda run, la, req: hooks.append(la.alias))
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced(write))))
+    # the command on the right side is the write's own: with the budget spent before the walk it is not
+    # launched, so no argument is evaluated, no hook is called and no result lands, and the turn carries
+    # the one refusal for the spent budget, where the command ran its gates before it was refused
+    assert hooks == [] and calls == []
+    assert [e.alias for e in run.record if e.kind is Kind.RESULT] == ["outer", "inner"]
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+def test_a_write_queued_with_time_left_is_refused_as_spent_whatever_its_evaluation_raises():
+    actor = _actor("blocked-write", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        time.sleep(req.seconds)  # holds the loop past the 0.2 s budget, after the write was queued
+        return req.seconds
+
+    turn = fenced("n = nap(seconds=0.3)", 'note.k = note["missing"]')
+    request = RunRequest(inputs=("go",), time_budget=0.2, max_turns=1)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the budget was ahead when the write was reached and gone when its task began: reading the note the
+    # store does not hold would have refused it as "not written", and the turn would not have said so
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+class Faulty(MemoryNoteStore):
+    """A store whose reads raise `error`."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def get(self, key):
+        raise self.error
+
+
+class Nap(BaseModel):
+    seconds: float
+
+
+def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing():
+    profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
+    turn = fenced(f"v = {LONG}", "n = echo(text=*v)", 'note.k = note["j"]')
+    request, _ = _spent(turn, inner=LIMIT // 10)  # the listings and the 0.2 s budget; the backend is prompt
+
+    async def main():
+        actor = _actor("settle-raises", [])
+        with pytest.raises(RuntimeError, match="the store is down"):
+            await actor.run(profile, request, scripted(turn))
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    # the write reads the store, with the budget still ahead, and fails in its own task, which the settle
+    # raises after the deadline cancelled the command reading *v; the value, computed in a task of its own,
+    # was left computing for nobody once the walk raised. A comprehension is the one computation that
+    # yields on its own account, and so the one that outlives the readers a spent budget cancels: a value
+    # of commands ends at its next step, which the spent budget refuses
+    assert asyncio.run(main()) == []
+
+
+def test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget_ends():
+    profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
+
+    async def main():
+        actor = _actor("settle-raises-waiting", [])
+        run = actor_module.Run(actor, profile, RunRequest(inputs=("go",), time_budget=100))
+        walk = actor_module._Walk(actor, run, actor.operable, 1)
+        waiting = walk.computed["v"] = asyncio.ensure_future(asyncio.Event().wait())
+        try:
+            with pytest.raises(RuntimeError, match="the store is down"):
+                await walk.execute(read(fenced('note.k = note["j"]')))
+            await asyncio.sleep(0)
+            return waiting.cancelled()
+        finally:
+            waiting.cancel()
+
+    # the value was computing when the walk began, and awaits an event that never comes: what outlives
+    # its readers does not depend on what a comprehension yields, and the walk stops it as it raises
+    assert asyncio.run(main())
+
+
+@pytest.mark.parametrize("budget", [60.0, None])
+def test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent(budget):
+    profile = Profile("p", language="program", notes=Faulty(TimeoutError("the store did not answer")))
+    request = RunRequest(inputs=("go",), time_budget=budget, max_turns=1)
+    # the deadline is far off or there is none: nothing here expired, so the walk's error is the error
+    # raised, never a refusal telling the budget is spent and never a format of a budget that is None
+    with pytest.raises(TimeoutError, match="the store did not answer"):
+        asyncio.run(_actor("store-timeout", []).run(profile, request, scripted(fenced('OUT{n: note["k"]}'))))
+
+
+def test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_runs_under():
+    actor = _actor("extended", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        await asyncio.sleep(req.seconds)
+        return req.seconds
+
+    grant = 'DO run.more(bound="time_budget", amount=5, reason="one more step")'
+    turn = fenced(f"OUT{{granted: {grant}, after: DO nap(seconds=0.8)}}")
+    request = RunRequest(inputs=("go",), time_budget=0.4, max_turns=1)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the nap after the grant ends 0.8 s in, past the 0.4 s the run began with: the walk's deadline moved
+    # with the bound, so the output is built where the old deadline would have cut it
+    assert run.elapsed > 0.4
+    assert isinstance(run.outcome, Success)
+    assert run.output == {"granted": "time_budget raised from 0.4 to 5.4", "after": 0.8}
+
+
+def test_the_same_walk_without_the_grant_is_cut_at_the_deadline_it_began_with():
+    request = RunRequest(inputs=("go",), time_budget=0.4, max_turns=1)
+    run = asyncio.run(
+        _nap_actor("unextended").run(PROGRAM, request, scripted(fenced("OUT{after: DO nap(seconds=0.8)}")))
+    )
+    # the walk waits on the same nap and nothing moved its deadline: it is cut at 0.4 s with the budget
+    # refusal, and no output is built, where a walk with no deadline would have built it at 0.8 s
+    assert run.refused == [("turn", "the time_budget of 0.4 is spent; nothing after it ran")]
+    assert run.output is None and not isinstance(run.outcome, Success) and run.elapsed < 0.8
+
+
+def test_a_write_the_settlement_cut_while_it_waited_for_its_command_is_refused_as_spent_once():
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_turns=1)
+    actor = _nap_actor("settle-cut-write")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced("note.k = nap(seconds=1)"))))
+    # the walk ends at once and the write, a task of its own, waits for the nap: the settlement's deadline
+    # cancels both, and the write is a write the budget cut, told as the walk's own cut is
+    (nap,) = [e.content for e in run.record if e.kind is Kind.RESULT]
+    assert nap.reason == "cancelled" and run.elapsed < 1
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", "the time_budget of 0.1 is spent; nothing after it ran")]
+    assert run.outcome == Exhausted(1, "time")
+
+
+def test_a_write_the_settlement_cut_after_a_grant_names_the_budget_the_settlement_ran_under():
+    turn = fenced(
+        'a = echo(text=DO run.more(bound="time_budget", amount=0.2, reason="a little more"))',
+        "note.k = nap(seconds=2)",
+    )
+    request = RunRequest(inputs=("go",), time_budget=0.3, max_turns=1)
+    actor = _nap_actor("settle-cut-granted")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the grant landed while the settlement waited and moved its deadline: the cut is at 0.5 s, and the
+    # refusal names that budget, with no grant "after the deadline" beside it, for none came after
+    assert run.bounds["time_budget"] == 0.5 and 0.5 <= run.elapsed < 2
+    assert actor.notes_for(PROGRAM).get("k") is None
+    assert run.refused == [("turn", "the time_budget of 0.5 is spent; nothing after it ran")]
+
+
+def test_a_write_the_settlement_cut_names_the_budget_it_ran_under_when_a_grant_lands_after_the_cut():
+    async def extend(run, bound, amount, reason) -> bool:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass  # the settlement's deadline cancels the request, and it is granted anyway
+        return True
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="too late")', "note.k = nap(seconds=2)")
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    actor = _nap_actor("settle-cut-late-grant")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the cut at 0.5 s cancels the write's command and the request; the request lands the grant after it, so
+    # the bound reads 5.5 when the cut is told, and the refusal names the 0.5 s the settlement ran under
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when_no_write_was_cut():
+    async def extend(run, bound, amount, reason) -> bool:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass  # the settlement's deadline cancels the request, and it is granted anyway
+        return True
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="too late")', 'OUT{k: "v"}')
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    actor = _nap_actor("settle-late-grant-output")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the cut cancels the request and no write waited on it: nothing is refused, and the output the walk had
+    # built is checked against the bound the late grant raised, and commits
+    assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
+    assert isinstance(run.outcome, Success) and run.output == {"k": "v"} and run.refused == []
+
+
+def test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write():
+    async def extend(run, bound, amount, reason) -> bool:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass  # the settlement's deadline cancels the request, and it is granted anyway
+        return True
+
+    turn = fenced(
+        'g = run.more(bound="time_budget", amount=5, reason="too late")',
+        "note.k = nap(seconds=2)",
+        'OUT{k: "v"}',
+    )
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    actor = _nap_actor("settle-cut-late-grant-output")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the cut cancels the write's command and the request, and the grant lands after it and raises the
+    # bound: the output the walk built before the cut goes with the write, never checked against the
+    # raised bound, so nothing the walk held commits
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_write_queued_behind_a_grant_that_held_the_settlement_past_its_deadline_commits_nothing():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settlement's deadline passes under it, unfired
+        return True
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="held")', 'note.k = "v"', 'OUT{k: "v"}')
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    actor = _nap_actor("settle-held-grant-write")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the walk ends in time and the settlement runs the grant first: it holds the loop past the settlement's
+    # deadline, raises the bound and fires the limit, and the write queued behind it runs before the cut
+    # lands. The fired deadline spends the walk whatever the grant raised: the write commits nothing, the
+    # output goes with it, and the turn names the budget the settlement ran under and the late grant
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_handler():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settlement's deadline passes under it, unfired
+        return True
+
+    ran: list[float] = []
+    actor = _actor("settle-held-grant-command", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)  # the effect a command on a write's right side has on the world
+        return req.seconds
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="held")', "note.k = nap(seconds=0)")
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the write launched its command before the grant held the loop past the settlement's deadline: the
+    # command reaches its handler after the grant raised the bound, and the walk's fired deadline, not the
+    # raised bound, decides it, so the handler never runs and the note is never written
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5
+    assert ran == [] and actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("r2.1", HALTED), ("turn", f"{late}; nothing after it ran")]
+
+
+HALTED = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
+
+
+def test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settlement's deadline passes under it, unfired
+        return True
+
+    ran: list[float] = []
+    actor = _actor("settle-held-grant-bare-command", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)
+        return req.seconds
+
+    turn = fenced(
+        'g = run.more(bound="time_budget", amount=5, reason="held")', "n = nap(seconds=0)", 'OUT{k: "v"}'
+    )
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # no write waits on the command: its refusal is its own result, as a cut command's cancellation is,
+    # and the output the walk built commits under the raised bound
+    assert ran == [] and run.record.get("n").content.reason == "refused"
+    assert run.output == {"k": "v"} and isinstance(run.outcome, Success)
+    assert run.refused == [("n", HALTED)]
+
+
+def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under():
+    async def extend(run, bound, amount, reason) -> bool:
+        while not any(limit.expired() for limit in run.timeouts):
+            await asyncio.sleep(0)  # the settlement's deadline has not fired
+        return True  # it has, and the settlement has not yet left its limit: the grant lands here
+
+    turn = fenced(
+        'g = run.more(bound="time_budget", amount=5, reason="as it fires")', "note.k = nap(seconds=2)"
+    )
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
+    actor = _nap_actor("settle-cut-fired-grant")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the grant raised the bound to 5.5 between the deadline firing and the settlement noticing: the budget
+    # the settlement ran under is the one it began with, whatever the bound reads by then
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5 and run.elapsed < 2
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn():
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_turns=1)
+    actor = _nap_actor("settle-cut-command")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced("n = nap(seconds=1)"))))
+    # only a write the budget cut is the turn's spent budget: a command the settlement cancels settles as
+    # a cancelled RESULT, which is what it says already
+    assert run.record.get("n").content.reason == "cancelled" and run.refused == []
+
+
+GRANT_IN_AN_ARGUMENT = (
+    'a = echo(text=DO run.more(bound="time_budget", amount=5, reason="one more nap"))',
+    "b = nap(seconds=1)",
+)
+
+
+def _nap_actor(name: str) -> Actor:
+    actor = _actor(name, [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        await asyncio.sleep(req.seconds)
+        return req.seconds
+
+    return actor
+
+
+def test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_settle_waits_under():
+    turn = fenced(*GRANT_IN_AN_ARGUMENT, 'OUT{done: "yes"}')
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1)
+    run = asyncio.run(_nap_actor("settle-grant").run(PROGRAM, request, scripted(turn)))
+    # the output is a literal, so the walk waits for no command: its own limit is gone when the turn's
+    # commands settle, and the argument of `a` grants during that wait: the grant extended the settle, so
+    # the nap finished that the 0.5 s the run began with would have cancelled
+    assert run.bounds["time_budget"] == 5.5
+    assert run.resolve("b") == 1 and run.elapsed > 0.5
+    assert isinstance(run.outcome, Success) and run.output == {"done": "yes"}
+    assert run.timeouts == set()
+
+
+def test_a_refused_grant_during_settlement_leaves_the_deadline_and_the_late_command_cancelled():
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=lambda *ask: False)
+    run = asyncio.run(
+        _nap_actor("settle-refused").run(PROGRAM, request, scripted(fenced(*GRANT_IN_AN_ARGUMENT)))
+    )
+    # nothing was granted, so the settle's deadline is the one it began with: the nap is cancelled there
+    assert run.bounds["time_budget"] == 0.5
+    assert run.resolve("b").reason == "cancelled" and 0.5 <= run.elapsed < 1
+    assert run.outcome == Exhausted(1, "time") and run.timeouts == set()
+
+
+@pytest.mark.parametrize(
+    "first", [('a = echo(text="x")',), ("if 1 / 0:", '    a = echo(text="x")')], ids=["settled", "refused"]
+)
+def test_a_walk_leaves_no_time_limit_behind_however_it_ends_so_a_later_grant_of_time_lands(first):
+    grant = 'DO run.more(bound="time_budget", amount=5, reason="one more step")'
+    request = RunRequest(inputs=("go",), time_budget=60.0, max_turns=2)
+    turns = scripted(fenced(*first), fenced(f"OUT{{granted: {grant}}}"))
+    run = asyncio.run(_actor("limits", []).run(PROGRAM, request, turns))
+    # a limit left over from the first turn cannot be moved, and the grant would fail on it
+    assert isinstance(run.outcome, Success) and run.output == {
+        "granted": "time_budget raised from 60.0 to 65.0"
+    }
+    assert run.timeouts == set()
 
 
 class Grid(BaseModel):
