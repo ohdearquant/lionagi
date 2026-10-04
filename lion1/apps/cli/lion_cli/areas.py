@@ -518,32 +518,39 @@ def make_server(
         def _v2(self, method: str) -> None:
             """A `/v2` route. A write names a route this server serves (else 404 before its body is
             read), carries `once` (32 hex digits, a UUID's hyphens allowed) and runs one at a time,
-            with `/control`'s: a replay of (method, path, once) is answered the first answer."""
+            with `/control`'s: a replay of (method, path, once) is answered the first answer. Each
+            write prints one line, its time, method, path and status, and never its body: loopback
+            names no sender, so the line is what says when a write came."""
             url = urlsplit(self.path)
             path = [unquote(p) for p in url.path[len("/v2/") :].split("/")]
             if method == "GET":
                 query = {k: v[0] for k, v in parse_qs(url.query).items() if v}
                 self.answer_json(*v2.get(path, query, self.run))
                 return
+
+            def said(code: int, doc: dict) -> None:
+                print(time.strftime("%Y-%m-%d %H:%M:%S"), method, url.path[:200], code, flush=True)
+                self.answer_json(code, doc)
+
             ident, rest = agent_path(path[1:]) if path[:1] == ["agents"] else ("", [])
             control = (method, rest) == ("POST", ["control"])
             act = None if control else v2.route(method, path)
             if not control and act is None:
-                self.answer_json(404, {"ok": False, "errors": [{"message": f"no route {method} {url.path}"}]})
+                said(404, {"ok": False, "errors": [{"message": f"no route {method} {url.path}"}]})
                 return
             body = self.body()
             if isinstance(body, str):
-                self.answer_json(400, {"ok": False, "errors": [{"message": f"{body}; nothing was done"}]})
+                said(400, {"ok": False, "errors": [{"message": f"{body}; nothing was done"}]})
                 return
             once = _text(body, "once").replace("-", "").lower()
             if not re.fullmatch(r"[0-9a-f]{32}", once):
                 message = "once is 32 hex digits (a UUID), new for each write; nothing was done"
-                self.answer_json(400, {"ok": False, "errors": [{"path": "once", "message": message}]})
+                said(400, {"ok": False, "errors": [{"path": "once", "message": message}]})
                 return
             key = (method, url.path, once)
             with control_lock:
                 if key in v2_once:
-                    self.answer_json(*v2_once[key])
+                    said(*v2_once[key])
                     return
                 try:
                     if control:
@@ -555,7 +562,7 @@ def make_server(
                 v2_once[key] = (code, doc)
                 while len(v2_once) > _ONCE_KEEP:
                     v2_once.popitem(last=False)
-            self.answer_json(code, doc)
+            said(code, doc)
 
         def _v2_control(self, ident: str, body: dict) -> tuple[int, dict]:
             """`/control`'s hold, resume, wake and restart on the agent `ident` names, answered with its

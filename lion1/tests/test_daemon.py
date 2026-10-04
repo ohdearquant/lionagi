@@ -5,6 +5,7 @@ OpenRouter answers with recorded bodies and `security` is a script that reads it
 
 import http.client
 import json
+import re
 import sys
 import time
 import uuid
@@ -679,15 +680,23 @@ def test_a_definition_saved_elsewhere_after_the_read_is_refused_409_and_left_as_
     assert (d / "chores.toml").read_text() == theirs
 
 
-def test_control_holds_and_resumes_answers_the_row_and_refuses_what_it_does_not_serve(tmp_path):
+def test_control_holds_and_resumes_answers_the_row_and_refuses_what_it_does_not_serve(tmp_path, capsys):
     d = resident(tmp_path)
     port = serve_on(reg(tmp_path, d))
     path = "/v2/agents/x/desk/control"
     token = once()
+    assert get(port, "/v2/today")[0] == 200 and capsys.readouterr().out == ""  # a read prints nothing
     first = write(port, "POST", path, {"action": "hold", "reason": "lunch", "once": token})
     assert first[0] == 200 and first[1]["row"]["id"] == "x/desk" and "lunch" in (d / "hold").read_text()
     assert write(port, "POST", path, {"action": "hold", "reason": "other", "once": token}) == first
     assert "lunch" in (d / "hold").read_text()
+    assert write(port, "POST", "/v2/nowhere", {"once": once()})[0] == 404
+    lines = capsys.readouterr().out.splitlines()  # one line a write, the replay and the 404 included
+    assert [line.split()[2:] for line in lines] == [["POST", path, "200"]] * 2 + [
+        ["POST", "/v2/nowhere", "404"]
+    ]
+    assert all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+ \S+ \d{3}", line) for line in lines)
+    assert "lunch" not in "".join(lines) and token not in "".join(lines)  # never a body
     assert write(port, "POST", path, {"action": "resume", "once": once()})[0] == 200
     assert not (d / "hold").exists()
     for action in ("stop", "cap", ""):
