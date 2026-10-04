@@ -427,8 +427,8 @@ leader alone; a second `EPERM` and any other error raise. A drain whose grace ex
 - **S15**: A candidate is a file stem: its JSON, or its Markdown header only when the stem has no
   JSON; a JSON that does not parse is the candidate's error, never a fallback to the Markdown beside
   it (`test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy`). The
-  case-blind, unpadded identity of S13 and S14 is this instrument's; the desk's triage of a verdict
-  notice still compares the repo spelling exactly and escalates a mismatch, so it fails closed.
+  case-blind, unpadded identity of S13 and S14 is this instrument's, and the desk's triage of a
+  verdict notice uses it too (S20).
 - **S16**: The runs of one `verdict-freshness` instrument on one event loop go one at a time, each
   from the snapshot the one before it put, so a list taken before another run wrote never retires a
   pull request that run listed. The guarantee is per event loop: the agent runs one loop, and its
@@ -436,3 +436,30 @@ leader alone; a second `EPERM` and any other error raise. A drain whose grace ex
   early returns (unreadable directory, invalid newest verdict, failed or untrusted enumeration)
   write nothing. Pinned by
   `test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_listed`.
+- **S17**: `pr-state`, `worktrees`, `required-contexts` and `ci-red` read their snapshot after their
+  last awaited call and put it with no await between the two. A row kept for a failed read or for a
+  pull request a full page lacks is then the snapshot's as it stands, never one an overlapping run
+  retired. `pr-state` first views each pull request the snapshot holds and a full page lacks,
+  reading the snapshot again until none is left unviewed. Pinned by
+  `test_pr_state_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`,
+  `test_worktrees_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`,
+  `test_required_contexts_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote` and
+  `test_ci_red_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`.
+- **S18**: The runs of one object of any of S17's four instruments, on one event loop, go one at a
+  time, as S16 says of `verdict-freshness`, so a list taken before another run wrote never reports
+  gone what that run listed (`test_the_runs_of_one_snapshot_instrument_go_one_at_a_time`). An agent
+  builds one object per instrument, which its chores and its desk share. Two objects over one store
+  are not serialized: a list one took before the other's run wrote reports gone a row that run
+  added, and the next run reads it as first seen.
+- **S19**: A verdict candidate is a regular file, and a link counts as what it points to, as
+  `scheduled-job` reads its artifact. A link to a regular file is a candidate, and a directory or a
+  link to one is none, however it is named
+  (`test_verdict_freshness_a_candidate_is_a_regular_file_and_a_link_is_read_as_its_target`).
+- **S20**: The desk's triage of a verdict notice matches its artifact and its actor-map keys by the
+  identity of S13 (`test_the_actor_map_meets_the_notices_repo_by_the_case_blind_identity`). A notice
+  naming no artifact file has it looked up under its own spelling, then the identity's; the two are
+  compared by the identity, so another repo or number fails closed. The gh reads keep the notice's
+  spelling, and the triage's destination check takes gh's name case-blind: a notice in another case
+  resolves, a rename still fails closed, and each instrument's check stays exact
+  (`test_a_notice_meets_its_artifact_by_the_case_blind_unpadded_identity`,
+  `test_an_instruments_destination_check_stays_exact_on_a_case_only_difference`).
