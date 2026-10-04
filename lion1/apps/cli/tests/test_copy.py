@@ -4,6 +4,7 @@ commands never reaching the model, and the clipboard's routes (the platform's to
 import asyncio
 import io
 import json
+import re
 import subprocess
 
 import pytest
@@ -160,7 +161,9 @@ def test_a_copy_typed_at_the_chat_prompt_is_the_consoles_and_never_reaches_the_r
     assert "copied the last response (7 chars)" in out
     assert "copied the response 2 back from the last (6 chars)" in out
     assert "no response 9 back from the last: this chat has 2; nothing copied" in out
-    assert "/copy [N]" in out and "(Nth-last)" in out  # the banner names it; the line wraps at 80 columns
+    # the banner names it; where that line wraps follows the directory's length, so read it unwrapped
+    banner = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", out).split())
+    assert "/copy [N] copies the last (Nth-last) response" in banner
 
 
 def test_alt_c_in_the_editor_copies_and_shows_the_notice_above_the_prompt_leaving_the_line_as_typed():

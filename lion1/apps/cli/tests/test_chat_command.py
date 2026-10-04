@@ -452,7 +452,8 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     with pytest.raises(SystemExit) as died:
         asyncio.run(chat_main(parser().parse_args(args)))
     assert died.value.code == 1
-    out = capsys.readouterr().out
+    # read unwrapped and uncoloured: where the closing line wraps follows the log path's length
+    out = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out).split())
     assert "✗ the model's call failed: claude exited 1: unrecognized model opus-5-5" in out
     assert "Traceback" not in out and "failed · 0 call(s)" in out and "continue it: lion chat -c" in out
     rows = [json.loads(ln) for ln in log.read_text().splitlines()]

@@ -37,14 +37,18 @@ if resumed:
     thread = argv[2]
     state = json.load(open(os.path.join(threads, thread)))
 else:
-    thread = "0199aaaa-0000-4000-8000-%012d" % (len(os.listdir(threads)) + 1)
+    k = 1
+    while True:  # two started at once each take their own id: an id is claimed by creating its file
+        thread = "0199aaaa-0000-4000-8000-%012d" % k
+        try:
+            os.close(os.open(os.path.join(threads, thread), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            k += 1
     state = {"prompts": [], "replies": [],
              "totals": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}}
 out = argv[argv.index("-o") + 1]
 scratch = os.path.dirname(out)
-counter = os.path.join(here, "attempts")
-n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
-open(counter, "w").write(str(n))
 catalog = next(a.split("=", 1)[1].strip('"') for a in argv if a.startswith("model_catalog_json="))
 seen = {"argv": argv, "cwd": os.getcwd(), "scratch": scratch, "thread": thread, "resumed": resumed,
         "prompt": prompt, "catalog": json.load(open(catalog)), "agents_md": open("AGENTS.md").read(),
@@ -408,9 +412,7 @@ def test_a_call_cancelled_on_a_resumed_thread_is_never_gone_on_from(cli, observe
         first = await s(one)
         two = [*one, _turn(first, "_t1"), Message("user", "[_in2] HANG", name="_in2")]
         task = asyncio.create_task(s(two))
-        for _ in range(500):
-            if len(observed()) == 2:
-                break
+        while len(observed()) < 2:  # the resumed attempt is out; this file's sleeps take no time, so no count
             await asyncio.sleep(0.01)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
