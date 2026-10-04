@@ -330,6 +330,7 @@ def test_an_agent_answers_its_row_its_definition_and_what_the_app_may_change(tmp
     assert definition["plugins"] == [{"name": "lion", "items": ["check", "digest", "aged"]}]
     assert definition["shell_rules"] is None and "tools" not in definition
     assert doc["editable"] == ["model", "limits.cost_per_day", "wake.at_most_per_hour", "wake.quiet"]
+    assert doc["refused"] is None
     assert doc["files"] == {"instance": str(d / "chores.toml")}
     assert get(port, "/v2/agents/x/none")[0] == 404
     # a file its own loaders refuse: the row says so, and there is no definition to edit
@@ -630,10 +631,20 @@ def test_a_definition_the_loaders_or_the_app_shape_refuse_leaves_the_file_byte_i
     (d / "chores.toml").write_text("budget = 3\n" + CHORES.replace("[budget]", "[budgets]"))
     raw = (d / "chores.toml").read_bytes()
     code, doc = get(port, "/v2/agents/x/desk")
-    assert code == 200 and doc["definition"] is None and doc["editable"] == []
+    assert code == 200 and doc["definition"] is None and doc["editable"] == [] and doc["refused"]
     assert get(port, "/v2/today")[1]["totals"]["cap"] is None
     code, doc = write(port, "PUT", path, {"definition": {"limits": {"cost_per_day": 2}}, "once": once()})
     assert code == 409 and (d / "chores.toml").read_bytes() == raw
+    # a table only the start's checks refuse: the read says so, as the write of it would
+    (d / "chores.toml").write_text(CHORES + "\n[claude_code]\nmax_turns = 3\n")
+    raw = (d / "chores.toml").read_bytes()
+    code, doc = get(port, "/v2/agents/x/desk")
+    assert code == 200 and doc["definition"] is None and doc["editable"] == []
+    assert "claude_code" in doc["refused"]
+    for want in ({}, {"limits": {"cost_per_day": 2}}):  # an unchanged write is refused as a changed one
+        code, doc = write(port, "PUT", path, {"definition": want, "once": once()})
+        assert code == 409 and "refused by its own loaders" in doc["errors"][0]["message"]
+        assert (d / "chores.toml").read_bytes() == raw
 
 
 def test_a_definition_saved_elsewhere_after_the_read_is_refused_409_and_left_as_saved(tmp_path, monkeypatch):

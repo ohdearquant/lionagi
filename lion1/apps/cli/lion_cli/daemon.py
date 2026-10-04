@@ -84,6 +84,16 @@ _RESTART = ("model", "instructions.extra")  # read by `lion agent` at its start;
 _REFUSED = (ValueError, TypeError, AttributeError, re.error)
 
 
+def _loaders(cfg: dict) -> None:
+    """The loaders the resident reloads its chores.toml with, and its start's own checks, run on the
+    parsed file: they raise what the resident refuses it with."""
+    Budget.load(cfg.get("budget"))
+    Wake.load(cfg.get("wake"))
+    Gtd.load(cfg.get("gtd"))
+    claude_code_options(cfg.get("claude_code"))
+    codex_options(cfg.get("codex"))
+
+
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -725,16 +735,18 @@ class Daemon:
 
     def agent(self, ident: str, area: Area, d: str, row: dict) -> dict:
         """The agent; a chores.toml its own loaders refuse has no definition and nothing editable, and
-        its row says why."""
+        `refused` says why: what a write of it would be refused for."""
         cfg = chores_toml(d)
         try:
-            definition, editable = self._definition(area, d, cfg, row), self._editable(d, cfg)
-        except _REFUSED:
-            definition, editable = None, []
+            _loaders(cfg)
+            definition, editable, refused = self._definition(area, d, cfg, row), self._editable(d, cfg), None
+        except _REFUSED as e:
+            definition, editable, refused = None, [], str(e)
         return {
             "row": agent_row(area, d, row, ident, time.strftime("%Y-%m-%d")),
             "definition": definition,
             "editable": editable,
+            "refused": refused,
             "files": {"instance": str(Path(d) / "chores.toml")},
         }
 
@@ -839,6 +851,7 @@ class Daemon:
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
             return _no(409, f"chores.toml does not read, nothing was written: {e}")
         try:
+            _loaders(before)
             current = self._definition(area, d, before, row)
         except _REFUSED as e:
             return _no(409, f"chores.toml is refused by its own loaders, nothing was written: {e}")
@@ -878,12 +891,8 @@ class Daemon:
             after = None
         if after is None or json.loads(json.dumps(after, default=str)) != expected:
             return _no(409, "chores.toml could not be rewritten in place; nothing was written")
-        try:  # the loaders the resident reloads the file with, and the start's own checks
-            Budget.load(after.get("budget"))
-            Wake.load(after.get("wake"))
-            Gtd.load(after.get("gtd"))
-            claude_code_options(after.get("claude_code"))
-            codex_options(after.get("codex"))
+        try:
+            _loaders(after)
         except _REFUSED as e:
             return _no(400, f"chores.toml would be refused: {e}; nothing was written")
         restart = any(c["path"] in _RESTART for c in changes)
