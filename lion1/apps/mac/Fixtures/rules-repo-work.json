@@ -1,0 +1,35 @@
+{
+  "name": "repo work",
+  "programs": [
+    "git",
+    "gh",
+    "uv",
+    "cargo",
+    "make"
+  ],
+  "never": [
+    "rm -rf",
+    "git push --force"
+  ],
+  "write_under": [
+    "~/code"
+  ],
+  "read": "anywhere",
+  "network": {
+    "hosts": [
+      "github.com",
+      "pypi.org"
+    ]
+  },
+  "seconds_per_command": 120,
+  "ask_first": [
+    "git push",
+    "gh pr merge"
+  ],
+  "otherwise": "refuse",
+  "used_by": [
+    "platform/front-desk",
+    "platform/reviewer",
+    "support/builder"
+  ]
+}

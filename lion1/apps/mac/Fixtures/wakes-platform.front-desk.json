@@ -1,0 +1,112 @@
+{
+  "wakes": [
+    {
+      "id": "w-fd-6",
+      "at": "2026-10-04T11:27:00Z",
+      "live": true,
+      "rule": "r2",
+      "source": {
+        "kind": "repo",
+        "phrase": "issue 389 opened in example/app"
+      },
+      "turns": 3,
+      "cost": 0.02,
+      "outcome": "nothing",
+      "text": "Reading the issue and the two it links to.",
+      "commands": []
+    },
+    {
+      "id": "w-fd-5",
+      "at": "2026-10-04T11:02:00Z",
+      "seconds": 74,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "mail",
+        "phrase": "mail from a user about the export button"
+      },
+      "turns": 9,
+      "cost": 0.06,
+      "outcome": "acted",
+      "text": "Filed issue 388 (the export button times out on large projects) and replied with the workaround.",
+      "commands": [
+        {
+          "line": "gh issue create -R example/app --title \"Export times out on large projects\"",
+          "result": "https://github.com/example/app/issues/388",
+          "ok": true
+        },
+        {
+          "line": "send_mail to=user@example.org",
+          "result": "sent",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "id": "w-fd-4",
+      "at": "2026-10-04T10:20:00Z",
+      "seconds": 12,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "mail",
+        "phrase": "a newsletter"
+      },
+      "turns": 1,
+      "cost": 0.01,
+      "outcome": "nothing",
+      "text": "A newsletter; nothing to do.",
+      "commands": []
+    },
+    {
+      "id": "w-fd-3",
+      "at": "2026-10-04T09:55:00Z",
+      "seconds": 140,
+      "live": false,
+      "rule": "r2",
+      "source": {
+        "kind": "repo",
+        "phrase": "5 issues collected"
+      },
+      "turns": 14,
+      "cost": 0.11,
+      "outcome": "acted",
+      "text": "Labelled five issues and closed one duplicate.",
+      "commands": [
+        {
+          "line": "gh issue edit 380 --add-label bug",
+          "result": "ok",
+          "ok": true
+        },
+        {
+          "line": "gh issue close 381 --reason duplicate",
+          "result": "ok",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "id": "w-fd-2",
+      "at": "2026-10-04T08:41:00Z",
+      "seconds": 61,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "mail",
+        "phrase": "mail asking for a refund"
+      },
+      "turns": 6,
+      "cost": 0.04,
+      "outcome": "escalated",
+      "text": "A refund is not mine to grant; asked the chair.",
+      "commands": [
+        {
+          "line": "git push origin triage-notes",
+          "result": "refused by repo work: git push asks you first",
+          "ok": false
+        }
+      ]
+    }
+  ],
+  "more": false
+}

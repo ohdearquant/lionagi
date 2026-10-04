@@ -1,0 +1,42 @@
+{
+  "name": "repo-review",
+  "about": "Review a pull request against its tests and conventions.",
+  "source": "installed",
+  "kind": "plugin",
+  "on": true,
+  "from": {
+    "marketplace": "sample-plugins",
+    "address": "github.com/example/sample-plugins",
+    "version": "1.2.0",
+    "installed_at": "2026-09-28T14:05:00Z"
+  },
+  "folder": "~/.lion/plugins/repo-review/",
+  "agents": [
+    {
+      "name": "reviewer",
+      "about": "Reviews a pull request and returns a verdict with findings.",
+      "in_use": 1
+    }
+  ],
+  "skills": [
+    {
+      "name": "review-a-diff",
+      "loaded_when": "the task is a code review",
+      "on": true,
+      "text": "# Review a diff\n\nRead the tests first, then the change, then what calls it."
+    },
+    {
+      "name": "write-a-verdict",
+      "loaded_when": "a review is finished",
+      "on": true,
+      "text": "# Write a verdict\n\nREADY or NOT READY at a named head, then findings, most serious first."
+    }
+  ],
+  "tools": [],
+  "not_used": [
+    "a hooks file: this Mac's daemon has no hooks"
+  ],
+  "given_to": [
+    "platform/reviewer"
+  ]
+}

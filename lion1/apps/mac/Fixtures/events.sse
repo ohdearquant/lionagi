@@ -1,0 +1,25 @@
+event: ping
+data: {}
+
+event: agent
+data: {"id": "platform/front-desk", "name": "front desk", "area": "platform", "kind": "agent", "state": "running", "now": "replying to issue 389", "woken_by": ["mail arrives for help@example.com", "an issue opens in example/app"], "model": "claude-code/sonnet", "runs_in": "local", "today": {"cost": 0.95, "wakes": 45, "acted": 13, "calls": 61}}
+
+event: wake
+data: {"agent": "platform/front-desk", "wake": {"id": "w-fd-6", "at": "2026-10-04T11:27:00Z", "live": true, "rule": "r2", "source": {"kind": "repo", "phrase": "issue 389 opened in example/app"}, "turns": 6, "cost": 0.04, "outcome": "nothing", "text": "Replying to issue 389 with the known workaround.", "commands": []}}
+
+event: wake
+data: {"agent": "platform/front-desk", "wake": {"id": "w-fd-6", "at": "2026-10-04T11:27:00Z", "live": false, "rule": "r2", "source": {"kind": "repo", "phrase": "issue 389 opened in example/app"}, "turns": 8, "cost": 0.05, "outcome": "acted", "text": "Replied to issue 389 with the known workaround and linked issue 388.", "commands": [{"line": "gh issue comment 389 -R example/app", "result": "https://github.com/example/app/issues/389#comment-1", "ok": true}], "seconds": 88}}
+
+event: today
+data: {"running": 3, "wakes": 95, "acted": 42, "cost": 4.61, "cap": 20.0}
+
+event: foryou
+data: {"id": "fy-6", "kind": "note", "open": false, "title": "Issue 389 answered", "body": "Same cause as 388; replied with the workaround and linked them.", "at": "2026-10-04T11:29:00Z", "from": {"agent": "platform/front-desk", "area": "platform"}, "choices": [], "links": []}
+
+event: library
+data: {"what": "plugins"}
+
+event: ping
+data: {}
+
+: the end of the recording

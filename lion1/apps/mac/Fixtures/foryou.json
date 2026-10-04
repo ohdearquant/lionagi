@@ -1,0 +1,144 @@
+{
+  "items": [
+    {
+      "id": "fy-1",
+      "kind": "approval",
+      "open": true,
+      "title": "Merge pull request 211?",
+      "body": "The reviewer passed pull request 211 (cache the export query). Every check is green at the current head. Merging deploys it to the preview.",
+      "at": "2026-10-04T10:15:00Z",
+      "from": {
+        "agent": "platform/reviewer",
+        "area": "platform"
+      },
+      "choices": [
+        {
+          "id": "merge",
+          "label": "Merge",
+          "primary": true,
+          "danger": false
+        },
+        {
+          "id": "hold",
+          "label": "Not yet",
+          "primary": false,
+          "danger": false
+        }
+      ],
+      "links": [
+        {
+          "label": "pull request 211",
+          "target": {
+            "page": "url",
+            "ref": "https://github.com/example/app/pull/211"
+          }
+        },
+        {
+          "label": "the reviewer",
+          "target": {
+            "page": "agent",
+            "ref": "platform/reviewer"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fy-2",
+      "kind": "decision",
+      "open": true,
+      "title": "Raise the builder's cap for today?",
+      "body": "The support builder stopped at its $1.00 cap with one bug left half done. Another $1.00 should finish it.",
+      "at": "2026-10-04T10:31:00Z",
+      "from": {
+        "agent": "support/builder",
+        "area": "support"
+      },
+      "choices": [
+        {
+          "id": "raise",
+          "label": "Raise to $2.00",
+          "primary": true,
+          "danger": false
+        },
+        {
+          "id": "wait",
+          "label": "Wait for tomorrow",
+          "primary": false,
+          "danger": false
+        }
+      ],
+      "links": [
+        {
+          "label": "support",
+          "target": {
+            "page": "area",
+            "ref": "support"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fy-3",
+      "kind": "question",
+      "open": true,
+      "title": "Which papers go in Friday's brief?",
+      "body": "Five new papers on retrieval came in this week. Two look worth a full read; the other three repeat known results. Keep the brief to the two, or cover all five briefly?",
+      "at": "2026-10-04T11:00:00Z",
+      "from": {
+        "agent": "research/front-desk",
+        "area": "research"
+      },
+      "choices": [
+        {
+          "id": "two",
+          "label": "The two",
+          "primary": true,
+          "danger": false
+        },
+        {
+          "id": "five",
+          "label": "All five",
+          "primary": false,
+          "danger": false
+        }
+      ],
+      "links": []
+    },
+    {
+      "id": "fy-4",
+      "kind": "note",
+      "open": true,
+      "title": "A preview deploy failed",
+      "body": "The build step for the cache-fix branch ran past its 15 minutes. The ops builder is stopped until you look.",
+      "at": "2026-10-04T09:47:00Z",
+      "from": {
+        "agent": "ops/builder",
+        "area": "ops"
+      },
+      "choices": [],
+      "links": [
+        {
+          "label": "the ops builder",
+          "target": {
+            "page": "agent",
+            "ref": "ops/builder"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fy-5",
+      "kind": "reply",
+      "open": true,
+      "title": "Re: the export timeout",
+      "body": "Filed as issue 388 and answered the sender with the workaround.",
+      "at": "2026-10-04T11:02:00Z",
+      "from": {
+        "agent": "platform/front-desk",
+        "area": "platform"
+      },
+      "choices": [],
+      "links": []
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "wakes": [
+    {
+      "id": "w-rv-3",
+      "at": "2026-10-04T11:24:00Z",
+      "live": true,
+      "rule": "r1",
+      "source": {
+        "kind": "call",
+        "phrase": "called with pull request 214"
+      },
+      "turns": 7,
+      "cost": 0.12,
+      "outcome": "nothing",
+      "text": "Reading the diff of pull request 214.",
+      "commands": [
+        {
+          "line": "gh pr diff 214 -R example/app",
+          "result": "312 lines",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "id": "w-rv-2",
+      "at": "2026-10-04T10:15:00Z",
+      "seconds": 210,
+      "live": false,
+      "rule": "r2",
+      "source": {
+        "kind": "repo",
+        "phrase": "pull request 211 opened"
+      },
+      "turns": 18,
+      "cost": 0.41,
+      "outcome": "escalated",
+      "text": "READY at the current head. Asked you to approve the merge.",
+      "commands": [
+        {
+          "line": "gh pr checks 211 -R example/app",
+          "result": "all 6 checks passed",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "id": "w-rv-1",
+      "at": "2026-10-04T08:30:00Z",
+      "seconds": 95,
+      "live": false,
+      "rule": "r1",
+      "source": {
+        "kind": "call",
+        "phrase": "called with pull request 209"
+      },
+      "turns": 11,
+      "cost": 0.19,
+      "outcome": "acted",
+      "text": "NOT READY: the new test does not cover the empty case. Sent the finding to the author.",
+      "commands": []
+    }
+  ],
+  "more": false
+}

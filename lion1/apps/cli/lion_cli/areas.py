@@ -20,7 +20,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from xml.parsers.expat import ExpatError
 
 from hub.app import app_shell, icon_svg, manifest_webmanifest, service_worker_js
@@ -39,6 +39,7 @@ from hub.areas import (
     status,
     table,
     talk,
+    wake_row,
     wakes,
 )
 from hub.khive import Khive, KhiveError, lit
@@ -48,6 +49,7 @@ from .context import checkpoint as context_checkpoint
 from .context import restore as context_restore
 from .context import set_var as context_set
 from .context import status as context_status
+from .daemon import Daemon, agent_ids, agent_path, agent_row, wake_of
 
 __all__ = ("context_api", "serve", "areas_main")
 
@@ -58,7 +60,8 @@ _HISTORY = 20  # the serve.log lines per desk an `/events` connection opens with
 _POLL_S = 1.0  # how often `/events` re-reads the registry, the residents and their logs
 _PING_S = 15.0
 _WRITE_S = 30.0  # a client that takes longer than this to accept a write is dropped
-_ONCE_KEEP = 100  # the `/control` answers kept for a replayed `once`
+_ONCE_KEEP = 100  # the `/control` answers kept for a replayed `once`, and as many of `/v2`'s writes
+_FORYOU_S = 15.0  # how often `/v2/events` reads the person's mail
 _MAX_BODY = 1 << 20
 
 # a table or array-of-tables header ends the table before it; `[budget]` may carry a comment
@@ -70,16 +73,16 @@ _KEY_RE = re.compile(
 )
 
 
-def _peer_allowed(addr: str) -> bool:
-    """Loopback or inside the Tailscale CGNAT range; anything else is refused before the request
-    is read any further."""
+def _peer_allowed(addr: str, tailnet: bool = True) -> bool:
+    """Loopback or, unless `tailnet` is False, inside the Tailscale CGNAT range; anything else is
+    refused before the request is read any further."""
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return ip.is_loopback or ip in _TAILSCALE_CGNAT
+    return ip.is_loopback or (tailnet and ip in _TAILSCALE_CGNAT)
 
 
 def _rewrite_budget(text: str, updates: dict[str, str]) -> str:
@@ -116,6 +119,13 @@ def _text(body: dict, key: str) -> str:
 
 def _one_line(text: str) -> str:
     return " ".join(str(text).split())
+
+
+def _mtime(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 def _tail(
@@ -211,8 +221,15 @@ def make_server(
     written or mailed outside it. Bound, not yet serving: `serve_forever` runs it, `shutdown` then
     `server_close` end it; `hosts` on it are the names it answers to."""
     me, khive = identity or (None, None)
+    v2 = Daemon(registry, me, khive)
+    # `/v2`'s writes by (method, path, once): a replay is answered the first answer, nothing done twice
+    v2_once: OrderedDict[tuple[str, str, str], tuple[int, dict]] = OrderedDict()
     hosts: set[str] = set()  # the names this server answers to, known once the port is
     origins: set[str] = set()  # the Origins a browser POST may carry: http(s) + an allowed host
+    # `/v2` answers this machine alone: its Hosts are this port on loopback by number or name, and an
+    # Origin it takes is http:// + one of them
+    v2_hosts: set[str] = set()
+    v2_origins: set[str] = set()
     once_cache: OrderedDict[str, tuple[int, dict]] = OrderedDict()  # /control's idempotency, last 100
     # one control at a time: a replayed `once` racing its first request must find the first answer
     control_lock = threading.Lock()
@@ -280,10 +297,24 @@ def make_server(
             # off the tailnet or loopback: refused before anything else is read. A loopback page is
             # reachable by any site the browser visits: a Host that is not this server (DNS
             # rebinding) or a POST a browser sent from another origin (a cross-site form) is refused
-            # too. A native client sends no Origin: the peer and Host guards are its admission
+            # too. A native client sends no Origin: the peer and Host guards are its admission. `/v2`
+            # takes a narrower one on every method, its event stream included: a loopback peer, a
+            # loopback Host for this port and no foreign Origin, since its reads hold the person's
+            # mail and its writes change the residents; a tailnet peer or an `--allow` name is refused
             peer = self.client_address[0]
             refusal = ""
-            if not _peer_allowed(peer):
+            v2_route = urlsplit(self.path).path.startswith("/v2/")  # the test each do_* routes by
+            if v2_route:
+                # every Host and Origin the request carries is weighed, so a second one refuses it
+                named = self.headers.get_all("Host") or [""]
+                sent = self.headers.get_all("Origin") or []
+                if not _peer_allowed(peer, tailnet=False):
+                    refusal = f"{peer} is not loopback: /v2 answers this machine only; nothing was done"
+                elif len(named) != 1 or named[0] not in v2_hosts:
+                    refusal = f"host {', '.join(named)!r} is not this server on loopback; nothing was done"
+                elif len(sent) > 1 or any(o not in v2_origins for o in sent):
+                    refusal = f"origin {', '.join(sent)!r} is not this server on loopback; nothing was done"
+            elif not _peer_allowed(peer):
                 refusal = f"{peer} is outside loopback/Tailscale; nothing was done"
             elif (host := self.headers.get("Host", "")) not in hosts:
                 refusal = f"host {host!r} is not this server; nothing was done"
@@ -293,7 +324,9 @@ def make_server(
                     refusal = f"origin {origin!r} is not this server; nothing was done"
             if not refusal:
                 return True
-            if self.command == "POST" and self.wants_json():
+            if v2_route:
+                self.answer_json(403, {"ok": False, "errors": [{"message": refusal}]})
+            elif self.command == "POST" and self.wants_json():
                 self.answer_json(403, {"ok": False, "action": "", "detail": refusal})
             else:
                 self.answer(403, refusal + "\n")
@@ -351,6 +384,12 @@ def make_server(
             if url.path == "/events":
                 self._events()
                 return
+            if url.path == "/v2/events":
+                self._v2_events()
+                return
+            if url.path.startswith("/v2/"):
+                self._v2("GET")
+                return
             if url.path == "/api/areas":
                 with snapshot_lock:
                     read_rows()
@@ -399,24 +438,9 @@ def make_server(
             revision; per desk the last `_HISTORY` serve.log lines as history on first sight, then
             each new line; `ping` every `_PING_S`. A write the client is gone for, or stalled on,
             ends the thread."""
-            try:
-                self.connection.settimeout(_WRITE_S)
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-            except OSError:
+            if not self.opened():
                 return
-
-            def emit(event: str, data: Any, revision: int = 0) -> bool:
-                try:
-                    stamp = f"id: {revision}\n" if revision else ""
-                    self.wfile.write(f"{stamp}event: {event}\ndata: {json.dumps(data)}\n\n".encode())
-                    self.wfile.flush()
-                    return True
-                except OSError:  # BrokenPipe, ConnectionReset: the client went away
-                    return False
-
+            emit = self.emit
             tails: dict[str, tuple[int, bytes, int]] = {}
             sent = 0  # the revision of the last `areas` event
             next_ping = time.monotonic() + _PING_S
@@ -439,6 +463,27 @@ def make_server(
                     next_ping = time.monotonic() + _PING_S
                 time.sleep(_POLL_S)
 
+        def opened(self) -> bool:
+            # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone
+            try:
+                self.connection.settimeout(_WRITE_S)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+            except OSError:
+                return False
+            return True
+
+        def emit(self, event: str, data: Any, revision: int = 0) -> bool:
+            try:
+                stamp = f"id: {revision}\n" if revision else ""
+                self.wfile.write(f"{stamp}event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+                self.wfile.flush()
+                return True
+            except OSError:  # BrokenPipe, ConnectionReset: the client went away
+                return False
+
         # ---- POST ----
 
         def do_POST(self) -> None:  # noqa: N802 (the stdlib's name)
@@ -449,6 +494,8 @@ def make_server(
                 self._control()
             elif path == "/send":
                 self._send()
+            elif path.startswith("/v2/"):
+                self._v2("POST")
             elif path.startswith("/api/context/"):
                 body = self.body()
                 if isinstance(body, str):
@@ -457,6 +504,153 @@ def make_server(
                 self.answer_json(*context_api(registry, "POST", path, body))
             else:
                 self.send_error(404)
+
+        def do_PUT(self) -> None:  # noqa: N802 (the stdlib's name); PATCH and DELETE alike: /v2 only
+            if not self.guarded():
+                return
+            if urlsplit(self.path).path.startswith("/v2/"):
+                self._v2(self.command)
+            else:
+                self.send_error(404)
+
+        do_PATCH = do_DELETE = do_PUT
+
+        # ---- /v2: the app's contract (`daemon.py`) behind this server's admission ----
+
+        def _v2(self, method: str) -> None:
+            """A `/v2` route. A write names a route this server serves (else 404 before its body is
+            read), carries `once` (32 hex digits, a UUID's hyphens allowed) and runs one at a time,
+            with `/control`'s: a replay of (method, path, once) is answered the first answer. Each
+            write prints one line, its time, method, path and status, and never its body: loopback
+            names no sender, so the line, printed once the write is answered, is what says when."""
+            url = urlsplit(self.path)
+            path = [unquote(p) for p in url.path[len("/v2/") :].split("/")]
+            if method == "GET":
+                query = {k: v[0] for k, v in parse_qs(url.query).items() if v}
+                self.answer_json(*v2.get(path, query, self.run))
+                return
+
+            def said(code: int, doc: dict) -> None:
+                print(time.strftime("%Y-%m-%d %H:%M:%S"), method, url.path[:200], code, flush=True)
+                self.answer_json(code, doc)
+
+            ident, rest = agent_path(path[1:]) if path[:1] == ["agents"] else ("", [])
+            control = (method, rest) == ("POST", ["control"])
+            act = None if control else v2.route(method, path)
+            if not control and act is None:
+                said(404, {"ok": False, "errors": [{"message": f"no route {method} {url.path}"}]})
+                return
+            body = self.body()
+            if isinstance(body, str):
+                said(400, {"ok": False, "errors": [{"message": f"{body}; nothing was done"}]})
+                return
+            once = _text(body, "once").replace("-", "").lower()
+            if not re.fullmatch(r"[0-9a-f]{32}", once):
+                message = "once is 32 hex digits (a UUID), new for each write; nothing was done"
+                said(400, {"ok": False, "errors": [{"path": "once", "message": message}]})
+                return
+            key = (method, url.path, once)
+            with control_lock:
+                if key in v2_once:
+                    said(*v2_once[key])
+                    return
+                try:
+                    if control:
+                        code, doc = self._v2_control(ident, body)
+                    else:
+                        code, doc = act({**body, "once": once}, self.run)
+                except (OSError, ValueError) as e:  # the registry or a file of the server's, mid-write
+                    code, doc = 500, {"ok": False, "errors": [{"message": f"{type(e).__name__}: {e}"}]}
+                v2_once[key] = (code, doc)
+                while len(v2_once) > _ONCE_KEEP:
+                    v2_once.popitem(last=False)
+            said(code, doc)
+
+        def _v2_control(self, ident: str, body: dict) -> tuple[int, dict]:
+            """`/control`'s hold, resume, wake and restart on the agent `ident` names, answered with its
+            row read after. `stop` is not served: nothing here stops a resident but a hold."""
+            found = v2.find(ident) if ident else None
+            if found is None:
+                return 404, {
+                    "ok": False,
+                    "errors": [{"message": f"no agent {ident!r} in {registry}; nothing was done"}],
+                }
+            action = _text(body, "action")
+            if action not in ("hold", "resume", "wake", "restart"):
+                message = f"action {action!r}: hold, resume, wake or restart; nothing was done"
+                return 400, {"ok": False, "errors": [{"path": "action", "message": message}]}
+            code, resp = self._act(Path(found[2]), action, body)
+            if code != 200:
+                return code, {"ok": False, "errors": [{"message": resp["detail"]}]}
+            _, area, d, row = v2.find(ident) or found
+            return 200, {"ok": True, "row": agent_row(area, d, row, ident, time.strftime("%Y-%m-%d"))}
+
+        def _v2_events(self) -> None:
+            """`/v2/events`: the poll `/events` reads, as the contract's events. `today` on connect and
+            when it changes; `agent` when a row's state or `now` changes; `wake` for each wake line a
+            serve.log gains (its earlier lines are history, not sent); `library` when `models.toml`
+            changes; `foryou` for an unread message of the person's that is new or changed, and with
+            `open` false for one that left the list, read every `_FORYOU_S`; `ping` every `_PING_S`.
+            A client that reconnects refetches its page."""
+            if not self.opened():
+                return
+            sent_rev, last_today = 0, None
+            states: dict[str, tuple[str, str]] = {}
+            tails: dict[str, tuple[int, bytes, int]] = {}
+            mail: dict[str, dict] | None = None
+            models_at = _mtime(v2.models_path)
+            next_ping = time.monotonic() + _PING_S
+            next_mail = time.monotonic()
+            while True:
+                areas, rows, revision = poll_rows()
+                found = agent_ids(areas)
+                if rows is not None and revision > sent_rev:
+                    sent_rev, day = revision, time.strftime("%Y-%m-%d")
+                    for (i, a, d), r in zip(found, rows, strict=True):
+                        row = agent_row(a, d, r, i, day)
+                        seen, states[i] = states.get(i), (row["state"], row["now"])
+                        if seen is not None and seen != states[i] and not self.emit("agent", row):
+                            return
+                    try:
+                        today = v2.today(self.run)
+                    except (OSError, ValueError):  # a registry mid-write: the next change reads it whole
+                        today = last_today
+                    now = {k: today[k] for k in ("date", "totals", "for_you")} if today else None
+                    if now is not None and now != last_today:
+                        if not self.emit("today", now):
+                            return
+                        last_today = now
+                for i, _, d in found:
+                    lines, tails[d] = _tail(Path(d) / "serve.log", tails.get(d))
+                    for line, history in lines:
+                        w = None if history else wake_row(line)
+                        if (
+                            w is not None
+                            and "wake" in w
+                            and not self.emit("wake", {"agent": i, "wake": wake_of(w)})
+                        ):
+                            return
+                if (at := _mtime(v2.models_path)) != models_at:
+                    models_at = at
+                    if not self.emit("library", {"what": "models"}):
+                        return
+                if khive is not None and time.monotonic() >= next_mail:
+                    next_mail = time.monotonic() + _FORYOU_S
+                    code, doc = v2.foryou(self.run)
+                    items = {x["id"]: x for x in doc.get("items", [])} if code == 200 else None
+                    for x in (items or {}).values() if mail is not None else ():
+                        if mail.get(x["id"]) != x and not self.emit("foryou", x):
+                            return
+                    # one read since, here or elsewhere, leaves the list: said once, as no longer open
+                    for ident, x in (mail or {}).items() if items is not None else ():
+                        if ident not in items and not self.emit("foryou", {**x, "open": False}):
+                            return
+                    mail = items if items is not None else mail
+                if time.monotonic() >= next_ping:
+                    if not self.emit("ping", {}):
+                        return
+                    next_ping = time.monotonic() + _PING_S
+                time.sleep(_POLL_S)
 
         def _send(self) -> None:
             wants_json = self.wants_json()
@@ -656,6 +850,9 @@ def make_server(
     for a in allow or []:
         hosts.add(f"{a}:{bound}")
     origins.update(f"{scheme}://{h}" for scheme in ("http", "https") for h in hosts)
+    # no `[::1]`: the server listens on IPv4 alone, so nothing reaches it by that name
+    v2_hosts.update({f"127.0.0.1:{bound}", f"localhost:{bound}"})
+    v2_origins.update(f"http://{h}" for h in v2_hosts)
     server.hosts = frozenset(hosts)  # type: ignore[attr-defined]
     return server
 
