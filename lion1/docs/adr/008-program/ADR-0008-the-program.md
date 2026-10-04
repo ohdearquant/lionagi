@@ -206,7 +206,7 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_a_missing_field_of_a_dict_with_mixed_keys_is_a_language_error_not_a_crash`,
   `test_a_dict_is_read_at_any_key_it_holds`,
   `test_a_key_a_dict_cannot_hold_is_a_language_error_not_a_crash`,
-  `test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash`,
+  `test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash_or_infinity`,
   `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
@@ -412,3 +412,12 @@ computation binds its failure.
   deadline lands inside arithmetic.
   `test_a_long_whole_number_counts_as_its_digits_and_a_product_past_the_limit_is_never_built` pins
   it.
+- **S17**: A command launched while its turn settles, by a `DO` in a value a command's argument
+  reads, is settled with the turn: waited for and cancelled at the same deadline. One launched after
+  the deadline is refused before its handler starts (S15), and waited for too. A value that failed
+  with no reader left is seen through at the walk's end. Before, a 0.4 s time budget gave a 3.0 s
+  run.
+  `test_a_command_a_value_launched_while_the_turn_settled_is_cut_at_the_deadline_with_the_rest`,
+  `test_a_late_launch_outliving_every_command_the_settle_began_with_is_cut_at_the_deadline`,
+  `test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through` and
+  `test_a_settle_sees_through_a_task_that_joined_its_list_after_the_cut` pin it.
