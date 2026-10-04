@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -24,46 +24,54 @@ tags:
 ## Context
 
 A Claude Code session's state is its transcript and the files around it: the Monitors it armed, the
-Agents it spawned, the words the person typed, the figure its statusline shows. Continuing the
-session reads the whole transcript again; a fresh one starts with none of it. A resident's next
-process loses the view its record folded to. This record fixes what a checkpoint of either holds,
-how it is taken with no model call, where it lands, and what a restore gives.
+Agents it spawned, the words the person typed, the figure its statusline shows. A Codex session's is
+its rollout: the person's prompts, the sub-agents it spawned, the figure of its last request.
+
+Continuing the session reads the whole transcript again; a fresh one starts with none of it. A
+resident's next process loses the view its record folded to. This record fixes what a checkpoint of
+either holds, how it is taken with no model call, where it lands, and what a restore gives.
 
 When a resident takes a checkpoint and how its next process replays it is
 [[ADR-0013-the-agent#^c7|ADR-0013/C7]]; the fold a resident's view follows is
 [[ADR-0007-the-record|ADR-0007]]; the context figure is [[ADR-0006-the-notification|ADR-0006]];
 `lion context` and the areas server that carry the verbs are [[ADR-0016-the-lion-command|ADR-0016]]
-and [[ADR-0017-the-desk|ADR-0017]]. Source: `src/lion1/checkpoint.py`,
-`hub/backend/claude_code/checkpoint.py`, `apps/cli/lion_cli/context.py`, `context_api` in
-`apps/cli/lion_cli/areas.py`, `_checkpoint` and `_restore` in `hub/agent/agent.py`.
+and [[ADR-0017-the-desk|ADR-0017]]. Source: `src/lion1/checkpoint.py`, `hub/backend/checkpoint.py`,
+`hub/backend/claude_code/checkpoint.py`, `hub/backend/codex_checkpoint.py`,
+`apps/cli/lion_cli/context.py`, `context_api` in `apps/cli/lion_cli/areas.py`, `_checkpoint` and
+`_restore` in `hub/agent/agent.py`.
 
 ## Definitions
 
-- **checkpoint**: the named values and the folded view of a Claude Code session or a resident's run,
-  taken with no model call and written under `.khive/context/`, from which a restore starts the next
-  session or process.
+- **checkpoint**: the named values and the folded view of a Claude Code or Codex session or a
+  resident's run, taken with no model call and written under `.khive/context/`, from which a restore
+  starts the next session or process.
 - **take**: one checkpoint made: the named values read or declared, the view folded, one file
   written.
 - **named value**: one `Var` of a checkpoint: a name, a kind, the value, where it was read from and
   when.
-- **exchange**: one prompt of a Claude Code session, typed by the person or opened by a task
-  notification, with the last text the session wrote before the next prompt.
+- **exchange**: one prompt of a Claude Code or Codex session, typed by the person or, in Claude
+  Code, opened by a task notification, with the last text the session wrote before the next prompt.
 - **injected text**: what a hook or the Claude Code harness writes into a user row: a slash command
-  with its caveat and output, a task notification, a system reminder, an interrupt mark.
+  with its caveat and output, a task notification, a system reminder, an interrupt mark. For Codex,
+  what its CLI writes into a user message: the environment, AGENTS.md, the plugin list.
 - **lazy value**: a named value over 400 characters, other than one of a kind its taker names eager
-  (a Claude Code session's `directive` and `watch`), which a restore shows by name, size and how to
-  load it.
+  (a Claude Code session's `directive` and `watch`, a Codex session's `directive`), which a restore
+  shows by name, size and how to load it.
 - **restore**: what a checkpoint gives the next session or process: the first prompt of a fresh
-  Claude Code session, or a resident's record as its first run's `history`.
+  Claude Code or Codex session, or a resident's record as its first run's `history`.
+- **rollout**: the file a Codex session writes under `$CODEX_HOME/sessions`, one JSON row per line,
+  the first its own `session_meta`.
 
 ## Assumptions
 
 | # | statement | source | if false |
 | - | --------- | ------ | -------- |
 | A1 | The transcript stays on disk after the session ends; a checkpoint points into it and never copies a tool call or its result. | `source.transcript`; a folded exchange is named by its row's uuid and time, and the restore prints the path | the folded exchanges are lost with the file, and the checkpoint must carry them |
-| A2 | Every value a fresh session needs is declared, read from a file the session keeps, or read from a store. | each kind is read by a function in `hub/backend/claude_code/checkpoint.py` or declared through `lion context set` | the checkpoint needs a model call to write the rest, and is prose again |
+| A2 | Every value a fresh session needs is declared, read from a file the session keeps, or read from a store. | each kind is read by a function in `hub/backend/checkpoint.py`, `hub/backend/claude_code/checkpoint.py` or `hub/backend/codex_checkpoint.py`, or declared through `lion context set` | the checkpoint needs a model call to write the rest, and is prose again |
 | A3 | A Monitor ends at its deadline, 30 minutes at most, whatever `persistent` says. | `MONITOR_CAP_MS` in `hub/backend/claude_code/checkpoint.py`; 65 Monitor calls read from 18 days of one session directory's transcript, all persistent, none still running (2026-09-24) | a Monitor still running is left out of the restore and never re-armed |
-| A4 | A spawned Agent with no ending task notification 12 hours after its start died with a session restart. | `SPAWN_HOURS` in `hub/backend/claude_code/checkpoint.py`; without the bound a take read 29 spawns as running, the oldest two days old (2026-09-24) | a spawn running past 12 hours is left out of the restore |
+| A4 | A spawned Agent with no ending task notification 12 hours after its start died with a session restart. | `SPAWN_HOURS` in `hub/backend/checkpoint.py`; without the bound a take read 29 spawns as running, the oldest two days old (2026-09-24) | a spawn running past 12 hours is left out of the restore |
+| A5 | A Codex rollout marks each item of a user message with what wrote it, and every item the CLI writes there carries a kind other than `user.text`. | `content_item_kinds`, read by `_typed` in `hub/backend/codex_checkpoint.py`; all 7,388 rollouts of September and October 2026, CLI 0.153.4 to 0.160.0: 14,470 user messages marked each item, no `user.text` item opened as the CLI's text does, and every other text item did (2026-10-04) | text the CLI wrote is read as the person's, or the take refuses it by its opening; a message marking no item is counted in `source.unmarked_messages`, never read |
+| A6 | A Codex sub-agent whose last activity row is its start or an `interacted` row still holds work. | `_RUNNING` in `hub/backend/codex_checkpoint.py`; in October's rollouts the row after an `interacted` one was `completed` 303 times, `interacted` 231, `interrupted` 6, and 7 of 834 sub-agents a thread started ended on neither; the 12 hours of A4 are not measured on Codex (2026-10-04) | a sub-agent that finished is restored as running, until 12 hours after its start |
 
 ## Claims
 
@@ -104,7 +112,7 @@ refusal of injected text is pinned by
 
 ### C3: The kept view is half the budget, oldest folded first, and the person's words are eight at most _(enforced: mechanical)_ ^c3
 
-- **Subject**: `fold_turns`, `directives` and `render_prompt` in
+- **Subject**: `fold_turns` (`hub/backend/checkpoint.py`), `directives` and `render_prompt` in
   `hub/backend/claude_code/checkpoint.py`.
 - **Violated when**: the kept exchanges estimate over half the budget while more than one is kept,
   the latest exchange is folded, a folded one goes unnamed, or a restore carries more than eight
@@ -176,11 +184,48 @@ value declared since stays; no test pins that second half.
 A Claude Code session's figure is the statusline's per-session file named by the session id: the
 input tokens, the window and the percentage. Absent, unreadable or not an object, each field is null
 and the restore says "not known". A resident's is the measure its fold decides on, the view estimate
-plus the excess above the floor ([[ADR-0009-backends#^c3|ADR-0009/C3]]), over `context_budget`.
+plus the excess above the floor ([[ADR-0009-backends#^c3|ADR-0009/C3]]), over `context_budget`. A
+Codex session's is its rollout's (C9).
 
 An absent topic, loop file or hook ring gives no value; a khive or a gh that cannot answer leaves
 its reason in `source.lanes`. Of the places read, a missing transcript, a `.khive/config.toml`
 naming no actor and a `pending.jsonl` line that is not a declared value refuse the take.
+
+### C8: A Codex session's exchange is the person's prompt, never text its CLI wrote _(enforced: mechanical)_ ^c8
+
+- **Subject**: the rollout scan in `hub/backend/codex_checkpoint.py` (`_read`, `_typed`),
+  `directives` and `take_codex`.
+- **Violated when**: an item not marked `user.text`, or a forked thread's parent row, is read as a
+  prompt; a sub-agent's prompt is a `directive`; an earlier text stands as the turn's; or a take
+  keeps a `directive` or input opening with the CLI's text.
+
+A prompt is the `input_text` items of a user message its row marks `user.text` (A5). A turn's text
+is the last assistant text before the next prompt; reasoning, tool calls and compactions are never
+read into one. The same words again with no answer between are one exchange.
+
+The first `session_meta` is the thread's own. A forked thread's rows before its own history starts
+are its parent's and are not read. The `directive` values are the newest eight prompts, none in a
+thread a sub-agent runs. Pinned by
+`test_a_rollout_reads_each_typed_prompt_with_its_turns_last_text_and_nothing_the_cli_wrote` and
+`test_a_forked_sub_agents_rollout_reads_its_own_rows_and_its_words_are_not_the_persons`.
+
+### C9: A Codex session's spawns and figure are its rollout's, and its restore re-arms nothing _(enforced: mechanical)_ ^c9
+
+- **Subject**: `spawns`, `context_figure`, `take_codex` and `render_prompt` in
+  `hub/backend/codex_checkpoint.py`, `lion context checkpoint --codex` and `status --codex`.
+- **Violated when**: a completed or interrupted sub-agent, another thread's, or one started 12 hours
+  before the take counts as running; another thread's figure is taken or an absent one reads as a
+  number; or a take or restore holds a `watch`, `precompact` or re-arm.
+
+A spawn is a sub-agent the thread started whose last activity row is its start or more work (A6),
+within 12 hours. The figure is the last `token_count` holding one: the last request's input tokens
+over the model's window, else not known.
+
+The kinds are a run's with `spawn`, `lane`, `directive` and `topic`, the reasons a run's with
+`rotate`: no Monitor is there to re-arm, and `precompact` names Claude Code's hook. The restore's
+first line names the thread, model and CLI; the rest is C4's without the watches. Pinned by
+`test_a_spawn_is_a_sub_agent_the_rollout_shows_holding_work_within_the_bound` and
+`test_the_codex_restore_names_the_thread_first_and_asks_for_no_re_arm`.
 
 ## Decisions
 
@@ -260,6 +305,22 @@ take that fails is kept among the agent's errors and the run goes on.
   `test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh`,
   `test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_says_so`.
 
+### D5: `hub/backend/codex_checkpoint.py` beside the sources both sessions share ^d5
+
+Serves C1, C3, C7, C8 and C9. A module beside `hub/backend/codex.py`, not a package in its place,
+because [[ADR-0009-backends|ADR-0009]] and its tests name that file. The lanes, the pull requests,
+the loop file, the fold and the restore's body live in `hub/backend/checkpoint.py`; the Claude Code
+module re-exports their names. `lion context checkpoint --codex` reads `--session`'s rollout, else
+the directory's newest that no sub-agent wrote; a `--transcript` whose first row is a `session_meta`
+is a Codex session's. `restore` renders by `source.kind`.
+
+- **Landing evidence**: `tests/test_codex_checkpoint.py`:
+  `test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_restores_it`,
+  `test_the_newest_rollout_is_the_directorys_own_thread_and_a_thread_id_names_one_file`,
+  `test_a_rollout_is_read_once_per_file_state`,
+  `test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing`; the Claude Code
+  tests in `tests/test_context.py` and `tests/test_claude_code_checkpoint.py`, unchanged.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -269,6 +330,9 @@ take that fails is kept among the agent's errors and the run goes on.
 | Copying tool calls and their results into the checkpoint | it grows with the session and the fold gains nothing; the transcript keeps them (A1) |
 | Re-arming every Monitor that says `persistent` | the tool ends every Monitor at its deadline, and none of 65 persistent ones read was still running (A3) |
 | The statusline's last-rendered file as the figure | it belongs to whichever session rendered last; the per-session file is named by the session id (C7) |
+| A package `hub/backend/codex/` in place of `codex.py` | the backend's record and its tests name `hub/backend/codex.py`; a module beside it moves no import (D5) |
+| Every user message of a rollout read as a prompt | the CLI writes the environment, AGENTS.md and the plugin list as user messages, each item marked (A5) |
+| The newest rollout whatever wrote it | a sub-agent runs in its parent's directory and writes as often (D5) |
 | One file per directory, overwritten at each take | a take would erase the one before; each take is its own file and `latest.json` names the newest (C6) |
 
 ## Consequences
@@ -285,7 +349,7 @@ take that fails is kept among the agent's errors and the run goes on.
 - **S3**: `save`, `load` and the restore refuse a reason or a kind outside their lists and name the
   value: a file edited to hold another kind does not load, and a restore leaves no value out unsaid.
   The kind checked is a named value's; `source.kind` is on no list: the restore renders a resident's
-  by it, and `to_history` refuses any other. Pinned by
+  and a Codex session's by it, and `to_history` refuses any other. Pinned by
   `test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value` and
   `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`.
 - **S4**: The lanes are the actor's active khive tasks, the threads its unread mail awaits a reply
@@ -322,3 +386,11 @@ take that fails is kept among the agent's errors and the run goes on.
   shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
   box that is not a list is a read that could not be done, and the khive client refuses such a page
   itself. Pinned by `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
+- **S11**: `hub/backend/codex_checkpoint.py` reads the rollouts under `$CODEX_HOME`, `~/.codex` when
+  unset, at each call. Nothing here takes a Codex session's checkpoint on its own: a person or
+  another program runs `lion context checkpoint --codex`. A rollout handed to the PreCompact hook is
+  refused, `precompact` being no reason of a Codex session's, and nothing is written. Pinned by
+  `test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing`.
+- **S12**: A Codex checkpoint is saved and loaded on a Claude Code session's lists, which hold a
+  Codex session's; its restore checks it on the Codex session's own. Like a Claude Code one (S5), it
+  becomes the latest in a resident's directory and the resident's next process refuses it.

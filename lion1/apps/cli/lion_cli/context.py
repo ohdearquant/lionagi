@@ -1,7 +1,7 @@
-"""`lion context {set,checkpoint,restore,status,show}`: a Claude Code session's checkpoint and restore,
-from the session's directory or as its PreCompact hook (ADR-0019/D3). One implementation: the areas
-server's `/api/context/*` routes call these functions; a refused take exits non-zero with the reason
-on stderr."""
+"""`lion context {set,checkpoint,restore,status,show}`: a Claude Code or Codex session's checkpoint and
+restore, from the session's directory or as Claude Code's PreCompact hook (ADR-0019/D3, D5). One
+implementation: the areas server's `/api/context/*` routes call these functions; a refused take exits
+non-zero with the reason on stderr."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from hub.backend import codex_checkpoint
 from hub.backend.claude_code.checkpoint import (
     PROJECTS,
     SESSION_KINDS,
@@ -118,9 +119,12 @@ def checkpoint(
     budget: int = BUDGET,
     khive: Khive | None = None,
     now: datetime | None = None,
+    codex: bool = False,
 ) -> dict:
-    """Take and save a Claude Code session's checkpoint: `{id, path, context, vars, kept, hidden}`. The
-    gitignore assertion runs before anything is read; lanes khive cannot give are a value, not a refusal."""
+    """Take and save a Claude Code or Codex session's checkpoint: `{id, path, context, vars, kept,
+    hidden}`. A Codex session is `codex`, its rollout `session`'s or the directory's newest, or a
+    transcript whose first row says it is a rollout. The gitignore assertion runs before anything is
+    read; lanes khive cannot give are a value, not a refusal."""
     d = Path(directory).resolve()
     if why not in SESSION_WHYS:
         raise CheckpointError(f"why {why!r}: one of {', '.join(SESSION_WHYS)}")
@@ -129,10 +133,24 @@ def checkpoint(
     # after the take, and status calls it so
     now = now or datetime.now().astimezone()
     actor = actor_id(d)
-    path = Path(transcript).expanduser() if transcript else newest_transcript(d)
+    if transcript:
+        path = Path(transcript).expanduser()
+    elif codex:
+        path = codex_checkpoint.rollout_of(session) if session else codex_checkpoint.newest_rollout(d)
+    else:
+        path = newest_transcript(d)
     if not path.is_file():
         raise CheckpointError(f"no transcript at {path}")
-    sid = session or path.stem
+    rollout = codex_checkpoint.is_rollout(path)
+    if codex and not rollout:
+        raise CheckpointError(f"{path} is not a Codex rollout: its first row is no session_meta")
+    if rollout:
+        if why not in codex_checkpoint.CODEX_WHYS:
+            whys = ", ".join(codex_checkpoint.CODEX_WHYS)
+            raise CheckpointError(f"why {why!r}: a Codex session's is one of {whys}")
+        found = codex_checkpoint.rollout_source(path)
+        if session is not None and session != found["session_id"]:
+            raise CheckpointError(f"{path} is the rollout of thread {found['session_id']}, not {session}")
     lane_vars: list[Var] = []
     if khive is None:
         try:
@@ -143,28 +161,33 @@ def checkpoint(
         lane_vars, lane_note = asyncio.run(lanes(khive))
     pr_vars, pr_note = asyncio.run(pulls(d))
     declared, taken = _pending(d)
-    harvested = [
-        *topic(PROJECTS / slug(d) / "memory" / "sessions_registry.json"),
-        *directives(sid, path, TYPED),
-        *watches(path, actor, now),
-        *spawns(path, now),
-        *lane_vars,
-        *pr_vars,
-        *posture(path),
-        *cursor(d),
-    ]
-    source = {
-        "kind": "claude-code",
-        "session_id": sid,
-        **transcript_source(path),
-        "cwd": str(d),
-        "context": context_figure(sid),
-        "lanes": f"{lane_note}; {pr_note}",
-    }
-    view = transcript_turns(path, budget)
-    ckpt = take_session(
-        source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now
-    )
+    if rollout:
+        own = [*codex_checkpoint.directives(path), *codex_checkpoint.spawns(path, now)]
+        last = codex_checkpoint.posture(path)
+        figure = codex_checkpoint.context_figure(path)
+        source = {"kind": "codex", **found, "cwd": str(d), "context": figure}
+        view, taker = codex_checkpoint.rollout_turns(path, budget), codex_checkpoint.take_codex
+    else:
+        sid = session or path.stem
+        own = [
+            *topic(PROJECTS / slug(d) / "memory" / "sessions_registry.json"),
+            *directives(sid, path, TYPED),
+            *watches(path, actor, now),
+            *spawns(path, now),
+        ]
+        last = posture(path)
+        source = {
+            "kind": "claude-code",
+            "session_id": sid,
+            **transcript_source(path),
+            "cwd": str(d),
+            "context": context_figure(sid),
+        }
+        view, taker = transcript_turns(path, budget), take_session
+    source["lanes"] = f"{lane_note}; {pr_note}"
+    harvested = [*own, *lane_vars, *pr_vars, *last, *cursor(d)]
+    ckpt = taker(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now)
+    # the load lists are the Claude Code session's, which hold the Codex session's
     written = save(ckpt, context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
     _drain(d, taken)
     return {
@@ -178,29 +201,40 @@ def checkpoint(
 
 
 def restore(directory: str | Path, id: str | None = None) -> dict:
-    """`{id, first_prompt, watches, spawns}` of the checkpoint `id`, the latest by default."""
+    """`{id, first_prompt, watches, spawns}` of the checkpoint `id`, the latest by default; a Codex
+    session's renders on the Codex session's lists."""
     c = load(context_dir(Path(directory).resolve()), id, kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    render = codex_checkpoint.render_prompt if c.source.get("kind") == "codex" else render_prompt
     return {
         "id": c.id,
-        "first_prompt": render_prompt(c),
+        "first_prompt": render(c),
         "watches": [v.value for v in c.vars if v.kind == "watch"],
         "spawns": [v.value for v in c.vars if v.kind == "spawn"],
     }
 
 
-def status(directory: str | Path, *, session: str | None = None) -> dict:
+def status(directory: str | Path, *, session: str | None = None, codex: bool = False) -> dict:
     """`{latest, taken_at, context_now, stale, pending_vars}`. Stale: no checkpoint, or the transcript or
-    record it points at changed after the take. A `taken_at` with no fraction is its second's start."""
+    record it points at changed after the take. A `taken_at` with no fraction is its second's start. The
+    figure now is a Codex session's with `codex`: `session`'s rollout, or the directory's newest."""
     d = Path(directory).resolve()
     try:
         c = load(context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
     except CheckpointError:
         c = None
-    if session is None:
+    if codex:
         try:
-            session = newest_transcript(d).stem
+            rollout = codex_checkpoint.rollout_of(session) if session else codex_checkpoint.newest_rollout(d)
         except CheckpointError:
-            session = None
+            rollout = None
+        now = codex_checkpoint.context_figure(rollout)
+    else:
+        if session is None:
+            try:
+                session = newest_transcript(d).stem
+            except CheckpointError:
+                session = None
+        now = context_figure(session)
     stale = True
     if c is not None:
         pointed = c.source.get("transcript") or c.source.get("record")
@@ -212,7 +246,7 @@ def status(directory: str | Path, *, session: str | None = None) -> dict:
     return {
         "latest": c.id if c else None,
         "taken_at": c.taken_at if c else None,
-        "context_now": context_figure(session),
+        "context_now": now,
         "stale": stale,
         "pending_vars": len(_pending(d)[0]),
     }
@@ -266,13 +300,15 @@ def context_main(a: argparse.Namespace) -> None:
                         )
                 where, why = given["cwd"], "precompact"
                 session, transcript = given["session_id"], given["transcript_path"]
-            done = checkpoint(where, why, session=session, transcript=transcript, budget=a.budget)
+            done = checkpoint(
+                where, why, session=session, transcript=transcript, budget=a.budget, codex=a.codex
+            )
             print(json.dumps(done, ensure_ascii=False, indent=1))
         elif a.verb == "restore":
             got = restore(a.dir, a.id)
             print(json.dumps(got, ensure_ascii=False, indent=1) if a.json else got["first_prompt"])
         elif a.verb == "status":
-            print(json.dumps(status(a.dir, session=a.session), ensure_ascii=False, indent=1))
+            print(json.dumps(status(a.dir, session=a.session, codex=a.codex), ensure_ascii=False, indent=1))
         elif a.verb == "show":
             value = show(a.dir, a.var, a.id)
             print(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=1))
