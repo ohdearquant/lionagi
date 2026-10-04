@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from lionagi.bus import Bus, Event
+from lion1.bus import Bus, Event
 
 
 class HandlerFailure(Exception):
@@ -38,7 +38,7 @@ def test_an_event_carries_its_kind_payload_and_the_time_it_was_made():
         ("run", "run.started", False),
         ("run.*", "run.started", False),
         ("command.", "commander.x", False),
-        ("round.", "run.started", False),
+        ("turn.", "run.started", False),
         ("*.started", "run.started", False),
     ],
 )
@@ -426,4 +426,4 @@ def test_events_reads_the_log_through_a_pattern():
     assert [e.kind for e in bus.events("*")] == kinds
     assert [e.kind for e in bus.events("command.")] == ["command.requested", "command.settled"]
     assert [e.kind for e in bus.events("run.completed")] == ["run.completed"]
-    assert bus.events("round.") == []
+    assert bus.events("turn.") == []

@@ -83,10 +83,10 @@ patch, because a command it started may still be writing the tree.
 - **Violated when**: an unreported spend reads as a complete number, a dead box's attempt drops its
   spend, or a failed call counts as a turn.
 
-A loop row carries the outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]) and what stopped it, turns
-(the code's `rounds`), and one entry per call from its envelope
-([[ADR-0009-backends#^c5|ADR-0009/C5]]): time, serving provider, attempts, tokens, finish reason,
-cost. Token sums follow, then `cost_usd` as the known subtotal beside `cost_complete`.
+A loop row carries the outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]) and what stopped it, its
+turns, and one entry per call from its envelope ([[ADR-0009-backends#^c5|ADR-0009/C5]]): time,
+serving provider, attempts, tokens, finish reason, cost. Token sums follow, then `cost_usd` as the
+known subtotal beside `cost_complete`.
 
 A box that dies is replaced once, and the first attempt's spend stays on the row. The summary adds
 only known cost and counts the rows that are not whole. The ledger keeps the row without its calls
@@ -160,7 +160,7 @@ their checks and 6 of those failed the grader.
 ### C7: The router arm thinks under a 2000-token budget and stops at the notification frame _(enforced: process)_ ^c7
 
 The loop arm's router backend runs the model's own thinking under a 2000-token budget and ends each
-completion where the model starts writing the loop's own frame, `<system round=`. On Mini-50 that
+completion where the model starts writing the loop's own frame, `<system turn=`. On Mini-50 that
 setting resolved 42 of 50 against 33 with thinking off, both with the stop; unbounded thinking
 without the stop resolved 35.
 
@@ -178,7 +178,7 @@ does not judge a change.
 
 The recorded pair on the hard set with the code hosts closed, not unaided since the CLI arm could
 reach the package indexes (S2), shares one head but ran the loop under a 2400 s budget and the CLI
-under 3600 s. A CLI arm's `rounds` counts the commands it ran, and its calls are one entry per exec,
+under 3600 s. A CLI arm's `turns` counts the commands it ran, and its calls are one entry per exec,
 so turns and calls compare within an arm only. The gate: a quoted comparison names both bench runs
 and states every difference their manifests show.
 
@@ -242,7 +242,7 @@ adds the watch's section and a section naming a turn cut at the output cap or bl
 a dead box, the watch and the cost cap, then harvests every call. `--criteria`, `--tdd` and
 `--deliberate` change the profile's text.
 
-- **Landing evidence**: `tests/test_swe_solve.py`: rounds and patch kept on a backend failure,
+- **Landing evidence**: `tests/test_swe_solve.py`: turns and patch kept on a backend failure,
   missing usage incomplete, a failed envelope not a turn, a dead box ending the run;
   `test_the_thinking_flag_maps_to_the_reasoning_field`.
 

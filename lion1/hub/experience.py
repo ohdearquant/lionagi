@@ -133,14 +133,17 @@ class Experience:
 
 
 class ExperienceLesson(BaseModel):
-    """Leave a lesson for a later run of this same ask: what to do or avoid, in your own words, 1 to
-    1,024 characters. used_ids names the experience records your first notification showed that you
-    used; an id it did not show refuses the lesson. When the run ends, the last lesson that settled ok
-    is kept; one still running when OUT{} ends the run is cancelled, so let it settle in an earlier turn."""
+    """Leave a lesson for a later run of this same ask; send it in a turn before the one with OUT{}.
+    When the run ends, the last lesson that settled ok is kept; one still running when OUT{} ends the
+    run is cancelled. The guidance shows this first line and each field's description."""
 
     __spec_name__ = "experience.lesson"
-    text: str
-    used_ids: list[str] = Field(default_factory=list)
+    text: str = Field(description="what to do or avoid, in your own words: not blank, 1 to 1,024 characters")
+    used_ids: list[str] = Field(
+        default_factory=list,
+        description="ids of the experience records your first notification showed that you used; "
+        "any other id refuses the lesson",
+    )
 
 
 _WORD = re.compile(r"\w+")

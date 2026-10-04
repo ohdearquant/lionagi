@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from lionagi import Actor, Context, Kind, Profile, RunRequest, fold
+from lion1 import Actor, Context, Kind, Profile, RunRequest, fold
 
 root = Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process
@@ -67,7 +67,7 @@ async def main() -> None:
     print("=== run 1: read, take a note, hide the big result, summarize a span")
     first = await actor.run(
         clerk,
-        RunRequest(inputs=("what port does the spec name?",), max_rounds=4),
+        RunRequest(inputs=("what port does the spec name?",), max_turns=4),
         scripted(
             '<lact f1>read_file(path="spec.md")</lact>',
             "<lvar note.port>the spec names port 8080; workers 4</lvar>\n"
@@ -86,7 +86,7 @@ async def main() -> None:
     print("\n=== run 2, same profile: the note is there, listed and pointed at")
     second = await actor.run(
         clerk,
-        RunRequest(inputs=("what did you learn last time?",), max_rounds=3),
+        RunRequest(inputs=("what did you learn last time?",), max_turns=3),
         scripted(
             "<lact l1>note.list()</lact>",
             "<lact e1>echo(text=*note.port)</lact>",

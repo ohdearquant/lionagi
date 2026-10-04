@@ -17,8 +17,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from hub.context import (
+from hub.backend.claude_code.checkpoint import (
     PROJECTS,
+    SESSION_KINDS,
+    SESSION_WHYS,
     TYPED,
     actor_id,
     context_figure,
@@ -28,25 +30,17 @@ from hub.context import (
     newest_transcript,
     posture,
     pulls,
+    render_prompt,
     slug,
     spawns,
+    take_session,
     topic,
     transcript_source,
     transcript_turns,
     watches,
 )
-from hub.khive import Khive, KhiveError
-from lionagi.checkpoint import (
-    KINDS,
-    WHYS,
-    CheckpointError,
-    Var,
-    assert_ignored,
-    load,
-    render_prompt,
-    save,
-    take,
-)
+from hub.khive import Khive, KhiveError, assert_ignored, context_dir
+from lion1.checkpoint import CheckpointError, Var, load, save
 
 __all__ = ("BUDGET", "set_var", "checkpoint", "restore", "status", "show", "context_main")
 
@@ -60,7 +54,7 @@ def _now() -> str:
 
 @contextlib.contextmanager
 def _pending_lock(directory: Path):
-    ctx = directory / ".khive" / "context"
+    ctx = context_dir(directory)
     ctx.mkdir(parents=True, exist_ok=True)
     with (ctx / ".pending.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -72,7 +66,7 @@ def _pending_lock(directory: Path):
 
 def _pending(directory: Path) -> tuple[list[Var], str]:
     """The declared vars waiting for a checkpoint, and the text they were read from."""
-    path = directory / ".khive" / "context" / "pending.jsonl"
+    path = context_dir(directory) / "pending.jsonl"
     try:
         text = path.read_text()
     except FileNotFoundError:
@@ -104,8 +98,8 @@ def set_var(directory: str | Path, name: str, kind: str, value: Any) -> dict:
     """A var declared mid-session, waiting in `.khive/context/pending.jsonl` for the next
     checkpoint; the Var stored."""
     d = Path(directory).resolve()
-    if kind not in KINDS:
-        raise CheckpointError(f"kind {kind!r}: one of {', '.join(KINDS)}")
+    if kind not in SESSION_KINDS:
+        raise CheckpointError(f"kind {kind!r}: one of {', '.join(SESSION_KINDS)}")
     if not name.strip():
         raise CheckpointError("a declared var needs a name")
     assert_ignored(d)
@@ -128,8 +122,8 @@ def checkpoint(
     """Take and save a Claude Code session's checkpoint: `{id, path, context, vars, kept, hidden}`. The
     gitignore assertion runs before anything is read; lanes khive cannot give are a value, not a refusal."""
     d = Path(directory).resolve()
-    if why not in WHYS:
-        raise CheckpointError(f"why {why!r}: one of {', '.join(WHYS)}")
+    if why not in SESSION_WHYS:
+        raise CheckpointError(f"why {why!r}: one of {', '.join(SESSION_WHYS)}")
     assert_ignored(d)
     # the stamp is read before the transcript is: a prompt landing between the read and the stamp is
     # after the take, and status calls it so
@@ -168,8 +162,10 @@ def checkpoint(
         "lanes": f"{lane_note}; {pr_note}",
     }
     view = transcript_turns(path, budget)
-    ckpt = take(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now)
-    written = save(ckpt, d)
+    ckpt = take_session(
+        source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now
+    )
+    written = save(ckpt, context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
     _drain(d, taken)
     return {
         "id": written.stem,
@@ -183,7 +179,7 @@ def checkpoint(
 
 def restore(directory: str | Path, id: str | None = None) -> dict:
     """`{id, first_prompt, watches, spawns}` of the checkpoint `id`, the latest by default."""
-    c = load(Path(directory).resolve(), id)
+    c = load(context_dir(Path(directory).resolve()), id, kinds=SESSION_KINDS, whys=SESSION_WHYS)
     return {
         "id": c.id,
         "first_prompt": render_prompt(c),
@@ -197,7 +193,7 @@ def status(directory: str | Path, *, session: str | None = None) -> dict:
     record it points at changed after the take. A `taken_at` with no fraction is its second's start."""
     d = Path(directory).resolve()
     try:
-        c = load(d)
+        c = load(context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
     except CheckpointError:
         c = None
     if session is None:
@@ -225,7 +221,7 @@ def status(directory: str | Path, *, session: str | None = None) -> dict:
 def show(directory: str | Path, name: str, id: str | None = None) -> Any:
     """The value of the var `name` in the checkpoint `id`, the latest by default: what a lazy var's line
     in the restore prompt points at. A var whose value lives elsewhere (its ref) is refused, saying where."""
-    c = load(Path(directory).resolve(), id)
+    c = load(context_dir(Path(directory).resolve()), id, kinds=SESSION_KINDS, whys=SESSION_WHYS)
     v = next((v for v in c.vars if v.name == name), None)
     if v is None:
         raise CheckpointError(f"{c.id} has no var {name!r}")

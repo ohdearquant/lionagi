@@ -30,7 +30,7 @@ The actor holds the inbox ([[ADR-0001-the-actor|ADR-0001]]); the asking command 
 turn's rule ([[ADR-0002-the-run#^c1|ADR-0002/C1]]) with nothing awaited inline
 ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]); the notification names what arrived
 ([[ADR-0006-the-notification#^c2|ADR-0006/C2]]). Source: `Actor.queue`, `Actor._take_inbox`, the
-handle branch of dispatch, `Actor._deliver` and the `_ACTORS` registry in `lionagi/actor.py`;
+handle branch of dispatch, `Actor._deliver` and the `_ACTORS` registry in `src/lion1/actor.py`;
 `notebooks/03_two_actors.ipynb`.
 
 ## Definitions
@@ -172,7 +172,7 @@ long-running agent is the something outside the loop that runs the actor.
 - **S7**: The ask stays on the table until read only since 2026-09-20; before, a handler that
   yielded after starting the peer got its handle back as the value. The early-answer test pins it.
 - **S8**: The peer's end in C2 is the end of the run that took the request. A peer run that ends
-  before its first turn, at `max_rounds` 0 or with its time budget already spent, never took it, and
+  before its first turn, at `max_turns` 0 or with its time budget already spent, never took it, and
   the request stays on the peer's inbox with its ask open. The asking command waits, and its turn
   with it, until the next run of that actor takes the request.
   `test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run` pins both bounds.

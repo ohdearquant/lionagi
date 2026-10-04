@@ -60,7 +60,7 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **status line**: `model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read
   off the live run each time it is drawn; `actor` is the id `.khive/config.toml` under the directory
   signs as, or `no actor`.
-- **working indicator**: `⠋ thinking · 12s` under the scrollback while a round's call is in flight,
+- **working indicator**: `⠋ thinking · 12s` under the scrollback while a turn's call is in flight,
   `running` once the turn's commands run; a finished result folds to its head, its detail parked
   under the indicator until the next result lands.
 - **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
@@ -86,7 +86,7 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 | A1 | The files git lists, tracked ones and untracked ones not ignored, are the directory the person means; `.git` is never among them. | `DaytonaSandbox.push` lists with `git ls-files --cached --others --exclude-standard`; every file when the directory is not a repository | the copy lacks a file the work needs, or carries one that should have stayed home |
 | A2 | The copy's diff against the baseline, committed, staged, unstaged and untracked, is the whole change the model made. | `git_diff` in `hub/tools/box.py`; `test_baseline_diff_keeps_committed_and_uncommitted_edits` | a change never reaches the person, and the chat says there was none |
 | A3 | `git apply` checks every hunk before it writes one. | git; `test_a_patch_that_will_not_apply_is_saved_whole_and_lands_nothing` | `--apply` can land half a patch in the person's tree |
-| A4 | One session fits one run's turn budget, 200 by default. | `--rounds` in the parser | the chat ends `Exhausted` mid-work and the person continues it with `-c` |
+| A4 | One session fits one run's turn budget, 200 by default. | `--turns` in the parser | the chat ends `Exhausted` mid-work and the person continues it with `-c` |
 
 ## Claims
 
@@ -204,18 +204,18 @@ coding guidance, `hub/guidance/code.md`, names the run it was tried on.
 On a terminal a paste of many lines is one message, Enter sends, Alt-Enter breaks a line, Up recalls
 earlier messages from `.lion/history`, and Ctrl-C clears the line or, on an empty one, ends the
 chat. A pipe keeps the plain line reader. The status line sits under the prompt and prints at each
-round notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
+turn notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
 per key, a flag on the line over both.
 
 ### C9: A first Ctrl-C cuts the call; a failed directive leaves a session as it was _(enforced: mechanical)_ ^c9
 
 - **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session.
-- **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a cancel arriving
+- **Violated when**: a Ctrl-C mid-call waits for the turn, a cut ends the run, a cancel arriving
   with a cut is lost, a failed directive restarts the session, or the session's CLI is handed a tool
   of its own.
 
-Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
-the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
+Mid-turn a first Ctrl-C cuts the backend call in flight: the turn ends with a notice and no message,
+the run goes on, and a `claude_code` session resumes where it was; with no call in flight the turn
 settles first. Only a result that changed the view carries its `spec`, so a failed directive leaves
 the session as it was.
 
@@ -229,7 +229,7 @@ does is a command in its text that the console runs, gates and records.
 - **Violated when**: a call in flight shows nothing moving, a finished result stays open above the
   next, or the status line names no model.
 
-On a terminal the working indicator runs under the scrollback from a round's start until its turn
+On a terminal the working indicator runs under the scrollback from a turn's start until its message
 lands, `running` while the turn's commands run. With `--verbose` a result prints its head to the
 scrollback and parks its detail under the indicator until the next lands. The status line leads with
 the model and the actor. A pipe gets none of this.
@@ -366,11 +366,11 @@ which a command typed as it accepts only if the model validates by name.
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
 
-Serves C1 and C6. `chat` runs the actor once with `wait`, `history`, `accept` and the round budget,
-and hands each entry to `say` from the bus's `run.started`, `round.started` and `command.` events,
+Serves C1 and C6. `chat` runs the actor once with `wait`, `history`, `accept` and the turn budget,
+and hands each entry to `say` from the bus's `run.started`, `turn.started` and `command.` events,
 from `wait`, and once more at the end. `entry_row` writes a result as its five fields and a
 directive as data; `load_log` reads rows back through `entry_of`, the reader the checkpoint in
-`lionagi/checkpoint.py` also uses.
+`src/lion1/checkpoint.py` also uses.
 
 - **Landing evidence**: `tests/test_chat.py`: a plain turn and the next line on one record, each
   entry said as it lands, `OUT{}` refused, the pause, the log read back as history, the directives
@@ -455,7 +455,7 @@ so the session runs `--tools ""` and `--max-turns 1`. On `-c`, `chat_main` seeds
 
 Serves C10. `Console.working(what)` starts a transient rich `Live` at eight frames a second holding
 a `_Working` (frame, what, elapsed) and any parked detail; `idle()` stops it. `chat_main` subscribes
-`round.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
+`turn.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
 carries commands. `signer(directory)` reads the actor id for the status line.
 
 - **Landing evidence**: `tests/test_chat.py`:
@@ -553,7 +553,7 @@ set.
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`. Control:
   the old line fails both.
 
-### D16: `jsonable` in `lionagi/checkpoint.py`, the writers' `default=` ^d16
+### D16: `jsonable` in `src/lion1/checkpoint.py`, the writers' `default=` ^d16
 
 Serves C19 and C20. `jsonable` returns `model_dump(mode="json")` for a pydantic model, whatever form
 that takes, and the `str` of anything else, or of a model whose dump raises pydantic's serialization
@@ -582,7 +582,7 @@ into the model again.
 | A summary of the session as what resumes | the record is the memory; a summary is the model's opinion of it and folds nothing |
 | Rerunning unsettled commands on resume | one may have had its effect before the session ended; the model is told and asks again |
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
-| A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
+| A first Ctrl-C that waits for the turn to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
 | Falling back to the directory's khive config when the explicit one is missing | the chat would sign as someone the person did not name; a refusal by file name is what they can act on |
 | A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
@@ -594,7 +594,7 @@ into the model again.
 | Letting the claude CLI read CLAUDE.md itself (its setting sources) | only one backend would get the files, and with them every setting and hook the CLI finds; composing them into the guidance serves every model alike |
 | Every CLAUDE.md from the directory up to the filesystem root | the directories above a repository hold other projects' rules; the home file is the one every chat means to share |
 | Copying the whole chat from the terminal's scrollback | the terminal wraps and indents what it shows; the copy is built from the entries, unwrapped |
-| The claude CLI's own tools inside each round (`--tools`) | a second channel beside the commands: a model that called a command natively was told it did not exist, then wrote the loop's result frame itself with invented results |
+| The claude CLI's own tools inside each turn (`--tools`) | a second channel beside the commands: a model that called a command natively was told it did not exist, then wrote the loop's result frame itself with invented results |
 
 ## Consequences
 
@@ -602,12 +602,12 @@ into the model again.
   declares, its receipts and what it may reach are the kernel's ([[ADR-0011-the-box|ADR-0011]], the
   box). The chat reaches them only through the tools the console registers.
 - **S2**: What resumes is the record. The notes outlive every chat anyway, one file per profile
-  under `.lion/notes/`. The VM is new per chat, the round budget and the spend count start again,
-  and a boxed chat starts from a fresh push of the directory as it stands: an earlier chat patch
-  left unapplied is not in the new copy.
+  under `.lion/notes/`. The VM is new per chat, the turn budget and the spend count start again, and
+  a boxed chat starts from a fresh push of the directory as it stands: an earlier chat patch left
+  unapplied is not in the new copy.
 - **S3**: A run ended mid-turn does not resume ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). Beside the
-  chat, `lionagi/checkpoint.py` and `lion context` take and restore checkpoints of named values and
-  a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
+  chat, `src/lion1/checkpoint.py` and `lion context` take and restore checkpoints of named values
+  and a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
   ([[ADR-0013-the-agent|ADR-0013]]) replays its last checkpointed record as history, and refuses one
   that no longer folds to the checkpoint's view.
 - **S4**: The chat log holds every value whole; the console prints a result as one line. The closing
@@ -630,7 +630,7 @@ into the model again.
   with git's reason; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
-- **S11**: A cut round leaves no turn on the record, only a notice. A `claude_code` session killed
+- **S11**: A cut turn leaves no message on the record, only a notice. A `claude_code` session killed
   mid-call resumes on the next call from the CLI's own persisted session, which keeps its own
   transcript until a restart that pays, or the fold, starts it over from the folded view.
 - **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a

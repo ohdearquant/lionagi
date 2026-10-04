@@ -4,7 +4,7 @@ Same model (through OpenRouter), same task text, same eval image, same grading a
 what differs is who runs the loop. Here codex's own agent loop runs in the box with its shell tool
 and no inner sandbox (the box is the sandbox), for at most `time_budget` seconds of wall clock; the
 diff on disk at the end is the patch, whatever codex said. The record has the shape
-`run_swe.solve` writes so the ledger and the summary read both arms alike: `rounds` counts the
+`run_swe.solve` writes so the ledger and the summary read both arms alike: `turns` counts the
 commands codex ran, `tokens` and `cost_usd` come from its `turn.completed` usage priced at the
 model's listed OpenRouter rates (codex reports tokens, not money); a turn started and never metered
 leaves the record incomplete, and with no usage at all both are None, never zero. A `time_budget`
@@ -196,7 +196,7 @@ async def solve(
         (out_dir / f"{iid}.codex.err").write_text(await _read(box, STDERR))
         parsed = parse_stream(stream)
         last = (await _read(box, LAST)).strip()
-        rec["rounds"] = len(parsed["commands"])
+        rec["turns"] = len(parsed["commands"])
         rec["steps"] = parsed["kinds"]
         rec["commands"] = parsed["commands"]
         rec["failures"] = parsed["failures"] or None
