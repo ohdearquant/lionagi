@@ -41,7 +41,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0016 | The lion command and the spend row: one entry, the shared lock, the row from the envelopes, the readers | draft (2026-09-25); the unknown-cost mark owed | none |
 | ADR-0017 | The desk: the read-only reader, the cursor that never marks, the gate, code escalations, every model-facing command with its gate, pending until its row, keyed replay, record answers, the brief, areas and chairs | draft (2026-09-25); no bench exercises the desk | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
-| ADR-0019 | The checkpoint and the restore: named values and a folded view with no model call, the transcript scan, half the budget and eight of the person's words, the re-arm first, the ignored directory, one `latest.json` for both arms | draft (2026-09-25); lanes from pull requests and threads owed; nothing in the code starts a Claude Code session's checkpoint | the durable record and a session's continuity across processes: which checkpoint a new process starts from, who starts it, how long a checkpoint is kept |
+| ADR-0019 | The checkpoint and the restore: named values and a folded view with no model call, the transcript scan, a Codex session's rollout, half the budget and eight of the person's words, the re-arm first, the ignored directory, one `latest.json` for both arms | draft (2026-09-25); lanes from pull requests and threads owed; nothing in the code starts a Claude Code session's checkpoint | the durable record and a session's continuity across processes: which checkpoint a new process starts from, who starts it, how long a checkpoint is kept |
 | ADR-0020 | Withdrawn 2026-10-03 (the record, the stores and the lesson's Spec are in `hub/experience.py`, wired to nothing). Experience across runs: one recall before the first call, one persist after the reap, an immutable record of each, two receipts on the record and the bus, the offline gate as transport evidence only | proposed (2026-10-02); built and pinned by tests; the khive-backed store owed under its own record (D7) | the durable record of outcomes and the recall that reads it |
 | ADR-0021 | The served actor: one service over one actor, offers, the card, a run started, watched, spoken to and ended from outside, a log per run, one HTTP transport on loopback | proposed (2026-10-02); nothing built | the process's front door: who may start what, the durable store of runs and supervision across restarts |
 
@@ -182,7 +182,8 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   chronology; a record answer is code's words and a miss is no answer; the brief moves only once
   delivered; an area is one chair and its residents (0017 C1 to C11).
 - A checkpoint is named values and a folded view taken with no model call; a restore starts from
-  the latest one, re-arms first, and a checkpoint lives in an ignored directory (0019 C1 to C7).
+  the latest one, re-arms first, and a checkpoint lives in an ignored directory (0019 C1 to C7); a
+  Codex session's reads its rollout, never the CLI's text as the person's (C8, C9).
 
 ## Open
 

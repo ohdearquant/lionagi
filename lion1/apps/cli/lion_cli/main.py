@@ -140,7 +140,7 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     here.add_argument(
         "--dir", default=".", help="the session's directory: .khive/config.toml names the actor"
     )
-    cx = sub.add_parser("context", help="a Claude Code session's checkpoint and restore (ADR-0019)")
+    cx = sub.add_parser("context", help="a Claude Code or Codex session's checkpoint and restore (ADR-0019)")
     verbs = cx.add_subparsers(dest="verb", required=True)
     cs = verbs.add_parser("set", parents=[here], help="declare a var; the next checkpoint takes it")
     cs.add_argument("--name", required=True)
@@ -148,24 +148,39 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     cs.add_argument("--value", required=True, help="text, or JSON when it opens with { or [")
     cc = verbs.add_parser("checkpoint", parents=[here], help="take the checkpoint, no model call")
     cc.add_argument("--why", choices=SESSION_WHYS, default="manual")
-    cc.add_argument("--session", default=None, help="default: the newest transcript's session")
+    cc.add_argument(
+        "--session", default=None, help="default: the newest transcript's session; with --codex, a thread id"
+    )
     cc.add_argument(
         "--transcript",
         default=None,
-        help="default: the newest *.jsonl under ~/.claude/projects/<cwd slug>/, never a _precompact_ copy",
+        help="default: the newest *.jsonl under ~/.claude/projects/<cwd slug>/, never a _precompact_ copy; "
+        "a Codex rollout given here is taken as a Codex session",
     )
     cc.add_argument("--budget", type=int, default=BUDGET, help="tokens; the kept view is half of it")
-    cc.add_argument(
+    how = cc.add_mutually_exclusive_group()
+    how.add_argument(
         "--hook",
         action="store_true",
         help="run as Claude Code's PreCompact hook: the session, transcript and cwd come on stdin, the "
         "reason is precompact",
     )
+    how.add_argument(
+        "--codex",
+        action="store_true",
+        help="a Codex session: --session's rollout, else the newest under $CODEX_HOME/sessions whose cwd "
+        "is --dir, never a sub-agent's",
+    )
     cr = verbs.add_parser("restore", parents=[here], help="print the first prompt of the fresh session")
     cr.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
     cr.add_argument("--json", action="store_true", help="print {id, first_prompt, watches, spawns}")
     ct = verbs.add_parser("status", parents=[here], help="the latest checkpoint and the figure now")
-    ct.add_argument("--session", default=None, help="default: the newest transcript's session")
+    ct.add_argument(
+        "--session", default=None, help="default: the newest transcript's session; with --codex, a thread id"
+    )
+    ct.add_argument(
+        "--codex", action="store_true", help="the figure now is a Codex session's, from its rollout"
+    )
     cv = verbs.add_parser("show", parents=[here], help="print one var's value, a lazy one included")
     cv.add_argument("--var", required=True, help="the var's name, as the restore prompt gives it")
     cv.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
