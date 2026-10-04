@@ -7,11 +7,11 @@ message array so the provider's prefix cache hits on the unchanged prefix; for D
 provider is pinned to DeepInfra with Fireworks as the only fallback and data collection denied (the
 first-party endpoint trains on traffic, and provider slugs are lowercase), the model's own thinking
 runs under a token budget (2000 on the bench: 42 of 50 against 33 with thinking off, ADR-0012/C7),
-and the completion stops where the model starts writing the loop's own `<system round=` frame.
+and the completion stops where the model starts writing the loop's own `<system turn=` frame.
 Codex runs `codex exec` with every acting feature off, on a subscription (no cost figure). Claude
 Code runs `claude -p` with tools off. `claude` resumes one CLI session per run and sends only what
 the view gained; `session` is the same shape under its own name. `claude-oneshot` is one fresh
-`claude -p` call per round, the whole view sent as a transcript each time.
+`claude -p` call per turn, the whole view sent as a transcript each time.
 
     uv run python examples/backends.py --backend openrouter [--model deepseek/deepseek-v4.1-flash]
     uv run python examples/backends.py --backend codex [--model gpt-6-luna]
@@ -34,9 +34,9 @@ from hub.backend import (
     OpenRouter,
     OpenRouterError,
 )
-from lionagi import Actor, Context, Kind, Profile, RunRequest, Success
+from lion1 import Actor, Context, Kind, Profile, RunRequest, Success
 
-TEXT = "the loop goes round and every round is one message in and one message out"
+TEXT = "the loop goes round and every turn is one message in and one message out"
 
 
 class WordCount(BaseModel):
@@ -69,7 +69,7 @@ def build_backend(kind: str, model: str | None):
             timeout=120,
             provider=provider,
             reasoning={"max_tokens": 2000},
-            stop=["<system round="],
+            stop=["<system turn="],
         )
     if kind == "codex":
         return Codex(model=model or "gpt-6-luna", timeout=300)
@@ -99,7 +99,7 @@ async def main(kind: str, model: str | None) -> None:
             RunRequest(
                 inputs=(f"How many words, and which is the longest? Text: {TEXT!r}",),
                 emits=(Report,),
-                max_rounds=6,
+                max_turns=6,
                 time_budget=180,
             ),
             backend,
@@ -108,7 +108,7 @@ async def main(kind: str, model: str | None) -> None:
         if backend.calls:
             spent(backend)
         raise
-    print(f"{kind}: {type(run.outcome).__name__} after {run.round} rounds")
+    print(f"{kind}: {type(run.outcome).__name__} after {run.turn} turns")
     for e in run.record:
         if e.kind is Kind.TEXT:
             print(f"  [{e.name}] {e.content.strip()[:160]!r}")

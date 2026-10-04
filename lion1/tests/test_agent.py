@@ -18,9 +18,9 @@ from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
 from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
-from hub.khive import Khive
-from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
-from lionagi.checkpoint import load
+from hub.khive import Khive, context_dir
+from lion1 import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
+from lion1.checkpoint import load as load_from
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes
@@ -131,7 +131,7 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     later = mail("lambda:a", "one more", mid="c3d4e5f6")
     lines: list[str] = []
-    # aliases are unique for the whole run, bursts included; a command's result comes back next round
+    # aliases are unique for the whole run, bursts included; a command's result comes back next turn
     # and a turn of plain text, the posture, ends the burst
     again = REPLY.replace("<lact s1>", "<lact s2>")
     backend = Scripted(REPLY, "answered hello", again, "answered again", khive=khive)
@@ -147,8 +147,8 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     asyncio.run(agent.serve(until=until, log=lines.append))
     (run,) = agent.runs  # one run, two wakes
     assert agent.wakes == 2 and khive.sent == [SENT, SENT]
-    assert lines[0].startswith("wake 1: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
-    assert lines[1].startswith("wake 2: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[0].startswith("wake 1: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[1].startswith("wake 2: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
     assert len(inputs) == 2 and "one more" in inputs[1] and "same conversation" in inputs[1]
     assert "'outcome': 'Quiet'" in inputs[1]  # the second burst is told how the first ended
@@ -198,7 +198,9 @@ def test_a_continuous_chairs_out_is_its_stop_its_posture_as_written_and_its_end_
     asyncio.run(agent.serve(until=until, log=lines.append))
     first, second = agent.runs  # the stop ended the conversation; the next mail runs fresh
     assert isinstance(first.outcome, Success) and khive.sent == [SENT, SENT]
-    held = load(tmp_path)  # the end is checkpointed as the cap's is, the stop's posture among its vars
+    held = load_from(
+        context_dir(tmp_path)
+    )  # the end is checkpointed as the cap's is, the stop's posture among its vars
     assert lines[0] == f"checkpoint {held.id} (end) at seq {first.record.seq}"
     assert held.why == "end" and held.source["run"] == first.id and held.source["seq"] == first.record.seq
     assert {v.name: v.value for v in held.vars}.get("posture", "") == posture  # an empty note is not held
@@ -224,7 +226,7 @@ def test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst(tmp_
     asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
     (run,) = agent.runs
     note, cursor = agent.actor.notes_for(ACTING).get("posture"), agent.state.get("cursor")
-    assert lines[0].startswith("wake 1: Quiet after 2 rounds") and khive.sent == [SENT]
+    assert lines[0].startswith("wake 1: Quiet after 2 turns") and khive.sent == [SENT]
     assert (note.value, note.run, note.seq) == ("", run.id, cursor.seq) and cursor.run == run.id
 
 
@@ -273,7 +275,7 @@ def test_a_failed_take_inside_the_conversation_is_a_logged_failure_the_run_outli
     asyncio.run(agent.serve(until=until, log=lines.append))
     (run,) = agent.runs
     assert lines[1] == "wake 1 failed: RuntimeError: AdmissionDeadlineExpired"
-    assert lines[2].startswith("wake 2: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[2].startswith("wake 2: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     spend = agent.state.get("spend").value
     assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 4  # nothing booked twice
     owed = [m for m in khive.sent if m["to"] == "lambda:owner"]
@@ -296,8 +298,8 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
     assert first.profile is ACTING and second.profile is READER and khive.sent == [SENT]
     assert "read this" not in "".join(str(e.content) for e in first.record)
     # the second run's OUT{} is the model's stop: its end is checkpointed before the wake's line
-    assert lines[1] == f"checkpoint {load(tmp_path).id} (end) at seq {second.record.seq}"
-    assert lines[2].startswith("wake 2: Success after 1 rounds, 1 mail, 0 sent")
+    assert lines[1] == f"checkpoint {load_from(context_dir(tmp_path)).id} (end) at seq {second.record.seq}"
+    assert lines[2].startswith("wake 2: Success after 1 turns, 1 mail, 0 sent")
 
 
 def test_a_profile_changed_under_the_same_name_ends_the_conversation_and_runs_fresh(tmp_path):
@@ -344,13 +346,13 @@ def test_two_sends_of_a_turn_wait_on_one_lock_under_every_loop_that_drives_the_a
 
 def test_a_refused_command_does_not_end_the_batch(tmp_path):
     """A turn of commands never ends the batch: their results, a refusal among them, come back next
-    round, and the turn of plain text after them ends it."""
+    turn, and the turn of plain text after them ends it."""
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     lines: list[str] = []
     slip = REPLY + "<lact x1>frobnicate()</lact>"  # the send lands, the second command is unknown
     agent = build(khive, slip, "sent once; the second was a slip", continuous=True, poll_ms=20)
     asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
-    assert lines[0].startswith("wake 1: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[0].startswith("wake 1: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     assert agent.actor.notes_for(ACTING).get("posture").value == "sent once; the second was a slip"
 
 
@@ -593,7 +595,7 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "wake": 3,
         "at": "2026-09-22 11:09:15",
         "outcome": "Success",
-        "rounds": 2,
+        "turns": 2,
         "mail": ["a1b2c3d4", "b2c3d4e5"],
         "sent": 1,
         "tokens": {"calls": 2, "in": 5000, "out": 300, "cost": 0.004, "unknown": 0, "context": 2400},
@@ -616,7 +618,7 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "day 2026-09-22: 5 model call(s), 12000 in, 800 out, $0.0123; 3 wake(s) with 4 mail; "
         "17 idle poll(s) at 0 tokens\n"
         "per handled message: 3200 tokens\n"
-        "last wake 3 at 2026-09-22 11:09:15: Success after 2 round(s), 2 mail, 1 sent; 2 call(s), 5000 in, "
+        "last wake 3 at 2026-09-22 11:09:15: Success after 2 turn(s), 2 mail, 1 sent; 2 call(s), 5000 in, "
         "300 out, $0.0040; 2 idle poll(s) before it\n"
         "ledger: 3 check(s), 2 answered, 1 not\n"
         "desk: 2 of the owner's message(s) read today, 1 answered, 1 left"
@@ -1009,7 +1011,7 @@ def test_new_failure_preserves_older_owed_batch():
 
 
 def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeypatch):
-    """--rerun ID...: the batch a killed round left read and unanswered, back through Agent.rerun."""
+    """--rerun ID...: the batch a killed turn left read and unanswered, back through Agent.rerun."""
     from types import SimpleNamespace
 
     seen: dict = {}
@@ -1347,6 +1349,121 @@ def test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own(tmp
             build(d, backend)
 
 
+def test_backend_for_codex_is_the_session_on_the_named_model_on_a_measured_release_only(
+    monkeypatch, tmp_path
+):
+    from lion_cli.agent import backend_for
+
+    from hub.backend import CodexSession
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: "/opt/bin/codex")
+    b = backend_for("codex/gpt-6-luna")
+    assert isinstance(b, CodexSession) and (b.model, b.cli) == ("gpt-6-luna", "/opt/bin/codex")
+    assert (b.timeout, b.effort, b.home) == (300.0, None, None)
+    assert isinstance(backend_for("codex"), CodexSession) and backend_for("codex").model is None
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "auth.json").write_text("{}")
+    options = {"timeout": 1800, "effort": "high", "cli": "/opt/bin/codex-named", "home": str(home)}
+    p = backend_for("codex/gpt-6-sol", codex=options, cwd=Path("/a"))
+    assert (p.timeout, p.effort, p.cli, p.home) == (1800.0, "high", "/opt/bin/codex-named", str(home))
+    # no name and no key reaches a CLI release the tools-off claim was not measured on
+    assert not b.unmeasured and not p.unmeasured
+    assert type(backend_for("codexx/gpt-6-luna")).__name__ == "OpenRouter"  # a name that only starts so
+    # the two tables are apart: `[claude_code]` configures nothing of a codex model
+    assert backend_for("codex/gpt-6-luna", {"timeout": 1800}).timeout == 300.0
+
+
+@pytest.mark.parametrize("model", ["codex/gpt-6-luna", "claude_code", "deepseek/deepseek-v4.1-flash"])
+@pytest.mark.parametrize("key", ["unmeasured", "tools", "sandbox", "retries", "mcp_config"])
+def test_a_codex_key_that_is_not_timeout_effort_cli_or_home_is_refused_by_name_whatever_the_model(
+    monkeypatch, model, key
+):
+    """`unmeasured` is the one way back to a model that may act unseen: no config sets it, and a
+    `--model` that is not codex does not make the table ignored."""
+    from lion_cli.agent import backend_for
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: f"/opt/bin/{name}")
+    says = rf"\[codex\] {key}: a codex model has no tools of its own \(ADR-0016/D3\); the keys are "
+    with pytest.raises(ValueError, match=says + "timeout, effort, cli, home$"):
+        backend_for(model, codex={"timeout": 600, key: True})
+    with pytest.raises(ValueError, match=r"\[codex\] is a table of timeout, effort, cli and home, not 'x'"):
+        backend_for(model, codex="x")
+
+
+# values a `[claude_code]` or `[codex]` key does not take
+_NOT_TAKEN = [
+    ("timeout", True),  # an int to Python: one second, off a typo
+    ("timeout", "fast"),
+    ("timeout", 0),
+    ("timeout", -5),
+    ("timeout", float("inf")),
+    ("timeout", float("nan")),
+    ("effort", 3),
+    ("effort", ""),
+    ("cli", ""),
+    ("cli", ["codex"]),
+    ("home", ""),  # an empty home would be read as the directory the process stands in
+    ("home", 7),
+]
+
+
+@pytest.mark.parametrize(("key", "value"), _NOT_TAKEN)
+def test_a_claude_code_value_that_is_not_what_its_key_takes_is_refused_by_the_key(key, value):
+    from lion_cli.agent import backend_for
+
+    from hub.agent.agent import claude_code_options
+
+    if key == "home":  # `[claude_code]` has no such key: refused as a key, before any value is read
+        with pytest.raises(ValueError, match=r"^\[claude_code\] home: a claude_code model has no tools"):
+            claude_code_options({key: value})
+        return
+    with pytest.raises(ValueError, match=rf"^\[claude_code\] {key} is a "):
+        claude_code_options({key: value})
+    with pytest.raises(ValueError, match=rf"^\[claude_code\] {key} is a "):
+        backend_for("claude_code/sonnet", {key: value})
+    good = {"timeout": 0.5, "effort": "low", "cli": "claude"}
+    assert claude_code_options(good) == good and claude_code_options({"timeout": 1800}) == {"timeout": 1800}
+
+
+@pytest.mark.parametrize(("key", "value"), _NOT_TAKEN)
+def test_a_codex_value_that_is_not_what_its_key_takes_is_refused_by_the_key(monkeypatch, key, value):
+    from lion_cli.agent import backend_for
+
+    from hub.agent.agent import codex_options
+
+    monkeypatch.setattr("hub.backend.codex.shutil.which", lambda name: f"/opt/bin/{name}")
+    with pytest.raises(ValueError, match=rf"^\[codex\] {key} is a "):
+        codex_options({key: value})
+    with pytest.raises(ValueError, match=rf"^\[codex\] {key} is a "):
+        backend_for("codex", codex={key: value})
+    good = {"timeout": 0.5, "effort": "low", "cli": "codex", "home": "/h"}
+    assert codex_options(good) == good and codex_options({"timeout": 1800}) == {"timeout": 1800}
+
+
+def test_build_refuses_a_codex_backend_built_for_an_unmeasured_release(tmp_path, kkernel_stub):
+    """`build` takes a backend from anywhere: one built to run a CLI release nobody measured may let
+    the model act outside every gate, so it is refused, as is the config key that would ask for it."""
+    from lion_cli.agent import build
+
+    from hub.backend import CodexSession
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    with pytest.raises(ValueError, match="a codex backend built to run an unmeasured CLI release"):
+        build(d, CodexSession(cli="/bin/codex", unmeasured=True))
+    backend = CodexSession(cli="/bin/codex")
+    _, agent = build(d, backend)
+    assert agent.backend is backend
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[codex]\nunmeasured = true\n'
+    )
+    with pytest.raises(ValueError, match=r"\[codex\] unmeasured: a codex model has no tools of its own"):
+        build(d, backend)
+
+
 def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread(
     tmp_path, kkernel_stub, monkeypatch
 ):
@@ -1640,7 +1757,7 @@ def test_the_wake_line_carries_the_last_turns_context_and_the_sessions_started_o
     cursor = {
         "wake": 44,
         "outcome": "Quiet",
-        "rounds": 1,
+        "turns": 1,
         "mail": [1],
         "sent": 0,
         "tokens": {"calls": 1, "in": 188926, "out": 601, "cost": 0.1, "context": 31895, "restarts": 1},
@@ -1831,6 +1948,12 @@ def test_budget_and_wake_rules_follow_the_config_file_while_serving(tmp_path):
     agent._reload()
     assert agent.budget.cost_per_day == 9.0
     said = "reload failed, the values in force stay: ValueError: [claude_code] tools: a claude_code model has"
+    assert lines[-1].startswith(said + " no tools of its own")
+    cfg.write_text("[budget]\ncost_per_day = 3.0\n\n[codex]\nunmeasured = true\n")
+    os.utime(cfg, (time.time() + 20, time.time() + 20))
+    agent._reload()
+    assert agent.budget.cost_per_day == 9.0
+    said = "reload failed, the values in force stay: ValueError: [codex] unmeasured: a codex model has"
     assert lines[-1].startswith(said + " no tools of its own")
 
 

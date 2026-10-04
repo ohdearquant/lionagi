@@ -34,24 +34,24 @@ class FakeBox:
 
 
 class _Run:
-    def __init__(self, round: int, *ran: tuple[str, int]):
-        self.round = round
-        self.record = [_Result(spec, r) for spec, r in ran]  # (spec, round) of commands that ran
+    def __init__(self, turn: int, *ran: tuple[str, int]):
+        self.turn = turn
+        self.record = [_Result(spec, r) for spec, r in ran]  # (spec, turn) of commands that ran
 
 
 class _Result:
-    """A RESULT entry as the gate reads it: kind name, the result's spec, the round."""
+    """A RESULT entry as the gate reads it: kind name, the result's spec, the turn."""
 
-    def __init__(self, spec: str, round: int, ok: bool = True):
+    def __init__(self, spec: str, turn: int, ok: bool = True):
         self.kind = type("K", (), {"name": "RESULT"})()
         self.content = type("C", (), {"spec": spec, "ok": ok})()
-        self.round = round
+        self.turn = turn
 
 
 async def _drive(watch: Watch, n: int) -> list[tuple[str | None, bool]]:
     out = []
     for r in range(1, n + 1):
-        stopped = watch.stop()  # asked at the top of the round, before the observation
+        stopped = watch.stop()  # asked at the top of the turn, before the observation
         out.append((await watch.section(_Run(r)), stopped))
     return out
 
@@ -95,9 +95,9 @@ def test_nothing_is_said_before_a_source_change_and_scaffolding_is_named_apart()
     assert (
         rows[1][0] == "repository: no source change yet; tests/t.py changed under tests, not part of the fix"
     )
-    assert rows[2][0] == "repository: the fix touches django/a.py, unchanged since round 2"
+    assert rows[2][0] == "repository: the fix touches django/a.py, unchanged since turn 2"
     assert rows[3][0] == (
-        "repository: the fix touches django/a.py, unchanged since round 2; "
+        "repository: the fix touches django/a.py, unchanged since turn 2; "
         "tests/t.py changed under tests, not part of the fix"
     )
     assert not any(stopped for _, stopped in rows)
@@ -118,32 +118,32 @@ def test_new_files_outside_the_tracked_tree_are_scaffolding_and_start_no_clock()
         "repository: no source change yet; repro.py, tt/__init__.py, tt/models.py are new files outside "
         "the tracked tree, not part of the fix"
     )
-    assert not any(stopped for _, stopped in rows)  # eight rounds of scratch never settle
+    assert not any(stopped for _, stopped in rows)  # eight turns of scratch never settle
     assert watch.state()["scratch"] == ["repro.py", "tt/__init__.py", "tt/models.py"] and watch.source == [
         "django/a.py",
         "django/db/new.py",
     ]
-    assert rows[8][0].startswith("repository: the fix touches django/a.py, unchanged since round 8; repro.py")
+    assert rows[8][0].startswith("repository: the fix touches django/a.py, unchanged since turn 8; repro.py")
     assert rows[9][0].startswith("repository: the fix touches django/a.py, django/db/new.py, unchanged since")
-    assert box.ran.count("git ls-files -- tt | head -1") == 1  # asked once per directory, not per round
+    assert box.ran.count("git ls-files -- tt | head -1") == 1  # asked once per directory, not per turn
 
 
 def test_the_notice_then_the_warning_then_the_stop_and_a_source_edit_resets_all_three():
     fix, fix2 = _diff(("django/a.py", "fix")), _diff(("django/a.py", "fix2"))
-    # observed at rounds 1..: fix stands from round 2 through 8, changes at 9, then stands
+    # observed at turns 1..: fix stands from turn 2 through 8, changes at 9, then stands
     seq = [""] + [fix] * 7 + [fix2] * 8
     watch = Watch(FakeBox(seq), notice_after=3, settle_after=6)
     rows = asyncio.run(_drive(watch, len(seq)))
     texts = [t or "" for t, _ in rows]
     stops = [s for _, s in rows]
-    assert "it has stood for" not in texts[3] and "it has stood for 3 rounds" in texts[4]
-    assert "the run ends after this round" not in texts[5] and "the run ends after this round" in texts[6]
-    # the fix is first seen at round 2 (stable 0) and stands through round 8 (stable 6): round 9 is refused
+    assert "it has stood for" not in texts[3] and "it has stood for 3 turns" in texts[4]
+    assert "the run ends after this turn" not in texts[5] and "the run ends after this turn" in texts[6]
+    # the fix is first seen at turn 2 (stable 0) and stands through turn 8 (stable 6): turn 9 is refused
     assert stops[:8] == [False] * 8 and stops[8] is True
-    # the edit observed at round 9 resets: since moves, the counters start over, round 10 runs
-    assert texts[8] == "repository: the fix touches django/a.py, unchanged since round 8"
+    # the edit observed at turn 9 resets: since moves, the counters start over, turn 10 runs
+    assert texts[8] == "repository: the fix touches django/a.py, unchanged since turn 8"
     assert stops[9] is False and "it has stood for" not in texts[8]
-    assert "it has stood for 3 rounds" in texts[11]
+    assert "it has stood for 3 turns" in texts[11]
 
 
 def test_settle_zero_never_stops_and_never_warns():
@@ -152,7 +152,7 @@ def test_settle_zero_never_stops_and_never_warns():
     rows = asyncio.run(_drive(watch, 12))
     assert not any(s for _, s in rows)
     assert not any("the run ends" in (t or "") for t, _ in rows)
-    assert "it has stood for 11 rounds" in rows[-1][0]
+    assert "it has stood for 11 turns" in rows[-1][0]
 
 
 def test_checks_that_already_pass_are_refused_and_nothing_is_stored():
@@ -173,7 +173,7 @@ def test_checks_rerun_only_when_the_source_changes_and_end_the_run_when_they_pas
     assert len(box.ran) == 2 and not watch.passed
 
     async def step(r: int) -> tuple[str | None, bool, int]:
-        stopped = watch.stop()  # asked at the top of the round, before the observation
+        stopped = watch.stop()  # asked at the top of the turn, before the observation
         return await watch.section(_Run(r)), stopped, len(box.ran)
 
     async def drive():
@@ -187,7 +187,7 @@ def test_checks_rerun_only_when_the_source_changes_and_end_the_run_when_they_pas
     assert "acceptance 1/2 pass" in rows[1][0] and rows[1][1:] == (False, 4)
     assert "acceptance 1/2 pass" in rows[2][0] and rows[2][1:] == (False, 4)
     assert rows[3][0].endswith("all acceptance checks pass, the run ends here") and rows[3][1:] == (False, 6)
-    assert watch.passed and watch.stop()  # the next round's stop() ends the run
+    assert watch.passed and watch.stop()  # the next turn's stop() ends the run
     assert watch.state()["checks"] == [("python repro.py", 0), ("pytest -q t.py", 0)]
 
 
@@ -198,7 +198,7 @@ def test_out_is_refused_while_a_declared_check_fails():
     box = FakeBox([fix, fix, fix, fix], rc={"python repro.py": 1})
     watch = Watch(box, settle_after=6)
     asyncio.run(watch.declare(["python repro.py"], 300))
-    asyncio.run(watch.section(_Run(2)))  # the fix landed in round 1
+    asyncio.run(watch.section(_Run(2)))  # the fix landed in turn 1
     why = asyncio.run(accept(watch, _Run(2, ("bash", 2)), {}))
     assert why == "your own acceptance checks fail: `python repro.py` exit 1"
     box.rc["python repro.py"] = 0
@@ -206,25 +206,25 @@ def test_out_is_refused_while_a_declared_check_fails():
 
 
 def test_out_is_refused_until_a_command_ran_after_the_source_changed():
-    # 13212 (unaided hard45): six edits in round 2, one quick check, OUT{} in round 4, wrong fix;
+    # 13212 (unaided hard45): six edits in turn 2, one quick check, OUT{} in turn 4, wrong fix;
     # 13837: OUT{} with only the tests it had itself edited as evidence
     from hub.tools.watch import accept
 
     fix = _diff(("django/a.py", "one"))
     box = FakeBox([fix] * 6)
     watch = Watch(box)
-    # round 1 edited; the OUT{} arrives in the same round: the section has not seen the change
+    # turn 1 edited; the OUT{} arrives in the same turn: the section has not seen the change
     why = asyncio.run(accept(watch, _Run(1, ("bash", 1)), {}))
-    assert why.startswith("the source changed in this round; nothing has run against that change")
-    asyncio.run(watch.section(_Run(2)))  # round 2 opens: the change is known, since round 1
+    assert why.startswith("the source changed in this turn; nothing has run against that change")
+    asyncio.run(watch.section(_Run(2)))  # turn 2 opens: the change is known, since turn 1
     why = asyncio.run(accept(watch, _Run(2, ("bash", 1), ("read_lines", 2)), {}))
-    assert why.startswith("no command has run since the source changed in round 1")
+    assert why.startswith("no command has run since the source changed in turn 1")
     assert asyncio.run(accept(watch, _Run(2, ("bash", 1), ("bash", 2)), {})) is None
 
 
-def test_the_first_refusal_never_names_round_0():
-    # `since = run.round - 1` read round 0 when the change already stood at
-    # round 1's own section call, and round 0 does not exist
+def test_the_first_refusal_never_names_turn_0():
+    # `since = run.turn - 1` read turn 0 when the change already stood at
+    # turn 1's own section call, and turn 0 does not exist
     from hub.tools.watch import accept
 
     fix = _diff(("django/a.py", "one"))
@@ -234,7 +234,7 @@ def test_the_first_refusal_never_names_round_0():
     assert watch.since == 1
     why = asyncio.run(accept(watch, _Run(2), {}))
     assert why == (
-        "no command has run since the source changed in round 1, so the change is not "
+        "no command has run since the source changed in turn 1, so the change is not "
         "verified: run the nearest tests first, then finish"
     )
     assert asyncio.run(accept(watch, _Run(3, ("python", 2)), {})) is None
@@ -258,7 +258,7 @@ def test_a_command_the_actor_refused_is_not_a_command_that_ran():
 
 def test_a_new_file_beside_an_edited_one_keeps_the_digest_the_section_computed():
     # git_diff lists the tracked edit before the new file; sorted, the new file comes first.
-    # The section sorted and the gate did not, so a verified fix was refused as "changed this round".
+    # The section sorted and the gate did not, so a verified fix was refused as "changed this turn".
     from hub.tools.watch import accept
 
     fix = _diff(("pkg/z.py", "one")) + _new(("pkg/a.py", "two"))
@@ -282,7 +282,7 @@ def test_a_change_under_tests_or_outside_the_tree_alone_is_not_a_fix():
     why = asyncio.run(accept(watch, _Run(2, ("bash", 2)), {}))
     assert why.startswith("the change is under tests: tests/test_a.py, and nothing else")
     asyncio.run(watch.section(_Run(3)))
-    why = asyncio.run(accept(watch, _Run(3, ("bash", 3)), {}))  # scratch of this round: classified afresh
+    why = asyncio.run(accept(watch, _Run(3, ("bash", 3)), {}))  # scratch of this turn: classified afresh
     assert why.startswith("the change is new outside the tracked tree: repro.py, and nothing else")
     asyncio.run(watch.section(_Run(4)))
     assert asyncio.run(accept(watch, _Run(5, ("bash", 5)), {})) is None
@@ -290,7 +290,7 @@ def test_a_change_under_tests_or_outside_the_tree_alone_is_not_a_fix():
 
 
 def test_a_refused_declaration_racing_an_accepted_one_leaves_the_accepted_one_standing():
-    # the actor runs a round's independent actions concurrently: measured on django-11951, a refused
+    # the actor runs a turn's independent actions concurrently: measured on django-11951, a refused
     # set reset the criteria the sibling call had just declared, and OUT{} was then accepted unchecked
     box = FakeBox([], rc={"python passes.py": 0, "python fails.py": 1})
     watch = Watch(box, settle_after=6)

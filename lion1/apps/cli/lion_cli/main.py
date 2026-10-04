@@ -6,7 +6,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from lionagi.checkpoint import KINDS, WHYS
+from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
 
 from .agent import agent_main
 from .areas import areas_main
@@ -19,7 +19,7 @@ __all__ = ("parser", "main")
 
 def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     """The command tree; `chat` replaces `lion chat`'s built-in defaults (a flag on the line still wins)."""
-    ap = argparse.ArgumentParser(prog="lion", description="lionagi v1")
+    ap = argparse.ArgumentParser(prog="lion", description="lion1")
     sub = ap.add_subparsers(dest="command", required=True)
     ag = sub.add_parser("agent", help="an actor's long-running agent, from its directory")
     ag.add_argument(
@@ -45,7 +45,7 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     )
     ch.add_argument("--model", default="deepseek/deepseek-v4.1-flash")
     ch.add_argument("--say", default=None, help="the first message; otherwise asked for")
-    ch.add_argument("--rounds", type=int, default=200, help="the run's round budget; the model is told")
+    ch.add_argument("--turns", type=int, default=200, help="the run's turn budget; the model is told")
     ch.add_argument(
         "--shell",
         action="store_true",
@@ -144,10 +144,10 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     verbs = cx.add_subparsers(dest="verb", required=True)
     cs = verbs.add_parser("set", parents=[here], help="declare a var; the next checkpoint takes it")
     cs.add_argument("--name", required=True)
-    cs.add_argument("--kind", required=True, choices=KINDS)
+    cs.add_argument("--kind", required=True, choices=SESSION_KINDS)
     cs.add_argument("--value", required=True, help="text, or JSON when it opens with { or [")
     cc = verbs.add_parser("checkpoint", parents=[here], help="take the checkpoint, no model call")
-    cc.add_argument("--why", choices=WHYS, default="manual")
+    cc.add_argument("--why", choices=SESSION_WHYS, default="manual")
     cc.add_argument("--session", default=None, help="default: the newest transcript's session")
     cc.add_argument(
         "--transcript",

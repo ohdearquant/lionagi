@@ -47,7 +47,7 @@ _HOSTS = ("127.0.0.1", "::1")
 _ID = re.compile(r"[0-9a-f]{16}")
 _ONCE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _FIELDS = ("offer", "inputs", "bounds", "resume", "once")
-_COUNTS = ("max_rounds", "max_idle", "max_refusals", "context_budget")
+_COUNTS = ("max_turns", "max_idle", "max_refusals", "context_budget")
 _AMOUNTS = ("time_budget", "cost_budget")
 _LIVE = ("starting", "working", "waiting")
 _MIB = 1 << 20  # an input, a body
@@ -437,7 +437,7 @@ class Service:
         s = self._by_run.get(event.payload.get("run"))
         if s is None:
             return
-        if event.kind in ("round.started", "run.completed") or event.kind.startswith("command."):
+        if event.kind in ("turn.started", "run.completed") or event.kind.startswith("command."):
             self._publish(s)
         self._send(s, ("bus", _bus(s, event)))
 
@@ -482,7 +482,7 @@ class Service:
 
     async def _wait(self, s: _Served, run: Run) -> bool:
         """A conversation's wait (ADR-0021/D5): False once it is ended or stopped, read first; True when
-        its inbox holds input; else asleep on the wake event. A wake left from a `say` the last round
+        its inbox holds input; else asleep on the wake event. A wake left from a `say` the last turn
         already took is cleared before the checks, so it finds nothing and the run sleeps."""
         self._publish(s)
         s.wake.clear()
@@ -629,7 +629,7 @@ class Service:
                 "resumed": s.resumed,
                 "run": run.id if run is not None else None,
                 "phase": s.phase,
-                "round": run.round if run is not None else None,
+                "turn": run.turn if run is not None else None,
                 "cost": run.cost if run is not None else None,
                 "rows": len(s.rows),
                 "pending": [i.handle.id for i in run.inbox] if run is not None else [],
@@ -662,7 +662,7 @@ class Service:
 
     def say(self, id: str, text: str, once: str | None = None) -> str:
         """Queue `text` on the run `id` names, waking it if it waits (ADR-0021/D5); the handle. The run
-        takes it at its next round as INPUT from `client`."""
+        takes it at its next turn as INPUT from `client`."""
         if type(text) is not str or not text:
             raise ServeError("bad_request", "text is a string of at least one character")
         if _utf8(text, "text") > _MIB:
@@ -716,15 +716,15 @@ class Service:
 
     def stop(self, id: str) -> dict:
         """The flag the run's `stop` reads and the wake event, then `Run.interrupt`: the run ends Stopped
-        at its next round unless it ended first (ADR-0021/C6)."""
+        at its next turn unless it ended first (ADR-0021/C6)."""
         s = self._find(id)
         self._live(s, "a stop")
         self._halt(s)
         return self._state(s)
 
     async def cancel(self, id: str) -> dict:
-        """Cancel the run's task and await it (ADR-0021/D6): an abort before the terminal commit, the
-        outcome kept during it; on a starting run, the reserved task."""
+        """Cancel the run's task and await it (ADR-0021/D6): an abort with no outcome; on a starting run,
+        the reserved task."""
         s = self._find(id)
         if s.phase not in _LIVE:
             raise ServeError("ended", f"run {s.id} is {s.phase}; a cancel is refused")
@@ -1005,7 +1005,7 @@ def _logged(path: Path, serve: dict, end: dict | None) -> _Served:
             "resumed": serve["resumed"],
             "run": None,
             "phase": "cut_short",
-            "round": None,
+            "turn": None,
             "cost": None,
             "rows": None,
             "pending": None,

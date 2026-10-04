@@ -132,10 +132,10 @@ Before polling, `hold` checks a `hold` file in the directory, the last hour's wa
 returns nothing and the inbox is not read, so the mail stays for a later poll.
 
 The cost is summed from the backend's own envelopes (`total_cost_usd`); a backend that writes none
-spends 0. A continuous run also ends at a burst past `max_rounds` turns, or at the day's cap with
-the burst's own calls counted.
+spends 0. A continuous run also ends at a burst past `max_turns` turns, or at the day's cap with the
+burst's own calls counted.
 
-A per-wake run is bounded at `max_rounds` turns, 6 by default and as `lion agent` builds it. At the
+A per-wake run is bounded at `max_turns` turns, 6 by default and as `lion agent` builds it. At the
 bound it ends exhausted: the cursor names that outcome and no posture is written. No test pins the
 six.
 
@@ -195,7 +195,7 @@ is not sent again.
 
 The model's tools are the runtime's commands, each gated and recorded; what needs git, gh or a click
 goes back to its sender as an ask ([[ADR-0016-the-lion-command#^d3|ADR-0016/D3]]). A chair's
-commands come back next round; a turn of plain text ends its burst.
+commands come back next turn; a turn of plain text ends its burst.
 
 The queue is read with `gtd.next` and never moved: its writes are refused at the boundary and
 recorded as failed results. A due task reaches the agent as a notice once per `at`; the chair states
@@ -254,10 +254,10 @@ whole life.
   replay, lost receipts, restart, cap refusal and transport refusal tests;
   `tests/test_bench_agent.py`.
 
-### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `lionagi/checkpoint.py` ^d5
+### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `src/lion1/checkpoint.py` ^d5
 
 Serves C7. The request carries `wait=_wait`, `fold_inputs` and no declared output, with a stop that
-ends a burst past `max_rounds` or the day's cap; `_run_batch` takes the same `end` checkpoint when
+ends a burst past `max_turns` or the day's cap; `_run_batch` takes the same `end` checkpoint when
 the model's OUT{} ends the run. `_checkpoint` writes the record beside a checkpoint through `take`
 and `save`; `_restore` hands `to_history(load(...))` to the process's first run.
 
@@ -270,8 +270,8 @@ and `save`; `_restore` hands `to_history(load(...))` to the process's first run.
 
 ### D6: The bench example: two typed handlers on one `Agent` ^d6
 
-Serves C8. `build` gives the agent `max_rounds` 4 and a policy that maps a batch to the acting or
-the reader profile by its senders. `launch` runs the job line through `sh -c` in a new session and
+Serves C8. `build` gives the agent `max_turns` 4 and a policy that maps a batch to the acting or the
+reader profile by its senders. `launch` runs the job line through `sh -c` in a new session and
 refuses a run id already launched. `report` holds a lock, so a job is reported once, and `row_for`
 refuses a run with no ledger.
 

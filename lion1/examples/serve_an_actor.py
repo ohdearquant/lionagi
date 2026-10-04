@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Profile, RunRequest
+from lion1 import Actor, Profile, RunRequest
 
 NOTE = (
     "58-year-old man with type 2 diabetes, seen for follow-up. Takes metformin 500 mg by mouth twice "
@@ -116,7 +116,7 @@ async def main() -> None:
         specs=frozenset({"route"}),  # the one command this offer grants; the card lists no other
         system="Extract the medications the note states. Quote; do not infer.",
     )
-    request = RunRequest(emits=(Extraction,), max_rounds=4)
+    request = RunRequest(emits=(Extraction,), max_turns=4)
     bound = asyncio.get_running_loop().create_future()
     served = asyncio.create_task(
         actor.serve(
@@ -139,7 +139,7 @@ async def main() -> None:
 
         print("\n=== POST /runs for what the owner never offered: refused, and nothing starts")
         print(*await ask(port, "POST", "/runs", {"offer": "writer"}))
-        print(*await ask(port, "POST", "/runs", {"offer": "extractor", "bounds": {"max_rounds": 9}}))
+        print(*await ask(port, "POST", "/runs", {"offer": "extractor", "bounds": {"max_turns": 9}}))
 
         print("\n=== POST /runs: the run starts with the note as its input")
         status, state = await ask(port, "POST", "/runs", {"offer": "extractor", "inputs": [NOTE]})
@@ -149,7 +149,7 @@ async def main() -> None:
         frames = await follow(port, state["id"])
         final = frames[-1][1]
         print("the stream opened with:", frames[0][0])
-        print("phase:", final["phase"], "| outcome:", final["outcome"]["kind"], "| round:", final["round"])
+        print("phase:", final["phase"], "| outcome:", final["outcome"]["kind"], "| turn:", final["turn"])
         print("output:", json.dumps(final["output"], indent=1))
 
         print("\n=== GET /runs/{id}/record: the rows the log holds, by kind")

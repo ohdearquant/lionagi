@@ -42,7 +42,7 @@ from hub.areas import (
     wakes,
 )
 from hub.khive import Khive, KhiveError, lit
-from lionagi.checkpoint import CheckpointError
+from lion1.checkpoint import CheckpointError
 
 from .context import checkpoint as context_checkpoint
 from .context import restore as context_restore

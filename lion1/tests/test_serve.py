@@ -14,14 +14,13 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-import lionagi.actor as actor_module
-import lionagi.serve as serve
-from lionagi import Actor, Kind, Profile, Reply, RunRequest, render_guidance
-from lionagi.actor import ProfileError
-from lionagi.checkpoint import entry_row, load_log
-from lionagi.experience import Experience, MemoryExperienceStore
-from lionagi.record import Entry
-from lionagi.serve import Offer, ServeError, Service
+import lion1.actor as actor_module
+import lion1.serve as serve
+from lion1 import Actor, Kind, Profile, Reply, RunRequest, render_guidance
+from lion1.actor import ProfileError
+from lion1.checkpoint import entry_row, load_log
+from lion1.record import Entry
+from lion1.serve import Offer, ServeError, Service
 
 ROOT = Path(__file__).resolve().parents[1]
 FINISH = 'OUT{answer: {text: "done"}}'
@@ -166,7 +165,7 @@ def test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_
         specs=frozenset({"lookup", "ping", "context.hide"}),
         privileges=frozenset({"glossary"}),
         system="THE ROLE PROMPT, never shown to a client",
-        defaults={"max_rounds": 7},
+        defaults={"max_turns": 7},
     )
     service.offer(reader, turns(), RunRequest(emits=(Answer,), time_budget=30.0), converse=True)
     service.offer(Profile("everything", language="program"), turns())
@@ -192,7 +191,7 @@ def test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_
     assert first["commands"][2]["doc"] is None
     assert first["outputs"] == [{"name": "answer", "schema": Answer.model_json_schema()}]
     assert first["bounds"] == {
-        "max_rounds": 7,
+        "max_turns": 7,
         "max_idle": 3,
         "time_budget": 30.0,
         "cost_budget": None,
@@ -202,21 +201,21 @@ def test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_
     assert (first["name"], first["language"], first["converse"]) == ("reader", "core", True)
     assert (second["name"], second["language"], second["converse"]) == ("everything", "program", False)
     assert [c["name"] for c in second["commands"]] == list(a.subset(Profile("everything")))
-    assert second["outputs"] == [] and second["bounds"]["max_rounds"] == 100
+    assert second["outputs"] == [] and second["bounds"]["max_turns"] == 100
     assert "THE ROLE PROMPT" not in json.dumps(card)
 
 
 def test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused_by_name():
     a, _ = actor("serve-offer")
     service = Service(a)
-    defaults = {"max_rounds": 5}
+    defaults = {"max_turns": 5}
     template = RunRequest(max_idle=2)
     offer = service.offer(Profile("p", defaults=defaults), turns(), template)
     assert isinstance(offer, Offer) and offer.name == "p" and service.offers == {"p": offer}
-    defaults["max_rounds"] = 50  # the caller's dict, changed after the offer was made
-    assert offer.profile.defaults == {"max_rounds": 5} and offer.request == template
+    defaults["max_turns"] = 50  # the caller's dict, changed after the offer was made
+    assert offer.profile.defaults == {"max_turns": 5} and offer.request == template
     assert offer.request is not template
-    assert service.card()["offers"][0]["bounds"]["max_rounds"] == 5
+    assert service.card()["offers"][0]["bounds"]["max_turns"] == 5
 
     async def wait(run):
         return False
@@ -232,19 +231,19 @@ def test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused
     assert list(service.offers) == ["p"]
 
 
-def test_serve_imports_the_standard_library_pydantic_and_lionagi_only_and_adds_no_dependency():
-    tree = ast.parse((ROOT / "lionagi" / "serve.py").read_text())
+def test_serve_imports_the_standard_library_pydantic_and_lion1_only_and_adds_no_dependency():
+    tree = ast.parse((ROOT / "src" / "lion1" / "serve.py").read_text())
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
-            imported.add("lionagi" if node.level else node.module.split(".")[0])
-    assert {"asyncio", "http", "pydantic_core", "lionagi"} <= imported  # the walk reads imports at all
+            imported.add("lion1" if node.level else node.module.split(".")[0])
+    assert {"asyncio", "http", "pydantic_core", "lion1"} <= imported  # the walk reads imports at all
     assert {m for m in imported if m not in sys.stdlib_module_names} <= {
         "pydantic",
         "pydantic_core",
-        "lionagi",
+        "lion1",
     }
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["dependencies"] == ["pydantic>=2.10.1"]
@@ -262,10 +261,10 @@ SCRIPT = (
 def test_a_served_run_records_what_actor_run_records_for_the_same_request():
     direct, _ = actor("serve-parity-direct")
     served, _ = actor("serve-parity-served")
-    request = RunRequest(inputs=("say one and two",), emits=(Answer,), max_rounds=5)
+    request = RunRequest(inputs=("say one and two",), emits=(Answer,), max_turns=5)
     alone = asyncio.run(direct.run(Profile("p"), request, turns(*SCRIPT)))
     service = Service(served)
-    service.offer(Profile("p"), turns(*SCRIPT), RunRequest(emits=(Answer,), max_rounds=5))
+    service.offer(Profile("p"), turns(*SCRIPT), RunRequest(emits=(Answer,), max_turns=5))
 
     async def main():
         state, created = await service.start({"offer": "p", "inputs": ["say one and two"]})
@@ -282,7 +281,7 @@ def test_a_served_run_records_what_actor_run_records_for_the_same_request():
     assert [clockless(r) for r in record["rows"]] == [clockless(plain(e)) for e in alone.record]
     assert record["more"] is False and final["rows"] == len(alone.record)
     assert final["outcome"] == {"kind": "Success"} and final["output"] == {"answer": {"text": "one, two"}}
-    assert (final["phase"], final["round"], final["pending"], final["error"]) == ("ended", 3, [], None)
+    assert (final["phase"], final["turn"], final["pending"], final["error"]) == ("ended", 3, [], None)
 
 
 BAD_STARTS = [
@@ -301,8 +300,8 @@ BAD_STARTS = [
     ({"offer": "p", "inputs": ["é" * (1 << 19) + "y"]}, "too_large"),
     ({"offer": "p", "bounds": []}, "bad_request"),
     ({"offer": "p", "bounds": {"view_budget": 5}}, "bad_request"),
-    ({"offer": "p", "bounds": {"max_rounds": 0}}, "bad_request"),
-    ({"offer": "p", "bounds": {"max_rounds": True}}, "bad_request"),
+    ({"offer": "p", "bounds": {"max_turns": 0}}, "bad_request"),
+    ({"offer": "p", "bounds": {"max_turns": True}}, "bad_request"),
     ({"offer": "p", "bounds": {"max_idle": 2.0}}, "bad_request"),
     ({"offer": "p", "bounds": {"context_budget": "9"}}, "bad_request"),
     ({"offer": "p", "bounds": {"max_refusals": -1}}, "bad_request"),
@@ -313,7 +312,7 @@ BAD_STARTS = [
     ({"offer": "p", "bounds": {"cost_budget": float("nan")}}, "bad_request"),
     ({"offer": "p", "bounds": {"cost_budget": 10**400}}, "bad_request"),
     ({"offer": "p", "bounds": {"cost_budget": "1"}}, "bad_request"),
-    ({"offer": "p", "bounds": {"max_rounds": 101}}, "bad_request"),  # above the offer's 100
+    ({"offer": "p", "bounds": {"max_turns": 101}}, "bad_request"),  # above the offer's 100
     ({"offer": "p", "bounds": {"max_idle": 4}}, "bad_request"),  # above the offer's 3
     ({"offer": "p", "resume": None}, "bad_request"),
     ({"offer": "p", "resume": "../../etc/passwd"}, "bad_request"),
@@ -349,12 +348,12 @@ def test_a_start_at_or_below_the_offers_bounds_runs_there_and_a_null_bound_takes
     a, _ = actor("serve-bounds")
     service = Service(a)
     service.offer(Profile("p"), turns("idle", "idle", "idle", FINISH), RunRequest(emits=(Answer,)))
-    service.offer(Profile("timed"), turns(FINISH), RunRequest(emits=(Answer,), max_rounds=3))
+    service.offer(Profile("timed"), turns(FINISH), RunRequest(emits=(Answer,), max_turns=3))
     seen = runs_of(a)
 
     async def main():
         low = {
-            "max_rounds": 2,
+            "max_turns": 2,
             "max_idle": 3,
             "time_budget": 10**300,
             "cost_budget": 0.5,
@@ -362,21 +361,21 @@ def test_a_start_at_or_below_the_offers_bounds_runs_there_and_a_null_bound_takes
         }
         first, _ = await service.start({"offer": "p", "inputs": ["go"], "bounds": low})
         end = (await to_end(service.events(first["id"])))[-1][1]
-        second, _ = await service.start({"offer": "timed", "bounds": {"max_rounds": 3, "time_budget": 2}})
+        second, _ = await service.start({"offer": "timed", "bounds": {"max_turns": 3, "time_budget": 2}})
         await to_end(service.events(second["id"]))
         return end
 
     end = bounded(main)
     assert seen[0].bounds == {
-        "max_rounds": 2,
+        "max_turns": 2,
         "max_idle": 3,
         "time_budget": 10**300,
         "cost_budget": 0.5,
         "context_budget": 200_000,
         "max_refusals": 3,
     }
-    assert end["outcome"] == {"kind": "Exhausted", "rounds": 2, "reason": "rounds"}
-    assert seen[1].bounds["max_rounds"] == 3 and seen[1].bounds["time_budget"] == 2
+    assert end["outcome"] == {"kind": "Exhausted", "turns": 2, "reason": "turns"}
+    assert seen[1].bounds["max_turns"] == 3 and seen[1].bounds["time_budget"] == 2
 
 
 def test_a_start_past_the_live_count_is_refused_and_the_next_after_an_end_is_not():
@@ -601,11 +600,10 @@ def test_rows_reach_the_log_the_record_read_and_every_stream_once_in_order_as_th
     assert {b["id"] for b in bus} == {state["id"]}
 
 
-def test_a_recall_and_a_fold_in_round_one_are_whole_on_the_row_the_log_the_read_and_the_stream(tmp_path):
-    a, _ = actor("serve-recall")
+def test_a_fold_in_turn_one_is_whole_on_the_row_the_log_the_read_and_the_stream(tmp_path):
+    a, _ = actor("serve-fold")
     service = Service(a, dir=tmp_path)
-    profile = Profile("p", experience=Experience(MemoryExperienceStore()))
-    service.offer(profile, turns(FINISH), RunRequest(emits=(Answer,), view_budget=200))
+    service.offer(Profile("p"), turns(FINISH), RunRequest(emits=(Answer,), view_budget=200))
     seen = runs_of(a)
 
     async def main():
@@ -617,15 +615,12 @@ def test_a_recall_and_a_fold_in_round_one_are_whole_on_the_row_the_log_the_read_
 
     state, everything = bounded(main)
     notice = seen[0].record.by_seq(1)
-    assert set(notice.meta) >= {"experience", "directive"}  # the receipt, then the fold, on one entry
+    assert "directive" in notice.meta  # the fold rides the notification
     whole = plain(notice)
     streamed = [r for r in rows_of(everything) if r["seq"] == 1]
     logged = [r for r in log_lines(tmp_path / f"{state['id']}.jsonl") if r.get("seq") == 1]
     assert streamed == logged == [service.record(state["id"])["rows"][1]] == [whole]
-    assert (
-        whole["meta"]["directive"]["op"] == "hide"
-        and json.loads(whole["meta"]["experience"])["op"] == "recall"
-    )
+    assert whole["meta"]["directive"]["op"] == "hide"
 
 
 def test_a_stream_that_overflows_is_closed_never_waited_for_and_a_new_one_opens_with_the_state(
@@ -688,10 +683,10 @@ class Flaky:
 def test_a_failed_append_latches_the_log_stops_the_run_and_nothing_is_served_or_written_after_it(
     tmp_path, monkeypatch, how, at, backend_kind
 ):
-    # the third write is round 1's notification, the sixth round 2's: each fails at its `round.started`,
-    # after that round's stop check, so the round's call still goes out and its turn stands
+    # the third write is turn 1's notification, the sixth turn 2's: each fails at its `turn.started`,
+    # after that turn's stop check, so the turn's call still goes out and its message stands
     good, script, outcome = {
-        "first": (2, ("Thinking it over.",), {"kind": "Stopped", "round": 2}),
+        "first": (2, ("Thinking it over.",), {"kind": "Stopped", "turn": 2}),
         "later": (5, ('<lact a1>echo(text="x")</lact>', FINISH), {"kind": "Success"}),
     }[at]
     opened = serve._opened
@@ -728,7 +723,7 @@ def test_a_failed_append_latches_the_log_stops_the_run_and_nothing_is_served_or_
     assert final["outcome"] == outcome and len(calls) == len(script)
     assert final["error"].startswith("the log failed: OSError: ") and final["rows"] == served
     assert service.state(state["id"]) == final and len(run.record) > served
-    assert len([ev for ev in a.bus.log if ev.kind == "round.started"]) == len(script)  # none after it
+    assert len([ev for ev in a.bus.log if ev.kind == "turn.started"]) == len(script)  # none after it
     rows = service.record(state["id"])["rows"]
     assert rows == rows_of(everything) == [plain(e) for e in run.record][:served]
     raw = (tmp_path / f"{state['id']}.jsonl").read_bytes().split(b"\n")
@@ -854,7 +849,7 @@ def test_a_conversation_waits_after_a_reply_takes_input_and_end_closes_it_on_bot
     assert closed["closed"] is True and closed["phase"] == "waiting"
     final = frames[-1][1]
     assert (
-        final["outcome"] == {"kind": "Stopped", "round": 3} and final["pending"] == [] and backend.calls == 2
+        final["outcome"] == {"kind": "Stopped", "turn": 3} and final["pending"] == [] and backend.calls == 2
     )
     taken = [e for e in run.record if e.kind is Kind.INPUT and e.meta.get("inbound")]
     assert [(e.content, e.meta["origin"], e.meta["inbound"]) for e in taken] == [
@@ -900,7 +895,7 @@ def test_input_lands_on_the_run_it_names_and_never_on_the_actors_shared_inbox():
     assert [e.meta["inbound"] for e in seen[1].record if e.meta.get("inbound")] == [handle]
 
 
-def test_input_mid_round_waits_for_the_next_round_and_input_never_taken_is_listed_at_the_end(monkeypatch):
+def test_input_mid_turn_waits_for_the_next_turn_and_input_never_taken_is_listed_at_the_end(monkeypatch):
     monkeypatch.setattr(serve, "_KEYS", 2)
     a, _ = actor("serve-input")
     service = Service(a)
@@ -915,9 +910,9 @@ def test_input_mid_round_waits_for_the_next_round_and_input_never_taken_is_liste
         repeat = service.say(sid, "first", once="k1")
         with pytest.raises(ServeError) as other:
             service.say(sid, "something else", once="k1")
-        assert [i.handle.id for i in seen[0].inbox] == [first]  # queued on the run, not taken mid-round
+        assert [i.handle.id for i in seen[0].inbox] == [first]  # queued on the run, not taken mid-turn
         await backend.answer('<lact a1>echo(text="x")</lact>')
-        call = await backend.next()  # round 2 took it, and its call is out
+        call = await backend.next()  # turn 2 took it, and its call is out
         queued_ = [service.say(sid, f"input {i}") for i in range(64)]
         with pytest.raises(ServeError) as full:
             service.say(sid, "the 65th")
@@ -934,7 +929,7 @@ def test_input_mid_round_waits_for_the_next_round_and_input_never_taken_is_liste
     assert other.code == "conflict" and full.code == "too_many" and late.code == "ended"
     assert pending == queued_ and final["pending"] == queued_ and final["outcome"] == {"kind": "Success"}
     taken = [e for e in seen[0].record if e.kind is Kind.INPUT and e.meta.get("inbound")]
-    assert [(e.content, e.round) for e in taken] == [("first", 2)]
+    assert [(e.content, e.turn) for e in taken] == [("first", 2)]
 
 
 BAD_INPUTS = [
@@ -977,10 +972,10 @@ async def waiting(service, sid: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "when", ["the first round", "waiting", "mid-call", "commands", "a retry", "input queued"]
+    "when", ["the first turn", "waiting", "mid-call", "commands", "a retry", "input queued"]
 )
 def test_end_closes_a_conversation_at_its_next_wait_wherever_it_lands(when):
-    """However far the exchange in flight has to go, through command rounds or a retry, it ends Stopped
+    """However far the exchange in flight has to go, through command turns or a retry, it ends Stopped
     at its next wait; input after the end is refused, input queued before it stays listed."""
     a, gates = actor("serve-end")
     service = Service(a)
@@ -990,7 +985,7 @@ def test_end_closes_a_conversation_at_its_next_wait_wherever_it_lands(when):
     async def main():
         state, _ = await service.start({"offer": "p", "inputs": ["hi"]})
         sid, queued_ = state["id"], []
-        if when == "the first round":
+        if when == "the first turn":
             service.end(sid)
             await backend.answer("Hello.")
         elif when == "waiting":
@@ -1009,10 +1004,10 @@ def test_end_closes_a_conversation_at_its_next_wait_wherever_it_lands(when):
             await backend.answer('<lact w1>wait(key="w")</lact>')
             service.end(sid)
             gates["w"].set()
-            await backend.answer("Done waiting.")  # the round after the command still runs
+            await backend.answer("Done waiting.")  # the turn after the command still runs
         elif when == "a retry":
             service.end(sid)
-            await backend.answer("<lact a1>echo(1)</lact>")  # unreadable: a retry round follows
+            await backend.answer("<lact a1>echo(1)</lact>")  # unreadable: a retry turn follows
             await backend.answer("Hello.")
         else:
             queued_.append(service.say(sid, "first"))
@@ -1023,15 +1018,15 @@ def test_end_closes_a_conversation_at_its_next_wait_wherever_it_lands(when):
         return queued_, (await to_end(service.events(sid)))[-1][1], refused.value
 
     queued_, final, refused = bounded(main)
-    rounds = {
-        "the first round": 2,
+    at_turn = {
+        "the first turn": 2,
         "waiting": 2,
         "mid-call": 3,
         "commands": 3,
         "a retry": 3,
         "input queued": 2,
     }
-    assert final["outcome"] == {"kind": "Stopped", "round": rounds[when]} and final["closed"] is True
+    assert final["outcome"] == {"kind": "Stopped", "turn": at_turn[when]} and final["closed"] is True
     assert final["pending"] == queued_ and refused.code == "ended"
 
 
@@ -1052,7 +1047,7 @@ def test_end_is_refused_on_a_run_no_conversation_and_a_wake_that_finds_nothing_s
         call = await backend.next()
         service.say(talk["id"], "while you think")  # wakes nothing yet: the run is in its call
         call.set_result("Hello.")
-        await backend.answer("Taken.")  # the next round took it; its wake is still set
+        await backend.answer("Taken.")  # the next turn took it; its wake is still set
         await waiting(service, talk["id"])  # the wait found the wake and nothing to take, and slept
         calls = backend.calls
         await asyncio.sleep(0.05)
@@ -1068,34 +1063,15 @@ def test_end_is_refused_on_a_run_no_conversation_and_a_wake_that_finds_nothing_s
 # --- C6, D6 -----------------------------------------------------------------------------------------
 
 
-class Slow(MemoryExperienceStore):
-    """A store whose persist waits for the test: the terminal commit, held open."""
-
-    def __init__(self):
-        super().__init__()
-        self.entered = asyncio.Event()
-        self.go = asyncio.Event()
-
-    async def persist(self, record):
-        self.entered.set()
-        await self.go.wait()
-        await super().persist(record)
-
-
 @pytest.mark.parametrize(
     "when, converse",
-    [("waiting", True)]
-    + [(w, c) for w in ("mid-call", "a command", "after the output") for c in (False, True)],
+    [("waiting", True)] + [(w, c) for w in ("mid-call", "a command") for c in (False, True)],
 )
-def test_stop_ends_a_run_stopped_at_its_next_round_unless_it_ended_first(when, converse):
+def test_stop_ends_a_run_stopped_at_its_next_turn_unless_it_ended_first(when, converse):
     a, gates = actor("serve-stop")
     service = Service(a)
     backend = Held()
-    store = Slow()
-    profile = Profile(
-        "p", experience=Experience(store, io_timeout=5.0) if when == "after the output" else None
-    )
-    service.offer(profile, backend, RunRequest(emits=(Answer,)), converse=converse)
+    service.offer(Profile("p"), backend, RunRequest(emits=(Answer,)), converse=converse)
     seen = runs_of(a)
 
     async def main():
@@ -1108,29 +1084,21 @@ def test_stop_ends_a_run_stopped_at_its_next_round_unless_it_ended_first(when, c
         elif when == "mid-call":
             await backend.next()  # in flight, and never answered: the stop cuts it
             service.stop(sid)
-        elif when == "a command":
+        else:
             gates["w"] = asyncio.Event()
             await backend.answer('<lact w1>wait(key="w")</lact>')
             await asyncio.sleep(0)
             service.stop(sid)
             gates["w"].set()  # the pending command settles first
-        else:
-            await backend.answer(FINISH)
-            await store.entered.wait()  # the outcome is committed, its closure not yet written
-            service.stop(sid)
-            store.go.set()
         return (await to_end(service.events(sid)))[-1][1]
 
     final = bounded(main)
     run = seen[0]
-    if when == "after the output":
-        assert final["outcome"] == {"kind": "Success"} and final["output"] == {"answer": {"text": "done"}}
-    else:
-        assert final["outcome"] == {"kind": "Stopped", "round": 2} and backend.calls == 1
+    assert final["outcome"] == {"kind": "Stopped", "turn": 2} and backend.calls == 1
     if when == "a command":
         assert run.record.get("w1").content.ok and run.record.get("w1").content.value == "w"
     if when == "mid-call":
-        assert any("cut this round short" in str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
+        assert any("cut this turn short" in str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
 
 
 @pytest.mark.parametrize("converse", [False, True])
@@ -1147,7 +1115,7 @@ def test_an_interrupt_cuts_the_call_in_flight_and_the_run_goes_on_or_waits_for_i
         await backend.next()
         cut = service.interrupt(sid)
         if converse:
-            await waiting(service, sid)  # no turn came of the cut round, and the person speaks next
+            await waiting(service, sid)  # no message came of the cut turn, and the person speaks next
             service.say(sid, "go on")
         await backend.answer(FINISH)
         final = (await to_end(service.events(sid)))[-1][1]
@@ -1211,28 +1179,6 @@ def test_a_cancel_before_the_commit_is_an_abort_with_no_outcome_even_with_an_int
     assert log_lines(tmp_path / f"{sid}.jsonl")[-1] == {"kind": "END", "state": cancelled}
 
 
-def test_a_cancel_during_the_terminal_commit_keeps_the_outcome_and_writes_the_closure():
-    a, _ = actor("serve-cancel-commit")
-    service = Service(a)
-    backend = Held()
-    store = Slow()
-    service.offer(
-        Profile("p", experience=Experience(store, io_timeout=5.0)), backend, RunRequest(emits=(Answer,))
-    )
-    seen = runs_of(a)
-
-    async def main():
-        state, _ = await service.start({"offer": "p", "inputs": ["go"]})
-        await backend.answer(FINISH)
-        await store.entered.wait()
-        return await service.cancel(state["id"])
-
-    final = bounded(main)
-    assert final["phase"] == "ended" and final["outcome"] == {"kind": "Success"} and final["error"] is None
-    closure = seen[0].record.entries[-1]
-    assert closure.content.startswith("<system closure") and final["rows"] == len(seen[0].record)
-
-
 def test_a_starting_run_takes_a_cancel_only_and_ends_aborted_with_no_runtime_id(tmp_path):
     a, _ = actor("serve-starting")
     service = Service(a, dir=tmp_path)
@@ -1254,7 +1200,7 @@ def test_a_starting_run_takes_a_cancel_only_and_ends_aborted_with_no_runtime_id(
 
     sid, refusals, cancelled, state, created = bounded(main)
     assert refusals == ["starting"] * 4 and created and state == cancelled
-    assert (cancelled["phase"], cancelled["run"], cancelled["round"], cancelled["rows"]) == (
+    assert (cancelled["phase"], cancelled["run"], cancelled["turn"], cancelled["rows"]) == (
         "aborted",
         None,
         None,
@@ -1279,7 +1225,7 @@ def entry(seq: int, kind: str = "INPUT", content="go", alias: str | None = None)
         "seq": seq,
         "kind": kind,
         "name": f"x{seq}",
-        "round": 0,
+        "turn": 0,
         "alias": alias,
         "meta": {},
         "content": content,
@@ -1319,7 +1265,7 @@ def test_a_resume_replays_a_stored_runs_log_and_a_restart_reads_each_log_by_its_
         "replayed": len(history),
     }
     assert two[1 : 1 + len(history)] == history == [plain(e) for e in seen[1].record][: len(history)]
-    assert seen[1].replayed == len(history) and two[1 + len(history)]["content"] == "again"
+    assert two[1 + len(history)]["content"] == "again"
     assert history[-1]["content"].startswith("<system closure") and "Success" in history[-1]["content"]
     assert [plain(e) for e in load_log(tmp_path / f"{second['id']}.jsonl")] == two[1:-1]  # SERVE, END skipped
     for at, state in enumerate((first, second)):
@@ -1366,7 +1312,7 @@ def test_after_a_restart_the_newest_logs_are_kept_by_end_row_and_one_without_a_s
         "resumed": None,
         "run": None,
         "phase": "cut_short",
-        "round": None,
+        "turn": None,
         "cost": None,
         "rows": None,
         "pending": None,
@@ -1570,7 +1516,7 @@ def test_every_outcome_kind_is_projected_with_its_own_fields_and_the_output_besi
         return "not good enough"
 
     service.offer(Profile("success"), turns(FINISH), RunRequest(emits=(Answer,)))
-    service.offer(Profile("exhausted"), turns("thinking"), RunRequest(max_rounds=1))
+    service.offer(Profile("exhausted"), turns("thinking"), RunRequest(max_turns=1))
     service.offer(
         Profile("refused"), turns(FINISH), RunRequest(emits=(Answer,), accept=never, max_refusals=1)
     )
@@ -1589,9 +1535,9 @@ def test_every_outcome_kind_is_projected_with_its_own_fields_and_the_output_besi
     finals = bounded(main)
     assert {k: (v["outcome"], v["output"]) for k, v in finals.items()} == {
         "success": ({"kind": "Success"}, {"answer": {"text": "done"}}),
-        "exhausted": ({"kind": "Exhausted", "rounds": 1, "reason": "rounds"}, None),
+        "exhausted": ({"kind": "Exhausted", "turns": 1, "reason": "turns"}, None),
         "refused": ({"kind": "Refused", "why": "not good enough", "times": 1}, None),
-        "stopped": ({"kind": "Stopped", "round": 2}, None),
+        "stopped": ({"kind": "Stopped", "turn": 2}, None),
     }
     assert all(list(f) == list(finals["success"]) for f in finals.values())
     assert list(finals["success"]) == [
@@ -1600,7 +1546,7 @@ def test_every_outcome_kind_is_projected_with_its_own_fields_and_the_output_besi
         "resumed",
         "run",
         "phase",
-        "round",
+        "turn",
         "cost",
         "rows",
         "pending",
@@ -1793,4 +1739,4 @@ def test_a_second_end_while_the_run_is_live_answers_its_state_and_sends_no_frame
     sid, first, second, frames = bounded(main)
     assert first == second and first["closed"] is True
     assert phases(frames) == [("working", False), ("working", True), ("ended", True)]
-    assert service.state(sid)["outcome"] == {"kind": "Stopped", "round": 2}
+    assert service.state(sid)["outcome"] == {"kind": "Stopped", "turn": 2}

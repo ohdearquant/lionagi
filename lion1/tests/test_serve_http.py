@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import lionagi.serve as serve
-from lionagi import Actor, Profile, RunRequest
-from lionagi.serve import Service
+import lion1.serve as serve
+from lion1 import Actor, Profile, RunRequest
+from lion1.serve import Service
 from tests.test_serve import FINISH, Answer, Held, actor, bounded, log_lines, turns
 
 
@@ -154,7 +154,7 @@ def test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives():
                 port, "POST", f"/runs/{talk}/input", {"text": "then?", "once": "i"}
             )
             got["interrupt"] = await call(port, "POST", f"/runs/{talk}/interrupt", {})
-            second = await backend.next()  # the cut round made no turn; the next took the input
+            second = await backend.next()  # the cut turn made no message; the next took the input
             got["end"] = await call(port, "POST", f"/runs/{talk}/end", {})
             second.set_result("Fine.")
             got["talk"] = await drained(*(await stream_open(port, f"/runs/{talk}/events"))[:2])
@@ -178,8 +178,8 @@ def test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives():
     assert got["input again"] == got["input"]
     assert got["interrupt"][0] == 202 and got["interrupt"][1]["cut"] is True
     assert got["end"][0] == 202 and got["end"][1]["closed"] is True and "cut" not in got["end"][1]
-    assert got["talk"][-1][1]["outcome"] == {"kind": "Stopped", "round": 3}
-    assert got["stop"][0] == 202 and service.state(ids[1])["outcome"] == {"kind": "Stopped", "round": 2}
+    assert got["talk"][-1][1]["outcome"] == {"kind": "Stopped", "turn": 3}
+    assert got["stop"][0] == 202 and service.state(ids[1])["outcome"] == {"kind": "Stopped", "turn": 2}
     assert got["cancel"] == (202, service.state(ids[2])) and got["cancel"][1]["phase"] == "aborted"
     assert got["every"][0] == ("runs", {"runs": []})
     assert {d["id"] for name, d in got["every"] if name == "state"} == {sid, *ids}
@@ -846,7 +846,7 @@ def test_a_start_while_the_service_ends_is_refused_busy():
 
     refused = bounded(main)
     assert (refused.code, refused.reason) == ("busy", "the service is ending")
-    assert [s["outcome"] for s in service.runs_state()["runs"]] == [{"kind": "Stopped", "round": 2}]
+    assert [s["outcome"] for s in service.runs_state()["runs"]] == [{"kind": "Stopped", "turn": 2}]
 
 
 def test_a_connection_that_arrives_while_the_service_ends_is_cut_and_never_held():
@@ -941,7 +941,7 @@ def test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_neve
 
     cut, state = bounded(main)
     assert cut < 2.0 and state["closed"] is True
-    assert service.state(state["id"])["outcome"] == {"kind": "Stopped", "round": 2}
+    assert service.state(state["id"])["outcome"] == {"kind": "Stopped", "turn": 2}
     assert service._conns == set()
 
 
@@ -998,7 +998,7 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
     assert service._conns == set() and service._subs == set() and service._all == set()
     assert a.bus._subs == subscriptions and service._by_run == {}
     assert {sid: service.state(sid)["phase"] for sid in (talk, work)} == {talk: "ended", work: "aborted"}
-    assert service.state(talk)["outcome"] == {"kind": "Stopped", "round": 2}
+    assert service.state(talk)["outcome"] == {"kind": "Stopped", "turn": 2}
     for sid in (talk, work):
         assert log_lines(tmp_path / f"{sid}.jsonl")[-1] == {"kind": "END", "state": service.state(sid)}
     # the idle stream was cut before its run ended: its one frame is the state it opened with

@@ -29,7 +29,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 __all__ = (
     "ENV_VARS",

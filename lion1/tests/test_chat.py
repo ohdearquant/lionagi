@@ -14,9 +14,9 @@ import pytest
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lionagi import Actor, Kind, Profile, RunRequest
-from lionagi.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
-from lionagi.checkpoint import CheckpointError, load, save, take, to_history
+from lion1 import Actor, Kind, Profile, RunRequest
+from lion1.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
+from lion1.checkpoint import CheckpointError, load, save, take, to_history
 from tests.test_actor import scripted
 
 
@@ -46,7 +46,7 @@ def test_a_plain_turn_is_the_reply_and_the_next_message_is_in_the_same_record(tm
     actor, profile = reader(tmp_path)
     said: list = []
     run = asyncio.run(chat(actor, profile, backend, asks("hi", "how many?", "/quit"), say=said.append))
-    assert isinstance(run.outcome, Stopped) and run.round == 2
+    assert isinstance(run.outcome, Stopped) and run.turn == 2
     texts = [e.content for e in run.record if e.kind is Kind.TEXT]
     assert texts == ["Hello. What would you like?", "Two, then."]  # the third turn was never asked for
     inputs = [(e.content, e.meta.get("origin")) for e in run.record if e.kind is Kind.INPUT]
@@ -70,7 +70,7 @@ def test_a_turn_with_a_command_reads_its_result_before_replying_and_the_tools_re
         "It says alpha.",
     )
     run = asyncio.run(chat(actor, profile, backend, asks("what is here?", "read a.txt", None)))
-    assert isinstance(run.outcome, Stopped) and run.round == 4
+    assert isinstance(run.outcome, Stopped) and run.turn == 4
     results = [e.content for e in run.record if e.kind is Kind.RESULT]
     assert [r.value for r in results] == [["a.txt", "sub/"], "alpha\n"]
     texts = [e.content for e in run.record if e.kind is Kind.TEXT]
@@ -113,8 +113,8 @@ def test_a_log_read_back_is_the_history_and_the_old_aliases_still_resolve(tmp_pa
     assert run.resolve("r1") == "alpha\n"  # the old result's alias too
 
 
-def test_a_paused_run_hands_the_turn_back_at_the_next_round_even_though_it_had_not_replied(tmp_path):
-    """`run.pause` is the person's interrupt: the round in flight finishes, its results land, and the
+def test_a_paused_run_hands_the_conversation_back_at_the_next_turn_even_though_it_had_not_replied(tmp_path):
+    """`run.pause` is the person's interrupt: the turn in flight finishes, its results land, and the
     wait hook is called as if the model had replied; the person's next message continues the run, and
     the record holds every entry when the run ends."""
     (tmp_path / "a.txt").write_text("alpha\n")
@@ -125,20 +125,20 @@ def test_a_paused_run_hands_the_turn_back_at_the_next_round_even_though_it_had_n
         "You spoke, so I answer: alpha.",
     )
 
-    def on_round(ev):
-        if ev.payload.get("round") == 2:
-            actor.runs[ev.payload["run"]].pause = True  # pressed during round 2: it still runs whole
+    def on_turn(ev):
+        if ev.payload.get("turn") == 2:
+            actor.runs[ev.payload["run"]].pause = True  # pressed during turn 2: it still runs whole
 
-    off = actor.bus.subscribe("round.started", on_round)
+    off = actor.bus.subscribe("turn.started", on_turn)
     said: list = []
     try:
         run = asyncio.run(chat(actor, profile, backend, asks("go", "still there?", None), say=said.append))
     finally:
         off()
-    assert isinstance(run.outcome, Stopped) and run.round == 3
+    assert isinstance(run.outcome, Stopped) and run.turn == 3
     results = [e.alias for e in run.record if e.kind is Kind.RESULT]
-    assert results == ["r1", "r2"]  # round 2's command ran and settled before the turn came back
-    inputs = [(e.content, e.round) for e in run.record if e.kind is Kind.INPUT]
+    assert results == ["r1", "r2"]  # turn 2's command ran and settled before the turn came back
+    inputs = [(e.content, e.turn) for e in run.record if e.kind is Kind.INPUT]
     assert inputs == [("go", 0), ("still there?", 3)]
     assert [e.seq for e in said] == list(range(len(run.record)))
 
@@ -146,7 +146,7 @@ def test_a_paused_run_hands_the_turn_back_at_the_next_round_even_though_it_had_n
 def test_an_interrupt_during_the_call_cuts_it_now_and_the_person_speaks_next_while_the_run_goes_on(
     tmp_path,
 ):
-    """`run.interrupt()` with a backend call in flight cancels that call: the round ends with a notice
+    """`run.interrupt()` with a backend call in flight cancels that call: the turn ends with a notice
     and no turn, the wait hook asks the person, and their next message continues the same run. The
     control: an interrupt while no call is in flight only pauses (False), and a real cancellation of
     the run still propagates through the same await."""
@@ -185,10 +185,10 @@ def test_an_interrupt_during_the_call_cuts_it_now_and_the_person_speaks_next_whi
     run = asyncio.run(main())
     assert interrupted == [True] and cancelled == [True]
     assert isinstance(run.outcome, Stopped)
-    notices = [e.content for e in run.record if e.kind is Kind.SYSTEM and "cut this round short" in e.content]
+    notices = [e.content for e in run.record if e.kind is Kind.SYSTEM and "cut this turn short" in e.content]
     assert len(notices) == 1
     texts = [e.content for e in run.record if e.kind is Kind.TEXT]
-    assert texts == ["Back to you."]  # no turn from the cut round; the next call answered the person
+    assert texts == ["Back to you."]  # no turn from the cut turn; the next call answered the person
     inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
     assert inputs == ["go", "still there?"]
     assert "still there?" in calls[1]
@@ -227,7 +227,7 @@ def test_a_cancel_of_the_run_that_lands_with_an_interrupt_is_the_cancel(tmp_path
         await asyncio.sleep(30)
 
     async def wait(run):
-        asked.append(run.round)
+        asked.append(run.turn)
         await asyncio.sleep(30)
         return False
 
@@ -254,7 +254,7 @@ def test_a_cancel_of_the_run_that_lands_with_an_interrupt_is_the_cancel(tmp_path
     assert run.id not in actor.runs
 
 
-def test_a_console_notice_reaches_the_model_as_inbound_in_the_first_round(tmp_path):
+def test_a_console_notice_reaches_the_model_as_inbound_in_the_first_turn(tmp_path):
     actor, profile = reader(tmp_path)
     seen = []
 
@@ -272,7 +272,7 @@ def test_a_console_notice_reaches_the_model_as_inbound_in_the_first_round(tmp_pa
 
 
 def test_context_directives_ride_the_log_so_a_resumed_view_folds_the_same(tmp_path):
-    from lionagi.record import fold
+    from lion1.record import fold
 
     (tmp_path / "a.txt").write_text("alpha\n")
     (tmp_path / "b.txt").write_text("beta\n")
@@ -343,13 +343,13 @@ def test_a_log_cut_mid_write_recovers_its_whole_lines_and_names_the_cut(tmp_path
         load_log(log, [])
 
 
-def test_each_entry_is_said_as_it_lands_not_at_the_next_round_boundary(tmp_path):
+def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path):
     # a slow tool beside an instant one: the turn and the instant result reach the log while the
     # slow one still runs; a signal in that window used to lose them and the resume notice went
     # silent about a command that had run
     from pydantic import BaseModel
 
-    from lionagi import Actor, Context, Profile
+    from lion1 import Actor, Context, Profile
 
     class Fast(BaseModel):
         pass
@@ -416,7 +416,7 @@ def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_histor
         code=False,
         offline=False,
         model="x",
-        rounds=1,
+        turns=1,
         raw=False,
         say=None,
         verbose=False,
@@ -468,14 +468,14 @@ def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_c
         "seq": 0,
         "kind": "INPUT",
         "name": "_in0",
-        "round": 0,
+        "turn": 0,
         "alias": None,
         "meta": {},
         "content": "hi",
     }
     failed = {
         "kind": "USAGE",
-        "round": 8,
+        "turn": 8,
         "model": None,
         "total_cost_usd": None,
     }  # a call that printed nothing
@@ -501,7 +501,7 @@ def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_c
             code=False,
             offline=False,
             model="claude_code",
-            rounds=1,
+            turns=1,
             raw=False,
             say=None,
             verbose=False,
@@ -558,7 +558,7 @@ def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
     said: list = []
     backend = scripted('Here it is.\nOUT{done: "yes"}', "Still here.")
     run = asyncio.run(chat(actor, profile, backend, asks("hi", "/quit"), say=said.append))
-    assert isinstance(run.outcome, Stopped) and run.round == 2
+    assert isinstance(run.outcome, Stopped) and run.turn == 2
     sys_entries = [e.content for e in run.record if e.kind is Kind.SYSTEM]
     assert any("this conversation has no OUT{}" in c for c in sys_entries)
     assert [e.content for e in run.record if e.kind is Kind.TEXT][-1] == "Still here."
@@ -601,7 +601,7 @@ def test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance(tmp
         '<lact e1>edit(path="a.py", old="x = 1", new="x = 2")</lact><lact b1>bash(command="pytest")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["l1"].value == ["a.py"] and r["s1"].value == "a.py:1:x = 1\n" and r["e1"].ok
     assert tree.files["a.py"] == "x = 2\n" and not (tmp_path / "a.py").exists()
@@ -936,7 +936,7 @@ def test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_u
 
 
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
-    from lionagi.record import fold
+    from lion1.record import fold
 
     (tmp_path / "a.txt").write_text("alpha\n")
     (tmp_path / "b.txt").write_text("beta\n")
@@ -992,7 +992,7 @@ def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_pat
 
 
 def _row(seq: int, content: str) -> dict:
-    return {"seq": seq, "kind": "TEXT", "content": content, "round": 1, "meta": {}}
+    return {"seq": seq, "kind": "TEXT", "content": content, "turn": 1, "meta": {}}
 
 
 def test_a_log_row_holding_a_unicode_line_separator_reads_back_whole(tmp_path):
@@ -1036,7 +1036,7 @@ def test_the_closure_rides_the_log_and_a_resumed_chat_folds_it_into_its_first_vi
             )
         )
     closure = run1.record.entries[-1]
-    assert closure.kind is Kind.SYSTEM and "outcome: Stopped(round=2)" in closure.content
+    assert closure.kind is Kind.SYSTEM and "outcome: Stopped(turn=2)" in closure.content
     history = load_log(log)
     last = history[-1]
     assert (last.seq, last.kind, last.content) == (closure.seq, Kind.SYSTEM, closure.content)
@@ -1087,15 +1087,15 @@ def test_the_editor_sends_a_paste_whole_breaks_a_line_on_alt_enter_and_ends_on_c
 
 def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp_path):
     """The console's status line is computed from the actor, its run and the backend each time it is
-    read: before the run only what exists (inbox, notes, cost); at the prompt after a round that wrote
-    a note and ran a command, the round notice's own context figure; with a backend that reports its
+    read: before the run only what exists (inbox, notes, cost); at the prompt after a turn that wrote
+    a note and ran a command, the turn notice's own context figure; with a backend that reports its
     prompt and cost, the last call's prompt and the partial mark for a call of unknown cost."""
     import re
 
     from lion_cli.chat import status_line
 
-    from lionagi import Reply
-    from lionagi.actor import Handle, Inbound
+    from lion1 import Reply
+    from lion1.actor import Handle, Inbound
 
     (tmp_path / "a.txt").write_text("alpha\n")
 
@@ -1117,10 +1117,10 @@ def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp
         finally:
             off()
         notices = [
-            e.content for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system round=")
+            e.content for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system turn=")
         ]
         figure = int(re.search(r"context: ~(\d+) / 200000 tokens", notices[-1]).group(1))
-        assert run.context_figure == figure  # the number the round notice told the model
+        assert run.context_figure == figure  # the number the turn notice told the model
         return actor, profile, runs, before, shown, figure
 
     turns = ('<lvar note.plan>ship it</lvar><lact r1>read(path="a.txt")</lact>', "Done.")
@@ -1152,7 +1152,7 @@ def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp
     ]
 
 
-def test_the_console_prints_the_status_line_at_each_round_notice_only_when_verbose(tmp_path, capsys):
+def test_the_console_prints_the_status_line_at_each_turn_notice_only_when_verbose(tmp_path, capsys):
     from lion_cli.view import Console
 
     actor, profile = reader(tmp_path)
@@ -1166,8 +1166,8 @@ def test_the_console_prints_the_status_line_at_each_round_notice_only_when_verbo
     say = Console("m", None, color=False, width=200, verbose=True, status=status)
     run = asyncio.run(chat(actor, profile, backend, asks("go", None), say=say))
     out = capsys.readouterr().out
-    rounds = [e for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system round=")]
-    assert len(rounds) == 2 and len(reads) == 2  # the closure and every other entry print none
+    turns = [e for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system turn=")]
+    assert len(turns) == 2 and len(reads) == 2  # the closure and every other entry print none
     assert "status read 1" in out and "status read 2" in out
     asyncio.run(
         chat(*reader(tmp_path), scripted("Hi."), asks("go", None), say=Console("m", None, status=status))
@@ -1212,7 +1212,7 @@ def test_the_editor_draws_the_status_line_under_the_prompt_as_it_stands_at_each_
 
 
 def test_the_editor_leaves_the_loops_sigint_handler_in_place_after_a_prompt(tmp_path):
-    """A mid-round Ctrl-C is a SIGINT the chat's own loop handler turns into a cut; a prompt must not
+    """A mid-turn Ctrl-C is a SIGINT the chat's own loop handler turns into a cut; a prompt must not
     swap that handler out (prompt_toolkit's own SIGINT handling would, and remove it on exit)."""
     import signal
 
@@ -1257,9 +1257,9 @@ def test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked(tmp
 def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it():
     from lion_cli.view import Console
 
-    from lionagi.record import Entry
+    from lion1.record import Entry
 
-    """On a terminal the round in flight shows a spinner at the bottom; a verbose result prints its
+    """On a terminal the turn in flight shows a spinner at the bottom; a verbose result prints its
     head to the scrollback and parks its detail under the spinner until the next one lands; the
     model's turn switches the label to `running`; asking or closing clears it. Off a terminal nothing
     is drawn live and the result prints whole, as before."""
@@ -1267,10 +1267,10 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
 
     from rich.console import Console as RichConsole
 
-    from lionagi.actor import Result
+    from lion1.actor import Result
 
     def result(seq: int, alias: str, value, spec="read") -> Entry:
-        return Entry(seq=seq, kind=Kind.RESULT, round=1, alias=alias, content=Result(spec, True, value))
+        return Entry(seq=seq, kind=Kind.RESULT, turn=1, alias=alias, content=Result(spec, True, value))
 
     say = Console("m", None, color=False, verbose=True, width=80)
     say.working("thinking")
@@ -1289,9 +1289,9 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
     assert say.detail is not None and "alpha" in say.detail  # parked under the spinner
     say(result(4, "a2", "gamma"))
     assert "gamma" in say.detail and "alpha" not in say.detail  # the next one replaces it
-    say(Entry(seq=5, kind=Kind.TEXT, round=1, content="Done."))
+    say(Entry(seq=5, kind=Kind.TEXT, turn=1, content="Done."))
     assert say.doing.what == "thinking"  # a plain reply asks for nothing: the person is next
-    say(Entry(seq=6, kind=Kind.TEXT, round=1, content='<lact b1>read(path="a")</lact>'))
+    say(Entry(seq=6, kind=Kind.TEXT, turn=1, content='<lact b1>read(path="a")</lact>'))
     assert say.doing.what == "running"
     say.idle()
     assert say.live is None and say.detail is None

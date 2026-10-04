@@ -29,14 +29,14 @@ model produces ([[ADR-0001-the-actor|ADR-0001]]). The profile
 ([[ADR-0001-the-actor#^c3|ADR-0001/C3]]) supplies defaults beneath it. Every bound is told to the
 model each turn ([[ADR-0006-the-notification|ADR-0006]]); the view's own fold line belongs to the
 record ([[ADR-0007-the-record|ADR-0007]]). Source: `RunRequest` and the bound checks in
-`lionagi/actor.py`.
+`src/lion1/actor.py`.
 
 ## Definitions
 
 - **job**: what the caller hands to `run`: `inputs`, `emits` (the Spec of the output), `accept`,
   `extend`, the bounds, and for a conversation `wait` and `history`
   ([[ADR-0018-chat-in-a-box|ADR-0018]]); `RunRequest` in code.
-- **bound**: a limit the run is checked against: `max_rounds`, `max_idle`, `time_budget`,
+- **bound**: a limit the run is checked against: `max_turns`, `max_idle`, `time_budget`,
   `cost_budget`, `context_budget`, `max_refusals`.
 
 - **`defaults`**: the profile's values for the bounds, taken where the job leaves a field unset.
@@ -63,10 +63,10 @@ record ([[ADR-0007-the-record|ADR-0007]]). Source: `RunRequest` and the bound ch
   enforced, a profile default overrides an explicit job value, or a bound is re-read mid-run.
 
 A field the job sets explicitly wins; one it leaves unset takes the profile's `defaults`, then the
-runtime's: `max_rounds` 100, `max_idle` 3, `max_refusals` 3, no time or cost budget,
-`context_budget` from the profile. The resolved values are recorded on the run before the first turn
-and the checks read those. A chair's profile may default to a long context and a desk's to a short
-one; the caller of `run` still sizes the task.
+runtime's: `max_turns` 100, `max_idle` 3, `max_refusals` 3, no time or cost budget, `context_budget`
+from the profile. The resolved values are recorded on the run before the first turn and the checks
+read those. A chair's profile may default to a long context and a desk's to a short one; the caller
+of `run` still sizes the task.
 
 In code a job leaves each bound None, and the run records the resolved values as `run.bounds`; with
 neither the job nor the profile setting it, `context_budget` is 200,000. `view_budget`, 60,000, is a
@@ -137,7 +137,7 @@ the resolved values; nothing re-reads the profile.
 
 - **Landing evidence**: `tests/test_actor.py`, each red when what it pins is removed or changed:
   `test_every_bound_resolves_once_at_run_start_the_job_over_the_profile_over_the_runtime`,
-  `test_max_rounds_defaults_to_a_hundred`,
+  `test_max_turns_defaults_to_a_hundred`,
   `test_idle_turns_in_a_row_end_the_run_and_any_other_turn_starts_the_count_over`,
   `test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_the_clock`,
   `test_a_wait_that_outlasts_the_time_budget_admits_no_further_call`,
@@ -156,7 +156,7 @@ grants. When an actor with the authority exists (a chair, a department head), th
 `extend` that asks it; nothing in the runtime changes.
 
 - **Landing evidence**: `tests/test_actor.py`:
-  `test_a_granted_ask_for_more_rounds_continues_past_max_rounds`,
+  `test_a_granted_ask_for_more_turns_continues_past_max_turns`,
   `test_a_refused_ask_leaves_the_bound_and_the_run_ends_at_the_cap_not_at_the_refusal`,
   `test_two_asks_in_one_turn_are_answered_in_order_against_one_total`,
   `test_an_ask_on_an_unbounded_bound_raises_nothing_and_only_a_count_is_rounded_up`.
@@ -213,7 +213,7 @@ refuse, and the caller receives the value it judged.
   what `time_budget` leaves; unless the turn's `OUT{}` was accepted, the next check ends the run
   `Exhausted(time)` (ADR-0005/S6), on the last turn too; a refusal cap keeps `Refused`.
   `test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time` and
-  `test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds` pin it.
+  `test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_turns` pin it.
 - **S4**: D1-D3 landed with their tests: bound resolution and every check (C1, C2), extension
   requests and grants (C3), and output dispatch through hooks (C4). Still owed with C3: the
   notification naming idle turns, cost and refusals with their remainders. `Reply` carries a cost
@@ -221,3 +221,13 @@ refuse, and the caller receives the value it judged.
   cost that is not a number reads as spent, never as room
   (`test_a_reported_cost_that_is_not_a_number_reads_as_spent`). `RunRequest` takes every field by
   name, so a new bound never shifts another (`test_a_run_request_takes_its_fields_by_name_only`).
+- **S5**: A grant of time landing after the deadline raises the bound for what follows the turn. A
+  pending command, held by the turn's wait or left out by `OUT{}`, is refused if its handler has not
+  started. Behind a synchronous grant that held the loop past the deadline, it would otherwise find
+  room at the C2 re-read. A running handler is not reached: the turn's wait or the run's end settles
+  it. A program's commands also answer to their walk's limits (ADR-0008/S15).
+  `test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler` and
+  `test_a_command_an_out_turn_leaves_out_of_its_wait_is_refused_after_a_late_grant` pin it.
+- **S6**: S5's refusal is checked beside the C2 re-read, after the command's arguments are evaluated
+  and its before hooks run, as a spent budget's is: a hook may see a call that is then refused
+  (`test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler`).

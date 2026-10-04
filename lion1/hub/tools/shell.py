@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 from .box import Box, BoxBase
 

@@ -5,7 +5,7 @@ import re
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from lionagi.lndl import Aliases, LNDLError, Pointer, Program, parse, parse_call_noting, plain, spans
+from lion1.lndl import Aliases, LNDLError, Pointer, Program, parse, parse_call_noting, plain, spans
 
 COMMA = "a comma between arguments was missing and was supplied"
 CLOSERS = "the call's closers were missing at its end and were supplied"

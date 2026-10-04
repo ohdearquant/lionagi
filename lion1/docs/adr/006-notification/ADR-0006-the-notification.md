@@ -29,14 +29,14 @@ Once per turn, before the backend call, the runtime appends one SYSTEM entry to 
 ([[ADR-0007-the-record|ADR-0007]]). The turn is [[ADR-0002-the-run|ADR-0002]]; the bounds the entry
 reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come from
 [[ADR-0005-command-handling|ADR-0005]]. Source: `Actor._notify` and `Actor.section` in
-`lionagi/actor.py`.
+`src/lion1/actor.py`.
 
 ## Definitions
 
 - **notification**: the one SYSTEM entry the runtime appends each turn, before the backend call.
 - **closure**: the one SYSTEM entry the runtime appends when the run ends by an outcome, after the
   cleanup; no backend in this run reads it.
-- **frame**: the notification's envelope, `<system round=n/N time=elapsed[/budget] seq=k>` to
+- **frame**: the notification's envelope, `<system turn=n/N time=elapsed[/budget] seq=k>` to
   `</system>`.
 - **section**: a function registered with `actor.section`; a contributor to the notification.
 - **view estimate**: the view's size at four characters per token.
@@ -59,14 +59,14 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 - **Violated when**: a turn starts without a fresh notification, two are appended in one turn, or a
   run ends by an outcome without its closure.
 
-The frame is `<system round=n/N time=elapsed[/budget] seq=k>`, closed by `</system>`. The entry's
+The frame is `<system turn=n/N time=elapsed[/budget] seq=k>`, closed by `</system>`. The entry's
 record name (`_sys12`) lets an old notification be pointed at after it has left the view. A model
 that writes the frame itself is refused whole ([[ADR-0004-the-language#^c4|ADR-0004/C4]]).
 
 A run that ends by an outcome appends the closure after its last turn and the reap: it carries the
 outcome, the cancelled aliases and the directives no notification follows
-([[ADR-0008-the-program#^d3|ADR-0008/D3]]). It is not a turn and calls no backend; an abort before
-the terminal commit appends none.
+([[ADR-0008-the-program#^d3|ADR-0008/D3]]). It is not a turn and calls no backend; an abort appends
+none.
 
 ### C2: The contents are what the runtime knows and the model does not _(enforced: mechanical)_ ^c2
 
@@ -76,7 +76,7 @@ the terminal commit appends none.
 
 In order:
 
-- the header: turn against `max_rounds`, time against `time_budget`, sequence;
+- the header: turn against `max_turns`, time against `time_budget`, sequence;
 - `context:`, C4's figure against `context_budget`;
 - `folded:`, the fold event against `view_budget` (ADR-0007);
 - `session:`, a restart or excess (ADR-0009/C4);
@@ -84,11 +84,11 @@ In order:
 - the idle and identical-turn notes;
 - `settled:` with alias, record name, Spec, type and preview;
 - `failed after starting:` and `completion unknown:`, by `execution` mark (ADR-0005/C1);
-- `out of view now`;
+- `out of view now`, what left the view;
 - `not executed:` with alias and reason, a repair's note among them
   ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
 - `notes written:`;
-- turn one's `notes kept:` (ADR-0007/C8) and `experience:` block (ADR-0020/C3);
+- turn one's `notes kept:` (ADR-0007/C8);
 - `hooks failed` (ADR-0005/C5);
 - `inbound:` with origin and handle;
 - each section's text, or `section failed:` with the exception.

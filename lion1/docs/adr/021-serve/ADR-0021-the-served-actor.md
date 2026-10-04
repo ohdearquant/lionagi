@@ -14,7 +14,6 @@ depends_on:
   - "[[ADR-0010-delegation|ADR-0010]]"
   - "[[ADR-0017-the-desk|ADR-0017]]"
   - "[[ADR-0018-chat-in-a-box|ADR-0018]]"
-  - "[[ADR-0020-the-experience|ADR-0020]]"
 tags:
   - adr
   - runtime
@@ -42,8 +41,8 @@ it happens ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and the record alrea
 either.
 
 It decides no remote bind, no token, no tool-protocol transport, no store beyond one log file per
-run, and no client. Source: `lionagi/actor.py` (`run`, `Run.inbox`, `Run.interrupt`),
-`lionagi/bus.py`, `lionagi/checkpoint.py` (`entry_of`), `hub/chat.py` (`chat`, `entry_row`,
+run, and no client. Source: `src/lion1/actor.py` (`run`, `Run.inbox`, `Run.interrupt`),
+`src/lion1/bus.py`, `src/lion1/checkpoint.py` (`entry_of`), `hub/chat.py` (`chat`, `entry_row`,
 `load_log`), `apps/cli/lion_cli/areas.py` (`guarded`).
 
 ## Definitions
@@ -67,7 +66,7 @@ run, and no client. Source: `lionagi/actor.py` (`run`, `Run.inbox`, `Run.interru
 | A2 | One event loop carries the actor, its runs and the transport, and the owner's handlers and awaited backend calls give it back within a second, which nothing in the core enforces; an offer's synchronous backend holds it for its whole call (S6). | the bus and the actor are single-loop; the OpenRouter backend calls out on a thread and the Claude Code and Codex backends await their subprocesses, while `Actor.run` calls a synchronous backend inline | one slow handler or synchronous backend stalls every stream; the transport moves to a thread and bridges to the loop |
 | A3 | A reader of one origin-form HTTP/1.1 request per connection, with a counted body, is small enough that its tests reach every line and branch, as the core's coverage gate requires (S10). | C10 and D8 name every form taken and refused; the reader's own checks run before the standard library parses the lines | the transport is rebuilt on the standard library's threaded server; the service is unchanged |
 | A4 | A local client needs the rows it missed and the state as it stands, and can do without the bus events it missed. | every row carries its sequence number and a stream opens with the state; an event that leaves no row is a progress mark | the stream gains event ids and a bounded replay |
-| A5 | A row is complete at `run.started`, at each `round.started`, at each `command.` event, when the run waits and when it ends. | `Actor.run` attaches a notification's fold after it emits `memory.recalled`; `chat` in `hub/chat.py` hands each entry to its `say` callback at these points | the runtime gains an event that marks an entry final, and D3 publishes on it |
+| A5 | A row is complete at `run.started`, at each `turn.started`, at each `command.` event, when the run waits and when it ends. | `Actor.run` attaches a notification's fold after it emits `memory.recalled`; `chat` in `hub/chat.py` hands each entry to its `say` callback at these points | the runtime gains an event that marks an entry final, and D3 publishes on it |
 
 ## Claims
 
@@ -106,7 +105,7 @@ service's own event (D4). Rows and events are per run as far as ids differ (S11)
 - **Violated when**: a published row differs from the record's row at the run's end; a row arrives
   twice or out of order on one stream; or a run awaits a subscriber's queue or a socket.
 
-Rows are published at `run.started`, at each `round.started`, at each `command.` event, at each wait
+Rows are published at `run.started`, at each `turn.started`, at each `command.` event, at each wait
 and at the run's end, and at no other event (A5). A row is in the chat log's form
 ([[ADR-0018-chat-in-a-box#^d1|ADR-0018/D1]]). Every bus event of a served run is forwarded as
 emitted, with or without rows.
@@ -137,7 +136,7 @@ replayed (A4). A closed stream is resumed by subscribing again.
   among the last 100 acts twice.
 
 Acceptance means queued. The service appends an inbound to the named run's own inbox and wakes a
-waiting run in the same step. The run takes it at its next round as INPUT
+waiting run in the same step. The run takes it at its next turn as INPUT
 ([[ADR-0010-delegation#^c1|ADR-0010/C1]]), with an origin the service sets. The answer is a handle,
 and the state lists the handles queued and not yet taken. A repeated `once` key returns the first
 answer.
@@ -149,16 +148,14 @@ answer.
   replaces a committed outcome; or a cancel before the terminal commit reports an outcome.
 
 Interrupt is `Run.interrupt`: it cancels an awaited call. A backend that lets the cancel through
-ends the round with no turn; one that catches it makes its turn; a synchronous call is not cut (S6).
-A conversation then waits for input once no command is pending (C15); another goes on.
+ends the turn with no message; one that catches it makes its message; a synchronous call is not cut
+(S6). A conversation then waits for input once no command is pending (C15); another goes on.
 
 Stop wakes a waiting run, whose wait answers false, and cancels an awaited call; pending commands
-settle, and the run ends `Stopped` at its next round unless it ended first.
+settle, and the run ends `Stopped` at its next turn unless it ended first.
 
-Cancel cancels the task: before the terminal commit an abort with no outcome
-([[ADR-0002-the-run#^c4|ADR-0002/C4]]), during it the outcome stands and the closure is written
-([[ADR-0020-the-experience#^c5|ADR-0020/C5]]). A cancel with an interrupt is the cancel
-([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
+Cancel cancels the task: an abort with no outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). A cancel
+with an interrupt is the cancel ([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
 
 ### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical)_ ^c7
 
@@ -180,16 +177,16 @@ A file without a whole `SERVE` row is not listed. Without a directory a resume i
 
 - **Subject**: a log file that cannot be created, and an append that fails.
 - **Violated when**: a row past a failed append is served; anything, the `END` row included, is
-  appended after it; or a `round.started` follows it. Also when the failure is absent from the
-  state, it changes the outcome, or a run starts whose log could not be created.
+  appended after it; or a `turn.started` follows it. Also when the failure is absent from the state,
+  it changes the outcome, or a run starts whose log could not be created.
 
 The bus records a subscriber's error and goes on ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), so
 the service catches its own write failure. The first failed append latches the log, so a torn line
 can only be its last. While the service runs, reads and streams serve the rows confirmed before it,
 and a dropped latched run answers `gone`.
 
-The run is stopped (C6) and its state names the failure. A failure at a `round.started` follows that
-round's stop check, so its backend call still goes out, and an output its turn makes accepted ends
+The run is stopped (C6) and its state names the failure. A failure at a `turn.started` follows that
+turn's stop check, so its backend call still goes out, and an output its message makes accepted ends
 the run `Success`.
 
 ### C9: The transport answers this machine's loopback only _(enforced: mechanical)_ ^c9
@@ -235,14 +232,13 @@ are stopped together (C6) and awaited under one grace deadline, then cancelled a
 unlatched log gets its `END` row, and the bus subscriptions are removed last.
 
 Cancellation is cooperative. A handler that will not yield holds the return, and the service does
-not kill it (S6). The core does not wait for a slow experience store
-([[ADR-0020-the-experience|ADR-0020]] S3), which may still be finishing when `serve` returns.
+not kill it (S6).
 
 ### C12: The core gains no dependency and imports no provider _(enforced: mechanical)_ ^c12
 
-- **Subject**: `lionagi/serve.py` and the package's dependency list.
+- **Subject**: `src/lion1/serve.py` and the package's dependency list.
 - **Violated when**: the module imports anything but the standard library, pydantic with its core
-  and `lionagi`, or the dependency list changes.
+  and `lion1`, or the dependency list changes.
 
 ### C13: The card tells a client what the model is told, and nothing of the prompt _(enforced: mechanical)_ ^c13
 
@@ -283,13 +279,13 @@ run waits for input (D1). An `OUT{}` ends it as it ends any run. The client's `e
 conversation: later input is refused, a waiting run wakes, and the run ends `Stopped` at its next
 wait unless a bound or an accepted output ended it first.
 
-Input may still be taken while the exchange goes on through command rounds. A handle not taken when
+Input may still be taken while the exchange goes on through command turns. A handle not taken when
 the next wait or the run's end closes it stays untaken, and the final state lists it (C5). An `end`
 on any other run is refused.
 
 ## Decisions
 
-### D1: `lionagi/serve.py` holds `Service` and `Offer`; `entry_row` moves beside `entry_of` ^d1
+### D1: `src/lion1/serve.py` holds `Service` and `Offer`; `entry_row` moves beside `entry_of` ^d1
 
 Serves C1, C12 and C13. `Service(actor, *, dir=None, max_live=8, keep=100)`; `keep` counts ended
 runs held in memory. `Service.offer(profile, backend, request=RunRequest(), *, converse=False)`
@@ -297,12 +293,12 @@ raises `ValueError`, naming which, for a template setting `wait` or `reply_on_co
 already offered. It keeps a copy of the profile with its own `defaults` dict, and of the template;
 the stores the profile names and the callbacks a request carries stay the caller's, live.
 `Service.card()` builds the card from `Actor.subset` and `model_json_schema`. `entry_row` and
-`load_log` move from `hub/chat.py` to `lionagi/checkpoint.py`, and the hub imports them.
+`load_log` move from `hub/chat.py` to `src/lion1/checkpoint.py`, and the hub imports them.
 
 - **Landing evidence**: `tests/test_serve.py`:
   `test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_prompt`,
   `test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused_by_name`,
-  `test_serve_imports_the_standard_library_pydantic_and_lionagi_only_and_adds_no_dependency`.
+  `test_serve_imports_the_standard_library_pydantic_and_lion1_only_and_adds_no_dependency`.
 
 ### D2: `Service.start` checks, reserves an id and a log, then reads the run from the bus ^d2
 
@@ -317,7 +313,7 @@ run began, was refused or was cancelled first (D6); a refusal after the reservat
 | `offer` | string | required; an offered name |
 | `inputs` | list of strings | optional; at most 16, none empty, each at most 1 MiB in UTF-8 |
 | `bounds` | object | optional; keys below only; a key absent or null takes the offer's value |
-| `max_rounds`, `max_idle`, `max_refusals`, `context_budget` | integer | 1 or more; a boolean or a float is refused |
+| `max_turns`, `max_idle`, `max_refusals`, `context_budget` | integer | 1 or more; a boolean or a float is refused |
 | `time_budget`, `cost_budget` | number | finite and above 0; a boolean is refused |
 | `resume` | string | 16 lowercase hex digits; the log of a run that ended or was cut short |
 | `once` | string | 1 to 64 characters of letters, digits, `.`, `_` and `-` |
@@ -336,13 +332,13 @@ run began, was refused or was cancelled first (D6); a refusal after the reservat
 
 Serves C3, C7 and C8. `_publish` takes the record's rows past the run's cursor, appends and flushes
 each to the log, advances the cursor after the whole line, then hands the rows to each subscriber's
-queue of 1,000 frames with `put_nowait`. Subscriptions on `run.started`, `round.started`, `command.`
+queue of 1,000 frames with `put_nowait`. Subscriptions on `run.started`, `turn.started`, `command.`
 and `run.completed` call it, as do the service's `wait` and the task's end. A write or a flush that
 raises latches the log: the file is closed, the cursor stays, the state takes the failure, the run
 is stopped, and later calls publish nothing.
 
 - **Landing evidence**: `tests/test_serve.py`:
-  `test_a_recall_and_a_fold_in_round_one_are_whole_on_the_row_the_log_the_read_and_the_stream`,
+  `test_a_fold_in_turn_one_is_whole_on_the_row_the_log_the_read_and_the_stream`,
   `test_rows_reach_the_log_the_record_read_and_every_stream_once_in_order_as_the_record_has_them`,
   `test_a_stream_that_overflows_is_closed_never_waited_for_and_a_new_one_opens_with_the_state`,
   `test_a_failed_append_latches_the_log_stops_the_run_and_nothing_is_served_or_written_after_it`.
@@ -372,7 +368,7 @@ flag is set, read first; true when the inbox holds input; else it clears the wak
 again and sleeps on it.
 
 - **Landing evidence**: `tests/test_serve.py`:
-  `test_input_mid_round_waits_for_the_next_round_and_input_never_taken_is_listed_at_the_end`,
+  `test_input_mid_turn_waits_for_the_next_turn_and_input_never_taken_is_listed_at_the_end`,
   `test_input_lands_on_the_run_it_names_and_never_on_the_actors_shared_inbox`,
   `test_input_outside_its_form_is_refused_and_nothing_is_queued`,
   `test_end_closes_a_conversation_at_its_next_wait_wherever_it_lands`,
@@ -389,11 +385,10 @@ that is the reserved task, aborted with no runtime id. Each answers the state. A
 all three, a starting run all but `cancel`.
 
 - **Landing evidence**: `tests/test_serve.py`:
-  `test_stop_ends_a_run_stopped_at_its_next_round_unless_it_ended_first`,
+  `test_stop_ends_a_run_stopped_at_its_next_turn_unless_it_ended_first`,
   `test_an_interrupt_cuts_the_call_in_flight_and_the_run_goes_on_or_waits_for_input`,
   `test_an_interrupt_with_no_call_in_flight_cuts_nothing`,
   `test_a_cancel_before_the_commit_is_an_abort_with_no_outcome_even_with_an_interrupt`,
-  `test_a_cancel_during_the_terminal_commit_keeps_the_outcome_and_writes_the_closure`,
   `test_a_starting_run_takes_a_cancel_only_and_ends_aborted_with_no_runtime_id`.
 
 ### D7: The log's `SERVE` and `END` rows ^d7
@@ -465,7 +460,7 @@ breaks a client raises the card's protocol version.
 | `runs` | `runs`, a list of `state` |
 | `card` | `actor`; `protocol`; `offers`, a list of `offer` |
 | `offer` | `name`; `language`; `commands`, each with `name`, `doc`, `schema`, `effect` (`write`, `read` or `pure`) and `privileges`, a list; `outputs`, each with `name` and `schema`; `bounds`, each bound's name to a number or null; `converse`, a boolean |
-| `outcome` | `kind`, one of `Success`, `Exhausted`, `Refused` and `Stopped`, beside that outcome's own fields but `output`: `rounds` and `reason`, `why` and `times`, or `round` |
+| `outcome` | `kind`, one of `Success`, `Exhausted`, `Refused` and `Stopped`, beside that outcome's own fields but `output`: `turns` and `reason`, `why` and `times`, or `turn` |
 | `rows` | `id`; `start`, the first row's sequence number; `rows`, each in the log's row form; `more`, true on a record read with rows past the page, false on a stream frame |
 | `bus` | `id`; `kind`; `payload` |
 | `handle` | `id`; `handle` |
@@ -476,7 +471,7 @@ breaks a client raises the card's protocol version.
 | `id`, `offer`, `resumed` | the service's id; the offer's name; the id of the run resumed, or null |
 | `run` | the runtime's id; null until `run.started`, on a run aborted before it began and on a cut-short log |
 | `phase` | `starting` until `run.started`, then `working` or `waiting`, and last `ended` or `aborted`; `starting` may go straight to `aborted`; `cut_short` for a log with no `END` row after a restart |
-| `round`, `cost` | the run's round and cost so far; null on a cut-short log |
+| `turn`, `cost` | the run's turn and cost so far; null on a cut-short log |
 | `rows` | the count of rows published; null on a cut-short log, whose record read holds them |
 | `pending` | the handles not taken; null on a cut-short log |
 | `closed` | true once an `end` was accepted, after which input is refused; else false; null on a cut-short log |
@@ -586,13 +581,12 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | Replay of missed events by id | a second ordered store beside the record; the state frame and the record read recover the rows and the end (A4) |
 | A failed append that only marks the state | rows would stream that no log holds, and a resume would replay less than the client saw (C8) |
 | Appending the `END` row, or retrying, after a failed append | the new row either joins the torn bytes into one last line the loader drops, or follows them past a line feed, where the loader refuses the whole file; neither keeps the row, and the cursor cannot repair bytes already written (C8) |
-| Waiting at shutdown for experience stores | the core does not wait for a slow store, so the service has nothing to await ([[ADR-0020-the-experience\|ADR-0020]] S3) |
 | Trusting the parsed headers | the parser accepts a folded line, a space before the colon and a repeated Origin; the raw checks of D8 run first (C10) |
 | Calling a handler with no run | a `Context` belongs to a run ([[ADR-0005-command-handling#^c3\|ADR-0005/C3]]); its bounds and its request's gates are the run's, and the actor's `before` hooks apply to every run it serves |
 | An error code on `Service.offer`'s refusal | it is owner-side Python, a `ValueError` naming the field; D9's codes are the transport's |
 | A WebSocket | it needs a framing layer or a dependency; a stream down and POSTs up carry everything here |
-| A check in the loop before each backend call, so a log failing at `round.started` holds that call back | a change to the core for one failure path; the one call it lets out is the run's last, and its output may stand (C8) |
-| A gate in the loop that takes no input after `end` | a second change to the core; the exchange in flight finishes its command rounds, and what it never took stays listed (C15) |
+| A check in the loop before each backend call, so a log failing at `turn.started` holds that call back | a change to the core for one failure path; the one call it lets out is the run's last, and its output may stand (C8) |
+| A gate in the loop that takes no input after `end` | a second change to the core; the exchange in flight finishes its command turns, and what it never took stays listed (C15) |
 
 ## Consequences
 
@@ -607,14 +601,13 @@ the key unchanged; only the refusal of the act that took a key releases it.
   is a client. A token per launch is the next step where that matters, and it does not wait for a
   remote bind; a remote bind and TLS are a later record.
 - **S4**: Inputs are text. An input with an image waits for the record to carry one.
-- **S5**: An actor's shared inbox is still taken by whichever of its runs starts a round first
+- **S5**: An actor's shared inbox is still taken by whichever of its runs starts a turn first
   ([[ADR-0010-delegation#^c1|ADR-0010/C1]]), a served run included: `Actor.run` drains it with the
   run's own. The service writes nothing to it; with several live runs the limit stands for a peer's
   `queue`.
 - **S6**: A handler that blocks the loop stalls every run and every stream (A2), and so does an
   offer's synchronous backend for the whole of its call; a log append is a file write on the loop.
-  `serve` returns only once every handler has yielded to its cancellation. An experience store's
-  task may outlive it (C11).
+  `serve` returns only once every handler has yielded to its cancellation.
 - **S7**: A tool-protocol transport over the same service, and a `lion serve` command, are later
   changes; the command amends [[ADR-0016-the-lion-command|ADR-0016]].
 - **S8**: A restart loses live runs: their logs remain and a resume is the client's ask (C7). The
@@ -648,8 +641,8 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S17**: A `once` key is scoped to its operation: starts across the service, inputs within one
   run. The last 100 of each are held in memory, and a key past that acts again, as after a restart.
 - **S18**: A resumed view equals the earlier run's rows only in what `entry_of` keeps: its filter of
-  a row's meta (`lionagi/checkpoint.py`) drops a recall's receipt on a SYSTEM row, so the receipt is
-  not carried into history.
+  a row's meta (`src/lion1/checkpoint.py`) drops a recall's receipt on a SYSTEM row, so the receipt
+  is not carried into history.
 - **S19**: `_deliver` answers a consumed inbound to the actor its origin names
   ([[ADR-0010-delegation#^c3|ADR-0010/C3]]). A client's input names `client`, so it is answered to
   no one while no actor has that name, and the service refuses a start while one is registered.

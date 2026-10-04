@@ -1,9 +1,9 @@
 # lion1
 the LION runtime
 
-## lionagi
+## lion1
 
-`lionagi/` is the runtime package: a model speaks in LNDL, handlers act, and the record remembers.
+`src/lion1/` is the runtime package: a model speaks in LNDL, handlers act, and the record remembers.
 The design records under `docs/adr/` are its specification, and the code cites them as `ADR-000N/Cn`.
 
 Work on it with [uv](https://docs.astral.sh/uv/):

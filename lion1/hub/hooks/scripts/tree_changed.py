@@ -1,10 +1,10 @@
-"""A round hook: name the tracked files whose content changed since the previous round of this run,
-and HEAD when it moved. stdin: {"event": "round", "run": ..., "round": ...}; stdout is the notice.
+"""A turn hook: name the tracked files whose content changed since the previous turn of this run,
+and HEAD when it moved. stdin: {"event": "turn", "run": ..., "turn": ...}; stdout is the notice.
 Run as `python -m hub.hooks.scripts.tree_changed` from a `hooks.toml`.
 
 The tree moves under a long conversation: a model that reads a green test as its own misread is
 reading a tree someone else edited. State lives under `.lion/tree_state/`, one file per run id, so
-two runs (two chats) never compare against each other's round, and two hooks running at once never
+two runs (two chats) never compare against each other's turn, and two hooks running at once never
 write one file.
 """
 
@@ -87,14 +87,14 @@ def _shown(name: str) -> str:
 
 
 def notice(prev: dict, head: str, files: dict[str, str]) -> list[str]:
-    """The lines this round adds: the files whose content differs from the last round, then HEAD when
-    it moved. A run with no previous round is compared against nothing."""
+    """The lines this turn adds: the files whose content differs from the last turn, then HEAD when
+    it moved. A run with no previous turn is compared against nothing."""
     was = prev.get("files", {})
     changed = sorted(p for p in set(was) | set(files) if was.get(p) != files.get(p))
     lines: list[str] = []
     if changed:
         named = ", ".join(map(_shown, changed))
-        lines.append(f"tree: {len(changed)} file(s) changed since round {prev.get('round')}: {named}")
+        lines.append(f"tree: {len(changed)} file(s) changed since turn {prev.get('turn')}: {named}")
     old = str(prev.get("head", ""))
     if old != head:
         lines.append(f"tree: HEAD moved {old[:7] or '?'} -> {head[:7]}")
@@ -103,7 +103,7 @@ def notice(prev: dict, head: str, files: dict[str, str]) -> list[str]:
 
 def main() -> int:
     payload = json.load(sys.stdin)
-    if payload.get("event") != "round":
+    if payload.get("event") != "turn":
         return 0
     run = str(payload.get("run", ""))
     cwd = Path.cwd()
@@ -114,19 +114,19 @@ def main() -> int:
     path = cwd / state_path(run)
     try:
         prev = json.loads(path.read_text()) if path.is_file() else None
-    except ValueError:  # a write cut short: start over rather than fail every later round
+    except ValueError:  # a write cut short: start over rather than fail every later turn
         prev = None
-    if files is None:  # the last snapshot stays the baseline; a run's first round stays quiet
+    if files is None:  # the last snapshot stays the baseline; a run's first turn stays quiet
         if isinstance(prev, dict):
             print(
-                f"tree: could not be read (git ls-files failed); round {prev.get('round')} stays the baseline"
+                f"tree: could not be read (git ls-files failed); turn {prev.get('turn')} stays the baseline"
             )
         return 0
     for line in notice(prev, head, files) if isinstance(prev, dict) else []:
         print(line)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # this process's own: no other hook replaces it
-    tmp.write_text(json.dumps({"round": payload.get("round", 0), "head": head, "files": files}, indent=1))
+    tmp.write_text(json.dumps({"turn": payload.get("turn", 0), "head": head, "files": files}, indent=1))
     tmp.replace(path)  # whole or absent, never cut
     return 0
 

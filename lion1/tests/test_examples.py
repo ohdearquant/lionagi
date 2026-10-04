@@ -23,7 +23,6 @@ SCRIPTED = (
     "watch_the_artifact",
     "budgets_and_outcomes",
     "structured_output",
-    "experience_twice",
     "serve_an_actor",
 )
 LIVE = ("backends",)
@@ -32,7 +31,10 @@ OWN_TESTS = ("bench_agent",)
 
 
 def run(script: str, *args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    env = {**env, "PYTHONPATH": os.pathsep.join(filter(None, (str(ROOT), env.get("PYTHONPATH"))))}
+    env = {
+        **env,
+        "PYTHONPATH": os.pathsep.join(filter(None, (str(ROOT), str(ROOT / "src"), env.get("PYTHONPATH")))),
+    }
     return subprocess.run(
         [sys.executable, str(EXAMPLES / f"{script}.py"), *args],
         cwd=ROOT,
@@ -75,18 +77,18 @@ SERVED = """\
 200 | actor: extractor | protocol: 1 | offer: extractor
 command: route | pure | The standard name of a route as a note writes it.
 outputs: ['extraction'] | converse: False
-bounds: max_rounds 4, max_idle 3, context_budget 200000, max_refusals 3
+bounds: max_turns 4, max_idle 3, context_budget 200000, max_refusals 3
 
 === POST /runs for what the owner never offered: refused, and nothing starts
 404 {'error': 'unknown_offer', 'reason': "no offer is named 'writer'"}
-400 {'error': 'bad_request', 'reason': "max_rounds 9 is above the offer's 4"}
+400 {'error': 'bad_request', 'reason': "max_turns 9 is above the offer's 4"}
 
 === POST /runs: the run starts with the note as its input
 201 | offer: extractor | resumed: None
 
 === GET /runs/{id}/events: read to the first state that says ended
 the stream opened with: state
-phase: ended | outcome: Success | round: 2
+phase: ended | outcome: Success | turn: 2
 output: {
  "extraction": {
   "medications": [
