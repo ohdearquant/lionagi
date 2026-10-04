@@ -122,7 +122,7 @@ private struct ProviderRow: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 2) {
-                if store.can(.checkProvider) {
+                if store.can(.checkProvider), provider.check != false {
                     Button("Check") { check() }.buttonStyle(.accent).disabled(working)
                 }
                 if provider.signsIn {

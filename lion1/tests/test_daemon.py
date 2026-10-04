@@ -504,6 +504,7 @@ def test_the_library_lists_the_providers_and_every_model_added_used_or_run_by_de
     port = serve_on(reg(tmp_path, resident(tmp_path, chores=chores)))
     code, doc = get(port, "/v2/library/models")
     assert code == 200 and [p["name"] for p in doc["providers"]] == ["claude_code", "codex", "openrouter"]
+    assert [p["check"] for p in doc["providers"]] == [False, True, True]  # as the check route serves them
     openrouter = doc["providers"][2]
     assert (openrouter["state"], openrouter["key"], openrouter["limits"]) == ("off", {"set": False}, None)
     models = {m["id"]: m for m in doc["models"]}

@@ -535,9 +535,11 @@ struct Provider: Codable, Hashable, Identifiable {
     var command: String?
     /// When the daemon last asked the provider; fresh after a check.
     var checkedAt: String?
+    /// false for a provider the daemon has no check for; nil from one that does not say
+    var check: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case name, kind, state, detail, address, key, signin, limits, command
+        case name, kind, state, detail, address, key, signin, limits, command, check
         case checkedAt = "checked_at"
     }
 

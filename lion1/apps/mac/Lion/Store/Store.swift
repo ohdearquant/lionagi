@@ -632,7 +632,10 @@ final class Store {
             if !dryRun {
                 modelShelf = try await client.models()
             }
-            return CheckOutcome(ok: answer.check.ok, line: Self.describe(answer.check))
+            guard let check = answer.check else {
+                return CheckOutcome(ok: answer.ok, line: answer.ok ? "it can be added · no test call was made" : "refused")
+            }
+            return CheckOutcome(ok: check.ok, line: Self.describe(check))
         case .provider(var body, let key):
             body.dryRun = dryRun
             body.once = Once.make()

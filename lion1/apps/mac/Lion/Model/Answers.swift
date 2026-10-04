@@ -408,7 +408,8 @@ struct NewModelWrite: Codable, Equatable {
 struct NewModelAnswer: Codable, Hashable {
     var ok: Bool
     var model: Model?
-    var check: ModelCheck
+    /// nil from a daemon that makes no test call when a model is added
+    var check: ModelCheck?
 }
 
 /// `PATCH /v2/library/models/{id}`: the settings this screen changed, and no other. A daemon

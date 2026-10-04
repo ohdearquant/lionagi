@@ -1179,7 +1179,8 @@ class Daemon:
         if present is not None:
             p["key"] = {"set": present}
         out.append(p)
-        return [{**p, **self.checked.get(p["name"], {})} for p in out]
+        # `check`: whether `check` below asks this provider anything
+        return [{**p, "check": p["name"] != "claude_code", **self.checked.get(p["name"], {})} for p in out]
 
     def models(self, extra: dict | None = None) -> dict:
         """The models of the library: those added (`models.toml`), those a resident runs and the one a

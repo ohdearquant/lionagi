@@ -140,6 +140,10 @@ final class DecodingTests: XCTestCase {
         XCTAssertNil(library.models[0].limits)
         XCTAssertNil(library.models[0].images)
         XCTAssertNil(library.providers[0].limits)
+
+        let added = try JSONDecoder().decode(NewModelAnswer.self, from: Data(#"{"ok": true, "model": null, "check": null}"#.utf8))
+        XCTAssertTrue(added.ok)
+        XCTAssertNil(added.check)
     }
 
     /// A model settings change carries the settings that differ and no other.

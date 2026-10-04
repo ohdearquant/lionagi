@@ -78,7 +78,7 @@ struct AddModelForm: View {
         .model(NewModelWrite(
             through: provider, modelId: chosenId,
             shownAs: shownAs.isEmpty ? nil : shownAs,
-            reasoning: reasoning == "off" ? nil : reasoning,
+            reasoning: store.can(.modelSettings) && reasoning != "off" ? reasoning : nil,
             context: nil, price: nil,
             limits: store.can(.limits) ? limits : nil,
             dryRun: false, once: ""
@@ -152,6 +152,7 @@ struct AddModelForm: View {
                     .textFieldStyle(.roundedBorder)
                 FieldName(text: "Effort")
                 MenuPicker(selection: $reasoning, options: [("off", "off"), ("low", "low"), ("medium", "medium"), ("high", "high")])
+                    .disabled(!store.can(.modelSettings))
             }
             GridRow {
                 FieldName(text: chosen.signsIn ? "Price" : "API key")
