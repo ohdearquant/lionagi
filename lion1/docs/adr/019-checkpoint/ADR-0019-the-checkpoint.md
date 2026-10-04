@@ -106,8 +106,8 @@ of a name replaces an earlier, so a declared value stands over one read from the
 
 A prompt is a `user` row whose content is a string, or text blocks beside an image, that no hook or
 harness wrote, as typed. A row opening with a slash command's name is not a prompt; a system
-reminder inside a typed prompt is cut out. The session's last text block before the exchange ends is
-its text.
+reminder inside a typed prompt is cut out and counted (S18). The session's last text block before
+the exchange ends is its text.
 
 A task notification opens an exchange of its own, labelled `[event]` in 200 characters at most,
 never a `directive`. The same words again with no answer between are one exchange. The take's
@@ -273,6 +273,7 @@ and its `## Posture` a `posture`, as is the last text less its LNDL.
   `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`,
   `test_a_transcripts_prompt_is_kept_as_typed_and_trimming_says_only_whether_it_is_empty`,
   `test_the_persons_row_with_no_words_an_image_alone_ends_the_exchange_before_it`,
+  `test_a_reminder_block_inside_a_typed_prompt_is_cut_and_the_source_counts_it`,
   `test_a_row_appended_while_the_transcript_is_read_is_after_the_take`,
   `test_a_same_size_rewrite_of_the_transcript_that_restores_the_mtime_is_read_anew`,
   `test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest`;
@@ -449,3 +450,10 @@ the directory's newest whose first row says a person's, the later name first on 
   first row checked as a take's (S14), so the figure is only ever of a rollout the status would
   choose. One that fails gives a figure not known, and stale. Pinned by
   `test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen`.
+- **S18**: One string holds no mark of who wrote a system reminder block inside it, so the reader
+  cannot tell quoted from placed. A restored prompt holds neither (C2): both are cut, the words
+  around them kept. A block runs from an opener, attributes or none, to the closer that balances it,
+  an unclosed opener to the end, a closer alone goes too; a row of blocks and nothing else is the
+  harness's. The cut is never silent: `source.reminders_cut` counts them. Pinned by
+  `test_a_reminder_block_inside_a_typed_prompt_is_cut_and_the_source_counts_it` and
+  `test_a_reminder_block_is_cut_whole_when_nested_unclosed_leading_or_a_closer_alone`.

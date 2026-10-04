@@ -110,10 +110,10 @@ _FRAMES = (
     "<command-message>",
     "<local-command-",
     "<task-notification>",
-    "<system-reminder>",
 )
 _INTERRUPT = "[Request interrupted by user"  # the harness's mark on a turn cut short, not a prompt
-_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+# either end of a reminder block, an opener with attributes included; a restored prompt holds none
+_MARK = re.compile(r"<(/?)system-reminder\b[^>]*>")
 _SLASH = re.compile(r"/[A-Za-z][\w:-]*")  # `/compact` alone on a row; a typed path has a second slash
 _TERMINAL = ("completed", "killed", "failed", "stopped")  # a task notification that ends its task
 _EVENT_MAX = 200  # an event turn's label: the notification's summary, this long at most
@@ -129,33 +129,69 @@ class _Scan:
     stopped: dict[str, int] = field(default_factory=dict)  # task id -> the row of its last TaskStop
     ended: dict[str, int] = field(default_factory=dict)  # task or tool-use id -> its terminal notification
     unread: int = 0  # lines not read: not JSON, or the snapshot's last line, cut mid-write
+    cut: int = 0  # system reminder blocks cut out of the person's prompts
+
+
+def _cut(text: str) -> tuple[str, int]:
+    """The text with every system reminder block cut out, and how many were. A block runs from an
+    opener to the closer that balances it, nested openers included; an opener never closed runs to
+    the end; a closer with no opener is a mark on its own and goes too. Each counts one."""
+    out, cut, depth, start = [], 0, 0, 0
+    for m in _MARK.finditer(text):
+        if not m.group(1):  # an opener
+            if depth == 0:
+                out.append(text[start : m.start()])
+            depth += 1
+        elif depth > 0:
+            depth -= 1
+            if depth == 0:
+                cut, start = cut + 1, m.end()
+        else:  # a closer alone
+            out.append(text[start : m.start()])
+            cut, start = cut + 1, m.end()
+    if depth > 0:
+        return "".join(out), cut + 1
+    out.append(text[start:])
+    return "".join(out), cut
 
 
 def _clean(text: str) -> str | None:
     """A prompt's own words, as typed: None when a hook or the harness wrote it, else the text with any
-    system reminder blocks cut out. Whether it holds any words is its caller's to ask."""
+    system reminder blocks cut out (`_cut`). One string holds no mark of who wrote a block inside it,
+    and a restored prompt must hold none, so a block the person quoted goes too; the scan counts each
+    cut. A row that is reminder blocks and nothing else is the harness's, whatever surrounds them.
+    Whether the words that remain say anything is its caller's to ask."""
     head = text.lstrip()
     if head.startswith(_FRAMES) or head.startswith(_INTERRUPT):
         return None
     if head and _SLASH.fullmatch(head.split(maxsplit=1)[0]):
         return None
-    return _REMINDER.sub("", text)
+    words, cut = _cut(text)
+    if cut and not words.strip():
+        return None
+    return words
 
 
-def _prompt(r: dict) -> str | None:
+def _words(r: dict) -> str | None:
+    """The text of a row shaped as a prompt, before anything is cut from it."""
     if r.get("type") != "user" or "toolUseResult" in r:
         return None
     if r.get("isCompactSummary") or r.get("isMeta") or r.get("promptSource") == "system":
         return None
     content = (r.get("message") or {}).get("content")
     if isinstance(content, str):
-        return _clean(content)
+        return content
     if isinstance(content, list) and content:
         # text blocks, beside a pasted image at most, or an image alone (no words); a tool_result
         # block is never a prompt
         if all(isinstance(b, dict) and b.get("type") in ("text", "image") for b in content):
-            return _clean("\n".join(b.get("text") or "" for b in content if b.get("type") == "text"))
+            return "\n".join(b.get("text") or "" for b in content if b.get("type") == "text")
     return None
+
+
+def _prompt(r: dict) -> str | None:
+    words = _words(r)
+    return None if words is None else _clean(words)
 
 
 def _notice(text: str) -> dict | None:
@@ -280,6 +316,7 @@ def _read(snap: Snapshot) -> _Scan:
                 continue
             text = _prompt(r)
             if text is not None:  # the person's, an image alone included: it ends the one before it
+                s.cut += _cut(_words(r) or "")[1]
                 at = r.get("timestamp") or ""
                 turn = _open(s.prompts, r.get("uuid"), at, text, "person") if text.strip() else None
     return s
@@ -327,9 +364,15 @@ def newest_transcript(directory: str | Path, projects: Path = PROJECTS) -> Path:
 
 def transcript_source(path: str | Path) -> dict:
     """What the checkpoint's `source` says of the transcript: its path, the model that last answered,
-    and how many of its lines were not JSON when read, a last line cut mid-write included."""
+    how many of its lines were not JSON when read, a last line cut mid-write included, and how many
+    system reminder blocks were cut out of the person's prompts."""
     s = _scan(path)
-    return {"transcript": os.fspath(path), "model": s.model, "unread_lines": s.unread}
+    return {
+        "transcript": os.fspath(path),
+        "model": s.model,
+        "unread_lines": s.unread,
+        "reminders_cut": s.cut,
+    }
 
 
 def transcript_turns(path: str | Path, budget: int) -> dict:
@@ -557,7 +600,7 @@ def posture(transcript_path: str | Path) -> list[Var]:
 
 def _hooked(text: Any) -> bool:
     s = str(text)
-    return s.lstrip().startswith(_FRAMES) or _REMINDER.search(s) is not None
+    return s.lstrip().startswith(_FRAMES) or _MARK.search(s) is not None
 
 
 def take_session(

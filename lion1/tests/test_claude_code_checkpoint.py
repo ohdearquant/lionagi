@@ -84,6 +84,9 @@ def test_a_session_take_refuses_a_hooks_frame_in_a_directive_or_a_kept_input():
         "<local-command-stdout>x</local-command-stdout>",
         "<task-notification>done</task-notification>",
         "the words, then <system-reminder>injected</system-reminder>",
+        "an opener alone <system-reminder> is a mark",
+        "a closer alone </system-reminder> is a mark",
+        '<system-reminder source="hook">attributed</system-reminder> and words',
     )
     for text in framed:
         with pytest.raises(CheckpointError, match="directive 'd' carries a hook's frame; whatever read it"):
@@ -510,6 +513,52 @@ def test_a_same_size_rewrite_of_the_transcript_that_restores_the_mtime_is_read_a
         before.st_ino,
     )
     assert [t["input"] for t in transcript_turns(path, 10**6)["kept"]] == ["placeholder bravo"]
+
+
+def test_a_reminder_block_inside_a_typed_prompt_is_cut_and_the_source_counts_it(tmp_path):
+    # the reader cannot tell a block the person quoted from one the harness placed, and a restored
+    # prompt holds neither: the words around it are kept as typed and the cut is counted, never silent
+    block = "<system-reminder>a quoted block</system-reminder>"
+    quoted = f"before{block} and{block}after"
+    path = write(
+        tmp_path / "t.jsonl",
+        [typed(quoted, "u1"), said("placeholder one"), typed("no block here", "u2"), said("placeholder two")],
+    )
+    kept = transcript_turns(path, 10**6)["kept"]
+    assert [t["input"] for t in kept] == ["before andafter", "no block here"]
+    assert transcript_source(path)["reminders_cut"] == 2
+    plain = write(tmp_path / "plain.jsonl", [typed("no block here", "u1"), said("placeholder one")])
+    assert transcript_source(plain)["reminders_cut"] == 0
+
+
+def test_a_reminder_block_is_cut_whole_when_nested_unclosed_leading_or_a_closer_alone(tmp_path):
+    # a block runs to the closer that balances it; an opener never closed runs to the end; a closer
+    # with no opener is a mark on its own, and an opener may carry attributes; a block the row opens
+    # with leaves the words after it; a row that is blocks and nothing else is the harness's and no
+    # prompt. Each cut is one in the count
+    inner = "<system-reminder>inner</system-reminder>"
+    nested = f"before <system-reminder>outer {inner} tail</system-reminder> after"
+    rows = [
+        typed(nested, "u1"),
+        said("placeholder one"),
+        typed("before <system-reminder>never closed", "u2"),
+        said("placeholder two"),
+        typed("a closer alone</system-reminder> stays words", "u3"),
+        said("placeholder three"),
+        typed("<system-reminder>injected</system-reminder> and then the words", "u4"),
+        said("placeholder four"),
+        typed("<system-reminder>the harness's own</system-reminder>", "u5"),
+        said("placeholder five"),
+        typed('before <system-reminder source="hook">attributed</system-reminder> after', "u6"),
+        said("placeholder six"),
+    ]
+    path = write(tmp_path / "t.jsonl", rows)
+    kept = transcript_turns(path, 10**6)["kept"]
+    words = ["before  after", "before ", "a closer alone stays words", " and then the words", "before  after"]
+    assert [t["input"] for t in kept] == words
+    assert transcript_source(path)["reminders_cut"] == 5
+    for text in kept:
+        assert "system-reminder" not in text["input"]
 
 
 def test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest(
