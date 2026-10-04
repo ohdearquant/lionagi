@@ -1,6 +1,6 @@
 """Claude Code as a backend (ADR-0009), in both shapes.
 
-`ClaudeCode` is the chat-completion shape: one `claude -p` per round, tools off, one turn, so the
+`ClaudeCode` is the chat-completion shape: one `claude -p` per turn, tools off, `--max-turns 1`, so the
 only way the model acts is LNDL in its text and every command goes through this runtime's handlers.
 
 `ClaudeCodeAgentic` is the agentic shape: one `claude -p` with its own tools on for a whole task.
@@ -41,9 +41,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from lionagi.actor import Actor, Message, Reply, Result, Run, SessionPlan
-from lionagi.lndl import Lact
-from lionagi.record import Kind
+from lion1.actor import Actor, Message, Reply, Result, Run, SessionPlan
+from lion1.lndl import Lact
+from lion1.record import Kind
 
 __all__ = (
     "ClaudeCodeError",
@@ -116,8 +116,8 @@ class _Step:
 
 @dataclass
 class ClaudeCodeSession:
-    """The chat-completion shape on one resumed CLI session: each round sends only what the view
-    gained since the last round, and the CLI keeps the conversation, so the provider's prompt cache
+    """The chat-completion shape on one resumed CLI session: each turn sends only what the view
+    gained since the last turn, and the CLI keeps the conversation, so the provider's prompt cache
     can hit on the unchanged prefix. The model's view is then the CLI's history, tool turns included.
 
     Without tools, each call forks the session it resumes (`--fork-session`), so every call leaves a
@@ -138,7 +138,7 @@ class ClaudeCodeSession:
     model: str | None = None
     cli: str | None = None
     timeout: float = 300.0
-    # the Claude Code provider: with `tools` the CLI runs its own tools inside each round (Bash, Read,
+    # the Claude Code provider: with `tools` the CLI runs its own tools inside each turn (Bash, Read,
     # Edit, Write, Grep, Glob), up to `max_turns` of them (0: no cap, the model runs its tools until it
     # stops), in `cwd` (khive signs as that directory's
     # actor) with `add_dirs` reachable; `allowed` adds permission rules beyond the tools (an MCP name);
@@ -902,7 +902,7 @@ def _land(live: Run, la: Lact, verdict: Result) -> Result:
         while live.record.get(alias) is not None:  # the CLI named one like the suffix
             alias += "_"
     execution = "admitted" if verdict.ok else "not executed"
-    live.record.append(Kind.RESULT, verdict, alias=alias, round=live.round, execution=execution)
+    live.record.append(Kind.RESULT, verdict, alias=alias, turn=live.turn, execution=execution)
     return verdict
 
 

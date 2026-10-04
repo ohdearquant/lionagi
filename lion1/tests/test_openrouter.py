@@ -7,9 +7,9 @@ import pytest
 from hub.backend import OpenRouter, OpenRouterError
 from hub.backend import openrouter as mod
 from hub.chat import entry_row
-from lionagi import Actor, Kind, Message, Profile, RunRequest
-from lionagi.checkpoint import entry_of
-from lionagi.lndl import parse
+from lion1 import Actor, Kind, Message, Profile, RunRequest
+from lion1.checkpoint import entry_of
+from lion1.lndl import parse
 
 
 def _answers(*replies):
@@ -40,7 +40,7 @@ def test_an_errored_choice_is_retried_and_the_attempt_count_recorded(monkeypatch
 
 def test_a_response_cut_mid_body_is_a_transient_request_failure(monkeypatch):
     # run-2 (2026-09-22): http.client.IncompleteRead escaped _post as itself, so the backend's retry
-    # loop never saw it and the instance ended at rounds=0 with an empty patch
+    # loop never saw it and the instance ended at turns=0 with an empty patch
     import http.client
 
     def cut(req, timeout):
@@ -101,13 +101,13 @@ def test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_
     monkeypatch.setattr(mod, "_post", _answers(mixed, _ok("fine"), _ok("plain")))
     backend = OpenRouter(model="m", retries=3)
     actor = Actor("mixed-channels")
-    run = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), backend))
     first, _ = backend.calls
     assert first["attempts"] == 1 and first["tool_calls"] == calls  # the model's turn: not sampled again
     turn = run.record.of_kind(Kind.TEXT)[0]
     assert turn.content == "<lvar v1>kept</lvar>" and "two channels" in turn.meta["refused"]
     assert "v1" not in run.values
-    notice = next(e.content for e in run.record.of_kind(Kind.SYSTEM) if e.round == 2)
+    notice = next(e.content for e in run.record.of_kind(Kind.SYSTEM) if e.turn == 2)
     assert (
         "your last turn could not be read: the turn came back in two channels, as text and as a native "
         "tool call, and nothing in it was executed" in notice
@@ -115,7 +115,7 @@ def test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_
     # resumed from the record or from the chat log, the refused turn still declares nothing
     for history in (run.record.entries, tuple(entry_of(entry_row(e)) for e in run.record.entries)):
         resumed = asyncio.run(
-            actor.run(Profile("p"), RunRequest(history=history, max_rounds=1), lambda messages: "ok")
+            actor.run(Profile("p"), RunRequest(history=history, max_turns=1), lambda messages: "ok")
         )
         assert "v1" not in resumed.values
     # a plain answer is not refused
@@ -212,9 +212,9 @@ def test_thinking_off_rides_in_the_body_and_reasoning_tokens_are_read_back(monke
         }
 
     monkeypatch.setattr(mod, "_post", post)
-    off = OpenRouter(model="m", reasoning={"enabled": False}, stop=["<system round="])
+    off = OpenRouter(model="m", reasoning={"enabled": False}, stop=["<system turn="])
     asyncio.run(off([Message("user", "hi")]))
-    assert seen[-1]["reasoning"] == {"enabled": False} and seen[-1]["stop"] == ["<system round="]
+    assert seen[-1]["reasoning"] == {"enabled": False} and seen[-1]["stop"] == ["<system turn="]
     assert off.calls[-1]["usage"]["reasoning_output_tokens"] == 7
     asyncio.run(OpenRouter(model="m")([Message("user", "hi")]))
     assert "reasoning" not in seen[-1]  # nothing sent means the provider's default, not a denial

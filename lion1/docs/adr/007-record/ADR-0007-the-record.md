@@ -24,8 +24,8 @@ cache, and a model with no notes starts every run from nothing. This record fixe
 
 The record belongs to the run ([[ADR-0002-the-run|ADR-0002]]); the notification that reads it each
 turn is [[ADR-0006-the-notification|ADR-0006]]; the context and note commands are dispatched like
-any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py`, `fold`,
-`Context.direct` and the default handlers in `lionagi/actor.py`, `lionagi/notes.py`.
+any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `src/lion1/record.py`, `fold`,
+`Context.direct` and the default handlers in `src/lion1/actor.py`, `src/lion1/notes.py`.
 
 ## Definitions
 

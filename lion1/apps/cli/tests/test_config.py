@@ -59,12 +59,12 @@ def test_home_then_directory_then_flag_for_a_string_and_a_bool(dirs, run):
 
 def test_a_flag_equal_to_the_built_in_default_still_beats_the_file(dirs, run):
     home, here = dirs
-    write(here, '[chat]\nmodel = "dir/m"\nrounds = 50\n')
+    write(here, '[chat]\nmodel = "dir/m"\nturns = 50\n')
     built_in = parser().parse_args(["chat"])
-    a = run("chat", "--dir", str(here), "--model", built_in.model, "--rounds", str(built_in.rounds))
-    assert (a.model, a.rounds) == (built_in.model, built_in.rounds)
+    a = run("chat", "--dir", str(here), "--model", built_in.model, "--turns", str(built_in.turns))
+    assert (a.model, a.turns) == (built_in.model, built_in.turns)
     a = run("chat", "--dir", str(here))
-    assert (a.model, a.rounds) == ("dir/m", 50)
+    assert (a.model, a.turns) == ("dir/m", 50)
 
 
 def test_no_file_leaves_the_parsers_own_defaults(dirs, run):
@@ -93,8 +93,8 @@ def test_an_unknown_key_refuses_naming_the_file_and_the_key(dirs, run, text, say
 @pytest.mark.parametrize(
     "line, says",
     [
-        ('rounds = "200"', r"rounds = '200' is not an integer"),
-        ("rounds = true", r"rounds = True is not an integer"),  # a TOML bool is not an int
+        ('turns = "200"', r"turns = '200' is not an integer"),
+        ("turns = true", r"turns = True is not an integer"),  # a TOML bool is not an int
         ("verbose = 1", r"verbose = 1 is not true or false"),
         ("model = 3", r"model = 3 is not a string"),
         ('box = "docker"', r"box = 'docker' is not one of vm, daytona"),
@@ -128,7 +128,7 @@ def test_lion_config_prints_each_value_with_the_file_it_came_from(dirs, capsys):
     assert rows["model"] == f'model = "dir/m"  # {d.resolve()}'
     assert rows["box"] == f'box = "daytona"  # {d.resolve()}'
     assert rows["verbose"] == f"verbose = true  # {h.resolve()}"
-    assert rows["rounds"] == "rounds = 200  # built-in"
+    assert rows["turns"] == "turns = 200  # built-in"
     assert rows["shell"] == "shell = false  # built-in"
     assert rows["image"] == "# image: unset  # built-in"
 

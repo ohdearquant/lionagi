@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import lionagi
-from lionagi.experience import (
+import lion1
+from hub.experience import (
     Experience,
     ExperienceRecord,
     FileExperienceStore,
@@ -120,7 +120,7 @@ def test_an_experience_takes_positive_bounds_only():
 
 
 def test_nothing_under_lionagi_imports_hub_or_a_khive_client():
-    root = Path(lionagi.__file__).resolve().parent  # the package as imported: the source tree or the wheel
+    root = Path(lion1.__file__).resolve().parent  # the package as imported: the source tree or the wheel
     imported = set()
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):

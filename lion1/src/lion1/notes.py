@@ -83,7 +83,7 @@ class MemoryNoteStore:
         return note
 
     def list(self, prefix: str = "") -> list[Note]:
-        return [n for k, n in sorted(self._notes.items()) if k.startswith(prefix)]
+        return [self._notes[k] for k in sorted(k for k in self._notes if k.startswith(prefix))]
 
     def find(self, query: str) -> list[Note]:
         """Case-insensitive substring over key and content, casefolded (`STRASSE` finds `Straße`); a blank
@@ -111,23 +111,15 @@ def _text(value: Any) -> str:
         return str(value)
 
 
-def _utf8(text: str) -> None:
-    """The one rule for a string the file cannot hold: UTF-8 cannot encode it. A lone surrogate passes
-    `json.dumps` raw (`ensure_ascii=False`) and would fail at the file's encode, so `put` refuses a key, a
-    run or a value by it before the store changes, and the loader a document by it before the next write
-    (`_lone_surrogate`)."""
-    text.encode("utf-8")
-
-
 def _lone_surrogate(document: Any) -> str | None:
-    """Where the first string `_utf8` refuses sits in a parsed file, as the subscripts that reach it
+    """Where the first non-UTF-8 string sits in a parsed file, as the subscripts that reach it
     (`document['notes']['k']['value'][2]`), else None. A dict's key is read before its value."""
     stack: list[tuple[Any, Any]] = [(document, None)]  # a path is a chain of (parent, part)
     while stack:
         node, path = stack.pop()
         if isinstance(node, str):
             try:
-                _utf8(node)
+                node.encode("utf-8")
             except UnicodeEncodeError:
                 parts = []
                 while path is not None:
@@ -259,7 +251,7 @@ class FileNoteStore(MemoryNoteStore):
             # on any of them, and by then the store has changed
             for what, string in (("key", key), ("run", run), ("value", text)):
                 try:
-                    _utf8(string)
+                    string.encode("utf-8")
                 except UnicodeEncodeError as e:
                     raise ValueError(f"the {what} is not UTF-8 text: {e}") from None
             # the sequence is written with them: NaN fails the flush, and a bool or a float that gets

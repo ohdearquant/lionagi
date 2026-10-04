@@ -69,7 +69,7 @@ Source: `hub/agent/desk.py`, `hub/agent/lookups.py`, `hub/agent/verdicts.py`; `A
 | A4 | A serving agent holds an exclusive lock on its `agent.pid` for its life. | `Agent._claim`; `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` | a row reads a dead resident as serving, or a live one as stopped (C10) |
 | A5 | An actor may send on a thread it never received, and the message lands on that thread for its sender. | `_deliver` in `hub/agent/desk.py` replies as the agent on a thread of the owner's box; the tests stand in for the store (assumption) | no answer or clarify reaches its sender, and the desk only escalates, routes, files and leaves (C12) |
 | A6 | The owner's box listing carries each message's content, so the desk reads no thread to list a message. | `_discover` in `hub/agent/desk.py` keeps a row's `content`, its first 2,000 characters, and `sweep` lists it; the tests' reader stands in for the store (assumption) | the sweep lists subjects with empty bodies, the model routes on subjects, and a clarify can quote only the subject (C5) |
-| A7 | A cheap model may write `OUT{}` in the round that called `sweep()`, before the listing is in front of it. | observed on one live wake, as the docstring of `Desk._accept` says; no bench measures it (assumption) | the gate on `OUT{}` in C6 never fires and costs nothing |
+| A7 | A cheap model may write `OUT{}` in the turn that called `sweep()`, before the listing is in front of it. | observed on one live wake, as the docstring of `Desk._accept` says; no bench measures it (assumption) | the gate on `OUT{}` in C6 never fires and costs nothing |
 
 ## Claims
 
@@ -345,7 +345,7 @@ Serves C2, C5 and C6. `lion agent` builds `Desk` when `chores.toml` has a `[desk
 is not false. It registers `sweep`, `answer`, `leave`, `clarify`, `route` and `task` on the agent's
 actor, each requiring `comm.send`, adds them and the desk guidance to the chores profile, and sets
 the agent's `accept` and `watch`. No tick is scheduled: the watch wakes the desk. Caps and routes
-come from `[desk]`. `build` gives a wake six rounds: sweep, route and `OUT{}` take three, and each
+come from `[desk]`. `build` gives a wake six turns: sweep, route and `OUT{}` take three, and each
 slip one more; no test pins the six.
 
 - **Landing evidence**: `tests/test_desk.py` (115 tests), among them

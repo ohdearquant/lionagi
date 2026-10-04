@@ -148,7 +148,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                 rec = await solve(
                     row,
                     args.model,
-                    args.max_rounds,
+                    args.max_turns,
                     out_dir,
                     args.backend,
                     box=box,
@@ -226,7 +226,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
     spent = rec.get("cost_usd", 0.0)
     cost = "unknown" if spent is None else f"${spent:.3f}" + ("" if _cost_known(rec) else "+?")
     print(
-        f"{iid}: resolved={rec['resolved']} {rec.get('outcome')} rounds={rec.get('rounds')} "
+        f"{iid}: resolved={rec['resolved']} {rec.get('outcome')} turns={rec.get('turns')} "
         f"cost={cost} {rec['total_seconds']:.0f}s "
         f"{rec.get('grade', {}).get('status', '')} {rec.get('error', '')}",
         flush=True,
@@ -438,7 +438,7 @@ if __name__ == "__main__":
         help="who runs the loop: this runtime (LNDL, `--backend` says which model API) or the codex CLI "
         "inside the box on the same model through OpenRouter (bench/swe/codex_cli.py)",
     )
-    ap.add_argument("--backend", choices=["rounds", "session", "openrouter", "codex"], default="openrouter")
+    ap.add_argument("--backend", choices=["turns", "session", "openrouter", "codex"], default="openrouter")
     ap.add_argument("--model", default="deepseek/deepseek-v4.1-flash")
     ap.add_argument("--effort", default=None, help="codex only: model_reasoning_effort, e.g. xhigh")
     ap.add_argument(
@@ -447,9 +447,9 @@ if __name__ == "__main__":
         help="openrouter only: a reasoning token budget (default 2000: 42/50 on Mini-50 against 33/50 "
         "off), off, on (the provider's default), low, medium, high",
     )
-    # rounds are the backstop: with the model's thinking off a round is one or two actions, and a
+    # turns are the backstop: with the model's thinking off a turn is one or two actions, and a
     # lower cap cut the longest instances mid-edit; settle, time and cost do the stopping
-    ap.add_argument("--max-rounds", type=int, default=100)
+    ap.add_argument("--max-turns", type=int, default=100)
     ap.add_argument(
         "--criteria",
         action="store_true",
@@ -459,7 +459,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--deliberate",
         action="store_true",
-        help="open each round with written reasoning lines; the arm for the no-thinking regime",
+        help="open each turn with written reasoning lines; the arm for the no-thinking regime",
     )
     ap.add_argument(
         "--tdd",
@@ -471,7 +471,7 @@ if __name__ == "__main__":
         "--settle",
         type=int,
         default=0,
-        help="rounds the fix may stand unchanged before the run stops; 0 (default) never: the run ends on "
+        help="turns the fix may stand unchanged before the run stops; 0 (default) never: the run ends on "
         "OUT{} or a budget (on the hard set most runs settled, some mid-verification)",
     )
     ap.add_argument(

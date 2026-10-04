@@ -28,7 +28,7 @@ def _args(**kw) -> argparse.Namespace:
         harness="lndl",
         backend="openrouter",
         model="deepseek/deepseek-v4.1-flash",
-        max_rounds=5,
+        max_turns=5,
         settle=0,
         time_budget=1200.0,
         cost_budget=None,

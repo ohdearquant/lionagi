@@ -1,4 +1,4 @@
-"""The repository in a box, as the round notice reports it: which files the change touches and since
+"""The repository in a box, as the turn notice reports it: which files the change touches and since
 when it has stood still, and the model's own acceptance checks. `Watch.section` is an actor section;
 `criteria(actor, watch)` registers the `criteria` command; `accept` is the gate on OUT{}.
 
@@ -6,9 +6,9 @@ Files under tests are named apart (a grader replaces them with its own copy, so 
 never the fix); so are new files outside the tracked tree (a repro script at the root, a throwaway
 package beside the source), which are scaffolding and start no clock: counted as the fix, they
 settled a run that was still investigating at a fifth of its time budget. Past `notice_after`
-unchanged rounds the line asks for OUT{} or a named gap; past `settle_after` the run stops and the
+unchanged turns the line asks for OUT{} or a named gap; past `settle_after` the run stops and the
 change is taken as it stands. On every resolved bench run before this the source was edited exactly
-once and every round after it was verification, five to twenty of them; the model has no stopping
+once and every turn after it was verification, five to twenty of them; the model has no stopping
 rule of its own."""
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lionagi import Actor, Context
+from lion1 import Actor, Context
 
 from .box import Box
 
@@ -131,7 +131,7 @@ def digest_of(chunks: dict[str, str], source: list[str]) -> str:
 
 
 class Watch:
-    """The change in `box` as it stands, round by round. `test` says which paths are tests."""
+    """The change in `box` as it stands, turn by turn. `test` says which paths are tests."""
 
     def __init__(
         self,
@@ -148,8 +148,8 @@ class Watch:
         self.settle_after = settle_after  # 0: never stop
         self.is_test = test
         self.digest: str | None = None
-        self.since = 0  # the round whose edits produced the current change
-        self.stable = 0  # rounds the change has now stood unchanged
+        self.since = 0  # the turn whose edits produced the current change
+        self.stable = 0  # turns the change has now stood unchanged
         self.source: list[str] = []
         self.tests: list[str] = []
         self.scratch: list[str] = []  # new files outside the tracked tree
@@ -163,7 +163,7 @@ class Watch:
 
     async def declare(self, cmds: list[str], timeout: int) -> str:
         """The acceptance checks, run once on the tree as it stands; all passing means they test nothing.
-        Two declarations in one round run concurrently, so the state moves only once the verdict is in,
+        Two declarations in one turn run concurrently, so the state moves only once the verdict is in,
         and a refused set leaves whatever stands untouched.
         """
         if not cmds:
@@ -233,12 +233,12 @@ class Watch:
             return None
         digest = digest_of(chunks, self.source)
         if digest != self.digest:
-            # run.round - 1: the edit happened the round before this one observed it; at round 1
-            # there is no round 0 to attribute it to, so the first sighting names round 1 itself
-            self.digest, self.since, self.stable = digest, max(run.round - 1, 1), 0
+            # run.turn - 1: the edit happened the turn before this one observed it; at turn 1
+            # there is no turn 0 to attribute it to, so the first sighting names turn 1 itself
+            self.digest, self.since, self.stable = digest, max(run.turn - 1, 1), 0
         else:
             self.stable += 1
-        line = f"repository: the fix touches {', '.join(self.source)}, unchanged since round {self.since}"
+        line = f"repository: the fix touches {', '.join(self.source)}, unchanged since turn {self.since}"
         for a in aside:
             line += "; " + a
         moved = False
@@ -256,11 +256,11 @@ class Watch:
                 return line + "; all acceptance checks pass, the run ends here"
         if self.stable >= self.notice_after:
             line += (
-                f"; it has stood for {self.stable} rounds: if it is verified, finish with OUT{{}} now; "
+                f"; it has stood for {self.stable} turns: if it is verified, finish with OUT{{}} now; "
                 "if not, write what is unverified to note.gap and check exactly that"
             )
         if self.settle_after and self.stable + 1 >= self.settle_after:
-            line += "; the run ends after this round if the fix still does not change"
+            line += "; the run ends after this turn if the fix still does not change"
         return line
 
     async def _moved(self, digest: str | None) -> bool:
@@ -314,7 +314,7 @@ def _ran(entry: Any) -> bool:
 
 async def accept(watch: Watch, run: Any, output: Any) -> str | None:
     """The gate on OUT{}: an unchanged repository is not done; a change nothing ran against since is
-    not verified (an edit and the command that checks it are two rounds: in one round they run
+    not verified (an edit and the command that checks it are two turns: in one turn they run
     together, so the command saw the tree before the edit); a failing declared check is not done."""
     diff = await watch.box.diff(watch.base)
     if not diff.strip():
@@ -322,7 +322,7 @@ async def accept(watch: Watch, run: Any, output: Any) -> str | None:
     chunks = by_file(diff)
     tests, scratch, source = await watch.classify(
         chunks
-    )  # read afresh: a scratch file of this round is scratch
+    )  # read afresh: a scratch file of this turn is scratch
     if not source:
         aside = []
         if tests:
@@ -335,13 +335,13 @@ async def accept(watch: Watch, run: Any, output: Any) -> str | None:
         )
     if digest_of(chunks, source) != watch.digest:
         return (
-            "the source changed in this round; nothing has run against that change yet, so it is not "
-            "verified: run the nearest tests in the next round, then finish"
+            "the source changed in this turn; nothing has run against that change yet, so it is not "
+            "verified: run the nearest tests in the next turn, then finish"
         )
-    ran_after = any(_ran(e) and e.round > watch.since for e in getattr(run, "record", ()))
+    ran_after = any(_ran(e) and e.turn > watch.since for e in getattr(run, "record", ()))
     if not ran_after:
         return (
-            f"no command has run since the source changed in round {watch.since}, so the change is not "
+            f"no command has run since the source changed in turn {watch.since}, so the change is not "
             "verified: run the nearest tests first, then finish"
         )
     if watch.criteria:

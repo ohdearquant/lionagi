@@ -2,7 +2,8 @@ import re
 
 import pytest
 
-from lionagi.lndl import (
+from lion1 import lndl
+from lion1.lndl import (
     Aliases,
     LNDLError,
     Lvar,
@@ -117,6 +118,13 @@ def test_a_pointer_in_a_tuple_stays_in_a_tuple():
 
 def test_a_dotted_pointer_is_one_name():
     assert parse_call("f(x=*note.a.b, y=[*r.c])") == ("f", {"x": Pointer("note.a.b"), "y": [Pointer("r.c")]})
+
+
+def test_a_call_that_reads_as_written_makes_no_repair(monkeypatch):
+    # every repair was made before the text as written was tried, on every call a model wrote well
+    for repair in ("_escape_newlines_in_strings", "_close_dangling", "_insert_commas"):
+        monkeypatch.setattr(lndl, repair, lambda source: pytest.fail("a repair was made"))
+    assert parse_call_noting('run(cmd="ls",\n    timeout=1)') == ("run", {"cmd": "ls", "timeout": 1}, ())
 
 
 def test_a_pointer_on_a_later_line_of_a_call_is_read():

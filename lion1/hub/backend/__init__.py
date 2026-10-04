@@ -6,7 +6,7 @@ rides its hooks. `claude_code` has both for the Claude Code CLI.
 """
 
 from .claude_code import ClaudeCode, ClaudeCodeAgentic, ClaudeCodeError, ClaudeCodeSession
-from .codex import Codex, CodexError
+from .codex import Codex, CodexError, CodexSession
 from .openrouter import OpenRouter, OpenRouterError
 
 __all__ = (
@@ -16,6 +16,7 @@ __all__ = (
     "ClaudeCodeSession",
     "Codex",
     "CodexError",
+    "CodexSession",
     "OpenRouter",
     "OpenRouterError",
 )

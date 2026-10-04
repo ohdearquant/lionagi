@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 
-from lionagi.lndl import _constructs
+from lion1.lndl import _constructs
 
 __all__ = ("normalize", "tool_calls_text")
 

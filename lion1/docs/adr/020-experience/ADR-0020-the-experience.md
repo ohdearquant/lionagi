@@ -1,7 +1,7 @@
 ---
 adr: ADR-0020
-status: proposed
-liveness: operating (the two stores, the recall and its block, the lesson command, the terminal phase and its cancel shape, the spend and model fields, and the example with its two removal arms are pinned by tests, S1)
+status: withdrawn
+liveness: retired (the runtime seam is removed; the record, the stores and the lesson's Spec are in `hub/experience.py`, wired to nothing)
 date: "2026-10-02"
 area: experience
 kind: new
@@ -21,6 +21,9 @@ tags:
 
 ## Context
 
+Withdrawn on 2026-10-03: the runtime seam is gone, and the record, stores and lesson Spec sit in
+`hub/experience.py`, wired to nothing.
+
 The model is fixed. What can move between two runs of the same ask is what the first run recorded:
 the ask, how it ended, and a lesson the model wrote in its own words. Today nothing carries that. A
 note outlives a run but is replaced by every put and found by substring
@@ -34,8 +37,8 @@ recalled lesson improves the next run; that is a bench question
 ([[ADR-0012-the-bench#^c8|ADR-0012/C8]]).
 
 The port source is an earlier loop built as a graph with an evaluator node and a goal record; none
-of that shape is kept. Source: `lionagi/actor.py` (`run`, `_notify`, `_closure`),
-`lionagi/notes.py`, `lionagi/bus.py`, `lionagi/record.py`; `lionagi/experience.py` and the two
+of that shape is kept. Source: `src/lion1/actor.py` (`run`, `_notify`, `_closure`),
+`src/lion1/notes.py`, `src/lion1/bus.py`, `src/lion1/record.py`; `hub/experience.py` and the two
 lifecycle points in `run` implement this record.
 
 ## Definitions
@@ -71,15 +74,15 @@ lifecycle points in `run` implement this record.
 
 ### C1: Experience is opt-in per profile, and the core imports no provider _(enforced: mechanical)_ ^c1
 
-- **Subject**: every profile and every run; `lionagi/experience.py` and the actor's two lifecycle
+- **Subject**: every profile and every run; `hub/experience.py` and the actor's two lifecycle
   points.
 - **Violated when**: a profile with no `experience` makes a store call, offers `experience.lesson`
-  or emits either event; or anything under `lionagi/` imports `hub/` or a khive client.
+  or emits either event; or anything under `src/lion1/` imports `hub/` or a khive client.
 
 `Profile.experience` is none by default, and a run of such a profile is the run of today: the same
 commands, the same notifications, no event. A profile that binds an `Experience` opts into the
 recall and the persist of C2 and C5, and only then is `experience.lesson` in its subset. The stores
-under `lionagi/` are in memory and on file; the khive-backed store is a hub adapter (D7).
+under `src/lion1/` are in memory and on file; the khive-backed store is a hub adapter (D7).
 
 ### C2: One recall per run, against the first new INPUT, inside the experience scope _(enforced: mechanical)_ ^c2
 
@@ -201,7 +204,7 @@ claim waits for a paired, held-out comparison the bench record governs
 
 ## Decisions
 
-### D1: `lionagi/experience.py`: the record, the configuration, the lexical recall and two stores ^d1
+### D1: `hub/experience.py`: the record, the configuration, the lexical recall and two stores ^d1
 
 Serves C1, C2, C4, C6 and C9. `Experience` holds the store, the declared model, the definition
 version, `k` (3), `max_chars` (4,096) and `io_timeout` (1.0 s). `ExperienceRecord` is frozen, scalar
@@ -218,7 +221,7 @@ is a tuple right below the imports.
 
 ### D2: `Actor.run`: the recall before the first notification, the persist after the reap ^d2
 
-Serves C2 and C5. After `_take_inbox` on round 1 the run picks its first new INPUT and calls the
+Serves C2 and C5. After `_take_inbox` on turn 1 the run picks its first new INPUT and calls the
 store once under `io_timeout`; the hits and the receipt are held on the run for `_notify`. After
 `_reap` returns and the outcome is set, the persist runs under the same bound, then `_closure`
 carries its receipt; a cancellation in that phase is re-raised after `_deliver`. Nothing of this
@@ -231,10 +234,10 @@ runs for a profile with no `experience`.
 
 ### D3: `_notify`: the `experience:` section on the first turn, counted before the first call ^d3
 
-Serves C3. On round 1 `_notify` renders the held hits as quoted data under `experience:` after
-`notes kept:`, writes the receipt into the entry's `meta["experience"]`, and includes the block in
-the view estimate the context check reads. A lesson is escaped onto its lines; a hit that would
-cross `max_chars` is left out whole and counted.
+Serves C3. On turn 1 `_notify` renders the held hits as quoted data under `experience:` after `notes
+kept:`, writes the receipt into the entry's `meta["experience"]`, and includes the block in the view
+estimate the context check reads. A lesson is escaped onto its lines; a hit that would cross
+`max_chars` is left out whole and counted.
 
 - **Landing evidence**: `tests/test_actor_experience.py`:
   `test_the_first_backend_call_sees_the_hits_and_the_role_prompt_is_unchanged`,

@@ -18,8 +18,8 @@ from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded
 from hub.agent.desk import Answer, Clarify, Leave, after
 from hub.khive import LOST, Khive, KhiveError
-from lionagi import Kind, RunRequest
-from lionagi.notes import FileNoteStore
+from lion1 import Kind, RunRequest
+from lion1.notes import FileNoteStore
 from tests.test_desk import (
     ASKER,
     DONE,
@@ -211,7 +211,7 @@ def test_ambiguous_delivery_is_not_automatically_sent_again_on_the_next_watch(tm
     desk, chores, agent = build(
         tmp_path, khive, FakeReader(q), [SWEEP, answer, DONE], disk=Probe("disk", full())
     )
-    agent.max_rounds = 3
+    agent.max_turns = 3
     agent.state.put("desk_since", "2026-09-22T09:00:00Z", run="-", seq=0)
     first = asyncio.run(agent.wake())
     first_pending = sorted(pending(agent))
@@ -620,7 +620,7 @@ def one_turn_at_cap_one(tmp_path, fates: dict[str, list[str]]) -> dict:
     # one turn orders two writes (ADR-0005/C6); declared read, two answers overlap as two runs' would
     agent.actor.handlers["answer"] = dataclasses.replace(agent.actor.handlers["answer"], effect="read")
     profile, _ = desk.chores.profiles()
-    request = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=3, accept=desk._accept)
+    request = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_turns=3, accept=desk._accept)
 
     def seen() -> dict:
         ledger = sorted((r["msg"], r["class"], r.get("why") or r.get("settled")) for r in desk.rows())
@@ -784,7 +784,7 @@ def two_sweeps_held(desk, agent, inner: FakeKhive):
 
         desk._discover, inner.send = discover, send
         profile, _ = desk.chores.profiles()
-        req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=3, accept=desk._accept)
+        req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_turns=3, accept=desk._accept)
         running = asyncio.create_task(agent.actor.run(profile, req, Scripted(TWO_SWEEPS, DONE)))
         try:
             await asyncio.wait_for(entered.wait(), 2)
