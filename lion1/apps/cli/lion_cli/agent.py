@@ -26,6 +26,8 @@ from lion1 import Actor, Profile
 from lion1.actor import DEFAULT_HANDLERS
 
 __all__ = (
+    "DEFAULT_MODEL",
+    "MAX_TURNS",
     "build",
     "chair",
     "land",
@@ -35,6 +37,11 @@ __all__ = (
     "backend_for",
     "agent_main",
 )
+
+DEFAULT_MODEL = (
+    "deepseek/deepseek-v4.1-flash"  # what a resident runs when neither --model nor its file names one
+)
+MAX_TURNS = 6  # the turns of one wake, a chair's burst
 
 
 def build(directory: Path, backend) -> tuple[Chores, Agent]:
@@ -74,7 +81,7 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         else (lambda m: m is not None and chores.admit(m)),
         owner=cfg["owner"],
         # sweep, route, OUT is three clean turns; a slip (measured: an unquoted dict key) costs one each
-        max_turns=6,
+        max_turns=MAX_TURNS,
         batch=int(cfg.get("batch", 5)),
         budget=budget,
         # the chair is one conversation for the life of the process: a burst of mail, a plain reply,
@@ -344,7 +351,7 @@ async def agent_main(a: argparse.Namespace) -> None:
         return
     cfg = tomllib.loads((directory / "chores.toml").read_text())
     backend = backend_for(
-        a.model or cfg.get("model") or "deepseek/deepseek-v4.1-flash",
+        a.model or cfg.get("model") or DEFAULT_MODEL,
         cfg.get("claude_code"),
         cwd=directory,
         codex=cfg.get("codex"),

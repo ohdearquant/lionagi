@@ -40,11 +40,13 @@ __all__ = (
     "table",
     "page",
     "controls_info",
+    "chores_toml",
     "budget_table",
     "wake_table",
     "waiting_mail",
     "area_rows",
     "rows_json",
+    "wake_row",
     "wakes",
     "log_tail",
     "identity",
@@ -366,7 +368,8 @@ def controls_info(directory: str) -> dict:
     }
 
 
-def _chores(directory: str) -> dict:
+def chores_toml(directory: str) -> dict:
+    """The resident's chores.toml as a table; one that is missing or does not parse is empty."""
     try:
         return tomllib.loads((Path(directory) / "chores.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError):
@@ -374,11 +377,11 @@ def _chores(directory: str) -> dict:
 
 
 def budget_table(directory: str) -> dict:
-    return dict(_chores(directory).get("budget") or {})
+    return dict(chores_toml(directory).get("budget") or {})
 
 
 def wake_table(directory: str) -> dict:
-    return dict(_chores(directory).get("wake") or {})
+    return dict(chores_toml(directory).get("wake") or {})
 
 
 def waiting_mail(directory: str) -> list[dict]:
@@ -436,6 +439,36 @@ def rows_json(rows: list[Resident]) -> str:
     return json.dumps(area_rows(rows), indent=1)
 
 
+def wake_row(line: str) -> dict | None:
+    """One serve.log line read as a wake: the numbers `serve` printed, or the line kept whole with its
+    time when it is a wake line of another shape; None for a line that is no wake line."""
+    m = _WAKE.match(line)
+    if m is None:
+        return None
+    if m["wake"] is None:
+        return {"at": m["at"], "raw": line}
+    row: dict[str, Any] = {}
+    for k, v in m.groupdict().items():
+        if k in ("at", "outcome"):
+            row[k] = v
+        elif k == "cost":
+            row[k] = float(v)
+        elif k not in ("context", "restarts", "tasks", "unknown"):
+            row[k] = int(v)
+    # the context and restarts suffixes: absent on an older line; a line that stood in a
+    # context and started no session over prints no restarts, which is 0 restarts
+    if m["context"] is not None:
+        row["context"] = int(m["context"])
+        row["restarts"] = int(m["restarts"] or 0)
+    elif m["restarts"] is not None:
+        row["restarts"] = int(m["restarts"])
+    if m["tasks"] is not None:  # the queue tasks the wake presented
+        row["tasks"] = int(m["tasks"])
+    if m["unknown"] is not None:  # calls the wake's dollars miss
+        row["unknown"] = int(m["unknown"])
+    return {**row, "raw": line}
+
+
 def wakes(directory: str, n: int = 30) -> list[dict]:
     """The last n wake lines of the resident's serve.log, newest first, with the numbers `serve`
     printed; a `serving ` line is a restart row, and a wake line of another shape is kept whole
@@ -448,30 +481,8 @@ def wakes(directory: str, n: int = 30) -> list[dict]:
     for line in text.splitlines():
         if line.startswith("serving "):
             rows.append({"at": "", "raw": line, "restart": True})
-        elif m := _WAKE.match(line):
-            if m["wake"] is None:
-                rows.append({"at": m["at"], "raw": line})
-                continue
-            row: dict[str, Any] = {}
-            for k, v in m.groupdict().items():
-                if k in ("at", "outcome"):
-                    row[k] = v
-                elif k == "cost":
-                    row[k] = float(v)
-                elif k not in ("context", "restarts", "tasks", "unknown"):
-                    row[k] = int(v)
-            # the context and restarts suffixes: absent on an older line; a line that stood in a
-            # context and started no session over prints no restarts, which is 0 restarts
-            if m["context"] is not None:
-                row["context"] = int(m["context"])
-                row["restarts"] = int(m["restarts"] or 0)
-            elif m["restarts"] is not None:
-                row["restarts"] = int(m["restarts"])
-            if m["tasks"] is not None:  # the queue tasks the wake presented
-                row["tasks"] = int(m["tasks"])
-            if m["unknown"] is not None:  # calls the wake's dollars miss
-                row["unknown"] = int(m["unknown"])
-            rows.append({**row, "raw": line})
+        elif (row := wake_row(line)) is not None:
+            rows.append(row)
     return rows[max(len(rows) - n, 0) :][::-1]
 
 
