@@ -447,13 +447,14 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
         raise ClaudeCodeError("claude exited 1: unrecognized model opus-5-5")
 
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: refusing)
+    # the closing line holds the log path: a console wider than any line, so nothing wraps
+    monkeypatch.setenv("COLUMNS", str(2 * len(str(tmp_path)) + 1000))
     log = tmp_path / "chat.jsonl"
     args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
     with pytest.raises(SystemExit) as died:
         asyncio.run(chat_main(parser().parse_args(args)))
     assert died.value.code == 1
-    # read unwrapped and uncoloured: where the closing line wraps follows the log path's length
-    out = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out).split())
+    out = capsys.readouterr().out
     assert "✗ the model's call failed: claude exited 1: unrecognized model opus-5-5" in out
     assert "Traceback" not in out and "failed · 0 call(s)" in out and "continue it: lion chat -c" in out
     rows = [json.loads(ln) for ln in log.read_text().splitlines()]
