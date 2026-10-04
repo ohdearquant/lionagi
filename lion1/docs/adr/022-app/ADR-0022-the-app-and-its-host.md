@@ -1,7 +1,7 @@
 ---
 adr: ADR-0022
 status: proposed
-liveness: partial (the host's `/v2` routes pass their tests; the app is written and not yet compiled, so its tests have never run; neither is on main)
+liveness: partial (the host's `/v2` routes pass their tests in CI; the app builds and passes its own under `build.sh`, which no CI job runs; C13 is unpinned)
 date: "2026-10-04"
 area: app
 kind: new
@@ -254,8 +254,8 @@ environment or `Local.xcconfig`. Unset or missing wrappers refuse with 78, `none
 and a lock's refusal exits 75. The derived data and the build log go outside the tree by default.
 Every screen draws its header with one `ScreenBar`.
 
-- **Landing evidence**: owed: `build.sh` passing `Tests/DecodingTests.swift` and
-  `Tests/StoreTests.swift`, which are written and have never run (S1).
+- **Landing evidence**: `build.sh` builds the app and passes the XCTest cases of
+  `Tests/DecodingTests.swift` and `Tests/StoreTests.swift`, run on a person's machine (S1).
 
 ### D2: The `/v2` routes: `Daemon` in `apps/cli/lion_cli/daemon.py`, behind `_v2` in `areas.py` ^d2
 
@@ -269,7 +269,7 @@ list (D7).
 | --------------- | ---- | ------- |
 | `GET /v2/today` | totals, each area with its agents, the For you count, the host's version and name, and the capability list | 200 |
 | `GET /v2/areas/{name}` | the chair, the agents, and a timeline of wakes and escalations, newest first | 200; 404 |
-| `GET /v2/agents/{id}` | the row, the definition, its editable paths and the path of `chores.toml` | 200; 404 |
+| `GET /v2/agents/{id}` | the row, the definition, its editable paths and the path of `chores.toml`; for a file its loaders refuse, no definition, no editable path and the reason as `refused` | 200; 404 |
 | `GET /v2/agents/{id}/wakes?before=&limit=` | the wakes in `serve.log`, newest first, with `more` | 200; 400, 404 |
 | `GET /v2/agents/{id}/record?wake=&after=` | the lines of `serve.log` with their numbers: one wake's, or those after a number | 200; 400, 404 |
 | `GET /v2/foryou` | For you (D5) | 200; 502 |
@@ -361,11 +361,13 @@ in `daemon/` beside the registry and fetched again once a day old; a failed fetc
 Serves C3 and C7. `CAN` names `definition`, `control`, `message`, `foryou`, `models`,
 `check_provider` and `open`, and no `provider_key`, since no route writes or removes a key (S4).
 `GET /v2/today` answers it as `daemon.can`. The app's `Store.can` reads it and answers false before
-the first read, and each control in the app's views is shown under one name.
+the first read, and each control in the app's views is shown under one name. The app knows names
+this host does not list, among them `stop`, `message_images`, `default_model` and `model_settings`
+(S3).
 
 - **Landing evidence**: `test_can_names_exactly_the_writes_a_route_serves`,
   `test_no_route_writes_or_removes_a_key_and_no_answer_carries_one`, and
-  `testActionsFollowTheDaemonsCanList`, not yet run (S1).
+  `testActionsFollowTheDaemonsCanList`.
 
 ### D8: Fixtures, and demo mode over them ^d8
 
@@ -376,7 +378,8 @@ stream once. The app's clock stands at the recording's time. `LionApp` takes it 
 or XCTest.
 
 - **Landing evidence**: `testEveryFixtureDecodesAsTheAnswerItsNameSays`,
-  `testTheEventRecordingParses`, `testAnsweringAForYouRowRemovesIt`; written, not yet run (S1).
+  `testTheEventRecordingParses`, `testAnsweringAForYouRowRemovesIt`,
+  `testTheAnswersADaemonLeavesNullDecode`.
 
 ## Alternatives
 
@@ -394,24 +397,25 @@ or XCTest.
 
 ## Consequences
 
-- **S1**: The app is written and not yet compiled, so its XCTest cases have never run. C3, C9, C10
-  and C13 are owed on the app's side until `build.sh` passes them. The host's tests in
-  `tests/test_daemon.py` pass.
+- **S1**: The app builds and its XCTest cases pass under `build.sh`, on a person's machine. No CI
+  job builds it, so a change under `apps/mac/` lands after that run. No test launches the app: C9's
+  launch rule and label and C10's entitlements rest on a reading of `LionApp.swift`, `ScreenBar` and
+  `Lion.entitlements`. The host's tests in `tests/test_daemon.py` run in CI.
 - **S2**: `guarded` takes `/v2` and `/v2/events` by their own test on every method it serves, before
   any route runs: a loopback peer, one of the two Hosts and no other Origin. Any other method,
   `HEAD` and `OPTIONS` included, gets the standard library's 501 and nothing runs. `[::1]` is
   refused, since the server listens on IPv4 alone. A test pins each refusal. Loopback is not
   identity: every process on the machine is answered, a proxy forwarding another machine's request
   with a loopback Host included.
-- **S3**: The app offers three things the host refuses whatever their body: Stop run under
-  `control`, an image dropped on the message box under `message`, and the default model in Settings
-  under `models`. Each leaves the app, or waits for a name of its own, before C3 holds. The help
-  text of Run now promises a run whatever the rules say, while the host wakes only on what waits
-  (C5).
+- **S3**: Four of the app's controls carry names this host does not list, so the app does not offer
+  them. They are Stop run under `stop`, an image dropped on the message box under `message_images`,
+  the default model under `default_model`, and a model's longest answer, reasoning, images and
+  failure rule under `model_settings`. A model change carries only the settings that differ. No test
+  reads a view to check that each control sits under its name, so C3 rests on review there.
 - **S4**: The host lists no `provider_key` and serves no key route: `PUT` and `DELETE` on
   `/v2/library/providers/{name}/key` answer 404 before a body is read. A provider's `key` says
-  whether the keychain item exists, asked without its value. The app hides its key field by itself,
-  which has not run (S1).
+  whether the keychain item exists, asked without its value. The app shows its key field only under
+  `provider_key`, so it shows none.
 - **S5**: An agent's `today.cost` is null while `unknown_today` in `hub/areas.py` is not 0, a day's
   row from before that count included, and so are `totals.cost` and an area's `today.cost` over it.
   A wake's `cost` is null when its line counts such calls. `totals.cap` is null when a resident's
@@ -429,8 +433,8 @@ or XCTest.
   send's idempotency key.
 - **S9**: An answer is a send and then a mark. When the mark fails after the send, the host answers
   502 saying the text was sent, and the item stays open; a second answer from the app carries a new
-  key and sends again. The app offers Done only on an item already read, and the host lists none, so
-  it offers none; a done for an id not listed answers 404.
+  key and sends again. The app offers Done on an item that carries no choices, which is every item
+  this host lists; a done for an id not listed answers 404.
 - **S10**: Nothing pins C13. The host's stream sends a wake only for a line its log gains while the
   stream is open, and an `agent` event only for a change it saw, so a reopened stream carries none
   of what it missed. A test that drops the stream across a wake and checks every page after the
@@ -447,9 +451,15 @@ or XCTest.
   route.
 - **S15**: Providers, credentials and shared limits are a later record. Until it lands the app shows
   each provider read only: its state, whether a key is set, codex's release after a check and
-  OpenRouter's usage figures. Once S4 lands it offers no key entry, and it offers no limits, which
-  the host answers as null.
+  OpenRouter's usage figures. It offers no key entry (S4) and no limits, which the host answers as
+  null.
 - **S16**: The subagent tool is a later record. Until it lands the app shows nothing for it.
 - **S17**: The host is the areas server, and the residents run their own loops; the two servers of
   [[ADR-0021-the-served-actor|ADR-0021]] S2 still stand. A desk served through the actor, reached by
   the app through the host, changes D2's table and amends this record.
+- **S18**: An agent's count of wakes is read from its notes and its list of them from `serve.log` in
+  its directory. A resident whose output is kept elsewhere shows the count and an empty list.
+- **S19**: An agent's read runs the loaders its write runs. A file they refuse answers no definition
+  and no editable path, with the reason as `refused`, and a write of it answers 409 before a key is
+  weighed. The host reads every resident with this tree's loaders, so one run by another tree's
+  `lion`, on a file that tree accepts, shows the reason while it runs.
