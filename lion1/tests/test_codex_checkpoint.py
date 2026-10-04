@@ -456,7 +456,7 @@ def test_a_row_appended_while_the_take_reads_is_after_the_take(tmp_path, monkeyp
     assert "LATE-PROMPT-MARK" not in json.dumps([dataclasses.asdict(v) for v in c.vars]) + json.dumps(c.view)
 
 
-@pytest.mark.parametrize("field", ["size", "mtime_ns", "ino", "ctime_ns"])
+@pytest.mark.parametrize("field", ["size", "mtime_ns", "dev", "ino", "ctime_ns"])
 def test_a_snapshot_that_differs_from_its_file_in_one_field_is_never_read(tmp_path, field):
     path = write(tmp_path / "r.jsonl", [meta(), typed(PROMPTS[0], "msg_u1")])
     cx._read.cache_clear()
@@ -465,6 +465,18 @@ def test_a_snapshot_that_differs_from_its_file_in_one_field_is_never_read(tmp_pa
     with pytest.raises(CheckpointError, match="is not the file its snapshot was taken of$"):
         cx._read(other)
     assert [v.value for v in directives(snap)] == [PROMPTS[0]]  # the file's own state is read
+
+
+def test_a_grown_file_is_the_snapshots_only_on_its_own_device_and_inode(tmp_path):
+    path = write(tmp_path / "r.jsonl", [meta(), typed(PROMPTS[0], "msg_u1")])
+    cx._read.cache_clear()
+    snap = cx.snapshot(path, 9)
+    earlier = dataclasses.replace(snap, size=snap.size - 1)  # the file as it was a byte ago: grown since
+    assert rollout_source(earlier)["unread_lines"] == 1  # read to that size, its last line cut
+    for field in ("dev", "ino"):  # as large, and another file: on another device, or another inode
+        other = dataclasses.replace(earlier, **{field: getattr(snap, field) + 1})
+        with pytest.raises(CheckpointError, match="is not the file its snapshot was taken of$"):
+            cx._read(other)
 
 
 @pytest.mark.parametrize("change", ["replaced", "cut"])
@@ -568,6 +580,47 @@ def test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken
         main(["context", "checkpoint", "--dir", str(d), "--transcript", str(live)])
     assert out.value.code == 1 and "is not the file its snapshot was taken of" in capsys.readouterr().err
     assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
+
+
+@pytest.mark.parametrize(
+    ("owner", "elsewhere", "taken"),
+    [("subagent", False, False), ("user", True, False), ("user", False, True)],
+)
+def test_a_rollout_changed_after_the_directory_chose_it_is_taken_only_if_it_would_be_chosen(
+    tmp_path, monkeypatch, capsys, owner, elsewhere, taken
+):
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    d = actor_dir(tmp_path)
+    path = write(
+        home / "sessions" / "2026" / "10" / "04" / f"rollout-2026-10-04T10-00-00-{THREAD}.jsonl",
+        [meta(THREAD, str(d)), typed("placeholder chosen", "m1")],
+    )
+    peek, changed = cx.is_rollout, []
+
+    def change_after_the_choice(p):  # the file rewritten between the choice and the take's one read
+        said = peek(p)
+        if not changed:
+            changed.append(p)
+            cwd = "/work/elsewhere" if elsewhere else str(d)
+            write(path, [meta(OTHER, cwd, thread_source=owner), typed("placeholder changed", "m2")])
+        return said
+
+    monkeypatch.setattr(cx, "is_rollout", change_after_the_choice)
+    if taken:  # another person's thread of this directory: what the directory would choose
+        main(["context", "checkpoint", "--dir", str(d), "--codex"])
+        done = json.loads(capsys.readouterr().out)
+        c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+        assert c.source["session_id"] == OTHER and c.view["kept"][0]["input"] == "placeholder changed"
+        return
+    with pytest.raises(SystemExit) as out:
+        main(["context", "checkpoint", "--dir", str(d), "--codex"])
+    assert out.value.code == 1 and "changed after it was chosen" in capsys.readouterr().err
+    assert changed and (not context_dir(d).exists() or not list(context_dir(d).iterdir()))
 
 
 def test_a_session_meta_after_the_first_row_is_never_the_threads_own(tmp_path, monkeypatch, capsys):

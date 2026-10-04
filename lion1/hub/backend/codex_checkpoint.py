@@ -96,6 +96,7 @@ class Snapshot:
     path: str
     size: int
     mtime_ns: int
+    dev: int  # an inode names a file on its own device only
     ino: int  # a file put in its place
     ctime_ns: int  # a rewrite in place keeps the size and can restore the mtime, never this
     budget: int | None = None
@@ -170,16 +171,16 @@ def _figure(info: dict) -> dict:
     return {"used": used, "window": window, "pct": pct}
 
 
-def _state(st: os.stat_result) -> tuple[int, int, int, int]:
-    return st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns
+def _state(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    return st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino, st.st_ctime_ns
 
 
 def _same(f: Any, snap: Snapshot) -> bool:
     """Whether the open file is the snapshot's: in its very state, or the same file grown since. One
     grown is taken as appended to, its bytes to the snapshot's size the snapshot's own."""
     st = os.fstat(f.fileno())
-    return _state(st) == (snap.size, snap.mtime_ns, snap.ino, snap.ctime_ns) or (
-        st.st_ino == snap.ino and st.st_size > snap.size
+    return _state(st) == (snap.size, snap.mtime_ns, snap.dev, snap.ino, snap.ctime_ns) or (
+        (st.st_dev, st.st_ino) == (snap.dev, snap.ino) and st.st_size > snap.size
     )
 
 

@@ -162,6 +162,15 @@ def checkpoint(
             )
         if session is not None and session != found["session_id"]:
             raise CheckpointError(f"{path} is the rollout of thread {found['session_id']}, not {session}")
+        if codex and not transcript and not session:
+            # the directory's choice was made on a first row read before this one: the row the take
+            # read must still say what chose it
+            cwd = found["session_cwd"]
+            if found["thread_source"] != "user" or not isinstance(cwd, str) or Path(cwd).resolve() != d:
+                raise CheckpointError(
+                    f"{path} changed after it was chosen: its first row no longer says a person's "
+                    f"thread in {d}; nothing was taken"
+                )
     lane_vars: list[Var] = []
     if khive is None:
         try:

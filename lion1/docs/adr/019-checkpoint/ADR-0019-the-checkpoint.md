@@ -332,6 +332,8 @@ the directory's newest whose first row says a person's, the later name first on 
   `test_a_rollout_whose_first_row_names_no_owner_is_skipped_and_refused_by_name`,
   `test_a_scan_keeps_only_what_the_takes_readers_read`,
   `test_a_snapshot_that_differs_from_its_file_in_one_field_is_never_read`,
+  `test_a_grown_file_is_the_snapshots_only_on_its_own_device_and_inode`,
+  `test_a_rollout_changed_after_the_directory_chose_it_is_taken_only_if_it_would_be_chosen`,
   `test_a_rollout_replaced_or_cut_between_its_stat_and_its_read_is_taken_again`,
   `test_a_rollout_rewritten_while_it_is_read_is_taken_again`,
   `test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken`,
@@ -416,7 +418,11 @@ the directory's newest whose first row says a person's, the later name first on 
   Codex session's; its restore checks it on the Codex session's own. Like a Claude Code one (S5), it
   becomes the latest in a resident's directory and the resident's next process refuses it.
 - **S13**: A Codex take's read is of the file its stat saw. The file opened is compared with that
-  state before the first byte and after the last. One put in its place, cut, or rewritten at the
-  same size is stat and read again, twice at most, then refused with nothing taken. One that only
-  grew is taken as appended to, so a rewrite that also grows the file is not told from an append.
-  The owner and the thread are read from that same read's first row.
+  state, its device and inode included, before the first byte and after the last. One put in its
+  place, cut, or rewritten at the same size is stat and read again, twice at most, then refused with
+  nothing taken. The same file grown is taken as appended to, so a rewrite that also grows it is not
+  told from an append.
+- **S14**: The owner, the thread and the directory of a Codex take are those of the first row its
+  one read saw. The directory's own choice rests on an earlier read of that row, so the take refuses
+  a chosen rollout whose row no longer says a person's thread in the directory. One that still says
+  so is taken, whatever thread it now names, and `source` names that thread.
