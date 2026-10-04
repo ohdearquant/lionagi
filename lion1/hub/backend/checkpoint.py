@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable
+from lion1.khive import Khive, lit
 from lion1.lndl import plain
 
 from ..agent.instruments import GH, PR_PAGE, Runner, sh
-from ..khive import Khive, lit
 
 __all__ = (
     "DIRECTIVES",

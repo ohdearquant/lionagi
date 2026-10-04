@@ -42,8 +42,8 @@ from hub.backend.claude_code.checkpoint import (
     watches,
 )
 from hub.backend.codex import _THREAD
-from hub.khive import Khive, KhiveError, assert_ignored, context_dir
 from lion1.checkpoint import CheckpointError, Var, load, save
+from lion1.khive import Khive, KhiveError, assert_ignored, context_dir
 
 __all__ = ("BUDGET", "set_var", "checkpoint", "restore", "status", "show", "context_main")
 

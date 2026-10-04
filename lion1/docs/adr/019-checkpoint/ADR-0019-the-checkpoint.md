@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, while the scanners stay as the readers of ADR-0025 C4)
 date: "2026-09-25"
 area: checkpoint
 kind: new

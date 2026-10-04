@@ -37,10 +37,10 @@ from hub.backend.claude_code.checkpoint import (
     transcript_turns,
     watches,
 )
-from hub.khive import KhiveError, NotIgnored, assert_ignored, context_dir
 from lion1 import Actor, Kind, Record, Reply, Result, fold
 from lion1 import checkpoint as core
 from lion1.checkpoint import LAZY, CheckpointError, Var, take, to_history
+from lion1.khive import KhiveError, NotIgnored, assert_ignored, context_dir
 from tests.test_agent import REPLY, FakeKhive, mail, profile_for
 from tests.test_areas import call, registry, serve_on
 

@@ -119,8 +119,8 @@ def test_khive_absent_kkernel_notices_and_keeps_the_console_alive(tmp_path, monk
     (tmp_path / ".khive").mkdir()
     (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
     # neither PATH nor the ~/.cargo/bin fallback resolves a kkernel, on any machine this runs on
-    monkeypatch.setattr("hub.khive.shutil.which", lambda name: None)
-    monkeypatch.setattr("hub.khive.Path.home", lambda: tmp_path / "no-kkernel-here")
+    monkeypatch.setattr("lion1.khive.shutil.which", lambda name: None)
+    monkeypatch.setattr("lion1.khive.Path.home", lambda: tmp_path / "no-kkernel-here")
     notices: list[str] = []
     actor, profile = console(tmp_path, notify=notices.append)
     assert "khive_ops" not in profile.specs  # degraded, not crashed

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lion1 import Actor, Profile, RunRequest
+from lion1 import Actor, MemoryNoteStore, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
@@ -23,8 +23,8 @@ class Echo(BaseModel):
     text: str
 
 
-def _resume_actor(name: str, calls: list[str], notes_dir=None) -> Actor:
-    actor = Actor(name, notes_dir=notes_dir)
+def _resume_actor(name: str, calls: list[str]) -> Actor:
+    actor = Actor(name)
 
     @actor.handler(Echo)
     def echo(req: Echo, ctx) -> str:
@@ -83,8 +83,8 @@ def test_resume_cannot_resurrect_refused_values():
     assert calls == ["genuine"]  # the handler ran once, live; a resume runs no command
 
 
-def test_resume_preserves_note_value_version_writer(tmp_path):
-    actor = _resume_actor("resume-note", [], notes_dir=tmp_path)
+def test_resume_preserves_note_value_version_writer():
+    actor = _resume_actor("resume-note", [])
     first = _resume_live(actor, "<lvar note.plan>old</lvar>", "<lvar note.done>written live</lvar>")
     notes = first.notes
     notes.put("plan", "newer", run="another-run", seq=19)  # a later writer, after the logged session
@@ -134,10 +134,14 @@ def _lnr01_asks(*messages):
     return ask
 
 
+_STORES: dict = {}  # one note store per directory, shared by the actors that read it, as the store's rows are
+
+
 def _lnr01_reader(directory, name):
-    actor = Actor(name, notes_dir=directory / "notes")
+    actor = Actor(name)
     specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
-    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text.")
+    notes = _STORES.setdefault(directory, MemoryNoteStore())
+    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text.", notes=notes)
 
 
 def _lnr01_session(tmp_path, name, turns, msgs):

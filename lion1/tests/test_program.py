@@ -28,7 +28,7 @@ from lion1.lndl import (
     program_guidance,
     read,
 )
-from lion1.notes import FileNoteStore, MemoryNoteStore
+from lion1.notes import MemoryNoteStore
 
 PROGRAM = Profile("p", language="program")
 
@@ -653,7 +653,7 @@ def test_a_failed_producer_writes_nothing_and_the_assignment_is_told_not_written
 
 def test_a_store_that_refuses_keeps_the_result_and_claims_no_write(tmp_path):
     actor = _actor("store-refuses", [])
-    profile = Profile("p", language="program", notes=FileNoteStore(tmp_path / "p.json"))
+    profile = Profile("p", language="program", notes=MemoryNoteStore())
     profile.notes.put("k", "a string", run="earlier", seq=0)
     run = _run(actor, fenced('note.k.part = echo(text="x")'), "idle", profile=profile)
     assert profile.notes.get("k").value == "a string"
@@ -688,24 +688,6 @@ def test_a_write_that_fails_on_a_defect_is_raised_by_the_settle_and_no_one_else_
         _run(actor, fenced(*lines), profile=profile)
     gc.collect()
     assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
-
-
-def test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on(tmp_path):
-    notes = tmp_path / "notes"
-    notes.mkdir()
-    path = notes / "p.json"
-    row = '{"key": "k", "value": "Crème Brûlée", "run": "r", "seq": 1, "version": 1}'
-    encoded = f'{{"version": 1, "notes": {{"k": {row}}}}}'.encode("latin-1")
-    path.write_bytes(encoded)
-    offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
-    run = _run(Actor("loader-refuses", notes_dir=notes), fenced('note.k = "new"'), "idle")
-    # the tag form ends the run on this file (ADR-0007/D7); a program's write is caught at settle
-    assert run.outcome is not None and run.turn == 2 and run.notes_written == []
-    assert (
-        f"note.k: not written: ValueError: {path}: the file is not UTF-8 "
-        f"(the byte at offset {offset} cannot be decoded); re-encode it as UTF-8 by hand"
-    ) in _notices(run)
-    assert path.read_bytes() == encoded and not list(notes.glob("*.tmp"))
 
 
 def test_a_dotted_path_writes_into_a_json_note_and_creates_what_is_missing():

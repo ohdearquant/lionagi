@@ -30,8 +30,8 @@ from hub.agent.chores import (
     sender_of,
     verbs,
 )
-from hub.khive import LOST, KhiveError
 from lion1 import Actor, Kind, Message
+from lion1.khive import LOST, KhiveError
 
 OWNER, STEWARD, SELF = "lambda:x", "lambda:owner", "lambda:x:agent"
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
@@ -128,6 +128,9 @@ class FakeKhive:
 
     async def exec(self, ops: str):
         self.ops.append(ops)
+        if ops.startswith("comm.read("):
+            await self.mark_read(json.loads(re.fullmatch(r"comm\.read\(ids=(\[.*\])\)", ops).group(1)))
+            return [{"status": "success"}]
         if ops.startswith("schedule.remind") and self.grows:
             content, at, repeat = re.search(
                 r'content="([^"]*)", at="([^"]*)", repeat="([^"]*)"', ops

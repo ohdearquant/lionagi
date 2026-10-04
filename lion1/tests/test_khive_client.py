@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hub.khive import LOST, Khive, KhiveError
+from lion1.khive import LOST, Khive, KhiveError
 
 
 class Dropping(Khive):
@@ -204,3 +204,16 @@ def test_a_failed_op_raises_with_the_kind_the_store_gave_its_error_and_no_other(
     with pytest.raises(KhiveError) as raised:
         asyncio.run(Khive(tmp_path, "lambda:x", kkernel=str(stub)).exec('get(id="ev1")'))
     assert raised.value.kind == kind
+
+
+def test_a_wait_past_the_cap_is_sliced_and_an_offset_rides_the_read(tmp_path):
+    k = Dropping(tmp_path, 0, page={"messages": []})
+    assert asyncio.run(k.inbox(wait_ms=45_000, status="read", offset=50)) == []
+    assert k.ops == [
+        'comm.inbox(status="read", limit=50, offset=50, wait_ms=20000)',
+        'comm.inbox(status="read", limit=50, offset=50, wait_ms=20000)',
+        'comm.inbox(status="read", limit=50, offset=50, wait_ms=5000)',
+    ]  # three slices under the daemon's deadline, until the wait is spent
+    k = Dropping(tmp_path, 0)
+    assert asyncio.run(k.inbox(wait_ms=45_000)) == [{"id": "m1"}] and len(k.ops) == 1  # mail ends the wait
+    assert not hasattr(k, "mark_read")  # the mark-read is written at its call site as the DSL (ADR-0025 D7)

@@ -27,7 +27,8 @@ from typing import Any
 from urllib.parse import urlencode
 from xml.parsers.expat import ExpatError
 
-from .khive import Khive, lit
+from lion1.khive import Khive, KhiveError, lit
+from lion1.store import KhiveNoteStore
 
 __all__ = (
     "DEFAULT_REGISTRY",
@@ -105,8 +106,8 @@ class Area:
     desks: list[str] = field(default_factory=list)  # the desks' directories, one resident each
 
 
-# how a resident's `problem` opens when its notes are there and do not read: its day is then unknown
-NOTES_UNREAD = "notes/agent.json: "
+# how a resident's `problem` opens when its notes cannot be read: its day is then unknown
+NOTES_UNREAD = "notes: "
 
 
 @dataclass
@@ -202,16 +203,15 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         problem.append(f"agent.pid: {e}")
     cursor: dict[str, Any] = {}
     spend: dict[str, Any] = {}
-    notes = d / "notes" / "agent.json"
-    if notes.exists():
-        try:
-            store = json.loads(notes.read_text()).get("notes", {})
-            cursor = (store.get("cursor") or {}).get("value") or {}
-            spend = (store.get("spend") or {}).get("value") or {}
-        except (OSError, ValueError) as e:
-            problem.append(f"{NOTES_UNREAD}{e}")
+    try:
+        notes = agent_notes(d)
+    except (KhiveError, ValueError) as e:
+        problem.append(f"{NOTES_UNREAD}{e}")
     else:
-        problem.append("no notes yet: never ran from this directory")
+        if not notes:
+            problem.append("no notes yet: never ran from this directory")
+        cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
+        spend = notes.get("spend") if isinstance(notes.get("spend"), dict) else {}
     if spend.get("day") != today:
         spend = {}
     unknown = spend.get("unknown") if spend else 0  # a row with no count is from before the count
@@ -354,10 +354,10 @@ def controls_info(directory: str) -> dict:
         # idle only on a cursor that names a finished wake: a first wake starts before any cursor
         # exists, and an unreadable one says nothing, so both read as busy, as an unread pgrep does
         try:
-            store = json.loads((d / "notes" / "agent.json").read_text()).get("notes", {})
-            outcome = ((store.get("cursor") or {}).get("value") or {}).get("outcome")
+            cursor = agent_notes(d).get("cursor")
+            outcome = cursor.get("outcome") if isinstance(cursor, dict) else None
             idle = isinstance(outcome, str) and outcome not in ("", "running")
-        except (OSError, ValueError, AttributeError):
+        except (KhiveError, ValueError):
             idle = False
     if idle and pid_file.exists():
         try:
@@ -384,6 +384,23 @@ def controls_info(directory: str) -> dict:
     }
 
 
+def agent_store(directory: str | Path) -> KhiveNoteStore:
+    """The `agent` notes of the resident at `directory`, in the store its actor writes (ADR-0025 D6):
+    `chores.toml` names the actor, the directory's own `.khive/config.toml` must agree, and each read
+    is one call of the binary. Raises `KhiveError` when the binary or the config is missing and
+    `ValueError` when chores.toml names no actor."""
+    actor = chores_toml(directory).get("actor")
+    if not isinstance(actor, str) or not actor:
+        raise ValueError("chores.toml names no actor")
+    return KhiveNoteStore(Khive(Path(directory), actor), "agent")
+
+
+def agent_notes(directory: str | Path) -> dict[str, Any]:
+    """Every note of the resident at `directory`, value by key, in one call of the binary; empty when
+    it never ran from there. Raises as `agent_store` does, and `KhiveError` when the store refuses."""
+    return {n.key: n.value for n in agent_store(directory).list()}
+
+
 def chores_toml(directory: str) -> dict:
     """The resident's chores.toml as a table; one that is missing or does not parse is empty."""
     try:
@@ -400,19 +417,15 @@ def wake_table(directory: str) -> dict:
     return dict(chores_toml(directory).get("wake") or {})
 
 
-def waiting_mail(directory: str) -> list[dict]:
+def waiting_mail(directory: str) -> list[dict] | None:
     """The mail a `[wake]` rule deferred, kept under the `deferred` note until the batch window
     opens (hub/agent/agent.py `_triage` keeps each whole, stamped `deferred_at`/`deferred_ts`): who
     sent it, the subject and when it was deferred, the body left in the note. No note yet is no mail
-    waiting."""
-    notes = Path(directory) / "notes" / "agent.json"
-    if not notes.exists():
-        return []
+    waiting; notes that cannot be read are None, never a count of zero."""
     try:
-        store = json.loads(notes.read_text()).get("notes", {})
-        deferred = (store.get("deferred") or {}).get("value")
-    except (OSError, ValueError, AttributeError):
-        return []
+        deferred = agent_notes(directory).get("deferred")
+    except (KhiveError, ValueError):
+        return None
     mail = deferred.get("mail") if isinstance(deferred, dict) else None
     out = []
     for m in mail if isinstance(mail, list) else []:
@@ -438,10 +451,11 @@ def waiting_mail(directory: str) -> list[dict]:
 def _api_row(r: Resident, controls: dict | None = None, waiting: list[dict] | None = None) -> dict:
     """One resident as the app reads it: `_row` plus its live `controls` and the count of mail
     waiting for the window."""
+    found = waiting if waiting is not None else waiting_mail(r.dir)
     return {
         **_row(r),
         "controls": controls if controls is not None else controls_info(r.dir),
-        "waiting": len(waiting if waiting is not None else waiting_mail(r.dir)),
+        "waiting": None if found is None else len(found),  # null: the notes could not be read
     }
 
 

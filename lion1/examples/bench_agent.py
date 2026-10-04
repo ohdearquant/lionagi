@@ -34,8 +34,8 @@ from pydantic import BaseModel, Field
 
 from hub.agent import Agent, AgentError
 from hub.backend import OpenRouter
-from hub.khive import Khive, lit
 from lion1 import Actor, Context, Profile
+from lion1.khive import Khive, lit
 
 ROOT = Path(__file__).resolve().parents[1]
 DIR = ROOT / ".khive" / "agents" / "bench"
@@ -191,7 +191,7 @@ def build(khive: Khive, backend) -> Agent:
         )
     (DIR / "notes").mkdir(parents=True, exist_ok=True)
     (DIR / "jobs").mkdir(parents=True, exist_ok=True)
-    actor = Actor("bench", privileges={"comm.send", "shell"}, notes_dir=DIR / "notes")
+    actor = Actor("bench", privileges={"comm.send", "shell"})
     agent = Agent(actor, khive, backend, profile_for, owner=OWNER, max_turns=4)
     state = agent.state
 

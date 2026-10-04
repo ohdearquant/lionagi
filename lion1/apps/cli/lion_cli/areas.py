@@ -42,8 +42,8 @@ from hub.areas import (
     wake_row,
     wakes,
 )
-from hub.khive import Khive, KhiveError, lit
 from lion1.checkpoint import CheckpointError
+from lion1.khive import Khive, KhiveError, lit
 
 from .context import checkpoint as context_checkpoint
 from .context import restore as context_restore

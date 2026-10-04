@@ -34,10 +34,10 @@ from hub.backend.codex_checkpoint import (
     spawns,
     take_codex,
 )
-from hub.khive import context_dir
 from lion1 import Actor
 from lion1 import checkpoint as core
 from lion1.checkpoint import KINDS, LAZY, WHYS, CheckpointError
+from lion1.khive import context_dir
 from tests.test_checkpoint import ACTOR as ONE
 from tests.test_checkpoint import AT, ID, turn, var
 from tests.test_context import ACTOR, TASK, TaskKhive, actor_dir, gh_says

@@ -49,7 +49,7 @@ def setup(tmp_path: Path, extra: str = "") -> tuple[Actor, Profile]:
         f'[[after]]\nname = "audit"\nrun = "{py} audit.py"\n\n'
         '[[turn]]\nname = "clock"\nrun = "echo clock: tick"\n' + extra
     )
-    actor = Actor("h", notes_dir=tmp_path / "notes")
+    actor = Actor("h")
     hooks = load(tmp_path / "hooks.toml")
     assert install(actor, hooks, tmp_path) == len(hooks)
     specs = files(actor, tmp_path) | {h.name for h in DEFAULT_HANDLERS}

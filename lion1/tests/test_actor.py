@@ -1233,15 +1233,24 @@ def test_guidance_shows_a_data_dependent_default_without_calling_it():
     assert "result: str = (computed)" in render_guidance(Derived)
 
 
-def test_a_file_note_store_refuses_a_value_the_file_cannot_carry(tmp_path):
-    from lion1 import FileNoteStore
+def test_the_khive_note_store_refuses_what_json_cannot_carry_before_any_call(tmp_path, kkernel_stub):
+    from lion1 import Store
+    from lion1.khive import Khive
 
-    store = FileNoteStore(tmp_path / "notes.json")
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lion1:notes"\n')
+    store = Store(Khive(tmp_path, "lion1:notes")).notes("clerk")
     store.put("ok", {"payload": [1, 2]}, run="a", seq=0)
-    with pytest.raises(ValueError, match="carries JSON values only"):
-        store.put("bad", {"payload": {1, 2}}, run="a", seq=1)
-    assert FileNoteStore(tmp_path / "notes.json").get("bad") is None
-    assert FileNoteStore(tmp_path / "notes.json").get("ok").value == {"payload": [1, 2]}
+    calls = len(store.khive.calls)
+    for bad in ({"payload": {1, 2}}, float("nan"), (1, 2), {1: "int key"}, {"deep": [float("inf")]}):
+        with pytest.raises(ValueError, match="JSON cannot carry whole"):
+            store.put("bad", bad, run="a", seq=1)
+    with pytest.raises(TypeError, match="seq is the record's integer sequence"):
+        store.put("bad", "fine", run="a", seq=True)
+    assert len(store.khive.calls) == calls  # refused before the binary ran
+    assert store.get("bad") is None
+    again = Store(Khive(tmp_path, "lion1:notes")).notes("clerk")
+    assert again.get("ok").value == {"payload": [1, 2]} and again.version == store.version > 0
 
 
 class OptionalText(BaseModel):

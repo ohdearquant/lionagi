@@ -18,9 +18,8 @@ from hub.agent import Posture
 from hub.agent import desk as dm
 from hub.agent.chores import Bounded
 from hub.agent.instruments import GH, CiRed, VerdictFreshness
-from hub.khive import KhiveError
 from lion1 import MemoryNoteStore, RunRequest
-from lion1.notes import FileNoteStore
+from lion1.khive import KhiveError
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Scripted
 from tests.test_desk import (
     LIVE,
@@ -792,9 +791,12 @@ def test_the_twenty_first_task_of_a_day_code_filed_or_mixed_is_left_cap_tasks(
 TWO_SWEEPS = "<lact s1>sweep()</lact><lact s2>sweep()</lact>"
 
 
+_STATES: dict = {}  # the agent's state per directory: the process after a restart reads the same rows
+
+
 def persistent_desk(tmp_path):
     desk, inner, agent, _ = verdict_desk(tmp_path, gh())
-    agent.state = FileNoteStore(tmp_path / "state.json")
+    agent.state = _STATES.setdefault(tmp_path, MemoryNoteStore())  # one store per directory, as the rows are
     agent.state.put("desk_since", LIVE, run="-", seq=0)
     return desk, inner, agent
 

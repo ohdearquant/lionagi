@@ -1,11 +1,11 @@
 """Notes that outlive a run, and a view the model curates without touching the record.
 
 A name with the `note.` prefix is written to the profile's note store as well as declared on the
-run; the store is a JSON file per profile and carries which run and sequence wrote each note. A
-second run of the same profile lists and points at them. `context.hide` and `context.summarize`
-change what the model sees, never what the record holds: hidden entries keep their names and
-resolve, and `context.show` brings them back. The model carries its big picture in notes and its
-details behind pointers. Scripted backend; runs offline.
+run; the store carries which run and sequence wrote each note (here the memory store; a served
+actor's is the graph's, ADR-0025). A second run of the same profile lists and points at them.
+`context.hide` and `context.summarize` change what the model sees, never what the record holds:
+hidden entries keep their names and resolve, and `context.show` brings them back. The model carries
+its big picture in notes and its details behind pointers. Scripted backend; runs offline.
 
     uv run python examples/notes_and_context.py
 """
@@ -53,7 +53,7 @@ def names_in_view(run):
 
 
 async def main() -> None:
-    actor = Actor("clerk", privileges={"fs"}, notes_dir=root / "notes")
+    actor = Actor("clerk", privileges={"fs"})
     clerk = Profile("clerk", privileges=frozenset({"fs"}))
 
     @actor.handler(ReadFile, requires={"fs"})
@@ -100,7 +100,7 @@ async def main() -> None:
     print(
         f"\nstore: {note.key} = {note.value!r}, written by run {note.run} at seq {note.seq}, v{note.version}"
     )
-    print("file:", sorted(p.name for p in (root / "notes").iterdir()))
+    print("store:", [n.key for n in actor.notes_for(clerk).list()])
 
 
 if __name__ == "__main__":

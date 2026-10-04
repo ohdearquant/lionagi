@@ -23,10 +23,10 @@ from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, CodexSes
 from hub.backend.claude_code import _prompt_tokens
 from hub.chat import chat, load_log
 from hub.hooks import install, load
-from hub.khive import Khive, KhiveError
 from hub.tools.code import Tree
-from lion1 import Actor, Kind, Profile, lndl
+from lion1 import Actor, Kind, Profile, Store, lndl
 from lion1.actor import DEFAULT_HANDLERS, Run, _text
+from lion1.khive import Khive, KhiveError
 from lion1.record import Entry
 
 from .agent import backend_for
@@ -76,7 +76,7 @@ def console(
     with `about_box` saying so (the VM's own guidance otherwise)."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
-    actor = Actor(name, notes_dir=directory / ".lion" / "notes")
+    actor = Actor(name)  # its store, when the directory is an actor's own, is set below
     if (hooks := directory / ".lion" / "hooks.toml").exists():
         install(actor, load(hooks), directory)
     specs = files(actor, tree)
@@ -105,7 +105,8 @@ def console(
                 notify(f"{config}: no [actor].id; khive tool unavailable")
         else:
             try:
-                khive = Bounded(Khive(directory, actor_id, config=khive_config), recipients=frozenset())
+                actor.store = Store(Khive(directory, actor_id, config=khive_config))
+                khive = Bounded(actor.store.khive, recipients=frozenset())
             except KhiveError as e:
                 if notify is not None:
                     notify(f"khive unavailable: {e}")

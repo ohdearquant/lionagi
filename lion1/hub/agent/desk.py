@@ -38,8 +38,8 @@ from pydantic import BaseModel, Field
 
 from hub import guidance
 from lion1.actor import Context, Run
+from lion1.khive import LOST, Khive, KhiveError, lit
 
-from ..khive import LOST, Khive, KhiveError, lit
 from .agent import Agent, AgentError
 from .chores import Bounded, Chores, Outcome, sender_of
 

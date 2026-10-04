@@ -20,15 +20,21 @@ from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
 from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
-from hub.khive import Khive, context_dir
-from lion1 import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
+from lion1 import Actor, Kind, MemoryNoteStore, Message, Profile, Success
 from lion1.checkpoint import load as load_from
+from lion1.khive import Khive, context_dir
+from tests.lionfake import LionFake, resident_store
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes
     "import fcntl, os, sys; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); "
     "fcntl.flock(fd, fcntl.LOCK_EX); os.write(fd, b'held'); print('locked', flush=True); sys.stdin.read()"
 )
+
+
+def noted(state) -> dict:
+    """What `stats` reads of a store: every note's value by key."""
+    return {n.key: n.value for n in state.list()}
 
 
 def mail(sender: str, content: str, mid: str = "a1b2c3d4") -> dict:
@@ -59,6 +65,13 @@ class FakeKhive:
         out, self.mail = self.mail[:limit], self.mail[limit:]
         self.taken += out
         return out
+
+    async def exec(self, ops: str) -> list:
+        # the mark-read is the one op the agent writes as DSL; the double keeps a method for its books
+        m = re.fullmatch(r"comm\.read\(ids=(\[.*\])\)", ops)
+        assert m, ops
+        await self.mark_read(json.loads(m.group(1)))
+        return [{"status": "success"}]
 
     async def mark_read(self, ids):
         self.log.append("read")
@@ -116,6 +129,7 @@ def test_a_wake_marks_mail_read_before_the_model_sees_it_answers_on_the_thread_a
     assert khive.read == ["a1b2c3d4-0000-0000-0000-000000000000"]
     assert khive.sent == [SENT]
     assert isinstance(run.outcome, Success) and run.profile is ACTING and agent.wakes == 1
+    assert run.request.trigger == ("a1b2c3d4-0000-0000-0000-000000000000",)  # the run names its wake's mail
     first = next(e for e in run.record if e.kind is Kind.INPUT).content
     assert f"[mail a1b2c3d4 from lambda:a thread {THREAD} subject 'hello']\nsay hi back" in first
     cursor = agent.state.get("cursor").value
@@ -480,7 +494,7 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
             self.calls[-1] = envelopes.pop(0)
             return text
 
-    state = FileNoteStore(tmp_path / "notes" / "agent.json")
+    state = MemoryNoteStore()
     backend = Billed(DONE, DONE, DONE, khive=khive)
     actor = Actor("echo", privileges={"comm.send"})
     cap = Budget(cost_per_day=0.65)
@@ -502,7 +516,7 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
     khive.mail.append(mail("lambda:a", "go", mid="m3"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == "$0.7000 spent today (partial: 2 call(s) of unknown cost) (cap $0.65); next day"
-    day, _, last = stats(tmp_path).splitlines()
+    day, _, last = stats(tmp_path, noted(state)).splitlines()
     assert "0 out, $0.7000 (partial: 2 call(s) of unknown cost); 3 wake(s) with 3 mail;" in day
     assert "0 out, $0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s) before it" in last
 
@@ -525,7 +539,7 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
             self.calls[-1] = envelopes.pop(0)
             return text
 
-    state = FileNoteStore(tmp_path / "notes" / "agent.json")
+    state = MemoryNoteStore()
     # the day's row as the version before the count wrote it: dollars, no `unknown` key
     state.put("spend", {"day": _day(now[0]), "cost": 0.5, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=0)
     backend = Billed(DONE, DONE, DONE, DONE, khive=khive)
@@ -557,7 +571,7 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
     khive.mail.append(mail("lambda:a", "go", mid="m3"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
-    day = stats(tmp_path).splitlines()[0]
+    day = stats(tmp_path, noted(state)).splitlines()[0]
     assert f"$0.9000 {uncounted}; 4 wake(s)" in day
     now[0] += 86_400  # the next day starts counted
     khive.mail.append(mail("lambda:a", "go", mid="m4"))
@@ -567,19 +581,25 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
         "cost": 0.2,
         "unknown": 0,
     }
-    assert "partial" not in stats(tmp_path).splitlines()[0]
+    assert "partial" not in stats(tmp_path, noted(state)).splitlines()[0]
     # a row from before the count that is already at the cap is held before any wake writes it: the
     # hold and the stats line still say it is uncounted
     state.put("spend", {"day": _day(now[0]), "cost": 0.9, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=9)
     khive.mail.append(mail("lambda:a", "go", mid="m5"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
-    assert f"$0.9000 {uncounted}; 1 wake(s)" in stats(tmp_path).splitlines()[0]
+    assert f"$0.9000 {uncounted}; 1 wake(s)" in stats(tmp_path, noted(state)).splitlines()[0]
 
 
-def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path):
-    notes_file = tmp_path / "notes" / "agent.json"
-    assert stats(tmp_path) == f"no notes at {notes_file}: the agent has not run from this directory"
+def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path, kkernel_stub):
+    assert stats(tmp_path) == f"notes unread at {tmp_path}: chores.toml names no actor"
+    (tmp_path / "chores.toml").write_text('actor = "lambda:x:stats"\n')
+    assert stats(tmp_path) == (
+        f"notes unread at {tmp_path}: {tmp_path} holds no .khive/config.toml; "
+        "khive would resolve it as 'local'"
+    )
+    store = resident_store(tmp_path)
+    assert stats(tmp_path) == f"no notes at {tmp_path}: the agent has not run from this directory"
     spend = {
         "day": "2026-09-22",
         "cost": 0.0123,
@@ -603,10 +623,8 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "tokens": {"calls": 2, "in": 5000, "out": 300, "cost": 0.004, "unknown": 0, "context": 2400},
         "idle_polls": 2,
     }
-    values = {"spend": spend, "cursor": cursor}
-    notes = {"version": 2, "notes": {k: {"key": k, "value": v} for k, v in values.items()}}
-    notes_file.parent.mkdir()
-    notes_file.write_text(json.dumps(notes))
+    store.put("spend", spend, run="-", seq=0)
+    store.put("cursor", cursor, run="-", seq=0)
     (tmp_path / "ledger.jsonl").write_text(
         "\n".join(json.dumps(r) for r in ({"answered": True}, {"control": True}, {"control": False})) + "\n"
     )
@@ -625,8 +643,7 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "ledger: 3 check(s), 2 answered, 1 not\n"
         "desk: 2 of the owner's message(s) read today, 1 answered, 1 left"
     )
-    notes["notes"]["spend"]["value"] = {**spend, "mail": 0}
-    notes_file.write_text(json.dumps(notes))
+    store.put("spend", {**spend, "mail": 0}, run="-", seq=1)
     assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
 
 
@@ -1102,7 +1119,11 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
     )
     ops: list[str] = []
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         return [{"messages": [], "events": [], "items": []}]
 
@@ -1187,7 +1208,11 @@ def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_
     ops: list[str] = []
     boxes = [[mail("lambda:x:agent", "tick: digest")]]
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         if op.startswith("schedule.agenda("):
             return [{"events": [tick]}]
@@ -1219,7 +1244,11 @@ def test_a_once_wake_of_a_chair_makes_no_tick(tmp_path, kkernel_stub, monkeypatc
     ops: list[str] = []
     boxes = [[mail("lambda:x", "hello")]]
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         if op.startswith("comm.inbox("):
             return [{"messages": boxes.pop(0) if boxes else []}]
@@ -1298,7 +1327,11 @@ def test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing(
     (d / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n')
     ops: list[str] = []
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         return [{}]
 
@@ -1342,7 +1375,11 @@ def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends
     )
     ops: list[str] = []
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         old = {"id": "t1", "title": "triage me", "created_at": "2026-01-01T00:00:00Z"}
         return [[old], [old]]
@@ -1616,7 +1653,11 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
         [mail("lambda:x", "now tell someone:else about it", mid="c9d0e1f2")],
     ]
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         if op.startswith("comm.inbox("):
             return [{"messages": boxes.pop(0) if boxes else []}]
@@ -1757,7 +1798,11 @@ def test_a_chair_with_a_due_task_names_it_in_the_posture_and_its_gtd_write_is_re
     )
     ops: list[str] = []
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         if op.startswith("gtd.next("):
             return [[task("t1", "cost report", at=1.0, description="send the numbers")]]
@@ -1792,7 +1837,11 @@ def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_k
     (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
     (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         if op.startswith("comm.inbox("):
             return [{"messages": [{"id": "m1", "properties": {"to_actor": "lambda:x:v1"}}]}]
         raise AgentError("agent boundary: refused")
@@ -1842,7 +1891,11 @@ def test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to
     ops: list[str] = []
     boxes = [[mail("someone:else", "hello from outside")]]
 
+    lion = LionFake()
+
     async def fake_exec(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         if op.startswith("comm.inbox("):
             return [{"messages": boxes.pop(0) if boxes else []}]
@@ -2112,6 +2165,8 @@ class QueueKhive(FakeKhive):
         self.queue, self.ops = list(queue), []
 
     async def exec(self, ops: str) -> list:
+        if ops.startswith("comm.read("):
+            return await super().exec(ops)
         self.ops.append(ops)
         self.log.append("exec")
         return [list(self.queue)]

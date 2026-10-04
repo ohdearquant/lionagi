@@ -34,9 +34,9 @@ supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Sour
 
 ## Definitions
 
-- **spend row**: the `spend` note in the agent's own store, `notes/agent.json` in the agent
-  directory: one row per local day of model calls, tokens, cost, wakes that ran, mail handled and
-  idle polls.
+- **spend row**: the `spend` note of the agent's `agent` profile in the store
+  ([[ADR-0025-the-graph|ADR-0025]] D6): one row per local day of model calls, tokens, cost, wakes
+  that ran, mail handled and idle polls.
 - **one-shot form**: a `lion agent` form that acts once and exits: `--check`, `--ticks`, `--arm`,
   `--once` and `--rerun`.
 - **landing file**: `landing/<date>-<name>.txt` in the agent directory, written by `--check` and
@@ -198,13 +198,12 @@ session restarts when present.
 
 ### D5: The readers `stats`, `resident`, `wakes` and the chat's `spent` ^d5
 
-Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `resident` takes a
-resident's row from its `chores.toml`, notes and lock, drops another day's row, and names what it
-could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log with
-the page's pattern. `spent` sums each call's `total_cost_usd`, its `usage.cost` only when the total
-is null, and counts the calls with neither or with `cost_complete` false. Chat-log rows state
-`cost_complete`; a reader of them (`load_log(..., usage=rows)`, `spent(rows)`) counts an older one
-without it.
+Serves C4. `stats` reads the `agent` notes through `hub.areas.agent_notes`, one call of the binary
+as the actor `chores.toml` names, and the directory's ledgers. `resident` reads the same notes, the
+`chores.toml` and the lock, drops another day's row, and names what it could not read; serving is
+the lock, never the pid in the file. `wakes` parses the serve log with the page's pattern. `spent`
+sums each call's `total_cost_usd`, else its `usage.cost`, and counts the calls with neither or with
+`cost_complete` false; a chat-log row without `cost_complete` is counted.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
   as the lock, the serve log's wake lines,

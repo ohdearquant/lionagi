@@ -22,6 +22,7 @@ from lion_cli.daemon import CAN, agent_ids
 
 from hub.areas import Area, load_areas
 from hub.backend.openrouter import OpenRouterError
+from tests.lionfake import resident_store, unread
 from tests.test_areas import (  # noqa: F401 (a fixture)
     FailingKhive,
     call,
@@ -111,6 +112,11 @@ sys.exit(run(sys.argv[1:]))
 
 
 @pytest.fixture(autouse=True)
+def _stub(kkernel_stub):
+    """Every resident directory here reads its notes through the stub binary (ADR-0025 D6)."""
+
+
+@pytest.fixture(autouse=True)
 def keychain(tmp_path, monkeypatch):
     """`security` as a script over a file, and OpenRouter as recorded answers; (items, argv log, asked)."""
     store, argv = tmp_path / "keychain.json", tmp_path / "security.argv"
@@ -149,6 +155,9 @@ class Mail:
         self.marked: list[list[str]] = []
 
     async def exec(self, ops: str) -> list:
+        if ops.startswith("comm.read("):
+            await self.mark_read(json.loads(re.fullmatch(r"comm\.read\(ids=(\[.*\])\)", ops).group(1)))
+            return [{"status": "success"}]
         if "offset=" in ops:
             return [{"messages": []}]
         box = self.sent_box if 'box="sent"' in ops else self.unread if 'status="unread"' in ops else self.read
@@ -198,14 +207,15 @@ def resident(
     """A resident's directory; `unknown` is its day's count of calls of unknown cost, None a day's row
     from before the count."""
     d = root / name
-    (d / "notes").mkdir(parents=True)
-    (d / "chores.toml").write_text(chores)
+    d.mkdir(parents=True)
+    (d / "chores.toml").write_text(chores.replace('actor = "agent:x:desk"', f'actor = "agent:x:{name}"'))
     cursor = {"wake": 2, "at": f"{DAY} 09:00:00", "outcome": "Success"}
     spend = {"day": DAY, "runs": 2, "mail": 2, "cost": 0.25, "calls": 3}
     if unknown is not None:
         spend["unknown"] = unknown
-    notes = {"cursor": {"key": "cursor", "value": cursor}, "spend": {"key": "spend", "value": spend}}
-    (d / "notes" / "agent.json").write_text(json.dumps({"version": 1, "notes": notes}))
+    store = resident_store(d)
+    store.put("cursor", cursor, run="-", seq=0)
+    store.put("spend", spend, run="-", seq=0)
     (d / "serve.log").write_text("".join(line + "\n" for line in lines))
     return d
 
@@ -851,11 +861,17 @@ def test_no_route_writes_or_removes_a_key_and_no_answer_carries_one(tmp_path, ke
     assert asked and not [a for a in asked if "-w" in a]  # whether it is set, asked without its value
 
 
-def test_a_codex_check_reads_the_clis_release_and_claude_code_has_no_check(tmp_path, monkeypatch):
+def test_a_codex_check_reads_the_clis_release_and_claude_code_has_no_check(
+    tmp_path, monkeypatch, kkernel_stub
+):
     cli = tmp_path / "codex"
     cli.write_text('#!/bin/sh\necho "codex-cli 0.156.1"\n')
     cli.chmod(0o755)
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: str(cli) if name == "codex" else None)
+    found = {
+        "codex": str(cli),
+        "kkernel": str(kkernel_stub),
+    }  # `shutil` is one module: the client's lookup too
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: found.get(name))
     port = serve_on(reg(tmp_path, resident(tmp_path)))
     path = "/v2/library/providers/codex/check"
     code, doc = write(port, "POST", path, {"once": once()})
@@ -1015,7 +1031,7 @@ def test_can_names_exactly_the_writes_a_route_serves(tmp_path):
 
 def test_a_day_whose_notes_cannot_be_read_is_unknown_never_zero(tmp_path):
     d = resident(tmp_path, lines=LOG)
-    (d / "notes" / "agent.json").write_text("{not json")
+    unread(d)
     port = serve_on(reg(tmp_path, d))
     code, doc = get(port, "/v2/agents/x/desk")
     assert code == 200 and doc["row"]["state"] == "error"
@@ -1023,7 +1039,8 @@ def test_a_day_whose_notes_cannot_be_read_is_unknown_never_zero(tmp_path):
     today = get(port, "/v2/today")[1]
     assert (today["totals"]["cost"], today["totals"]["wakes"]) == (None, None)
     assert today["areas"][0]["today"] == {"cost": None, "wakes": None}
-    (d / "notes" / "agent.json").unlink()  # never ran from here: a day of nothing, which is known
+    for key in ("cursor", "spend"):  # never ran from here: a day of nothing, which is known
+        resident_store(d).delete(key)
     assert get(port, "/v2/agents/x/desk")[1]["row"]["today"]["wakes"] == 0
 
 

@@ -29,9 +29,9 @@ from hub.backend.claude_code.checkpoint import (
     transcript_source,
     transcript_turns,
 )
-from hub.khive import context_dir
 from lion1 import checkpoint as core
 from lion1.checkpoint import KINDS, LAZY, WHYS, Checkpoint, CheckpointError, Var
+from lion1.khive import context_dir
 from tests.test_checkpoint import ACTOR, AT, ID, Book, Mark, Tags, turn, var
 from tests.test_codex_checkpoint import at, write
 from tests.test_context import TASK, TaskKhive, actor_dir, gh_says

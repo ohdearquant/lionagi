@@ -91,7 +91,7 @@ def once(actor: Actor, profile: Profile, *turns: str, **request):
 
 
 def test_a_note_is_read_back_by_pointer_in_a_later_run_of_the_same_profile_and_no_other():
-    actor = _echo_actor("edge-notes-memory")  # no notes_dir: the actor keeps a store per profile name
+    actor = _echo_actor("edge-notes-memory")  # no store: the actor keeps a memory store per profile name
     once(actor, Profile("writer"), "<lvar note.plan>ship it</lvar>")
     later = once(actor, Profile("writer"), "<lact a1>echo(text=*note.plan)</lact>")
     assert later.resolve("a1") == "ship it"

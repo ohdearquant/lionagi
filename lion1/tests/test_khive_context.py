@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from hub import khive as module
-from hub.khive import NotIgnored, assert_ignored, context_dir
+from lion1 import khive as module
 from lion1.checkpoint import CheckpointError, save, take
+from lion1.khive import NotIgnored, assert_ignored, context_dir
 from tests.test_checkpoint import ACTOR, AT, ID
 
 

@@ -231,10 +231,10 @@ Serves C1. `_claim` locks `agent.pid` without blocking and writes the pid for pe
 
 ### D3: The agent's own note store beside the profiles' notes ^d3
 
-Serves C3, C5 and C6. `notes/agent.json` in the agent's directory holds `cursor`, `taking`,
-`unreported`, `threads`, `hops_charged`, `spend` and `deferred`. The profiles' notes hold `posture`;
-`lion agent` keeps them in the same folder, one file per profile. The wake number continues from the
-stored cursor, so a restart keeps counting.
+Serves C3, C5 and C6. The `agent` profile's notes in the store ([[ADR-0025-the-graph|ADR-0025]] D6)
+hold `cursor`, `taking`, `unreported`, `threads`, `hops_charged`, `spend` and `deferred`. The
+profiles' notes hold `posture`, in the same store under their own names. The wake number continues
+from the stored cursor, so a restart keeps counting.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_the_cursor_names_the_batch_before_the_run_so_a_wake_that_dies_still_shows_what_it_took`,

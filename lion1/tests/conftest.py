@@ -1,5 +1,7 @@
 import gc
 import os
+import sys
+from pathlib import Path
 
 import pytest
 from hypothesis import settings
@@ -12,13 +14,49 @@ settings.register_profile("deep", max_examples=20_000, deadline=None, print_blob
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
 
+# the stub `kkernel`: the lion pack's note verbs over a JSON file beside it, and a refusal of every
+# other call. Written by `kkernel_stub` under the test's interpreter.
+_STUB_KKERNEL = """\
+\"\"\"The stub `kkernel` of the tests: the lion pack answered by `tests/lionfake.py` over a JSON file
+beside this script (an empty store at first); any other pack is refused.\"\"\"
+import fcntl, json, os, sys
+from pathlib import Path
+
+sys.path.insert(0, REPO)
+from lion1.khive import KhiveError  # noqa: E402
+from tests.lionfake import LionFake  # noqa: E402
+
+actor = sys.argv[sys.argv.index("--expect-actor") + 1]  # one store per actor, as the binary's namespaces
+store = Path(__file__).with_name("lion.json")
+# one call at a time, as the binary serialises its writers: a server thread reads a resident's notes
+# while the test puts them, and a read of a half-written file is a crash the real store never has
+with open(store.with_name("lion.lock"), "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    stores = json.loads(store.read_text()) if store.exists() else {}
+    fake = LionFake.from_json(stores[actor]) if actor in stores else LionFake()
+    try:
+        results = [{"ok": True, "tool": "lion", "result": r} for r in fake.answer(sys.argv[-1])]
+        status = "success"
+    except KhiveError as e:
+        results = [{"ok": False, "tool": "lion", "error": {"kind": e.kind, "message": str(e)}}]
+        status = "failed"
+    stores[actor] = fake.to_json()
+    tmp = store.with_name("lion.json.tmp")
+    tmp.write_text(json.dumps(stores))
+    os.replace(tmp, store)
+print(json.dumps({"results": results, "status": status}))
+sys.exit(status != "success")
+"""
+
+
 @pytest.fixture
-def kkernel_stub(tmp_path, monkeypatch):
-    """A `kkernel` on PATH that only exits, so a test of the wiring around the khive client passes on a
-    machine without the binary (a sandbox VM, CI); nothing in such a test calls it."""
-    b = tmp_path / "stub-bin"
-    b.mkdir()
-    (b / "kkernel").write_text("#!/bin/sh\necho 'stub kkernel: not for calls' >&2\nexit 1\n")
+def kkernel_stub(tmp_path_factory, monkeypatch):
+    """A `kkernel` on PATH for a test of the wiring around the khive client, on a machine without the
+    binary (a sandbox VM, CI). It serves the lion pack (ADR-0025 D4, D6) from `tests/lionfake.py` over
+    a file of its own and refuses every other pack."""
+    b = tmp_path_factory.mktemp("kkernel-stub")  # beside the test's tmp_path, never inside it
+    repo = repr(str(Path(__file__).resolve().parent.parent))
+    (b / "kkernel").write_text(f"#!{sys.executable}\n" + _STUB_KKERNEL.replace("REPO", repo))
     (b / "kkernel").chmod(0o755)
     monkeypatch.setenv("PATH", f"{b}{os.pathsep}{os.environ.get('PATH', '')}")
     return b / "kkernel"

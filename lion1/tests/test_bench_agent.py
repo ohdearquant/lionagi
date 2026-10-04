@@ -53,6 +53,8 @@ class BenchKhive(FakeKhive):
         self.ops: list[str] = []
 
     async def exec(self, ops):
+        if ops.startswith("comm.read("):  # the mark-read is the box's, not a write the tests count
+            return await super().exec(ops)
         self.ops.append(ops)
         return [{"id": "mem1"}]
 

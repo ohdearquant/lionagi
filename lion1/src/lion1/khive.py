@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lion1.checkpoint import CheckpointError
+from .checkpoint import CheckpointError
 
 __all__ = (
     "KhiveError",
@@ -84,13 +84,8 @@ class Khive:
 
     async def exec(self, ops: str) -> list[Any]:
         """Run one DSL expression; each op's `result`, in order. An op that is not ok raises."""
-        # after `--`: an ops string that begins with `-` is the DSL, never an option
-        argv = [self.kkernel, "exec", "--strict", "--expect-actor", self.actor]
-        if self.config is not None:
-            argv += ["--config", str(self.config)]
-        argv += ["--", ops]
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *self._argv(ops),
             cwd=str(self.cwd),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -111,6 +106,33 @@ class Khive:
             if isinstance(e, asyncio.CancelledError):
                 raise
             raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
+        return self._answer(ops, proc.returncode, out, err)
+
+    def exec_sync(self, ops: str) -> list[Any]:
+        """`exec` for a caller that is not awaiting: the note store's five methods (ADR-0025 D6), each
+        one call of the binary, blocking the loop for its length. An async store is a later change."""
+        try:
+            done = subprocess.run(
+                self._argv(ops),
+                cwd=str(self.cwd),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=self.timeout,
+                start_new_session=True,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
+        return self._answer(ops, done.returncode, done.stdout, done.stderr)
+
+    def _argv(self, ops: str) -> list[str]:
+        # after `--`: an ops string that begins with `-` is the DSL, never an option
+        argv = [self.kkernel, "exec", "--strict", "--expect-actor", self.actor]
+        if self.config is not None:
+            argv += ["--config", str(self.config)]
+        return argv + ["--", ops]
+
+    def _answer(self, ops: str, returncode: int | None, out: bytes, err: bytes) -> list[Any]:
         # the CLI prints a config warning and its database line on every call; keep the rest
         noise = (" WARN ", "database:")
         detail = [ln for ln in err.decode(errors="replace").splitlines() if not any(n in ln for n in noise)]
@@ -120,11 +142,11 @@ class Khive:
             raise KhiveError(f"unparseable kkernel output: {e}: {out[:300]!r}") from None
         results = data.get("results") or []
         bad = [r for r in results if not r.get("ok")]
-        if proc.returncode != 0:
+        if returncode != 0:
             # the op's own error is on stdout; stderr carries the refusal class and the actor line
             said = "; ".join(f"{r.get('tool')}: {str(r.get('error') or r)[:300]}" for r in bad)
             said = said or " | ".join(detail).strip() or out.decode(errors="replace").strip()
-            raise KhiveError(f"kkernel exited {proc.returncode}: {said[-600:]}", kind=_kind(bad))
+            raise KhiveError(f"kkernel exited {returncode}: {said[-600:]}", kind=_kind(bad))
         self.calls.append({"ops": ops, "status": data.get("status"), "summary": data.get("summary")})
         if bad:
             raise KhiveError(
@@ -167,10 +189,9 @@ class Khive:
             if mail or remaining <= 0:
                 return mail
 
-    async def mark_read(self, ids: list[str]) -> None:
-        if ids:
-            await self.exec(f"comm.read(ids={lit(ids)})")
-
+    # `send` is a method because the agent's boundary (`Bounded`) checks its recipient in code before
+    # the call; every other verb, the mark-read included, is written at its call site as the DSL
+    # (ADR-0025 D7)
     async def send(
         self,
         to: str,

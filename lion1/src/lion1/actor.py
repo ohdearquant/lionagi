@@ -25,7 +25,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
@@ -53,7 +53,7 @@ from .lndl import (
 )
 from .lndl import check as check_script
 from .lndl import read as read_script
-from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
+from .notes import MemoryNoteStore, Note, NoteStore, key_of
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
@@ -96,6 +96,9 @@ __all__ = (
 )
 
 # --- what a backend sees ---------------------------------------------------------------------
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 @dataclass(frozen=True)
@@ -174,7 +177,7 @@ class Profile:
     defaults: dict[str, float] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
-        # the name is the notes file's name under `notes_dir`: one file per profile, none outside it
+        # the name keys the profile's note in the store and names it on the command line, so it is one word
         if not _PROFILE_NAME.fullmatch(self.name) or ".." in self.name:
             raise ProfileError(f"profile name {self.name!r}: letters, digits, _ . - only, it names a file")
         if self.language not in ("core", "program"):
@@ -347,6 +350,9 @@ class RunRequest:
     # a resumed conversation: entries of an earlier run, replayed onto this run's record before its
     # inputs, their aliases and values in reach again (a pointer to an old result or value resolves)
     history: tuple[Entry, ...] = ()
+    # for the store (ADR-0025): what started this run, by id, and the run it resumes by replay
+    trigger: tuple[str, ...] = ()
+    continues: str | None = None
 
 
 @dataclass(frozen=True)
@@ -418,6 +424,8 @@ class Run:
         )
         self.pause = False  # hand the conversation back at the next turn boundary (a person's interrupt)
         self.call: asyncio.Future | None = None  # the backend call in flight, what `interrupt` cuts
+        self.store_flushed = 0  # entries of the record the store holds, by count (ADR-0025 C1)
+        self.store_call_started = 0.0  # when the open call row's request went out
         self.cut = False  # `interrupt` cancelled the call: the turn ends with no message, not the run
         self.same_turns = 0  # consecutive turns byte-identical to the one before
         self.same_errors = 0  # consecutive turns ending in the same retry error
@@ -652,11 +660,11 @@ async def _note_delete(req: NoteDelete, ctx: Context) -> str:
 
 async def _note_read(req: NoteRead, ctx: Context) -> dict:
     name, actor = Profile(req.profile).name, ctx.actor
-    # the store kept under that name, or its file; a read makes none, so a name with neither stays
-    # without one (a file store loads its file on every read, so the one made here is not kept)
+    # the store kept under that name, or the profile's rows in the actor's store; a read makes no
+    # memory store, so a name with neither stays without one
     store = actor._notes.get(name)
-    if store is None and actor.notes_dir is not None:
-        store = FileNoteStore(actor.notes_dir / f"{name}.json")
+    if store is None and actor.store is not None:
+        store = actor.store.notes(name)
     n = store.get(req.key) if store is not None else None
     if n is None:
         raise KeyError(f"no note {req.key!r} in the notes of {req.profile}")
@@ -762,12 +770,12 @@ class Actor:
         *,
         privileges: Iterable[str] = (),
         bus: Bus | None = None,
-        notes_dir: str | Path | None = None,
+        store: Store | None = None,
     ):
         self.name = name
+        self.store = store  # the run's rows and the profiles' notes in khive (ADR-0025); None: in memory
         self.privileges = frozenset(privileges)
         self.bus = bus or Bus()
-        self.notes_dir = Path(notes_dir) if notes_dir is not None else None
         self.handlers: dict[str, Handler] = {}
         self.operable = Operable()
         self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a turn
@@ -855,10 +863,7 @@ class Actor:
             return profile.notes
         store = self._notes.get(profile.name)
         if store is None:
-            if self.notes_dir is not None:
-                store = FileNoteStore(self.notes_dir / f"{profile.name}.json")
-            else:
-                store = MemoryNoteStore()
+            store = self.store.notes(profile.name) if self.store is not None else MemoryNoteStore()
             self._notes[profile.name] = store
         return store
 
@@ -924,7 +929,14 @@ class Actor:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
         self.bus.emit("run.started", run=run.id, actor=self.name, profile=profile.name)
+        if self.store is not None:
+            try:
+                await self.store.open(run, trigger=list(request.trigger) or None, continues=request.continues)
+            except BaseException:  # no rows: the run never started, and it is not left behind
+                self.runs.pop(run.id, None)
+                raise
 
+        call = None
         try:
             while True:
                 spent = _spent(run)  # the turn's first act: every bound, as resolved or raised
@@ -978,7 +990,12 @@ class Actor:
                     run.outcome = Stopped(turn_no)
                     break
                 self.bus.emit("turn.started", run=run.id, turn=turn_no)
-                messages = self._render(run, subset)
+                view = self._fold(run)
+                messages = self._render(run, subset, view)
+                call = None
+                if self.store is not None:  # every entry so far is a row before this call goes (C1)
+                    await self.store.flush(run)
+                    call = await self.store.call_open(run, turn_no, _model(backend), view)
                 text = backend(messages)
                 if inspect.isawaitable(text):
                     run.call = asyncio.ensure_future(text)
@@ -998,6 +1015,9 @@ class Actor:
                             "the person cut this turn short: its call was abandoned, no message came of it",
                             turn=turn_no,
                         )
+                        if call is not None:
+                            await self.store.call_close(run, call, status="cut")
+                            call = None
                         continue
                     finally:
                         run.call = None
@@ -1026,6 +1046,19 @@ class Actor:
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
+                if call is not None:
+                    counted = isinstance(reported, int) and not isinstance(reported, bool)
+                    priced = isinstance(cost, int | float) and not isinstance(cost, bool)
+                    await self.store.call_close(
+                        run,
+                        call,
+                        status="refused" if refused else "ok",
+                        reply_seq=m.seq,
+                        tokens_in=reported if counted else None,
+                        cost=cost if priced else None,
+                        error=refused,
+                    )
+                    call = None  # closed: a request that raises later is not this call
                 try:
                     program = _read(text, run.profile.language, refused)
                     run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
@@ -1173,6 +1206,14 @@ class Actor:
             finally:
                 self.runs.pop(run.id, None)
                 self._deliver(run, error=e)
+            if self.store is not None:  # the open call and the run close as what they are (C2, C5);
+                try:  # a store that fails here does not hide what ended the run
+                    if call is not None:
+                        why = f"{type(e).__name__}: {e}"
+                        await self.store.call_close(run, call, status="failed", error=why)
+                    await self.store.close(run)
+                except Exception:
+                    pass
             if cancelled and not isinstance(e, asyncio.CancelledError):
                 raise asyncio.CancelledError from e
             raise
@@ -1181,6 +1222,8 @@ class Actor:
                 if not answer.done():
                     answer.cancel()
 
+        if self.store is not None:
+            await self.store.close(run)
         self.runs.pop(run.id, None)
         self._deliver(run)
         self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, turns=run.turn)
@@ -1877,7 +1920,7 @@ class Actor:
             told.clear()
         return "\n".join(lines), folded
 
-    def _render(self, run: Run, subset: Operable) -> list[Message]:
+    def _render(self, run: Run, subset: Operable, view: list[ViewEntry] | None = None) -> list[Message]:
         outputs = tuple(spec_name(s) for s in run.request.emits)
         language = lndl.guidance if run.profile.language == "core" else program_guidance
         parts = [
@@ -1888,13 +1931,20 @@ class Actor:
         if run.request.emits:
             parts.append(_output_guidance(run.request.emits))
         messages = [Message("system", "\n\n".join(p for p in parts if p))]
-        view = self._fold(run)
+        if view is None:
+            view = self._fold(run)
         messages.extend(_messages(view))
         run.viewed = _shown(view)
         return [dataclasses.replace(m, run=run.id) for m in messages]
 
     def _fold(self, run: Run, consumed: tuple[Directive, ...] = ()) -> list[ViewEntry]:
         return fold(run.record, protect_input=not run.request.fold_inputs, consumed=consumed)
+
+
+def _model(backend: Any) -> str:
+    """What the call row names: the backend's model when it says, else the backend by its class."""
+    model = getattr(backend, "model", None)
+    return model if isinstance(model, str) and model else type(backend).__name__
 
 
 def _consumed(run: Run) -> tuple[Directive, ...]:

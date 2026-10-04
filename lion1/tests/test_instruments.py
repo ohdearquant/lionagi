@@ -41,7 +41,13 @@ from hub.agent.instruments import (
     Worktrees,
 )
 from lion1 import MemoryNoteStore
+from tests.lionfake import resident_store
 from tests.test_chores import FakeKhive
+
+
+@pytest.fixture(autouse=True)
+def _stub(kkernel_stub):
+    """Every resident directory here reads its notes through the stub binary (ADR-0025 D6)."""
 
 
 class FakeSh:
@@ -64,6 +70,15 @@ class FakeSh:
             if key in line:
                 return self.answers[key]
         return 1, "", f"no fake for {line}"
+
+
+def bench_dir(tmp_path):
+    """A resident directory whose notes the stub binary serves, no note written yet."""
+    d = tmp_path / "bench"
+    d.mkdir()
+    (d / "chores.toml").write_text('actor = "lambda:x:bench"\n')
+    resident_store(d)
+    return d
 
 
 def iso(hours_ago: float) -> str:
@@ -318,13 +333,10 @@ def test_pr_state_control_fails_when_gh_does_not_return_the_repo_as_itself():
 
 
 def test_served_reads_the_cursor_first_then_the_pid_then_launchd_with_its_own_pid_as_control(tmp_path):
-    d = tmp_path / "bench"
-    (d / "notes").mkdir(parents=True)
+    d = bench_dir(tmp_path)
     (d / "agent.pid").write_text("999999")
     stale = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3 * 3600))
-    (d / "notes" / "agent.json").write_text(
-        json.dumps({"version": 1, "notes": {"cursor": {"value": {"at": stale, "outcome": "Success"}}}})
-    )
+    resident_store(d).put("cursor", {"at": stale, "outcome": "Success"}, run="-", seq=0)
     me = os.getpid()
     sh = FakeSh(
         **{f"-p {me} -o": "S+ 01:02\n", "-p 999999 -o": "", "print gui": (0, "  state = waiting\n", "")}
@@ -360,8 +372,7 @@ def test_disk_names_the_device_and_the_mount_point_whole_when_either_holds_a_spa
 def test_served_reads_a_pid_file_as_ascii_digits_or_as_unreadable_and_probes_no_process_for_it(
     tmp_path, text
 ):
-    d = tmp_path / "bench"
-    (d / "notes").mkdir(parents=True)
+    d = bench_dir(tmp_path)
     (d / "agent.pid").write_text(text)
     me = os.getpid()
     sh = FakeSh(**{f"-p {me} -o": "S+ 01:02\n"})
@@ -1698,13 +1709,12 @@ def test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unre
 
 
 def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
-    d = tmp_path / "bench"
-    (d / "notes").mkdir(parents=True)
+    d = bench_dir(tmp_path)
     jobs = {
         "r1": {"pid": 4242, "started": "x", "asker": "lambda:x", "reported": False},
         "r0": {"pid": 1, "reported": True},
     }
-    (d / "notes" / "agent.json").write_text(json.dumps({"version": 1, "notes": {"jobs": {"value": jobs}}}))
+    resident_store(d).put("jobs", jobs, run="-", seq=0)
     (tmp_path / "results" / "r1").mkdir(parents=True)
     (tmp_path / "results" / "r1" / "ledger.jsonl").write_text('{"a":1}\n{"b":2}\n')
     inst = BenchJobs(str(d), str(tmp_path / "results"), every="every:1h", run=FakeSh(**{"-p 4242": ""}))
@@ -1712,9 +1722,11 @@ def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     assert out.control and out.findings == (
         "job r1: unreported, pid 4242 gone, 2 ledger row(s); asked by lambda:x",
     )
-    assert out.evidence.startswith(f"control: {d}/notes/agent.json read, 2 job(s) noted\n")
+    assert out.evidence.startswith(f"control: {d} notes read, 2 job(s) noted\n")
     out = asyncio.run(BenchJobs(str(tmp_path / "nope"), str(tmp_path), every=None).run({}))
-    assert not out.control
+    assert not out.control and out.findings == (
+        f"no bench notes at {tmp_path / 'nope'}: chores.toml names no actor",
+    )
 
 
 def test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock(tmp_path):

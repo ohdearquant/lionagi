@@ -14,7 +14,7 @@ import pytest
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lion1 import Actor, Kind, Profile, RunRequest
+from lion1 import Actor, Kind, MemoryNoteStore, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
 from lion1.checkpoint import CheckpointError, load, save, take, to_history
 from tests.test_actor import scripted
@@ -29,10 +29,16 @@ def asks(*messages: str | None):
     return ask
 
 
+_NOTES: dict = {}  # one note store per directory: the store outlives the actor, as the graph's does
+
+
 def reader(directory) -> tuple[Actor, Profile]:
-    actor = Actor("c", notes_dir=directory / "notes")
+    actor = Actor("c")
     specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
-    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text. Never write OUT{}.")
+    notes = _NOTES.setdefault(directory, MemoryNoteStore())
+    return actor, Profile(
+        name="c", specs=frozenset(specs), system="Reply in plain text. Never write OUT{}.", notes=notes
+    )
 
 
 def test_a_plain_turn_is_the_reply_and_the_next_message_is_in_the_same_record(tmp_path):
@@ -357,7 +363,7 @@ def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path):
     class Slow(BaseModel):
         pass
 
-    actor = Actor("c", notes_dir=tmp_path / "notes")
+    actor = Actor("c")
     said: list = []
     seen: list = []
 
@@ -1144,7 +1150,7 @@ def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp
             return Reply(text, prompt_tokens=14_100)
 
     actor, profile, runs, before, shown, figure = drive(Billed())
-    assert before == "inbox 0 · notes 1 (7 chars) · $0.0000"  # the notes file outlives the actor
+    assert before == "inbox 0 · notes 1 (7 chars) · $0.0000"  # the note store outlives the actor
     assert runs[0].anchor[0] == 14_100 and 14_100 < figure < 15_000
     assert shown == [
         f"inbox 0 · ctx ~{figure / 1000:.1f}k/200k (last call 14.1k) · notes 1 (7 chars) · "

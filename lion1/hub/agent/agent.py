@@ -41,14 +41,14 @@ from pydantic import BaseModel, Field
 
 from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
 from lion1.checkpoint import Var, jsonable, load, save, take, to_history
+from lion1.khive import Khive, assert_ignored, context_dir, lit
 from lion1.lndl import plain
-from lion1.notes import FileNoteStore, MemoryNoteStore, NoteStore
+from lion1.notes import MemoryNoteStore, NoteStore
 from lion1.record import Directive, Entry, Kind
 
 from ..areas import partial
 from ..backend.claude_code import _prompt_tokens
 from ..chat import entry_row
-from ..khive import Khive, assert_ignored, context_dir, lit
 
 __all__ = (
     "AgentError",
@@ -378,7 +378,7 @@ class Agent:
     admit: Callable[[dict], bool] | None = None  # None admits all mail; refused mail never reaches a run
     budget: Budget = Budget()
     owner: str | None = None  # the actor told when a batch is lost or a wake fails; None tells nobody
-    state: NoteStore | None = None  # the agent's own notes; None: notes/agent.json in the khive directory
+    state: NoteStore | None = None  # the agent's own notes: the store's rows from the CLI; None: in memory
     max_turns: int = 6
     # the gate on OUT{} (RunRequest.accept): why the wake may not end yet, or None; a refusal is a retry
     accept: Callable[[Run, Any], Awaitable[str | None] | str | None] | None = None
@@ -419,14 +419,8 @@ class Agent:
     _restored: bool = field(default=False, repr=False)  # the first run of the process read latest.json
 
     def __post_init__(self) -> None:
-        if self.state is None:
-            cwd = getattr(self.khive, "cwd", None)
-            if cwd is None:
-                self.state = MemoryNoteStore()
-            else:
-                path = Path(cwd) / "notes" / "agent.json"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                self.state = FileNoteStore(path)
+        if self.state is None:  # the CLI hands the store's rows (ADR-0025 D6); a test runs in memory
+            self.state = MemoryNoteStore()
         if self.config is not None and self.config.exists():
             self._config_mtime = self.config.stat().st_mtime  # what this process was built with
         # a quiet chair counts from its start, or its last wake booked, whichever is later
@@ -747,7 +741,8 @@ class Agent:
             # the batch's ids first, then the mark-read: a wake that dies between the two (or a
             # mark-read that raises after it committed) leaves ids behind for the next start to report
             self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
-            await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
+            ids = [m.get("full_id") or m["id"] for m in mail]
+            await self.khive.exec(f"comm.read(ids={lit(ids)})")
         if self.admit is not None:  # refused mail is read, recorded on the cursor, and never run
             # one answer per message: a gate may do work per call, and a second call may answer otherwise
             verdicts = [(m, self.admit(m)) for m in mail]
@@ -877,6 +872,7 @@ class Agent:
         self.state.put("cursor", self._facts(None, mail, "running", profile, notices=notices), run="-", seq=0)
         self.state.put("taking", {}, run="-", seq=0)  # entered: the cursor carries the batch from here
         history = self._restore()
+        trigger = tuple(str(m.get("full_id") or m["id"]) for m in batch if m.get("full_id") or m.get("id"))
         before = len(getattr(self.backend, "calls", ()))
         self._burst = {
             "mail": list(mail),
@@ -901,6 +897,7 @@ class Agent:
                 wait=self._wait,
                 fold_inputs=True,  # a day of mail and replies folds too; the latest batch stays
                 history=history,
+                trigger=trigger,
             )
 
             def stop() -> bool:  # this run, by its request: the actor's other runs are not asked
@@ -914,6 +911,7 @@ class Agent:
                 max_turns=self.max_turns,
                 accept=self.accept,
                 history=history,
+                trigger=trigger,
             )
             stop = None
         try:
@@ -1149,7 +1147,8 @@ class Agent:
                 self._dropped = []
                 if mail:
                     self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
-                    await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
+                    ids = [m.get("full_id") or m["id"] for m in mail]
+                    await self.khive.exec(f"comm.read(ids={lit(ids)})")
                 if self.admit is not None:
                     verdicts = [(m, self.admit(m)) for m in mail]  # asked once per message, as on `wake`
                     self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]

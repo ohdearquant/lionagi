@@ -20,9 +20,10 @@ from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
 from hub.agent.verdicts import Verdicts
-from hub.khive import LOST, Khive, KhiveError
 from lion1 import Actor, Kind, RunRequest
-from lion1.notes import FileNoteStore
+from lion1.khive import LOST, Khive, KhiveError
+from lion1.notes import MemoryNoteStore
+from tests.lionfake import LionFake
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Probe, Scripted, full, mail
 
 ASKER = "lambda:a"  # an agent that wrote to the owner; not in the agent's trusted set
@@ -737,6 +738,9 @@ class YieldingReader(FakeReader):
         return await super().exec(ops)
 
 
+_STATES: dict = {}  # the agent's state per directory: the process after a restart reads the same rows
+
+
 def over_state(tmp_path, inner: FakeKhive, *rows: dict, body: str = TASK_BODY) -> tuple[Desk, Agent]:
     """A desk over the state file and the ledgers in `tmp_path`; called again, it is the process after a
     restart, and `inner`, the store, keeps what it wrote. TASK's thread holds `body`, the `disk` chore
@@ -746,7 +750,7 @@ def over_state(tmp_path, inner: FakeKhive, *rows: dict, body: str = TASK_BODY) -
     khive = Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF, BUILD}))
     desk, _, agent = build(tmp_path, khive, reader, [], disk=Probe("disk", full()))
     desk.routes = {"build": BUILD}
-    agent.state = FileNoteStore(tmp_path / "state.json")
+    agent.state = _STATES.setdefault(tmp_path, MemoryNoteStore())  # one store per directory, as the rows are
     if agent.state.get("desk_since") is None:
         agent.state.put("desk_since", LIVE, run="-", seq=0)
     return desk, agent
@@ -1162,7 +1166,11 @@ def test_the_brief_is_the_digest_tick_repeating_as_desk_brief_says(
 ):
     ops: list[str] = []
 
+    lion = LionFake()
+
     async def recorded(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         return [{"events": []}] if op.startswith("schedule.agenda") else [{"ok": True}]
 
@@ -1360,7 +1368,11 @@ def test_reader_helpers_cannot_write(tmp_path, kkernel_stub, monkeypatch):
     is a refusal too."""
     reached: list[tuple[str, str]] = []
 
+    lion = LionFake()
+
     async def recorded(self, ops):
+        if ops.lstrip("[").startswith("lion."):
+            return lion.answer(ops)
         reached.append((self.actor, ops))
         return [{"messages": []}]
 
@@ -2486,7 +2498,11 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
     stub.write_text("")
     reached: list[tuple[str, str]] = []
 
+    lion = LionFake()
+
     async def recorded(self, ops):
+        if ops.lstrip("[").startswith("lion."):
+            return lion.answer(ops)
         reached.append((self.actor, ops))
         return [{"messages": []}]
 

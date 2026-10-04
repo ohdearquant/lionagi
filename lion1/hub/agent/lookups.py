@@ -21,7 +21,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..khive import Khive, lit
+from lion1.khive import Khive, lit
+
 from .chores import Instrument, Outcome
 from .instruments import GH, Runner, sh
 

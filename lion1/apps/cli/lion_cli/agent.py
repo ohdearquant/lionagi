@@ -16,14 +16,14 @@ from hub.agent.chores import SPAWN_SALIENCE, Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
-from hub.areas import partial
+from hub.areas import agent_notes, partial
 from hub.backend import ClaudeCodeSession, Codex, CodexSession, OpenRouter
 from hub.guidance import guidance
 from hub.hooks import install, load
-from hub.khive import Khive
 from hub.tools import LocalTree, files, khive_ops
-from lion1 import Actor, Profile
+from lion1 import Actor, Profile, Store
 from lion1.actor import DEFAULT_HANDLERS
+from lion1.khive import Khive, KhiveError
 
 __all__ = (
     "DEFAULT_MODEL",
@@ -63,8 +63,9 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
     routes = dict((cfg.get("desk") or {}).get("routes", {}))  # the desk forwards to these; `Desk` checks them
     if routes and not cfg["desk"].get("front", True):  # no Desk would check them, yet they widen the sends
         raise ValueError("[desk.routes] needs the front desk: front = false names no routes")
-    khive = Bounded(Khive(directory, actor_id), recipients=trusted | frozenset(routes.values()))
-    actor = Actor("chores", privileges={"comm.send"}, notes_dir=directory / "notes")
+    store = Store(Khive(directory, actor_id))  # the runtime's own rows and notes, unbounded (ADR-0025)
+    khive = Bounded(store.khive, recipients=trusted | frozenset(routes.values()))
+    actor = Actor("chores", privileges={"comm.send"}, store=store)
     if (hooks := directory / "hooks.toml").exists():
         install(actor, load(hooks), directory)
     profiles: dict[str, Profile] = {}
@@ -74,6 +75,7 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         khive,
         backend,
         lambda mail: profiles["wake"],
+        state=store.notes("agent"),
         # an actor as the chair takes every sender's mail (`[chair] admit = "all"`): the gate would silently
         # shelve a new peer; the guidance still says whose mail is work. Anything else keeps the trusted gate.
         admit=None
@@ -245,16 +247,20 @@ def render(name: str, inst: Any, out: Outcome) -> str:
     return "\n".join(lines + [out.evidence])
 
 
-def stats(directory: Path) -> str:
+def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
     """The numbers behind "does a long-running agent save tokens": the day's spend row (model calls,
     tokens in and out, dollars, wakes that ran, mail handled, idle polls at zero) beside the last
-    wake's cursor, read from the agent's own notes; nothing is computed that the agent did not write."""
-    notes = directory / "notes" / "agent.json"
-    if not notes.exists():
-        return f"no notes at {notes}: the agent has not run from this directory"
-    store = json.loads(notes.read_text()).get("notes", {})
-    spend = (store.get("spend") or {}).get("value") or {}
-    cursor = (store.get("cursor") or {}).get("value") or {}
+    wake's cursor, read from the agent's own notes (`notes` by key, else the store the directory's
+    actor writes); nothing is computed that the agent did not write."""
+    if notes is None:
+        try:
+            notes = agent_notes(directory)
+        except (KhiveError, ValueError) as e:
+            return f"notes unread at {directory}: {e}"
+    if not notes:
+        return f"no notes at {directory}: the agent has not run from this directory"
+    spend = notes.get("spend") if isinstance(notes.get("spend"), dict) else {}
+    cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
     tokens = cursor.get("tokens") or {}
     mail = spend.get("mail", 0)
     lines = [

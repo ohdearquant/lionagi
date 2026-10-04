@@ -41,12 +41,22 @@ from xml.parsers.expat import ExpatError
 from hub.agent.agent import Agent, Budget, Gtd, Send, Wake, claude_code_options, codex_options
 from hub.agent.chores import Aged, Check, Chores, Digest
 from hub.agent.desk import Answer, Clarify, Desk, Leave, Route, Sweep, Task
-from hub.areas import NOTES_UNREAD, Area, area_rows, chores_toml, load_areas, status, wake_row, wakes
+from hub.areas import (
+    NOTES_UNREAD,
+    Area,
+    agent_notes,
+    area_rows,
+    chores_toml,
+    load_areas,
+    status,
+    wake_row,
+    wakes,
+)
 from hub.backend.codex import MEASURED
 from hub.backend.openrouter import OpenRouterError, api_key
-from hub.khive import Khive, KhiveError
 from hub.tools import LocalTree, SearXNG, code, criteria, files, khive_ops, shell, web
 from lion1.actor import DEFAULT_HANDLERS, Actor, Handler
+from lion1.khive import Khive, KhiveError, lit
 from lion1.spec import field_keys, spec_name
 
 from .agent import DEFAULT_MODEL, MAX_TURNS
@@ -352,9 +362,8 @@ def agent_row(area: Area, directory: str, row: dict, ident: str, day: str) -> di
 
 def _spend(directory: str) -> dict:
     try:
-        store = json.loads((Path(directory) / "notes" / "agent.json").read_text()).get("notes", {})
-        spend = (store.get("spend") or {}).get("value")
-    except (OSError, ValueError, AttributeError):
+        spend = agent_notes(directory).get("spend")
+    except (KhiveError, ValueError):
         return {}
     return spend if isinstance(spend, dict) else {}
 
@@ -1071,7 +1080,7 @@ class Daemon:
         except KhiveError as e:
             return _no(502, f"{e}; nothing was sent")
         try:
-            run(self.khive.mark_read([ident]))
+            run(self.khive.exec(f"comm.read(ids={lit([ident])})"))
         except KhiveError as e:
             return _no(502, f"sent to {item['_to']}, and the item could not be marked done: {e}")
         return 200, {"ok": True, "item": {**_public(item), "open": False}}
@@ -1081,7 +1090,7 @@ class Daemon:
         if isinstance(item, tuple):
             return item
         try:
-            run(self.khive.mark_read([ident]))
+            run(self.khive.exec(f"comm.read(ids={lit([ident])})"))
         except KhiveError as e:
             return _no(502, f"the item could not be marked done: {e}")
         return 200, {"ok": True}
