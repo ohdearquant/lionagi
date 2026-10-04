@@ -1391,23 +1391,42 @@ def test_a_codex_key_that_is_not_timeout_effort_cli_or_home_is_refused_by_name_w
         backend_for(model, codex="x")
 
 
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("timeout", True),  # an int to Python: one second, off a typo
-        ("timeout", "fast"),
-        ("timeout", 0),
-        ("timeout", -5),
-        ("timeout", float("inf")),
-        ("timeout", float("nan")),
-        ("effort", 3),
-        ("effort", ""),
-        ("cli", ""),
-        ("cli", ["codex"]),
-        ("home", ""),  # an empty home would be read as the directory the process stands in
-        ("home", 7),
-    ],
-)
+# values a `[claude_code]` or `[codex]` key does not take
+_NOT_TAKEN = [
+    ("timeout", True),  # an int to Python: one second, off a typo
+    ("timeout", "fast"),
+    ("timeout", 0),
+    ("timeout", -5),
+    ("timeout", float("inf")),
+    ("timeout", float("nan")),
+    ("effort", 3),
+    ("effort", ""),
+    ("cli", ""),
+    ("cli", ["codex"]),
+    ("home", ""),  # an empty home would be read as the directory the process stands in
+    ("home", 7),
+]
+
+
+@pytest.mark.parametrize(("key", "value"), _NOT_TAKEN)
+def test_a_claude_code_value_that_is_not_what_its_key_takes_is_refused_by_the_key(key, value):
+    from lion_cli.agent import backend_for
+
+    from hub.agent.agent import claude_code_options
+
+    if key == "home":  # `[claude_code]` has no such key: refused as a key, before any value is read
+        with pytest.raises(ValueError, match=r"^\[claude_code\] home: a claude_code model has no tools"):
+            claude_code_options({key: value})
+        return
+    with pytest.raises(ValueError, match=rf"^\[claude_code\] {key} is a "):
+        claude_code_options({key: value})
+    with pytest.raises(ValueError, match=rf"^\[claude_code\] {key} is a "):
+        backend_for("claude_code/sonnet", {key: value})
+    good = {"timeout": 0.5, "effort": "low", "cli": "claude"}
+    assert claude_code_options(good) == good and claude_code_options({"timeout": 1800}) == {"timeout": 1800}
+
+
+@pytest.mark.parametrize(("key", "value"), _NOT_TAKEN)
 def test_a_codex_value_that_is_not_what_its_key_takes_is_refused_by_the_key(monkeypatch, key, value):
     from lion_cli.agent import backend_for
 
