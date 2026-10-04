@@ -212,9 +212,9 @@ def take(
         v = replace(v, value=copy.deepcopy(v.value))  # the checkpoint's own copy: a later edit is not its
         if v.kind not in kinds:
             raise CheckpointError(f"var {v.name!r}: kind {v.kind!r} is not one of {', '.join(kinds)}")
-        if v.kind not in eager and v.size is None and len(_one(v.value)) > LAZY:
+        if v.kind not in eager and v.size is None and (size := len(_one(v.value))) > LAZY:
             # lazy: a var with a ref leaves its value where the ref points; without one the file keeps it
-            v = replace(v, size=len(_one(v.value)), value=None if v.ref else v.value)
+            v = replace(v, size=size, value=None if v.ref else v.value)
         named[v.name] = v
     now = now or datetime.now().astimezone()
     source = copy.deepcopy(source)
@@ -349,27 +349,28 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
             f"{checkpoint.id} holds no run's record (its source is {src.get('kind')!r}); nothing was replayed"
         )
     path, n = Path(str(src.get("record"))), int(src.get("seq", 0))
+    entries: list[Entry] = []
     try:
-        # a row ends at a line feed: a JSON string may carry U+2028 or U+0085 unescaped, where
-        # str.splitlines would break the row in two; a row is decoded when admitted, so a write cut
-        # inside a multi-byte character past the take is never read
-        rows = path.read_bytes().split(b"\n")
+        # a row ends at a line feed, which is where a file read as bytes ends a line: a JSON string
+        # may carry U+2028 or U+0085 unescaped, where str.splitlines would break the row in two; a
+        # row is decoded when admitted, so a write cut inside a multi-byte character past the take is
+        # never read, and the rows a long run appended after the take are not read at all
+        with path.open("rb") as rows:
+            for i, raw in enumerate(rows, 1):
+                if len(entries) == n:
+                    break  # the record as it stood at the take; what came after is not this checkpoint
+                if not raw.strip():
+                    continue
+                try:
+                    e = entry_of(json.loads(raw.decode()))
+                except (ValueError, KeyError, TypeError) as err:  # UnicodeDecodeError is a ValueError
+                    raise CheckpointError(
+                        f"{path} line {i} is not a record row ({err}); nothing was replayed"
+                    ) from None
+                if e is not None:
+                    entries.append(e)
     except OSError as e:
         raise CheckpointError(f"{checkpoint.id}: its record {path} cannot be read: {e}") from None
-    entries: list[Entry] = []
-    for i, raw in enumerate(rows, 1):
-        if len(entries) == n:
-            break  # the record as it stood at the take; what the run appended after is not this checkpoint
-        if not raw.strip():
-            continue
-        try:
-            e = entry_of(json.loads(raw.decode()))
-        except (ValueError, KeyError, TypeError) as err:  # UnicodeDecodeError is a ValueError
-            raise CheckpointError(
-                f"{path} line {i} is not a record row ({err}); nothing was replayed"
-            ) from None
-        if e is not None:
-            entries.append(e)
     if [e.seq for e in entries] != list(range(n)):
         raise CheckpointError(f"{path} holds seqs {len(entries)} of {n} in order; nothing was replayed")
     try:

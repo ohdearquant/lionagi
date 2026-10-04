@@ -5,6 +5,7 @@ that no longer folds to the view the checkpoint carries. The Claude Code session
 in `tests/test_claude_code_checkpoint.py`."""
 
 import dataclasses
+import io
 import json
 import re
 import threading
@@ -412,11 +413,38 @@ def test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_ins
     c = take({"record": str(path)}, [], actor=ACTOR, why="end", budget=100, record=rec, now=AT)
     save(c, plain / "ckpt")
     assert to_history(load(plain / "ckpt")) == tuple(rec)
+
     path.write_bytes(rows[0] + b"\n" + rows[1][:-5] + b"\xe2\x98")
     with pytest.raises(
         CheckpointError, match=r"r0\.jsonl line 2 is not a record row \(.*utf-8.*\); nothing was replayed"
     ):
         to_history(c)
+
+
+def test_the_replay_reads_the_rows_to_the_take_and_not_what_a_long_run_appended_after(plain, monkeypatch):
+    # a resident's log grows for as long as it runs and a checkpoint names a prefix of it: the file
+    # was read whole and split before the first row was looked at
+    rec = a_record("hide")
+    path = write_rows(plain / "r0.jsonl", map(row_of, rec))
+    c = take({"record": str(path)}, [], actor=ACTOR, why="end", budget=100, record=rec, now=AT)
+    with path.open("ab") as f:
+        f.write(b"\n" + b'{"kind": "USAGE", "seq": 5, "content": {}}\n' * 100_000)
+    read: list[int] = []
+
+    class Counted(io.FileIO):
+        def readinto(self, b):
+            n = super().readinto(b)
+            read.append(n)
+            return n
+
+    real = Path.open
+
+    def opened(self, mode="r", *args, **kwargs):
+        return io.BufferedReader(Counted(self)) if self == path else real(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opened)
+    assert to_history(c) == tuple(rec)
+    assert 0 < sum(read) < path.stat().st_size // 10
 
 
 def test_save_lands_the_file_names_it_latest_and_never_overwrites(plain):

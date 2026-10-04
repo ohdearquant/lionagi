@@ -627,8 +627,8 @@ async def _note_find(req: NoteFind, ctx: Context) -> list[dict]:
     return [
         {
             "key": n.key,
-            "preview": _text(n.value)[:120],
-            "size": len(_text(n.value)),
+            "preview": (text := _text(n.value))[:120],
+            "size": len(text),
             "run": n.run,
             "version": n.version,
         }
@@ -1289,6 +1289,8 @@ class Actor:
             return  # `_perform` ran and settled the command itself
         run.pending.pop(la.alias)
         run.waits.pop(la.alias, None)
+        run.pointing.pop(la.alias, None)
+        run.thunks.pop(la.alias, None)  # its arguments were never computed: nothing holds them now
         run.halts.pop(la.alias, None)
         result = Result(la.name, False, error="cancelled before it started", reason="cancelled")
         run.record.append(Kind.RESULT, result, alias=la.alias, turn=run.turn, execution="not executed")
@@ -1371,7 +1373,9 @@ class Actor:
             )
         finally:
             run.pending.pop(la.alias, None)
-            run.waits.pop(la.alias, None)  # its row is read by nobody once it has settled
+            run.waits.pop(la.alias, None)  # its rows are read by nobody once it has settled
+            run.pointing.pop(la.alias, None)
+            run.thunks.pop(la.alias, None)  # refused before its arguments were computed
             run.entered.discard(la.alias)
             run.reads.pop(la.alias, None)
             run.halts.pop(la.alias, None)
@@ -1845,12 +1849,8 @@ class Actor:
             if text:
                 lines.append(text)
         lines.append("</system>")
-        run.settled.clear()
-        run.refused.clear()
-        run.failed.clear()
-        run.unknown.clear()
-        run.notes_written.clear()
-        run.hook_errors.clear()
+        for told in (run.settled, run.refused, run.failed, run.unknown, run.notes_written, run.hook_errors):
+            told.clear()
         return "\n".join(lines), folded
 
     def _render(self, run: Run, subset: Operable) -> list[Message]:
@@ -2369,8 +2369,8 @@ def _put_path(base: Any, path: tuple[str, ...], value: Any) -> Any:
 
 def _nearest(name: str, names: Iterable[str]) -> tuple[str, str | None, int | None]:
     """An unknown command name, the nearest name in the subset and their edit distance."""
-    best = min(names, key=lambda n: (_distance(name, n), n), default=None)
-    return name, best, None if best is None else _distance(name, best)
+    distance, best = min(((_distance(name, n), n) for n in names), default=(None, None))
+    return name, best, distance
 
 
 def _distance(a: str, b: str) -> int:

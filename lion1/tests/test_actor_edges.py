@@ -647,6 +647,7 @@ def test_a_command_cancelled_before_it_started_settles_as_cancelled_and_nothing_
     assert r["k"].value == "cut" and held == []
     assert r["h"] == Result("hold", False, error="cancelled before it started", reason="cancelled")
     assert run.record.get("h").meta["execution"] == "not executed" and run.pending == {}
+    assert run.pointing == {} and run.waits == {}  # a settled command leaves no row behind it
     assert "h: cancelled before it started" in notices(run)[1] and "still running" not in notices(run)[1]
     settled = [e.payload for e in actor.bus.log if e.kind == "command.settled" and e.payload["alias"] == "h"]
     assert [(s["ok"], s["reason"], s["execution"]) for s in settled] == [(False, "cancelled", "not executed")]
