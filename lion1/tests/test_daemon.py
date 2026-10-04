@@ -626,6 +626,14 @@ def test_a_definition_the_loaders_or_the_app_shape_refuse_leaves_the_file_byte_i
     raw = (d / "chores.toml").read_bytes()
     code, doc = write(port, "PUT", path, {"definition": {"limits": {"cost_per_day": 2}}, "once": once()})
     assert code == 409 and (d / "chores.toml").read_bytes() == raw
+    # a `budget` that is no table: its loader fails on it as on no value it names
+    (d / "chores.toml").write_text("budget = 3\n" + CHORES.replace("[budget]", "[budgets]"))
+    raw = (d / "chores.toml").read_bytes()
+    code, doc = get(port, "/v2/agents/x/desk")
+    assert code == 200 and doc["definition"] is None and doc["editable"] == []
+    assert get(port, "/v2/today")[1]["totals"]["cap"] is None
+    code, doc = write(port, "PUT", path, {"definition": {"limits": {"cost_per_day": 2}}, "once": once()})
+    assert code == 409 and (d / "chores.toml").read_bytes() == raw
 
 
 def test_a_definition_saved_elsewhere_after_the_read_is_refused_409_and_left_as_saved(tmp_path, monkeypatch):

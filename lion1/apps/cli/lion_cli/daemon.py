@@ -80,6 +80,8 @@ _PROFILES = {
 _UNKEPT = "not a setting this server keeps for a model: a resident takes only the model's name"
 _EDITABLE = ("model", "limits.cost_per_day", "wake.at_most_per_hour", "wake.quiet", "instructions.extra")
 _RESTART = ("model", "instructions.extra")  # read by `lion agent` at its start; the rest at its next poll
+# how a resident's loaders refuse its chores.toml: a value they name, or a table that is no table
+_REFUSED = (ValueError, TypeError, AttributeError, re.error)
 
 
 def _now() -> str:
@@ -295,7 +297,7 @@ def agent_row(area: Area, directory: str, row: dict, ident: str, day: str) -> di
     }[state]
     try:
         woken = [_phrase(r) for r in _rules(cfg)]
-    except (ValueError, TypeError, re.error) as e:  # the resident refuses this file too, at its start
+    except _REFUSED as e:  # the resident refuses this file too, at its start
         woken = [f"chores.toml refused: {e}"]
     out = {
         "id": ident,
@@ -727,7 +729,7 @@ class Daemon:
         cfg = chores_toml(d)
         try:
             definition, editable = self._definition(area, d, cfg, row), self._editable(d, cfg)
-        except (ValueError, TypeError, re.error):
+        except _REFUSED:
             definition, editable = None, []
         return {
             "row": agent_row(area, d, row, ident, time.strftime("%Y-%m-%d")),
@@ -838,7 +840,7 @@ class Daemon:
             return _no(409, f"chores.toml does not read, nothing was written: {e}")
         try:
             current = self._definition(area, d, before, row)
-        except (ValueError, TypeError, re.error) as e:
+        except _REFUSED as e:
             return _no(409, f"chores.toml is refused by its own loaders, nothing was written: {e}")
         editable = self._editable(d, before)
         have = _flat(current)
@@ -882,7 +884,7 @@ class Daemon:
             Gtd.load(after.get("gtd"))
             claude_code_options(after.get("claude_code"))
             codex_options(after.get("codex"))
-        except (ValueError, TypeError, re.error) as e:
+        except _REFUSED as e:
             return _no(400, f"chores.toml would be refused: {e}; nothing was written")
         restart = any(c["path"] in _RESTART for c in changes)
         if dry or not changes:
