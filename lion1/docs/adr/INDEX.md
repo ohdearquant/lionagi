@@ -25,6 +25,7 @@
 | [ADR-0021](021-serve/ADR-0021-the-served-actor.md) | 021-serve | proposed | operating (the service, its logs, the transport over real loopback sockets and the example are pinned by tests, and each mechanism S1 names turned a named test red) | ADR-0001, ADR-0002, ADR-0003, ADR-0005, ADR-0007, ADR-0010, ADR-0017, ADR-0018 |
 | [ADR-0022](022-app/ADR-0022-the-app-and-its-host.md) | 022-app | proposed | partial (the host's `/v2` routes pass their tests in CI; the app builds and passes its own under `build.sh`, which no CI job runs; C13 is unpinned) | ADR-0013, ADR-0017, ADR-0021 |
 | [ADR-0023](023-web/ADR-0023-the-web-tools.md) | 023-web | proposed | operating (two commands, four provider adapters, the address check, the checked dial, and every request's bounds and deadline, save the steps S9 leaves out of it, are pinned by tests; the live provider tests are opt-in, S1) | ADR-0003, ADR-0005, ADR-0007 |
+| [ADR-0024](024-accounts/ADR-0024-accounts-and-the-pick.md) | 024-accounts | proposed | unimplemented (nothing is built; every mechanism is owed, S1) | ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 
 ## By topic
 
@@ -51,3 +52,4 @@
 - **021-serve**, ADR-0021: The served actor
 - **022-app**, ADR-0022: The app and its host
 - **023-web**, ADR-0023: The web tools
+- **024-accounts**, ADR-0024: Accounts and the pick
