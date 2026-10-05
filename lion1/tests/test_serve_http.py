@@ -446,6 +446,36 @@ def test_a_get_carrying_a_body_is_a_bad_request_and_a_zero_length_is_none(name, 
     assert_safe(fields)
 
 
+# S23: a request h11 cannot read gets uvicorn's own answer, and the app never sees it
+UNREAD = [
+    ("a length of 21 digits", post(START, length=b"0" * 19 + b"14"), 400),
+    ("a length of 5,002 digits", post(START, length=b"0" * 5000 + b"14"), 400),
+    (
+        "a chunk not ended by CRLF",  # h11 0.16 refuses it; 0.15 dropped any two bytes there
+        chunked(START).replace(START + b"\r\n", START + b"XX"),
+        400,
+    ),
+    ("a length of 20 digits", post(START, length=b"0" * 18 + b"14"), 201),
+]
+
+
+@pytest.mark.parametrize("name, raw, status", UNREAD, ids=[c[0] for c in UNREAD])
+def test_a_request_h11_cannot_read_is_answered_by_uvicorn_alone(name, raw, status, store):
+    service = Service(Actor("http-unread", store=store))
+    service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
+
+    async def main():
+        async with serving(service) as port:
+            return await ask(port, raw.replace(b"{p}", str(port).encode()))
+
+    got, fields, body = bounded(main)
+    assert got == status, body
+    if status == 400:
+        # sent chunked when the head was already read
+        assert b"Invalid HTTP request received." in body and service.runs == {}
+        assert fields["content-type"].startswith("text/plain")
+
+
 def test_a_body_nested_past_the_recursion_limit_is_a_bad_request(no_collection, store):
     a = Actor("http-deep", store=store)
     service = Service(a)
