@@ -109,7 +109,13 @@ _KIND = re.compile(r"`(?P<module>\w+)\.(?P<alias>\w+)`(?P<tail>| or None|, an en
 def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
     table = rows()
     assert len(table) >= 11 and table[0][0] == "`Message.role`"  # the parse reads what it should
-    classes = {n for m in MODULES.values() for n, c in vars(m).items() if isinstance(c, type)}
+    # a note may name a class the mapped modules define (an error it raises), never one they only import
+    classes = {
+        n
+        for m in MODULES.values()
+        for n, c in vars(m).items()
+        if isinstance(c, type) and c.__module__ == m.__name__
+    }
     aliases = [
         v for m in MODULES.values() for v in vars(m).values() if typing.get_origin(v) is typing.Literal
     ]
