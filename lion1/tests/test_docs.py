@@ -4,6 +4,7 @@ and every closed value set the runtime and the served actor declare has a row, t
 names are the ones they emit, and every relative link on it and on the README resolves."""
 
 import ast
+import importlib
 import re
 import typing
 from enum import Enum
@@ -44,6 +45,21 @@ def literals() -> list[tuple[str, ...]]:
             ):
                 items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
                 found.append(tuple(item.value for item in items))
+    return found
+
+
+def enums() -> list[tuple[str, ...]]:
+    """Every enum a module of src/lion1 or hub/serve defines, as its members in order."""
+    found = []
+    for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]):
+        package = "lion1" if path.parent == SRC else "hub.serve"
+        name = package if path.stem == "__init__" else f"{package}.{path.stem}"
+        module = importlib.import_module(name)
+        found += [
+            tuple(values_of(c))
+            for c in vars(module).values()
+            if isinstance(c, type) and issubclass(c, Enum) and c.__module__ == name
+        ]
     return found
 
 
@@ -109,12 +125,12 @@ _KIND = re.compile(r"`(?P<module>\w+)\.(?P<alias>\w+)`(?P<tail>| or None|, an en
 def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
     table = rows()
     assert len(table) >= 11 and table[0][0] == "`Message.role`"  # the parse reads what it should
-    # a note may name a class the mapped modules define (an error it raises), never one they only import
-    classes = {
+    # a note may name an error a mapped module defines (one it raises), never another class
+    errors = {
         n
         for m in MODULES.values()
         for n, c in vars(m).items()
-        if isinstance(c, type) and c.__module__ == m.__name__
+        if isinstance(c, type) and issubclass(c, BaseException) and c.__module__ == m.__name__
     }
     aliases = [
         v for m in MODULES.values() for v in vars(m).values() if typing.get_origin(v) is typing.Literal
@@ -125,7 +141,7 @@ def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
         assert cell, f"{field}: values cell {listed!r}"
         assert re.findall(r"`([^`]+)`", cell["values"]) == values_of(hint), field
         note = cell["said"] or cell["aside"] or ""
-        named = [n for n in re.findall(r"`([^`]+)`", note) if n not in classes]
+        named = [n for n in re.findall(r"`([^`]+)`", note) if n not in errors]
         assert named == [], f"{field}: a note names a value"
         typed = _KIND.fullmatch(kind)
         assert typed, f"{field}: type cell {kind!r}"
@@ -138,8 +154,9 @@ def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
 
 
 def test_every_closed_value_set_the_code_declares_has_a_row():
-    sets = literals()
-    assert ("system", "user", "assistant") in sets and len(sets) >= 10  # the walk reads what it should
+    sets = literals() + enums()
+    assert ("system", "user", "assistant") in sets and len(sets) >= 11  # the walks read what they should
+    assert tuple(str(k) for k in record.Kind) in sets
     listed = {tuple(values_of(declared(field))) for field, _, _ in rows()}
     assert [values for values in sets if values not in listed] == []
 
