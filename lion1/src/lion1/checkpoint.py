@@ -14,12 +14,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from pydantic import BaseModel
 
 from .actor import Result
-from .record import Directive, Entry, Kind
+from .record import Directive, Entry, Kind, Op
 
 __all__ = (
     "KINDS",
@@ -44,6 +44,7 @@ WHYS = ("threshold", "end", "manual")
 # restore; a kind the taker names eager is always inline
 LAZY = 400
 
+_OPS = get_args(Op)
 _KEEP = ("inbound", "origin", "reply", "execution", "request", "returned", "unread", "refused")
 
 
@@ -144,10 +145,11 @@ def entry_of(row: dict) -> Entry | None:
             seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
         )
 
-    if isinstance(d := kept.get("directive"), dict):
+    # an op this runtime has not got (a row a later one wrote) is left out, as the fold would leave it
+    if isinstance(d := kept.get("directive"), dict) and d.get("op") in _OPS:
         meta["directive"] = directive(d)
     if isinstance(ds := kept.get("consumed"), list):  # a program's consumed results ride a notification too
-        meta["consumed"] = tuple(directive(d) for d in ds)
+        meta["consumed"] = tuple(directive(d) for d in ds if d.get("op") in _OPS)
     if isinstance(bs := kept.get("bound"), list):  # the values a program bound and nothing read yet
         meta["bound"] = tuple((str(b[0]), int(b[1]), int(b[2]), str(b[3])) for b in bs)
     if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value,

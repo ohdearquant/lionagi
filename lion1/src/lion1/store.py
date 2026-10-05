@@ -14,19 +14,23 @@ import tomllib
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from .checkpoint import entry_of, entry_row, row_json
 from .khive import Khive, KhiveError, lit
 from .notes import Note
 from .record import Entry, Kind, ViewEntry
 
-__all__ = ("SOURCE", "lion_database", "Store", "KhiveNoteStore")
+__all__ = ("SOURCE", "CallStatus", "lion_database", "Store", "KhiveNoteStore")
 
 if TYPE_CHECKING:
     from .actor import Run
 
 SOURCE = "lion1"
+# how a model call closed: a reply taken, a reply the backend refused to hand on, a call an interrupt
+# cut, a call that raised or that the run's end left open
+CallStatus = Literal["ok", "refused", "cut", "failed"]
+_CALL_STATUSES = get_args(CallStatus)
 _ROLE = {Kind.INPUT: "user", Kind.SYSTEM: "system", Kind.TEXT: "assistant", Kind.RESULT: "tool"}
 _BATCH = 100  # ops per `kkernel exec`: the DSL's parallel form takes that many
 
@@ -159,12 +163,14 @@ class Store:
         run: Run,
         call: str,
         *,
-        status: str,
+        status: CallStatus,
         reply_seq: int | None = None,
         tokens_in: int | None = None,
         cost: float | None = None,
         error: str | None = None,
     ) -> None:
+        if status not in _CALL_STATUSES:
+            raise ValueError(f"call status {status!r} is not one of {', '.join(_CALL_STATUSES)}")
         ms = int((time.monotonic() - run.store_call_started) * 1000)
         await self.khive.exec(
             f"lion.call_close(id={lit(call)}, status={lit(status)}, reply_seq={lit(reply_seq)}, "

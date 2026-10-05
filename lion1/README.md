@@ -6,6 +6,9 @@ the LION runtime
 `src/lion1/` is the runtime package: a model speaks in LNDL, handlers act, and the record remembers.
 The design records under `docs/adr/` are its specification, and the code cites them as `ADR-000N/Cn`.
 
+Start with [docs/README.md](docs/README.md): what each module holds, the words the code uses, and the
+values each state field takes. The [examples](examples/README.md) run offline, one idea per file.
+
 Work on it with [uv](https://docs.astral.sh/uv/):
 
     uv sync
