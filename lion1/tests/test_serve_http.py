@@ -470,7 +470,9 @@ def test_a_request_h11_cannot_read_is_answered_by_uvicorn_alone(name, raw, statu
 
     got, fields, body = bounded(main)
     assert got == status, body
-    if status == 400:  # sent chunked when the app had the head, so the text is looked for in the body
+    # uvicorn frames its answer to a refused chunk as chunks and its answer to a refused head not at all
+    # (read to the close), so the text is looked for in the body
+    if status == 400:
         assert b"Invalid HTTP request received." in body and service.runs == {}
         assert fields["content-type"].startswith("text/plain")
 
