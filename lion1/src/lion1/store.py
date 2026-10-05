@@ -1,8 +1,9 @@
 """The run's rows in khive (ADR-0025): a session and a run row when it starts, a message row for each
 entry before the next call, a call row around each request to the model, the outcome at its end. All
 through the `lion` pack's verbs over `Khive.exec`, so the actor's identity signs every row. `history`
-reads a session's messages back as the entries a resumed run replays (`RunRequest.history`); the
-session is the whole of what a resume needs (C3)."""
+reads a session's messages back as the entries a resumed run replays (`RunRequest.history`): a run
+that continues another holds only its own entries, so the session and the sessions its `continues`
+chain names are the whole of what a resume needs (C3)."""
 
 from __future__ import annotations
 
@@ -137,8 +138,9 @@ class Store:
             self.database = lion_database(config, self.khive.cwd)
 
     async def open(self, run: Run, *, trigger: list[str] | None = None, continues: str | None = None) -> None:
-        """The session and the run, both under the run's id; the run row names what started it."""
-        run.store_flushed = 0
+        """The session and the run, both under the run's id; the run row names what started it. A run that
+        continues another writes none of the history it replays: those entries are rows of the chain."""
+        run.store_flushed = len(run.request.history) if continues is not None else 0
         await self.khive.exec(
             f"lion.session_open(id={lit(run.id)}, source={lit(SOURCE)}, actor={lit(run.actor.name)}, "
             f"profile={lit(run.profile.name)}) | "
@@ -211,13 +213,27 @@ class Store:
         return KhiveNoteStore(self.khive, profile)
 
     async def history(self, run_id: str) -> tuple[Entry, ...]:
-        """A session's messages as the entries a resumed run replays, in seq order."""
-        (got,) = await self.khive.exec(f'lion.get(table="messages", id={lit(run_id)})')
+        """The entries a run that continues `run_id` replays, in seq order: the messages of that run's
+        session after those of every run its `continues` chain names, oldest first (C3). A run of the
+        chain the store does not hold raises its `not_found`; a chain that comes back to a run raises."""
+        sessions: list[list[dict]] = []
+        named: list[str] = []
+        at: str | None = run_id
+        while at is not None:
+            if at in named:
+                raise KhiveError(f"run {at} continues itself through {' <- '.join(named)}", "invalid")
+            named.append(at)
+            row, got = await self.khive.exec(
+                f'[lion.get(table="runs", id={lit(at)}), lion.get(table="messages", id={lit(at)})]'
+            )
+            sessions.append(got["rows"])
+            at = row.get("continues")
         entries = []
-        for r in got["rows"]:
-            e = entry_of(json.loads(r["raw"]))
-            if e is not None:
-                entries.append(e)
+        for rows in reversed(sessions):
+            for r in rows:
+                e = entry_of(json.loads(r["raw"]))
+                if e is not None:
+                    entries.append(e)
         return tuple(entries)
 
 

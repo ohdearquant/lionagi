@@ -38,7 +38,7 @@ supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Sour
   ([[ADR-0025-the-graph|ADR-0025]] D6): one row per local day of model calls, tokens, cost, wakes
   that ran, mail handled and idle polls.
 - **one-shot form**: a `lion agent` form that acts once and exits: `--check`, `--ticks`, `--arm`,
-  `--once` and `--rerun`.
+  `--once`, `--rerun` and `--forget`.
 - **landing file**: `landing/<date>-<name>.txt` in the agent directory, written by `--check` and
   `--arm` and overwritten by the day's latest run of that name.
 - **idle poll**: a poll of the agent's inbox that found nothing to run and made no model call.
@@ -63,6 +63,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | ---- | ------------ | -------------- |
 | `lion agent --dir D` | the agent built from `D`, serving until interrupted; refused after the claim and before any other act while `D` routes the lion tables and no fold point bounds the chain [[ADR-0026-the-submission|ADR-0026]] C6 has its wakes continue | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
 | `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | the missing reminders first, none for a chair, and a failed agenda read raises there, before the wake (`test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for`); what a wake writes; the record printed |
+| `lion agent --dir D --forget RUN` | the owner's act after a refused wake ([[ADR-0026-the-submission|ADR-0026]] C6, C9): the cursor lets go of `RUN` when it names that run and the store cannot replay it, and it runs where the serving form is refused; given beside another action, the parser refuses it | a `forgotten` row naming the run, why and when, then the cursor without it; no mail read, no reminder, no model call |
 | `lion agent --dir D --check NAME` | one instrument, outside its chore | a landing file; no ledger row, nothing sent |
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
@@ -168,7 +169,11 @@ inherits.
   `test_serve_refuses_a_directory_that_routes_the_lion_tables_while_nothing_folds_the_chain`,
   `test_serve_runs_a_store_that_routes_nothing`,
   `test_the_serve_form_is_refused_before_the_start_makes_its_ticks`,
-  `test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key`.
+  `test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key`,
+  `test_the_forget_flag_lets_go_of_the_run_and_makes_no_tick` (the lock is released after),
+  `test_the_forget_flag_runs_in_a_directory_whose_serving_form_is_refused`;
+  `test_once_refuses_served_identity` holds `--forget` among the forms a held lock refuses;
+  `test_forget_beside_another_action_is_refused_before_anything_is_claimed`.
 
 ### D3: `backend_for` maps a model name to a backend that keeps envelopes ^d3
 

@@ -82,17 +82,19 @@ refusal is a marked message), the tokens, the cost and the duration. A cut call 
 request that raised closes the call `failed` with its error and the run `stopped`. The reply's row
 lands with the next flush (C1): the pack checks the status, a test that each reply is a row.
 
-### C3: A run restores by replay, from its session alone _(enforced: mechanical)_ ^c3
-- **Subject**: every run resumed from the store, by its session row.
-- **Violated when**: a resumed run's first view differs from the view its predecessor had at its
-  last call, or a resume reads anything but the session's messages.
+### C3: A run restores by replay, from its session and the chain it continues _(enforced: mechanical)_ ^c3
+- **Subject**: every run resumed from the store, by its session row and each run row's `continues`.
+- **Violated when**: a resumed run's first view differs from its predecessor's at its last call, a
+  resume reads anything but the messages on that chain, or a continuing run writes what it replays.
 
-The messages, in order, with their directives applied by `fold`, are the resumed run's history; the
-resuming request carries its predecessor's bounds and folding (the run row holds the bounds). A
-result whose value is a model replays as its JSON object, as [[ADR-0019-the-checkpoint|ADR-0019]]'s
-log does. No other artefact is read: that record's checkpoint is not taken for a run of this runtime
-(S2), the agent's wake the one open exception (S9). A test runs a job, resumes it from the store and
-compares the views entry by entry (S1).
+The messages of the sessions its `continues` chain names, oldest first and folded by their
+directives, are the resumed run's history, with the predecessor's bounds and folding. A continuing
+run writes only its own entries, so the session plus its chain is the whole of what a resume needs.
+
+A model value replays as its JSON object, as [[ADR-0019-the-checkpoint|ADR-0019]]'s log does; that
+record's checkpoint is not taken here (S2). A chain naming a run the store lacks, or one that loops,
+refuses the resume. Tests compare a resumed job's views entry by entry (S1) and count seven rows per
+wake over five ([[ADR-0026-the-submission|ADR-0026]] C6).
 
 ### C4: A harness session is a session in the same tables _(enforced: mechanical; owed, S1)_ ^c4
 - **Subject**: every Claude Code or Codex session the runtime drives.
@@ -166,8 +168,8 @@ the graph; a graph record that needs a run points at it by id in a property.
 Serves C1, C2 and C5. The store client moves into the core (`lion1.khive`), and `lion1.store` writes
 the rows: the session and the run at the start, every entry not yet written before each call, the
 call around each request, the outcome at the end. The core gains no package: the client starts the
-store's own binary. A harness session is written by the scanner that reads its transcript. An actor
-without a store runs in memory until every caller passes one (S6).
+store's own binary. A harness session is written by the scanner that reads its transcript. Every
+actor is built with a store ([[ADR-0026-the-submission|ADR-0026]] C7, closing S6).
 
 - **Landing evidence**: `tests/test_store.py`: the run's rows and the call rows closed `ok` with the
   reply's seq and price (`…_and_a_second_run_replays_them`), a refusal closed `refused` with its
@@ -280,12 +282,11 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
   the built binary, against the backends their own config names (S10).
 - **S8**: `hub.areas.agent_notes` reads a resident's notes in one call of the binary; the host's
   pages make one per resident per read. A batched read across residents is owed.
-- **S9**: The agent of [[ADR-0013-the-agent|ADR-0013]] passes a store and still takes its checkpoint
-  and restores from it, naming its wake's mail as the trigger. This departs from the instruction,
-  under which no checkpoint is taken and a run replays in full; it is the same one-step-at-a-time
-  allowance as S6. S4's record closes it: the agent's wake becomes a run of this store that
-  continues the last, and a test there wakes an agent twice and finds the second run replayed from
-  the first's rows with no checkpoint file written.
+- **S9**: Closed: the agent of [[ADR-0013-the-agent|ADR-0013]] passed a store and still took its
+  checkpoint and restored from it, naming its wake's mail as the trigger, a departure from the
+  instruction under the same one-step allowance as S6. [[ADR-0026-the-submission|ADR-0026]] C6 made
+  its wake a run of this store that continues the last, and a test there wakes an agent twice and
+  finds the second run replayed from the first's rows with no checkpoint file written.
 - **S10**: The binary's default database is the one under the home directory; `[storage]` in a
   config file names none (a backends table does, and `KHIVE_DB` cannot join it). Every run of the
   real binary from this repository's tests or scripts names its database and asserts, from the

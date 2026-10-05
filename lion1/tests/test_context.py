@@ -16,9 +16,7 @@ import pytest
 from lion_cli.areas import context_api
 from lion_cli.context import checkpoint, restore, show, status
 from lion_cli.main import main
-from pydantic import BaseModel
 
-from hub.agent import Agent
 from hub.backend.claude_code.checkpoint import (
     DIRECTIVES,
     INBOX_MONITOR,
@@ -37,13 +35,11 @@ from hub.backend.claude_code.checkpoint import (
     transcript_turns,
     watches,
 )
-from lion1 import Actor, Kind, Record, Reply, Result, fold
+from lion1 import Actor, Record
 from lion1 import checkpoint as core
-from lion1.checkpoint import LAZY, CheckpointError, Var, take, to_history
+from lion1.checkpoint import LAZY, Var, take
 from lion1.khive import KhiveError, NotIgnored, assert_ignored, context_dir
 from tests.lionfake import routed_config
-from tests.lionfake import store as fresh_store
-from tests.test_agent import REPLY, FakeKhive, mail, profile_for
 from tests.test_areas import call, registry, serve_on
 
 
@@ -879,175 +875,6 @@ def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watche
     )
 
 
-class Raises:
-    """A backend a checkpoint must never reach."""
-
-    def __init__(self):
-        self.calls: list = []
-
-    async def __call__(self, messages):
-        self.calls.append(messages)
-        raise AssertionError("the resident's checkpoint called its backend")
-
-
-class Growing:
-    """A backend whose reported prompt count grows past the view budget: the fold event the chair's
-    record carries when a session-keeping CLI's history outgrows the view."""
-
-    def __init__(self, *turns: tuple[str, int]):
-        self.turns, self.calls, self.seen = list(turns), [], []
-
-    async def __call__(self, messages):
-        self.seen.append(list(messages))
-        self.calls.append({"total_cost_usd": 0.0})
-        text, reported = self.turns.pop(0)
-        return Reply(text, prompt_tokens=reported)
-
-
-def resident(khive: FakeKhive, backend, **kw) -> Agent:
-    return Agent(
-        Actor("echo", privileges={"comm.send"}, store=fresh_store()),
-        khive,
-        backend,
-        profile_for,
-        continuous=True,
-        poll_ms=20,
-        **kw,
-    )
-
-
-FAILS = '<lact {}>note.get(key="absent")</lact>'  # a failed command: the burst gets one more turn
-LONG_POSTURE = "quiet now; " + "placeholder posture " * 25
-
-
-def serve_one(agent: Agent) -> list[str]:
-    lines: list[str] = []
-    asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
-    return lines
-
-
-def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view(tmp_path):
-    backend = Growing((FAILS.format("g1"), 1_000), (FAILS.format("g2"), 150_000), (LONG_POSTURE, 150_000))
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    agent = resident(khive, backend)
-    lines = serve_one(agent)
-    (run,) = agent.runs
-    folds = [e for e in run.record if e.kind is Kind.SYSTEM and "directive" in e.meta]
-    assert len(folds) == 1 and folds[0].meta["directive"].refs and agent.errors == []
-    held_seq = run.record.seq - 1  # the closure lands when the run returns, after the checkpoint
-    assert [line for line in lines if line.startswith("checkpoint ")] == [
-        f"checkpoint {load(tmp_path).id} (threshold) at seq {held_seq}"
-    ]
-    ckpt = load(tmp_path)
-    assert ckpt.why == "threshold" and ckpt.source["kind"] == "resident" and ckpt.source["seq"] == held_seq
-    assert ckpt.actor == khive.actor and ckpt.source["context"]["used"] > 60_000  # the figure the fold used
-    # the posture note is over LAZY: carried by its key and size, the note keeps the body
-    held = {v.name: v for v in ckpt.vars}
-    note = agent.actor.notes_for(run.profile).get("posture").value
-    assert len(note) > LAZY and (held["posture"].value, held["posture"].size) == (None, len(note))
-    assert held["posture"].ref == 'note.get(key="posture")' and "last_wake" in held
-    # no result rides inline: the record stays where source.record points
-    text = next((tmp_path / ".khive" / "context").glob("ckpt-*.json")).read_text()
-    assert "no note 'absent'" not in text and "no note 'absent'" in Path(ckpt.source["record"]).read_text()
-    history = to_history(ckpt)
-    assert [(e.seq, e.kind, e.content) for e in history] == [
-        (e.seq, e.kind, e.content) for e in list(run.record)[:held_seq]
-    ]
-    # the next process: its first run starts from the checkpoint, the view folded where it folded
-    khive2 = FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=tmp_path)
-    backend2 = Growing(("still here", 2_000))
-    agent2 = resident(khive2, backend2)
-    serve_one(agent2)
-    (run2,) = agent2.runs
-    n = len(history)
-    assert [e.content for e in list(run2.record)[:n]] == [e.content for e in list(run.record)[:n]]
-
-    def shape(record, upto):
-        return [
-            (v.entry.seq, v.hidden, v.summary)
-            for v in fold(record, protect_input=False)
-            if v.entry.seq < upto
-        ]
-
-    assert shape(run2.record, n) == shape(run.record, n)
-    hidden = [v.entry.name for v in fold(run.record, protect_input=False) if v.hidden]
-    first_view = "\n".join(m.content for m in backend2.seen[0])
-    assert hidden and all(name in first_view for name in hidden) and agent2.errors == []
-    # the take makes no model call: a backend that raises is never reached
-    agent.backend = Raises()
-    agent._checkpoint(run, "manual")
-    assert agent.backend.calls == [] and agent.errors == [] and load(tmp_path).why == "manual"
-
-
-def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
-    backend = Growing((FAILS.format("g1"), 1_000), ("never read", 1_000))
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    agent = resident(khive, backend, max_turns=1)
-    serve_one(agent)
-    (run,) = agent.runs
-    ckpt = load(tmp_path)
-    # taken by the stop, so it holds everything but the closure the run appends when it returns
-    assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq - 1 and agent.errors == []
-    assert len(backend.calls) == 1  # the second turn's notification ended the run before the model
-
-
-def test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_says_so(
-    tmp_path, monkeypatch
-):
-    isolated_git(monkeypatch, tmp_path)
-    repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-
-    def one_run() -> Agent:
-        backend = Growing((FAILS.format("g1"), 1_000), ("never read", 1_000))
-        agent = resident(FakeKhive(mail("lambda:a", "say hi back"), cwd=repo), backend, max_turns=1)
-        serve_one(agent)
-        return agent
-
-    refused = one_run()
-    assert len(refused.errors) == 1 and refused.errors[0].startswith("checkpoint end: NotIgnored: ")
-    assert not context_dir(repo).exists()  # neither the record nor the checkpoint was written
-    (repo / ".gitignore").write_text(".khive/context/\n")
-    assert one_run().errors == [] and load(repo).why == "end"  # the control: ignored, it lands
-
-
-class Book(BaseModel):
-    title: str
-    year: int
-
-
-def test_the_residents_record_and_vars_hold_a_model_value_as_its_fields_and_replay_them_as_a_dict(tmp_path):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    agent = resident(khive, Growing((REPLY, 1_000), ("answered", 1_000)))
-    serve_one(agent)
-    (run,) = agent.runs
-    book = Book(title="Dune", year=1965)
-    e = run.record.append(Kind.RESULT, Result("fetch", True, book), alias="b", turn=run.turn)
-    run.values["v"] = (e.seq, book)
-    agent._checkpoint(run, "manual")
-    ckpt, fields = load(tmp_path), {"title": "Dune", "year": 1965}
-    assert agent.errors == [] and {v.name: v.value for v in ckpt.vars}["value.v"] == fields
-    replayed = to_history(ckpt)[-1]
-    assert (replayed.alias, replayed.content.value) == ("b", fields)
-
-
-def test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh(tmp_path):
-    rec = Record("r0")
-    rec.append(Kind.INPUT, "placeholder")
-    source = {"record": str(tmp_path / "gone.jsonl"), "run": "r0"}
-    save(take(source, [], actor="lambda:a:echo", why="end", budget=100, record=rec), tmp_path)
-    with pytest.raises(CheckpointError, match="cannot be read"):
-        to_history(load(tmp_path))
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    agent = resident(khive, Growing((REPLY, 1_000), ("answered", 1_000)))
-    lines = serve_one(agent)
-    (run,) = agent.runs
-    assert lines[0].startswith("restore failed, the run starts fresh: restore: CheckpointError")
-    assert len(agent.errors) == 1 and "cannot be read" in agent.errors[0]
-    first = list(run.record)[0]
-    assert first.kind is Kind.INPUT and "say hi back" in first.content
-
-
 def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp_path, monkeypatch, capsys):
     import lion_cli.context as cli
 
@@ -1224,47 +1051,6 @@ def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_h
             main(["context", "checkpoint", "--hook"])
         assert out.value.code == 1 and said in capsys.readouterr().err
     assert [p.stem for p in (d / ".khive" / "context").glob("ckpt-*.json")] == [done["id"]]
-
-
-def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_next_process(
-    tmp_path, monkeypatch
-):
-    # one latest.json serves both arms: a take through the context routes, which reach a resident's
-    # directory only, becomes the latest; the resident's next process refuses it and starts fresh, and
-    # its own checkpoint stays on disk
-    import lion_cli.context as cli
-
-    d = actor_dir(tmp_path, "lambda:a:echo")
-    agent = resident(
-        FakeKhive(mail("lambda:a", "say hi back"), cwd=d),
-        Growing((FAILS.format("g1"), 1_000), ("never read", 1_000)),
-        max_turns=1,
-    )
-    serve_one(agent)
-    own = load(d)
-    assert own.source["kind"] == "resident" and agent.errors == []
-    monkeypatch.setattr(cli, "newest_transcript", lambda directory: FIXTURE)
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
-    gh_says(monkeypatch)
-    code, doc = context_api(
-        registry(tmp_path, d), "POST", "/api/context/checkpoint", {"dir": str(d), "why": "manual"}
-    )
-    assert code == 200 and load(d).id == doc["id"] != own.id and load(d).source["kind"] == "claude-code"
-    again = resident(
-        FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=d),
-        Growing((REPLY, 1_000), ("answered", 1_000)),
-    )
-    lines = serve_one(again)
-    # the resident loads on the run's kinds: the session's directive is off them, so the file is refused
-    refused = (
-        f"{doc['id']}: var 'directive.1' has kind 'directive', not one of fact, posture; nothing was loaded"
-    )
-    assert again.errors == [f"restore: CheckpointError: {refused}"]
-    assert lines[0] == f"restore failed, the run starts fresh: restore: CheckpointError: {refused}"
-    (run,) = again.runs
-    first = list(run.record)[0]
-    assert first.kind is Kind.INPUT and "one more" in first.content and "say hi back" not in first.content
-    assert load(d, own.id) == own  # the resident's checkpoint is on disk, no longer the one latest names
 
 
 def test_only_the_first_invalid_row_is_spelled_out():

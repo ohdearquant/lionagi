@@ -308,7 +308,7 @@ async def main(model: str | None, once: bool, wait: int) -> None:
         if run is None:
             print(f"no mail within {wait}s")
             return
-        for e in run.record:
+        for e in list(run.record)[len(run.request.history) :]:  # its own: the history is the last run's
             print(f"[{e.seq:>3} {e.name:>6} t{e.turn}]", str(e.content)[:400].replace("\n", "\n" + " " * 18))
         for n in agent.state.list():
             print(f"=== state {n.key} (v{n.version}): {n.value}")

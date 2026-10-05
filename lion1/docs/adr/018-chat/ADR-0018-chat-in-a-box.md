@@ -558,10 +558,9 @@ set.
 
 Serves C19 and C20. `jsonable` returns `model_dump(mode="json")` for a pydantic model, whatever form
 that takes, and the `str` of anything else, or of a model whose dump raises pydantic's serialization
-error. `Console` writes each chat log entry row with it, the long-running agent its checkpointed
-record, and the checkpoint its file and each value its restore shows; a usage row is written with
-`str`. `entry_of` hands the JSON back as written, and a Spec field typed as the model validates it
-into the model again.
+error. `Console` writes each chat log entry row with it, and the checkpoint its file and each value
+its restore shows; a usage row is written with `str`. `entry_of` hands the JSON back as written, and
+a Spec field typed as the model validates it into the model again.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
   `test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model`,
@@ -570,7 +569,7 @@ into the model again.
   `test_a_logged_root_model_resumes_as_its_root_and_a_command_typed_as_it_gets_the_model`,
   `test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments`,
   `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
-  the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`.
+  the model value tests of `tests/test_checkpoint.py`.
 
 ### D17: The push's git calls on this machine, each within the hub's `GIT_TIMEOUT` ^d17
 
@@ -628,8 +627,8 @@ last.
 - **S3**: A run ended mid-turn does not resume ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). Beside the
   chat, `src/lion1/checkpoint.py` and `lion context` take and restore checkpoints of named values
   and a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
-  ([[ADR-0013-the-agent|ADR-0013]]) replays its last checkpointed record as history, and refuses one
-  that no longer folds to the checkpoint's view.
+  ([[ADR-0013-the-agent|ADR-0013]]) continues its last run from the store
+  ([[ADR-0026-the-submission|ADR-0026]] C6).
 - **S4**: The chat log holds every value whole; the console prints a result as one line. The closing
   line sums the cost on every call's envelope, failed attempts included; a call whose envelope
   carries no cost adds nothing and is not flagged.

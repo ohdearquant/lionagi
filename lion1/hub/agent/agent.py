@@ -15,9 +15,10 @@ dies still names what it took, then overwritten with the outcome. `threads` coun
 has sent on each thread; past the hop limit `send` refuses, which is what stops two agents answering
 each other forever. `spend` holds the wakes of the last hour and the cost of the day; at either cap
 the agent does not wake, and mail waits. The model's line goes under `posture` in the profile's own
-notes. Cursor and posture head the next wake's input: the record does not cross wakes, the notes
-do. One process holds an identity: `serve`, and every one-shot command of the CLI, locks a pid file in
-the agent's directory and refuses to start while a live process holds it.
+notes. Cursor and posture head the next wake's input, and the record crosses wakes through the store:
+each run continues the last run the cursor names, its history that run's rows (ADR-0026 C6). One
+process holds an identity: `serve`, and every one-shot command of the CLI, locks a pid file in the
+agent's directory and refuses to start while a live process holds it.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import re
 import time
 import tomllib
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,15 +41,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
-from lion1.checkpoint import Var, jsonable, load, save, take, to_history
-from lion1.khive import Khive, assert_ignored, context_dir, lit
+from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
 from lion1.notes import NoteStore
-from lion1.record import Directive, Entry, Kind
+from lion1.record import Kind
 
 from ..areas import partial
 from ..backend.claude_code import _prompt_tokens
-from ..chat import entry_row
 
 __all__ = (
     "AgentError",
@@ -400,7 +399,8 @@ class Agent:
     admitted: list[dict] = field(default_factory=list)  # the running wake's batch: what an ask may answer
     # the chair: one run for the life of the process. The model's plain reply ends
     # a burst of mail; `_wait` books it as one wake, then brings the next mail into the same run, whose
-    # view folds as it grows. A run that ends (OUT, a stop, the caps) is followed by a fresh one.
+    # view folds as it grows. A run that ends (OUT, a stop, the caps) is followed by a new one, which
+    # continues it from the store's rows.
     continuous: bool = False
     _say: Callable[[str], None] = field(default=lambda line: None, repr=False)
     _until: Callable[[], bool] | None = field(default=None, repr=False)
@@ -416,7 +416,6 @@ class Agent:
     config: Path | None = None  # chores.toml, whose [budget] and [wake] are re-read when it changes
     _config_mtime: float | None = field(default=None, repr=False)
     _waiting_said: int = field(default=-1, repr=False)  # the waiting count last said in the log
-    _restored: bool = field(default=False, repr=False)  # the first run of the process read latest.json
 
     def __post_init__(self) -> None:
         if self.state is None:  # the CLI hands the store's rows (ADR-0025 D6); else the actor's own
@@ -804,32 +803,67 @@ class Agent:
                 self.state.put("cursor", facts, run="-", seq=0)
                 dropped, self._dropped = self._dropped, []
                 raise AgentError(f"the gate refuses all of that mail; no wake: {dropped}")
+        # what an earlier wake left under `taking` or mid-run is owed before this run enters and lets go
+        # of it; recovery leaves this batch's ids under `taking`, so a rerun that dies before its run
+        # begins is reported in turn
+        await self._recover(taken=[m.get("id") for m in found])
         return await self._run_batch(found)
 
-    async def _recover(self) -> None:
+    async def forget(self, run: str) -> None:
+        """The owner's way past a refused wake: the cursor lets go of the run it names when the store
+        cannot replay it, so the next wake continues nothing and starts a new chain. A run the store
+        can replay is refused, and so is any run but the cursor's: neither is a break in the chain. What
+        was forgotten, why and when stays under `forgotten` after later wakes move the cursor on."""
+        prior = _value(self.state, "cursor", {})
+        last = prior.get("run") or prior.get("continues")
+        if run != last:
+            raise AgentError(f"the cursor's last run is {last}, not {run}: nothing forgotten")
+        try:
+            await self.actor.store.history(run)
+        except KhiveError as e:
+            if e.kind not in ("not_found", "invalid"):
+                raise
+            gone = {"run": run, "why": str(e), "at": _stamp(self.clock())}
+        else:
+            raise AgentError(f"run {run} can be replayed: nothing forgotten")
+        kept = _value(self.state, "forgotten", [])
+        # a forget that died between its two writes is retried against a cursor that still names the
+        # run: its record is already kept, and the retry lets the cursor go on that one
+        gone = next((f for f in kept if f.get("run") == run), None) or gone
+        if gone not in kept:
+            self.state.put("forgotten", [*kept, gone], run="-", seq=0)
+        self.state.put("cursor", {**prior, "run": None, "continues": None, "forgot": gone}, run="-", seq=0)
+
+    async def _recover(self, taken: Collection[str] = ()) -> None:
         """A batch taken but never entered, or a cursor still at "running", is a wake that died after
-        its mark-read: it is owed to the owner, recorded before `taking` and the cursor let go of it."""
+        its mark-read: it is owed to the owner, recorded before `taking` and the cursor let go of it.
+        Mail a rerun is taking back now (`taken`) is not owed: that rerun answers it. It goes under
+        `taking` before any note naming it lets go, and stays there as the rerun's batch."""
+        taken = list(taken)
         owed = []
         taking = _value(self.state, "taking", {})
-        if taking.get("mail"):
-            why = "a wake died after taking its mail and before its run began"
-            owed.append({"why": why, "mail": list(taking["mail"])})
+        held = [i for i in taking.get("mail") or [] if i not in taken]
+        if taken:  # one handoff: a death anywhere below leaves the rerun's mail under `taking`, owed in turn
+            self.state.put("taking", {"mail": held + taken}, run="-", seq=0)
+        if held:
+            owed.append({"why": "a wake died after taking its mail and before its run began", "mail": held})
         prior = _value(self.state, "cursor", {})
         if prior.get("outcome") == "running":
             owed.append(
                 {
                     "why": f"wake {prior.get('wake')} died mid-run",
-                    "mail": list(prior.get("mail") or []),
+                    # a wake that died entering its run left its batch under both notes: told once
+                    "mail": [i for i in prior.get("mail") or [] if i not in taken and i not in held],
                     "notices": list(prior.get("notices") or []),
                 }
             )
         self._owe(owed)
-        gone = {i for o in owed for i in o["mail"]}
+        gone = {i for o in owed for i in o["mail"]} | set(taken)
         left = [m for m in self._waiting() if m.get("id") not in gone]
-        if len(left) != len(self._waiting()):  # told as lost, so never also run from `deferred`
+        if len(left) != len(self._waiting()):  # told as lost or rerun now, so never also run from `deferred`
             self.state.put("deferred", {"mail": left}, run="-", seq=0)
-        if taking.get("mail"):
-            self.state.put("taking", {}, run="-", seq=0)
+        if taken or taking.get("mail"):
+            self.state.put("taking", {"mail": taken} if taken else {}, run="-", seq=0)
         if prior.get("outcome") == "running":
             self.state.put("cursor", {**prior, "outcome": "lost"}, run="-", seq=0)
         await self._tell_owed()
@@ -852,7 +886,11 @@ class Agent:
             parts.append(part + (f"; watch notices {o['notices']}" if o.get("notices") else ""))
         text = "; ".join(parts) + "."
         if any(o.get("mail") for o in owed):
-            text += " That mail is marked read and unanswered. Agent.rerun(ids) takes it back through a wake."
+            text += " That mail is marked read and unanswered. Agent.rerun(ids) takes it back through a wake"
+            # a refused wake's mail cannot go back while the cursor still names the run the store lacks
+            text += (
+                ", once the run a refusal names is forgotten." if any(o.get("refused") for o in owed) else "."
+            )
         if any(o.get("notices") for o in owed):
             text += " Watch notices are not mail: the watched box is read again at the next poll."
         if await self._tell_owner(text):
@@ -866,12 +904,37 @@ class Agent:
         batch = mail + notices
         profile = self.profile_for(batch)
         notes = self.actor.notes_for(profile)
-        self.wakes = int(_value(self.state, "cursor", {}).get("wake", 0)) + 1
+        prior = _value(self.state, "cursor", {})
+        self.wakes = int(prior.get("wake", 0)) + 1
+        # the actor's last run, which this one continues from the store's rows (ADR-0026 C6): the cursor
+        # names a run once it returns, and a wake that died or raised keeps the one it continued
+        last = prior.get("run") or prior.get("continues")
+        kept = {"continues": last} if last else {}
+        try:
+            history = await self.actor.store.history(last) if last else ()
+        except KhiveError as e:
+            if e.kind not in ("not_found", "invalid"):
+                raise
+            # fail closed: no run opens, so no run names one it never read; the batch is the owner's
+            why = (
+                f"wake {self.wakes} refused: the cursor's last run {last} cannot be replayed ({e}); every "
+                f"wake refuses until `lion agent --forget {last}` (Agent.forget) lets the next start "
+                "a new chain"
+            )
+            owed = {
+                "why": why,
+                "mail": [m.get("id") for m in mail],
+                "notices": [n.get("id") for n in notices],
+            }
+            self._owe([{**owed, "refused": last}])
+            self.state.put("taking", {}, run="-", seq=0)
+            await self._tell_owed()
+            raise AgentError(why) from None
         inputs = (self._input(batch, notes),)  # reads the last wake's cursor, before this wake overwrites it
         self._spend(wake=True)
-        self.state.put("cursor", self._facts(None, mail, "running", profile, notices=notices), run="-", seq=0)
+        running = self._facts(None, mail, "running", profile, notices=notices)
+        self.state.put("cursor", {**running, **kept}, run="-", seq=0)
         self.state.put("taking", {}, run="-", seq=0)  # entered: the cursor carries the batch from here
-        history = self._restore()
         trigger = tuple(str(m.get("full_id") or m["id"]) for m in batch if m.get("full_id") or m.get("id"))
         before = len(getattr(self.backend, "calls", ()))
         self._burst = {
@@ -881,7 +944,6 @@ class Agent:
             "turn0": 0,
             "sent0": 0,
             "restarts0": int(getattr(self.backend, "restarts", 0) or 0),
-            "seq0": len(history),  # the burst's first entry: a replayed history is not this burst's
         }
         if self.continuous and self._serving:
             # turns run on across bursts; `_stop` ends the run at a burst past max_turns or the day's
@@ -898,6 +960,7 @@ class Agent:
                 fold_inputs=True,  # a day of mail and replies folds too; the latest batch stays
                 history=history,
                 trigger=trigger,
+                continues=last,
             )
 
             def stop() -> bool:  # this run, by its request: the actor's other runs are not asked
@@ -912,6 +975,7 @@ class Agent:
                 accept=self.accept,
                 history=history,
                 trigger=trigger,
+                continues=last,
             )
             stop = None
         try:
@@ -928,7 +992,7 @@ class Agent:
             self._owe(
                 [{"why": f"wake {self.wakes} failed: {outcome}", "mail": mail_ids, "notices": notice_ids}]
             )
-            self.state.put("cursor", self._burst_facts(None, outcome, profile), run="-", seq=0)
+            self.state.put("cursor", {**self._burst_facts(None, outcome, profile), **kept}, run="-", seq=0)
             await self._tell_owed()
             raise
         self.runs.append(run)
@@ -953,8 +1017,6 @@ class Agent:
             except (TypeError, ValueError):  # a literal JSON cannot hold, a tuple key: as Python writes it
                 line = repr(posture)
             notes.put("posture", line, run=run.id, seq=seq)
-        if stopped:
-            self._checkpoint(run, "end")  # the run ends here, as at the cap
         return run
 
     def _burst_facts(self, run: Run | None, outcome: str, profile: Profile, done: int | None = None) -> dict:
@@ -974,110 +1036,14 @@ class Agent:
 
     def _stop(self, run: Run) -> bool:
         """Asked each turn of a continuous run: a burst past max_turns, or the day's cost at cap with
-        this burst's calls counted, ends the run; serve() starts a fresh one on the next mail."""
+        this burst's calls counted, ends the run; serve() starts a new one on the next mail, which
+        continues it."""
         b = self._burst
         spend = _value(self.state, "spend", {})
         today = spend.get("cost", 0.0) if spend.get("day") == _day(self.clock()) else 0.0
-        if run.turn - b["turn0"] > self.max_turns or (
+        return run.turn - b["turn0"] > self.max_turns or (
             today + self._usage(b["before"])["cost"] >= self.budget.cost_per_day
-        ):
-            self._checkpoint(run, "end")  # the run ends here: the next one starts from what it held
-            return True
-        return False
-
-    def _restore(self) -> tuple[Entry, ...]:
-        """The first run of the process starts from `<dir>/.khive/context/latest.json` when there is one,
-        its record replayed as the run's history (ADR-0013/C7). A checkpoint that cannot be replayed is
-        said and kept among the errors, and the run starts fresh."""
-        if self._restored:
-            return ()
-        self._restored = True
-        cwd = getattr(self.khive, "cwd", None)
-        if cwd is None or not (context_dir(cwd) / "latest.json").exists():
-            return ()
-        try:
-            return to_history(load(context_dir(cwd)))
-        except Exception as e:
-            self.errors.append(f"restore: {type(e).__name__}: {e}")
-            self._say(f"restore failed, the run starts fresh: {self.errors[-1]}")
-            return ()
-
-    def _checkpoint(self, run: Run, why: str) -> None:
-        """The run's checkpoint under `<dir>/.khive/context/`, its record written beside it: one file per
-        run, rewritten whole, so an earlier checkpoint's prefix of the record still stands. The posture,
-        the last wake, what is owed and the run's values are its vars. A take that fails is said and
-        kept among the errors; the run goes on."""
-        cwd = getattr(self.khive, "cwd", None)
-        if cwd is None:
-            return
-        d = Path(cwd)
-        try:
-            assert_ignored(d)
-            ctx = context_dir(d)
-            ctx.mkdir(parents=True, exist_ok=True)
-            log = ctx / f"record-{run.id}.jsonl"
-            tmp = log.with_name(f".{log.name}.{os.getpid()}.tmp")
-            tmp.write_text("".join(json.dumps(entry_row(e), default=jsonable) + "\n" for e in run.record))
-            os.replace(tmp, log)
-            # a note over LAZY is carried by its key (`take`): the model's note.get reaches the profile's
-            # notes; the agent's own (the cursor) are a file the model never reads, named by its path
-            state = getattr(self.state, "path", None)
-            held = [
-                (
-                    "posture",
-                    "posture",
-                    self.actor.notes_for(run.profile).get("posture"),
-                    'note.get(key="posture")',
-                ),
-                (
-                    "last_wake",
-                    "fact",
-                    self.state.get("cursor"),
-                    f'key "cursor" of {state}' if state else None,
-                ),
-                (
-                    "unreported",
-                    "fact",
-                    self.state.get("unreported"),
-                    f'key "unreported" of {state}' if state else None,
-                ),
-            ]
-            named = [
-                Var(n, k, note.value, "notes", str(note.seq), ref=ref)
-                for n, k, note, ref in held
-                if note and note.value
-            ]
-            named += [
-                Var(f"value.{a}", "fact", v, "declared", str(seq)) for a, (seq, v) in run.values.items()
-            ]
-            excess = 0  # the figure the fold decides on (`_notify`): the view plus history it never saw
-            if run.anchor is not None and run.floor is not None:
-                excess = max(0, run.anchor[0] - run.anchor[1] - run.floor)
-            used, window = run.view_est + excess, run.bounds["context_budget"]
-            source = {
-                "record": str(log),
-                "run": run.id,
-                "cwd": str(d),
-                "model": getattr(self.backend, "model", None),
-                "context": {
-                    "used": used,
-                    "window": window,
-                    "pct": round(100 * used / window) if window else None,
-                },
-            }
-            ckpt = take(
-                source,
-                named,
-                actor=self.khive.actor,
-                why=why,
-                budget=run.request.view_budget,
-                record=run.record,
-                fold_inputs=run.request.fold_inputs,
-            )
-            self._say(f"checkpoint {save(ckpt, ctx).stem} ({why}) at seq {run.record.seq}")
-        except Exception as e:
-            self.errors.append(f"checkpoint {why}: {type(e).__name__}: {e}")
-            self._say(self.errors[-1])
+        )
 
     async def _wait(self, run: Run) -> bool:
         """The chair's quiet point: the model answered with no commands, so this burst of mail is done.
@@ -1099,12 +1065,6 @@ class Agent:
         notes.put("posture", posture, run=run.id, seq=run.record.seq)
         b["booked"] = True
         self._say(_line(facts))
-        folded = any(
-            e.kind is Kind.SYSTEM and isinstance(e.meta.get("directive"), Directive)
-            for e in run.record.entries[b.get("seq0", 0) :]
-        )
-        if folded:  # the view folded in this burst (ADR-0019/D4): one checkpoint per crossing
-            self._checkpoint(run, "threshold")
         was_held: str | None = None
         while True:
             if self._until is not None and self._until():
@@ -1192,7 +1152,6 @@ class Agent:
                 "turn0": run.turn - 1,
                 "sent0": self._delivered.get(run.id, 0),
                 "restarts0": int(getattr(self.backend, "restarts", 0) or 0),
-                "seq0": run.record.seq,
             }
             self._spend(wake=True)
             running = {**self._facts(None, mail, "running", run.profile, notices=notices), "run": run.id}

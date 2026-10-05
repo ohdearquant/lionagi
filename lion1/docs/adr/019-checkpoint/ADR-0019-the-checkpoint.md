@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, while the scanners stay as the readers of ADR-0025 C4)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, and the agent no longer checkpoints, its wake continuing its last run by ADR-0026 C6, while the scanners stay as the readers of ADR-0025 C4)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -31,17 +31,18 @@ Agents it spawned, the words the person typed, the figure its statusline shows. 
 its rollout: the person's prompts, the sub-agents it spawned, the figure of its last request.
 
 Continuing the session reads the whole transcript again; a fresh one starts with none of it. A
-resident's next process loses the view its record folded to. This record fixes what a checkpoint of
-either holds, how it is taken with no model call, where it lands, and what a restore gives.
+resident's next process lost the view its record folded to, until
+[[ADR-0026-the-submission|ADR-0026]] C6 made its wake continue its last run from the store. This
+record fixes what a checkpoint of either holds, how it is taken with no model call, where it lands,
+and what a restore gives.
 
-When a resident takes a checkpoint and how its next process replays it is
-[[ADR-0013-the-agent#^c7|ADR-0013/C7]]; the fold a resident's view follows is
-[[ADR-0007-the-record|ADR-0007]]; the context figure is [[ADR-0006-the-notification|ADR-0006]];
-`lion context` and the areas server that carry the verbs are [[ADR-0016-the-lion-command|ADR-0016]]
-and [[ADR-0017-the-desk|ADR-0017]]. Source: `src/lion1/checkpoint.py`, `hub/backend/checkpoint.py`,
-`hub/backend/claude_code/checkpoint.py`, `hub/backend/codex_checkpoint.py`,
-`apps/cli/lion_cli/context.py`, `context_api` in `apps/cli/lion_cli/areas.py`, `_checkpoint` and
-`_restore` in `hub/agent/agent.py`.
+A resident takes none since [[ADR-0026-the-submission|ADR-0026]] C6 (D4); the fold a resident's view
+follows is [[ADR-0007-the-record|ADR-0007]]; the context figure is
+[[ADR-0006-the-notification|ADR-0006]]; `lion context` and the areas server that carry the verbs are
+[[ADR-0016-the-lion-command|ADR-0016]] and [[ADR-0017-the-desk|ADR-0017]]. Source:
+`src/lion1/checkpoint.py`, `hub/backend/checkpoint.py`, `hub/backend/claude_code/checkpoint.py`,
+`hub/backend/codex_checkpoint.py`, `apps/cli/lion_cli/context.py`, `context_api` in
+`apps/cli/lion_cli/areas.py`.
 
 ## Definitions
 
@@ -83,7 +84,8 @@ and [[ADR-0017-the-desk|ADR-0017]]. Source: `src/lion1/checkpoint.py`, `hub/back
 
 - **Subject**: `take` in `src/lion1/checkpoint.py`, `take_session` in
   `hub/backend/claude_code/checkpoint.py`, and their callers: `lion context checkpoint`, the
-  `/api/context/checkpoint` route, the resident's `_checkpoint`.
+  `/api/context/checkpoint` route.
+
 - **Violated when**: a take reaches a backend, a value holds text a model wrote for the checkpoint,
   a kind or reason outside the lists is kept, or a tool call or its result is held inline.
 
@@ -163,8 +165,8 @@ an agent id and it started within 12 hours (A4). A timestamp with no zone is rea
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
 - **Subject**: `save` in `src/lion1/checkpoint.py`, `context_dir` and `assert_ignored` in
-  `hub/khive.py`, `set_var` and `checkpoint` in `apps/cli/lion_cli/context.py`, the resident's
-  `_checkpoint`.
+  `hub/khive.py`, `set_var` and `checkpoint` in `apps/cli/lion_cli/context.py`.
+
 - **Violated when**: a file lands under a `.khive/context/` a git work tree does not ignore, a git
   that cannot answer reads as ignored, a take replaces another, `latest.json` names no file, or a
   declared value is lost.
@@ -302,19 +304,14 @@ it points at changed after it, or its rollout fails (S17).
   `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`,
   `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`.
 
-### D4: The resident's arm in `hub/agent/agent.py` ^d4
+### D4: The resident's arm, retired ^d4
 
-Serves C1, C6 and C7. When the resident takes and replays is [[ADR-0013-the-agent#^c7|ADR-0013/C7]].
-Its take holds the `posture` by its note key, the last wake and the unreported batch by their keys
-in the agent's note file, and each value the run declared. Its record is written beside the
-checkpoint as `record-<run>.jsonl`, rewritten whole at each take, after the same ignore check. A
-take that fails is kept among the agent's errors and the run goes on.
+The resident took a checkpoint at its fold and when its run stopped, wrote its record beside it, and
+replayed both in its next process. Since [[ADR-0026-the-submission|ADR-0026]] C6 its wake continues
+its last run from the store and takes none: `hub/agent/agent.py` holds no take and no restore.
 
-- **Landing evidence**: `tests/test_context.py`:
-  `test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view`,
-  `test_the_resident_checkpoints_when_stop_ends_its_run`,
-  `test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh`,
-  `test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_says_so`.
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`.
 
 ### D5: `hub/backend/codex_checkpoint.py` beside the sources both sessions share ^d5
 
@@ -391,18 +388,20 @@ the directory's newest whose first row says a person's, the later name first on 
 - **S5**: One `latest.json` serves both arms, so the latest checkpoint that `lion context restore`
   and `status` show is the directory's newest, whichever arm took it. A Claude Code checkpoint taken
   in a resident's directory, the only kind of directory the `/api/context/` routes reach, becomes
-  the latest. The resident's next process, loading on a run's kinds, refuses it and starts fresh
-  ([[ADR-0013-the-agent|ADR-0013]] S8), its own checkpoint left on disk: the cost is a fresh start,
-  never a view the resident did not take. Pinned by
-  `test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_next_process`.
+  the latest; the resident reads none since [[ADR-0026-the-submission|ADR-0026]] C6, so it costs the
+  resident nothing. Pinned by
+  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`, whose decoy
+  checkpoint replays and is never read.
+
 - **S6**: `hub/backend/claude_code/checkpoint.py` reads fixed places under the home directory:
   Claude Code's project directory, the hook ring, the typing log and the statusline's files; where
   no tool writes one, it reads as absent. The script the added inbox Monitor runs, and the actors it
   names after the directory's own, come from the environment (`LION_INBOX_MONITOR`,
   `LION_INBOX_PRIORITY`); unset, the Monitor names `inbox-monitor.sh` on the path of whoever runs
   it.
-- **S7**: The code removes no checkpoint: every take adds a file under `.khive/context/`, and each
-  resident run's record file stays beside them.
+- **S7**: The code removes no checkpoint: every take adds a file under `.khive/context/`, and the
+  record files residents wrote before D4 was retired stay beside them.
+
 - **S8**: The boundary: the durable record and a session's continuity across processes are the
   kernel's: which checkpoint a new process starts from, who starts it, how long a checkpoint is
   kept, and where it lives once the directory is gone. Here a checkpoint is files in a directory git
@@ -426,7 +425,8 @@ the directory's newest whose first row says a person's, the later name first on 
   in `skipped_unowned`.
 - **S12**: A Codex checkpoint is saved and loaded on a Claude Code session's lists, which hold a
   Codex session's; its restore checks it on the Codex session's own. Like a Claude Code one (S5), it
-  becomes the latest in a resident's directory and the resident's next process refuses it.
+  becomes the latest in a resident's directory, which the resident never reads.
+
 - **S13**: A take's read, of a transcript or a rollout, is of the file its stat saw (`Snapshot` in
   `hub/backend/checkpoint.py`). The file opened is compared with that state, its device and inode
   included, before the first byte and after the last. One put in its place, cut, or rewritten at the

@@ -1,7 +1,7 @@
 ---
 adr: ADR-0026
 status: proposed
-liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, and a chat with no signer refuses to start, each pinned by tests; the commands, the driver, the result mail, the MCP server and the agent's run that continues the last are owed, S1)
+liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, and an agent's wake continues its last run with no checkpoint, each pinned by tests; the commands, the driver, the result mail and the MCP server are owed, S1)
 date: "2026-10-04"
 area: submission
 kind: new
@@ -35,8 +35,8 @@ takes a checkpoint beside its store (ADR-0025 S9), and an `Actor` still runs wit
 This record fixes the commands, the files they read, the step driver, the result mail, the MCP
 server over the same functions, the end of the agent's checkpoint and of the store-less `Actor`.
 Source: `apps/cli/lion_cli/main.py`, `apps/cli/lion_cli/chat.py` (`profile`),
-`apps/cli/lion_cli/agent.py` (`build`), `hub/agent/agent.py` (`_run_batch`, `_restore`,
-`_checkpoint`), `src/lion1/store.py`, `khive/pack-lion/sql/08-steps.sql`.
+`apps/cli/lion_cli/agent.py` (`build`), `hub/agent/agent.py` (`_run_batch`, `forget`),
+`src/lion1/store.py`, `khive/pack-lion/sql/08-steps.sql`.
 
 ## Definitions
 
@@ -149,17 +149,25 @@ tool is the profile's, never the caller's; the caller's own tools are not reache
 - `test_the_mcp_run_tool_returns_the_id_once_printed_and_the_child_runs_on`
 - `test_the_mcp_server_lists_run_flow_and_result_and_no_other_tool`
 
-### C6: The agent's wake is a run of the store that continues the last _(enforced: mechanical; owed, S1)_ ^c6
+### C6: The agent's wake is a run of the store that continues the last _(enforced: mechanical)_ ^c6
 
 - **Subject**: an agent's run row, its request's history, and `.khive/context/` under its directory.
 - **Violated when**: a wake's run row names no `continues` while a last run exists, its history is
-  not that run's session, or a checkpoint file is written or read.
+  not the chain `Store.history` reads, a run opens whose last run cannot be replayed, or a
+  checkpoint file is written or read.
 
-An agent's run opens with `continues` naming the actor's last run from the cursor and with the
-history `Store.history` reads from that run's session. A second wake of the same agent replays from
-the first wake's rows and nothing under `.khive/context/`. This closes ADR-0025 S9.
+An agent's run opens with `continues` naming the actor's last run from the cursor, whatever profile
+ran it, and the history `Store.history` reads from that run's chain ([[ADR-0025-the-graph|ADR-0025]]
+C3); nothing under `.khive/context/` is read. This closes ADR-0025 S9. Replayed history is context,
+never authority: a reader wake does what its own profile allows. A last run the store cannot replay
+refuses the wake until the owner forgets it (C9): no run opens, and the batch is owed to the owner
+with the run named.
 
 - `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`
+- `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`
+- `test_each_wake_stores_only_its_own_entries_and_replays_the_whole_chain`
+- `test_a_reader_wake_continuing_an_acting_run_cannot_send_whatever_its_history_holds`
+- `test_a_cursor_naming_a_run_the_store_does_not_hold_refuses_the_wake_and_names_the_run`
 
 ### C7: An `Actor` is built with a store _(enforced: mechanical)_ ^c7
 
@@ -196,6 +204,20 @@ inherits the refusal.
 - `test_a_residents_notes_are_refused_where_its_config_puts_them_in_the_main_store`
 - `test_the_same_run_against_the_built_binary`: the `database:` line names both targets; rows only
   in the lion file; no home database
+
+### C9: Only the owner's forget takes a wake past a run the store cannot replay _(enforced: mechanical)_ ^c9
+
+- **Subject**: the agent's cursor and its `forgotten` record.
+- **Violated when**: a wake or rerun gets past a run the store cannot replay without the owner's
+  forget, or a forget lets go of a run the store can replay or one the cursor does not name.
+
+Every wake and rerun refuses the same way until the owner forgets that run (`lion agent --forget
+RUN`, [[ADR-0016-the-lion-command|ADR-0016]] C1); the forget is kept under `forgotten` with why and
+when, and the next wake starts a new chain. Nothing gets past the refusal by itself: a chain that
+restarted unasked would lose what the refusal keeps.
+
+- `test_forgetting_the_run_a_refusal_names_lets_the_refused_mail_rerun_on_a_new_chain`
+- `test_forget_refuses_a_run_the_store_can_replay_and_any_run_but_the_cursors`
 
 ## Decisions
 
@@ -254,12 +276,22 @@ configuration with its directory.
 
 ### D6: The agent's run continues the last ^d6
 
-Serves C6. `Agent._run_batch` reads the last run's id from the cursor and passes `continues` and
-`history=await store.history(id)` in its `RunRequest`. `_restore`, `_checkpoint` and the threshold
+Serves C6 and C9. `Agent._run_batch` passes the cursor's last run as `continues`, with
+`history=await store.history(id)`, in its `RunRequest`. A chain the store refuses (`not_found`,
+`invalid`) raises `AgentError` before any run, and `Agent.forget` is the owner's way past it; other
+store errors propagate. `Store.open` counts a continuing run's history as written, and
+`Store.history` walks `continues` oldest first. `_restore`, `_checkpoint` and the threshold
 checkpoint go, with their tests; `lion context` stays for the assistant sessions of ADR-0019, whose
 readers ADR-0025 C4 keeps. ADR-0013 D3 and the ADR-0019 liveness line say so.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`,
+  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`,
+  `test_a_wake_whose_run_raised_leaves_the_run_it_continued_for_the_next_wake`, C6's three more and
+  C9's two,
+  `test_a_history_the_store_never_answered_propagates_and_is_neither_refused_nor_forgotten`;
+  `tests/test_store.py`:
+  `test_a_history_refuses_a_chain_with_a_run_the_store_does_not_hold_or_one_that_loops`.
 
 ### D7: `Actor(store=...)` required; the double in `tests/lionfake.py` ^d7
 
@@ -288,8 +320,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 
 ## Consequences
 
-- **S1**: Owed: C1 to C6, each with the tests named there; C7 and C8 have landed. Landing order: D6
-  (the agent's checkpoint gone), then D2 to D4 with `lion run`, `lion flow`, `lion result`, then D5.
+- **S1**: Owed: C1 to C5, each with the tests named there; C6, C7 and C8 have landed. Landing order:
+  D2 to D4 with `lion run`, `lion flow`, `lion result`, then D5.
 - **S2**: [[ADR-0016-the-lion-command|ADR-0016]] C1's table and D1 gain the four subcommands in the
   change that adds them. [[ADR-0013-the-agent|ADR-0013]] D3 is amended: the agent's history is its
   last run's session, and its cursor names that run.
@@ -311,3 +343,7 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   past it (case or Unicode form, a firmlink over a file not yet made, a URI). Once both backends are
   open, the two files' device and inode are compared, and the lion pack refuses to serve when they
   are one file. The config-time refusal stays: it names the mistake before any row is written.
+- **S8**: Nothing yet bounds a continuation: an agent's chain grows by one run per wake, and each
+  wake replays the whole of it. A fold point, after which a wake starts fresh from its cursor and
+  posture, is owed beside S5. Until it lands, and until the agent's directory routes the lion tables
+  (C8), no agent is served from this runtime.

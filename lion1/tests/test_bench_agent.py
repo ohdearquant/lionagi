@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from hub.agent import AgentError
 from lion1 import Kind, Success
 from tests.lionfake import store as fresh_store
-from tests.test_agent import FakeKhive, Scripted, mail
+from tests.test_agent import FakeKhive, Scripted, mail, own
 
 spec = importlib.util.spec_from_file_location(
     "bench_agent", Path(__file__).resolve().parents[1] / "examples" / "bench_agent.py"
@@ -135,13 +135,13 @@ def test_a_finish_for_an_unknown_job_and_a_second_launch_of_the_same_id_are_refu
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
     assert not result.ok and "no job nope" in str(result.error) and khive.sent == []
 
-    launch = f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", run_id="dup")</lact>'
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
     for n, expect_ok in ((1, True), (2, False)):
         khive.mail.append(mail("lambda:a", "again", mid=f"d{n}"))
+        launch = f'<lact l{n}>launch(asker="lambda:a", thread="{THREAD}", run_id="dup")</lact>'
         agent.backend = Scripted(launch, done, khive=khive)
         run = asyncio.run(agent.wake(wait_ms=0))
-        result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "launch")
+        result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "launch")
         assert result.ok is expect_ok
     assert "already launched" in str(result.error)
 
@@ -229,7 +229,7 @@ def test_a_report_goes_through_the_agents_counted_send_and_a_reported_job_is_not
         '<lact r3>report(run_id="t1")</lact>', 'OUT{posture: {done: "x", awaiting: ""}}', khive=khive
     )
     run = asyncio.run(agent.wake(wait_ms=0))
-    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "report")
     assert not result.ok and "not again" in result.error and len(khive.sent) == 1
 
 
@@ -352,7 +352,7 @@ def test_delivery_receipt_precedes_remember_failure(tmp_path, monkeypatch):
     khive.mail.append(mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f2"))
     agent.backend = Scripted('<lact r2>report(run_id="t1")</lact>', done, khive=khive)
     run = asyncio.run(agent.wake(wait_ms=0))
-    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "report")
     assert len(khive.sent) == 1, f"the asker got the row {len(khive.sent)} times"
     assert result.ok and len(khive.ops) == 1 and "memory.remember" in khive.ops[0]  # the retry wrote it
     assert agent.state.get("jobs").value["t1"]["remember_pending"] is False
@@ -416,7 +416,7 @@ def test_a_report_retried_after_a_lost_receipt_sends_the_body_it_first_sent(tmp_
     khive.mail.append(mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f2"))
     agent.backend = Scripted('<lact r2>report(run_id="t1")</lact>', done, khive=khive)
     run = asyncio.run(agent.wake(wait_ms=0))
-    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "report")
     assert result.ok and bodies[1] == bodies[0] and len(khive.sent) == 1
     assert agent.state.get("jobs").value["t1"]["row"] == json.loads(bodies[0])
 

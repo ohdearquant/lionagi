@@ -200,7 +200,9 @@ def test_a_run_writes_its_rows_and_a_second_run_replays_them(tmp_path, kkernel_s
         run.record
     )  # replayed, then the same again
     assert rows_of(k, again.id)["run"]["continues"] == run.id
-    assert [m["seq"] for m in rows_of(k, again.id)["messages"]] == [e.seq for e in again.record]
+    # it writes its own entries and none it replayed: those are the rows of the run it continues (C3)
+    own = [e.seq for e in again.record][len(history) :]
+    assert [m["seq"] for m in rows_of(k, again.id)["messages"]] == own
 
 
 def test_a_refused_reply_closes_its_call_refused_with_the_reason(tmp_path, kkernel_stub):
@@ -376,6 +378,25 @@ def test_replay_skips_a_message_row_that_is_not_an_entry_and_a_refusal_other_tha
         notes.get("plan")
     with pytest.raises(KhiveError, match="permission denied"):
         notes.delete("plan")
+
+
+def test_a_history_refuses_a_chain_with_a_run_the_store_does_not_hold_or_one_that_loops(store):
+    def opened(run: str, continues: str) -> None:  # the ops `Store.open` sends, the chain written by hand
+        store.khive.exec_sync(
+            f'lion.session_open(id="{run}", source="lion1", actor="a", profile="p") | '
+            f'lion.run_open(id="{run}", profile="p", session_id="{run}", actor="a", bounds="{{}}", '
+            f'trigger=null, continues="{continues}")'
+        )
+
+    opened("after-gone", "r-gone")
+    with pytest.raises(KhiveError) as gone:  # the missing run is one link back, not the one named
+        asyncio.run(store.history("after-gone"))
+    assert gone.value.kind == "not_found" and "r-gone" in str(gone.value)
+    opened("loop-a", "loop-b")
+    opened("loop-b", "loop-a")
+    with pytest.raises(KhiveError, match="run loop-a continues itself through loop-a <- loop-b") as loop:
+        asyncio.run(store.history("loop-a"))
+    assert loop.value.kind == "invalid"
 
 
 def test_a_row_json_cannot_carry_whole_is_written_with_each_part_it_cannot_carry_as_its_str():

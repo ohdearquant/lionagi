@@ -380,6 +380,10 @@ async def agent_main(a: argparse.Namespace) -> None:
             print(text)
             print(f"landed: {land(directory, 'arm', text)}")
             raise SystemExit(rc)
+        if a.forget is not None:  # the owner's act after a refused wake: no mail, no tick, no model call
+            await agent.forget(a.forget)
+            print(f"forgot {a.forget}: the next wake starts a new chain")
+            return
         why = None if a.once or a.rerun else agent.unservable()
         if why is not None:  # refused before the start makes its ticks: a refused serve acts on nothing
             raise AgentError(why)
@@ -393,7 +397,7 @@ async def agent_main(a: argparse.Namespace) -> None:
             if run is None:
                 print(f"no mail within {a.wait}s")
                 return
-            for e in run.record:
+            for e in list(run.record)[len(run.request.history) :]:  # its own: the history is the last run's
                 print(
                     f"[{e.seq:>3} {e.name:>6} t{e.turn}]",
                     str(e.content)[:600].replace("\n", "\n" + " " * 18),

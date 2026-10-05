@@ -17,6 +17,12 @@ from .context import BUDGET, context_main
 __all__ = ("parser", "main")
 
 
+def _run_id(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("expected a run id")
+    return value
+
+
 def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     """The command tree; `chat` replaces `lion chat`'s built-in defaults (a flag on the line still wins)."""
     ap = argparse.ArgumentParser(prog="lion", description="lion1")
@@ -33,6 +39,13 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         default=None,
         metavar="ID",
         help="read mail back through one wake, by id; then exit",
+    )
+    ag.add_argument(
+        "--forget",
+        default=None,
+        type=_run_id,
+        metavar="RUN",
+        help="let go of the run a refused wake names, so the next wake starts a new chain; then exit",
     )
     ag.add_argument("--wait", type=int, default=30, help="seconds --once waits for mail")
     ag.add_argument("--check", default=None, help="run one instrument, print and land it; nothing is sent")
@@ -188,7 +201,13 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    a = parser().parse_args(argv)
+    ap = parser()
+    a = ap.parse_args(argv)
+    if a.command == "agent" and a.forget is not None:
+        # each action exits after itself, so another one beside the forget would run in its place
+        beside = [f"--{k}" for k in ("once", "rerun", "check", "ticks", "arm", "stats") if getattr(a, k)]
+        if beside:
+            ap.error(f"argument --forget: not allowed with {', '.join(beside)}")
     if a.command == "chat":
         # the directory's file is found by --dir, so the first parse reads it; the second takes the
         # files' values as defaults, which a flag given on the line beats even when it equals the default
