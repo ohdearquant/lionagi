@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import tomllib
@@ -15,7 +16,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from hub import BoxTree, DaytonaSandbox, Sandbox, guidance
 from hub.flow import Flow as _Flow
@@ -242,10 +243,23 @@ async def result_mail(
     return None
 
 
+def _emit(line: str, stream: TextIO | None = None) -> None:
+    """One line to standard output, or to `stream`. A reader that has gone, a caller that took the id
+    and closed its end, costs the run nothing: the stream is pointed at the null device and the run goes
+    on, for its rows and its result mail carry the rest (C1, C4)."""
+    stream = stream or sys.stdout
+    try:
+        print(line, file=stream, flush=True)
+    except BrokenPipeError:
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, stream.fileno())
+        os.close(null)
+
+
 def _say(line: str) -> None:
     """A notice (a box's push, its patch): on standard error, for standard output holds the ids first
     and the end last (C1)."""
-    print(line, file=sys.stderr, flush=True)
+    _emit(line, sys.stderr)
 
 
 def _submitter(directory: Path, notify: str | None) -> tuple[str, str]:
@@ -268,13 +282,13 @@ def _ended(
     mailed: str | None,
     error: str | None = None,
 ) -> int:
-    print(f"{kind} {run_id} {outcome}" + (f" at {failed}" if failed else ""), flush=True)
+    _emit(f"{kind} {run_id} {outcome}" + (f" at {failed}" if failed else ""))
     if output is not None:
-        print(output if isinstance(output, str) else json.dumps(output, indent=2, default=str), flush=True)
+        _emit(output if isinstance(output, str) else json.dumps(output, indent=2, default=str))
     if error is not None:
-        print(f"error: {error}", file=sys.stderr, flush=True)
+        _emit(f"error: {error}", sys.stderr)
     if mailed is not None:
-        print(f"the result mail was not sent: {mailed}", file=sys.stderr, flush=True)
+        _emit(f"the result mail was not sent: {mailed}", sys.stderr)
     return 0 if outcome == "success" and error is None and mailed is None else 1
 
 
@@ -299,7 +313,7 @@ async def run_main(a: argparse.Namespace) -> int:
 
     def tell(ev: Any) -> None:
         opened.append(ev.payload["run"])
-        print(ev.payload["run"], flush=True)
+        _emit(ev.payload["run"])
 
     run = khive = error = None
     try:
@@ -342,7 +356,7 @@ async def flow_main(a: argparse.Namespace) -> int:
         raise SubmitError(str(e)) from None
 
     def opened(what: str, run_id: str) -> None:
-        print(run_id if what.startswith("flow ") else f"{what} {run_id}", flush=True)
+        _emit(run_id if what.startswith("flow ") else f"{what} {run_id}")
 
     def step_cast(name: str) -> Any:
         return cast(directory, shapes[name], submitter=to, thread=a.thread, say=_say)

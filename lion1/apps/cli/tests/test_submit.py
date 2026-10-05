@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import sys
 
 import pytest
 from lion_cli import submit
@@ -356,6 +358,80 @@ def test_a_result_mail_that_fails_leaves_the_rows_complete_and_prints_the_error(
     assert console_khive.sessions[run_id]["ended"] is not None and console_khive.messages[run_id]
     err = capsys.readouterr().err
     assert "the result mail was not sent: KhiveError: comm is down" in err
+
+
+@pytest.fixture
+def leaving(monkeypatch):
+    """`leaving()`, called in the test's body, for the call phase's capture puts back any stream a
+    fixture set: standard output and error become pipes, and the function it returns gives what came on
+    standard output, then closes both read ends, as a caller does that took the id and went."""
+    open_ends: list[int] = []
+    streams: list = []
+
+    def pipes():
+        out_r, out_w = os.pipe()
+        err_r, err_w = os.pipe()
+        open_ends.extend((out_r, err_r))
+        streams.extend((os.fdopen(out_w, "w"), os.fdopen(err_w, "w")))
+        monkeypatch.setattr(sys, "stdout", streams[0])
+        monkeypatch.setattr(sys, "stderr", streams[1])
+
+        def leave() -> str:
+            assert sys.stdout is streams[0]  # the run printed into the pipe, not into a capture
+            got = os.read(out_r, 65536).decode()
+            while open_ends:
+                os.close(open_ends.pop())
+            return got
+
+        return leave
+
+    yield pipes
+    for fd in open_ends:
+        os.close(fd)
+    for s in streams:
+        s.close()
+
+
+def test_a_run_whose_reader_leaves_after_the_id_ends_its_rows_and_says_why_it_failed(
+    actor_dir, console_khive, monkeypatch, leaving
+):
+    seen = {}
+    leave = leaving()
+
+    def first(messages):
+        seen["printed"] = leave().split()
+        return out("done")
+
+    console_khive.refuse_send = "comm is down"  # so the end writes to standard error too
+    backends(monkeypatch, **{"fake/writer": first})
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 1
+    (run_id,) = console_khive.runs
+    assert seen["printed"] == [run_id]
+    assert console_khive.runs[run_id]["outcome"] == "success"
+    assert console_khive.sessions[run_id]["ended"] is not None
+
+
+def test_a_flow_whose_reader_leaves_after_its_id_runs_every_step_and_mails_its_end(
+    actor_dir, console_khive, monkeypatch, leaving
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+    seen = []
+    leave = leaving()
+
+    def answer(messages):
+        if not seen:
+            seen.extend(leave().splitlines())  # the flow's id and its first step's, then gone
+        return out(said(messages).split()[0])
+
+    backends(monkeypatch, **{"fake/writer": answer})
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 0
+    (flow_id,) = console_khive.steps
+    steps = console_khive.steps[flow_id]
+    assert seen == [flow_id, f"step plan {steps[0]['run_id']}"]
+    assert [s["outcome"] for s in steps.values()] == ["success", "success"]
+    assert console_khive.runs[flow_id]["outcome"] == "success"
+    (mail,) = console_khive.sent
+    assert mail["subject"] == f"flow two {flow_id} success"
 
 
 def test_lion_result_prints_the_row_and_with_history_the_messages(
