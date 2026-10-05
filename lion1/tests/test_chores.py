@@ -32,6 +32,7 @@ from hub.agent.chores import (
 )
 from lion1 import Actor, Kind, Message
 from lion1.khive import LOST, KhiveError
+from tests.lionfake import store as fresh_store
 
 OWNER, STEWARD, SELF = "lambda:x", "lambda:owner", "lambda:x:agent"
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
@@ -239,7 +240,7 @@ CHECK = '<lact c1>check(chore="disk")</lact>'
 def build(
     tmp_path, khive: FakeKhive, turns: list[str], batch: int = 1, usage: dict | None = None, **probes: Probe
 ) -> tuple[Chores, Agent]:
-    actor = Actor("chores", privileges={"comm.send"})
+    actor = Actor("chores", privileges={"comm.send"}, store=fresh_store())
     agent = Agent(
         actor,
         khive,
@@ -995,8 +996,8 @@ def a_chore_w(tmp_path, ran: bool):
 @pytest.mark.parametrize("ran", [False, True], ids=["never-run", "monthly-run"])
 @pytest.mark.parametrize(
     "stored",
-    [float("nan"), float("inf"), float("-inf"), True, "x", 10**20, -(10**20), 10**400, _END + 1],
-    ids=["nan", "inf", "-inf", "bool", "text", "1e20", "-1e20", "huge-int", "year-10000"],
+    [True, "x", 10**20, -(10**20), 10**400, _END + 1],  # the store refuses NaN and infinity at the put
+    ids=["bool", "text", "1e20", "-1e20", "huge-int", "year-10000"],
 )
 def test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers(
     tmp_path, stored, ran
@@ -2431,8 +2432,6 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
         (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() - 3600, False),  # earlier
         ("soon", True),  # a record that is no instant is no record
         (True, True),
-        (float("nan"), True),
-        (float("inf"), True),
         (-(10**20), True),  # a number no UTC date names is no record, however early it reads
         (-1e11, True),
         (10**20, True),
@@ -2445,8 +2444,6 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
         "earlier",
         "text",
         "bool",
-        "nan",
-        "inf",
         "below-year-1-huge",
         "below-year-1",
         "1e20",

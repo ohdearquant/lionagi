@@ -95,6 +95,23 @@ def agent_dir(tmp_path: Path, name: str, *, role: str, cursor: dict, spend: dict
     return d
 
 
+def test_a_residents_notes_are_refused_where_its_config_puts_them_in_the_main_store(tmp_path, kkernel_stub):
+    """`agent_store` builds a `Store`, so it refuses as every store does (ADR-0026 C8): a resident whose
+    config does not route the lion pack's tables gets no note store and nothing reaches the binary; the
+    page says the notes are unread."""
+    d = tmp_path / "r"
+    (d / ".khive").mkdir(parents=True)
+    (d / "chores.toml").write_text('actor = "lambda:x:r"\n')
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:r"\n')
+    with pytest.raises(KhiveError, match="would resolve to the main store"):
+        agent_store(d)
+    assert not kkernel_stub.with_name("lion.json").exists()  # the binary never ran
+    problem = resident(Area("a", "lambda:a", [str(d)]), str(d), TODAY).problem
+    assert problem.startswith("notes: ") and "would resolve to the main store" in problem
+    resident_store(d).put("cursor", {"wake": 1}, run="-", seq=0)  # the control: routed, the same call writes
+    assert kkernel_stub.with_name("lion.json").exists()
+
+
 def test_the_registry_reads_areas_and_a_missing_file_is_no_areas(tmp_path):
     reg = tmp_path / "areas.toml"
     reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x", "/y"]\n\n[area.b]\nchair = "lambda:b"\n')

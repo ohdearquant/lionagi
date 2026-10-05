@@ -27,7 +27,7 @@
 | [ADR-0023](023-web/ADR-0023-the-web-tools.md) | 023-web | proposed | operating (two commands, four provider adapters, the address check, the checked dial, and every request's bounds and deadline, save the steps S9 leaves out of it, are pinned by tests; the live provider tests are opt-in, S1) | ADR-0003, ADR-0005, ADR-0007 |
 | [ADR-0024](024-accounts/ADR-0024-accounts-and-the-pick.md) | 024-accounts | proposed | unimplemented (nothing is built; every mechanism is owed, S1) | ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 | [ADR-0025](025-graph/ADR-0025-the-graph.md) | 025-graph | proposed | partial (the pack builds and serves fourteen verbs; the core writes every row of a run and replays one from them, pinned on a stub binary and on the built one; the flow driver, the harness-session ingest and the pack's own tests are owed, S1) | ADR-0007, ADR-0013, ADR-0019 |
-| [ADR-0026](026-submission/ADR-0026-the-submission.md) | 026-submission | proposed | unimplemented (nothing is built; every mechanism is owed, S1) | ADR-0002, ADR-0013, ADR-0016, ADR-0025 |
+| [ADR-0026](026-submission/ADR-0026-the-submission.md) | 026-submission | proposed | partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, and a chat with no signer refuses to start, each pinned by tests; the commands, the driver, the result mail, the MCP server and the agent's run that continues the last are owed, S1) | ADR-0002, ADR-0013, ADR-0016, ADR-0025 |
 
 ## By topic
 

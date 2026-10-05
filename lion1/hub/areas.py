@@ -28,7 +28,7 @@ from urllib.parse import urlencode
 from xml.parsers.expat import ExpatError
 
 from lion1.khive import Khive, KhiveError, lit
-from lion1.store import KhiveNoteStore
+from lion1.store import KhiveNoteStore, Store
 
 __all__ = (
     "DEFAULT_REGISTRY",
@@ -387,12 +387,13 @@ def controls_info(directory: str) -> dict:
 def agent_store(directory: str | Path) -> KhiveNoteStore:
     """The `agent` notes of the resident at `directory`, in the store its actor writes (ADR-0025 D6):
     `chores.toml` names the actor, the directory's own `.khive/config.toml` must agree, and each read
-    is one call of the binary. Raises `KhiveError` when the binary or the config is missing and
-    `ValueError` when chores.toml names no actor."""
+    is one call of the binary. Raises `KhiveError` when the binary or the config is missing, or when
+    the config would put the lion pack's tables in the main store (a `Store`'s refusal, ADR-0026 C8),
+    and `ValueError` when chores.toml names no actor."""
     actor = chores_toml(directory).get("actor")
     if not isinstance(actor, str) or not actor:
         raise ValueError("chores.toml names no actor")
-    return KhiveNoteStore(Khive(Path(directory), actor), "agent")
+    return Store(Khive(Path(directory), actor)).notes("agent")
 
 
 def agent_notes(directory: str | Path) -> dict[str, Any]:

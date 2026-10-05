@@ -268,16 +268,16 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
   state those commands write, never the surface a caller uses.
 - **S5**: Reconciling these kinds with the store's own session pack is the store's later decision,
   taken once this runtime has run on them.
-- **S6**: The store is optional on `Actor` while the callers and the tests move to it. This departs
-  from the instruction, which makes the store the one hard dependency and the only store; it is the
-  instruction's own allowance to move one step at a time. S4's record removes it: an `Actor` built
-  without a store is refused outside tests, and that record pins the refusal. The note store's
-  methods are synchronous and each starts the binary; an asynchronous store is a later change.
+- **S6**: Closed: the store was optional on `Actor` while the callers and the tests moved to it, a
+  departure from the instruction under its own one-step allowance;
+  [[ADR-0026-the-submission|ADR-0026]] C7 made it required, and the tests take an in-memory double
+  of the pack. The note store's methods are synchronous and each starts the binary; an asynchronous
+  store is a later change.
 - **S7**: `khive/Cargo.toml` pins the store's revision. The binary of this repository and the
   store's own open one database, so the owner of this repository bumps the pin in the same change
   that moves the store's binary. A check outside this repository compares the revision each binary's
   `--version` names and exits non-zero on a difference. Under `LION1_KHIVE` the store's tests run on
-  the built binary, against the database `KHIVE_DB` names (S10).
+  the built binary, against the backends their own config names (S10).
 - **S8**: `hub.areas.agent_notes` reads a resident's notes in one call of the binary; the host's
   pages make one per resident per read. A batched read across residents is owed.
 - **S9**: The agent of [[ADR-0013-the-agent|ADR-0013]] passes a store and still takes its checkpoint

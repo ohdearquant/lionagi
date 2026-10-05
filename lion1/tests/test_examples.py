@@ -64,7 +64,7 @@ def test_a_script_imports_without_running_its_main(script, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("script", SCRIPTED)
-def test_a_scripted_example_runs_to_its_end_and_takes_its_scratch_with_it(script, tmp_path):
+def test_a_scripted_example_runs_to_its_end_and_takes_its_scratch_with_it(script, tmp_path, kkernel_stub):
     done = run(script, env={**os.environ, "TMPDIR": str(tmp_path)})
     assert done.returncode == 0, done.stderr
     assert done.stderr == ""
@@ -113,7 +113,9 @@ output: {
 """
 
 
-def test_the_served_example_reads_the_card_a_run_and_its_end_over_the_socket(tmp_path, monkeypatch, capsys):
+def test_the_served_example_reads_the_card_a_run_and_its_end_over_the_socket(
+    tmp_path, monkeypatch, capsys, kkernel_stub
+):
     """Its output pinned: nothing in it depends on the port, the run's id, or whether the run ended
     before its stream opened."""
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
@@ -121,7 +123,9 @@ def test_the_served_example_reads_the_card_a_run_and_its_end_over_the_socket(tmp
     assert capsys.readouterr().out == SERVED
 
 
-def test_the_live_example_says_what_the_calls_cost_when_a_later_call_fails(tmp_path, monkeypatch, capsys):
+def test_the_live_example_says_what_the_calls_cost_when_a_later_call_fails(
+    tmp_path, monkeypatch, capsys, kkernel_stub
+):
     """The table of calls is printed on the way out of a failure too: the calls before it were paid."""
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     module = load("backends")
@@ -227,7 +231,7 @@ def test_the_call_table_marks_a_partial_cost_and_names_a_failed_calls_error(tmp_
 
 
 @pytest.mark.parametrize("name", sorted(p.name for p in NOTEBOOKS.glob("*.ipynb")))
-def test_a_notebook_runs_to_its_end(name, tmp_path, monkeypatch):
+def test_a_notebook_runs_to_its_end(name, tmp_path, monkeypatch, kkernel_stub):
     """The notebooks are scripted, so this is the whole notebook and it runs offline."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
@@ -237,7 +241,7 @@ def test_a_notebook_runs_to_its_end(name, tmp_path, monkeypatch):
         assert ns["peer_tasks"] and all(t.done() and t.exception() is None for t in ns["peer_tasks"])
 
 
-def test_the_two_actor_notebook_raises_a_peers_error_on_the_page(tmp_path, monkeypatch):
+def test_the_two_actor_notebook_raises_a_peers_error_on_the_page(tmp_path, monkeypatch, kkernel_stub):
     """A researcher whose backend raises settles the reviewer's ask naming the error, and the
     reviewer's run goes on; the peer's own task is awaited where the peer runs are shown, so the
     error is raised there rather than left to the loop to report at exit."""
@@ -274,9 +278,12 @@ def test_the_two_actor_notebook_raises_a_peers_error_on_the_page(tmp_path, monke
         ("codex", "codex CLI not found on PATH"),
     ],
 )
-def test_the_live_example_with_nothing_to_reach_a_model_says_what_is_missing(backend, missing, tmp_path):
+def test_the_live_example_with_nothing_to_reach_a_model_says_what_is_missing(
+    backend, missing, tmp_path, kkernel_stub
+):
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
-    env["PATH"] = str(tmp_path)  # an empty directory: no model CLI, and no keychain tool to find a key
+    (tmp_path / "kkernel").symlink_to(kkernel_stub)  # the store's binary, and nothing else on PATH:
+    env["PATH"] = str(tmp_path)  # no model CLI, and no keychain tool to find a key
     done = run("backends", "--backend", backend, env=env)
     assert done.returncode == 1
     assert done.stdout == ""

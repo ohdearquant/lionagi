@@ -228,7 +228,7 @@ def test_another_run_on_the_same_backend_gets_its_own_session(monkeypatch):
     assert "--session-id" in calls[2]["args"] and calls[2]["prompt"].startswith("[in0] a third question")
 
 
-def test_an_inputless_run_after_another_on_one_backend_is_planned_as_its_own_session(monkeypatch):
+def test_an_inputless_run_after_another_on_one_backend_is_planned_as_its_own_session(monkeypatch, store):
     """A run with no inputs has an empty view before its first call, so no message names it; the actor
     names the run to `plan` itself. The earlier run's session and its count are never the ones
     planned: the second run starts its own session within its own, smaller budget."""
@@ -243,7 +243,7 @@ def test_an_inputless_run_after_another_on_one_backend_is_planned_as_its_own_ses
         }
 
     monkeypatch.setattr(claude_code, "_exec", fake)
-    actor, s = Actor("worker"), ClaudeCodeSession(cli="/bin/claude")
+    actor, s = Actor("worker", store=store), ClaudeCodeSession(cli="/bin/claude")
     large = Profile("large", system="x" * 80_000)
     first = asyncio.run(actor.run(large, RunRequest(max_turns=1, context_budget=100_000), s))
     second = asyncio.run(actor.run(Profile("small"), RunRequest(max_turns=1, context_budget=10_000), s))
@@ -771,7 +771,7 @@ def _tool(name: str, use_id: str, **args) -> dict:
     return {"hook_event_name": "PreToolUse", "tool_name": name, "tool_use_id": use_id, "tool_input": args}
 
 
-def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_path):
+def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_path, store):
     cli = _scripted(
         tmp_path,
         _tool("Bash", "toolu_a", command="git status"),  # needs `shell`, which the profile holds
@@ -779,7 +779,7 @@ def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_p
         _tool("Bash", "toolu_c", command="rm -rf build"),  # a before hook refuses it
         _tool("Edit", "toolu_d", file_path="a.py"),  # needs `edit`, which the profile does not hold
     )
-    actor = Actor("gated", privileges={"shell", "edit"})
+    actor = Actor("gated", privileges={"shell", "edit"}, store=store)
 
     @actor.before
     def guard(run, la, request):
@@ -830,7 +830,7 @@ def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_p
     assert f"[{ran.name} toolu_a Bash]" in rendered and "error: refused: no rm here" in rendered
 
 
-def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path):
+def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path, store):
     """The hook answers allow only for a tool the CLI's --allowedTools names, exactly; any other admitted
     call goes back with its input, the before hooks' replacement included, and no decision, for the
     CLI's own rules (ADR-0009/S18 says why). Each lands admitted. The scripted CLI runs the hook and
@@ -843,7 +843,7 @@ def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path):
         _tool("mcp__other__mark", "toolu_d"),  # named nowhere; a before hook replaces its input
         _tool("Bash", "toolu_e", command="ls"),  # a built-in the session was not given
     )
-    actor = Actor("gated")
+    actor = Actor("gated", store=store)
 
     @actor.before
     def tag(run, la, request):
@@ -869,11 +869,11 @@ def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path):
     assert acts == [(f"toolu_{x}", True, "admitted") for x in "abcde"]
 
 
-def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
+def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path, store):
     """No live run, an id already on the record, and a hook that cannot reach the runtime: each stops the
     tool; the CLI runs a tool whose hook failed any other way than exit 2."""
     cli = _scripted(tmp_path, _tool("Bash", "toolu_a", command="ls"), _tool("Read", "toolu_b", file_path="x"))
-    actor = Actor("gated")
+    actor = Actor("gated", store=store)
     backend = ClaudeCodeSession(cli=cli, tools=("Bash", "Read"), actor=actor)
     asyncio.run(backend([Message("system", "p", run="gone"), Message("user", "go", name="_in0", run="gone")]))
     seen = json.loads((tmp_path / "seen.json").read_text())
@@ -906,11 +906,11 @@ def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
     assert late.returncode == 2 and "the runtime's gate could not be asked" in late.stderr
 
 
-def test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands(tmp_path):
+def test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands(tmp_path, store):
     cli = _scripted(
         tmp_path, _tool("Read", "toolu_a", file_path="a.txt"), _tool("Read", "toolu_b", file_path="b.txt")
     )
-    actor = Actor("gated")
+    actor = Actor("gated", store=store)
 
     @actor.before
     def tag(run, la, request):
@@ -953,7 +953,7 @@ time.sleep(30)
 """
 
 
-def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch):
+def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch, store):
     """The CLI's hook connects, then the CLI exits a few event-loop turns later, before the gate's task
     for that connection has run: the gate does not run after the call returned, the hook is refused,
     and the call lands once in the call's own turn, whatever the window (0 to 7 turns): admitted when the
@@ -962,7 +962,7 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
     import socket
 
     async def window(k: int):
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         hooks: list[tuple[str, int]] = []
         state = {"returned": 0, "calls": 0, "client": None}
 
@@ -1008,7 +1008,7 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
         assert landed == [(f"toolu_{k}", 1, "admitted" if hooks else "not executed")], (k, landed)
 
 
-def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives(monkeypatch):
+def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives(monkeypatch, store):
     """The hook connected and sent half its request when the CLI exited: the call waits for the rest
     (within the read's own bound), lands the tool call not executed, and the hook is refused; a hook
     that never finishes sending asked nothing, and the call returns at the bound with nothing landed."""
@@ -1017,7 +1017,7 @@ def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_i
     import time
 
     async def late(finish: bool):
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         hooks: list[str] = []
         state = {"calls": 0, "client": None}
 
@@ -1088,7 +1088,7 @@ def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_i
     assert 1.0 <= took < 2.0, took  # the read's bound ended the wait
 
 
-def test_an_ask_that_finished_as_the_call_settles_is_not_waited_on(monkeypatch):
+def test_an_ask_that_finished_as_the_call_settles_is_not_waited_on(monkeypatch, store):
     """An ask arrives as the call ends and returns some turns later. Ending in the turn before the
     call's settling resumes, it is finished and still among the call's asks, since what takes it out
     runs only once the settling yields: the call returns whichever turn the ask ends on. An alarm
@@ -1098,7 +1098,7 @@ def test_an_ask_that_finished_as_the_call_settles_is_not_waited_on(monkeypatch):
     import socket
 
     async def window(after: int):
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         state = {"calls": 0, "client": None}
 
         async def ask(actor, run, requires, closed, arrived, reader, writer):
@@ -1147,7 +1147,7 @@ def test_an_ask_that_finished_as_the_call_settles_is_not_waited_on(monkeypatch):
         signal.signal(signal.SIGALRM, previous)
 
 
-def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypatch):
+def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypatch, store):
     """The hook connects as the CLI exits, so its task is created by the call's own settle, and the run
     is cancelled before that task takes its first step: the task never ran, the call still returns
     cancelled with no task left (one that never started cannot take itself off the call's books)."""
@@ -1156,7 +1156,7 @@ def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypat
     import time
 
     async def go():
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         state = {"calls": 0, "client": None}
 
         async def fake_exec(cli, args, prompt, **kw):
@@ -1186,6 +1186,7 @@ def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypat
 
 def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_caller_still_returns(
     monkeypatch,
+    store,
 ):
     """The call's end cancels and joins its asks; one that swallows its cancel would keep the join open
     for ever, and a caller cancelling the call on every turn of that join would be swallowed with it
@@ -1212,7 +1213,7 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
         await claude_code._answer(writer, {"allow": {"file_path": "notes.txt"}})  # too late to land
 
     async def go(cancelling: bool):
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         state = {"hook": None}
         free["it"], free["came"], free["at"] = asyncio.Event(), asyncio.Event(), None
 
@@ -1289,7 +1290,7 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
     refused(hook)
 
 
-def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch):
+def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch, store):
     """Both pass the repeat check before either lands (both are at the before hook); the first to land
     is admitted, the second lands as a repeat under the suffixed id and its hook is refused, whether
     the hooks let it through or the call's end cancelled it at the gate."""
@@ -1297,7 +1298,7 @@ def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(mo
     import socket
 
     async def twins(cancelled: bool):
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         waiting, release = 0, asyncio.Event()
 
         @actor.before
@@ -1361,7 +1362,9 @@ def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(mo
     assert landed[0][0] == "toolu_d" and landed[1][0].startswith("toolu_d_") and answers == [b"", b""]
 
 
-def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns(tmp_path):
+def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns(
+    tmp_path, store
+):
     """The CLI fails, runs past the call's deadline, or the call is cancelled, while a before hook waits on an
     approval: the call's deadline ends it, the tool call lands not executed before it returns, nothing of the
     gate is left running, and the approval that comes later lands nothing. A hook that swallows the
@@ -1375,7 +1378,7 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
         (tmp_path / "mode").write_text(mode)
         errors: list[str] = []
         asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: errors.append(ctx["message"]))
-        actor = Actor("gated")
+        actor = Actor("gated", store=store)
         entered, approved = asyncio.Event(), asyncio.Event()
         runs = []
 

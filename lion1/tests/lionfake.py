@@ -7,14 +7,29 @@ client and a test through a patched `exec` see one behaviour."""
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from lion1.khive import KhiveError
+from lion1 import khive as khive_module
+from lion1.khive import Khive, KhiveError, lit
+from lion1.store import Store
 
-__all__ = ("LionFake", "parse", "resident_store", "unread")
+__all__ = (
+    "LionFake",
+    "LionKhive",
+    "actor_dir",
+    "parse",
+    "patch_khive",
+    "resident_store",
+    "routed_config",
+    "store",
+    "unflushed_store",
+    "unread",
+)
 
 _SOURCES = ("lion1", "claude_code", "codex")
 _ROLES = ("system", "user", "assistant", "tool")
@@ -322,14 +337,102 @@ class LionFake:
         )
 
 
+class LionKhive:
+    """A `Khive` whose every op is answered by `LionFake` in this process: the store's double for a test
+    that builds an `Actor`."""
+
+    def __init__(self, actor: str = "actor") -> None:
+        self.actor = actor
+        self.cwd = None
+        self.lion = LionFake()
+
+    async def exec(self, ops: str) -> list:
+        return self.lion.answer(ops)
+
+    def exec_sync(self, ops: str) -> list:
+        return self.lion.answer(ops)
+
+
+def store() -> Store:
+    return Store(LionKhive())
+
+
+class _Unflushed(Store):
+    async def flush(self, run) -> int:
+        run.store_flushed = len(run.record)
+        return 0
+
+    async def close(self, run) -> None:
+        outcome = type(run.outcome).__name__.lower() if run.outcome is not None else "stopped"
+        await self.khive.exec(
+            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(run.cost)}, "
+            f"turns={run.turn}, output=null) | lion.session_close(id={lit(run.id)})"
+        )
+
+
+def unflushed_store() -> Store:
+    """`store()` that writes no message rows and no output, for a test whose run holds a message of
+    megabytes: the in-memory pack parses each op a character at a time, and under coverage that write
+    alone takes the whole of a service test's 10 s bound. What a row holds is the store's tests' to say."""
+    return _Unflushed(LionKhive())
+
+
+def routed_config(actor: str, d: Path, packs: tuple[str, ...] = ()) -> str:
+    """The khive config a directory of this runtime holds: the actor, and the lion pack's tables
+    routed to their own file beside the main store (ADR-0026 C8); `packs` adds a `[runtime]` line."""
+    text = f"[actor]\nid = {json.dumps(actor)}\n"
+    if packs:
+        text += f"\n[runtime]\npacks = {json.dumps(list(packs))}\n"
+    main, lion = d / ".khive" / "main.db", d / ".khive" / "lion.db"
+    text += f'\n[[backends]]\nname = "main"\npath = {json.dumps(str(main))}\n'
+    text += f'\n[[backends]]\nname = "lion"\npath = {json.dumps(str(lion))}\n'
+    text += '\n[packs.lion]\nbackend = "lion"\n'
+    return text
+
+
+def actor_dir(d: Path, actor: str = "console") -> Path:
+    """`d` made a directory whose `.khive/config.toml` names `actor` and routes the lion pack's
+    tables, the file a `Khive` and a `Store` over it need."""
+    (d / ".khive").mkdir(parents=True, exist_ok=True)
+    (d / ".khive" / "config.toml").write_text(routed_config(actor, d))
+    return d
+
+
+_NO_BINARY = Path(__file__).resolve().parent / "bin" / "kkernel"  # refuses if it is ever run
+
+
+def patch_khive(monkeypatch) -> LionFake:
+    """Every `Khive` in the process answered by one `LionFake`, `exec` and `exec_sync` both, so no
+    subprocess runs for an op. The client resolves its binary to `tests/bin/kkernel`, which refuses to
+    run, so a machine with no `kkernel` builds the same client. The fake, for a test that reads its rows."""
+    lion = LionFake()
+    which = shutil.which
+    monkeypatch.setattr(
+        khive_module,
+        "shutil",
+        SimpleNamespace(which=lambda name: str(_NO_BINARY) if name == "kkernel" else which(name)),
+    )
+
+    async def exec_(self, ops: str) -> list:
+        return lion.answer(ops)
+
+    def exec_sync(self, ops: str) -> list:
+        return lion.answer(ops)
+
+    monkeypatch.setattr(Khive, "exec", exec_)
+    monkeypatch.setattr(Khive, "exec_sync", exec_sync)
+    return lion
+
+
 def resident_store(d: Path):
     """The `agent` notes of a resident directory under the stub binary: its `.khive/config.toml` written
-    to name the actor its chores.toml names (the real binary resolves the actor from that file), then
+    to name the actor its chores.toml names (the real binary resolves the actor from that file) and to
+    route the lion pack's tables (ADR-0026 C8), then
     the store `hub.areas.agent_store` reads. `unread(d)` takes the config away again."""
     from hub.areas import agent_store, chores_toml  # the stub binary imports this module: keep it light
 
     (d / ".khive").mkdir(exist_ok=True)
-    (d / ".khive" / "config.toml").write_text(f"[actor]\nid = {json.dumps(chores_toml(d)['actor'])}\n")
+    (d / ".khive" / "config.toml").write_text(routed_config(chores_toml(d)["actor"], d))
     return agent_store(d)
 
 

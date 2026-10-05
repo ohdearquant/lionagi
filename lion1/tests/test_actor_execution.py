@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from hub.chat import entry_row, load_log
 from lion1 import Actor, Kind, Profile, Result, RunRequest
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -33,7 +34,7 @@ class Guarded(BaseModel):
 
 
 def _exec_actor(name: str, entered: list[str], parked: list[str]) -> Actor:
-    actor = Actor(name, privileges=("write",))
+    actor = Actor(name, privileges=("write",), store=fresh_store())
 
     @actor.handler(Touch)
     async def touch(req: Touch, ctx):
@@ -125,8 +126,8 @@ def test_cancel_after_handler_entry_reads_completion_unknown():
     assert run.pending == {}
 
 
-def test_a_started_command_whose_result_cannot_land_is_not_told_unexecuted():
-    actor = Actor("exec-no-landing")
+def test_a_started_command_whose_result_cannot_land_is_not_told_unexecuted(store):
+    actor = Actor("exec-no-landing", store=store)
 
     @actor.handler(Mark)
     async def squat(req: Mark, ctx):
@@ -182,8 +183,8 @@ def test_cancel_while_waiting_in_a_before_hook_is_not_executed():
     assert run.pending == {}
 
 
-def test_a_command_that_ran_and_failed_is_not_told_as_not_executed():
-    actor = Actor("exec-ran-then-raised")
+def test_a_command_that_ran_and_failed_is_not_told_as_not_executed(store):
+    actor = Actor("exec-ran-then-raised", store=store)
     written = []
 
     @actor.handler(Touch)

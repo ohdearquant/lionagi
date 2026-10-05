@@ -13,7 +13,7 @@ import pytest
 from hub.agent import instruments as instr
 from hub.agent.chores import Chores, Outcome
 from hub.agent.lookups import TAIL, Adrs, Decisions, Issues, Record, stem, terms
-from lion1 import MemoryNoteStore
+from tests.lionfake import store as fresh_store
 from tests.test_chores import DONE, OWNER, SELF, FakeKhive, Probe, full, mail
 from tests.test_desk import ASKER, SWEEP, FakeReader, build, inbox_row, results
 from tests.test_instruments import FakeSh
@@ -385,7 +385,7 @@ def test_the_factory_builds_the_record_chore_from_its_config(tmp_path):
             }
         },
     }
-    out = instr.instruments(cfg, SearchKhive([]), MemoryNoteStore())
+    out = instr.instruments(cfg, SearchKhive([]), fresh_store().notes("agent"))
     rec = out["record"]
     assert isinstance(rec, Record) and [type(p).__name__ for p in rec.parts] == [
         "Issues",

@@ -41,6 +41,8 @@ from lion1 import Actor, Kind, Record, Reply, Result, fold
 from lion1 import checkpoint as core
 from lion1.checkpoint import LAZY, CheckpointError, Var, take, to_history
 from lion1.khive import KhiveError, NotIgnored, assert_ignored, context_dir
+from tests.lionfake import routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_agent import REPLY, FakeKhive, mail, profile_for
 from tests.test_areas import call, registry, serve_on
 
@@ -112,7 +114,7 @@ def monitor_commands() -> dict[str, str]:
 def actor_dir(root: Path, actor: str = ACTOR) -> Path:
     d = root / "actor"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(f'[actor]\nid = "{actor}"\n')
+    (d / ".khive" / "config.toml").write_text(routed_config(actor, d))
     return d
 
 
@@ -904,7 +906,7 @@ class Growing:
 
 def resident(khive: FakeKhive, backend, **kw) -> Agent:
     return Agent(
-        Actor("echo", privileges={"comm.send"}),
+        Actor("echo", privileges={"comm.send"}, store=fresh_store()),
         khive,
         backend,
         profile_for,

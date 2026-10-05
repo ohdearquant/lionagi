@@ -40,6 +40,7 @@ __all__ = (
     "take_patch",
     "spent",
     "signer",
+    "NoSigner",
     "status_line",
     "resolve_chat",
     "fresh_log",
@@ -62,21 +63,34 @@ def console(
     turns: int = 200,
     sandbox: Box | None = None,
     coding: bool = False,
-    notify: Callable[[str], None] | None = None,
     tree: Tree | None = None,
     about_box: str | None = None,
     khive_config: Path | None = None,
 ) -> tuple[Actor, Profile]:
-    """The actor a person talks to: the file and directory readers, khive when the directory is an
-    actor's own (its `.khive/config.toml` names the actor the reads sign as) or `khive_config` names
-    the file to sign with instead (explicit: the directory's own is not read), a shell when a sandbox
-    is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit).
+    """The actor a person talks to: the file and directory readers, khive signing as the actor the
+    directory's `.khive/config.toml` names or `khive_config` names instead (explicit: the directory's
+    own is not read; a console with neither refuses to start, `NoSigner`, for its record is rows of
+    that actor's store), a shell when a sandbox is given, and with `coding` the tools a fix is found
+    and written with (read_lines, search, edit).
     The person's instruction files (`instructions`) close the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
     with `about_box` saying so (the VM's own guidance otherwise)."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
-    actor = Actor(name)  # its store, when the directory is an actor's own, is set below
+    config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
+    actor_id = signer(directory, khive_config)
+    try:
+        if not config.is_file():
+            raise KhiveError("no such khive config file")
+        if actor_id is None:
+            raise KhiveError("no [actor].id")
+        store = Store(Khive(directory, actor_id, config=khive_config))
+    except KhiveError as e:
+        raise NoSigner(
+            f"{config}: {e}; a chat's record is rows of khive, so the directory's .khive/config.toml "
+            "or --khive-config must name the actor (ADR-0025 D3)"
+        ) from None
+    actor = Actor(name, store=store)
     if (hooks := directory / ".lion" / "hooks.toml").exists():
         install(actor, load(hooks), directory)
     specs = files(actor, tree)
@@ -94,29 +108,13 @@ def console(
         specs |= code(actor, tree)
         tools += ", read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)"
         about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory))
-    config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
-    if khive_config is not None and not config.is_file():  # explicit: said, never the directory's instead
-        if notify is not None:
-            notify(f"{config}: no such khive config file; khive tool unavailable")
-    elif config.exists():
-        actor_id = signer(directory, khive_config)
-        if actor_id is None:
-            if notify is not None:
-                notify(f"{config}: no [actor].id; khive tool unavailable")
-        else:
-            try:
-                actor.store = Store(Khive(directory, actor_id, config=khive_config))
-                khive = Bounded(actor.store.khive, recipients=frozenset())
-            except KhiveError as e:
-                if notify is not None:
-                    notify(f"khive unavailable: {e}")
-            else:
-                specs |= khive_ops(actor, khive)
-                tools += (
-                    f", khive_ops(ops) signing as {actor_id} (these verbs and no other: "
-                    f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
-                    f"{SPAWN_SALIENCE})"
-                )
+    khive = Bounded(actor.store.khive, recipients=frozenset())
+    specs |= khive_ops(actor, khive)
+    tools += (
+        f", khive_ops(ops) signing as {actor_id} (these verbs and no other: "
+        f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
+        f"{SPAWN_SALIENCE})"
+    )
     if not system:
         system = guidance("console", model=model, tools=tools, turns=turns, sandbox=about_sandbox)
         for path, text in instructions(directory):
@@ -239,6 +237,10 @@ def spent(calls: list[dict]) -> tuple[float, int]:
         1 for c in calls if not cost_whole(c) or (c.get("kind") == "USAGE" and "cost_complete" not in c)
     )
     return cost, unknown
+
+
+class NoSigner(ValueError):
+    """A chat with no khive actor to sign as: it refuses to start."""
 
 
 def signer(directory: Path, config: Path | None = None) -> str | None:
@@ -459,7 +461,6 @@ async def _chat_main(
         about_box = guidance("box", kind="Daytona", image=image, root=directory)
     elif a.shell or a.code:
         sandbox = Sandbox(directory, f"lion-{chat_id}", offline=a.offline)
-    degraded: list[str] = []
     khive_config = None
     if getattr(a, "khive_config", None):  # explicit: refused outright rather than falling back
         khive_config = Path(a.khive_config).expanduser().resolve()
@@ -467,17 +468,19 @@ async def _chat_main(
             raise SystemExit(f"--khive-config {a.khive_config}: no such file")  # as typed, not resolved
         if signer(directory, khive_config) is None:
             raise SystemExit(f"--khive-config {a.khive_config}: no [actor].id in it")
-    actor, profile = console(
-        directory,
-        model=a.model,
-        turns=a.turns,
-        sandbox=sandbox,
-        coding=a.code,
-        notify=degraded.append,
-        tree=tree,
-        about_box=about_box,
-        khive_config=khive_config,
-    )
+    try:
+        actor, profile = console(
+            directory,
+            model=a.model,
+            turns=a.turns,
+            sandbox=sandbox,
+            coding=a.code,
+            tree=tree,
+            about_box=about_box,
+            khive_config=khive_config,
+        )
+    except NoSigner as e:
+        raise SystemExit(str(e)) from None
     # a claude_code or codex model gets no tools of its own: one turn per call, resumed, and everything
     # it does is a command in its text that this console runs, gates and records
     backend = backend_for(a.model)
@@ -506,8 +509,6 @@ async def _chat_main(
     )
     say.quiet_until = len(history) - 1
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
-    for msg in degraded:
-        say.notice(msg)
     if composed := instructions(directory):
         say.notice(
             "instructions: " + ", ".join(f"{_shown(p, directory)} ({len(t)} chars)" for p, t in composed)

@@ -1,7 +1,7 @@
 ---
 adr: ADR-0026
 status: proposed
-liveness: unimplemented (nothing is built; every mechanism is owed, S1)
+liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, and a chat with no signer refuses to start, each pinned by tests; the commands, the driver, the result mail, the MCP server and the agent's run that continues the last are owed, S1)
 date: "2026-10-04"
 area: submission
 kind: new
@@ -161,7 +161,7 @@ the first wake's rows and nothing under `.khive/context/`. This closes ADR-0025 
 
 - `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`
 
-### C7: An `Actor` is built with a store _(enforced: mechanical; owed, S1)_ ^c7
+### C7: An `Actor` is built with a store _(enforced: mechanical)_ ^c7
 
 - **Subject**: `Actor.__init__`.
 - **Violated when**: an `Actor` exists with no store, or `lion chat` starts in a directory whose
@@ -172,34 +172,41 @@ console's actor is built with the store its signer names, so a chat with no sign
 and says what names one. The tests pass the in-memory double of the pack. This closes ADR-0025 S6.
 
 - `test_an_actor_without_a_store_is_refused_at_construction`
-- `test_a_chat_with_no_khive_signer_refuses_to_start_and_names_the_config`
+- `test_khive_config_missing_actor_table_or_id_refuses_the_chat_and_names_the_file`
+- `test_a_khive_config_that_is_not_a_file_or_names_no_actor_refuses_to_start_and_leaves_no_log`
 
-### C8: A submission's rows live in the actor's lion database, never the home store _(enforced: mechanical; owed, S1)_ ^c8
+### C8: A submission's rows live in the actor's lion database, never the home store _(enforced: mechanical)_ ^c8
 
-- **Subject**: the config `lion run`, `lion flow` and `lion mcp` start under, and the binary's
+- **Subject**: the config a `Store` is built under, every command's included, and the binary's
   `database:` line.
-- **Violated when**: the command starts while the pack's tables would resolve to the home database,
-  or a row of a submitted run is found in the main store.
+- **Violated when**: a store is built while the pack's tables would resolve to the home database, or
+  a row of a submitted run is found in the main store.
 
-The command reads the actor's config before building anything and refuses to start, naming the
-config, unless a backends entry named `lion` with a `path` exists and `[packs.lion]` routes the pack
-to it; `KHIVE_DB` does not satisfy it, since it moves every pack at once. The binary's `database:`
-line then names both targets (`main=…, lion=…`); the test reads a run back from the lion file alone
-and finds none of its rows when the main file is opened alone.
+A store refuses its config unless a `lion` backend with a file's `path` sits beside `main` and
+`[packs.lion]` routes the pack there. It refuses two backends of one name, a path SQLite reads as a
+URI, and a `lion` path reaching main's file by any name or differing only in case or Unicode form.
 
-- `test_a_submission_refuses_to_start_when_the_lion_tables_would_resolve_to_the_home_store`
-- `test_a_submitted_runs_rows_are_in_the_lion_database_and_not_in_the_main_store`
+The binary is handed that config by absolute name, the directory's own included, without
+`KHIVE_CONFIG` or `KHIVE_DB`: the file checked is the file read. Every command that builds a store
+inherits the refusal.
+
+- `test_a_store_refuses_a_config_that_would_put_the_lion_tables_in_the_main_store`
+- `test_a_store_refuses_a_lion_path_that_reaches_the_main_stores_file`
+- `test_kkernel_reads_the_config_the_client_names_never_one_the_environment_names`
+- `test_a_residents_notes_are_refused_where_its_config_puts_them_in_the_main_store`
+- `test_the_same_run_against_the_built_binary`: the `database:` line names both targets; rows only
+  in the lion file; no home database
 
 ## Decisions
 
 ### D1: `lion run`, `lion flow`, `lion result` and `lion mcp` in `apps/cli/lion_cli/submit.py` ^d1
 
-Serves C1, C4, C5 and C8. Four subcommands, each taking `--dir`, the actor's directory; each reads
-the config's backends first and refuses without the lion database (C8). `run` takes `--profile`,
-`--say`, `--file` (repeatable; each file's text is an input after `--say`), `--model`, `--var`,
-`--thread` and `--notify ACTOR` (default: the directory's own actor). `flow` takes `--name`,
-`--var`, `--thread` and `--notify`. `result` takes the id and `--history`. `mcp` takes nothing more.
-ADR-0016 C1's table and D1 gain these rows in the same change.
+Serves C1, C4, C5 and C8. Four subcommands, each taking `--dir`, the actor's directory; each builds
+its store first, which refuses without the lion database (C8). `run` takes `--profile`, `--say`,
+`--file` (repeatable; each file's text is an input after `--say`), `--model`, `--var`, `--thread`
+and `--notify ACTOR` (default: the directory's own actor). `flow` takes `--name`, `--var`,
+`--thread` and `--notify`. `result` takes the id and `--history`. `mcp` takes nothing more. ADR-0016
+C1's table and D1 gain these rows in the same change.
 
 - **Landing evidence**: none yet; owed with the code (S1).
 
@@ -262,7 +269,9 @@ from `tests/conftest.py`, the in-memory pack behind a `Khive` double; `MemoryNot
 the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before the actor and raises
 `ValueError` naming the config and `--khive-config` when neither names a signer.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `test_an_actor_without_a_store_is_refused_at_construction`,
+  `test_a_store_refuses_a_config_that_would_put_the_lion_tables_in_the_main_store`, the two chat
+  refusals under C7; 207 constructions in the tests take the double; `MemoryNoteStore` is gone.
 
 ## Alternatives
 
@@ -279,9 +288,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 
 ## Consequences
 
-- **S1**: Owed: everything above, each with the tests named in C1 to C7. Landing order: D7 and D6
-  first (the store everywhere, the agent's checkpoint gone), then D2 to D4 with `lion run`, `lion
-  flow`, `lion result`, then D5.
+- **S1**: Owed: C1 to C6, each with the tests named there; C7 and C8 have landed. Landing order: D6
+  (the agent's checkpoint gone), then D2 to D4 with `lion run`, `lion flow`, `lion result`, then D5.
 - **S2**: [[ADR-0016-the-lion-command|ADR-0016]] C1's table and D1 gain the four subcommands in the
   change that adds them. [[ADR-0013-the-agent|ADR-0013]] D3 is amended: the agent's history is its
   last run's session, and its cursor names that run.
@@ -298,3 +306,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 - **S6**: The MCP server's `run` tool is the only path by which a caller's assistant reaches this
   runtime; the server offers no tool of the caller's own to the model, so a profile's tools are the
   whole of what a submitted run can do.
+- **S7**: Owed: C8's same-file check also runs where the files are opened. The refusal compares
+  paths before anything exists to open, and each spelling it does not foresee reaches main's file
+  past it (case or Unicode form, a firmlink over a file not yet made, a URI). Once both backends are
+  open, the two files' device and inode are compared, and the lion pack refuses to serve when they
+  are one file. The config-time refusal stays: it names the mistake before any row is written.

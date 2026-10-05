@@ -15,6 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, mo
 
 from hub.chat import chat, entry_row, load_log
 from lion1 import Actor, Profile
+from tests.lionfake import actor_dir, patch_khive, routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -28,10 +30,10 @@ def asks(*messages: str | None):
 
 
 def test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor(tmp_path, kkernel_stub):
-    actor, profile = console(tmp_path)
-    assert "khive_ops" not in profile.specs  # no .khive/config.toml here: no khive tool
+    with pytest.raises(ValueError, match="no such khive config file; a chat's record is rows of khive"):
+        console(tmp_path)  # no .khive/config.toml here: a chat with no actor to sign as does not start
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     actor, profile = console(tmp_path, model="deepseek/deepseek-v4.1-flash")
     assert "khive_ops" in profile.specs and "signing as lambda:x" in profile.system
     # every verb the boundary admits, by name: a count and a summary left a model to find them by failing
@@ -70,61 +72,56 @@ def test_branch_resolves_via_git_in_a_linked_worktree_and_a_subdirectory(tmp_pat
     assert _branch(tmp_path) == "(no git)"
 
 
-def test_a_non_utf8_agents_md_does_not_crash_the_console_and_decodes_best_effort(tmp_path):
+def test_a_non_utf8_agents_md_does_not_crash_the_console_and_decodes_best_effort(tmp_path, console_khive):
     (tmp_path / "AGENTS.md").write_bytes(b"rules: \xe8 latin-1 byte\n")
     actor, profile = console(tmp_path, coding=True)
     assert "AGENTS.md says:" in profile.system  # started; did not raise UnicodeDecodeError
     assert "rules:" in profile.system and "latin-1 byte" in profile.system
 
 
-def test_an_explicit_khive_config_signs_over_the_directorys_own_and_a_missing_one_is_said(
+def test_an_explicit_khive_config_signs_over_the_directorys_own_and_a_missing_one_refuses(
     tmp_path, kkernel_stub
 ):
     """`khive_config=` names the file the chat signs with: its actor, not the directory's, and the
     directory's own `.khive/config.toml` is not read (it may name a different actor, or none). A
-    path that is not a file is noticed as such; the directory's config is never the fallback."""
+    path that is not a file refuses the chat; the directory's config is never the fallback."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     elsewhere = tmp_path / "elsewhere" / "khive.toml"
     elsewhere.parent.mkdir()
-    elsewhere.write_text('[actor]\nid = "lambda:y"\n')
+    elsewhere.write_text(routed_config("lambda:y", tmp_path))
     assert signer(tmp_path) == "lambda:x" and signer(tmp_path, elsewhere) == "lambda:y"
     actor, profile = console(tmp_path, khive_config=elsewhere)
     assert "khive_ops" in profile.specs and "signing as lambda:y" in profile.system
     assert "lambda:x" not in profile.system
-    notices: list[str] = []
-    actor, profile = console(tmp_path, khive_config=tmp_path / "gone.toml", notify=notices.append)
-    assert "khive_ops" not in profile.specs  # not the directory's lambda:x instead
-    assert notices == [f"{tmp_path / 'gone.toml'}: no such khive config file; khive tool unavailable"]
+    gone = tmp_path / "gone.toml"  # not the directory's lambda:x instead
+    with pytest.raises(ValueError, match=f"{re.escape(str(gone))}: no such khive config file;"):
+        console(tmp_path, khive_config=gone)
 
 
-def test_khive_config_missing_actor_table_or_id_skips_the_tool_and_notices_the_file(tmp_path):
+def test_khive_config_missing_actor_table_or_id_refuses_the_chat_and_names_the_file(tmp_path, kkernel_stub):
     khive_dir = tmp_path / ".khive"
     khive_dir.mkdir()
     config = khive_dir / "config.toml"
     config.write_text("")  # no [actor] table at all
-    notices: list[str] = []
-    actor, profile = console(tmp_path, notify=notices.append)
-    assert "khive_ops" not in profile.specs
-    assert len(notices) == 1 and str(config) in notices[0] and "id" in notices[0]
+    with pytest.raises(ValueError, match=f"{re.escape(str(config))}: no \\[actor\\].id;"):
+        console(tmp_path)
 
     config.write_text("[actor]\n")  # [actor] present, no id
-    notices2: list[str] = []
-    actor, profile = console(tmp_path, notify=notices2.append)
-    assert "khive_ops" not in profile.specs
-    assert len(notices2) == 1 and str(config) in notices2[0] and "id" in notices2[0]
+    with pytest.raises(ValueError, match=f"{re.escape(str(config))}: no \\[actor\\].id;"):
+        console(tmp_path)
 
 
-def test_khive_absent_kkernel_notices_and_keeps_the_console_alive(tmp_path, monkeypatch):
+def test_khive_absent_kkernel_refuses_the_chat_naming_it(tmp_path, monkeypatch):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     # neither PATH nor the ~/.cargo/bin fallback resolves a kkernel, on any machine this runs on
     monkeypatch.setattr("lion1.khive.shutil.which", lambda name: None)
     monkeypatch.setattr("lion1.khive.Path.home", lambda: tmp_path / "no-kkernel-here")
-    notices: list[str] = []
-    actor, profile = console(tmp_path, notify=notices.append)
-    assert "khive_ops" not in profile.specs  # degraded, not crashed
-    assert len(notices) == 1 and "khive unavailable" in notices[0] and "kkernel" in notices[0]
+    with pytest.raises(
+        ValueError, match="kkernel not found on PATH or under ~/.cargo/bin; a chat's record is rows of khive"
+    ):
+        console(tmp_path)
 
 
 def test_unsettled_never_reports_an_alias_the_records_own_namespace_refused(tmp_path):
@@ -149,7 +146,9 @@ def test_unsettled_never_reports_an_alias_the_records_own_namespace_refused(tmp_
     assert unsettled(load_log(log)) == ["r1"]
 
 
-def test_the_console_shows_prose_calls_and_results_and_logs_every_entry_whole(tmp_path, capsys):
+def test_the_console_shows_prose_calls_and_results_and_logs_every_entry_whole(
+    tmp_path, capsys, console_khive
+):
     (tmp_path / "big.txt").write_text("\n".join(f"line {i}" for i in range(40)) + "\n")
     actor, profile = console(tmp_path, model="deepseek/deepseek-v4.1-flash")
     backend = scripted(
@@ -179,7 +178,9 @@ def test_the_console_shows_prose_calls_and_results_and_logs_every_entry_whole(tm
     assert next(r for r in rows if r["seq"] == 0)["content"] == "what is in big.txt?"
 
 
-def test_a_resumed_chat_logs_the_whole_record_again_and_prints_only_the_new_part(tmp_path, capsys):
+def test_a_resumed_chat_logs_the_whole_record_again_and_prints_only_the_new_part(
+    tmp_path, capsys, console_khive
+):
     (tmp_path / "a.txt").write_text("alpha\n")
     log1, log2 = tmp_path / "one.jsonl", tmp_path / "two.jsonl"
     actor, profile = console(tmp_path, name="c1")
@@ -202,7 +203,7 @@ def test_a_khive_config_that_is_not_a_file_or_names_no_actor_refuses_to_start_an
     """The chat refuses before any model work, naming the file; the directory's own config, which
     would sign as someone else, is not the fallback. The log opened for the chat is removed."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     gone = tmp_path / "gone.toml"
     with pytest.raises(SystemExit, match=f"--khive-config {gone}: no such file"):
         asyncio.run(
@@ -234,7 +235,9 @@ def test_resume_last_with_no_log_says_where_logs_live_instead_of_an_index_error(
     )
 
 
-def test_results_collapse_to_one_line_and_prose_renders_as_markdown_by_default(tmp_path, capsys):
+def test_results_collapse_to_one_line_and_prose_renders_as_markdown_by_default(
+    tmp_path, capsys, console_khive
+):
     (tmp_path / "a.txt").write_text("alpha\n")
     actor, profile = console(tmp_path, model="m")
     backend = scripted('<lact r1>read(path="a.txt")</lact>', "It says:\n\n- **alpha**\n- nothing else")
@@ -248,7 +251,9 @@ def test_results_collapse_to_one_line_and_prose_renders_as_markdown_by_default(t
     assert "• alpha" in out and "**" not in out  # markdown rendered: a bullet, no raw emphasis marks
 
 
-def test_the_console_cuts_constructs_where_the_parser_does_and_shows_a_value_as_its_shape(tmp_path, capsys):
+def test_the_console_cuts_constructs_where_the_parser_does_and_shows_a_value_as_its_shape(
+    tmp_path, capsys, console_khive
+):
     actor, profile = console(tmp_path, model="m")
     turn = (
         "Writing the note.\n<lvar note.f>P4: <lvar x>inner</lvar> kept whole; `<lvar q>` quoted</lvar>\n"
@@ -320,14 +325,14 @@ def test_ctrl_c_cuts_the_call_once_then_quits_and_quits_at_the_prompt(capsys):
     assert "stopping after this turn" in capsys.readouterr().out
 
 
-def test_the_console_installs_the_directorys_hooks(tmp_path):
+def test_the_console_installs_the_directorys_hooks(tmp_path, console_khive):
     (tmp_path / ".lion").mkdir()
     (tmp_path / ".lion" / "hooks.toml").write_text('[[before]]\nrun = "true"\n[[turn]]\nrun = "echo hi"\n')
     actor, _ = console(tmp_path)
     assert len(actor.befores) == 1 and len(actor.sections) == 1
 
 
-def test_a_command_that_never_ran_and_a_broken_hook_show_without_verbose(tmp_path, capsys):
+def test_a_command_that_never_ran_and_a_broken_hook_show_without_verbose(tmp_path, capsys, console_khive):
     (tmp_path / "a.txt").write_text("alpha\n")
     actor, profile = console(tmp_path, model="m")
 
@@ -396,7 +401,7 @@ def test_two_consoles_in_one_second_get_two_logs_and_an_existing_log_is_refused(
 
 
 def test_an_explicit_log_is_owned_before_the_session_starts_and_a_failed_start_leaves_none(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, console_khive
 ):
     import lion_cli.chat as cli
 
@@ -434,7 +439,7 @@ def test_a_failure_whose_message_spans_lines_is_said_on_one_line(capsys):
 
 
 def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_exit_1(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, console_khive
 ):
     """A backend's own error (a model the claude CLI does not know, a timeout) is one red line and
     the closing line, exit 1: no traceback. The record keeps the message sent, so `-r` continues."""
@@ -475,7 +480,7 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
 
 
 def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, console_khive
 ):
     """A router call whose known subtotal misses an attempt is partial live and on its USAGE row
     alike: the row keeps `cost_complete`, the failed last call's row too, which the close writes."""
@@ -549,7 +554,9 @@ def test_a_row_from_before_cost_complete_counts_among_the_calls_the_sum_may_miss
     assert log.read_bytes() == before
 
 
-def test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not(tmp_path, monkeypatch):
+def test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not(
+    tmp_path, monkeypatch, console_khive
+):
     """A CLI's call has a figure or none and no `cost_complete`: its row says which, so the sum read
     back from the log is the live one, and a row without the key is only ever one from before it."""
     import lion_cli.chat as cli
@@ -589,7 +596,7 @@ def test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not(tmp_pa
 
 
 def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, console_khive
 ):
     """Everything the model does is a command in its text that the console runs: the CLI it is called
     through gets no tools, one turn a call and no pre-tool hook, since nothing is left to call natively."""
@@ -624,7 +631,7 @@ def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_g
 
 
 def test_every_chat_composes_the_persons_instruction_files_in_order_and_opens_by_naming_them(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, kkernel_stub
 ):
     """Home first, then the directory's AGENTS.md, CLAUDE.md and .lion/CLAUDE.md, each under its own
     name, with no --code; the chat's opening lines say which were composed."""
@@ -637,6 +644,8 @@ def test_every_chat_composes_the_persons_instruction_files_in_order_and_opens_by
     (home / ".lion" / "CLAUDE.md").write_text("Answer in English.\n")
     (here / "CLAUDE.md").write_text("This repo is public.\n")
     (here / ".lion" / "CLAUDE.md").write_text("Sign as the lab.\n")
+    actor_dir(here)
+    patch_khive(monkeypatch)
     actor, profile = console(here)
     tail = profile.system.split("not what the last one did.", 1)[1]
     assert tail == (
@@ -670,7 +679,9 @@ def test_a_turn_the_loop_refuses_prints_that_nothing_in_it_ran_never_its_calls_a
     assert say._turn('Checking.\n<lact k1>read(path="a")</lact>', 2)[-1].startswith("[cyan]→ k1")
 
 
-def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_the_copy(tmp_path, capsys):
+def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_the_copy(
+    tmp_path, capsys, console_khive
+):
     """A turn the backend would not hand on (text beside a native tool call) lands with `refused` on
     its entry and none of it runs: the console and the copied chat say so, with no call arrow."""
     from lion1 import Kind
@@ -739,7 +750,7 @@ def shelf(language: str, got: list) -> tuple[Actor, Profile]:
     returns a Doc, whose field is read under an alias, `index` takes a Doc and `catalog` a Named one,
     which validates by the field's name too; `got` collects what `shelve`, `echo`, `index` and
     `catalog` were handed."""
-    actor = Actor("shelf")
+    actor = Actor("shelf", store=fresh_store())
 
     @actor.handler(Fetch)
     async def fetch(req: Fetch, ctx) -> Book:
@@ -964,7 +975,7 @@ def vault(got: list) -> tuple[Actor, Profile]:
     """A console of four commands: `make` returns a model by kind, a `Tags` root model, a `Mark` whose
     serializer returns its title, or a `Sealed` whose key its dump leaves out; `filing`, `cite` and
     `unseal` take one each and put what they were handed in `got`."""
-    actor = Actor("vault")
+    actor = Actor("vault", store=fresh_store())
 
     @actor.handler(Make)
     async def make(req: Make, ctx) -> BaseModel:

@@ -14,6 +14,7 @@ import pytest
 import lion1.serve as serve
 from lion1 import Actor, Profile, RunRequest
 from lion1.serve import Service
+from tests.lionfake import unflushed_store
 from tests.test_serve import FINISH, Answer, Held, actor, bounded, log_lines, turns
 
 
@@ -451,8 +452,10 @@ async def finish(messages):
 
 @pytest.mark.parametrize("split", ["whole", "in pieces"])
 @pytest.mark.parametrize("name, raw, code", REFUSED, ids=[c[0] for c in REFUSED])
-def test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(name, raw, code, split):
-    a = Actor("http-raw")
+def test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(
+    name, raw, code, split, store
+):
+    a = Actor("http-raw", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -468,11 +471,11 @@ def test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatc
     assert_safe(fields)
 
 
-def test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request(monkeypatch):
+def test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request(monkeypatch, store):
     """D8's own field cap sits under the parser's, so the parser's refusal is reached here by lowering
     the parser's: whatever it refuses is answered, never left to end the connection's task."""
     monkeypatch.setattr(serve.http.client, "_MAXHEADERS", 1)
-    a = Actor("http-parser-refuses")
+    a = Actor("http-parser-refuses", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -489,8 +492,10 @@ def test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request(monkeypatc
 
 
 @pytest.mark.parametrize("name, raw, code", WHOLE_ONLY, ids=[c[0] for c in WHOLE_ONLY])
-def test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused(name, raw, code):
-    test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(name, raw, code, "whole")
+def test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused(name, raw, code, store):
+    test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(
+        name, raw, code, "whole", store
+    )
 
 
 ACCEPTED = [
@@ -510,8 +515,8 @@ ACCEPTED = [
 
 @pytest.mark.parametrize("split", ["whole", "in pieces"])
 @pytest.mark.parametrize("name, raw, status", ACCEPTED, ids=[c[0] for c in ACCEPTED])
-def test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive(name, raw, status, split):
-    a = Actor("http-raw-ok")
+def test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive(name, raw, status, split, store):
+    a = Actor("http-raw-ok", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -525,8 +530,8 @@ def test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive(name, raw,
     assert_safe(fields)
 
 
-def test_a_body_nested_past_the_recursion_limit_is_a_bad_request(no_collection):
-    a = Actor("http-deep")
+def test_a_body_nested_past_the_recursion_limit_is_a_bad_request(no_collection, store):
+    a = Actor("http-deep", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish)
 
@@ -654,10 +659,12 @@ def loopback_v6() -> bool:
 
 
 @pytest.mark.parametrize("bind, cases", [("127.0.0.1", V4), ("::1", V6)])
-def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route(bind, cases):
+def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route(
+    bind, cases, store
+):
     if bind == "::1" and not loopback_v6():
         pytest.skip("no IPv6 loopback on this machine")
-    a = Actor("http-hosts")
+    a = Actor("http-hosts", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -692,8 +699,8 @@ def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on
 
 
 @pytest.mark.parametrize("peer", ["192.0.2.7", "10.0.0.1", "::ffff:192.0.2.7", "", "not an address"])
-def test_a_peer_off_loopback_is_forbidden_before_any_byte_of_its_request_is_read(peer, monkeypatch):
-    a = Actor("http-peer")
+def test_a_peer_off_loopback_is_forbidden_before_any_byte_of_its_request_is_read(peer, monkeypatch, store):
+    a = Actor("http-peer", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
     seen = []
@@ -722,8 +729,8 @@ def test_the_peer_is_read_from_the_connection_and_only_a_loopback_address_passes
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "localhost", "127.0.0.2", "192.0.2.7", ""])
-def test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind(host, monkeypatch):
-    service = Service(Actor("http-bind"))
+def test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind(host, monkeypatch, store):
+    service = Service(Actor("http-bind", store=store))
     binds = []
 
     async def recorder(*args, **kwargs):
@@ -748,10 +755,10 @@ DEADLINE = [  # what is sent, and in how many pieces 0.05 seconds apart: all of 
 
 @pytest.mark.parametrize("name, raw, count", DEADLINE, ids=[c[0] for c in DEADLINE])
 def test_a_request_not_whole_by_the_deadline_is_answered_timeout_however_its_bytes_arrive(
-    name, raw, count, monkeypatch
+    name, raw, count, monkeypatch, store
 ):
     monkeypatch.setattr(serve, "_DEADLINE", 0.6)
-    a = Actor("http-deadline")
+    a = Actor("http-deadline", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -771,8 +778,8 @@ def test_a_request_not_whole_by_the_deadline_is_answered_timeout_however_its_byt
 
 
 @pytest.mark.parametrize("sent", [b"", b"GET / HTTP/1.1\r\nHo", post(b'{"of', length=b"14")])
-def test_a_peer_that_closes_before_its_request_is_whole_is_never_answered(sent):
-    a = Actor("http-eof")
+def test_a_peer_that_closes_before_its_request_is_whole_is_never_answered(sent, store):
+    a = Actor("http-eof", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -801,9 +808,9 @@ def test_a_head_that_parses_with_a_defect_is_refused(monkeypatch):
 # --- C10, D10: the caps -----------------------------------------------------------------------------
 
 
-def test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not(monkeypatch):
+def test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not(monkeypatch, store):
     monkeypatch.setattr(serve, "_CONNECTIONS", 1)
-    a = Actor("http-conns")
+    a = Actor("http-conns", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -831,9 +838,9 @@ def test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes
     assert first[0] == 200 and after == (200, service.card())
 
 
-def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch):
+def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch, store):
     monkeypatch.setattr(serve, "_SUBSCRIBERS", 1)
-    a = Actor("http-subs")
+    a = Actor("http-subs", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -848,8 +855,8 @@ def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch):
     assert frames_ == [("runs", {"runs": []})] and service._subs == set()
 
 
-def test_a_request_read_whole_after_the_end_began_is_refused_busy():
-    a = Actor("http-closing")
+def test_a_request_read_whole_after_the_end_began_is_refused_busy(store):
+    a = Actor("http-closing", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -899,8 +906,8 @@ def test_a_start_while_the_service_ends_is_refused_busy():
     assert [s["outcome"] for s in service.runs_state()["runs"]] == [{"kind": "Stopped", "turn": 2}]
 
 
-def test_a_connection_that_arrives_while_the_service_ends_is_cut_and_never_held():
-    service = Service(Actor("http-late"))
+def test_a_connection_that_arrives_while_the_service_ends_is_cut_and_never_held(store):
+    service = Service(Actor("http-late", store=store))
     service._closing = True
     cut = []
     service._accept(None, SimpleNamespace(transport=SimpleNamespace(abort=lambda: cut.append(True))))
@@ -910,8 +917,8 @@ def test_a_connection_that_arrives_while_the_service_ends_is_cut_and_never_held(
 # --- D12: the stream --------------------------------------------------------------------------------
 
 
-def test_a_stream_sends_a_comment_line_each_time_its_clock_steps_and_frames_in_between():
-    a = Actor("http-ping")
+def test_a_stream_sends_a_comment_line_each_time_its_clock_steps_and_frames_in_between(store):
+    a = Actor("http-ping", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
     ticks: asyncio.Queue = asyncio.Queue()
@@ -968,7 +975,7 @@ BIG = "x" * 8_000_000
 
 def test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_never_waits(monkeypatch):
     monkeypatch.setattr(serve, "_WRITE", 0.2)
-    a = Actor("http-stall")
+    a = Actor("http-stall", store=unflushed_store())  # BIG is 8 MB: see `unflushed_store`
     service = Service(a)
     backend = Held()
     service.offer(Profile("talk"), backend, converse=True)
@@ -1000,6 +1007,7 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
     connections first, so no stream takes a final state, then ends the runs and writes their END rows."""
     monkeypatch.setattr(serve, "_WRITE", 1.0)
     a, gates = actor("http-end")
+    a.store = unflushed_store()  # BIG is 8 MB: see `unflushed_store`
     subscriptions = list(a.bus._subs)
     service = Service(a, dir=tmp_path)
     backend = Held()

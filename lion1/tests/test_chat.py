@@ -14,9 +14,11 @@ import pytest
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lion1 import Actor, Kind, MemoryNoteStore, Profile, RunRequest
+from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
 from lion1.checkpoint import CheckpointError, load, save, take, to_history
+from tests.lionfake import routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -33,9 +35,9 @@ _NOTES: dict = {}  # one note store per directory: the store outlives the actor,
 
 
 def reader(directory) -> tuple[Actor, Profile]:
-    actor = Actor("c")
+    actor = Actor("c", store=fresh_store())
     specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
-    notes = _NOTES.setdefault(directory, MemoryNoteStore())
+    notes = _NOTES.setdefault(directory, fresh_store().notes("p"))
     return actor, Profile(
         name="c", specs=frozenset(specs), system="Reply in plain text. Never write OUT{}.", notes=notes
     )
@@ -349,7 +351,7 @@ def test_a_log_cut_mid_write_recovers_its_whole_lines_and_names_the_cut(tmp_path
         load_log(log, [])
 
 
-def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path):
+def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path, store):
     # a slow tool beside an instant one: the turn and the instant result reach the log while the
     # slow one still runs; a signal in that window used to lose them and the resume notice went
     # silent about a command that had run
@@ -363,7 +365,7 @@ def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path):
     class Slow(BaseModel):
         pass
 
-    actor = Actor("c")
+    actor = Actor("c", store=store)
     said: list = []
     seen: list = []
 
@@ -402,7 +404,9 @@ def test_an_exact_chat_id_resolves_beside_its_same_second_sibling(tmp_path):
         raise AssertionError("a short prefix of two logs resolved")
 
 
-def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_history(tmp_path, monkeypatch):
+def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_history(
+    tmp_path, monkeypatch, console_khive
+):
     # a bad hooks.toml failed the start after the new log was reserved; `-c` then chose the
     # empty log and the previous history was gone from the next session
     import argparse
@@ -452,7 +456,9 @@ def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_histor
     assert sorted(p.name for p in chats.iterdir()) == [old.name]
 
 
-def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call(tmp_path, monkeypatch):
+def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call(
+    tmp_path, monkeypatch, console_khive
+):
     """A continued chat's new CLI session starts from the whole view; its first figure stands on the
     count the last call reported and the characters that call stood in, both from the log's bill."""
     import argparse
@@ -570,7 +576,7 @@ def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
     assert [e.content for e in run.record if e.kind is Kind.TEXT][-1] == "Still here."
 
 
-def test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance(tmp_path):
+def test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance(tmp_path, console_khive):
     """`console(tree=..., about_box=...)`: the file and code tools work the tree handed in, not the
     directory, and the shell guidance is the box's, not the VM's."""
     from lion_cli.chat import console
@@ -874,7 +880,7 @@ def test_a_resumed_chat_whose_git_hangs_is_told_its_patch_could_not_be_checked_w
 
 
 def test_a_resumed_coding_chat_whose_git_hangs_starts_with_the_branch_said_unknown_within_its_bound(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, console_khive
 ):
     # with --code the guidance names the branch, read from git with no time limit: past the bounded
     # patch check, a git that hangs still held the resumed chat before its first call
@@ -1252,7 +1258,7 @@ def test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked(tmp
         "claude-sonnet-5-5 · no actor · inbox 0"
     )
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     assert signer(tmp_path) == "lambda:x"
     line = status_line(actor, profile, [], None, "m", signer(tmp_path))
     assert line.startswith("m · lambda:x · inbox 0")

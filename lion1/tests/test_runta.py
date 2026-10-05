@@ -1668,7 +1668,9 @@ def test_events_without_a_runtime_id_refuses():
 # --- 15. the shell and code tools through the box -------------------------------------------------
 
 
-def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registrations(tmp_path, monkeypatch):
+def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registrations(
+    tmp_path, monkeypatch, store
+):
     mod = stub_runta(tmp_path)
     monkeypatch.setitem(sys.modules, "runta", mod)
     work = tmp_path / "work"
@@ -1679,7 +1681,7 @@ def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registra
 
     (work / "pkg").mkdir()
     (work / "pkg" / "m.py").write_text("def f():\n    return 1\n\n\ndef g():\n    return f()\n")
-    actor = Actor("d")
+    actor = Actor("d", store=store)
     specs = shell(actor, box) | code(actor, BoxTree(box)) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="d", specs=frozenset(specs), system="x")
     backend = scripted(
@@ -1702,7 +1704,7 @@ def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registra
 
 
 @pytest.mark.skipif(os.environ.get("LION_RUNTA_E2E") != "1", reason="LION_RUNTA_E2E=1 runs a real runtime")
-def test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops(tmp_path):
+def test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops(tmp_path, store):
     src = tmp_path / "proj"
     src.mkdir()
     (src / "calc.py").write_text("def add(a, b):\n    return a - b\n")
@@ -1716,7 +1718,7 @@ def test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops(tm
         memory=1,
         egress=Egress(mode="allowlist", hosts=("pypi.org", "files.pythonhosted.org")),
     )
-    actor = Actor("e")
+    actor = Actor("e", store=store)
     specs = shell(actor, box) | code(actor, BoxTree(box)) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="e", specs=frozenset(specs), system="x")
 

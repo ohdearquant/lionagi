@@ -22,8 +22,8 @@ from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
 from hub.agent.verdicts import Verdicts
 from lion1 import Actor, Kind, RunRequest
 from lion1.khive import LOST, Khive, KhiveError
-from lion1.notes import MemoryNoteStore
-from tests.lionfake import LionFake
+from tests.lionfake import LionFake, routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Probe, Scripted, full, mail
 
 ASKER = "lambda:a"  # an agent that wrote to the owner; not in the agent's trusted set
@@ -117,7 +117,7 @@ def build(
     admit_replies: bool = False,
     **probes: Probe,
 ):
-    actor = Actor("chores", privileges={"comm.send"})
+    actor = Actor("chores", privileges={"comm.send"}, store=fresh_store())
     agent = Agent(
         actor,
         khive,
@@ -431,9 +431,9 @@ def test_a_lost_escalation_receipt_is_settled_by_its_keyed_replay_and_never_list
 def test_build_reads_the_escalation_rule_from_chores_toml(tmp_path, kkernel_stub):
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         f"[desk]\nactor_dir = {json.dumps(str(chair))}\n"
@@ -750,7 +750,9 @@ def over_state(tmp_path, inner: FakeKhive, *rows: dict, body: str = TASK_BODY) -
     khive = Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF, BUILD}))
     desk, _, agent = build(tmp_path, khive, reader, [], disk=Probe("disk", full()))
     desk.routes = {"build": BUILD}
-    agent.state = _STATES.setdefault(tmp_path, MemoryNoteStore())  # one store per directory, as the rows are
+    agent.state = _STATES.setdefault(
+        tmp_path, fresh_store().notes("agent")
+    )  # one store per directory, as the rows are
     if agent.state.get("desk_since") is None:
         agent.state.put("desk_since", LIVE, run="-", seq=0)
     return desk, agent
@@ -1183,7 +1185,7 @@ def test_the_brief_is_the_digest_tick_repeating_as_desk_brief_says(
 
 def test_a_desk_less_agent_keeps_the_daily_digest(tmp_path, kkernel_stub):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\n')
     chores, agent = cli_build(tmp_path, backend=None)
     assert getattr(chores, "digest_every", "daily") == "daily" and getattr(agent, "desk", None) is None
@@ -1315,9 +1317,9 @@ def test_a_refused_reply_spends_only_its_own_attempt():
 def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp_path, kkernel_stub):
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         '[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
@@ -1352,9 +1354,9 @@ def chair_agent(tmp_path, extra: str = "") -> Agent:
     appended to its chores.toml."""
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         f"[desk]\nactor_dir = {json.dumps(str(chair))}\n" + extra
@@ -2493,7 +2495,7 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
     client marks, sends or is granted a recipient. A helper that is not there is a refusal too."""
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     stub = tmp_path / "kkernel"
     stub.write_text("")
     reached: list[tuple[str, str]] = []

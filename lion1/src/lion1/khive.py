@@ -5,7 +5,11 @@ the file `--config` names, which wins over the cwd's (measured: from a directory
 names another actor, the file's actor resolves and `--expect-actor <the cwd's>` is refused). So a
 Khive is bound to a directory, or to a config file, and asserts on every call that it resolves to
 the actor it was built for (`--expect-actor`). Ops are the verb DSL the MCP `request` tool takes;
-string arguments are JSON literals, so they go through `json.dumps`.
+string arguments are JSON literals, so they go through `json.dumps`. The binary reads the file a
+`Store` checked (ADR-0026 C8) and no other: `--config` names `config`, made absolute from the directory
+it was named in since the binary runs in `cwd`, or else the cwd's `.khive/config.toml`, which khive's
+own discovery passes over for a `khive.toml` beside it; and the binary starts without `KHIVE_CONFIG`
+and `KHIVE_DB`, either of which would choose another config or another database.
 
 The directory's `.khive/` also keeps its checkpoints, under `.khive/context/` (`context_dir`), which
 git must ignore (`assert_ignored`, ADR-0019/C6).
@@ -76,7 +80,7 @@ class Khive:
         if not Path(self.kkernel).exists():
             raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
         if self.config is not None:
-            self.config = Path(self.config)
+            self.config = Path(self.config).absolute()
             if not self.config.is_file():  # explicit means explicit: never the cwd's instead
                 raise KhiveError(f"{self.config}: no such khive config file")
         elif not (self.cwd / ".khive" / "config.toml").exists():
@@ -87,6 +91,7 @@ class Khive:
         proc = await asyncio.create_subprocess_exec(
             *self._argv(ops),
             cwd=str(self.cwd),
+            env=self._env(),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -115,6 +120,7 @@ class Khive:
             done = subprocess.run(
                 self._argv(ops),
                 cwd=str(self.cwd),
+                env=self._env(),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=self.timeout,
@@ -125,12 +131,23 @@ class Khive:
             raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
         return self._answer(ops, done.returncode, done.stdout, done.stderr)
 
+    def _env(self) -> dict[str, str]:
+        return {k: v for k, v in os.environ.items() if k not in ("KHIVE_CONFIG", "KHIVE_DB")}
+
     def _argv(self, ops: str) -> list[str]:
         # after `--`: an ops string that begins with `-` is the DSL, never an option
-        argv = [self.kkernel, "exec", "--strict", "--expect-actor", self.actor]
-        if self.config is not None:
-            argv += ["--config", str(self.config)]
-        return argv + ["--", ops]
+        config = self.config or (self.cwd / ".khive" / "config.toml").absolute()
+        return [
+            self.kkernel,
+            "exec",
+            "--strict",
+            "--expect-actor",
+            self.actor,
+            "--config",
+            str(config),
+            "--",
+            ops,
+        ]
 
     def _answer(self, ops: str, returncode: int | None, out: bytes, err: bytes) -> list[Any]:
         # the CLI prints a config warning and its database line on every call; keep the rest

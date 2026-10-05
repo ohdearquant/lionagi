@@ -22,6 +22,8 @@ from lion1 import (
 )
 from lion1.actor import JobError, Output, ProfileError
 from lion1.spec import spec_name
+from tests.lionfake import routed_config
+from tests.lionfake import store as fresh_store
 
 
 class Done(BaseModel):
@@ -38,8 +40,8 @@ def scripted(*turns: str):
     return backend
 
 
-def test_out_dict_literal_fills_a_multi_field_spec():
-    actor = Actor("t")
+def test_out_dict_literal_fills_a_multi_field_spec(store):
+    actor = Actor("t", store=store)
     run = asyncio.run(
         actor.run(
             Profile("p"),
@@ -88,18 +90,20 @@ ALIASED_OUTPUTS = [
 
 
 @pytest.mark.parametrize("spec, turn, value", ALIASED_OUTPUTS)
-def test_an_aliased_output_is_filled_by_its_keys_every_way_the_guidance_offers(spec, turn, value):
+def test_an_aliased_output_is_filled_by_its_keys_every_way_the_guidance_offers(spec, turn, value, store):
     # per-field lvars, a dict literal, a bare value, one alias holding it all, one alias per field: each
     # reaches validation under the key validation reads, and text is read for the field that key names
     run = asyncio.run(
-        Actor("t").run(Profile("p"), RunRequest(inputs=("go",), emits=(spec,), max_turns=1), scripted(turn))
+        Actor("t", store=store).run(
+            Profile("p"), RunRequest(inputs=("go",), emits=(spec,), max_turns=1), scripted(turn)
+        )
     )
     assert isinstance(run.outcome, Success)
     assert run.output[spec_name(spec)] == spec.model_validate(value)
 
 
 @pytest.mark.parametrize("spec, turn, value", ALIASED_OUTPUTS)
-def test_an_output_takes_its_specs_keys_once(monkeypatch, spec, turn, value):
+def test_an_output_takes_its_specs_keys_once(monkeypatch, spec, turn, value, store):
     asked = []
     field_keys = actor_module.field_keys
 
@@ -109,13 +113,15 @@ def test_an_output_takes_its_specs_keys_once(monkeypatch, spec, turn, value):
 
     monkeypatch.setattr(actor_module, "field_keys", counted)
     run = asyncio.run(
-        Actor("t").run(Profile("p"), RunRequest(inputs=("go",), emits=(spec,), max_turns=1), scripted(turn))
+        Actor("t", store=store).run(
+            Profile("p"), RunRequest(inputs=("go",), emits=(spec,), max_turns=1), scripted(turn)
+        )
     )
     assert isinstance(run.outcome, Success)
     assert asked == [spec]
 
 
-def test_an_output_with_no_spec_is_filled_field_by_field_and_takes_no_keys(monkeypatch):
+def test_an_output_with_no_spec_is_filled_field_by_field_and_takes_no_keys(monkeypatch, store):
     asked = []
     field_keys = actor_module.field_keys
 
@@ -125,7 +131,7 @@ def test_an_output_with_no_spec_is_filled_field_by_field_and_takes_no_keys(monke
 
     monkeypatch.setattr(actor_module, "field_keys", counted)
     run = asyncio.run(
-        Actor("t").run(
+        Actor("t", store=store).run(
             Profile("p"),
             RunRequest(inputs=("go",), max_turns=1),
             scripted("<lvar note.a x>1</lvar>\n<lvar note.b y>two</lvar>\nOUT{note: [x, y]}"),
@@ -136,8 +142,8 @@ def test_an_output_with_no_spec_is_filled_field_by_field_and_takes_no_keys(monke
     assert asked == []
 
 
-def test_accept_gate_refuses_then_lets_a_later_turn_through():
-    actor = Actor("t2")
+def test_accept_gate_refuses_then_lets_a_later_turn_through(store):
+    actor = Actor("t2", store=store)
     seen: list[str] = []
 
     def accept(run, output):
@@ -160,9 +166,9 @@ def test_accept_gate_refuses_then_lets_a_later_turn_through():
     assert any("OUT{} refused: not yet" in c for c in sys_entries)
 
 
-def test_unreadable_turn_is_a_retry_not_an_end():
+def test_unreadable_turn_is_a_retry_not_an_end(store):
     # a call written with a positional argument cannot be read: the turn is refused whole and retried
-    actor = Actor("t3")
+    actor = Actor("t3", store=store)
     run = asyncio.run(
         actor.run(
             Profile("p"),
@@ -175,8 +181,8 @@ def test_unreadable_turn_is_a_retry_not_an_end():
     assert any("your last turn could not be read" in c for c in sys_entries)
 
 
-def test_repeated_refusals_end_the_run_as_refused():
-    actor = Actor("t4")
+def test_repeated_refusals_end_the_run_as_refused(store):
+    actor = Actor("t4", store=store)
     run = asyncio.run(
         actor.run(
             Profile("p"),
@@ -195,7 +201,7 @@ class Echo(BaseModel):
 
 
 def _echo_actor(name: str) -> Actor:
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
 
     @actor.handler(Echo, effect="pure")
     async def echo(req: Echo, ctx) -> str:
@@ -204,10 +210,10 @@ def _echo_actor(name: str) -> Actor:
     return actor
 
 
-def test_a_program_the_reader_refuses_is_a_retry_that_runs_nothing_like_an_unreadable_call():
+def test_a_program_the_reader_refuses_is_a_retry_that_runs_nothing_like_an_unreadable_call(store):
     # two fenced blocks: a program profile's reader refuses the message whole (ADR-0002/C1, fourth row)
     ran: list[str] = []
-    actor = Actor("t3p")
+    actor = Actor("t3p", store=store)
 
     @actor.handler(Echo, effect="pure")
     async def echo(req: Echo, ctx) -> str:
@@ -297,7 +303,7 @@ class Big(BaseModel):
 
 
 def _big_actor(name: str) -> Actor:
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
 
     @actor.handler(Big)
     async def big(req: Big, ctx) -> str:
@@ -306,10 +312,10 @@ def _big_actor(name: str) -> Actor:
     return actor
 
 
-def test_a_gate_that_raises_refuses_the_finish_instead_of_ending_the_run():
+def test_a_gate_that_raises_refuses_the_finish_instead_of_ending_the_run(store):
     # the bench's gate reads the box's git diff, which raises on an index.lock the model's own
     # killed command left; the run ended and its record died with it
-    actor = Actor("t2b")
+    actor = Actor("t2b", store=store)
     calls: list[int] = []
 
     def accept(run, output):
@@ -493,10 +499,10 @@ def test_a_fold_takes_off_what_left_at_the_runs_measured_rate_not_the_whole_coun
     assert abs(figure - truth) / truth < 0.02, (figure, truth)
 
 
-def test_the_record_keeps_a_plain_str_when_the_backend_reports_a_count():
+def test_the_record_keeps_a_plain_str_when_the_backend_reports_a_count(store):
     seen: list[tuple[int, int, int]] = []
     run = asyncio.run(
-        Actor("t7f").run(
+        Actor("t7f", store=store).run(
             Profile("p"), RunRequest(inputs=("go",), max_turns=2), _counting("one", "two", seen=seen)
         )
     )
@@ -602,8 +608,8 @@ def test_a_turn_level_problem_is_told_and_the_rest_of_the_turn_still_runs():
     assert any("turn: alias 'a1' is used twice in one turn" in c for c in sys_entries)
 
 
-def test_a_wrong_out_key_names_the_concrete_form():
-    actor = Actor("t9")
+def test_a_wrong_out_key_names_the_concrete_form(store):
+    actor = Actor("t9", store=store)
     run = asyncio.run(
         actor.run(
             Profile("p"),
@@ -619,8 +625,8 @@ def test_a_wrong_out_key_names_the_concrete_form():
     assert any("write OUT{done: [aliases]} or OUT{done: {field: value, ...}}" in c for c in sys_entries)
 
 
-def test_a_lone_output_takes_any_out_key_and_says_so():
-    actor = Actor("t11")
+def test_a_lone_output_takes_any_out_key_and_says_so(store):
+    actor = Actor("t11", store=store)
     run = asyncio.run(
         actor.run(
             Profile("p"),
@@ -723,7 +729,7 @@ def test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_th
     ],
 )
 def test_a_wait_that_outlasts_the_time_budget_admits_no_further_call(
-    monkeypatch, answered_at, answer, calls, outcome
+    monkeypatch, answered_at, answer, calls, outcome, store
 ):
     from lion1 import Stopped
 
@@ -741,7 +747,7 @@ def test_a_wait_that_outlasts_the_time_budget_admits_no_further_call(
         return "hello"  # a plain reply: the other side speaks next
 
     request = RunRequest(inputs=("go",), max_turns=5, time_budget=60, wait=wait)
-    run = asyncio.run(Actor("t-wait-clock").run(Profile("p"), request, backend))
+    run = asyncio.run(Actor("t-wait-clock", store=store).run(Profile("p"), request, backend))
     kind, turns = outcome
     assert run.outcome == (Exhausted(turns, "time") if kind == "exhausted" else Stopped(turns))
     assert len(called) == calls and run.turn == calls
@@ -909,8 +915,8 @@ def test_a_frame_anywhere_a_mention_included_is_refused_naming_its_line():
     ).lacts  # a comparison
 
 
-def test_a_turn_with_two_outs_is_not_executed_and_counts_as_a_repeat():
-    actor = Actor("t17b")
+def test_a_turn_with_two_outs_is_not_executed_and_counts_as_a_repeat(store):
+    actor = Actor("t17b", store=store)
     echoed: list[str] = []
 
     @actor.handler(Echo)
@@ -946,8 +952,8 @@ class Answer(BaseModel):
 def _pair(name: str, peer_backend):
     """An asker whose one command queues to a peer and starts the peer's run; the peer answers with
     `peer_backend`. Returns the asker, and the list the peer's run task lands in."""
-    peer = Actor(f"{name}-peer")
-    asker = Actor(f"{name}-asker")
+    peer = Actor(f"{name}-peer", store=fresh_store())
+    asker = Actor(f"{name}-asker", store=fresh_store())
     tasks: list[asyncio.Task] = []
 
     @asker.handler(Ask)
@@ -1038,10 +1044,14 @@ def test_a_peer_whose_backend_raises_settles_the_ask_as_failed_instead_of_hangin
 
 
 @pytest.mark.parametrize("bound, reason", [({"max_turns": 0}, "turns"), ({"time_budget": 0}, "time")])
-def test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run(bound, reason):
+def test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run(bound, reason, store):
     from lion1 import Exhausted
 
-    peer, asker, tasks = Actor(f"t-idle-{reason}-peer"), Actor(f"t-idle-{reason}-asker"), []
+    peer, asker, tasks = (
+        Actor(f"t-idle-{reason}-peer", store=store),
+        Actor(f"t-idle-{reason}-asker", store=store),
+        [],
+    )
 
     @asker.handler(Ask)
     async def ask(req: Ask, ctx):
@@ -1076,8 +1086,8 @@ class Rows(BaseModel):
     items: list[dict[str, int]]
 
 
-def test_an_out_literal_list_of_objects_is_data_and_not_a_list_of_aliases():
-    actor = Actor("t-rows")
+def test_an_out_literal_list_of_objects_is_data_and_not_a_list_of_aliases(store):
+    actor = Actor("t-rows", store=store)
     run = asyncio.run(
         actor.run(Profile("p"), RunRequest(max_turns=1, emits=(Rows,)), scripted('OUT{rows: [{"x": 1}]}'))
     )
@@ -1089,8 +1099,8 @@ class Pair(BaseModel):
     second: str
 
 
-def test_a_field_binding_declared_in_an_earlier_turn_still_fills_its_field():
-    actor = Actor("t-pair")
+def test_a_field_binding_declared_in_an_earlier_turn_still_fills_its_field(store):
+    actor = Actor("t-pair", store=store)
     run = asyncio.run(
         actor.run(
             Profile("p"),
@@ -1101,8 +1111,8 @@ def test_a_field_binding_declared_in_an_earlier_turn_still_fills_its_field():
     assert run.output["pair"] == Pair(first="FIRST", second="SECOND")
 
 
-def test_an_answer_that_lands_before_the_handler_returns_its_handle_still_settles_the_ask():
-    peer, asker, tasks = Actor("t-early-peer"), Actor("t-early-asker"), []
+def test_an_answer_that_lands_before_the_handler_returns_its_handle_still_settles_the_ask(store):
+    peer, asker, tasks = Actor("t-early-peer", store=store), Actor("t-early-asker", store=store), []
 
     @asker.handler(Ask)
     async def ask(req: Ask, ctx):
@@ -1238,7 +1248,7 @@ def test_the_khive_note_store_refuses_what_json_cannot_carry_before_any_call(tmp
     from lion1.khive import Khive
 
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lion1:notes"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lion1:notes", tmp_path))
     store = Store(Khive(tmp_path, "lion1:notes")).notes("clerk")
     store.put("ok", {"payload": [1, 2]}, run="a", seq=0)
     calls = len(store.khive.calls)
@@ -1278,10 +1288,10 @@ class Tally(BaseModel):
         (Tally, '"3"', 3),  # a field that cannot take text reads the text as a literal
     ],
 )
-def test_a_quoted_string_stays_a_string_where_the_field_takes_text(spec, literal, expected):
+def test_a_quoted_string_stays_a_string_where_the_field_takes_text(spec, literal, expected, store):
     name = spec_name(spec)
     run = asyncio.run(
-        Actor(f"t-{name}").run(
+        Actor(f"t-{name}", store=store).run(
             Profile("p"),
             RunRequest(inputs=("go",), emits=(spec,), max_turns=1),
             scripted(f"OUT{{{name}: {{value: {literal}}}}}"),
@@ -1292,9 +1302,9 @@ def test_a_quoted_string_stays_a_string_where_the_field_takes_text(spec, literal
     assert value == expected and type(value) is type(expected)
 
 
-def test_a_namespaced_lvar_holding_a_list_still_fills_a_list_field():
+def test_a_namespaced_lvar_holding_a_list_still_fills_a_list_field(store):
     run = asyncio.run(
-        Actor("t-lvar-list").run(
+        Actor("t-lvar-list", store=store).run(
             Profile("p"),
             RunRequest(emits=(Done,), max_turns=2),
             scripted(
@@ -1306,8 +1316,8 @@ def test_a_namespaced_lvar_holding_a_list_still_fills_a_list_field():
     assert run.output["done"] == Done(summary="two", files=["a.py", "b.py"])
 
 
-def test_a_refused_declaration_binds_no_field_and_a_plain_one_unbinds():
-    actor = Actor("t-rebind")
+def test_a_refused_declaration_binds_no_field_and_a_plain_one_unbinds(store):
+    actor = Actor("t-rebind", store=store)
 
     @actor.handler(Echo)
     def echo(req: Echo, ctx) -> str:
@@ -1331,7 +1341,7 @@ def test_a_refused_declaration_binds_no_field_and_a_plain_one_unbinds():
     before = ("<lvar a>NEW_FIRST</lvar><lvar b>NEW_SECOND</lvar>", "OUT{pair: [a, b]}")
     for turns in (beside, before):
         run = asyncio.run(
-            Actor("t-plain").run(
+            Actor("t-plain", store=store).run(
                 Profile("p"),
                 RunRequest(max_turns=3, emits=(Pair,)),
                 scripted("<lvar pair.first a>X</lvar><lvar pair.second b>Y</lvar>", *turns),
@@ -1353,8 +1363,8 @@ class Picky(BaseModel):
         raise TypeError("the validator's own error")
 
 
-def test_a_command_that_stops_without_returning_still_settles_as_a_result():
-    actor = Actor("t-cancel")
+def test_a_command_that_stops_without_returning_still_settles_as_a_result(store):
+    actor = Actor("t-cancel", store=store)
 
     @actor.handler(Wait)
     async def wait(req: Wait, ctx) -> str:
@@ -1393,8 +1403,8 @@ class Reciprocal(BaseModel):
         return 1 / self.n
 
 
-def test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues():
-    actor = Actor("t-capture")
+def test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues(store):
+    actor = Actor("t-capture", store=store)
     called: list[int] = []
 
     @actor.handler(Reciprocal)
@@ -1423,8 +1433,8 @@ class GetCount(BaseModel):
     pass
 
 
-def test_a_bare_result_fills_a_one_field_output_named_in_a_list():
-    actor = Actor("t-scalar")
+def test_a_bare_result_fills_a_one_field_output_named_in_a_list(store):
+    actor = Actor("t-scalar", store=store)
 
     @actor.handler(GetCount)
     def get_count(req: GetCount, ctx) -> int:
@@ -1444,8 +1454,8 @@ class Reply(BaseModel):
     answer: str
 
 
-def test_a_command_written_inside_an_out_string_is_a_string_and_never_runs():
-    actor = Actor("t-quoted")
+def test_a_command_written_inside_an_out_string_is_a_string_and_never_runs(store):
+    actor = Actor("t-quoted", store=store)
     fired: list[str] = []
 
     @actor.handler(Echo)
@@ -1472,7 +1482,7 @@ def test_a_profile_name_is_a_file_name(name):
     assert Profile("reviewer.v2-draft_1").name == "reviewer.v2-draft_1"
 
 
-def test_every_message_to_the_backend_names_the_run():
+def test_every_message_to_the_backend_names_the_run(store):
     seen: list[list[Message]] = []
 
     async def backend(messages: list[Message]) -> str:
@@ -1480,13 +1490,15 @@ def test_every_message_to_the_backend_names_the_run():
         return 'OUT{done: {summary: "s", files: []}}'
 
     run = asyncio.run(
-        Actor("t-runid").run(Profile("p"), RunRequest(inputs=("go",), emits=(Done,), max_turns=1), backend)
+        Actor("t-runid", store=store).run(
+            Profile("p"), RunRequest(inputs=("go",), emits=(Done,), max_turns=1), backend
+        )
     )
     assert seen and all(m.run == run.id for m in seen[0])
 
 
-def test_a_subset_named_by_a_generator_is_read_once():
-    actor = Actor("t-gen")
+def test_a_subset_named_by_a_generator_is_read_once(store):
+    actor = Actor("t-gen", store=store)
 
     @actor.handler(Echo)
     def echo(req: Echo, ctx) -> str:
@@ -1495,7 +1507,7 @@ def test_a_subset_named_by_a_generator_is_read_once():
     assert list(actor.operable.subset(iter(["echo"]))) == ["echo"]
 
 
-def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
+def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs(store):
     """A session-keeping backend's context (tool turns included) is what it reports; the record's own
     estimate never sees it grow. What the count stands above the view at its least is the backend's own
     context and never folds; growth past that does, and under fold_inputs the earlier mail and replies
@@ -1519,7 +1531,7 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
         return next(replies)
 
     request = RunRequest(inputs=("first mail",), emits=(), max_turns=4, wait=wait, fold_inputs=True)
-    run = asyncio.run(Actor("folder").run(Profile("p", system="s"), request, backend))
+    run = asyncio.run(Actor("folder", store=store).run(Profile("p", system="s"), request, backend))
     notices = [e for e in run.record if e.kind is Kind.SYSTEM]
     # the count reported after turn 2 decides turn 3's notification; the first count is the floor
     assert len(notices) == 4 and all("directive" not in n.meta for n in notices[:2])  # the fourth closes
@@ -1540,7 +1552,7 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
         [Said("looked", prompt_tokens=20_000), Said("looked more", prompt_tokens=100_000), "and again"]
     )
     bare = RunRequest(inputs=("only mail",), emits=(), max_turns=3)
-    run = asyncio.run(Actor("folder").run(Profile("p", system="s"), bare, backend))
+    run = asyncio.run(Actor("folder", store=store).run(Profile("p", system="s"), bare, backend))
     third = [e for e in run.record if e.kind is Kind.SYSTEM][2]
     assert "nothing older to fold" in third.content and third.meta["directive"].refs == ()
 
@@ -1773,7 +1785,7 @@ def test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_a
     assert told == ["time_budget raised from 100 to 100.5"] and run.bounds["time_budget"] == 100.5
 
 
-def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant():
+def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant(store):
     async def extend(run, bound, amount, reason) -> bool:
         while not any(limit.expired() for limit in run.timeouts):
             await asyncio.sleep(0)  # the walk's deadline has not fired
@@ -1781,7 +1793,7 @@ def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant(
 
     turn = '```\nOUT{granted: DO run.more(bound="time_budget", amount=5, reason="late")}\n```'
     run = asyncio.run(
-        Actor("b-late").run(
+        Actor("b-late", store=store).run(
             Profile("p", language="program"),
             RunRequest(inputs=("go",), time_budget=0.2, max_turns=1, extend=extend),
             scripted(turn),
@@ -1794,14 +1806,14 @@ def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant(
     assert run.refused == [("turn", f"{late}; nothing after it ran")]
 
 
-def test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk():
+def test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk(store):
     def extend(run, bound, amount, reason) -> bool:
         time.sleep(0.3)  # a synchronous grant that holds the loop: the deadline passes under it, unfired
         return True
 
     turn = '```\nOUT{granted: DO run.more(bound="time_budget", amount=5, reason="held")}\n```'
     run = asyncio.run(
-        Actor("b-held").run(
+        Actor("b-held", store=store).run(
             Profile("p", language="program"),
             RunRequest(inputs=("go",), time_budget=0.2, max_turns=1, extend=extend),
             scripted(turn),
@@ -2014,8 +2026,8 @@ def test_a_grant_of_time_during_the_reap_gives_it_no_deadline_so_a_cleanup_runs_
     assert run.resolve("n1").reason == "cancelled" and run.timeouts == set()
 
 
-def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
-    actor = Actor("b-out-before")
+def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges(store):
+    actor = Actor("b-out-before", store=store)
     order: list[tuple[str, ...]] = []
 
     @actor.before
@@ -2046,8 +2058,8 @@ def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
         ({}, "must fill: ['done']"),  # a required output dropped, as the model could not
     ],
 )
-def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told):
-    actor = Actor("b-out-rewrite-shape")
+def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told, store):
+    actor = Actor("b-out-rewrite-shape", store=store)
     actor.before(lambda run, la, req: Output(fields=fields))
     run = asyncio.run(
         actor.run(
@@ -2063,11 +2075,11 @@ def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told)
         assert told in "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
 
 
-def test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default():
+def test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default(store):
     class Note(BaseModel):
         text: str = ""
 
-    actor = Actor("b-out-rewrite-default")
+    actor = Actor("b-out-rewrite-default", store=store)
     actor.before(lambda run, la, req: Output(fields={"done": req.fields["done"]}))
     run = asyncio.run(
         actor.run(
@@ -2079,8 +2091,8 @@ def test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default():
     assert isinstance(run.outcome, Success) and run.output == {"done": Done(summary="s", files=[])}
 
 
-def test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_approved():
-    actor = Actor("b-out-accept-validated")
+def test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_approved(store):
+    actor = Actor("b-out-accept-validated", store=store)
     actor.before(lambda run, la, req: Output(fields={"done": {"summary": "rewritten", "files": []}}))
     judged: list[dict] = []
     run = asyncio.run(
@@ -2096,8 +2108,8 @@ def test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_app
     assert judged == [run.output] and judged[0]["done"] is run.output["done"]
 
 
-def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse():
-    actor = Actor("b-out-accept-unasked")
+def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse(store):
+    actor = Actor("b-out-accept-unasked", store=store)
     actor.before(lambda run, la, req: Output(fields={"done": "not a Done"}))
     judged: list[dict] = []
     run = asyncio.run(
@@ -2145,8 +2157,8 @@ def test_a_run_request_takes_its_fields_by_name_only():
         RunRequest(("go",), (Done,), 10)
 
 
-def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts():
-    actor = Actor("b-out-gate")
+def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts(store):
+    actor = Actor("b-out-gate", store=store)
     actor.before(lambda run, la, req: "closed for the night")
     judged: list[object] = []
     run = asyncio.run(
@@ -2161,8 +2173,8 @@ def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts():
     assert run.outcome == Refused("closed for the night", 1) and judged == [] and run.output is None
 
 
-def test_an_after_hooks_replacement_of_out_is_refused_and_listed():
-    actor = Actor("b-out-after")
+def test_an_after_hooks_replacement_of_out_is_refused_and_listed(store):
+    actor = Actor("b-out-after", store=store)
 
     @actor.after
     def swap(run, la, req, result):

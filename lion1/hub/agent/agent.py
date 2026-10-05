@@ -43,7 +43,7 @@ from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, 
 from lion1.checkpoint import Var, jsonable, load, save, take, to_history
 from lion1.khive import Khive, assert_ignored, context_dir, lit
 from lion1.lndl import plain
-from lion1.notes import MemoryNoteStore, NoteStore
+from lion1.notes import NoteStore
 from lion1.record import Directive, Entry, Kind
 
 from ..areas import partial
@@ -378,7 +378,7 @@ class Agent:
     admit: Callable[[dict], bool] | None = None  # None admits all mail; refused mail never reaches a run
     budget: Budget = Budget()
     owner: str | None = None  # the actor told when a batch is lost or a wake fails; None tells nobody
-    state: NoteStore | None = None  # the agent's own notes: the store's rows from the CLI; None: in memory
+    state: NoteStore | None = None  # the agent's own notes: the CLI hands the store's; None: the actor's own
     max_turns: int = 6
     # the gate on OUT{} (RunRequest.accept): why the wake may not end yet, or None; a refusal is a retry
     accept: Callable[[Run, Any], Awaitable[str | None] | str | None] | None = None
@@ -419,8 +419,8 @@ class Agent:
     _restored: bool = field(default=False, repr=False)  # the first run of the process read latest.json
 
     def __post_init__(self) -> None:
-        if self.state is None:  # the CLI hands the store's rows (ADR-0025 D6); a test runs in memory
-            self.state = MemoryNoteStore()
+        if self.state is None:  # the CLI hands the store's rows (ADR-0025 D6); else the actor's own
+            self.state = self.actor.store.notes("agent")
         if self.config is not None and self.config.exists():
             self._config_mtime = self.config.stat().st_mtime  # what this process was built with
         # a quiet chair counts from its start, or its last wake booked, whichever is later

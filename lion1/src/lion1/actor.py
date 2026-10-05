@@ -53,7 +53,7 @@ from .lndl import (
 )
 from .lndl import check as check_script
 from .lndl import read as read_script
-from .notes import MemoryNoteStore, Note, NoteStore, key_of
+from .notes import Note, NoteStore, key_of
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
@@ -660,12 +660,12 @@ async def _note_delete(req: NoteDelete, ctx: Context) -> str:
 
 async def _note_read(req: NoteRead, ctx: Context) -> dict:
     name, actor = Profile(req.profile).name, ctx.actor
-    # the store kept under that name, or the profile's rows in the actor's store; a read makes no
-    # memory store, so a name with neither stays without one
-    store = actor._notes.get(name)
-    if store is None and actor.store is not None:
-        store = actor.store.notes(name)
-    n = store.get(req.key) if store is not None else None
+    # the notes kept under that name, or the profile's rows in the actor's store; a read registers no
+    # notes for the name
+    notes = actor._notes.get(name)
+    if notes is None:
+        notes = actor.store.notes(name)
+    n = notes.get(req.key)
     if n is None:
         raise KeyError(f"no note {req.key!r} in the notes of {req.profile}")
     return {"profile": req.profile, "key": n.key, "value": n.value, "run": n.run, "version": n.version}
@@ -770,10 +770,15 @@ class Actor:
         *,
         privileges: Iterable[str] = (),
         bus: Bus | None = None,
-        store: Store | None = None,
+        store: Store,
     ):
+        if store is None:
+            raise TypeError(
+                "an Actor is built with a store: the run's rows and its profiles' notes are rows of khive "
+                "(ADR-0025 D3)"
+            )
         self.name = name
-        self.store = store  # the run's rows and the profiles' notes in khive (ADR-0025); None: in memory
+        self.store = store  # the run's rows and the profiles' notes in khive (ADR-0025)
         self.privileges = frozenset(privileges)
         self.bus = bus or Bus()
         self.handlers: dict[str, Handler] = {}
@@ -861,11 +866,11 @@ class Actor:
     def notes_for(self, profile: Profile) -> NoteStore:
         if profile.notes is not None:
             return profile.notes
-        store = self._notes.get(profile.name)
-        if store is None:
-            store = self.store.notes(profile.name) if self.store is not None else MemoryNoteStore()
-            self._notes[profile.name] = store
-        return store
+        notes = self._notes.get(profile.name)
+        if notes is None:
+            notes = self.store.notes(profile.name)
+            self._notes[profile.name] = notes
+        return notes
 
     def queue(self, content: Any, context: Context) -> Handle:
         """Hand something to this actor from inside a handler (ADR-0010/C1, ADR-0010/C2).
@@ -929,12 +934,11 @@ class Actor:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
         self.bus.emit("run.started", run=run.id, actor=self.name, profile=profile.name)
-        if self.store is not None:
-            try:
-                await self.store.open(run, trigger=list(request.trigger) or None, continues=request.continues)
-            except BaseException:  # no rows: the run never started, and it is not left behind
-                self.runs.pop(run.id, None)
-                raise
+        try:
+            await self.store.open(run, trigger=list(request.trigger) or None, continues=request.continues)
+        except BaseException:  # no rows: the run never started, and it is not left behind
+            self.runs.pop(run.id, None)
+            raise
 
         call = None
         try:
@@ -993,9 +997,8 @@ class Actor:
                 view = self._fold(run)
                 messages = self._render(run, subset, view)
                 call = None
-                if self.store is not None:  # every entry so far is a row before this call goes (C1)
-                    await self.store.flush(run)
-                    call = await self.store.call_open(run, turn_no, _model(backend), view)
+                await self.store.flush(run)  # every entry so far is a row before this call goes (C1)
+                call = await self.store.call_open(run, turn_no, _model(backend), view)
                 text = backend(messages)
                 if inspect.isawaitable(text):
                     run.call = asyncio.ensure_future(text)
@@ -1015,9 +1018,8 @@ class Actor:
                             "the person cut this turn short: its call was abandoned, no message came of it",
                             turn=turn_no,
                         )
-                        if call is not None:
-                            await self.store.call_close(run, call, status="cut")
-                            call = None
+                        await self.store.call_close(run, call, status="cut")
+                        call = None
                         continue
                     finally:
                         run.call = None
@@ -1046,19 +1048,18 @@ class Actor:
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
-                if call is not None:
-                    counted = isinstance(reported, int) and not isinstance(reported, bool)
-                    priced = isinstance(cost, int | float) and not isinstance(cost, bool)
-                    await self.store.call_close(
-                        run,
-                        call,
-                        status="refused" if refused else "ok",
-                        reply_seq=m.seq,
-                        tokens_in=reported if counted else None,
-                        cost=cost if priced else None,
-                        error=refused,
-                    )
-                    call = None  # closed: a request that raises later is not this call
+                counted = isinstance(reported, int) and not isinstance(reported, bool)
+                priced = isinstance(cost, int | float) and not isinstance(cost, bool)
+                await self.store.call_close(
+                    run,
+                    call,
+                    status="refused" if refused else "ok",
+                    reply_seq=m.seq,
+                    tokens_in=reported if counted else None,
+                    cost=cost if priced else None,
+                    error=refused,
+                )
+                call = None  # closed: a request that raises later is not this call
                 try:
                     program = _read(text, run.profile.language, refused)
                     run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
@@ -1206,14 +1207,15 @@ class Actor:
             finally:
                 self.runs.pop(run.id, None)
                 self._deliver(run, error=e)
-            if self.store is not None:  # the open call and the run close as what they are (C2, C5);
-                try:  # a store that fails here does not hide what ended the run
-                    if call is not None:
-                        why = f"{type(e).__name__}: {e}"
-                        await self.store.call_close(run, call, status="failed", error=why)
-                    await self.store.close(run)
-                except Exception:
-                    pass
+            # the open call and the run close as what they are (C2, C5); a store that fails here does not
+            # hide what ended the run
+            try:
+                if call is not None:
+                    why = f"{type(e).__name__}: {e}"
+                    await self.store.call_close(run, call, status="failed", error=why)
+                await self.store.close(run)
+            except Exception:
+                pass
             if cancelled and not isinstance(e, asyncio.CancelledError):
                 raise asyncio.CancelledError from e
             raise
@@ -1222,8 +1224,7 @@ class Actor:
                 if not answer.done():
                     answer.cancel()
 
-        if self.store is not None:
-            await self.store.close(run)
+        await self.store.close(run)
         self.runs.pop(run.id, None)
         self._deliver(run)
         self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, turns=run.turn)

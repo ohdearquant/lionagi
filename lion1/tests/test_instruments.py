@@ -40,8 +40,8 @@ from hub.agent.instruments import (
     VerdictFreshness,
     Worktrees,
 )
-from lion1 import MemoryNoteStore
-from tests.lionfake import resident_store
+from tests.lionfake import resident_store, routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_chores import FakeKhive
 
 
@@ -123,7 +123,7 @@ RUNS = runs_page(
 
 
 def pr_state(sh: FakeSh, repos, **kw) -> PrState:
-    return PrState(repos, MemoryNoteStore(), every="every:30m", run=sh, **kw)
+    return PrState(repos, fresh_store().notes("agent"), every="every:30m", run=sh, **kw)
 
 
 def test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once():
@@ -289,7 +289,7 @@ def test_pr_state_now_reads_one_pr_from_gh_at_the_moment_of_asking_and_leaves_th
             "commits/": json.dumps([{"context": "local/suites", "state": "success"}]),
         }
     )
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = PrState([{"name": "o/r", "ci": "statuses"}], store, every="every:30m", run=sh)
     row = asyncio.run(inst.now("o/r", 7))
     assert set(row) == {
@@ -525,12 +525,12 @@ def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
 def test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build(table, refusal):
     cfg = tomllib.loads(f'[chores.disk]\nroots = ["/"]\n{table}\n')
     with pytest.raises(ValueError, match=re.escape(refusal)):
-        instr.instruments(cfg, FakeKhive(), MemoryNoteStore())
+        instr.instruments(cfg, FakeKhive(), fresh_store().notes("agent"))
     fine = '[[chores.disk.floors]]\nname = "zero"\nfloor_gib = 0\nbudget_gib = 0.5\n'
     disk = instr.instruments(
         tomllib.loads(f'[chores.disk]\nroots = ["/"]\ntarget_cap_gib = 0\n{fine}'),
         FakeKhive(),
-        MemoryNoteStore(),
+        fresh_store().notes("agent"),
     )
     assert (
         disk["disk"].floors == [{"name": "zero", "floor_gib": 0, "budget_gib": 0.5}] and disk["disk"].cap == 0
@@ -1363,7 +1363,9 @@ def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
             "pr list -R o/r --head feat": "[]",
         }
     )
-    inst = Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every="every:6h", parked_days=3, run=sh)
+    inst = Worktrees(
+        [str(tmp_path / "main")], fresh_store().notes("agent"), every="every:6h", parked_days=3, run=sh
+    )
     out = asyncio.run(inst.run({}))
     assert out.control and out.evidence.startswith(
         f"control: {tmp_path}/main lists 2 tree(s) incl. the main checkout; origin o/r\n"
@@ -1384,7 +1386,7 @@ def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
         f"{tmp_path}/wt (feat): parked: dirty, HEAD older than 3 days, no open PR",
     )
     out = asyncio.run(
-        Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=FakeSh()).run({})
+        Worktrees([str(tmp_path / "main")], fresh_store().notes("agent"), every=None, run=FakeSh()).run({})
     )
     assert not out.control and "git worktree list failed" in out.findings[0]
 
@@ -1412,7 +1414,9 @@ def test_worktrees_an_origin_keeps_every_dot_of_its_repository(tmp_path, origin)
             "pr list -R o/project.v2 --head feat": "[]",
         }
     )
-    out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
+    out = asyncio.run(
+        Worktrees([str(tmp_path / "main")], fresh_store().notes("agent"), every=None, run=sh).run({})
+    )
     assert out.control and "origin o/project.v2\n" in out.evidence
     assert ["pr", "list", "-R", "o/project.v2"] == next(c for c in sh.calls if "pr" in c)[1:5]
 
@@ -1431,7 +1435,7 @@ def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_
         "pr list -R o/r --head feat": "[]",
     }
     key = {"status": "status --porcelain", "log": "log -1", "pr": "pr list -R o/r --head feat"}[failing]
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
     assert asyncio.run(inst.run({})).control
     kept = store.get(f"worktrees:{tmp_path}/main").value
@@ -1442,7 +1446,7 @@ def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_
     word = {"status": "status", "log": "log", "pr": "PR"}[failing]
     assert not out.control and out.findings == (f"{tmp_path}/wt: the {word} read failed; the tree is unread",)
     assert store.get(f"worktrees:{tmp_path}/main").value == kept  # no transition from an unread tree
-    fresh = Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=broken)
+    fresh = Worktrees([str(tmp_path / "main")], fresh_store().notes("agent"), every=None, run=broken)
     out = asyncio.run(fresh.run({}))  # first sight of an unread tree: nothing stored for it
     assert not out.control and out.count == 0
     assert f"{tmp_path}/wt: the {word} read failed; the tree is unread" in out.findings
@@ -1476,7 +1480,7 @@ def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, orig
         "log -1": f"{int(time.time()) - 5 * 86400}\n",
         "pr list -R o/r --head feat": "[]",
     }
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
     assert asyncio.run(inst.run({})).control
     kept = store.get(f"worktrees:{tmp_path}/main").value
@@ -1520,7 +1524,9 @@ def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer)
             "pr list -R o/r --head feat": answer,
         }
     )
-    out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
+    out = asyncio.run(
+        Worktrees([str(tmp_path / "main")], fresh_store().notes("agent"), every=None, run=sh).run({})
+    )
     assert not out.control and f"{tmp_path}/wt: the PR read failed; the tree is unread" in out.findings
     assert f"{tmp_path}/wt | feat | dirty 0 | HEAD 0.0d | PR not a PR list" in out.evidence
 
@@ -1539,7 +1545,9 @@ def test_worktrees_a_head_committed_ahead_of_the_clock_is_a_read(tmp_path):
             "pr list -R o/r --head feat": "[]",
         }
     )
-    out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
+    out = asyncio.run(
+        Worktrees([str(tmp_path / "main")], fresh_store().notes("agent"), every=None, run=sh).run({})
+    )
     assert out.control and out.findings == (f"{tmp_path}/main: first snapshot, 1 worktree(s)",)
 
 
@@ -1559,7 +1567,7 @@ def test_worktrees_strips_only_the_leading_refs_heads_from_a_branch(tmp_path):
             "pr list -R o/r --head feat": "[]",
         }
     )
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, run=sh).run({}))
     assert out.control
     snap = store.get(f"worktrees:{tmp_path}/main").value
@@ -1583,7 +1591,7 @@ def test_worktrees_a_path_holding_a_line_break_is_read_whole(tmp_path):
             "pr list -R o/r --head feat": "[]",
         }
     )
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, run=sh).run({}))
     assert out.control and out.count == 4
     assert sorted(store.get(f"worktrees:{tmp_path}/main").value) == sorted(paths)
@@ -1605,7 +1613,7 @@ def test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread(tmp_p
             "pr list -R o/r --head feat": "[]",
         }
     )
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = Worktrees([str(tmp_path / "main")], store, every=None, run=sh)
     assert asyncio.run(inst.run({})).control
     kept = store.get(f"worktrees:{tmp_path}/main").value
@@ -1637,7 +1645,7 @@ def _old_dirty_answers(tmp_path) -> dict:
 
 def test_worktrees_a_branch_named_detached_is_queried_and_parks_beside_a_detached_head(tmp_path):
     sh = FakeSh(**_old_dirty_answers(tmp_path))
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=sh).run({}))
     assert out.control and out.count == 2
     assert [c[1:] for c in sh.calls if "pr" in c] == [
@@ -1661,7 +1669,7 @@ def test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_
     # rows stored before a detached HEAD was kept as no branch hold `detached` with PR `?` for both a
     # detached HEAD and a branch of that name: such a row is guessed into neither
     sh = FakeSh(**_old_dirty_answers(tmp_path))
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     old = {"branch": "detached", "dirty": 1, "pr": "?", "parked": False}
     rows = {f"{tmp_path}/named": old, f"{tmp_path}/loose": old}
     store.put(f"worktrees:{tmp_path}/main", rows, run="-", seq=0)
@@ -1691,7 +1699,7 @@ def test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_
 )
 def test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unread(tmp_path, key, answer):
     good = _old_dirty_answers(tmp_path)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
     assert asyncio.run(inst.run({})).control
     kept = store.get(f"worktrees:{tmp_path}/main").value
@@ -1963,7 +1971,7 @@ def test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_b
     job = f'{{artifact = "/x/out.json", max_age_h = {bound}}}'
     cfg = tomllib.loads(f'owner = "lambda:x"\n[chores.scheduled-job]\njobs = [{job}]\n')
     with pytest.raises(ValueError, match="max_age_h is a positive number of hours"):
-        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
+        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), fresh_store().notes("agent"))
 
 
 def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs(tmp_path):
@@ -1976,7 +1984,7 @@ def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_s
             "scheduled-job": {"every": "every:1h", "jobs": [{"artifact": "/x/out.json", "max_age_h": 26}]},
         },
     }
-    built = instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
+    built = instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), fresh_store().notes("agent"))
     assert sorted(built) == ["lock-holder", "scheduled-job"]
     lock_holder = built["lock-holder"]
     assert (lock_holder.locks, lock_holder.held) == (["/tmp/a.lock"], str(tmp_path / "agent.pid"))
@@ -1985,12 +1993,12 @@ def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_s
     assert not any(i.empty_expected for i in built.values())
     cfg["chores"]["scheduled-job"]["jobs"] = [{"artifact": "/x/out.json"}]
     with pytest.raises(ValueError, match="a scheduled job names its artifact and its max_age_h"):
-        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
+        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), fresh_store().notes("agent"))
 
 
 def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_path, kkernel_stub):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         'trusted = ["daemon:review"]\n'
@@ -2015,10 +2023,10 @@ def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_
 def desk_dir(tmp_path, front: str = "") -> None:
     """An agent directory whose `[desk]` reads the chair `lambda:x`; `front` is appended to the table."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         + f"[desk]\nactor_dir = {json.dumps(str(chair))}\n{front}"
@@ -2135,7 +2143,7 @@ def required_sh(admin: bool | None = True, **over) -> FakeSh:
 def required(sh: FakeSh, classic: bool = True, state=None) -> RequiredContexts:
     return RequiredContexts(
         [{"name": "o/r", "classic": classic}],
-        state or MemoryNoteStore(),
+        state or fresh_store().notes("agent"),
         every=None,
         source_identity="lambda:x:desk",
         run=sh,
@@ -2181,7 +2189,7 @@ def test_required_contexts_reads_seven_classic_names_by_name_and_emits_the_check
 
 
 def test_required_contexts_first_sight_is_the_row_then_only_transitions():
-    sh, store = required_sh(), MemoryNoteStore()
+    sh, store = required_sh(), fresh_store().notes("agent")
     inst = required(sh, state=store)
     assert len(asyncio.run(inst.run({})).findings) == 1
     assert asyncio.run(inst.run({})).findings == ()  # nothing moved: quiet
@@ -2607,7 +2615,7 @@ def test_required_contexts_control_fails_when_a_head_surface_does_not_read():
     env = out.data[0]["envelope"]
     assert env["completeness"] == "partial" and env["reason"] == "check-runs unread: gh: HTTP 502"
     with pytest.raises(ValueError, match="classic = true|false"):
-        RequiredContexts([{"name": "o/r"}], MemoryNoteStore(), every=None, source_identity="x")
+        RequiredContexts([{"name": "o/r"}], fresh_store().notes("agent"), every=None, source_identity="x")
 
 
 HEAD7, HEAD8, HEAD9, OLD = "7" * 40, "8" * 40, "9" * 40, "0" * 40
@@ -2691,7 +2699,7 @@ def test_verdict_freshness_at_head_stale_never_reviewed_newest_by_mtime_then_rou
     # named as o/r's, its own repo is not o/r
     verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other", named="o/r")
     inst = VerdictFreshness(
-        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
     )
     out = asyncio.run(inst.run({}))
     assert out.control and out.count == 3
@@ -2714,7 +2722,9 @@ def test_verdict_freshness_at_head_stale_never_reviewed_newest_by_mtime_then_rou
 def test_verdict_freshness_first_sight_then_transitions(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = freshness_sh(prs=((7, HEAD7),))
-    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    inst = VerdictFreshness(
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+    )
     assert len(asyncio.run(inst.run({})).findings) == 1
     assert asyncio.run(inst.run({})).findings == ()  # nothing moved: quiet
     sh.set(
@@ -2737,7 +2747,9 @@ def test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until
     monkeypatch.setattr(instr, "PR_PAGE", 2)
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = freshness_sh(prs=((7, HEAD7), (8, HEAD8)))
-    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    inst = VerdictFreshness(
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+    )
     asyncio.run(inst.run({}))
     kept = inst.state.get("verdict-freshness").value["o/r#7"]
     sh.set(
@@ -2764,7 +2776,7 @@ def test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_ano
     that row, as it keeps one spelled as configured."""
     monkeypatch.setattr(instr, "PR_PAGE", 2)
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     kept = "O/R#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: x"
     store.put("verdict-freshness", {"O/R#7": kept}, run="-", seq=0)
     sh = freshness_sh(prs=((8, HEAD8), (9, HEAD9)))
@@ -2776,14 +2788,14 @@ def test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_ano
 
 def test_verdict_freshness_an_empty_verdict_dir_fails_the_instrument_and_judges_no_pr(tmp_path):
     inst = VerdictFreshness(
-        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
     )
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings == (f"{tmp_path}: no verdict JSON in 0 entries; no PR is judged",)
     assert out.data == () and not any("NEVER-REVIEWED" in f for f in out.findings)
     out = asyncio.run(
         VerdictFreshness(
-            MemoryNoteStore(),
+            fresh_store().notes("agent"),
             every=None,
             verdict_dir=str(tmp_path / "gone"),
             repos=["o/r"],
@@ -2797,7 +2809,7 @@ def test_verdict_freshness_a_newest_json_that_does_not_parse_fails_the_control(t
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     (tmp_path / "o-r-7-12345678.json").write_text("{not json")
     inst = VerdictFreshness(
-        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
     )
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings == (
@@ -2823,7 +2835,7 @@ def test_verdict_freshness_reads_the_md_header_when_the_json_is_missing_and_says
         tmp_path, 7, HEAD7, head8="77777777", mtime=1000, json_file=False, blocking=["x", "y"], degraded=True
     )
     inst = VerdictFreshness(
-        MemoryNoteStore(),
+        fresh_store().notes("agent"),
         every=None,
         verdict_dir=str(tmp_path),
         repos=["o/r"],
@@ -2841,7 +2853,7 @@ def test_verdict_freshness_a_directory_of_md_only_verdicts_is_read_through_the_m
     per-PR read promises is reachable without another PR's JSON."""
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, json_file=False)
     inst = VerdictFreshness(
-        MemoryNoteStore(),
+        fresh_store().notes("agent"),
         every=None,
         verdict_dir=str(tmp_path),
         repos=["o/r"],
@@ -2863,7 +2875,7 @@ def test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_co
     os.utime(tmp_path / "o-r-7-77777777.json", (1000, 1000))
     verdict(tmp_path, 8, OLD, head8="88888888", mtime=2000)
     inst = VerdictFreshness(
-        MemoryNoteStore(),
+        fresh_store().notes("agent"),
         every=None,
         verdict_dir=str(tmp_path),
         repos=["o/r"],
@@ -2888,7 +2900,7 @@ def test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_c
     os.utime(bad, (1500, 1500) if newer else (500, 500))
     verdict(tmp_path, 8, OLD, head8="88888888", mtime=2000)  # the directory's newest parses
     inst = VerdictFreshness(
-        MemoryNoteStore(),
+        fresh_store().notes("agent"),
         every=None,
         verdict_dir=str(tmp_path),
         repos=["o/r"],
@@ -2927,7 +2939,7 @@ def test_verdict_freshness_a_candidate_is_a_regular_file_and_a_link_is_read_as_i
         named.symlink_to(elsewhere / "o-r-7-77777777.json")
     os.utime(named, (2000, 2000))  # through a link, its target's: #7's newest by mtime
     inst = VerdictFreshness(
-        MemoryNoteStore(),
+        fresh_store().notes("agent"),
         every=None,
         verdict_dir=str(d),
         repos=["o/r"],
@@ -2950,7 +2962,11 @@ def test_verdict_freshness_an_enumerator_without_a_total_line_failed(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"/x/my_open_prs.sh": (2, "", "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n")})
     inst = VerdictFreshness(
-        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+        fresh_store().notes("agent"),
+        every=None,
+        verdict_dir=str(tmp_path),
+        enumerator=["/x/my_open_prs.sh"],
+        run=sh,
     )
     out = asyncio.run(inst.run({}))
     assert not out.control and out.count is None and out.data == ()
@@ -2969,7 +2985,11 @@ def test_verdict_freshness_an_enumerator_whose_closed_pr_control_is_zero_is_untr
     )
     sh = FakeSh(**{"/x/my_open_prs.sh": total})
     inst = VerdictFreshness(
-        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+        fresh_store().notes("agent"),
+        every=None,
+        verdict_dir=str(tmp_path),
+        enumerator=["/x/my_open_prs.sh"],
+        run=sh,
     )
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings == (
@@ -2982,7 +3002,7 @@ def test_verdict_freshness_only_the_enumerators_last_line_is_its_total(tmp_path,
     """Only the last line is the enumerator's verdict: an earlier good TOTAL line does not validate a
     failed enumeration, so the open PRs in the snapshot are not reported no longer open."""
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     store.put("verdict-freshness", {"o/r#7": "previous open row"}, run="-", seq=0)
     total = (
         "TOTAL 0 open PRs authored by bot (control: closed-PR search returned {k}, an empty list is real)\n"
@@ -3016,7 +3036,11 @@ def test_verdict_freshness_reads_each_enumerated_prs_head_on_its_own(tmp_path):
         **{"/x/my_open_prs.sh": out_, "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"})}
     )
     inst = VerdictFreshness(
-        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+        fresh_store().notes("agent"),
+        every=None,
+        verdict_dir=str(tmp_path),
+        enumerator=["/x/my_open_prs.sh"],
+        run=sh,
     )
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings[0].startswith("o/r#7 77777777: AT-HEAD")
@@ -3028,7 +3052,7 @@ def test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_p
     """A TOTAL the listed PRs do not reach is an incomplete list: a prior row it lacks is kept, a PR it
     lists is read and merged, and a PR read MERGED retires its own row."""
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED", "o/r#9": "o/r#9 99999999: NEVER-REVIEWED"}
     store.put("verdict-freshness", prior, run="-", seq=0)
     total = (
@@ -3072,7 +3096,7 @@ def test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_uns
     """Lines that reach the TOTAL by listing one PR twice, however its repo or number is spelled, are an
     incomplete list: the PR they omit keeps its row, and the PR they repeat is read once."""
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED"}
     store.put("verdict-freshness", prior, run="-", seq=0)
     total = (
@@ -3120,7 +3144,7 @@ def test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_s
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, repo="O/R")  # the file spelled another way
 
     def inst_with(prior, lines, n, view):
-        store = MemoryNoteStore()
+        store = fresh_store().notes("agent")
         store.put("verdict-freshness", prior, run="-", seq=0)
         sh = FakeSh(**{"/x/my_open_prs.sh": lines + total.format(n=n), f"pr view {shown} -R": view})
         return store, VerdictFreshness(
@@ -3161,7 +3185,7 @@ def test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure(tmp_
     """An older snapshot that held a PR under two spellings keeps one row; the other is retired
     silently, since the PR is still open."""
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     seven = "o/r#7 77777777: NEVER-REVIEWED"
     store.put(
         "verdict-freshness", {"o/r#7": seven, "O/R#07": seven.replace("o/r#7", "O/R#07")}, run="-", seq=0
@@ -3198,7 +3222,9 @@ def test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_b
         reverse=reverse,
     )
     sh = freshness_sh(prs=((7, HEAD7),))
-    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    inst = VerdictFreshness(
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+    )
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings == (
         f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {tmp_path}/new-r-7-77777777.json",
@@ -3218,7 +3244,9 @@ def test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_no
         reverse=reverse,
     )
     sh = freshness_sh(prs=((7, HEAD7),))
-    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    inst = VerdictFreshness(
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+    )
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings == (
         f"o/r#7 77777777: AT-HEAD, APPROVE, blocking 0; read json: {tmp_path}/old-r-7-77777777.json",
@@ -3229,7 +3257,9 @@ def test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_no
 def test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number(tmp_path, filed_as):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, filed_as=filed_as)
     sh = freshness_sh(prs=((7, HEAD7),))
-    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    inst = VerdictFreshness(
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+    )
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings == (
         f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
@@ -3249,7 +3279,7 @@ def test_verdict_freshness_of_two_conflicting_rows_for_one_pr_the_one_at_its_hea
         "o/r#7": "o/r#7 00000000: STALE (verdict at 00000000), APPROVE, blocking 0; read json: x",
         "O/R#07": f"O/R#07 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {path}",
     }
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     snapshot = {k: rows[k] for k in sorted(rows, key=lambda k: k != first)}  # `first` is listed first
     store.put("verdict-freshness", snapshot, run="-", seq=0)
     sh = freshness_sh(prs=((7, HEAD7),))
@@ -3269,7 +3299,7 @@ def test_verdict_freshness_two_rows_at_one_head_keep_the_spelling_read_now_then_
     tmp_path, aliases, winner, flip
 ):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     rows = {k: f"{k} 00000000: NEVER-REVIEWED" for k in (reversed(aliases) if flip else aliases)}
     store.put("verdict-freshness", rows, run="-", seq=0)
     sh = freshness_sh(prs=((7, HEAD7),))
@@ -3283,7 +3313,7 @@ def test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_anot
     """The page is short, so nothing retains the row: the PR's own read finds it, its repo case-blind."""
     assert instr.PR_PAGE > 1
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     store.put("verdict-freshness", {"O/R#7": "O/R#7 77777777: NEVER-REVIEWED"}, run="-", seq=0)
     sh = freshness_sh(prs=((7, HEAD7),))
     inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
@@ -3296,11 +3326,13 @@ def test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_anot
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
-    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    inst = VerdictFreshness(
+        fresh_store().notes("agent"), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+    )
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings[0].startswith("o/r: gh does not resolve it as itself")
     with pytest.raises(ValueError, match="exactly one of them"):
-        VerdictFreshness(MemoryNoteStore(), every=None, repos=["o/r"], enumerator=["x"])
+        VerdictFreshness(fresh_store().notes("agent"), every=None, repos=["o/r"], enumerator=["x"])
 
 
 class LateList(FakeSh):
@@ -3345,7 +3377,7 @@ def test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_
             f"pr view {n} -R o/r": json.dumps({"headRefOid": h, "state": "OPEN"}) for n, h in heads.items()
         }
         where = {"enumerator": ["/x/my_open_prs.sh"]}
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
 
     async def both():
         sh = LateList(key, **answers)
@@ -3370,7 +3402,7 @@ def test_the_runs_of_one_snapshot_instrument_go_one_at_a_time(tmp_path, which):
     """As for `verdict-freshness`: run A takes its list before #9 opens and waits; run B starts and lists
     #9. Left to overlap, B writes first and A, seeing #9 absent from its complete list, reports it gone and
     drops it. The runs of one instrument go one at a time, so #9 is B's first sight, never A's closure."""
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     if which == "worktrees":
         key, gone, first = "worktree list --porcelain", "worktree gone", f"{tmp_path}/wt9: new worktree"
         snapshot, rows = f"worktrees:{tmp_path}/main", {f"{tmp_path}/wt{n}" for n in (7, 8, 9)}
@@ -3451,7 +3483,7 @@ def test_pr_state_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(mon
     keeps the rows it holds that its page lacks: the snapshot's as it stands then, not the copy it began
     with."""
     monkeypatch.setattr(instr, "PR_PAGE", 2)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
 
     def answers(*ns):
         return {
@@ -3493,7 +3525,7 @@ def test_worktrees_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(tm
         f"-C {wt} log -1": f"{int(time.time())}\n",
         "pr list -R o/r --head wt": "[]",
     }
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     seed = FakeSh(
         **read, **{"worktree list --porcelain": porcelain(main, wt, old), "status": "", "log -1": "1\n"}
     )
@@ -3527,7 +3559,7 @@ def test_required_contexts_a_retaining_run_merges_the_snapshot_a_concurrent_run_
     (or opens #9) and writes. A keeps #7's row and the rows its full page lacks: the snapshot's as it stands
     then, not the copy it began with."""
     monkeypatch.setattr(instr, "PR_PAGE", 2)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
 
     def listing(*prs):
         return json.dumps([{"number": n, "headRefOid": h, "baseRefName": "main"} for n, h in prs])
@@ -3555,7 +3587,7 @@ def test_ci_red_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(monke
     (or opens #9) and writes. A keeps #7's last red and the rows its full page lacks: the snapshot's as it
     stands then, not the copy it began with."""
     monkeypatch.setattr(instr, "PR_PAGE", 2)
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     asyncio.run(ci_red(ci_sh(prs=((7, SHA), (8, SHA))), state=store).run({}))
     now = ((8, SHA),) if moved == "a PR closed" else ((7, SHA), (8, SHA), (9, SHA))
 
@@ -3634,7 +3666,9 @@ def ci_sh(runs: str = RED_RUNS, sha: str = SHA, prs=((7, SHA),), **over) -> Fake
 
 
 def ci_red(sh: FakeSh, channel: str = "actions", state=None) -> CiRed:
-    return CiRed([{"name": "o/r", "channel": channel}], state or MemoryNoteStore(), every=None, run=sh)
+    return CiRed(
+        [{"name": "o/r", "channel": channel}], state or fresh_store().notes("agent"), every=None, run=sh
+    )
 
 
 @pytest.mark.parametrize("answer", ["", "{}", "null", '[{"number": ' + "9" * 4301 + "}]"])
@@ -3643,7 +3677,9 @@ def test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading
     tmp_path, which, answer
 ):
     verdict(tmp_path, 7, SHA, head8=SHA[:8], mtime=1000)
-    store = MemoryNoteStore()  # one store across the reads: the unread read must keep the last rows
+    store = fresh_store().notes(
+        "agent"
+    )  # one store across the reads: the unread read must keep the last rows
     sh = {"required-contexts": required_sh, "verdict-freshness": freshness_sh, "ci-red": ci_sh}[which]()
     inst = {
         "required-contexts": lambda: required(sh, state=store),
@@ -3705,7 +3741,7 @@ def test_ci_red_actions_extracts_each_failed_run_strips_ansi_and_stamps_and_coun
 
 
 def test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed():
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     sh = ci_sh()
     first = asyncio.run(ci_red(sh, state=store).run({}))
     assert len(first.findings) == 2
@@ -3727,7 +3763,7 @@ def test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed():
 
 
 def test_ci_red_a_head_with_no_red_is_not_a_finding_and_a_named_ask_answers_every_row():
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     sh = ci_sh(runs=ci_runs((13, "docs", "success", "2026-09-22T10:00:00Z")))
     out = asyncio.run(ci_red(sh, state=store).run({}))
     assert out.control and out.findings == () and out.data == () and out.count == 1
@@ -3786,7 +3822,9 @@ def first_page(total: int, n: int = 50) -> FakeSh:
 
 def now_row(sh: FakeSh) -> dict:
     return asyncio.run(
-        PrState([{"name": "o/r", "ci": "actions"}], MemoryNoteStore(), every=None, run=sh).now("o/r", 7)
+        PrState([{"name": "o/r", "ci": "actions"}], fresh_store().notes("agent"), every=None, run=sh).now(
+            "o/r", 7
+        )
     )
 
 
@@ -3854,7 +3892,7 @@ def test_pr_state_now_display_labels_cannot_collapse_three_distinct_workflow_ids
 def test_ci_red_a_label_collision_keeps_the_failed_workflow_and_its_red_is_not_news_again():
     """Workflow 501's failure is read, then workflows 502 CI and 503 CI#501 appear at the head; runs
     keyed by label would drop 501, never fetch its log and clear its red."""
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     sh = ci_sh(runs=ci_runs((11, "CI", "failure", "2026-09-22T09:00:00Z", 501)))
     inst = ci_red(sh, state=store)
     first = f"o/r#7 aaaaaaaa: CI run 11 red in [test (3.12)]; first: {BOOM}"
@@ -3924,7 +3962,7 @@ def test_ci_red_control_fails_when_the_repo_does_not_resolve_or_the_local_dir_is
         f"o/r: the local log dir {tmp_path / 'absent'} is not a directory; no PR is judged",
     )
     with pytest.raises(ValueError, match="actions or local:<log dir>"):
-        CiRed([{"name": "o/r", "channel": "statuses"}], MemoryNoteStore(), every=None)
+        CiRed([{"name": "o/r", "channel": "statuses"}], fresh_store().notes("agent"), every=None)
 
 
 def transcript(sha: str, *jobs: tuple[str, str, list[str]]) -> str:
@@ -4032,7 +4070,7 @@ def test_ci_red_local_an_unfinished_or_discarded_retry_keeps_the_prior_red_and_n
         transcript(SHA, ("Rust", "failure", ["$ cargo test", "[cwd=/t rc=101 #1]", "error: a real failure"]))
     )
     os.utime(first, (1000, 1000))
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
     assert asyncio.run(inst.run({})).data
     red = store.get("ci-red:o/r").value
@@ -4059,7 +4097,7 @@ def test_ci_red_local_a_header_only_retry_keeps_the_prior_red_and_names_the_gap(
         transcript(SHA, ("Rust", "failure", ["$ cargo test", "[cwd=/t rc=101 #1]", "error: a real failure"]))
     )
     os.utime(first, (1000, 1000))
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
     assert asyncio.run(inst.run({})).data
     red = store.get("ci-red:o/r").value
@@ -4082,7 +4120,7 @@ def test_ci_red_local_a_job_left_without_a_verdict_before_the_next_began_keeps_t
         transcript(SHA, ("Rust", "failure", ["$ cargo test", "[cwd=/t rc=101 #1]", "error: a real failure"]))
     )
     os.utime(first, (1000, 1000))
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
     assert asyncio.run(inst.run({})).data
     red = store.get("ci-red:o/r").value
@@ -4101,7 +4139,7 @@ def test_ci_red_local_a_completed_green_replacement_clears_the_prior_red(tmp_pat
     first = pr / "20260922T090000Z-aaaaaaaa.log"
     first.write_text(transcript(SHA, ("Rust", "failure", ["$ false", "[cwd=/t rc=1 #1]"])))
     os.utime(first, (1000, 1000))
-    store = MemoryNoteStore()
+    store = fresh_store().notes("agent")
     inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
     assert asyncio.run(inst.run({})).data
     (pr / "20260922T100000Z-aaaaaaaa.log").write_text(
@@ -4145,7 +4183,7 @@ def test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_defau
             "ci-red": {"every": "every:30m", "repos": [{"name": "o/r", "channel": "local:/x"}]},
         },
     }
-    built = instr.instruments(cfg, None, MemoryNoteStore())
+    built = instr.instruments(cfg, None, fresh_store().notes("agent"))
     assert sorted(built) == ["ci-red", "required-contexts", "verdict-freshness"]
     assert built["required-contexts"].source_identity == "lambda:x:desk"
     assert str(built["verdict-freshness"].dir) == "/x/verdicts"
@@ -4155,4 +4193,4 @@ def test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_defau
     assert instr.VERDICT_DIR is None  # no default: a verdict-freshness chore names its verdict_dir
     del cfg["chores"]["verdict-freshness"]["verdict_dir"]
     with pytest.raises(ValueError, match="verdict-freshness reads verdicts from a verdict_dir"):
-        instr.instruments(cfg, None, MemoryNoteStore())
+        instr.instruments(cfg, None, fresh_store().notes("agent"))

@@ -3,7 +3,8 @@
 One idea per file, read in the order of the table: two notebooks open with the run and the language
 the model speaks in it, six scripts take one mechanism each, a third notebook hands work from one
 actor to another, and the last script puts a real model behind the same loop. Everything but the
-last runs offline, with no key: where a model is needed, its turns are written in advance.
+last runs offline, with no key: where a model is needed, its turns are written in advance. Each one
+writes its rows through the khive binary (`kkernel`, on PATH), as the actor of a scratch directory.
 
     uv run python examples/<file>.py
 

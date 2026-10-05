@@ -19,7 +19,6 @@ from lion1 import (
     Handle,
     Inbound,
     Kind,
-    MemoryNoteStore,
     Profile,
     ProfileError,
     Record,
@@ -29,6 +28,7 @@ from lion1 import (
     Success,
 )
 from lion1 import actor as runtime
+from tests.lionfake import store as fresh_store
 from tests.test_actor import Answer, Ask, Done, Echo, Tally, _big_actor, _echo_actor, scripted
 
 
@@ -103,8 +103,8 @@ def test_a_note_is_read_back_by_pointer_in_a_later_run_of_the_same_profile_and_n
 
 
 def test_a_reply_under_wait_with_no_command_still_writes_the_note_it_declares():
-    actor = Actor("edge-wait-declares")
-    store = MemoryNoteStore()
+    actor = Actor("edge-wait-declares", store=fresh_store())
+    store = fresh_store().notes("p")
     seen: list = []
 
     async def wait(run) -> bool:
@@ -117,15 +117,15 @@ def test_a_reply_under_wait_with_no_command_still_writes_the_note_it_declares():
 
 
 def test_a_profile_that_brings_its_own_note_store_writes_its_notes_there():
-    actor = Actor("edge-notes-own")
-    store = MemoryNoteStore()
+    actor = Actor("edge-notes-own", store=fresh_store())
+    store = fresh_store().notes("p")
     once(actor, Profile("own", notes=store), "<lvar note.plan>mine</lvar>")
     assert store.get("plan").value == "mine"
     assert actor.notes_for(Profile("own")).get("plan") is None  # the actor's own store for the name
 
 
-def test_a_handler_reads_a_value_and_emits_an_event_through_its_context():
-    actor = Actor("edge-context")
+def test_a_handler_reads_a_value_and_emits_an_event_through_its_context(store):
+    actor = Actor("edge-context", store=store)
 
     @actor.handler(Peek)
     async def peek(req: Peek, ctx):
@@ -139,7 +139,7 @@ def test_a_handler_reads_a_value_and_emits_an_event_through_its_context():
     assert event.payload == {"run": run.id, "alias": "p1", "name": "v"}
 
 
-def test_register_takes_a_callable_carrying_its_spec_and_requires_and_refuses_anything_else():
+def test_register_takes_a_callable_carrying_its_spec_and_requires_and_refuses_anything_else(store):
     class Stamper:
         spec = Stamp
         requires = ("write",)
@@ -156,7 +156,7 @@ def test_register_takes_a_callable_carrying_its_spec_and_requires_and_refuses_an
         def __call__(self, req, ctx) -> str:
             return "never"
 
-    actor = Actor("edge-register", privileges=("write",))
+    actor = Actor("edge-register", privileges=("write",), store=store)
     handler = actor.register(Stamper())
     assert handler.name == "stamp" and handler.requires == frozenset({"write"})
     turn = '<lact s1>stamp(text="x")</lact>'
@@ -186,17 +186,19 @@ def test_a_profile_asking_beyond_its_actor_is_refused_before_the_run_starts():
     assert called == [] and actor.bus.log == []
 
 
-def test_a_backend_that_returns_its_text_directly_is_not_awaited():
+def test_a_backend_that_returns_its_text_directly_is_not_awaited(store):
     def backend(messages) -> str:
         return 'OUT{answer: "sync"}'
 
-    run = asyncio.run(Actor("edge-sync").run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend))
+    run = asyncio.run(
+        Actor("edge-sync", store=store).run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend)
+    )
     assert run.outcome == Success({"answer": "sync"})
 
 
-def test_a_backend_that_hands_back_something_other_than_text_aborts_the_run():
+def test_a_backend_that_hands_back_something_other_than_text_aborts_the_run(store):
     # ADR-0009/C1 has the backend hand back text; anything else is an abort with the outcome unset
-    actor = Actor("edge-not-text")
+    actor = Actor("edge-not-text", store=store)
     live = []
 
     def backend(messages):
@@ -344,8 +346,8 @@ def test_an_unknown_command_and_a_pointer_to_nothing_settle_without_their_handle
     assert r["a3"] == Result("echo", False, error="pointer *ghost names nothing", reason="invalid")
 
 
-def test_a_pointer_inside_a_tuple_argument_is_resolved():
-    actor = Actor("edge-tuple")
+def test_a_pointer_inside_a_tuple_argument_is_resolved(store):
+    actor = Actor("edge-tuple", store=store)
 
     @actor.handler(Join)
     def join(req: Join, ctx) -> str:
@@ -355,7 +357,7 @@ def test_a_pointer_inside_a_tuple_argument_is_resolved():
     assert run.resolve("j") == "A-x"
 
 
-def test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong():
+def test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong(store):
     turns_and_errors = [
         ('OUT{done: "just text"}', "OUT{done: ...}: done has several fields; give a dict literal or aliases"),
         ('OUT{done: {summary: "s"}}', "OUT{done: ...}: files: Field required"),
@@ -377,7 +379,11 @@ def test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong():
     ]
     finish = '<lvar j>{"summary": "s", "files": ["a.py"]}</lvar>OUT{done: [j]}'  # one alias, a JSON object
     run = once(
-        Actor("edge-out-errors"), Profile("p"), *(t for t, _ in turns_and_errors), finish, emits=(Done,)
+        Actor("edge-out-errors", store=store),
+        Profile("p"),
+        *(t for t, _ in turns_and_errors),
+        finish,
+        emits=(Done,),
     )
     assert run.outcome == Success({"done": Done(summary="s", files=["a.py"])})
     told = notices(run)
@@ -385,7 +391,7 @@ def test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong():
         assert f"your last turn could not be read: {error}" in told[i], (i, told[i])
 
     two = once(
-        Actor("edge-out-missing"),
+        Actor("edge-out-missing", store=store),
         Profile("p"),
         'OUT{done: {summary: "s", files: []}}',
         'OUT{done: {summary: "s", files: []}, echo: {text: "e"}}',
@@ -395,8 +401,8 @@ def test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong():
     assert isinstance(two.outcome, Success) and two.output["echo"] == Echo(text="e")
 
 
-def test_a_result_that_already_is_the_output_fills_it_as_it_is():
-    actor = Actor("edge-whole-model")
+def test_a_result_that_already_is_the_output_fills_it_as_it_is(store):
+    actor = Actor("edge-whole-model", store=store)
     made: list[Tally] = []
 
     @actor.handler(MakeTally)
@@ -412,23 +418,23 @@ def test_a_result_that_already_is_the_output_fills_it_as_it_is():
     "text, expected",
     [("[1, 2]", [1, 2]), ("(1, 2)", (1, 2)), ("just words", "just words")],
 )
-def test_a_field_typed_any_reads_its_text_as_a_literal_when_it_is_one(text, expected):
+def test_a_field_typed_any_reads_its_text_as_a_literal_when_it_is_one(text, expected, store):
     turn = f"<lvar loose.value v>{text}</lvar>OUT{{loose: [v]}}"
-    run = once(Actor("edge-any"), Profile("p"), turn, emits=(Loose,))
+    run = once(Actor("edge-any", store=store), Profile("p"), turn, emits=(Loose,))
     value = run.output["loose"].value
     assert value == expected and type(value) is type(expected)
 
 
-def test_a_spec_rebuilt_with_a_text_field_keeps_the_text_it_read_as_a_list_before():
+def test_a_spec_rebuilt_with_a_text_field_keeps_the_text_it_read_as_a_list_before(store):
     class Shape(BaseModel):
         value: list[int]
 
     turn = "<lvar shape.value v>[1]</lvar>OUT{shape: [v]}"
-    run = once(Actor("edge-rebuilt"), Profile("p"), turn, emits=(Shape,))
+    run = once(Actor("edge-rebuilt", store=store), Profile("p"), turn, emits=(Shape,))
     assert run.output["shape"].value == [1]  # a field that cannot take text reads it as a literal
     Shape.model_fields["value"].annotation = str
     Shape.model_rebuild(force=True)  # the same class, its field now text
-    run = once(Actor("edge-rebuilt"), Profile("p"), turn, emits=(Shape,))
+    run = once(Actor("edge-rebuilt", store=store), Profile("p"), turn, emits=(Shape,))
     assert isinstance(run.outcome, Success) and run.output["shape"].value == "[1]"
 
 
@@ -464,14 +470,15 @@ def test_the_fold_stops_hiding_once_the_view_is_back_under_half_its_budget():
 
 
 @pytest.mark.parametrize("budget, shown", [(190, "/3m10s "), (3700, "/1h01m ")])
-def test_the_header_shows_a_time_budget_in_minutes_or_hours(budget, shown):
-    run = once(Actor("edge-clock"), Profile("p"), "x", time_budget=budget)
+def test_the_header_shows_a_time_budget_in_minutes_or_hours(budget, shown, store):
+    run = once(Actor("edge-clock", store=store), Profile("p"), "x", time_budget=budget)
     header = notices(run)[0].splitlines()[0]
     assert shown in header and run.outcome == Exhausted(1)
 
 
 def test_a_result_json_cannot_carry_is_shown_by_its_repr():
-    actor = Actor("edge-repr")
+    store = fresh_store()
+    actor = Actor("edge-repr", store=store)
 
     @actor.handler(Pairs)
     def pairs(req: Pairs, ctx) -> dict:
@@ -479,11 +486,14 @@ def test_a_result_json_cannot_carry_is_shown_by_its_repr():
 
     run = once(actor, Profile("p"), "<lact a1>pairs()</lact>", "x")
     assert "  a1 (_r3, pairs): dict[1] {(1, 2): 'x'}" in notices(run)[1]
+    # its row is written, the key JSON cannot hold as its str, and the run went on to its end
+    (row,) = [e for e in asyncio.run(store.history(run.id)) if e.kind is Kind.RESULT]
+    assert row.content.value == {"(1, 2)": "x"} and run.outcome == Exhausted(2)
 
 
-def test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run():
+def test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run(store):
     # ADR-0002/S5: the turn's settle raises it and never drops it
-    actor = Actor("edge-halt")
+    actor = Actor("edge-halt", store=store)
     live = []
 
     @actor.handler(Halter)
@@ -498,8 +508,8 @@ def test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run()
     assert actor.runs == {} and "run.completed" not in [e.kind for e in actor.bus.log]
 
 
-def test_an_answer_carrying_models_in_a_list_reaches_the_asker_as_plain_data():
-    peer, asker, tasks = Actor("edge-plain-peer"), Actor("edge-plain-asker"), []
+def test_an_answer_carrying_models_in_a_list_reaches_the_asker_as_plain_data(store):
+    peer, asker, tasks = Actor("edge-plain-peer", store=store), Actor("edge-plain-asker", store=store), []
 
     @peer.handler(Find)
     def find(req: Find, ctx) -> Answer:
@@ -539,8 +549,8 @@ def test_an_answer_carrying_models_in_a_list_reaches_the_asker_as_plain_data():
     assert run.resolve("q1") == {"found": [{"text": "x"}, {"text": "y"}, "a note"]}
 
 
-def test_an_answer_whose_asking_run_has_ended_comes_back_as_a_reply_and_only_a_success_does():
-    peer, asker = Actor("edge-late-peer"), Actor("edge-late-asker")
+def test_an_answer_whose_asking_run_has_ended_comes_back_as_a_reply_and_only_a_success_does(store):
+    peer, asker = Actor("edge-late-peer", store=store), Actor("edge-late-asker", store=store)
     handles: list[Handle] = []
 
     @asker.handler(Ask)
@@ -579,8 +589,8 @@ def test_an_answer_whose_asking_run_has_ended_comes_back_as_a_reply_and_only_a_s
     assert not any(e.kind == "inbox.answered" for e in asker.bus.log)
 
 
-def test_an_inbound_from_an_actor_no_longer_in_the_registry_is_consumed_and_answered_to_nobody():
-    actor = Actor("edge-orphan")
+def test_an_inbound_from_an_actor_no_longer_in_the_registry_is_consumed_and_answered_to_nobody(store):
+    actor = Actor("edge-orphan", store=store)
     actor.inbox.append(
         Inbound(
             handle=Handle("orphan01"),
@@ -597,8 +607,11 @@ def test_an_inbound_from_an_actor_no_longer_in_the_registry_is_consumed_and_answ
     assert actor.inbox == [] and not any(e.kind == "inbox.answered" for e in actor.bus.log)
 
 
-def test_a_late_answer_to_an_ask_whose_command_was_cancelled_leaves_the_peers_run_whole():
-    peer, asker = Actor("edge-cancelled-ask-peer"), Actor("edge-cancelled-ask-asker")
+def test_a_late_answer_to_an_ask_whose_command_was_cancelled_leaves_the_peers_run_whole(store):
+    peer, asker = (
+        Actor("edge-cancelled-ask-peer", store=store),
+        Actor("edge-cancelled-ask-asker", store=store),
+    )
     queued: list[str] = []
     answered = []
 
@@ -630,8 +643,8 @@ class Hold(BaseModel):
     pass
 
 
-def test_a_command_cancelled_before_it_started_settles_as_cancelled_and_nothing_stays_pending():
-    actor = Actor("edge-never-started")
+def test_a_command_cancelled_before_it_started_settles_as_cancelled_and_nothing_stays_pending(store):
+    actor = Actor("edge-never-started", store=store)
     held: list[str] = []
 
     @actor.handler(Cut)
@@ -657,9 +670,9 @@ def test_a_command_cancelled_before_it_started_settles_as_cancelled_and_nothing_
     assert [(s["ok"], s["reason"], s["execution"]) for s in settled] == [(False, "cancelled", "not executed")]
 
 
-def test_an_out_literal_with_an_unhashable_key_is_a_retry_that_names_the_field():
+def test_an_out_literal_with_an_unhashable_key_is_a_retry_that_names_the_field(store):
     turns = ('OUT{tally: {value: "{[]: 1}"}}', "OUT{tally: {value: 3}}")
-    run = once(Actor("edge-unhashable"), Profile("p"), *turns, emits=(Tally,))
+    run = once(Actor("edge-unhashable", store=store), Profile("p"), *turns, emits=(Tally,))
     assert "your last turn could not be read: OUT{tally: ...}: value: " in notices(run)[1]
     assert run.output["tally"] == Tally(value=3)
 
@@ -678,11 +691,11 @@ def test_an_out_literal_with_an_unhashable_key_is_a_retry_that_names_the_field()
     ],
     ids=["a-field", "the-whole-output"],
 )
-def test_a_value_nested_past_what_the_reader_walks_is_a_retry(turn, emits):
+def test_a_value_nested_past_what_the_reader_walks_is_a_retry(turn, emits, store):
     # json.loads and ast.literal_eval raise RecursionError, or MemoryError, on text this deep: it is
     # a value the output refuses, told to the model, never an end of the run (ADR-0002/S1)
     finish = 'OUT{done: {summary: "ok", files: ["a"]}}' if emits is Done else "OUT{tally: {value: 3}}"
-    run = once(Actor("edge-too-deep"), Profile("p"), turn, finish, emits=(emits,))
+    run = once(Actor("edge-too-deep", store=store), Profile("p"), turn, finish, emits=(emits,))
     assert "your last turn could not be read: OUT{" in notices(run)[1]
     assert isinstance(run.outcome, Success) and run.turn == 2
 
@@ -693,13 +706,13 @@ class Said(BaseModel):
 
 @pytest.mark.parametrize("forward", [False, True], ids=["one-command", "a-pointer-at-a-later-one"])
 @pytest.mark.parametrize("eager", [False, True], ids=["default-factory", "eager-factory"])
-def test_every_command_of_a_turn_is_admitted_before_any_of_them_runs(eager, forward):
+def test_every_command_of_a_turn_is_admitted_before_any_of_them_runs(eager, forward, store):
     # under an eager task factory a command's coroutine ran inside create_task: registered as pending
     # only afterwards, it settled twice (a second RESULT under its alias), and a pointer at a later
     # command of the same turn found nothing to wait for and resolved invalid
     if eager and not hasattr(asyncio, "eager_task_factory"):
         pytest.skip("eager tasks arrive in Python 3.12")
-    actor = Actor("edge-admitted")
+    actor = Actor("edge-admitted", store=store)
 
     @actor.handler(Said, effect="pure")
     async def said(req: Said, ctx) -> str:
@@ -725,10 +738,10 @@ def test_every_command_of_a_turn_is_admitted_before_any_of_them_runs(eager, forw
 
 
 @pytest.mark.parametrize("settled", [0, 1], ids=["first-turn", "after-a-settled-turn"])
-def test_a_backend_that_raises_leaves_the_run_with_no_outcome(settled):
+def test_a_backend_that_raises_leaves_the_run_with_no_outcome(settled, store):
     # a settled turn without OUT{} leaves Continue in run.outcome, and the abort left it there: the
     # run read as settled while it ended by a raise (ADR-0002/C4: an abort is not one of the four)
-    actor = Actor("edge-abort")
+    actor = Actor("edge-abort", store=store)
     seen: list = []
     calls = 0
 
@@ -749,10 +762,10 @@ def test_a_backend_that_raises_leaves_the_run_with_no_outcome(settled):
 
 
 @pytest.mark.parametrize("twice", [False, True], ids=["replays", "does-not-replay"])
-def test_a_history_that_does_not_replay_leaves_no_live_run(twice):
+def test_a_history_that_does_not_replay_leaves_no_live_run(twice, store):
     # the run was registered before its history replayed: a history refused (an alias twice) raised
     # with a run that never ran still live in `actor.runs`
-    actor = Actor("edge-history")
+    actor = Actor("edge-history", store=store)
     entry = Record("old").append(Kind.INPUT, "kept", alias="prior")
     calls: list[int] = []
 
@@ -771,7 +784,7 @@ def test_a_history_that_does_not_replay_leaves_no_live_run(twice):
     assert actor.runs == {}
 
 
-def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
+def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch, store):
     # the registry is keyed by the 8-hex id: a second live run with the first's id would take its place
     # there, and the second's end would then remove the first
     import uuid
@@ -780,8 +793,9 @@ def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
         hex = "5eed5eed" + "0" * 24
 
     real, forced = uuid.uuid4, iter([Drawn, Drawn])  # the first two draws are the same id
-    monkeypatch.setattr("lion1.actor.uuid.uuid4", lambda: next(forced, None) or real())
-    actor = Actor("ids")
+    # the actor's own `uuid` only: the store's double draws its row ids from the module itself
+    monkeypatch.setattr("lion1.actor.uuid", SimpleNamespace(uuid4=lambda: next(forced, None) or real()))
+    actor = Actor("ids", store=store)
 
     async def both():
         first_in, release = asyncio.Event(), asyncio.Event()
@@ -818,7 +832,7 @@ def refuse_shield(*_args, **_kwargs):
 async def _at_deref(target):
     run = SimpleNamespace(thunks={}, pending={"source": target}, pointing={}, waits={})
     la = SimpleNamespace(alias="reader", pointers=lambda: [SimpleNamespace(name="source")], args={})
-    return await Actor("waits")._deref(run, la)
+    return await Actor("waits", store=fresh_store())._deref(run, la)
 
 
 async def _at_point(target):
@@ -936,12 +950,12 @@ class Reads(BaseModel):
     value: str
 
 
-def test_a_run_cancelled_while_a_pointer_waits_on_a_command_that_then_fails_tells_the_loop_nothing():
+def test_a_run_cancelled_while_a_pointer_waits_on_a_command_that_then_fails_tells_the_loop_nothing(store):
     """A whole run, `asyncio.shield` left as it is. One command waits on another's result through a
     pointer, the run is cancelled there, and the awaited command then fails in its cleanup. The run
     raises that failure, which the reap read, and the loop's exception handler hears nothing. With a
     shield at that wait CPython 3.14.7 reports the failure there as a shielded future's."""
-    actor = Actor("pointer-waits")
+    actor = Actor("pointer-waits", store=store)
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     @actor.handler(Holds, effect="pure")
@@ -999,12 +1013,13 @@ class Cleans(BaseModel):
 
 def test_an_aborts_reap_that_fails_after_a_second_cancel_reaches_the_caller_and_tells_the_loop_nothing(
     monkeypatch,
+    store,
 ):
     """A run aborted by a defect reaps its pending commands; a second cancel lands while it waits for the
     reap, and the reap then fails on a defect in a command's cleanup. The caller gets that defect, and the
     loop's exception handler hears nothing: the wait on the reap is never a shield."""
     monkeypatch.setattr(asyncio, "shield", refuse_shield)
-    actor = Actor("reap-waits")
+    actor = Actor("reap-waits", store=store)
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     @actor.handler(Fails, effect="pure")

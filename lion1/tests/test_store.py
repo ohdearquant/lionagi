@@ -5,16 +5,21 @@ test runs the same run against the real binary when `LION1_KHIVE` names it."""
 
 import asyncio
 import json
+import math
 import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from hub.chat import chat
 from lion1 import Actor, Kind, Profile, Reply, RunRequest, Store, Success
 from lion1.khive import Khive, KhiveError
-from tests.lionfake import LionFake, parse
+from lion1.store import _json
+from tests.lionfake import LionFake, LionKhive, parse, routed_config
 from tests.test_actor import Done, scripted
 from tests.test_chat import asks, reader
 
@@ -26,8 +31,97 @@ TURNS = ("thinking about it", 'OUT{done: {summary: "read", files: []}}')
 
 def client(d: Path, binary: str | None = None) -> Khive:
     (d / ".khive").mkdir(exist_ok=True)
-    (d / ".khive" / "config.toml").write_text(f'[actor]\nid = "{ACTOR}"\n')
+    (d / ".khive" / "config.toml").write_text(routed_config(ACTOR, d))
     return Khive(d, ACTOR, kkernel=binary)
+
+
+def test_a_store_refuses_a_config_that_would_put_the_lion_tables_in_the_main_store(tmp_path, kkernel_stub):
+    (tmp_path / ".khive").mkdir()
+    cfg = tmp_path / ".khive" / "config.toml"
+    unrouted = (
+        '[actor]\nid = "a"\n',  # no backends at all: everything in the main store
+        '[actor]\nid = "a"\n[[backends]]\nname = "main"\npath = "m.db"\n[[backends]]\nname = "lion"\n'
+        'path = "l.db"\n',
+        '[actor]\nid = "a"\n[[backends]]\nname = "lion"\npath = "l.db"\n[packs.lion]\nbackend = "lion"\n',
+        '[actor]\nid = "a"\n[[backends]]\nname = "main"\npath = "m.db"\n[[backends]]\nname = "lion"\n'
+        '[packs.lion]\nbackend = "lion"\n',
+    )
+    for text in unrouted:  # the lion entry missing, unrouted, without main, or without a path
+        cfg.write_text(text)
+        with pytest.raises(KhiveError, match="would resolve to the main store"):
+            Store(Khive(tmp_path, "a"))
+    cfg.write_text("[actor\n")
+    with pytest.raises(KhiveError, match="config.toml"):
+        Store(Khive(tmp_path, "a"))
+    cfg.write_text(routed_config("a", tmp_path))
+    assert Store(Khive(tmp_path, "a")).database == tmp_path / ".khive" / "lion.db"
+    assert Store(LionKhive()).database is None  # a double has no file to route
+
+
+def backends(main: str, lion: str, lion_kind: str = "") -> str:
+    return (
+        f'[actor]\nid = "a"\n[[backends]]\nname = "main"\npath = {json.dumps(main)}\n'
+        f'[[backends]]\nname = "lion"\npath = {json.dumps(lion)}\n{lion_kind}[packs.lion]\nbackend = "lion"\n'
+    )
+
+
+def test_a_store_refuses_a_lion_path_that_reaches_the_main_stores_file(tmp_path, kkernel_stub, monkeypatch):
+    """The binary runs in the client's directory, takes a relative path from there and `~` as the home,
+    and opens one database for two names that reach one file: each such config would write the lion
+    pack's tables into the main store, so the store refuses it, as it does a path SQLite reads as a URI,
+    two backends of one name and a lion backend that is not a file. The directory the check resolves from
+    is the client's, never the process's."""
+    home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
+    home.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(elsewhere)  # a relative path read from here would name another file
+    (tmp_path / ".khive").mkdir()
+    cfg = tmp_path / ".khive" / "config.toml"
+    main = tmp_path / ".khive" / "main.db"
+    (tmp_path / "alias.db").symlink_to(main)  # dangling until the binary makes main: still main's file
+    same = {
+        "one path": (str(main), str(main)),
+        "relative to the client's directory": (str(main), ".khive/main.db"),
+        "the home": ("~/m.db", str(home / "m.db")),
+        "a symlink": (str(main), str(tmp_path / "alias.db")),
+        "a dot-dot": (str(main), str(tmp_path / ".khive" / "x" / ".." / "main.db")),
+        "letter case, neither file made": (str(main), str(tmp_path / ".KHIVE" / "Main.DB")),
+        "a Unicode form, neither file made": (
+            str(tmp_path / "caf\u00e9.db"),
+            str(tmp_path / "cafe\u0301.db"),
+        ),
+    }
+    firm = Path("/System/Volumes/Data") / os.path.realpath(tmp_path).lstrip("/")
+    if firm.exists() and os.path.realpath(firm) != os.path.realpath(tmp_path):  # macOS: a second name
+        same["a firmlink, neither file made"] = (str(main), str(firm / ".khive" / "main.db"))
+    assert not main.exists()  # the ones above are refused by their names, before the binary makes a file
+    for m, lion in same.values():
+        cfg.write_text(backends(m, lion))
+        with pytest.raises(KhiveError, match="is the main store's own file"):
+            Store(Khive(tmp_path, "a"))
+    for m, lion in ((str(main), f"file:{main}?mode=rwc"), (f"file:{main}", "l.db")):
+        cfg.write_text(backends(m, lion))
+        with pytest.raises(KhiveError, match="SQLite reads as a URI"):
+            Store(Khive(tmp_path, "a"))
+    main.write_bytes(b"")
+    (tmp_path / "hard.db").hardlink_to(main)  # two paths, one file: the binary's canonical paths differ
+    cfg.write_text(backends(str(main), str(tmp_path / "hard.db")))
+    with pytest.raises(KhiveError, match="is the main store's own file"):
+        Store(Khive(tmp_path, "a"))
+    cfg.write_text(backends(str(main), "l.db") + '[[backends]]\nname = "lion"\npath = "other.db"\n')
+    with pytest.raises(KhiveError, match="two backends share a name"):
+        Store(Khive(tmp_path, "a"))
+    cfg.write_text(backends(str(main), "l.db", 'kind = "memory"\n'))
+    with pytest.raises(KhiveError, match="would resolve to the main store"):
+        Store(Khive(tmp_path, "a"))
+    # the controls: a relative lion path that is its own file, from the client's directory
+    cfg.write_text(backends(".khive/main.db", "rows/lion.db"))
+    assert Store(Khive(tmp_path, "a")).database == tmp_path / "rows" / "lion.db"
+    cfg.write_text(backends(str(main), "l.db", 'kind = "sqlite"\n'))
+    assert Store(Khive(tmp_path, "a")).database == tmp_path / "l.db"
+    cfg.write_text(backends(str(main), "l.db").replace(f"path = {json.dumps(str(main))}", 'kind = "memory"'))
+    assert Store(Khive(tmp_path, "a")).database == tmp_path / "l.db"  # a main in memory has no file to reach
 
 
 def one(k: Khive, ops: str):
@@ -244,7 +338,7 @@ def test_the_store_refuses_as_the_pack_does_and_the_client_names_the_kind(tmp_pa
 
 def test_exec_sync_times_out_and_refuses_output_it_cannot_parse(tmp_path):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(f'[actor]\nid = "{ACTOR}"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config(ACTOR, tmp_path))
     slow = tmp_path / "slow"
     slow.write_text("#!/bin/sh\nsleep 5\n")
     slow.chmod(0o755)
@@ -284,6 +378,47 @@ def test_replay_skips_a_message_row_that_is_not_an_entry_and_a_refusal_other_tha
         notes.delete("plan")
 
 
+def test_a_row_json_cannot_carry_whole_is_written_with_each_part_it_cannot_carry_as_its_str():
+    ring: list = [1]
+    ring.append(ring)
+    nan, inf = float("nan"), float("inf")
+    value = {(1, 2): "x", 3: nan, None: [ring, (inf, 2.5)], True: "t", 1.5: "f", nan: "k"}
+    assert _json(value) == (
+        '{"(1, 2)": "x", "3": NaN, "null": [[1, "[1, [...]]"], [Infinity, 2.5]], "true": "t", "1.5": "f", '
+        '"NaN": "k"}'
+    )  # the key and the value that holds itself as their str; a float that is not finite as the log writes it
+    assert _json({"a": [1, (2, 3)]}) == json.dumps({"a": [1, [2, 3]]})  # what JSON carries whole, as it is
+
+
+class Pairs(BaseModel):
+    pass
+
+
+def test_a_replay_reads_a_float_that_is_not_finite_as_that_float_and_a_key_json_cannot_hold_as_its_str():
+    """A result's value reads back in the form the row wrote it (ADR-0019/D1): NaN and infinity as the
+    floats they were, as the log wrote them before the store; a tuple key as its str."""
+    store = Store(LionKhive())
+    actor = Actor("clerk", store=store)
+
+    @actor.handler(Pairs)
+    def pairs(req, ctx) -> dict:
+        return {(1, 2): "x", "nan": float("nan"), "inf": [float("inf")]}
+
+    async def backend(messages):
+        return "<lact pair>pairs()</lact>"
+
+    run = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend))
+    (got,) = [e.content.value for e in asyncio.run(store.history(run.id)) if e.alias == "pair"]
+    assert got["(1, 2)"] == "x" and math.isnan(got["nan"]) and got["inf"] == [math.inf]
+
+
+def test_an_actor_without_a_store_is_refused_at_construction():
+    with pytest.raises(TypeError, match="built with a store"):
+        Actor("bare", store=None)
+    with pytest.raises(TypeError):
+        Actor("bare")  # the keyword is required, not defaulted
+
+
 def test_the_fake_parses_the_dsl_the_client_writes():
     assert parse('lion.get(table="runs", id="a, b)")') == [("lion.get", {"table": "runs", "id": "a, b)"})]
     assert [v for v, _ in parse("[lion.runs(limit=1), lion.runs(limit=2)]")] == ["lion.runs", "lion.runs"]
@@ -297,22 +432,28 @@ def test_the_fake_parses_the_dsl_the_client_writes():
 
 @pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
 def test_the_same_run_against_the_built_binary(tmp_path, monkeypatch):
-    # the binary's database is `KHIVE_DB` (else the one under the home directory): the config file
-    # names the actor and the packs, never the database, so the test pins the variable and then
-    # proves the file it named is the one written
+    # the config routes the lion pack's tables to their own file beside a main store it also names
+    # (ADR-0026 C8; the binary's default, with no backends declared, is the one under the home
+    # directory): the test then proves the lion file is the one written, and the main one holds none
     binary = os.environ["LION1_KHIVE"]
+    monkeypatch.delenv("KHIVE_DB", raising=False)  # a single-file database would move every pack at once
+    # both directories short, under /tmp: under a pytest tmp_path (170 characters and more) the binary
+    # creates the lion file but not the main one, and every op fails its audit obligation (measured);
+    # the home is the test's own, so a stray default would resolve there and never in the real one
+    home = Path(tempfile.mkdtemp(prefix="lion1-home-", dir="/tmp"))
+    tmp_path = Path(tempfile.mkdtemp(prefix="lion1-store-", dir="/tmp"))
+    monkeypatch.setenv("HOME", str(home))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(
-        f'[actor]\nid = "{ACTOR}"\n\n[runtime]\npacks = ["kg", "lion"]\n'
-    )
-    db = tmp_path / ".khive" / "store.db"
-    monkeypatch.setenv("KHIVE_DB", str(db))
+    cfg = tmp_path / ".khive" / "config.toml"
+    cfg.write_text(routed_config(ACTOR, tmp_path, packs=("kg", "lion")))
+    main, db = tmp_path / ".khive" / "main.db", tmp_path / ".khive" / "lion.db"
     k = Khive(tmp_path, ACTOR, kkernel=binary)
-    # the binary names the database it resolved on every call: the one this test named, no other
+    assert Store(k).database == db
+    # the binary names every target it resolved on every call: both this test named, no other
     said = subprocess.run(
         [binary, "exec", "lion.runs(limit=1)"], cwd=tmp_path, capture_output=True, text=True, check=True
     ).stderr
-    assert f"database: {db} (resolved)" in said, said
+    assert f"database: config-declared backends govern storage targets: main={main}, lion={db}" in said, said
     _, run = a_run(Store(k), trigger=("mail-1",))
     check_rows(k, run)
     _, again = a_run(Store(k), history=asyncio.run(Store(k).history(run.id)), continues=run.id)
@@ -320,3 +461,16 @@ def test_the_same_run_against_the_built_binary(tmp_path, monkeypatch):
     notes = Store(k).notes("clerk")  # every kind the pack writes lands in that file: the notes too
     notes.put("plan", {"step": 1}, run=run.id, seq=1)
     assert notes.get("plan").value == {"step": 1} and db.stat().st_size > 0
+    assert not (home / ".khive" / "khive.db").exists()
+    # the rows are in the lion file and not in the main one: each opened alone as the main store
+    for path, count in ((db, 2), (main, 0)):
+        cfg.write_text(
+            f'[actor]\nid = "{ACTOR}"\n\n[runtime]\npacks = ["kg", "lion"]\n\n[[backends]]\nname = "main"\n'
+            f"path = {json.dumps(str(path))}\n"
+        )
+        got = subprocess.run(
+            [binary, "exec", "lion.runs(limit=10)"], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout
+        assert json.loads(got)["results"][0]["result"]["count"] == count, (path, got)
+    shutil.rmtree(home)
+    shutil.rmtree(tmp_path)

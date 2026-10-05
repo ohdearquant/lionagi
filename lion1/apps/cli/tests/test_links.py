@@ -161,7 +161,7 @@ def test_a_url_in_a_notice_is_a_terminal_hyperlink(capsys):
     assert "the run is at " in out and ". [not markup]" in out  # the rest as written, never markup
 
 
-def test_the_chat_hands_its_directory_to_the_console(tmp_path, monkeypatch):
+def test_the_chat_hands_its_directory_to_the_console(tmp_path, monkeypatch, console_khive):
     import lion_cli.chat as cli
     from lion_cli.main import parser
 

@@ -19,7 +19,7 @@ from hub.agent.chores import Bounded
 from hub.agent.desk import Answer, Clarify, Leave, after
 from lion1 import Kind, RunRequest
 from lion1.khive import LOST, Khive, KhiveError
-from lion1.notes import MemoryNoteStore
+from tests.lionfake import store as fresh_store
 from tests.test_desk import (
     ASKER,
     DONE,
@@ -405,7 +405,7 @@ def test_a_key_is_charged_once_through_a_repeated_settlement_and_a_restart(tmp_p
     sent again."""
     reader = FakeReader(question("m-first", "first"))
     server = Server(reader, {"Re: first": ["after"]})
-    notes = MemoryNoteStore()
+    notes = fresh_store().notes("agent")
     desk, agent, wire, run = keyed_desk(tmp_path, server, reader)
     agent.state = notes
     agent.state.put("desk_since", "2026-09-22T09:00:00Z", run="-", seq=0)
@@ -807,7 +807,7 @@ def persistent(tmp_path, inner: FakeKhive, reader: FakeReader, **probes: Probe):
     desk, _, agent = build(
         tmp_path, Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF})), reader, [], **probes
     )
-    agent.state = _STATES.setdefault(tmp_path, MemoryNoteStore())  # one state across the rebuilds
+    agent.state = _STATES.setdefault(tmp_path, fresh_store().notes("agent"))  # one state across the rebuilds
     agent.state.put("desk_since", LIVE, run="-", seq=0)
     return desk, agent
 

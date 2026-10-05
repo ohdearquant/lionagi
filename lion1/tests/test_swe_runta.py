@@ -17,6 +17,8 @@ from tests._swe import sandbox as swe_sandbox
 from tests.test_runta import Resp, install_httpx, stub_runta
 from tests.test_swe_run_set import _args, _main, _one
 
+pytestmark = pytest.mark.usefixtures("bench_store")
+
 # --- bench/swe/sandbox.py: testbed over Runta ---------------------------------------------
 
 

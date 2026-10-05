@@ -11,6 +11,7 @@ from hub import LocalTree, code
 from hub.tools.code import Edit, numbered, replace_once
 from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -21,7 +22,7 @@ def tree(tmp_path: Path) -> tuple[Actor, Profile]:
     (tmp_path / ".gitignore").write_text("build/\n")
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "m.py").write_text("def f():\n    return 99\n")
-    actor = Actor("c")
+    actor = Actor("c", store=fresh_store())
     specs = code(actor, LocalTree(tmp_path)) | {h.name for h in DEFAULT_HANDLERS}
     return actor, Profile(name="c", specs=frozenset(specs), system="x")
 
@@ -199,25 +200,25 @@ def test_read_lines_shows_a_bare_carriage_return_as_text(tmp_path):
         "unterminated-last-line-crlf-new",
     ],
 )
-def test_an_edit_reads_each_crlf_of_the_replacement_as_a_line_end(tmp_path, file, new, want):
+def test_an_edit_reads_each_crlf_of_the_replacement_as_a_line_end(tmp_path, file, new, want, store):
     # `a\r\nb\r\n` with `b` replaced by `B\r\nC` was written `a\r\nB\r\r\nC\r\n`: the CRLF of the
     # replacement was split at its LF, so its CR stayed on the line and took a second one; a bare CR in
     # the replacement stays text, and every new line takes the ending of the line before it
-    actor = Actor("c")
+    actor = Actor("c", store=store)
     code(actor, LocalTree(tmp_path))
     (tmp_path / "f.txt").write_bytes(file)
     asyncio.run(actor.handlers["edit"].fn(Edit(path="f.txt", old="b", new=new), None))
     assert (tmp_path / "f.txt").read_bytes() == want
 
 
-def test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line(tmp_path):
+def test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line(tmp_path, store):
     # every string of length 0..6 over a, CR and LF holding a CRLF: the file as read_lines shows it is
     # what an edit matches, an edit of it to itself writes the same bytes, and in a file whose LFs all
     # follow a CR an edit of one line leaves every other line byte-identical (with mixed endings the
     # diff may pair an untouched line with an equal line ending otherwise, so those take only the first).
     # The replacement is spelled with CRLF line ends, and with LF ones where no row ends in a CR of its
     # own: an LF after a CR in the replacement is a CRLF, a line end, and the CR is not kept as text.
-    actor = Actor("c")
+    actor = Actor("c", store=store)
     code(actor, LocalTree(tmp_path))
     edit, f = actor.handlers["edit"].fn, tmp_path / "f.txt"
 

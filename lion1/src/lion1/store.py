@@ -7,8 +7,12 @@ session is the whole of what a resume needs (C3)."""
 from __future__ import annotations
 
 import json
+import os
 import time
-from dataclasses import dataclass
+import tomllib
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .checkpoint import entry_of, entry_row, jsonable
@@ -16,7 +20,7 @@ from .khive import Khive, KhiveError, lit
 from .notes import Note
 from .record import Entry, Kind, ViewEntry
 
-__all__ = ("SOURCE", "Store", "KhiveNoteStore")
+__all__ = ("SOURCE", "lion_database", "Store", "KhiveNoteStore")
 
 if TYPE_CHECKING:
     from .actor import Run
@@ -26,13 +30,111 @@ _ROLE = {Kind.INPUT: "user", Kind.SYSTEM: "system", Kind.TEXT: "assistant", Kind
 _BATCH = 100  # ops per `kkernel exec`: the DSL's parallel form takes that many
 
 
+def lion_database(config: Path, cwd: Path) -> Path:
+    """The file the config routes the `lion` pack's tables to (ADR-0026 C8): a `[[backends]]` entry
+    named `lion` with a `path`, the `main` entry the store requires once any backend is declared, and
+    `[packs.lion] backend = "lion"`. Anything less would put the pack's tables in the main store, and so
+    would a `lion` path that reaches main's own file: the binary, run in `cwd`, takes a relative path
+    from there and opens one database for two names that reach one file. A `file:` path SQLite reads as
+    a URI naming any file, so it is refused rather than compared. Two names of files not made yet that
+    differ only in case or in Unicode form are refused too: a file system that does not tell them apart
+    (this machine's) makes one file of them."""
+    try:
+        cfg = tomllib.loads(config.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise KhiveError(f"{config}: {e}") from None
+    declared = [b for b in cfg.get("backends") or () if isinstance(b, dict)]
+    backends = {b.get("name"): b for b in declared}
+    lion, main = backends.get("lion"), backends.get("main")
+    routed = ((cfg.get("packs") or {}).get("lion") or {}).get("backend")
+    a_file = lion is not None and lion.get("path") and lion.get("kind", "sqlite") == "sqlite"
+    if not a_file or main is None or routed != "lion":
+        raise KhiveError(
+            f"{config}: the lion pack's tables would resolve to the main store; declare "
+            '[[backends]] name = "main" (the store itself) and name = "lion" with a path, and '
+            '[packs.lion] backend = "lion" (ADR-0026 C8)'
+        )
+    if len(backends) != len(declared):
+        raise KhiveError(f"{config}: two backends share a name, and the binary refuses such a config")
+    for name, b in (("lion", lion), ("main", main)):
+        given = str(b.get("path") or "")
+        if given.startswith("file:") and b.get("kind", "sqlite") == "sqlite":
+            raise KhiveError(
+                f"{config}: the {name} backend's path {given} is one SQLite reads as a URI, which can name "
+                "any file, the main store's included; give it a plain path (ADR-0026 C8)"
+            )
+    path = cwd / _home(str(lion["path"]))
+    if main.get("path") and main.get("kind", "sqlite") == "sqlite":
+        other = cwd / _home(str(main["path"]))
+        real = [unicodedata.normalize("NFC", os.path.realpath(p)) for p in (path, other)]
+        same = real[0] == real[1] or real[0].casefold() == real[1].casefold()
+        if same or _identity(path) == _identity(other):
+            raise KhiveError(
+                f"{config}: the lion backend's path {path} is the main store's own file {other}, so the "
+                "lion pack's tables would be written there (ADR-0026 C8)"
+            )
+    return path
+
+
+def _identity(path: Path) -> tuple[int, int, str]:
+    """The file `path` names as the file system tells it: the deepest part of it that exists, by device
+    and inode, whatever spelling reached it (a link of either kind, `..`, a firmlink), and the names
+    below it not made yet, folded to one Unicode form and one letter case."""
+    real, rest = Path(os.path.realpath(path)), []
+    while not real.exists() and real != real.parent:
+        rest.append(real.name)
+        real = real.parent
+    st = real.stat()
+    names = unicodedata.normalize("NFC", "/".join(reversed(rest)))
+    return st.st_dev, st.st_ino, unicodedata.normalize("NFC", names.casefold())
+
+
+def _home(path: str) -> str:
+    """`path` with a leading `~` as the binary reads it: the home directory, and no other user's."""
+    home = os.environ.get("HOME", ".")
+    return home + path[1:] if path == "~" or path.startswith("~/") else path
+
+
+def _json(value: Any) -> str:
+    """`value` as a row's JSON, as the log writes it: `jsonable` writes what JSON cannot hold as its str
+    (ADR-0018 D16). A key JSON cannot hold (one that is not a string or a number) and a value that holds
+    itself are written the same way, each as its str, so the row is written and the run goes on; a replay
+    reads that part back as the str, as it reads anything else `jsonable` wrote."""
+    try:
+        return json.dumps(value, default=jsonable)
+    except (TypeError, ValueError):  # ValueError: a value that holds itself
+        return json.dumps(_carried(value, frozenset()), default=jsonable)
+
+
+def _carried(value: Any, path: frozenset[int]) -> Any:
+    if not isinstance(value, dict | list | tuple):
+        return value
+    if id(value) in path:  # the value holds itself here
+        return str(value)
+    inner = path | {id(value)}
+    if isinstance(value, dict):
+        return {(k if _key(k) else str(k)): _carried(v, inner) for k, v in value.items()}
+    return [_carried(v, inner) for v in value]
+
+
+def _key(k: Any) -> bool:
+    """Whether JSON writes `k` as an object's key."""
+    return k is None or isinstance(k, str | int | float | bool)
+
+
 def _text(e: Entry) -> str:
-    return e.content if isinstance(e.content, str) else json.dumps(entry_row(e)["content"], default=jsonable)
+    return e.content if isinstance(e.content, str) else _json(entry_row(e)["content"])
 
 
 @dataclass
 class Store:
     khive: Khive
+    database: Path | None = field(init=False, default=None)  # where the pack's tables go; a double has none
+
+    def __post_init__(self) -> None:
+        if isinstance(self.khive, Khive):  # a test double carries no config and no file: nothing routes
+            config = self.khive.config or self.khive.cwd / ".khive" / "config.toml"
+            self.database = lion_database(config, self.khive.cwd)
 
     async def open(self, run: Run, *, trigger: list[str] | None = None, continues: str | None = None) -> None:
         """The session and the run, both under the run's id; the run row names what started it."""
@@ -60,7 +162,7 @@ class Store:
         d = row["meta"].get("directive")
         return (
             f"lion.message_append(session_id={lit(session)}, seq={e.seq}, role={lit(_ROLE[e.kind])}, "
-            f"kind={lit(e.kind.value)}, text={lit(_text(e))}, raw={lit(json.dumps(row, default=jsonable))}, "
+            f"kind={lit(e.kind.value)}, text={lit(_text(e))}, raw={lit(_json(row))}, "
             f"turn={e.turn}, alias={lit(e.alias)}, directive={lit(json.dumps(d) if d is not None else None)})"
         )
 
@@ -98,7 +200,7 @@ class Store:
         """What is left to write, the outcome, and the session's end."""
         await self.flush(run)
         outcome = type(run.outcome).__name__.lower() if run.outcome is not None else "stopped"
-        output = json.dumps(run.output, default=jsonable) if run.output is not None else None
+        output = _json(run.output) if run.output is not None else None
         await self.khive.exec(
             f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(run.cost)}, "
             f"turns={run.turn}, output={lit(output)}) | lion.session_close(id={lit(run.id)})"

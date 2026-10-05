@@ -25,8 +25,8 @@ class FakeSandbox:
         return {"rc": 0, "stdout": "out", "stderr": "", "elapsed": 0.01}
 
 
-def test_the_handlers_hand_the_sandbox_a_shell_line_and_a_script_on_stdin():
-    actor = Actor("s")
+def test_the_handlers_hand_the_sandbox_a_shell_line_and_a_script_on_stdin(store):
+    actor = Actor("s", store=store)
     box = FakeSandbox()
     assert shell(actor, box) == {"bash", "python"}
     profile = Profile(
@@ -47,10 +47,10 @@ def test_the_handlers_hand_the_sandbox_a_shell_line_and_a_script_on_stdin():
     os.environ.get("LION_CONTAINER_E2E") != "1" or shutil.which("container") is None,
     reason="LION_CONTAINER_E2E=1 boots a real VM with Apple's container CLI",
 )
-def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and_stops(tmp_path):
+def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and_stops(tmp_path, store):
     (tmp_path / "a.txt").write_text("alpha\n")
     box = Sandbox(tmp_path, f"lion-test-{int(time.time())}")
-    actor = Actor("s")
+    actor = Actor("s", store=store)
     specs = shell(actor, box) | files(actor, tmp_path) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="s", specs=frozenset(specs), system="x")
 

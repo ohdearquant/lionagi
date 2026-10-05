@@ -20,7 +20,7 @@ from .actor import (
 )
 from .bus import Bus, Event
 from .lndl import Lact, LNDLError, Lvar, Out, Pointer, Program, parse
-from .notes import MemoryNoteStore, Note, NoteStore
+from .notes import Note, NoteStore
 from .record import Directive, Entry, Kind, Record, fold
 from .spec import Operable, Spec, render_guidance, spec_name
 from .store import KhiveNoteStore, Store
@@ -44,7 +44,6 @@ __all__ = (
     "LNDLError",
     "Lact",
     "Lvar",
-    "MemoryNoteStore",
     "Message",
     "Note",
     "NoteStore",

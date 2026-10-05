@@ -85,7 +85,7 @@ def test_a_native_tool_call_answer_is_the_models_turn_as_text_and_is_not_retried
     assert call["attempts"] == 1 and call["finish_reason"] == "tool_calls" and call["tool_calls"] == calls
 
 
-def test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told(monkeypatch):
+def test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told(monkeypatch, store):
     # the call was dropped and the text ran: a turn read by halves
     monkeypatch.setattr(mod, "asyncio", _NoSleep)
     calls = [{"id": "c1", "type": "function", "function": {"name": "run", "arguments": '{"cmd": "ls"}'}}]
@@ -100,7 +100,7 @@ def test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_
     }
     monkeypatch.setattr(mod, "_post", _answers(mixed, _ok("fine"), _ok("plain")))
     backend = OpenRouter(model="m", retries=3)
-    actor = Actor("mixed-channels")
+    actor = Actor("mixed-channels", store=store)
     run = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), backend))
     first, _ = backend.calls
     assert first["attempts"] == 1 and first["tool_calls"] == calls  # the model's turn: not sampled again

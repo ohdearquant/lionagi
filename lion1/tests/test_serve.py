@@ -21,6 +21,7 @@ from lion1.actor import ProfileError
 from lion1.checkpoint import entry_row, load_log
 from lion1.record import Entry
 from lion1.serve import Offer, ServeError, Service
+from tests.lionfake import store as fresh_store
 
 ROOT = Path(__file__).resolve().parents[1]
 FINISH = 'OUT{answer: {text: "done"}}'
@@ -89,7 +90,7 @@ class Held:
 
 def actor(name: str) -> tuple[Actor, dict[str, asyncio.Event]]:
     """An actor with `echo` and `wait`; `wait(key=k)` holds until the test sets `gates[k]`."""
-    a = Actor(name)
+    a = Actor(name, store=fresh_store())
     gates: dict[str, asyncio.Event] = {}
 
     @a.handler(Echo, effect="pure")
@@ -148,8 +149,8 @@ class Ping(BaseModel):
     n: int
 
 
-def test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_prompt():
-    a = Actor("serve-card", privileges={"glossary"})
+def test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_prompt(store):
+    a = Actor("serve-card", privileges={"glossary"}, store=store)
 
     @a.handler(Lookup, requires={"glossary"}, effect="read")
     async def lookup(req: Lookup, ctx) -> str:
@@ -709,7 +710,7 @@ class Flaky:
 @pytest.mark.parametrize("at", ["first", "later"])
 @pytest.mark.parametrize("how", ["short", "raise", "flush"])
 def test_a_failed_append_latches_the_log_stops_the_run_and_nothing_is_served_or_written_after_it(
-    tmp_path, monkeypatch, how, at, backend_kind
+    tmp_path, monkeypatch, how, at, backend_kind, store
 ):
     # the third write is turn 1's notification, the sixth turn 2's: each fails at its `turn.started`,
     # after that turn's stop check, so the turn's call still goes out and its message stands
@@ -764,7 +765,7 @@ def test_a_failed_append_latches_the_log_stops_the_run_and_nothing_is_served_or_
     else:  # the bytes landed whole and their flush failed: on disk, and never served
         assert len(tail) == 2 and json.loads(tail[0]) == plain(run.record.by_seq(served)) and tail[1] == b""
     # after a restart the log is read whole: cut short, its whole rows read back, the cut one dropped
-    after = Service(Actor("serve-latch-restarted"), dir=tmp_path)
+    after = Service(Actor("serve-latch-restarted", store=store), dir=tmp_path)
     assert after.state(state["id"])["phase"] == "cut_short"
     reread = after.record(state["id"])["rows"]
     assert reread == rows + ([plain(run.record.by_seq(served))] if how == "flush" else [])
@@ -1210,11 +1211,12 @@ def test_a_cancel_before_the_commit_is_an_abort_with_no_outcome_even_with_an_int
 @pytest.mark.parametrize("control", ["cancel", "stop"])
 def test_a_cancel_in_the_last_reap_aborts_with_no_outcome_ever_shown_and_a_stop_changes_nothing(
     control,
+    store,
 ):
     """The runtime sets a run's outcome, then reaps what `OUT{}` did not name, then returns. A command
     that absorbs its cancel holds that reap open: a cancel landing there is before the commit, an abort
     whose outcome no state ever showed; a stop there leaves the outcome as it was."""
-    a = Actor(f"serve-last-reap-{control}")
+    a = Actor(f"serve-last-reap-{control}", store=store)
     entered, absorbed, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     @a.handler(Wait)
@@ -1329,7 +1331,7 @@ def entry(seq: int, kind: str = "INPUT", content="go", alias: str | None = None)
     }
 
 
-def test_a_resume_replays_a_stored_runs_log_and_a_restart_reads_each_log_by_its_own_end_row(tmp_path):
+def test_a_resume_replays_a_stored_runs_log_and_a_restart_reads_each_log_by_its_own_end_row(tmp_path, store):
     calls: list = []
 
     async def backend(messages):
@@ -1367,7 +1369,7 @@ def test_a_resume_replays_a_stored_runs_log_and_a_restart_reads_each_log_by_its_
     assert [plain(e) for e in load_log(tmp_path / f"{second['id']}.jsonl")] == two[1:-1]  # SERVE, END skipped
     for at, state in enumerate((first, second)):
         os.utime(tmp_path / f"{state['id']}.jsonl", (1_000_000 + at, 1_000_000 + at))
-    after = Service(Actor("serve-resume-restarted"), dir=tmp_path)
+    after = Service(Actor("serve-resume-restarted", store=store), dir=tmp_path)
     # the resumed run replayed its ancestor's closure, and its own END row is what says how it ended
     listed = [(s["id"], s["phase"], s["outcome"], s["resumed"]) for s in after.runs_state()["runs"]]
     assert listed == [
@@ -1382,6 +1384,7 @@ A, B, C, D, E, F, G, H = (ch * 16 for ch in "abcdef09")
 
 def test_after_a_restart_the_newest_logs_are_kept_by_end_row_and_one_without_a_serve_row_is_not(
     tmp_path,
+    store,
 ):
     def write(sid: str, data: bytes, at: int) -> None:
         path = tmp_path / f"{sid}.jsonl"
@@ -1399,7 +1402,7 @@ def test_after_a_restart_the_newest_logs_are_kept_by_end_row_and_one_without_a_s
     (tmp_path / f"{F}.jsonl").mkdir()
     (tmp_path / f"{H}.jsonl").symlink_to(tmp_path / "nowhere")
     (tmp_path / "notes.jsonl").write_bytes(line(served_row("notes")))
-    after = Service(Actor("serve-listing"), dir=tmp_path, keep=2)
+    after = Service(Actor("serve-listing", store=store), dir=tmp_path, keep=2)
     assert list(after.runs) == [E, B]  # the newest two by modification time; A is older and not held
     assert after.state(A) == ended  # read from its log all the same
     cut = after.state(B)
@@ -1449,7 +1452,7 @@ def test_after_a_restart_the_newest_logs_are_kept_by_end_row_and_one_without_a_s
     assert past.value.code == "bad_request" and "0 to 1" in past.value.reason
 
 
-def test_a_resume_names_a_stored_runs_id_and_one_whose_log_cannot_be_replayed_is_refused(tmp_path):
+def test_a_resume_names_a_stored_runs_id_and_one_whose_log_cannot_be_replayed_is_refused(tmp_path, store):
     def write(sid: str, *docs) -> None:
         (tmp_path / f"{sid}.jsonl").write_bytes(
             b"".join(d if isinstance(d, bytes) else line(d) for d in docs)
@@ -1504,14 +1507,14 @@ def test_a_resume_names_a_stored_runs_id_and_one_whose_log_cannot_be_replayed_is
     assert codes["a bad row"][1] == f"the log of {D} cannot be read: KeyError: 'seq'"
     # no log left behind
     assert sorted(tmp_path.iterdir()) == sorted([*files, tmp_path / f"{live['id']}.jsonl"])
-    restarted = Service(Actor("serve-resume-read"), dir=tmp_path)
+    restarted = Service(Actor("serve-resume-read", store=store), dir=tmp_path)
     with pytest.raises(ServeError) as unreadable:
         restarted.record(B)
     assert unreadable.value.code == "unreadable_log"
 
 
 def test_a_dropped_run_reads_whole_from_its_log_and_one_whose_log_failed_is_gone_until_a_restart(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, store
 ):
     a, _ = actor("serve-dropped")
     service = Service(a, dir=tmp_path, keep=0)
@@ -1540,7 +1543,10 @@ def test_a_dropped_run_reads_whole_from_its_log_and_one_whose_log_failed_is_gone
         with pytest.raises(ServeError) as gone:
             read(failed["id"])
         assert gone.value.code == "gone"
-    assert Service(Actor("serve-dropped-again"), dir=tmp_path).state(failed["id"])["phase"] == "cut_short"
+    assert (
+        Service(Actor("serve-dropped-again", store=store), dir=tmp_path).state(failed["id"])["phase"]
+        == "cut_short"
+    )
 
 
 # --- C14 --------------------------------------------------------------------------------------------
@@ -1606,11 +1612,11 @@ def test_a_dropped_run_whose_id_is_forgotten_reads_from_its_log_as_after_a_resta
     ],
     ids=repr,
 )
-def test_a_capacity_that_is_no_count_is_refused_when_the_service_is_made(capacity):
+def test_a_capacity_that_is_no_count_is_refused_when_the_service_is_made(capacity, store):
     (name,) = capacity
     with pytest.raises(ValueError, match=f"^{name} is a count of at least"):
-        Service(Actor("serve-capacity"), **capacity)
-    made = Service(Actor("serve-capacity-least"), max_live=1, keep=0)
+        Service(Actor("serve-capacity", store=store), **capacity)
+    made = Service(Actor("serve-capacity-least", store=store), max_live=1, keep=0)
     assert (made.max_live, made.keep) == (1, 0)
 
 
@@ -1733,8 +1739,8 @@ class Unprintable:
         raise RuntimeError("no repr")
 
 
-def test_a_value_json_cannot_hold_is_carried_by_its_repr_and_never_as_the_object():
-    a = Actor("serve-odd")
+def test_a_value_json_cannot_hold_is_carried_by_its_repr_and_never_as_the_object(store):
+    a = Actor("serve-odd", store=store)
     cycle: list = [1]
     cycle.append(cycle)
     deep: list = []
@@ -1804,9 +1810,9 @@ def test_a_start_is_refused_while_an_actor_named_client_is_registered(monkeypatc
 # --- the edges of D3, D5 and D7 ---------------------------------------------------------------------
 
 
-def test_a_comment_line_is_queued_only_on_an_open_stream_with_room(monkeypatch):
+def test_a_comment_line_is_queued_only_on_an_open_stream_with_room(monkeypatch, store):
     monkeypatch.setattr(serve, "_FRAMES", 2)
-    service = Service(Actor("serve-ping"))
+    service = Service(Actor("serve-ping", store=store))
     sub = service.events()
     sub.ping()
     sub.ping()  # the queue is full: a comment line is dropped, and the stream stays open

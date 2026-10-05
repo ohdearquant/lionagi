@@ -63,6 +63,33 @@ def kkernel_stub(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture
+def store():
+    """The store over the in-memory pack, for a test that builds an `Actor` (ADR-0026 D7)."""
+    from tests.lionfake import store as _store
+
+    return _store()
+
+
+@pytest.fixture
+def console_khive(tmp_path, kkernel_stub, monkeypatch):
+    """`tmp_path` made the directory of the actor `console`, with every khive op answered in memory: what
+    `console` and `lion chat` need to start (ADR-0025 D3). The `LionFake` behind it."""
+    from tests.lionfake import actor_dir, patch_khive
+
+    actor_dir(tmp_path)
+    return patch_khive(monkeypatch)
+
+
+@pytest.fixture
+def bench_store(monkeypatch):
+    """`run_set` takes the store a run writes its rows to from `--khive-dir`: here the in-memory pack."""
+    from tests._swe import run_set
+    from tests.lionfake import store as fresh_store
+
+    monkeypatch.setattr(run_set, "store_of", lambda directory: fresh_store())
+
+
+@pytest.fixture
 def no_collection():
     """For a test that takes the interpreter to its recursion limit on purpose. A garbage collection
     that happened to run there would run some other object's finalizer with no stack left, and the

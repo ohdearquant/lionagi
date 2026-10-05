@@ -9,8 +9,9 @@ from pydantic import BaseModel
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lion1 import Actor, MemoryNoteStore, Profile, RunRequest
+from lion1 import Actor, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -24,7 +25,7 @@ class Echo(BaseModel):
 
 
 def _resume_actor(name: str, calls: list[str]) -> Actor:
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
 
     @actor.handler(Echo)
     def echo(req: Echo, ctx) -> str:
@@ -105,8 +106,8 @@ def test_warned_but_admitted_value_survives_resume():
     assert resumed.resolve("w") == "warned value" and resumed.resolve("v") == 'echo(text="x")'
 
 
-def test_a_resumed_run_resolves_a_redeclared_value_to_its_latest_declaration():
-    actor = Actor("resume-redeclared")
+def test_a_resumed_run_resolves_a_redeclared_value_to_its_latest_declaration(store):
+    actor = Actor("resume-redeclared", store=store)
     first = asyncio.run(
         actor.run(
             Profile("p"),
@@ -138,9 +139,9 @@ _STORES: dict = {}  # one note store per directory, shared by the actors that re
 
 
 def _lnr01_reader(directory, name):
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
     specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
-    notes = _STORES.setdefault(directory, MemoryNoteStore())
+    notes = _STORES.setdefault(directory, fresh_store().notes("p"))
     return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text.", notes=notes)
 
 

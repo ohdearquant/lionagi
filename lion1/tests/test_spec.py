@@ -537,7 +537,7 @@ def _said_path(first: str | int, rest: str | int) -> str:
         "",
     ],
 )
-def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, form):
+def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, form, store):
     """What the guidance says a path is, written back as the dict it names, fills the field: in an OUT{}
     tag and in a program, whichever of the key's positions it stands in."""
     leaf = _said_path("leaf", "leaf").removesuffix('["leaf"]')  # however the guidance says `leaf` first
@@ -552,7 +552,7 @@ def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, fo
         return turn
 
     run = asyncio.run(
-        Actor("t").run(profile, RunRequest(inputs=("go",), emits=(spec,), max_turns=1), backend)
+        Actor("t", store=store).run(profile, RunRequest(inputs=("go",), emits=(spec,), max_turns=1), backend)
     )
     assert isinstance(run.outcome, Success), run.refused
     assert run.output["path_spec"].value == "done"

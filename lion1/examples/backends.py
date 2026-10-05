@@ -22,6 +22,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
+import shutil
+import tempfile
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -34,7 +38,8 @@ from hub.backend import (
     OpenRouter,
     OpenRouterError,
 )
-from lion1 import Actor, Context, Kind, Profile, RunRequest, Success
+from lion1 import Actor, Context, Kind, Profile, RunRequest, Store, Success
+from lion1.khive import Khive
 
 TEXT = "the loop goes round and every turn is one message in and one message out"
 
@@ -78,8 +83,25 @@ def build_backend(kind: str, model: str | None):
     return ClaudeCodeSession(model=model)  # "claude" and "session" are the same shape
 
 
+def a_store() -> Store:
+    """The store the run's rows go to: the khive binary, as the actor of a scratch directory."""
+    scratch = Path(tempfile.mkdtemp())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)  # the scratch goes with the process
+    (scratch / ".khive").mkdir()
+    (scratch / ".khive" / "config.toml").write_text(
+        # the actor, and the lion pack's tables routed to their own file beside a main store (the
+        # store refuses a config that would put them in the default one under the home directory)
+        '[actor]\nid = "example"\n'
+        f'\n[[backends]]\nname = "main"\npath = "{scratch / ".khive" / "main.db"}"\n'
+        f'\n[[backends]]\nname = "lion"\npath = "{scratch / ".khive" / "lion.db"}"\n'
+        '\n[packs.lion]\nbackend = "lion"\n'
+    )
+    return Store(Khive(scratch, "example"))
+
+
 async def main(kind: str, model: str | None) -> None:
-    actor = Actor("counter")
+    backend = build_backend(kind, model)  # first: a missing key or CLI is said before anything is built
+    actor = Actor("counter", store=a_store())
 
     @actor.handler(WordCount)
     async def word_count(req: WordCount, ctx: Context) -> int:
@@ -89,7 +111,6 @@ async def main(kind: str, model: str | None) -> None:
     async def longest(req: Longest, ctx: Context) -> str:
         return max(req.text.split(), key=len)
 
-    backend = build_backend(kind, model)
     try:
         run = await actor.run(
             Profile(

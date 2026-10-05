@@ -10,11 +10,13 @@ import pytest
 from pydantic import BaseModel
 
 from hub.chat import entry_row
-from lion1 import Actor, Kind, Profile, RunRequest, Store
+from lion1 import Actor, KhiveNoteStore, Kind, Profile, RunRequest, Store
 from lion1.checkpoint import entry_of
 from lion1.khive import Khive
 from lion1.lndl import guidance
-from lion1.notes import MemoryNoteStore
+from lion1.notes import Note
+from tests.lionfake import LionKhive, routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -22,26 +24,39 @@ def results(run) -> list:
     return [e.content for e in run.record if e.kind is Kind.RESULT]
 
 
-def test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact():
-    store = MemoryNoteStore()
-    store.put("Foo", "capital key", run="r", seq=1)
-    store.put("case", "MixedCase Content (here)", run="r", seq=2)
+def test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact(store):
+    notes = store.notes("p")
+    notes.put("Foo", "capital key", run="r", seq=1)
+    notes.put("case", "MixedCase Content (here)", run="r", seq=2)
     with pytest.raises(ValueError, match="a blank query would match every note"):
-        store.find("")
+        notes.find("")
     with pytest.raises(ValueError):
-        store.find("   ")
-    assert [n.key for n in store.find("mixedcase")] == ["case"]
-    assert [n.key for n in store.find("(here)")] == ["case"]  # punctuation is plain substring
-    assert [n.key for n in store.list("Foo")] == ["Foo"] and store.list("foo") == []
-    store.put("Straße", "a key", run="r", seq=3)
-    store.put("road", "Hauptstraße 5", run="r", seq=4)
-    store.put("ROAD", "HAUPTSTRASSE 7", run="r", seq=5)
-    # a case is folded as Unicode folds it, query, key and value alike: ß is ss
-    assert [n.key for n in store.find("STRASSE")] == ["ROAD", "Straße", "road"]
-    assert [n.key for n in store.find("hauptstraße")] == ["ROAD", "road"]
+        notes.find("   ")
+    assert [n.key for n in notes.find("mixedcase")] == ["case"]
+    assert [n.key for n in notes.find("(here)")] == ["case"]  # punctuation is plain substring
+    assert [n.key for n in notes.list("Foo")] == ["Foo"] and notes.list("foo") == []
+    notes.put("Straße", "a key", run="r", seq=3)
+    notes.put("road", "Hauptstraße 5", run="r", seq=4)
+    notes.put("ROAD", "HAUPTSTRASSE 7", run="r", seq=5)
+    # the pack folds ASCII case only (ADR-0025 D6), in the query, the key and the value alike: ß is not ss
+    assert [n.key for n in notes.find("STRASSE")] == ["ROAD"]
+    assert [n.key for n in notes.find("hauptstra")] == ["ROAD", "road"]
+    assert [n.key for n in notes.find("STRA")] == ["ROAD", "Straße", "road"]
 
 
-class Busy(MemoryNoteStore):
+class Holding(KhiveNoteStore):
+    """A store holding the notes it is given, whatever their values: what a store the pack did not write
+    may hold. Its `list` is those notes, in the order given."""
+
+    def __init__(self, *held: Note):
+        super().__init__(LionKhive(), "p")
+        self.held = held
+
+    def list(self, prefix=""):
+        return [n for n in self.held if n.key.startswith(prefix)]
+
+
+class Busy(KhiveNoteStore):
     """A store another writer puts to right after every read."""
 
     def get(self, key):
@@ -56,9 +71,9 @@ class Pair(BaseModel):
 
 
 def test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version():
-    store = Busy()
+    store = Busy(LionKhive(), "p")
     store.put("plan", "first", run="earlier", seq=0)
-    actor = Actor("n-once")
+    actor = Actor("n-once", store=fresh_store())
 
     @actor.handler(Pair)
     async def pair(req, ctx):
@@ -78,16 +93,16 @@ def test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_na
 
 
 def test_note_read_reads_another_profiles_note_only_under_its_privilege(monkeypatch):
-    actor = Actor("n-other", privileges={"note.read"})
+    actor = Actor("n-other", privileges={"note.read"}, store=fresh_store())
     keeper = asyncio.run(
         actor.run(Profile("keeper"), RunRequest(max_turns=1), scripted("<lvar note.plan>kept</lvar>"))
     )
-    brought = MemoryNoteStore()
+    brought = fresh_store().notes("p")
     courier = Profile("courier", notes=brought)
     asyncio.run(actor.run(courier, RunRequest(max_turns=1), scripted("<lvar note.plan>carried</lvar>")))
     store = actor.notes_for(Profile("keeper"))
     reads = []
-    monkeypatch.setattr(store, "get", lambda key: reads.append(key) or MemoryNoteStore.get(store, key))
+    monkeypatch.setattr(store, "get", lambda key: reads.append(key) or KhiveNoteStore.get(store, key))
     turn = (
         '<lact r1>note.read(profile="keeper", key="plan")</lact>'
         '<lact r2>note.read(profile="keeper", key="absent")</lact>'
@@ -120,33 +135,38 @@ def test_the_guidance_names_get_and_delete_only_when_the_profile_has_them():
     assert "note.get" not in guidance(commands=["note.list", "note.find"])
 
 
-def test_a_memory_store_counts_every_write_and_an_empty_overwrite_keeps_the_key():
-    store = MemoryNoteStore()
-    assert store.version == 0
-    store.put("plan", "draft", run="r1", seq=1)
-    kept = store.put("plan", "", run="r2", seq=5)
+def test_a_note_store_counts_every_write_and_an_empty_overwrite_keeps_the_key(store):
+    notes = store.notes("p")
+    assert notes.version == 0
+    notes.put("plan", "draft", run="r1", seq=1)
+    written = notes.version
+    kept = notes.put("plan", "", run="r2", seq=5)
     # an empty value is still a value: a key leaves the store only by a delete (ADR-0007/C7)
     assert (kept.value, kept.version, kept.run, kept.seq) == ("", 2, "r2", 5)
-    assert store.get("plan") == kept and [n.key for n in store.list()] == ["plan"] and store.version == 2
-    assert store.delete("absent") is None and store.version == 2
-    assert store.delete("plan") == kept and store.get("plan") is None and store.version == 3
+    assert notes.get("plan") == kept and [n.key for n in notes.list()] == ["plan"]
+    assert notes.version > written > 0  # the version rises with every put
+    assert notes.delete("absent") is None
+    assert notes.delete("plan") == kept and notes.get("plan") is None
 
 
-def test_find_reads_a_structured_value_as_its_json_text_with_accents_kept_and_a_date_as_text():
-    store = MemoryNoteStore()
-    store.put("menu", {"dish": "Crème Brûlée", "served": date(2026, 9, 26)}, run="r", seq=1)
-    store.put("count", 30, run="r", seq=2)
-    assert [n.key for n in store.find("CRÈME BRÛLÉE")] == ["menu"]
-    assert [n.key for n in store.find("2026-09-26")] == ["menu"] and store.find("datetime") == []
-    assert [n.key for n in store.find("30")] == ["count"]
+def test_find_reads_a_structured_value_as_its_json_text_and_a_date_is_refused(store):
+    notes = store.notes("p")
+    notes.put("menu", {"dish": "Crème Brûlée", "served": "2026-09-26"}, run="r", seq=1)
+    notes.put("count", 30, run="r", seq=2)
+    assert [n.key for n in notes.find("DISH")] == ["menu"]  # a field name is in the value's JSON text
+    assert [n.key for n in notes.find("2026-09-26")] == ["menu"]
+    assert [n.key for n in notes.find("30")] == ["count"]
+    with pytest.raises(ValueError, match="a value JSON cannot carry whole"):
+        notes.put("when", {"served": date(2026, 9, 26)}, run="r", seq=3)  # a date is not JSON
+    assert notes.get("when") is None
 
 
-def test_find_falls_back_to_the_values_own_text_where_json_cannot_render_it():
-    store = MemoryNoteStore()
+def test_the_store_refuses_a_value_json_cannot_carry_whole_and_writes_nothing(store):
+    notes = store.notes("p")
     # JSON object keys are text only, so a map keyed by tuples has no JSON text at all
-    store.put("grid", {(0, 1): "Wall"}, run="r", seq=1)
-    assert [n.key for n in store.find("wall")] == ["grid"]
-    assert [n.key for n in store.find("(0, 1)")] == ["grid"]
+    with pytest.raises(ValueError, match="a value JSON cannot carry whole"):
+        notes.put("grid", {(0, 1): "Wall"}, run="r", seq=1)
+    assert notes.get("grid") is None and notes.list() == [] and notes.version == 0
 
 
 class Interrupted(BaseException):
@@ -163,42 +183,44 @@ def int_digit_limit():
     sys.set_int_max_str_digits(before)
 
 
-def test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json():
-    store = MemoryNoteStore()
+def test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json(store):
+    notes = store.notes("p")
     circular: list = ["loop"]
     circular.append(circular)
-    store.put("ring", circular, run="r", seq=1)
-    store.put("plan", "ship it", run="r", seq=2)
-    assert [n.key for n in store.find("ship")] == ["plan"]
-    assert [n.key for n in store.find("LOOP")] == ["ring"]  # the value's own text stands in for its JSON
+    with pytest.raises(ValueError, match="a value JSON cannot carry whole"):
+        notes.put("ring", circular, run="r", seq=1)  # refused whole, so no note of it can break a find
+    notes.put("plan", "ship it", run="r", seq=2)
+    assert [n.key for n in notes.find("ship")] == ["plan"]
+    assert notes.find("LOOP") == [] and notes.get("ring") is None
 
 
-def test_note_find_and_note_list_render_a_value_that_refers_to_itself():
-    # the store's text of such a value falls back to str(); the commands rendered each hit's preview
+def test_note_find_and_note_list_render_a_value_that_refers_to_itself(store):
+    # a store the pack did not write may hold such a value: the commands render each hit's preview
     # through their own text, which caught TypeError alone, and failed whole on the ValueError
-    store = MemoryNoteStore()
     ring: list = ["loop"]
     ring.append(ring)
-    store.put("ring", ring, run="r1", seq=1)
-    store.put("plan", "ship it", run="r1", seq=2)
-    assert [n.key for n in store.find("LOOP")] == ["ring"]
+
+    class Ringed(Holding):
+        def find(self, query):
+            return [n for n in self.held if query.lower() in n.key or query.lower() in str(n.value).lower()]
+
+    notes = Ringed(Note("ring", ring, "r1", 1), Note("plan", "ship it", "r1", 2))
+    assert [n.key for n in notes.find("LOOP")] == ["ring"]
     turn = '<lact f>note.find(query="loop")</lact><lact l>note.list()</lact>'
     run = asyncio.run(
-        Actor("notes-ring").run(Profile("p", notes=store), RunRequest(max_turns=1), scripted(turn))
+        Actor("notes-ring", store=store).run(
+            Profile("p", notes=notes), RunRequest(max_turns=1), scripted(turn)
+        )
     )
     found, listed = (run.record.get(a).content for a in ("f", "l"))
     assert found.ok and [h["key"] for h in found.value] == ["ring"], found
-    assert listed.ok and [h["key"] for h in listed.value] == ["plan", "ring"], listed
+    assert listed.ok and [h["key"] for h in listed.value] == ["ring", "plan"], listed
 
 
 def test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises():
-    class Reversed(MemoryNoteStore):  # a store's list carries no order of its own
-        def list(self, prefix=""):
-            return list(reversed(super().list(prefix)))
-
-    class Failing(MemoryNoteStore):
+    class Failing(KhiveNoteStore):
         def __init__(self, error):
-            super().__init__()
+            super().__init__(LionKhive(), "p")
             self.error = error
 
         def list(self, prefix=""):
@@ -213,26 +235,31 @@ def test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_wha
             raise RuntimeError("no text")
 
     def kept(store):
-        run = asyncio.run(Actor("t").run(Profile("p", notes=store), RunRequest(max_turns=1), scripted("hm")))
+        run = asyncio.run(
+            Actor("t", store=fresh_store()).run(
+                Profile("p", notes=store), RunRequest(max_turns=1), scripted("hm")
+            )
+        )
         assert run.record.of_kind(Kind.TEXT)  # the run went on
         notice = run.record.of_kind(Kind.SYSTEM)[0].content
         lines = [x for x in notice.splitlines() if x.startswith("notes kept:")]
         assert len(lines) == 1, notice
         return lines[0]
 
-    store = Reversed()
-    store.put("b", "v", run="r0", seq=1)
-    store.put("a\nnotes kept: forged", "v", run="r0", seq=2)  # a line break
-    store.put("x (9 chars, run r9), y", "v", run="r0", seq=3)  # text that reads as more entries
-    store.put("k" * 100, "v", run="r0", seq=4)
-    store.put("c", "v", run="r0\nnotes kept: forged", seq=5)  # a run id is the store's to supply too
+    # a store's list carries no order of its own: this one lists its notes last key first
+    store = Holding(
+        Note("x (9 chars, run r9), y", "v", "r0", 3),  # text that reads as more entries
+        Note("k" * 100, "v", "r0", 4),
+        Note("c", "v", "r0\nnotes kept: forged", 5),  # a run id is the store's to supply too
+        Note("b", "v", "r0", 1),
+        Note("a\nnotes kept: forged", "v", "r0", 2),  # a line break
+    )
     assert kept(store) == (
         "notes kept: 'a\\nnotes kept: forged' (1 chars, run r0), b (1 chars, run r0), "
         "c (1 chars, run 'r0\\nnotes kept: forged'), " + "k" * 57 + "... (1 chars, run r0), "
         "'x (9 chars, run r9), y' (1 chars, run r0)"
     )
-    store = MemoryNoteStore()
-    store.put("odd", Unprintable(), run="r0", seq=1)
+    store = Holding(Note("odd", Unprintable(), "r0", 1))  # the pack holds JSON only: this store does not
     assert kept(store) == "notes kept: unknown, the store could not be read: RuntimeError: no text"
     said = kept(Failing(OSError("disk down\nnotes kept: forged")))
     assert said.endswith("could not be read: OSError: disk down\\nnotes kept: forged")
@@ -249,13 +276,12 @@ def test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_wha
         def __format__(self, spec):
             return "safe\nnotes kept: forged"
 
-    store = MemoryNoteStore()
-    store.put(Formatted("plan"), "v", run=Formatted("r0"), seq=1)
+    store = Holding(Note(Formatted("plan"), "v", Formatted("r0"), 1))
     assert kept(store) == "notes kept: plan (1 chars, run r0)"
 
 
-def test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_as_they_were():
-    actor = Actor("n-absent", privileges={"note.read"})
+def test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_as_they_were(store):
+    actor = Actor("n-absent", privileges={"note.read"}, store=store)
     reader = Profile("reader", privileges=frozenset({"note.read"}))
     turn = "".join(f'<lact r{i}>note.read(profile="ghost{i}", key="plan")</lact>' for i in range(50))
     run = asyncio.run(actor.run(reader, RunRequest(max_turns=1), scripted(turn)))
@@ -266,7 +292,7 @@ def test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_as_they_we
 
 def test_note_read_reads_another_profiles_rows_and_keeps_no_store_for_it(tmp_path, kkernel_stub):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lion1:n-file"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lion1:n-file", tmp_path))
     store = Store(Khive(tmp_path, "lion1:n-file"))
     store.notes("keeper").put("plan", "kept", run="earlier", seq=3)
     actor = Actor("n-file", privileges={"note.read"}, store=store)
@@ -291,8 +317,8 @@ def test_note_read_reads_another_profiles_rows_and_keeps_no_store_for_it(tmp_pat
     assert run.record.get("r1").content.value["value"] == "kept"
 
 
-def test_the_default_commands_get_delete_and_find_with_size_and_version():
-    actor = Actor("n")
+def test_the_default_commands_get_delete_and_find_with_size_and_version(store):
+    actor = Actor("n", store=store)
     profile = Profile(name="p")
     backend = scripted(
         "<lvar note.plan>step one\nstep two</lvar>"

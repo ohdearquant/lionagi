@@ -58,6 +58,7 @@ from hub.tools import LocalTree, SearXNG, code, criteria, files, khive_ops, shel
 from lion1.actor import DEFAULT_HANDLERS, Actor, Handler
 from lion1.khive import Khive, KhiveError, lit
 from lion1.spec import field_keys, spec_name
+from lion1.store import Store
 
 from .agent import DEFAULT_MODEL, MAX_TURNS
 
@@ -409,12 +410,24 @@ def _type(prop: dict) -> str:
     return "any"
 
 
+class _Nowhere:
+    """The khive of the actors `_registered` builds: they are read for their registrations and never run,
+    so every row is absent and nothing is written."""
+
+    async def exec(self, ops: str) -> list:
+        raise KhiveError("a library actor holds no rows", "not_found")
+
+    def exec_sync(self, ops: str) -> list:
+        raise KhiveError("a library actor holds no rows", "not_found")
+
+
 @cache
 def _registered() -> tuple[tuple[str, dict[str, Handler]], ...]:
     """Every command the runtime and this tree register, by group, each read off an actor it was
     registered on: its spec and its effect as the actor holds them. Nothing here calls a command, so
     what a registrar binds for its commands to call (a sandbox, a client, a provider) is never used."""
     groups = []
+    store = Store(_Nowhere())
     for group, register in (
         ("files", lambda a: files(a, Path("."))),
         ("code", lambda a: code(a, LocalTree(Path(".")))),
@@ -423,13 +436,13 @@ def _registered() -> tuple[tuple[str, dict[str, Handler]], ...]:
         ("web", lambda a: web(a, SearXNG("http://localhost"))),
         ("criteria", lambda a: criteria(a, None)),
     ):
-        actor = Actor(f"library {group}")
+        actor = Actor(f"library {group}", store=store)
         groups.append((group, {n: actor.handlers[n] for n in sorted(register(actor))}))
-    actor = Actor("library runtime")
+    actor = Actor("library runtime", store=store)
     groups.append(("runtime", {h.name: actor.handlers[h.name] for h in DEFAULT_HANDLERS}))
     # a resident's own commands, registered as `build` registers them: the agent's `send`, the chores
     # and the front desk's
-    actor = Actor("library resident")
+    actor = Actor("library resident", store=store)
     agent = Agent(actor, SimpleNamespace(actor="library", cwd=None), None, lambda mail: None)
     chores = Chores(agent, "library", None, {}, Path("ledger.jsonl"))
     Desk(agent, chores, None, Path("desk.jsonl"))
