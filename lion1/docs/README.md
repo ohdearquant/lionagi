@@ -137,7 +137,7 @@ Message("robot", "hi")
 | `Directive.op` | `record.Op` | `hide`, `show`, `summarize` |
 | `status` of `Store.call_close` | `store.CallStatus` | `ok`, `refused`, `cut`, `failed`; another is refused before any row is written |
 | `_Served.phase` | `service.Phase` | `starting`, `working`, `waiting`, `ended`, `aborted`, `cut_short`; a served run's phase in its JSON, set only by the service, and a test reads every value the service writes |
-| `code` of `ServeError` | `service.Code` | `bad_request`, `forbidden`, `unknown_offer`, `unknown_run`, `not_found`, `method_not_allowed`, `timeout`, `ended`, `starting`, `not_conversation`, `no_resume`, `unreadable_log`, `conflict`, `gone`, `too_large`, `unsupported_type`, `refused`, `too_many`, `log_failed`, `busy`; each answers with its own HTTP status (ADR-0021/D9) |
+| `code` of `ServeError` | `service.Code` | `bad_request`, `forbidden`, `unknown_offer`, `unknown_run`, `not_found`, `method_not_allowed`, `timeout`, `ended`, `starting`, `not_conversation`, `no_resume`, `unreadable_log`, `conflict`, `gone`, `too_large`, `unsupported_type`, `refused`, `too_many`, `log_failed`, `busy`; each answers with its own HTTP status, per ADR-0021 D9 |
 
 These stay strings on purpose, because their values are another party's to name:
 

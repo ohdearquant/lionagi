@@ -100,8 +100,8 @@ def values_of(hint: typing.Any) -> list[str]:
     return values_of(next(a for a in typing.get_args(hint) if a is not type(None)))  # X | None
 
 
-# a values cell: the values in backticks, then at most one note after "; " or in parentheses
-_LISTED = re.compile(r"(?P<values>`[^`]+`(?:, `[^`]+`)*)(?:; (?P<said>.+)| \((?P<aside>[^()]+)\))?")
+# a values cell: the values in backticks, then at most one note: after "; " with no parentheses, or in them
+_LISTED = re.compile(r"(?P<values>`[^`]+`(?:, `[^`]+`)*)(?:; (?P<said>[^()]+)| \((?P<aside>[^()]+)\))?")
 # a type cell: the alias, the alias or None, the alias as an enum, or an inline Literal
 _KIND = re.compile(r"`(?P<module>\w+)\.(?P<alias>\w+)`(?P<tail>| or None|, an enum)|a `Literal`")
 
