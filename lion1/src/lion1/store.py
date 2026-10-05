@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .checkpoint import entry_of, entry_row, jsonable
+from .checkpoint import entry_of, entry_row, row_json
 from .khive import Khive, KhiveError, lit
 from .notes import Note
 from .record import Entry, Kind, ViewEntry
@@ -96,35 +96,8 @@ def _home(path: str) -> str:
     return home + path[1:] if path == "~" or path.startswith("~/") else path
 
 
-def _json(value: Any) -> str:
-    """`value` as a row's JSON, as the log writes it: `jsonable` writes what JSON cannot hold as its str
-    (ADR-0018 D16). A key JSON cannot hold (one that is not a string or a number) and a value that holds
-    itself are written the same way, each as its str, so the row is written and the run goes on; a replay
-    reads that part back as the str, as it reads anything else `jsonable` wrote."""
-    try:
-        return json.dumps(value, default=jsonable)
-    except (TypeError, ValueError):  # ValueError: a value that holds itself
-        return json.dumps(_carried(value, frozenset()), default=jsonable)
-
-
-def _carried(value: Any, path: frozenset[int]) -> Any:
-    if not isinstance(value, dict | list | tuple):
-        return value
-    if id(value) in path:  # the value holds itself here
-        return str(value)
-    inner = path | {id(value)}
-    if isinstance(value, dict):
-        return {(k if _key(k) else str(k)): _carried(v, inner) for k, v in value.items()}
-    return [_carried(v, inner) for v in value]
-
-
-def _key(k: Any) -> bool:
-    """Whether JSON writes `k` as an object's key."""
-    return k is None or isinstance(k, str | int | float | bool)
-
-
 def _text(e: Entry) -> str:
-    return e.content if isinstance(e.content, str) else _json(entry_row(e)["content"])
+    return e.content if isinstance(e.content, str) else row_json(entry_row(e)["content"])
 
 
 @dataclass
@@ -164,7 +137,7 @@ class Store:
         d = row["meta"].get("directive")
         return (
             f"lion.message_append(session_id={lit(session)}, seq={e.seq}, role={lit(_ROLE[e.kind])}, "
-            f"kind={lit(e.kind.value)}, text={lit(_text(e))}, raw={lit(_json(row))}, "
+            f"kind={lit(e.kind.value)}, text={lit(_text(e))}, raw={lit(row_json(row))}, "
             f"turn={e.turn}, alias={lit(e.alias)}, directive={lit(json.dumps(d) if d is not None else None)})"
         )
 
@@ -202,7 +175,7 @@ class Store:
         """What is left to write, the outcome, and the session's end."""
         await self.flush(run)
         outcome = type(run.outcome).__name__.lower() if run.outcome is not None else "stopped"
-        output = _json(run.output) if run.output is not None else None
+        output = row_json(run.output) if run.output is not None else None
         await self.khive.exec(
             f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(run.cost)}, "
             f"turns={run.turn}, output={lit(output)}) | lion.session_close(id={lit(run.id)})"

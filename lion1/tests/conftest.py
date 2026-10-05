@@ -49,6 +49,13 @@ sys.exit(status != "success")
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_khive_daemon(monkeypatch):
+    # a test that reaches a real `kkernel` (one on PATH) runs it in-process: `exec` would otherwise
+    # start a daemon under the test's home that nothing stops, or hand the call to the machine's own
+    monkeypatch.setenv("KHIVE_NO_DAEMON", "1")
+
+
 @pytest.fixture
 def kkernel_stub(tmp_path_factory, monkeypatch):
     """A `kkernel` on PATH for a test of the wiring around the khive client, on a machine without the

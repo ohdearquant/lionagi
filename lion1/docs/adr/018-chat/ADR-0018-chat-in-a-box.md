@@ -558,9 +558,10 @@ set.
 
 Serves C19 and C20. `jsonable` returns `model_dump(mode="json")` for a pydantic model, whatever form
 that takes, and the `str` of anything else, or of a model whose dump raises pydantic's serialization
-error. `Console` writes each chat log entry row with it, and the checkpoint its file and each value
-its restore shows; a usage row is written with `str`. `entry_of` hands the JSON back as written, and
-a Spec field typed as the model validates it into the model again.
+error; the checkpoint writes its file and restore values with it. `row_json` beside it writes each
+chat log row and store row, a key JSON cannot hold and a self-holding value as their str. A usage
+row is `str`. `entry_of` hands the JSON back as written, and a Spec field typed as the model
+validates it again.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
   `test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model`,
@@ -568,7 +569,8 @@ a Spec field typed as the model validates it into the model again.
   `test_a_resumed_program_reads_a_field_of_a_logged_model_value`,
   `test_a_logged_root_model_resumes_as_its_root_and_a_command_typed_as_it_gets_the_model`,
   `test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments`,
-  `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
+  `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`,
+  `test_a_value_json_cannot_hold_whole_is_logged_with_that_part_as_its_str_and_the_chat_goes_on`;
   the model value tests of `tests/test_checkpoint.py`.
 
 ### D17: The push's git calls on this machine, each within the hub's `GIT_TIMEOUT` ^d17
@@ -629,9 +631,9 @@ last.
   and a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
   ([[ADR-0013-the-agent|ADR-0013]]) continues its last run from the store
   ([[ADR-0026-the-submission|ADR-0026]] C6).
-- **S4**: The chat log holds every value whole; the console prints a result as one line. The closing
-  line sums the cost on every call's envelope, failed attempts included; a call whose envelope
-  carries no cost adds nothing and is not flagged.
+- **S4**: The chat log holds every value JSON can hold whole, and the rest as D16 writes it; the
+  console prints a result as one line. The closing line sums the cost on every call's envelope,
+  failed attempts included; a call whose envelope carries no cost adds nothing and is not flagged.
 - **S5**: `--offline` reaches the local VM only; nothing in the chat restricts a remote box's
   network.
 - **S6**: The copy's baseline needs git in the image; an image without it fails the preparation, and

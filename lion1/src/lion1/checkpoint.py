@@ -32,6 +32,7 @@ __all__ = (
     "entry_of",
     "load_log",
     "jsonable",
+    "row_json",
     "take",
     "listed",
 )
@@ -214,6 +215,33 @@ def jsonable(value: Any) -> Any:
         except ValueError:  # pydantic's serialization error: a field of a type it cannot write
             pass
     return str(value)
+
+
+def row_json(value: Any, **kw: Any) -> str:
+    """`value` as a row's JSON, `kw` passed to `json.dumps`: what JSON cannot hold, `jsonable` writes as
+    its str (ADR-0018 D16), and a key JSON cannot hold (one that is not a string or a number) and a value
+    holds itself are written the same way, each as its str, so the row is written and the run or the
+    chat goes on. A replay reads that part back as the str, as it reads anything else `jsonable` wrote."""
+    try:
+        return json.dumps(value, default=jsonable, **kw)
+    except (TypeError, ValueError):  # ValueError: a value that holds itself
+        return json.dumps(_carried(value, frozenset()), default=jsonable, **kw)
+
+
+def _carried(value: Any, path: frozenset[int]) -> Any:
+    if not isinstance(value, dict | list | tuple):
+        return value
+    if id(value) in path:  # the value holds itself here
+        return str(value)
+    inner = path | {id(value)}
+    if isinstance(value, dict):
+        return {(k if _key(k) else str(k)): _carried(v, inner) for k, v in value.items()}
+    return [_carried(v, inner) for v in value]
+
+
+def _key(k: Any) -> bool:
+    """Whether JSON writes `k` as an object's key."""
+    return k is None or isinstance(k, str | int | float | bool)
 
 
 def take(

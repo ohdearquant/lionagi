@@ -8,8 +8,10 @@ import json
 import math
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -17,8 +19,8 @@ from pydantic import BaseModel
 
 from hub.chat import chat
 from lion1 import Actor, Kind, Profile, Reply, RunRequest, Store, Success
+from lion1.checkpoint import row_json
 from lion1.khive import Khive, KhiveError
-from lion1.store import _json
 from tests.lionfake import LionFake, LionKhive, parse, routed_config
 from tests.test_actor import Done, scripted
 from tests.test_chat import asks, reader
@@ -404,11 +406,11 @@ def test_a_row_json_cannot_carry_whole_is_written_with_each_part_it_cannot_carry
     ring.append(ring)
     nan, inf = float("nan"), float("inf")
     value = {(1, 2): "x", 3: nan, None: [ring, (inf, 2.5)], True: "t", 1.5: "f", nan: "k"}
-    assert _json(value) == (
+    assert row_json(value) == (
         '{"(1, 2)": "x", "3": NaN, "null": [[1, "[1, [...]]"], [Infinity, 2.5]], "true": "t", "1.5": "f", '
         '"NaN": "k"}'
     )  # the key and the value that holds itself as their str; a float that is not finite as the log writes it
-    assert _json({"a": [1, (2, 3)]}) == json.dumps({"a": [1, [2, 3]]})  # what JSON carries whole, as it is
+    assert row_json({"a": [1, (2, 3)]}) == json.dumps({"a": [1, [2, 3]]})  # what JSON carries whole, as it is
 
 
 class Pairs(BaseModel):
@@ -451,18 +453,186 @@ def test_the_fake_parses_the_dsl_the_client_writes():
     assert LionFake.from_json(text).to_json() == text
 
 
+def _daemon_pids(binary: str) -> dict[int, str | None]:
+    # the daemon and the events child it spawns, which keeps the store as its directory: a daemon that
+    # died without its shutdown leaves the child running, holding the store's events file. Each pid
+    # comes with the events file its child's `--db` names ("" when the line names none), None for a daemon
+    rows = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True, check=True).stdout
+    found: dict[int, str | None] = {}
+    for pid, _, command in (row.strip().partition(" ") for row in rows.splitlines()):
+        args = command.split()
+        if command.strip().startswith(f"{binary} mcp --daemon"):
+            found[int(pid)] = None
+        elif command.strip().startswith(f"{binary} events-daemon"):
+            found[int(pid)] = args[args.index("--db") + 1] if "--db" in args[:-1] else ""
+    return found
+
+
+def _serves(db: str | None, cwd: str, where: Path) -> bool:
+    """A daemon works for the store it runs in; an events child also names its file, which must be in it:
+    a child in the same directory serving another store's file is not this store's to stop."""
+    if db is None:
+        return True
+    store = Path(os.path.realpath(where))
+    return bool(db) and Path(os.path.realpath(os.path.join(cwd, db))).is_relative_to(store)
+
+
+def _daemons(binary: str, where: Path) -> list[int]:
+    """The pids of `binary`'s daemons working in `where`, read off the process table."""
+    pids = _daemon_pids(binary)
+    if not pids:
+        return []
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+    looked = subprocess.run(
+        [lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, sorted(pids)))],
+        capture_output=True,
+        text=True,
+    )
+    found, read, pid = [], set(), None
+    for line in looked.stdout.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("n"):
+            read.add(pid)
+            cwd = line[1:]
+            if os.path.realpath(cwd) == os.path.realpath(where) and _serves(pids[pid], cwd, where):
+                found.append(pid)
+    # lsof exits 1 when a pid it was given is gone before it looks, so its code cannot tell an exit from
+    # a failed look; the table can. A daemon still listed whose directory went unread fails here: read as
+    # working elsewhere, it would let the caller remove a directory a live daemon holds
+    missed = pids.keys() - read
+    unread = sorted(missed & _daemon_pids(binary).keys()) if missed else []
+    assert not unread, (
+        f"lsof read no directory for daemons {unread} (exit {looked.returncode}): {looked.stderr}"
+    )
+    return found
+
+
+def _stop(binary: str, where: Path) -> None:
+    # SIGTERM is the daemon's one stop path: it drains, removes its socket and exits. A pid is signalled
+    # only as the process table names it, read just before, and the wait reads the table again rather
+    # than probing the pid: a daemon that exited and left its number to another process is neither
+    # signalled nor waited on
+    for pid in _daemons(binary, where):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 30
+    while left := _daemons(binary, where):
+        assert time.monotonic() < deadline, f"daemons {left} still running 30 s after SIGTERM"
+        time.sleep(0.2)
+
+
+def _short_dirs() -> tuple[Path, Path]:
+    # both directories short, under /tmp: under a pytest tmp_path (170 characters and more) the binary
+    # creates the lion file but not the main one, and every op fails its audit obligation (measured);
+    # the home is the test's own, so a stray default would resolve there and never in the real one
+    home = Path(tempfile.mkdtemp(prefix="lion1-home-", dir="/tmp"))
+    try:
+        return home, Path(tempfile.mkdtemp(prefix="lion1-store-", dir="/tmp"))
+    except BaseException:  # a fixture runs nothing after `yield` when its setup raises: the first goes here
+        shutil.rmtree(home)
+        raise
+
+
+@pytest.fixture
+def binary_dirs():
+    home, store = _short_dirs()
+    yield home, store
+    # `exec` starts a daemon and its events child in the store's directory and nothing stops them:
+    # stopped before the directories go, a failed run's included, or each run leaves them holding
+    # deleted files
+    _stop(os.environ["LION1_KHIVE"], store)
+    shutil.rmtree(home)
+    shutil.rmtree(store)
+
+
+def test_the_short_dirs_leave_nothing_behind_when_the_second_cannot_be_made(monkeypatch):
+    made = []
+    real = tempfile.mkdtemp
+
+    def mkdtemp(**kw):
+        if made:
+            raise OSError("no room")
+        made.append(Path(real(**kw)))
+        return str(made[-1])
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    with pytest.raises(OSError, match="no room"):
+        _short_dirs()
+    assert len(made) == 1 and not made[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("tables", "signalled"),
+    [
+        # the daemon exited and its pid went to another process: the table names nothing
+        ([[], []], []),
+        # running, then gone after the signal: one SIGTERM, and the wait never probes the pid
+        ([[41], [41], []], [(41, signal.SIGTERM)]),
+    ],
+)
+def test_stop_signals_and_waits_on_only_what_the_process_table_names(monkeypatch, tables, signalled):
+    sent, reads = [], iter(tables)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(f"{__name__}._daemons", lambda binary, where: next(reads))
+    _stop("lion1-khive", Path("/x"))
+    assert sent == signalled
+
+
+DAEMON = "41 lion1-khive mcp --daemon\n"
+EVENTS = "52 lion1-khive events-daemon --db /x/.khive/khive.db.events.db\n"
+
+
+@pytest.mark.parametrize(
+    ("table", "lsof", "table_after", "expect", "reads"),
+    [
+        # lsof names the daemon's directory: it is found, and the table is not read again
+        (DAEMON, (0, "p41\nn/x\n"), None, [41], 1),
+        # an events child whose daemon died without its shutdown: found by its directory, as the daemon is
+        (EVENTS, (0, "p52\nn/x\n"), None, [52], 1),
+        # its events file named relative to its directory: the same store
+        (EVENTS.replace("/x/.khive", ".khive"), (0, "p52\nn/x\n"), None, [52], 1),
+        # a child in the same directory serving another store's events file, or naming none: not this store's
+        (EVENTS.replace("/x/", "/y/"), (0, "p52\nn/x\n"), None, [], 1),
+        (EVENTS.replace(" --db /x/.khive/khive.db.events.db", ""), (0, "p52\nn/x\n"), None, [], 1),
+        # gone before lsof looked: lsof exits 1 with no row, and the table, read again, no longer lists it
+        (DAEMON, (1, ""), "", [], 2),
+        # still listed and its directory went unread: refused, never read as working elsewhere
+        (DAEMON, (1, ""), DAEMON, r"lsof read no directory for daemons \[41\] \(exit 1\)", 2),
+    ],
+)
+def test_daemons_reads_an_unread_directory_as_an_exit_only_when_the_table_agrees(
+    monkeypatch, table, lsof, table_after, expect, reads
+):
+    tables, read = iter([table, table_after]), []
+
+    def run(argv, **_):
+        if argv[0] == "ps":
+            read.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=next(tables), stderr="")
+        return subprocess.CompletedProcess(argv, lsof[0], stdout=lsof[1], stderr="lsof: permission denied")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if isinstance(expect, str):
+        with pytest.raises(AssertionError, match=expect):
+            _daemons("lion1-khive", Path("/x"))
+    else:
+        assert _daemons("lion1-khive", Path("/x")) == expect
+    assert len(read) == reads
+
+
 @pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
-def test_the_same_run_against_the_built_binary(tmp_path, monkeypatch):
+def test_the_same_run_against_the_built_binary(binary_dirs, monkeypatch):
     # the config routes the lion pack's tables to their own file beside a main store it also names
     # (ADR-0026 C8; the binary's default, with no backends declared, is the one under the home
     # directory): the test then proves the lion file is the one written, and the main one holds none
     binary = os.environ["LION1_KHIVE"]
     monkeypatch.delenv("KHIVE_DB", raising=False)  # a single-file database would move every pack at once
-    # both directories short, under /tmp: under a pytest tmp_path (170 characters and more) the binary
-    # creates the lion file but not the main one, and every op fails its audit obligation (measured);
-    # the home is the test's own, so a stray default would resolve there and never in the real one
-    home = Path(tempfile.mkdtemp(prefix="lion1-home-", dir="/tmp"))
-    tmp_path = Path(tempfile.mkdtemp(prefix="lion1-store-", dir="/tmp"))
+    monkeypatch.delenv("KHIVE_NO_DAEMON")  # the daemon `exec` starts is part of what runs here
+    home, tmp_path = binary_dirs
     monkeypatch.setenv("HOME", str(home))
     (tmp_path / ".khive").mkdir()
     cfg = tmp_path / ".khive" / "config.toml"
@@ -493,5 +663,7 @@ def test_the_same_run_against_the_built_binary(tmp_path, monkeypatch):
             [binary, "exec", "lion.runs(limit=10)"], cwd=tmp_path, capture_output=True, text=True, check=True
         ).stdout
         assert json.loads(got)["results"][0]["result"]["count"] == count, (path, got)
-    shutil.rmtree(home)
-    shutil.rmtree(tmp_path)
+    # the run went through the daemon `exec` starts, and once stopped none is left in its directory
+    assert _daemons(binary, tmp_path)
+    _stop(binary, tmp_path)
+    assert _daemons(binary, tmp_path) == []

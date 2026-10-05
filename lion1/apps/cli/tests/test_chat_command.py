@@ -839,6 +839,33 @@ def test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_m
     assert by_alias(rows, "b")["value"] == fields  # the replayed row is logged again as it was read
 
 
+class Pair(BaseModel):
+    pass
+
+
+def test_a_value_json_cannot_hold_whole_is_logged_with_that_part_as_its_str_and_the_chat_goes_on(
+    tmp_path, monkeypatch
+):
+    """A command whose value has a key JSON cannot hold, or holds itself, is logged with that part as its
+    str (ADR-0018 D16), as the store writes its row; the chat goes on to the model's next reply."""
+    ring: list = [1]
+    ring.append(ring)
+
+    def made():
+        actor = Actor("pairs", store=fresh_store())
+
+        @actor.handler(Pair)
+        async def pair(req: Pair, ctx) -> dict:
+            return {(1, 2): "x", "ring": ring}
+
+        return actor, Profile("pairs", specs=frozenset({"pair"}))
+
+    turns = ("<lact p>pair()</lact>", "Paired.")
+    rows = lion_chat(monkeypatch, tmp_path, made, turns, tmp_path / "log.jsonl", "--say", "pair them")
+    assert by_alias(rows, "p")["value"] == {"(1, 2)": "x", "ring": [1, "[1, [...]]"]}
+    assert [r["content"] for r in rows if r.get("kind") == "TEXT"][-1] == "Paired."
+
+
 def test_a_resumed_program_reads_a_field_of_a_logged_model_value(tmp_path, monkeypatch):
     """`*v.title` on a model value from the previous session, a command's result and a value the
     program computed from it: its str had no field to read."""
