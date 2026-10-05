@@ -265,6 +265,8 @@ def _guarded(inner: Any, service: Service, hosts: frozenset[str]) -> Any:
             await send(message)
 
         refusal = _refusal(scope, hosts)
+        if refusal is None and scope["method"] == "GET" and _bodied(scope):
+            refusal = ServeError("bad_request", "a GET carries no body")
         if refusal is None and service.closing:
             refusal = ServeError("busy", "the service is ending")
         if refusal is None and active >= _REQUESTS:
@@ -306,6 +308,14 @@ def _refusal(scope: dict, hosts: frozenset[str]) -> ServeError | None:
     return None
 
 
+def _bodied(scope: dict) -> bool:
+    """A body is framed: chunked, or by a length that is not zero."""
+    return any(
+        name == b"transfer-encoding" or (name == b"content-length" and value.strip(b"0"))
+        for name, value in scope["headers"]
+    )
+
+
 def _loopback(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -321,7 +331,9 @@ def _no_query(request: Request) -> None:
 async def _body(request: Request) -> dict:
     """A POST's body: `application/json`, at most 1 MiB, whole within the deadline, one JSON object."""
     types = request.headers.getlist("content-type")
-    if len(types) != 1 or types[0].lower() != "application/json":
+    if len(types) > 1:
+        raise ServeError("bad_request", "Content-Type is given twice")
+    if not types or types[0].lower() != "application/json":
         raise ServeError("unsupported_type", "a POST carries application/json")
     length = request.headers.get("content-length")
     # the digits decide before `int` reads them: thousands of digits are past the cap, where `int` raises
@@ -375,7 +387,8 @@ class _Stream(StreamingResponse):
 
     def __init__(self, sub: _Sub) -> None:
         self.sub = sub
-        super().__init__(self._frames(), media_type="text/event-stream")
+        # the type as a header, not a media type, which would gain a charset parameter D8 does not name
+        super().__init__(self._frames(), headers={"content-type": "text/event-stream"})
 
     async def _frames(self) -> Any:
         async for name, data in self.sub:

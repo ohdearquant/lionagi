@@ -254,7 +254,7 @@ def test_the_core_serves_nothing_and_the_transport_is_the_serve_extra():
     assert {"fastapi", "uvicorn"} <= transport
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["dependencies"] == ["pydantic>=2.11"]
-    assert project["optional-dependencies"]["serve"] == ["fastapi>=0.115", "uvicorn>=0.30"]
+    assert project["optional-dependencies"]["serve"] == ["fastapi>=0.115", "uvicorn>=0.30", "h11>=0.16"]
 
 
 # --- C1, C2, D2, D13 --------------------------------------------------------------------------------

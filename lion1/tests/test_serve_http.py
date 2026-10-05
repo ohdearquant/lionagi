@@ -142,7 +142,7 @@ async def stream_open(port: int, path: str) -> Stream:
     writer.write(http("GET", path, port))
     head = await reader.readuntil(b"\r\n\r\n")
     status, fields, _ = parsed(head)
-    assert status == 200 and fields["content-type"].startswith("text/event-stream")
+    assert status == 200 and fields["content-type"] == "text/event-stream"  # D8's value, no parameter
     assert "content-length" not in fields and fields["transfer-encoding"] == "chunked"
     assert_safe(fields)
     return Stream(reader, writer, fields)
@@ -369,7 +369,7 @@ REFUSED = [
     ),
     ("no type", post(START, kind=b""), "unsupported_type"),
     ("another type", post(START, kind=b"Content-Type: text/plain\r\n"), "unsupported_type"),
-    ("two types", post(START, kind=JSON + JSON), "unsupported_type"),
+    ("two types", post(START, kind=JSON + JSON), "bad_request"),
     ("a length past 1 MiB", post(b"", length=b"1048577"), "too_large"),
     ("a chunked body past 1 MiB", chunked(b" " * (1 << 20) + START), "too_large"),
 ]
@@ -411,6 +411,38 @@ def test_a_body_in_d8s_form_is_dispatched_however_it_is_framed(name, raw, status
 
     got, fields, body = bounded(main)
     assert got == status, body
+    assert_safe(fields)
+
+
+def get(path: bytes, framing: bytes, body: bytes = b"") -> bytes:
+    return b"GET " + path + b" HTTP/1.1\r\n" + HOST + framing + b"\r\n" + body
+
+
+GETS = [
+    ("a length and a body on the card", get(b"/", b"Content-Length: 2\r\n", b"{}"), 400),
+    (
+        "a chunked body on the runs",
+        get(b"/runs", b"Transfer-Encoding: chunked\r\n", b"2\r\n{}\r\n0\r\n\r\n"),
+        400,
+    ),
+    ("a length on every run's stream", get(b"/events", b"Content-Length: 1\r\n", b" "), 400),
+    ("a length of zero", get(b"/", b"Content-Length: 0\r\n"), 200),
+    ("a length of zeros", get(b"/", b"Content-Length: 000\r\n"), 200),
+]
+
+
+@pytest.mark.parametrize("name, raw, status", GETS, ids=[c[0] for c in GETS])
+def test_a_get_carrying_a_body_is_a_bad_request_and_a_zero_length_is_none(name, raw, status, store):
+    service = Service(Actor("http-get-body", store=store))
+
+    async def main():
+        async with serving(service) as port:
+            return await ask(port, raw.replace(b"{p}", str(port).encode()))
+
+    got, fields, body = bounded(main)
+    assert got == status, body
+    if status == 400:
+        assert json.loads(body) == {"error": "bad_request", "reason": "a GET carries no body"}
     assert_safe(fields)
 
 
@@ -779,15 +811,16 @@ def test_a_request_past_the_cap_is_refused_busy_and_the_next_after_one_ends_is_n
             held.writer.transport.abort()
             await asyncio.sleep(0.2)
             after = await call(port, "GET", "/")
-        return past, after
+            left = set(service._subs)  # read while the service still serves: its end would close it too
+        return past, after, left
 
-    past, after = bounded(main)
+    past, after, left = bounded(main)
     assert (past[0], json.loads(past[2])) == (
         503,
         {"error": "busy", "reason": "1 requests are in flight, the most this service takes"},
     )
     assert_safe(past[1])
-    assert after == (200, service.card()) and service._subs == set()
+    assert after == (200, service.card()) and left == set()
 
 
 def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch, store):

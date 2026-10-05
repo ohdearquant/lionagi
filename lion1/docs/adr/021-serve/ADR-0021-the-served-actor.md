@@ -444,13 +444,14 @@ configured. `app(service, hosts)` is FastAPI's routes behind an ASGI guard.
 | Origin | at most one: `http://` followed by one of the Host spellings |
 | query | none, but a record read's `start=N` |
 | Content-Type | on a POST, exactly one: `application/json` in any letter case, with no parameter |
-| body | a POST's, by Content-Length or chunked: UTF-8 holding one JSON object, no key twice and no NaN or Infinity, at most 1 MiB, whole within 10 seconds |
-| Content-Length, `start` | decimal digits of any length, decided by the digits: a length past the body's cap is refused as too large, a `start` past 18 digits as a bad request |
+| body | a POST's, by Content-Length or chunked: UTF-8 holding one JSON object, no key twice and no NaN or Infinity, at most 1 MiB, whole within 10 seconds; a GET framing one, chunked or by a length not zero, is a bad request |
+| Content-Length, `start` | decimal digits, decided by the digits: a length of more than 20 digits is a head h11 refuses (S23), one past the body's cap is too large, and a `start` past 18 digits is a bad request |
 
 - **Landing evidence**: `tests/test_serve_http.py`:
   `test_a_body_outside_d8s_form_is_answered_with_its_error_and_never_dispatched`,
   `test_a_body_in_d8s_form_is_dispatched_however_it_is_framed`,
   `test_a_body_nested_past_the_recursion_limit_is_a_bad_request`,
+  `test_a_get_carrying_a_body_is_a_bad_request_and_a_zero_length_is_none`,
   `test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route`,
   `test_a_peer_off_loopback_is_forbidden_before_any_route`,
   `test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind`,
@@ -594,6 +595,7 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | The transport in the core, as `Actor.serve` over `asyncio.start_server` | the form until 2026-10-05: a reader written by hand, one request per connection, with rules of its own on the raw head; replaced by `Lion` in the hub over FastAPI (D8, D10) |
 | Checks on the raw head in front of uvicorn | h11 refuses a space before a colon and a second Host, and takes a folded line, a bare line feed, `Expect` and Transfer-Encoding beside a length; with no proxy between, none is read two ways. The guard counts Host and Origin as sent (A3) |
 | A bound on each write of a stream | a stalled stream's queue overflows and closes it, and the run never waits (C3); at the end uvicorn cuts its write after 5 seconds |
+| A run lookup for an empty run id (`/runs/`), the earlier transport's | FastAPI routes a run id of one character or more, so `/runs/` is no route and answers `not_found` (D9); no run has an empty id |
 | A deadline on the head and a cap on connections, the earlier transport's | uvicorn has neither for a head still arriving, and adding them means its protocol class subclassed; a request and its body are bounded instead (C10, S24) |
 | A client that sends its own profile, prompt or tools | the actor would run what any local page or process hands it; the owner's offer is the gate (C1) |
 | Publishing rows at every bus event | every event falls on a complete row today, and nothing holds the runtime to that: an event added between a notification and its fold would publish half a row to the log and every stream; the named points are the ones `chat` uses (A5) |
@@ -675,10 +677,11 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S22**: A run's rows carry the model's text as it is published, an `OUT{}` in it included, before
   the run ends. Only an ended state's outcome and output say what the run committed. A run aborted
   during its last reap keeps those rows, in its record and in its log.
-- **S23**: A head uvicorn's reader refuses, a second Host or a space before a colon among them, is
-  answered by uvicorn alone: a 400 in plain text, without `nosniff` or `no-store`, logged as a
-  warning. A stream whose peer reads nothing holds the end for uvicorn's 5 seconds, and uvicorn logs
-  its cancel as an error; the runs do not wait for it (C11).
+- **S23**: A head uvicorn's reader refuses, a second Host, a space before a colon or a
+  Content-Length of more than 20 digits among them, is answered by uvicorn alone: a 400 in plain
+  text, without `nosniff` or `no-store`, logged as a warning. A stream whose peer reads nothing
+  holds the end for uvicorn's 5 seconds, and uvicorn logs its cancel as an error; the runs do not
+  wait for it (C11).
 - **S24**: Nothing bounds a connection that sends no request or a head still arriving: uvicorn holds
   both open, and only the end closes them. No idle timeout covers either in this design: uvicorn's
   keep-alive timeout starts only once a response is sent. Any process on the machine can hold as

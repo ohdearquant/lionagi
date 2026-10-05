@@ -24,7 +24,7 @@ classifiers = [
 [project.optional-dependencies]
 daytona = ["daytona>=0.100"]  # hub.tools.daytona: a box on Daytona
 runta = ["runta-sdk>=0.2.1"]  # hub.tools.runta: a box on Runta
-serve = ["fastapi>=0.115", "uvicorn>=0.30"]  # hub.serve: an actor served over HTTP
+serve = ["fastapi>=0.115", "uvicorn>=0.30", "h11>=0.16"]  # hub.serve over HTTP; h11 0.16: D8 length cap
 
 [dependency-groups]
 dev = [

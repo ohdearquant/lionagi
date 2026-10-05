@@ -1281,6 +1281,7 @@ runta = [
 ]
 serve = [
     { name = "fastapi" },
+    { name = "h11" },
     { name = "uvicorn" },
 ]
 
@@ -1300,6 +1301,7 @@ dev = [
 requires-dist = [
     { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.100" },
     { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.115" },
+    { name = "h11", marker = "extra == 'serve'", specifier = ">=0.16" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "runta-sdk", marker = "extra == 'runta'", specifier = ">=0.2.1" },
     { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.30" },
