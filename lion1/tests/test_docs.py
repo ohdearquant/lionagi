@@ -141,7 +141,8 @@ _KIND = re.compile(r"`(?P<module>\w+)\.(?P<alias>\w+)`(?P<tail>| or None|, an en
 def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
     table = rows()
     assert len(table) >= 11 and table[0][0] == "`Message.role`"  # the parse reads what it should
-    # a note may name an error a mapped module defines (one it raises), never another class
+    # a note keeps values out of the row: it may name an error class a mapped module defines and nothing
+    # else in backticks; which of those errors the field raises is the note's prose, not checked here
     errors = {
         n
         for m in MODULES.values()
@@ -193,6 +194,9 @@ h: other.Literal["h"]
 
 
 def test_every_closed_value_set_the_code_declares_has_a_row():
+    # a set is one row, found by its values: another field holding a listed set's values is covered by
+    # that row, so the table lists sets, not every field that takes one. A declared set whose values no
+    # row lists fails here, whichever field holds it
     sets = literals() + enums()
     assert ("system", "user", "assistant") in sets and len(sets) >= 11  # the walks read what they should
     assert tuple(str(k) for k in record.Kind) in sets
