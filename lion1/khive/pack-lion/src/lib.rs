@@ -99,6 +99,7 @@ impl PackRuntime for LionPack {
             "lion.run_close" => handlers::run_close(rt, token, params).await,
             "lion.get" => handlers::get(rt, token, params).await,
             "lion.runs" => handlers::runs(rt, token, params).await,
+            "lion.sessions" => handlers::sessions(rt, token, params).await,
             "lion.note_put" => handlers::note_put(rt, token, params).await,
             "lion.note_get" => handlers::note_get(rt, token, params).await,
             "lion.note_list" => handlers::note_list(rt, token, params).await,

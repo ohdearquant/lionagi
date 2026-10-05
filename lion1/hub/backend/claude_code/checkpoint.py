@@ -72,6 +72,7 @@ __all__ = (
     "newest_transcript",
     "snapshot",
     "transcript_source",
+    "transcript_exchanges",
     "transcript_turns",
     "directives",
     "watches",
@@ -373,6 +374,13 @@ def transcript_source(path: str | Path) -> dict:
         "unread_lines": s.unread,
         "reminders_cut": s.cut,
     }
+
+
+def transcript_exchanges(path: str | Path | Snapshot) -> list[dict]:
+    """Every exchange of the transcript, oldest first: the owner's prompt or the event that woke the
+    actor, with the turn's final text (`{turn, at, input, text, kind}`); what a take writes into the
+    store."""
+    return [dict(p) for p in _scan(path).prompts]
 
 
 def transcript_turns(path: str | Path, budget: int) -> dict:

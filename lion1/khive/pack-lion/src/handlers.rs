@@ -411,6 +411,28 @@ pub(crate) async fn runs(rt: &KhiveRuntime, token: &NamespaceToken, params: Valu
 }
 
 #[derive(Deserialize)]
+struct Sessions {
+    limit: Option<i64>,
+    source: Option<String>,
+    actor: Option<String>,
+}
+
+pub(crate) async fn sessions(rt: &KhiveRuntime, token: &NamespaceToken, params: Value) -> Out {
+    let p: Sessions = deser(params)?;
+    let limit = p.limit.unwrap_or(20);
+    if !(1..=200).contains(&limit) {
+        return Err(RuntimeError::InvalidInput(format!("limit {limit}: 1 to 200")));
+    }
+    let got = rows(
+        rt,
+        include_str!("../sql/sessions.sql"),
+        vec![ns(token), text(p.source), text(p.actor), SqlValue::Integer(limit)],
+    )
+    .await?;
+    Ok(json!({"count": got.len(), "rows": got.iter().map(row).collect::<Vec<_>>()}))
+}
+
+#[derive(Deserialize)]
 struct NotePut {
     profile: String,
     key: String,

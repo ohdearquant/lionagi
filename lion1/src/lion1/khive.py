@@ -10,9 +10,6 @@ string arguments are JSON literals, so they go through `json.dumps`. The binary 
 it was named in since the binary runs in `cwd`, or else the cwd's `.khive/config.toml`, which khive's
 own discovery passes over for a `khive.toml` beside it; and the binary starts without `KHIVE_CONFIG`
 and `KHIVE_DB`, either of which would choose another config or another database.
-
-The directory's `.khive/` also keeps its checkpoints, under `.khive/context/` (`context_dir`), which
-git must ignore (`assert_ignored`, ADR-0019/C6).
 """
 
 from __future__ import annotations
@@ -28,16 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .checkpoint import CheckpointError
-
 __all__ = (
     "KhiveError",
     "LOST",
     "lit",
     "Khive",
-    "NotIgnored",
-    "context_dir",
-    "assert_ignored",
 )
 
 
@@ -229,60 +221,3 @@ class Khive:
             args.append(f"idempotency_key={lit(idempotency_key)}")
         (sent,) = await self.exec(f"comm.send({', '.join(args)})")
         return sent
-
-
-class NotIgnored(CheckpointError):
-    """`<dir>/.khive/context/` sits in a git work tree that does not ignore it."""
-
-
-def context_dir(directory: str | Path) -> Path:
-    """Where the directory keeps its checkpoints: `<dir>/.khive/context/`."""
-    return Path(directory) / ".khive" / "context"
-
-
-def assert_ignored(directory: str | Path) -> None:
-    """Checkpoints land under `<dir>/.khive/context/` (`context_dir`); inside a git work tree that path
-    must be ignored (`git check-ignore`) or the take refuses with NotIgnored. Outside a repository it
-    passes; a git that cannot answer refuses too, never passes."""
-    d = Path(directory)
-    git = shutil.which("git") or "/usr/bin/git"
-    try:
-        inside = subprocess.run(
-            [git, "-C", str(d), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise CheckpointError(f"git could not be asked about {d}: {e}; nothing was written") from None
-    if inside.returncode != 0:
-        if "not a git repository" in inside.stderr:
-            return
-        said = inside.stderr.strip() or f"rc {inside.returncode}"
-        raise CheckpointError(
-            f"git could not say whether {d} is in a repository: {said}; nothing was written"
-        )
-    if inside.stdout.strip() != "true":
-        return
-    try:
-        ignored = subprocess.run(
-            [git, "-C", str(d), "check-ignore", "-q", ".khive/context/"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise CheckpointError(
-            f"git check-ignore could not be asked about {d}: {e}; nothing was written"
-        ) from None
-    if ignored.returncode == 0:
-        return
-    if ignored.returncode == 1:
-        raise NotIgnored(
-            f"{d / '.khive' / 'context'} is inside a git work tree that does not ignore it, so a "
-            "checkpoint could be committed; add `.khive/context/` to the repository's .gitignore when "
-            "the directory is the repository root, `**/.khive/context/` when it sits below it. "
-            "Nothing was written"
-        )
-    said = ignored.stderr.strip() or f"rc {ignored.returncode}"
-    raise CheckpointError(f"git check-ignore could not answer for {d}: {said}; nothing was written")

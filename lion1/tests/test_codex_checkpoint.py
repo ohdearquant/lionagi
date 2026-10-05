@@ -16,10 +16,10 @@ import pytest
 from lion_cli.context import checkpoint, status
 from lion_cli.main import main
 
-from hub.backend import codex_checkpoint as cx
 from hub.backend.checkpoint import DIRECTIVES, SPAWN_HOURS, fold_turns
 from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
-from hub.backend.codex_checkpoint import (
+from hub.backend.codex import checkpoint as cx
+from hub.backend.codex.checkpoint import (
     CODEX_KINDS,
     CODEX_WHYS,
     context_figure,

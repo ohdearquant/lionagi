@@ -1,23 +1,17 @@
-"""The checkpoint and the restore (ADR-0019): named state plus a folded view, never prose about the
-run. A take makes no model call. A run's view is its record after `fold`, by name, the record itself
-staying on disk where `source.record` points; the restore replays that record as the next run's
-history, so any run can be resumed. A harness that is not a run of this runtime hands its own view and
-its own vocabulary of kinds and whys; the Claude Code session's is in
-`hub.backend.claude_code.checkpoint`. The files land in the directory the caller names; which
-directory, and what guards it, is the caller's.
+"""The checkpoint (ADR-0019): the named values and the folded view of a session at a turn, computed from
+what the store holds, never prose about the run and never a file. A run of this runtime needs none: its
+rows are the store's and its history replays them (ADR-0025 C3). A harness that is not a run of this
+runtime (a Claude Code or Codex session) is written into the store as a session of its own source by its
+adapter, and its checkpoint at any turn is read back from there: `take` folds what it is handed and
+calls no model. The adapter hands its own vocabulary of kinds and whys; a run's is the default.
 """
 
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
-import os
-import re
-import threading
-import uuid
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,7 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .actor import Result
-from .record import Directive, Entry, Kind, Record, fold
+from .record import Directive, Entry, Kind
 
 __all__ = (
     "KINDS",
@@ -40,19 +34,15 @@ __all__ = (
     "jsonable",
     "take",
     "listed",
-    "save",
-    "load",
-    "to_history",
 )
 
-# the default vocabulary, a run's own: a take, a save and a load check against the lists they are given
+# the default vocabulary, a run's own: a take and a restore check against the lists they are given
 KINDS = ("fact", "posture")
 WHYS = ("threshold", "end", "manual")
 # characters: a longer var is carried by name, size and where it loads from, never printed whole in a
 # restore; a kind the taker names eager is always inline
 LAZY = 400
 
-_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _KEEP = ("inbound", "origin", "reply", "execution", "request", "returned", "unread", "refused")
 
 
@@ -68,17 +58,17 @@ class Var:
     source: str  # where it was read: declared | notes | registry | khive | gh | what the harness names
     at: str  # ISO time, or the record seq for a resident
     size: int | None = None  # set when the value is over LAZY: the restore names it, never prints it
-    # where the value lives when not in the checkpoint (`note.get(key="posture")`); None: the file keeps it
+    # where the value lives when not in the checkpoint (`note.get(key="posture")`); None: the store keeps it
     ref: str | None = None
 
 
 @dataclass(frozen=True)
 class Checkpoint:
-    id: str  # ckpt-<YYYYMMDD-HHMMSS>-<actor slug>
+    id: str  # <session>@<turn>: the session the store holds and the turn it was read to
     actor: str
     taken_at: str
     why: str  # one of the taker's whys; a run's are threshold | end | manual
-    # {kind: resident, record, seq, digest, ...}, or the harness's own (`claude-code`: session_id, transcript)
+    # the harness's own: `claude-code` or `codex` with session_id and transcript, the store's turn count
     source: dict
     vars: tuple[Var, ...]
     view: dict  # {budget, kept: [{turn, at, input, text}], hidden: [names], summaries: [{before, text}]}
@@ -226,37 +216,6 @@ def jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _record_view(record: Record | Iterable[Entry], budget: int, fold_inputs: bool) -> dict:
-    if not isinstance(record, Record):
-        replayed = Record("replay")
-        for e in record:
-            replayed.append(e.kind, e.content, alias=e.alias, turn=e.turn, **e.meta)
-        record = replayed
-    view = fold(record, protect_input=not fold_inputs)
-    shown = [v.entry for v in view if v.summary is None and not v.hidden]
-    in_view = {e.seq for e in shown}
-    return {
-        "budget": budget,
-        "kept": [{"turn": e.name, "at": e.seq} for e in shown],
-        "hidden": [e.name for e in record if e.seq not in in_view],
-        "summaries": [{"before": v.entry.name, "text": v.summary} for v in view if v.summary is not None],
-    }
-
-
-def _digest(entries: Iterable[Entry]) -> str:
-    """The rows as the replay checks them (ADR-0019/D1): each row's seq and kind, the text of an input,
-    a turn or a notice, and a result's spec, ok, error and reason. A result's value reads back as data
-    in the form the log chose, so it is not digested."""
-    h = hashlib.sha256()
-    for e in entries:
-        c = e.content
-        said = (
-            [c.spec, c.ok, c.error, c.reason] if isinstance(c, Result) else c if isinstance(c, str) else None
-        )
-        h.update(json.dumps([e.seq, e.kind.name, said]).encode() + b"\n")
-    return h.hexdigest()
-
-
 def take(
     source: dict,
     vars: Iterable[Var],
@@ -265,17 +224,16 @@ def take(
     why: str,
     budget: int,
     view: dict | None = None,
-    record: Record | None = None,
-    fold_inputs: bool = False,
     now: datetime | None = None,
     kinds: Iterable[str] = KINDS,
     whys: Iterable[str] = WHYS,
     eager: Iterable[str] = (),
 ) -> Checkpoint:
-    """The checkpoint of a run (`record`, folded here, its entries by name) or of a harness that hands
-    its own `view`. Pure: no model call, no file. Vars keep their order and a later one of the same name
-    stands (a declared var over a harvested one). A kind or a why outside `kinds` and `whys` is refused
-    (ADR-0019/C1); a var of a kind in `eager` is never made lazy."""
+    """The checkpoint of a session at a turn: `source` names the session and the turn, `view` is its
+    exchanges folded (`hub.backend.checkpoint.fold_turns`). Pure: no model call, nothing written. Vars keep
+    their order and a later one of the same name stands (a declared var over a harvested one). A kind or
+    a why outside `kinds` and `whys` is refused (ADR-0019/C1); a var of a kind in `eager` is never made
+    lazy. The id is `<session_id>@<turns>` from `source`, the time `now`."""
     kinds, whys, eager = tuple(kinds), tuple(whys), frozenset(eager)
     if why not in whys:
         raise CheckpointError(f"why {why!r}: one of {', '.join(whys)}")
@@ -287,28 +245,18 @@ def take(
         if v.kind not in kinds:
             raise CheckpointError(f"var {v.name!r}: kind {v.kind!r} is not one of {', '.join(kinds)}")
         if v.kind not in eager and v.size is None and (size := len(_one(v.value))) > LAZY:
-            # lazy: a var with a ref leaves its value where the ref points; without one the file keeps it
+            # lazy: a var with a ref leaves its value where the ref points; without one it is kept here
             v = replace(v, size=size, value=None if v.ref else v.value)
         named[v.name] = v
     now = now or datetime.now().astimezone()
     source = copy.deepcopy(source)
-    if record is not None:
-        view = _record_view(record, budget, fold_inputs)
-        source = {
-            **source,
-            "kind": "resident",
-            "seq": record.seq,
-            "fold_inputs": fold_inputs,
-            "digest": _digest(record),
-        }
-    else:
-        view = (
-            copy.deepcopy(view)
-            if view is not None
-            else {"budget": budget, "kept": [], "hidden": [], "summaries": []}
-        )
+    view = (
+        copy.deepcopy(view)
+        if view is not None
+        else {"budget": budget, "kept": [], "hidden": [], "summaries": []}
+    )
     return Checkpoint(
-        id=f"ckpt-{now:%Y%m%d-%H%M%S}-{re.sub(r'[^A-Za-z0-9]+', '-', actor).strip('-')}",
+        id=f"{source.get('session_id')}@{source.get('turns', 0)}",
         actor=actor,
         taken_at=now.isoformat(),
         why=why,
@@ -336,133 +284,3 @@ def listed(
                 f"{c.id}: var {v.name!r} has kind {v.kind!r}, not one of {', '.join(kinds)}; {then}"
             )
     return c
-
-
-def _replace_text(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
-
-
-def save(
-    checkpoint: Checkpoint, directory: str | Path, *, kinds: Iterable[str] = KINDS, whys: Iterable[str] = WHYS
-) -> Path:
-    """`<directory>/<id>.json`, then `latest.json` pointing at it; the path written. An id already on
-    disk (two takes in one second) gets `-02`, `-03`: nothing is overwritten. An id that is not a name
-    (`load` takes only a name; `latest` is the pointer's), a why or a kind off the lists and a value the
-    file cannot carry are refused before anything is written."""
-    if not _ID.fullmatch(checkpoint.id) or checkpoint.id == "latest":
-        raise CheckpointError(f"checkpoint id {checkpoint.id!r} is not a name; nothing was written")
-    doc = asdict(listed(checkpoint, "nothing was written", kinds=kinds, whys=whys))
-    try:
-        data = _bytes(doc)
-    except ValueError as e:  # a lone surrogate: JSON carries it escaped, UTF-8 refuses it
-        raise CheckpointError(
-            f"{checkpoint.id}: a value the file cannot carry ({e}); nothing was written"
-        ) from None
-    ctx = Path(directory)
-    ctx.mkdir(parents=True, exist_ok=True)
-    cid, n = checkpoint.id, 1
-    while True:
-        path = ctx / f"{cid}.json"
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            break
-        except FileExistsError:
-            n += 1
-            cid = f"{checkpoint.id}-{n:02d}"
-    if cid != checkpoint.id:  # encoded once: the id is the first field and a name JSON writes as it is,
-        # so a taken name changes those bytes alone
-        data = f'{{\n "id": "{cid}"'.encode() + data[len(f'{{\n "id": "{checkpoint.id}"') :]
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    _replace_text(ctx / "latest.json", json.dumps({"id": cid}) + "\n")
-    return path
-
-
-def _bytes(doc: dict) -> bytes:
-    return json.dumps(doc, ensure_ascii=False, indent=1, default=jsonable).encode("utf-8")
-
-
-def load(
-    directory: str | Path,
-    id: str | None = None,
-    *,
-    kinds: Iterable[str] = KINDS,
-    whys: Iterable[str] = WHYS,
-) -> Checkpoint:
-    """The checkpoint `id` in `directory`, the latest when None; a file whose why or a var's kind is off
-    the lists is refused, never read as another checkpoint."""
-    ctx = Path(directory)
-    if id is None:
-        try:
-            id = json.loads((ctx / "latest.json").read_text())["id"]
-        except FileNotFoundError:
-            raise CheckpointError(f"no checkpoint in {ctx}: latest.json is absent") from None
-        except (ValueError, KeyError, TypeError) as e:
-            raise CheckpointError(f"{ctx / 'latest.json'} does not name a checkpoint: {e}") from None
-    if not isinstance(id, str) or not _ID.fullmatch(id):
-        raise CheckpointError(f"checkpoint id {id!r} is not a name in {ctx}")
-    path = ctx / f"{id}.json"
-    try:
-        doc = json.loads(path.read_text())
-    except FileNotFoundError:
-        raise CheckpointError(f"no checkpoint {id!r} in {ctx}") from None
-    c = Checkpoint(**{**doc, "vars": tuple(Var(**v) for v in doc["vars"])})
-    return listed(c, "nothing was loaded", kinds=kinds, whys=whys)
-
-
-def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
-    """A resident's checkpoint as a run's history (`RunRequest.history`): the record it points at, to
-    the seq it was taken at, each row back as its entry (`entry_of`), the directives with them, so
-    `fold` renders the view the ended run last showed. The record replayed is folded here and must
-    name the checkpoint's view; a record that no longer does is refused, never replayed."""
-    src = checkpoint.source
-    if src.get("kind") != "resident":
-        raise CheckpointError(
-            f"{checkpoint.id} holds no run's record (its source is {src.get('kind')!r}); nothing was replayed"
-        )
-    path, n = Path(str(src.get("record"))), int(src.get("seq", 0))
-    entries: list[Entry] = []
-    try:
-        # a row ends at a line feed, which is where a file read as bytes ends a line: a JSON string
-        # may carry U+2028 or U+0085 unescaped, where str.splitlines would break the row in two; a
-        # row is decoded when admitted, so a write cut inside a multi-byte character past the take is
-        # never read, and the rows a long run appended after the take are not read at all
-        with path.open("rb") as rows:
-            for i, raw in enumerate(rows, 1):
-                if len(entries) == n:
-                    break  # the record as it stood at the take; what came after is not this checkpoint
-                if not raw.strip():
-                    continue
-                try:
-                    e = entry_of(json.loads(raw.decode()))
-                except (ValueError, KeyError, TypeError) as err:  # UnicodeDecodeError is a ValueError
-                    raise CheckpointError(
-                        f"{path} line {i} is not a record row ({err}); nothing was replayed"
-                    ) from None
-                if e is not None:
-                    entries.append(e)
-    except OSError as e:
-        raise CheckpointError(f"{checkpoint.id}: its record {path} cannot be read: {e}") from None
-    if [e.seq for e in entries] != list(range(n)):
-        raise CheckpointError(f"{path} holds seqs {len(entries)} of {n} in order; nothing was replayed")
-    try:
-        again = _record_view(entries, int(checkpoint.view.get("budget", 0)), bool(src.get("fold_inputs")))
-    except ValueError as e:
-        raise CheckpointError(f"{path} does not replay: {e}") from None
-    for key in ("kept", "hidden", "summaries"):
-        if again[key] != checkpoint.view.get(key):
-            raise CheckpointError(
-                f"{path} no longer folds to the view of {checkpoint.id} ({key} differ); nothing was replayed"
-            )
-    # the view compares names; a row rewritten in place folds the same, so its content is checked too
-    want = src.get("digest")
-    if not isinstance(want, str):
-        raise CheckpointError(f"{checkpoint.id} carries no digest of its record; nothing was replayed")
-    if _digest(entries) != want:
-        raise CheckpointError(
-            f"{path} to seq {n} is not the record {checkpoint.id} was taken over (its rows were rewritten); "
-            "nothing was replayed"
-        )
-    return tuple(entries)

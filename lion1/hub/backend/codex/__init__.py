@@ -77,7 +77,7 @@ from pathlib import Path
 
 from lion1.actor import Message, Reply, SessionPlan
 
-from .claude_code import (
+from ..claude_code import (
     _REPLY,
     _beyond,
     _clipped,
