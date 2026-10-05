@@ -158,12 +158,14 @@ class _Sub:
 class _Served:
     """A run the service started, or one its log describes."""
 
+    phase: Phase
+
     def __init__(self, sid: str, offer: str, resumed: str | None, converse: bool = False):
         self.id = sid
         self.offer = offer
         self.resumed = resumed
         self.converse = converse
-        self.phase: Phase = "starting"
+        self.phase = "starting"
         self.run: Run | None = None
         self.task: asyncio.Task | None = None
         self.begun: asyncio.Future | None = None  # None once it began or was cancelled; a refusal else

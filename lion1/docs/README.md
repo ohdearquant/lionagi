@@ -12,6 +12,7 @@ records, indexed in [adr/INDEX.md](adr/INDEX.md); the code cites one claim of a 
 |---|---|
 | [`src/lion1/`](../src/lion1) | the runtime: the modules below, and nothing an app adds |
 | [`hub/`](../hub) | what every app reaches for, versioned with the runtime: backends, tools, hooks, each role's guidance, the chat, flows, long-running agents |
+| [`hub/serve/`](../hub/serve) | the served actor: `Lion().serve(actor)`, its offers, the runs a client starts, and the HTTP transport on loopback, FastAPI on uvicorn from the `serve` extra (ADR-0021) |
 | [`apps/cli/`](../apps/cli) | `lion`, the command line (ADR-0016) |
 | [`apps/mac/`](../apps/mac) | the Mac app (ADR-0022) |
 | [`khive/`](../khive) | the `lion` pack the store's rows go through, and `lion1-khive`, the store's CLI with that pack linked in (ADR-0025) |
@@ -32,7 +33,6 @@ records, indexed in [adr/INDEX.md](adr/INDEX.md); the code cites one claim of a 
 | [`store.py`](../src/lion1/store.py) | a run's rows in khive, the replay a resumed run reads, notes as rows | ADR-0025, ADR-0026 |
 | [`khive.py`](../src/lion1/khive.py) | the khive client: one `kkernel exec` per call, always as one actor | ADR-0001, ADR-0025 |
 | [`checkpoint.py`](../src/lion1/checkpoint.py) | the named values and folded view of a harness session at a turn, read from the store | ADR-0019, ADR-0025 |
-| [`serve.py`](../src/lion1/serve.py) | the served actor: offers, the runs a client starts, the HTTP transport on loopback | ADR-0021 |
 | [`__init__.py`](../src/lion1/__init__.py) | the names `import lion1` exports | |
 
 ## Words
@@ -116,7 +116,8 @@ A profile with `language="program"` takes one fenced program per turn instead (A
 ## Value sets
 
 Each field below takes one value of a closed set. The set is the field's type, a `Literal` alias or
-the `Kind` enum, importable from its module, and `typing.get_args(Role)` gives the values as a tuple.
+the `Kind` enum, importable from its module (`service` is `hub.serve.service`), and
+`typing.get_args(Role)` gives the values as a tuple.
 A value outside the set is refused when the object is made, and the error names the set:
 
 ```python
@@ -135,6 +136,8 @@ Message("robot", "hi")
 | `Entry.kind` | `record.Kind`, an enum | `Kind.INPUT`, `Kind.SYSTEM`, `Kind.TEXT`, `Kind.RESULT`; its value as a bare string is refused too |
 | `Directive.op` | `record.Op` | `hide`, `show`, `summarize` |
 | `status` of `Store.call_close` | `store.CallStatus` | `ok`, `refused`, `cut`, `failed`; another is refused before any row is written |
+| `_Served.phase` | `service.Phase` | `starting`, `working`, `waiting`, `ended`, `aborted`, `cut_short`; a served run's `phase` in its JSON, set only by the service, and a test reads every value the service writes |
+| `code` of `ServeError` | `service.Code` | `bad_request`, `forbidden`, `unknown_offer`, `unknown_run`, `not_found`, `method_not_allowed`, `timeout`, `ended`, `starting`, `not_conversation`, `no_resume`, `unreadable_log`, `conflict`, `gone`, `too_large`, `unsupported_type`, `refused`, `too_many`, `log_failed`, `busy`; each answers with its own HTTP status (ADR-0021/D9) |
 
 These stay strings on purpose, because their values are another party's to name:
 

@@ -1,7 +1,7 @@
 """docs/README.md is the map of the runtime, kept in step with the code: every module of src/lion1 is in
 its table, each row of the value sets names a field whose type holds exactly the values the row lists
-and every closed value set the code declares has a row, the event kinds it names are the ones the
-runtime emits, and every relative link on it and on the README resolves."""
+and every closed value set the runtime and the served actor declare has a row, the event kinds it
+names are the ones they emit, and every relative link on it and on the README resolves."""
 
 import ast
 import re
@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+import hub.serve.service as service
 from lion1 import actor, record, store
 from lion1.actor import Run
 from lion1.spec import spec_name
@@ -18,6 +19,8 @@ from lion1.spec import spec_name
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "README.md"
 SRC = ROOT / "src" / "lion1"
+SERVE = ROOT / "hub" / "serve"
+MODULES = {"actor": actor, "record": record, "store": store, "service": service}
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
 
 
@@ -30,9 +33,9 @@ def section(title: str) -> str:
 
 
 def literals() -> list[tuple[str, ...]]:
-    """Every `Literal[...]` written in src/lion1, as its values in order."""
+    """Every `Literal[...]` written in src/lion1 and hub/serve, as its values in order."""
     found = []
-    for path in sorted(SRC.glob("*.py")):
+    for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]):
         for node in ast.walk(ast.parse(path.read_text())):
             if (
                 isinstance(node, ast.Subscript)
@@ -47,7 +50,7 @@ def literals() -> list[tuple[str, ...]]:
 def emitted() -> set[str]:
     """Every event kind the runtime and the served actor pass to an `emit` call as a literal."""
     kinds = set()
-    for path in sorted([*SRC.glob("*.py"), *(ROOT / "hub" / "serve").glob("*.py")]):
+    for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]):
         for node in ast.walk(ast.parse(path.read_text())):
             if (
                 isinstance(node, ast.Call)
@@ -74,10 +77,10 @@ def rows() -> list[tuple[str, str, str]]:
 
 
 def declared(field: str) -> typing.Any:
-    """The annotation a field cell names: `Cls.attr`, `attr` of `Cls.method`, or `attr` of the
-    `name` command."""
+    """The annotation a field cell names: `Cls.attr`, `attr` of `Cls.method`, `attr` of `Cls` (its
+    constructor), or `attr` of the `name` command."""
     names = re.findall(r"`([^`]+)`", field)
-    classes = {n: c for m in (actor, record, store) for n, c in vars(m).items() if isinstance(c, type)}
+    classes = {n: c for m in MODULES.values() for n, c in vars(m).items() if isinstance(c, type)}
     commands = {spec_name(c): c for c in classes.values() if issubclass(c, BaseModel) and c is not BaseModel}
     if len(names) == 1:
         owner, attr = names[0].split(".")
@@ -85,7 +88,7 @@ def declared(field: str) -> typing.Any:
     else:
         attr, where = names
         owner, _, method = where.partition(".")
-        target = commands[where] if where in commands else getattr(classes[owner], method)
+        target = commands[where] if where in commands else getattr(classes[owner], method or "__init__")
     return typing.get_type_hints(target, localns={"Run": Run})[attr]
 
 
@@ -99,19 +102,19 @@ def values_of(hint: typing.Any) -> list[str]:
 
 def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
     table = rows()
-    assert len(table) >= 9 and table[0][0] == "`Message.role`"  # the parse reads what it should
+    assert len(table) >= 11 and table[0][0] == "`Message.role`"  # the parse reads what it should
     for field, kind, listed in table:
         hint = declared(field)
         assert re.findall(r"`([^`]+)`", re.split(r"[;(]", listed)[0]) == values_of(hint), field
         named = re.match(r"`(\w+)\.(\w+)`", kind)
         if named:  # the type cell names the alias the field is annotated with
-            alias = getattr({"actor": actor, "record": record, "store": store}[named[1]], named[2])
+            alias = getattr(MODULES[named[1]], named[2])
             assert hint in (alias, alias | None), field
 
 
 def test_every_closed_value_set_the_code_declares_has_a_row():
     sets = literals()
-    assert ("system", "user", "assistant") in sets and len(sets) >= 8  # the walk reads what it should
+    assert ("system", "user", "assistant") in sets and len(sets) >= 10  # the walk reads what it should
     listed = {tuple(values_of(declared(field))) for field, _, _ in rows()}
     assert [values for values in sets if values not in listed] == []
 
