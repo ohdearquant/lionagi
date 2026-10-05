@@ -27,7 +27,7 @@ from hub.areas import partial
 from hub.chat import entry_row, line
 from lion1 import lndl
 from lion1.actor import _read
-from lion1.checkpoint import jsonable
+from lion1.checkpoint import row_json
 from lion1.record import Entry, Kind
 
 from .clipboard import to_clipboard
@@ -276,7 +276,7 @@ class Console:
             with self.log.open("a") as fh:
                 if self.head is not None and not self.written:
                     fh.write(json.dumps(self.head) + "\n")
-                fh.write(json.dumps(entry_row(e), default=jsonable) + "\n")
+                fh.write(row_json(entry_row(e)) + "\n")
                 self._bill(fh, e.turn)
             self.written += 1
         if e.kind is Kind.TEXT and (prose := _prose(str(e.content))):  # a replayed reply counts too
@@ -503,7 +503,8 @@ def _shape(value: Any) -> str:
     if isinstance(value, list):
         return f"· list of {len(value)}"
     if isinstance(value, dict):
-        return f"· dict of {len(value)}: {', '.join(list(value)[:6])}" + (", …" if len(value) > 6 else "")
+        keys = ", ".join(str(k) for k in list(value)[:6])  # a key need not be a str: a tuple, a number
+        return f"· dict of {len(value)}: {keys}" + (", …" if len(value) > 6 else "")
     return f"· {type(value).__name__}"
 
 

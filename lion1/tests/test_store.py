@@ -19,8 +19,8 @@ from pydantic import BaseModel
 
 from hub.chat import chat
 from lion1 import Actor, Kind, Profile, Reply, RunRequest, Store, Success
+from lion1.checkpoint import row_json
 from lion1.khive import Khive, KhiveError
-from lion1.store import _json
 from tests.lionfake import LionFake, LionKhive, parse, routed_config
 from tests.test_actor import Done, scripted
 from tests.test_chat import asks, reader
@@ -406,11 +406,11 @@ def test_a_row_json_cannot_carry_whole_is_written_with_each_part_it_cannot_carry
     ring.append(ring)
     nan, inf = float("nan"), float("inf")
     value = {(1, 2): "x", 3: nan, None: [ring, (inf, 2.5)], True: "t", 1.5: "f", nan: "k"}
-    assert _json(value) == (
+    assert row_json(value) == (
         '{"(1, 2)": "x", "3": NaN, "null": [[1, "[1, [...]]"], [Infinity, 2.5]], "true": "t", "1.5": "f", '
         '"NaN": "k"}'
     )  # the key and the value that holds itself as their str; a float that is not finite as the log writes it
-    assert _json({"a": [1, (2, 3)]}) == json.dumps({"a": [1, [2, 3]]})  # what JSON carries whole, as it is
+    assert row_json({"a": [1, (2, 3)]}) == json.dumps({"a": [1, [2, 3]]})  # what JSON carries whole, as it is
 
 
 class Pairs(BaseModel):
