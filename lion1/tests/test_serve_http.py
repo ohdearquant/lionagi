@@ -446,16 +446,16 @@ def test_a_get_carrying_a_body_is_a_bad_request_and_a_zero_length_is_none(name, 
     assert_safe(fields)
 
 
-# S23: a request h11 cannot read gets uvicorn's own answer, and the app never sees it
+# S23: a request h11 cannot read gets uvicorn's own answer, and no run starts. A chunk's footer is read after
+# the head and the chunk, so the app may be reading the body already when h11 refuses it.
+BAD_FOOTER = chunked(START).replace(START + b"\r\n", START + b"XX")  # 0.16 refuses it; 0.15 took it
+LATE = [BAD_FOOTER[: BAD_FOOTER.index(b"XX")], BAD_FOOTER[BAD_FOOTER.index(b"XX") :]]
 UNREAD = [
-    ("a length of 21 digits", post(START, length=b"0" * 19 + b"14"), 400),
-    ("a length of 5,002 digits", post(START, length=b"0" * 5000 + b"14"), 400),
-    (
-        "a chunk not ended by CRLF",  # h11 0.16 refuses it; 0.15 dropped any two bytes there
-        chunked(START).replace(START + b"\r\n", START + b"XX"),
-        400,
-    ),
-    ("a length of 20 digits", post(START, length=b"0" * 18 + b"14"), 201),
+    ("a length of 21 digits", [post(START, length=b"0" * 19 + b"14")], 400),
+    ("a length of 5,002 digits", [post(START, length=b"0" * 5000 + b"14")], 400),
+    ("a chunk not ended by CRLF", [BAD_FOOTER], 400),
+    ("a chunk not ended by CRLF, its footer sent late", LATE, 400),
+    ("a length of 20 digits", [post(START, length=b"0" * 18 + b"14")], 201),
 ]
 
 
@@ -466,12 +466,11 @@ def test_a_request_h11_cannot_read_is_answered_by_uvicorn_alone(name, raw, statu
 
     async def main():
         async with serving(service) as port:
-            return await ask(port, raw.replace(b"{p}", str(port).encode()))
+            return await ask(port, [piece.replace(b"{p}", str(port).encode()) for piece in raw], pause=0.1)
 
     got, fields, body = bounded(main)
     assert got == status, body
-    if status == 400:
-        # sent chunked when the head was already read
+    if status == 400:  # sent chunked when the app had the head, so the text is looked for in the body
         assert b"Invalid HTTP request received." in body and service.runs == {}
         assert fields["content-type"].startswith("text/plain")
 
