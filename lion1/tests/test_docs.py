@@ -33,19 +33,35 @@ def section(title: str) -> str:
     return text[start : end if end != -1 else len(text)]
 
 
+def literals_in(source: str) -> list[tuple[str, ...]]:
+    """Every `Literal[...]` in `source`, as its values in order, however the file binds the name: imported
+    from `typing` (or `typing_extensions`), aliased, or reached through the module, itself aliased."""
+    tree = ast.parse(source)
+    names, modules = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("typing", "typing_extensions"):
+            names |= {a.asname or a.name for a in node.names if a.name == "Literal"}
+        elif isinstance(node, ast.Import):
+            modules |= {a.asname or a.name for a in node.names if a.name in ("typing", "typing_extensions")}
+    found = []
+    for node in ast.walk(tree):
+        base = node.value if isinstance(node, ast.Subscript) else None
+        if (isinstance(base, ast.Name) and base.id in names) or (
+            isinstance(base, ast.Attribute)
+            and base.attr == "Literal"
+            and isinstance(base.value, ast.Name)
+            and base.value.id in modules
+        ):
+            items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            found.append(tuple(item.value for item in items))
+    return found
+
+
 def literals() -> list[tuple[str, ...]]:
     """Every `Literal[...]` written in src/lion1 and hub/serve, as its values in order."""
-    found = []
-    for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if (
-                isinstance(node, ast.Subscript)
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "Literal"
-            ):
-                items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
-                found.append(tuple(item.value for item in items))
-    return found
+    return [
+        v for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]) for v in literals_in(path.read_text())
+    ]
 
 
 def enums() -> list[tuple[str, ...]]:
@@ -151,6 +167,29 @@ def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
         alias = getattr(MODULES[typed["module"]], typed["alias"])
         assert hint == (alias | None if typed["tail"] == " or None" else alias), field
         assert typed["tail"] != ", an enum" or (isinstance(alias, type) and issubclass(alias, Enum)), field
+
+
+def test_the_inventory_reads_every_spelling_of_literal_and_no_other_subscript():
+    source = """
+import typing
+import typing as t
+import typing_extensions
+from typing import Literal
+from typing import Literal as Lit
+from typing_extensions import Literal as Ext
+
+a: Literal["a"]
+b: typing.Literal["b", "bb"]
+c: t.Literal["c"]
+d: Lit["d"]
+e: typing_extensions.Literal["e"]
+f: Ext["f"]
+g: dict["g", int]
+h: other.Literal["h"]
+"""
+    assert literals_in(source) == [("a",), ("b", "bb"), ("c",), ("d",), ("e",), ("f",)]
+    # a `Literal` the file never imports from typing is some other name
+    assert literals_in('class Literal: ...\nx: Literal["x"]') == []
 
 
 def test_every_closed_value_set_the_code_declares_has_a_row():
