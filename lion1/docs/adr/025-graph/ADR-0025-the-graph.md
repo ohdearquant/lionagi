@@ -1,7 +1,7 @@
 ---
 adr: ADR-0025
 status: proposed
-liveness: partial (the pack builds and serves fifteen verbs; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver and the pack's own tests are owed, S1)
+liveness: partial (the pack builds and serves fifteen verbs; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; the pack's own tests are owed, S1)
 date: "2026-10-04"
 area: graph
 kind: new
@@ -166,7 +166,9 @@ session the same way; a step names its flow's run and its own run; a run resumed
 the id of the run it continues. Order is `seq` and `index`. Nothing in these tables is an edge of
 the graph; a graph record that needs a run points at it by id in a property.
 
-- **Landing evidence**: none yet; owed with the pack (S1).
+- **Landing evidence**: `tests/test_store.py::test_a_flows_step_rows_against_the_built_binary`: each
+  step row names its flow's run and its own run, in order, and each step's run names the flow's run
+  as its trigger; `continues`, under C3's replay test.
 
 ### D3: The core writes, as the actor, through its own client ^d3
 
@@ -257,8 +259,9 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
 | The CLI's transcript as the harness session's source of truth | it is one file on one machine that the CLI rewrites, and the runtime cannot search it |
 
 ## Consequences
-- **S1**: Owed: the flow driver that writes `steps` rows (the table exists, nothing writes it) and
-  the pack's own tests in Rust. Each lands with tests named here.
+- **S1**: Owed: the pack's own tests in Rust, landing with tests named here. The flow driver that
+  writes `steps` rows landed with [[ADR-0026-the-submission|ADR-0026]] D3; D2's evidence reads its
+  rows back from the built binary.
 - **S2**: [[ADR-0019-the-checkpoint|ADR-0019]] is superseded for runs of this runtime: a run with a
   store takes no checkpoint and restores by D5; its liveness line says so in the same change. Its
   scanners stay as the readers of C4.  The served actor's resume

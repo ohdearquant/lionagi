@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from lion1 import Actor, Context
 
-__all__ = ("KhiveOps", "khive_ops")
+__all__ = ("KhiveOps", "khive_ops", "Send", "send")
 
 
 class KhiveOps(BaseModel):
@@ -30,3 +30,22 @@ def khive_ops(actor: Actor, client: Any) -> set[str]:
         return await client.exec(req.ops)
 
     return {"khive_ops"}
+
+
+class Send(BaseModel):
+    """Mail the actor that submitted this job: a finding it should read before the job ends, or why the
+    job cannot go on. The job's result reaches it on its own when the job ends."""
+
+    text: str
+
+
+def send(actor: Actor, client: Any, to: str, *, thread: str | None = None) -> set[str]:
+    """Register `send` over `client` (a `Khive`): one recipient, `to`, on `thread` when the submission
+    named one (ADR-0026 D2). Its privilege is `comm.send`, which the actor and the profile must hold."""
+
+    @actor.handler(Send, requires={"comm.send"})
+    async def run(req: Send, ctx: Context) -> str:
+        sent = await client.send(to, req.text, thread_id=thread, self_send=to == client.actor)
+        return f"sent {sent.get('id')} to {to}"
+
+    return {"send"}

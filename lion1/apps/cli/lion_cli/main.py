@@ -7,12 +7,14 @@ import asyncio
 from pathlib import Path
 
 from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
+from hub.flow import FlowError
 
 from .agent import agent_main
 from .areas import areas_main
 from .chat import chat_main
 from .config import chat_config, config_main
 from .context import BUDGET, context_main
+from .submit import SubmitError, flow_main, result_main, run_main
 
 __all__ = ("parser", "main")
 
@@ -117,6 +119,42 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", help="show results' first lines and the loop's notices"
     )
     ch.set_defaults(**(chat or {}))
+    after = argparse.ArgumentParser(add_help=False)  # where the result goes (ADR-0026 C4)
+    after.add_argument("--thread", default=None, help="the thread the result mail goes on")
+    after.add_argument(
+        "--notify",
+        default=None,
+        metavar="ACTOR",
+        help="who the result mail goes to; default: the directory's actor",
+    )
+    after.add_argument(
+        "--var",
+        action="append",
+        default=None,
+        metavar="NAME=VALUE",
+        help="a variable the text names as {NAME}",
+    )
+    rn = sub.add_parser(
+        "run", parents=[after], help="one job of a profile from the directory's profiles.toml; its id first"
+    )
+    rn.add_argument("--dir", default=".", help="the actor's directory: .khive/config.toml, profiles.toml")
+    rn.add_argument("--profile", required=True, help="a [profile.<name>] of profiles.toml")
+    rn.add_argument("--say", required=True, help="the job; a template of the --var names when any is given")
+    rn.add_argument(
+        "--file", action="append", default=None, help="a file whose text is an input after --say (repeatable)"
+    )
+    rn.add_argument("--model", default=None, help="the model; overrides the profile's")
+    fl = sub.add_parser(
+        "flow",
+        parents=[after],
+        help="a [flow.<name>] of the directory's flows.toml; its id, then each step's",
+    )
+    fl.add_argument("--dir", default=".", help="the actor's directory: .khive/config.toml, flows.toml")
+    fl.add_argument("--name", required=True, help="the flow")
+    rs = sub.add_parser("result", help="a run's or a flow's row with its output, read back by id")
+    rs.add_argument("id", type=_run_id, help="the id `lion run` or `lion flow` printed first")
+    rs.add_argument("--dir", default=".", help="the actor's directory the run's rows are in")
+    rs.add_argument("--history", action="store_true", help="the run's messages too, in order")
     cf = sub.add_parser(
         "config", help="the [chat] values a bare `lion chat` runs with, and the file each came from"
     )
@@ -243,6 +281,13 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(chat_main(a))
         except KeyboardInterrupt:
             pass
+    elif a.command in ("run", "flow", "result"):
+        act = {"run": run_main, "flow": flow_main, "result": result_main}[a.command]
+        try:
+            code = asyncio.run(act(a))
+        except (SubmitError, FlowError) as e:  # refused before any row
+            raise SystemExit(f"lion {a.command}: {e}") from None
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

@@ -352,6 +352,9 @@ class RunRequest:
     # for the store (ADR-0025): what started this run, by id, and the run it resumes by replay
     trigger: tuple[str, ...] = ()
     continues: str | None = None
+    # for the store too: this run as one step of a flow's run (ADR-0026 D3), its row written with the
+    # run's own: `flow_run_id`, `idx`, `name` and `inputs_from`, the steps its text read
+    step: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -934,7 +937,9 @@ class Actor:
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
         self.bus.emit("run.started", run=run.id, actor=self.name, profile=profile.name)
         try:
-            await self.store.open(run, trigger=list(request.trigger) or None, continues=request.continues)
+            await self.store.open(
+                run, trigger=list(request.trigger) or None, continues=request.continues, step=request.step
+            )
         except BaseException:  # no rows: the run never started, and it is not left behind
             self.runs.pop(run.id, None)
             raise

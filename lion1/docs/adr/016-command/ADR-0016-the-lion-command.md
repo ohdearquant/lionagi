@@ -55,7 +55,7 @@ supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Sour
 ### C1: One command, `lion`, holds every entry _(enforced: process)_ ^c1
 
 The workspace member `apps/cli`, package `lion_cli`, declares the one console script, `lion =
-"lion_cli.main:main"`; the root package declares none. `parser()` requires one of five subcommands.
+"lion_cli.main:main"`; the root package declares none. `parser()` requires one of eight subcommands.
 The package composes the runtime and `hub` and talks to a terminal; the runtime package imports
 neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 
@@ -69,6 +69,9 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
 | `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--khive-config` names the file its khive calls sign with, and a file that names no actor or leaves the lion tables unrouted refuses the chat before it starts ([[ADR-0026-the-submission|ADR-0026]] C7, C8); the instruction files close its guidance | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; its record and notes as rows of the lion database ([[ADR-0025-the-graph|ADR-0025]]); a box's patch, applied only under `--apply`; the clipboard under `/copy` and `/copy all` |
+| `lion run --dir D --profile P --say TEXT` | one job of `[profile.P]` in `D`'s `profiles.toml`, on its model or `--model`'s; `--file` adds an input, `--var` makes `--say` a template, `--thread` and `--notify` place the result mail ([[ADR-0026-the-submission|ADR-0026]] C1, C3, C4) | the run's rows in `D`'s lion database, its id first on standard output and its output at the end; one result mail; a Daytona box's patch as `.lion/runs/<id>.patch`, never applied |
+| `lion flow --dir D --name N` | `[flow.N]` of `D`'s `flows.toml`, each step a run of its own under its profile ([[ADR-0026-the-submission|ADR-0026]] C2, C3); `--var`, `--thread`, `--notify` | the flow's run row, a step row per step or item, each step's own run rows; the flow's id, then `step <name> <id>` as each opens, the output at the end; one result mail |
+| `lion result ID --dir D [--history]` | a read of a run's or a flow's row by the id the command printed ([[ADR-0026-the-submission|ADR-0026]] C4) | nothing |
 | `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from, then the instruction files it composes | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
 | `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code or Codex session's checkpoint in the store and its restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]], [[ADR-0025-the-graph#^c4|ADR-0025/C4]]); `checkpoint --codex` and `status --codex` read a Codex rollout, and `checkpoint` takes a rollout given as `--transcript` as one | the store's `sessions` and `messages` rows for the session, and the actor's `context.<name>` notes for declared vars |
@@ -135,20 +138,20 @@ envelopes say, never a price table ([[ADR-0009-backends|ADR-0009]] S7). The gate
 
 ## Decisions
 
-### D1: `apps/cli/lion_cli/main.py`: one parser, five subcommands ^d1
+### D1: `apps/cli/lion_cli/main.py`: one parser, eight subcommands ^d1
 
-Serves C1. `parser(chat=None)` builds `agent`, `chat`, `areas`, `context` and `config`, each with
-its own flags. `main()` parses `chat` twice, the second time with the config file's values as the
-chat parser's defaults; it runs `agent` and `chat` under `asyncio.run`, the rest directly, and ends
-a chat quietly on an interrupt. `context` takes its verbs as a second level of subcommands, and
-`context checkpoint` `--codex` or `--hook`, never both. At the chat's prompt a line the console owns
-(`/copy [N]`, `/copy all`, `/quit`) runs there and never reaches the model.
+Serves C1. `parser(chat=None)` builds `agent`, `chat`, `run`, `flow`, `result`, `areas`, `context`
+and `config`. `main()` parses `chat` twice, the second time with the config file's values as the
+chat parser's defaults; it runs `agent`, `chat`, `run`, `flow` and `result` under `asyncio.run`, the
+rest directly, and ends a chat quietly on an interrupt. `context` takes its verbs as a second level
+of subcommands, and `context checkpoint` `--codex` or `--hook`, never both. At the chat's prompt a
+line the console owns (`/copy [N]`, `/copy all`, `/quit`) runs there and never reaches the model.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags through `parser()`;
   `apps/cli/tests/test_config.py`: the two files, the flag over them, the refusals, `lion config`;
   `apps/cli/tests/test_copy.py`: `/copy` never sent; `tests/test_areas.py`: the table from a given
-  registry; `tests/test_context.py`: `lion context` set, checkpoint, show, restore and status;
-  `tests/test_codex_checkpoint.py`: `--codex`.
+  registry; `tests/test_context.py`: `lion context`; `tests/test_codex_checkpoint.py`: `--codex`;
+  `apps/cli/tests/test_submit.py`: `run`, `flow`, `result`.
 
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
 
