@@ -26,24 +26,24 @@ tags:
 
 This record serves the author's request of 2026-10-02 that serving an agent be as easy as serving an
 API, starting with a local app and designed in a record first; its first consumer is the native app
-(ADR-0022).
+(ADR-0022). Its transport serves his of 2026-10-05: serving is split out, to the hub or anywhere, as
+`Lion().serve(actor)` under `asyncio.run`; FastAPI replaces the hand-written logic.
 
 An actor is reached only by the Python that calls `Actor.run`. Every program outside that process
 gets its own glue: the areas server reads residents' files
 ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]), and the terminal chat drives `Actor.run` with its own
-`wait` ([[ADR-0018-chat-in-a-box#^c1|ADR-0018/C1]]). A native app, a script in another language or a
-second terminal cannot start a run, watch it or speak to it.
+`wait` ([[ADR-0018-chat-in-a-box#^c1|ADR-0018/C1]]). Nothing else can start a run, watch it or speak
+to it.
 
 This record fixes one service over one actor: what it offers, how a run is started, watched, spoken
-to and ended from outside, and one HTTP transport bound to loopback. The bus already tells a run as
-it happens ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and the record already has a row form
-([[ADR-0018-chat-in-a-box#^d1|ADR-0018/D1]]). The service forwards both and adds no second model of
-either.
+to and ended, and one HTTP transport bound to loopback. The bus already tells a run as it happens
+([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and the record already has a row form
+([[ADR-0018-chat-in-a-box#^d1|ADR-0018/D1]]). The service forwards both.
 
 It decides no remote bind, no token, no tool-protocol transport, no store beyond one log file per
 run, and no client. Source: `src/lion1/actor.py` (`run`, `Run.inbox`, `Run.interrupt`),
-`src/lion1/bus.py`, `src/lion1/checkpoint.py` (`entry_of`), `hub/chat.py` (`chat`, `entry_row`,
-`load_log`), `apps/cli/lion_cli/areas.py` (`guarded`).
+`src/lion1/bus.py`, `src/lion1/checkpoint.py` (`entry_of`, `entry_row`, `load_log`), `hub/chat.py`
+(`chat`), `apps/cli/lion_cli/areas.py` (`guarded`).
 
 ## Definitions
 
@@ -64,7 +64,7 @@ run, and no client. Source: `src/lion1/actor.py` (`run`, `Run.inbox`, `Run.inter
 | - | --------- | ------ | -------- |
 | A1 | `Actor.run` emits `run.started` before its first await, so a subscriber set in the same step as the call sees that run's id first. | `run` builds the run, replays history, appends the inputs and emits with no await between | the run takes its id as an argument, a change to the loop, and D2 is rewritten |
 | A2 | One event loop carries the actor, its runs and the transport, and the owner's handlers and awaited backend calls give it back within a second, which nothing in the core enforces; an offer's synchronous backend holds it for its whole call (S6). | the bus and the actor are single-loop; the OpenRouter backend calls out on a thread and the Claude Code and Codex backends await their subprocesses, while `Actor.run` calls a synchronous backend inline | one slow handler or synchronous backend stalls every stream; the transport moves to a thread and bridges to the loop |
-| A3 | A reader of one origin-form HTTP/1.1 request per connection, with a counted body, is small enough that its tests reach every line and branch, as the core's coverage gate requires (S10). | C10 and D8 name every form taken and refused; the reader's own checks run before the standard library parses the lines | the transport is rebuilt on the standard library's threaded server; the service is unchanged |
+| A3 | uvicorn's h11 reader hands the app each request with the peer it read off the connection and the header lines as sent, a repeated line kept, and answers a head it cannot read itself. | the guard reads the peer from the ASGI scope and counts Host and Origin in its raw header list; measured on uvicorn 0.30.0 and 0.54.0 | the guard reads a value the reader rewrote, and its checks move in front of the reader |
 | A4 | A local client needs the rows it missed and the state as it stands, and can do without the bus events it missed. | every row carries its sequence number and a stream opens with the state; an event that leaves no row is a progress mark | the stream gains event ids and a bounded replay |
 | A5 | A row is complete at `run.started`, at each `turn.started`, at each `command.` event, when the run waits and when it ends. | `Actor.run` attaches a notification's fold as it appends the notification, with no event between; `chat` in `hub/chat.py` hands each entry to its `say` callback at these points | the runtime gains an event that marks an entry final, and D3 publishes on it |
 
@@ -201,25 +201,25 @@ the run `Success`.
 The transport binds `127.0.0.1` or `::1` and refuses any other address. Before it dispatches, it
 checks the peer, then that Host is one of the spellings D8 lists for the bound address and port,
 then that an Origin, when present, is `http://` followed by one of them. A POST must be
-`application/json`. Responses carry `nosniff` and `no-store`.
+`application/json`. The app's answers carry `nosniff` and `no-store`; a head uvicorn cannot read
+never reaches the app, and uvicorn answers it (S23).
 
 This admits any process on the machine that can open the port. There is no token, and the checks
 stop a web page while identifying no client (S3).
 
-### C10: One request per connection, in one strict form _(enforced: mechanical)_ ^c10
+### C10: uvicorn reads the request, and the app bounds what a route waits on _(enforced: mechanical)_ ^c10
 
-- **Subject**: every request the transport reads.
-- **Violated when**: a request D8's table refuses is dispatched; a request is dispatched on the
-  strength of the parsed headers alone; or a slow sender holds a connection past the deadline.
+- **Subject**: every request the transport answers.
+- **Violated when**: a request D8's table refuses reaches a route; a body is read past 1 MiB or past
+  its deadline; or a request past the cap of requests in flight is dispatched.
 
-The transport reads one request per connection and closes it. Its own checks on the raw head come
-first, and the standard library's parser reads only lines that passed them. A POST carries exactly
-one decimal Content-Length and that many bytes, and a GET carries no body. Anything outside this
-form is answered with its error and never dispatched. One deadline of 10 seconds covers the whole
-request, however its bytes arrive.
+uvicorn reads each request with its h11 reader, and a connection may carry several in turn. The
+app's guard runs before any route: C9's checks, then the end of the service, then the cap of
+requests in flight. A POST's body is read as it arrives, at most 1 MiB, whole within one deadline of
+10 seconds. Anything outside D8's table is answered with its error and never dispatched.
 
-A plain response carries its length, and a stream ends when the connection closes. Connections and
-subscribers are capped, and one past the cap is refused.
+A plain response carries its length, and a stream is chunked and ends with its response. Subscribers
+are capped too, and one past either cap is refused. A connection and its head are not (S24).
 
 ### C11: Ending the service ends everything it started _(enforced: mechanical)_ ^c11
 
@@ -228,19 +228,22 @@ subscribers are capped, and one past the cap is refused.
   alive; a served run's task is live; a bus subscription of the service remains; or an unlatched log
   lacks a row that was published or its `END` row.
 
-Admission closes first: the listener stops and requests already read are refused. Connection, stream
-and ping tasks are cancelled, each write bounded, so no stream takes a final state (C4). Live runs
-are stopped together (C6) and awaited under one grace deadline, then cancelled and awaited. Each
-unlatched log gets its `END` row, and the bus subscriptions are removed last.
+Admission closes first: every later request is refused and every stream closes, so none takes a
+final state (C4). Live runs are stopped together (C6) as uvicorn closes the listener and its
+connections, and awaited under one grace deadline, then cancelled and awaited. Each unlatched log
+gets its `END` row, and the bus subscriptions are removed last.
 
 Cancellation is cooperative. A handler that will not yield holds the return, and the service does
 not kill it (S6).
 
-### C12: The core gains no dependency and imports no provider _(enforced: mechanical)_ ^c12
+### C12: The core gains no dependency; the transport's are the `serve` extra _(enforced: mechanical)_ ^c12
 
-- **Subject**: `src/lion1/serve.py` and the package's dependency list.
-- **Violated when**: the module imports anything but the standard library, pydantic with its core
-  and `lion1`, or the dependency list changes.
+- **Subject**: `src/lion1/`, `hub/serve/` and the package's dependency lists.
+- **Violated when**: the core imports a web framework or the hub; `hub/serve/service.py` imports
+  anything but the standard library, pydantic with its core and `lion1`; or the core's dependency
+  list changes.
+
+`hub/serve/transport.py` alone imports FastAPI and uvicorn, which `lion1[serve]` installs.
 
 ### C13: The card tells a client what the model is told, and nothing of the prompt _(enforced: mechanical)_ ^c13
 
@@ -287,7 +290,7 @@ on any other run is refused.
 
 ## Decisions
 
-### D1: `src/lion1/serve.py` holds `Service` and `Offer`; `entry_row` moves beside `entry_of` ^d1
+### D1: `hub/serve/service.py` holds `Service` and `Offer`; `entry_row` sits beside `entry_of` ^d1
 
 Serves C1, C12 and C13. `Service(actor, *, dir=None, max_live=8, keep=100)`; `keep` counts ended
 runs held, and `max_live` under 1, `keep` under 0 or a non-integer raises `ValueError`.
@@ -296,14 +299,14 @@ runs held, and `max_live` under 1, `keep` under 0 or a non-integer raises `Value
 naming which, for a template setting `wait` or `reply_on_commands` or a name already offered. It
 copies the profile, with its own `defaults`, and the template; the profile's stores and a request's
 callbacks stay the caller's, live. `Service.card()` builds the card from `Actor.subset` and
-`model_json_schema`. `entry_row` and `load_log` move from `hub/chat.py` to
-`src/lion1/checkpoint.py`; the hub imports them.
+`model_json_schema`. `entry_row` and `load_log` live in `src/lion1/checkpoint.py`, which the hub
+imports.
 
 - **Landing evidence**: `tests/test_serve.py`:
   `test_the_card_lists_each_command_as_the_model_is_told_it_and_nothing_of_the_prompt`,
   `test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused_by_name`,
   `test_a_capacity_that_is_no_count_is_refused_when_the_service_is_made`,
-  `test_serve_imports_the_standard_library_pydantic_and_lion1_only_and_adds_no_dependency`.
+  `test_the_core_serves_nothing_and_the_transport_is_the_serve_extra`.
 
 ### D2: `Service.start` checks, reserves an id and a log, then reads the run from the bus ^d2
 
@@ -414,13 +417,13 @@ makes the log unreadable. The listing after a restart reads each log's first and
   `test_a_dropped_run_reads_whole_from_its_log_and_one_whose_log_failed_is_gone_until_a_restart`,
   `test_a_run_cancelled_while_starting_whose_end_row_fails_is_latched_and_stopped`.
 
-### D8: The HTTP transport on `asyncio.start_server` ^d8
+### D8: The HTTP transport: FastAPI on uvicorn ^d8
 
-Serves C9 and C10. `Service.serve(host="127.0.0.1", port=8710, grace=10.0, *, ready=None)` runs
-until cancelled and reports the address it bound to `ready`; a port of 0 takes a free one, and a
-`host` outside loopback is refused with `ValueError` before any bind (C9). The head is read to its
-blank line under the cap, checked against the second table, and only then parsed by
-`http.client.parse_headers`; a parsed message with a defect is refused.
+Serves C9 and C10. `serve(service, host="127.0.0.1", port=8710, grace=10.0, *, ready=None)` in
+`hub/serve/transport.py` runs until cancelled and reports the address it bound to `ready`; a port of
+0 takes a free one, and a `host` outside loopback is refused with `ValueError` before any bind (C9).
+It binds the socket and hands it to uvicorn: the h11 reader, no lifespan, no WebSocket, no logging
+configured. `app(service, hosts)` is FastAPI's routes behind an ASGI guard.
 
 | method and path | does | answers |
 | --------------- | ---- | ------- |
@@ -434,35 +437,35 @@ blank line under the cap, checked against the second table, and only then parsed
 | `POST /runs/{id}/end`, `/interrupt`, `/stop`, `/cancel` | the control | 202 with the state; 409 |
 | any route | the shared answers | also 400, 403, 404, 405, 408, 410, 413, 415, 500 or 503, where D9 says they fit |
 
-| the raw request | rule |
-| --------------- | ---- |
-| request line | `GET` or `POST`, an origin-form target, `HTTP/1.1`; anything else is refused |
-| line endings | CRLF only; a bare line feed is refused |
-| header line | a token name, a colon with no space before it, a value with no control character; a line that starts with a space or a tab is refused |
-| Host, Origin, Content-Type, Content-Length | at most one of each; Host is required |
-| Transfer-Encoding, Expect | refused when present |
-| Host | `127.0.0.1:<port>` or `localhost:<port>` on a `127.0.0.1` bind; `[::1]:<port>` or `localhost:<port>` on a `::1` bind; `localhost` in any letter case |
-| body | a POST's is exactly Content-Length bytes of UTF-8 holding one JSON object, at most 1 MiB; a GET with a Content-Length other than 0 is refused |
-| head | at most 16 KiB and 64 header fields |
+| the request | rule |
+| ----------- | ---- |
+| head | read by uvicorn's h11 reader; one it cannot read, or one still incomplete past 16 KiB, is uvicorn's own 400 (S23) |
+| Host | exactly one: `127.0.0.1:<port>` or `localhost:<port>` on a `127.0.0.1` bind; `[::1]:<port>` or `localhost:<port>` on a `::1` bind; `localhost` in any letter case |
+| Origin | at most one: `http://` followed by one of the Host spellings |
+| query | none, but a record read's `start=N` |
+| Content-Type | on a POST, exactly one: `application/json` in any letter case, with no parameter |
+| body | a POST's, by Content-Length or chunked: UTF-8 holding one JSON object, no key twice and no NaN or Infinity, at most 1 MiB, whole within 10 seconds |
 | Content-Length, `start` | decimal digits of any length, decided by the digits: a length past the body's cap is refused as too large, a `start` past 18 digits as a bad request |
 
 - **Landing evidence**: `tests/test_serve_http.py`:
-  `test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched`,
-  `test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused`,
-  `test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request`,
-  `test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive`,
+  `test_a_body_outside_d8s_form_is_answered_with_its_error_and_never_dispatched`,
+  `test_a_body_in_d8s_form_is_dispatched_however_it_is_framed`,
+  `test_a_body_nested_past_the_recursion_limit_is_a_bad_request`,
   `test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route`,
-  `test_a_peer_off_loopback_is_forbidden_before_any_byte_of_its_request_is_read`,
+  `test_a_peer_off_loopback_is_forbidden_before_any_route`,
   `test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind`,
-  `test_a_request_not_whole_by_the_deadline_is_answered_timeout_however_its_bytes_arrive`.
+  `test_a_port_in_use_raises_the_bind_error_and_leaves_no_socket_open`,
+  `test_a_scope_that_is_not_http_is_left_unanswered`,
+  `test_a_body_not_whole_by_the_deadline_is_answered_timeout_however_its_bytes_arrive`,
+  `test_a_peer_that_closes_before_its_request_is_whole_is_never_answered`.
 
 ### D9: Shapes, frames and errors ^d9
 
-Serves C4, C10 and C14. Every answer but a stream (D12) is one JSON object in a shape below; a key
-holds null where it has no value, and a null `pending` means unknown, never empty. Values become
-JSON through `pydantic_core.to_jsonable_python`; one it cannot project is carried as an object with
-the single key `repr`, so what a client reads is a projection and never the object. A change that
-breaks a client raises the card's protocol version.
+Serves C4, C10 and C14. Every answer of the app but a stream (D12) is one JSON object in a shape
+below; a key holds null where it has no value, and a null `pending` means unknown, never empty.
+Values become JSON through `pydantic_core.to_jsonable_python`; one it cannot project is carried as
+an object with the single key `repr`, so what a client reads is a projection and never the object. A
+change that breaks a client raises the card's protocol version.
 
 | shape | keys |
 | ----- | ---- |
@@ -501,19 +504,19 @@ breaks a client raises the card's protocol version.
 | `forbidden` | 403 | the peer, the Host or the Origin |
 | `unknown_offer`, `unknown_run`, `not_found` | 404 | no such offer, run or route |
 | `method_not_allowed` | 405 | a route asked with the other method |
-| `timeout` | 408 | the request's deadline |
+| `timeout` | 408 | the body's deadline |
 | `ended` | 409 | input after the run's `end` or on an ended run; a control on an ended run; either on a cut-short log |
 | `starting` | 409 | input, or a control other than `cancel`, on a run still starting |
 | `not_conversation` | 409 | `end` on a run that is no conversation |
 | `no_resume`, `unreadable_log` | 409 | a resume with no directory, no such log or a live run; a resume whose log cannot be read or whose history does not replay; a record read of a log the loader refuses |
 | `conflict` | 409 | a held `once` key repeated with other fields (D13) |
 | `gone` | 410 | a run no longer held, with no log to read or a latched one |
-| `too_large` | 413 | the head, the body, or an input's text past D5's bound |
+| `too_large` | 413 | the body, or an input's text past D5's bound |
 | `refused` | 422 | a start `Actor.run` refused before `run.started`, the error's type and message as the reason |
 | `unsupported_type` | 415 | a POST that is not `application/json` |
 | `too_many` | 429 | live runs, or inputs not taken |
 | `log_failed` | 500 | a log that could not be created |
-| `busy` | 503 | connections or subscribers past the cap, or the service ending |
+| `busy` | 503 | requests in flight or subscribers past the cap, or the service ending |
 
 - **Landing evidence**: `tests/test_serve_http.py`:
   `test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives`,
@@ -523,32 +526,33 @@ breaks a client raises the card's protocol version.
   `test_a_value_json_cannot_hold_is_carried_by_its_repr_and_never_as_the_object`; and the example of
   D11.
 
-### D10: `Actor.serve`, and the order of shutdown ^d10
+### D10: `Lion`, and the order of the end ^d10
 
-Serves C11. `Actor.serve(profile, backend, **options)` is a service with one offer, served. In
-order: close the listener; refuse requests already read; cancel connection, stream and ping tasks,
-each write bounded by 5 seconds; stop every live run and await them under `grace`; cancel what
-remains and await it; append the `END` rows; remove the bus subscriptions. A bound is
-`asyncio.timeout`, as `wait_for` on 3.11 drops a cancel that lands as the write ends. At most 64
-connections and 32 subscribers are open at once.
+Serves C11. `Lion(*, dir, max_live, keep, host, port, grace)` takes offers by `offer(profile,
+backend, request=None, *, converse=False)`, which returns it; `serve(actor, *, ready=None)` serves a
+`Service` of them. The end: `Service.halt` refuses admission, closes every stream and stops every
+live run. Then uvicorn closes its connections, cutting a stalled write after 5 seconds, while the
+runs are awaited under `grace`; what remains is cancelled, then the `END` rows and the bus
+subscriptions. The serve leaves out uvicorn's signal handlers. At most 64 requests in flight and 32
+subscribers.
 
 - **Landing evidence**: `tests/test_serve_http.py`:
   `test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each_run`,
-  `test_a_cancel_that_lands_as_a_bounded_write_finishes_is_never_lost`,
-  `test_a_write_or_a_close_a_peer_never_takes_ends_at_its_bound`,
+  `test_serving_leaves_the_signals_to_its_caller`,
+  `test_lion_serves_its_offers_on_the_port_it_is_given_until_cancelled`,
   `test_an_ending_seen_through_a_cancel_that_then_fails_reaches_its_caller_and_no_one_else`,
-  `test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_never_waits`,
-  `test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not`,
+  `test_a_stream_whose_reader_stalls_is_closed_at_its_frame_cap_and_the_run_never_waits`,
+  `test_a_request_past_the_cap_is_refused_busy_and_the_next_after_one_ends_is_not`,
   `test_a_stream_past_the_subscriber_cap_is_refused_busy`,
-  `test_a_request_read_whole_after_the_end_began_is_refused_busy`,
+  `test_a_request_after_the_end_began_is_refused_busy`,
   `test_a_start_while_the_service_ends_is_refused_busy`.
 
 ### D11: `examples/serve_an_actor.py` and its test ^d11
 
-Serves C2 and C4. The example serves the structured-output actor on a scripted backend at a free
-port, then acts as its own client over the socket. It reads the card, starts a run, opens the stream
-and finishes on the first state that says ended, whether that is the stream's first frame or a later
-one. `tests/test_examples.py` runs it offline.
+Serves C2 and C4. The example serves the structured-output actor through `Lion` on a scripted
+backend at a free port, then acts as its own client over the socket. It reads the card, starts a
+run, opens the stream and finishes on the first state that says ended, whether that is the stream's
+first frame or a later one. `tests/test_examples.py` runs it offline.
 
 - **Landing evidence**: `serve_an_actor` in the scripted set of `tests/test_examples.py`, and
   `test_the_served_example_reads_the_card_a_run_and_its_end_over_the_socket`, which pins its output.
@@ -585,16 +589,18 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | approach | rejected because |
 | -------- | ---------------- |
 | Extending the areas server to any actor | it reads residents' files from a registry, on a thread per request, inside the command-line package; a served run needs the actor's own loop and nothing of the registry |
-| The standard library's threaded server with a bridge to the loop | its parser reads the head, but the body rules, the guards and the deadline of C10 are written either way; every event then crosses a thread and shutdown owns threads beside tasks; kept as the fallback of A3 |
-| A web framework | a dependency in the core, or `Actor.serve` absent without an extra |
-| The transport in the hub | `Actor.serve` would need the hub installed; the service itself knows no HTTP and a later transport may live there |
+| The standard library's threaded server with a bridge to the loop | every event crosses a thread and shutdown owns threads beside tasks; uvicorn runs on the actor's loop (D8) |
+| A web framework | rejected at first as a dependency in the core, or `Actor.serve` absent without an extra; reversed on 2026-10-05, when the transport moved to the hub: FastAPI and uvicorn are its `serve` extra, and the core gains nothing (C12) |
+| The transport in the core, as `Actor.serve` over `asyncio.start_server` | the form until 2026-10-05: a reader written by hand, one request per connection, with rules of its own on the raw head; replaced by `Lion` in the hub over FastAPI (D8, D10) |
+| Checks on the raw head in front of uvicorn | h11 refuses a space before a colon and a second Host, and takes a folded line, a bare line feed, `Expect` and Transfer-Encoding beside a length; with no proxy between, none is read two ways. The guard counts Host and Origin as sent (A3) |
+| A bound on each write of a stream | a stalled stream's queue overflows and closes it, and the run never waits (C3); at the end uvicorn cuts its write after 5 seconds |
+| A deadline on the head and a cap on connections, the earlier transport's | uvicorn has neither for a head still arriving, and adding them means its protocol class subclassed; a request and its body are bounded instead (C10, S24) |
 | A client that sends its own profile, prompt or tools | the actor would run what any local page or process hands it; the owner's offer is the gate (C1) |
 | Publishing rows at every bus event | every event falls on a complete row today, and nothing holds the runtime to that: an event added between a notification and its fold would publish half a row to the log and every stream; the named points are the ones `chat` uses (A5) |
 | The runtime's 8-hex run id as the served run's id | a directory outlives the process and 32 bits collide across kept logs; the id is known only once the run began, too late to reserve its log |
 | Replay of missed events by id | a second ordered store beside the record; the state frame and the record read recover the rows and the end (A4) |
 | A failed append that only marks the state | rows would stream that no log holds, and a resume would replay less than the client saw (C8) |
 | Appending the `END` row, or retrying, after a failed append | the new row either joins the torn bytes into one last line the loader drops, or follows them past a line feed, where the loader refuses the whole file; neither keeps the row, and the cursor cannot repair bytes already written (C8) |
-| Trusting the parsed headers | the parser accepts a folded line, a space before the colon and a repeated Origin; the raw checks of D8 run first (C10) |
 | Calling a handler with no run | a `Context` belongs to a run ([[ADR-0005-command-handling#^c3\|ADR-0005/C3]]); its bounds and its request's gates are the run's, and the actor's `before` hooks apply to every run it serves |
 | An error code on `Service.offer`'s refusal | it is owner-side Python, a `ValueError` naming the field; D9's codes are the transport's |
 | A WebSocket | it needs a framing layer or a dependency; a stream down and POSTs up carry everything here |
@@ -604,10 +610,10 @@ the key unchanged; only the refusal of the act that took a key releases it.
 ## Consequences
 
 - **S1**: D1 to D13 landed with the tests they name. Disabled alone, each mechanism turned a named
-  test red: the bound check, the publishing points and the latch (C1, C3, C8); a final state, the
-  run's inbox and the stop's wake (C4 to C6). So did the `END` row (C7), the Host check (C9), the
-  deadline (C10), the unsubscription and the write bound (C11), the dropped ids (C14), the status
-  table (D9), the comment line (D12) and the conflict check (D13).
+  test red: C1's bound check, C3's publishing points, C8's latch; C4's final state, C5's inbox, C6's
+  wake; C7's `END` row. So did C9's peer, Host and Origin checks; C10's body deadline and request
+  cap; C11's unsubscription, early stop and signal handlers; C14's dropped ids; D9's status table,
+  D12's comment line and D13's conflict check.
 - **S2**: The areas server and the terminal chat are unchanged. Two servers stand until a client
   moves; a chat's box and its patch behind an offer are not decided here.
 - **S3**: Loopback is per machine: any process of any account on the machine that can open the port
@@ -631,7 +637,9 @@ the key unchanged; only the refusal of the act that took a key releases it.
   mid-run input (`say`) has no counterpart there and stays here. Every kernel loopback surface is
   bearer-credentialed, so C9's no-token choice does not carry over if this actor is ever served by
   or beside khived.
-- **S10**: The transport is under the core's coverage gate, so its tests open real loopback sockets.
+- **S10**: The transport is in the hub, outside the core's coverage gate. Its tests open real
+  loopback sockets, and with the service's and the example's they reach every line and branch of
+  `hub/serve/`; nothing holds that figure but a run that measures it.
 - **S11**: The service routes a bus event to its served run by the runtime's id, so it rests on that
   id being unique among an actor's live runs. `Run` draws 8 hex digits and `Actor.runs` keys on them
   unchecked, so a new run's id meets a given live run's one time in 2^32; the service does not check
@@ -648,9 +656,9 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S15**: C6's cancel that arrives with an interrupt rests on the loop telling the two apart by the
   task's count of cancel requests ([[ADR-0018-chat-in-a-box#^d6|ADR-0018/D6]]), so a client's cut
   and cancel in one step end the run as a cancel.
-- **S16**: The caps count runs, inputs, frames and connections, never bytes. An input is at most 1
-  MiB by D2 and D5, on every path, so a run's untaken inputs are bounded; a row is not, and a stream
-  of large rows fills memory up to 1,000 frames a subscriber.
+- **S16**: The caps count runs, inputs, frames and requests, never bytes. An input is at most 1 MiB
+  by D2 and D5, on every path, so a run's untaken inputs are bounded; a row is not, and a stream of
+  large rows fills memory up to 1,000 frames a subscriber.
 - **S17**: A `once` key is scoped to its operation: starts across the service, inputs within one
   run. The last 100 of each are held in memory, and a key past that acts again, as after a restart.
 - **S18**: A resumed view equals the earlier run's rows only in what `entry_of` keeps. Its filter of
@@ -667,3 +675,10 @@ the key unchanged; only the refusal of the act that took a key releases it.
 - **S22**: A run's rows carry the model's text as it is published, an `OUT{}` in it included, before
   the run ends. Only an ended state's outcome and output say what the run committed. A run aborted
   during its last reap keeps those rows, in its record and in its log.
+- **S23**: A head uvicorn's reader refuses, a second Host or a space before a colon among them, is
+  answered by uvicorn alone: a 400 in plain text, without `nosniff` or `no-store`, logged as a
+  warning. A stream whose peer reads nothing holds the end for uvicorn's 5 seconds, and uvicorn logs
+  its cancel as an error; the runs do not wait for it (C11).
+- **S24**: Nothing bounds a connection that sends no request or a head still arriving: uvicorn holds
+  both open, and only the end closes them. Any process on the machine can hold as many sockets as it
+  opens; the caps count requests once read (C10).

@@ -7,20 +7,19 @@ import asyncio
 import json
 import os
 import re
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
+import hub.serve.service as serve
 import lion1.actor as actor_module
-import lion1.serve as serve
+from hub.serve.service import Offer, ServeError, Service
 from lion1 import Actor, Kind, Profile, Reply, RunRequest, render_guidance
 from lion1.actor import ProfileError
 from lion1.checkpoint import entry_row, load_log
 from lion1.record import Entry
-from lion1.serve import Offer, ServeError, Service
 from tests.lionfake import store as fresh_store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -232,22 +231,30 @@ def test_an_offer_is_fixed_when_made_and_one_the_service_cannot_serve_is_refused
     assert list(service.offers) == ["p"]
 
 
-def test_serve_imports_the_standard_library_pydantic_and_lion1_only_and_adds_no_dependency():
-    tree = ast.parse((ROOT / "src" / "lion1" / "serve.py").read_text())
+def _imports(path: Path) -> set[str]:
     imported = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.Import):
-            imported |= {alias.name.split(".")[0] for alias in node.names}
+            imported |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
-            imported.add("lion1" if node.level else node.module.split(".")[0])
-    assert {"asyncio", "http", "pydantic_core", "lion1"} <= imported  # the walk reads imports at all
-    assert {m for m in imported if m not in sys.stdlib_module_names} <= {
-        "pydantic",
-        "pydantic_core",
-        "lion1",
-    }
+            imported.add("." if node.level else node.module)
+    return imported
+
+
+def test_the_core_serves_nothing_and_the_transport_is_the_serve_extra():
+    # C12: the core neither serves nor gains a dependency; FastAPI and uvicorn are the `serve` extra, and
+    # only the transport imports them, the service knowing no HTTP
+    core = set().union(*(_imports(p) for p in (ROOT / "src" / "lion1").rglob("*.py")))
+    assert {"asyncio", "pydantic"} <= core  # the walk reads imports at all
+    assert not {m for m in core if m.split(".")[0] in ("fastapi", "starlette", "uvicorn", "hub")}
+    assert not (ROOT / "src" / "lion1" / "serve.py").exists() and not hasattr(Actor, "serve")
+    service = {m.split(".")[0] for m in _imports(ROOT / "hub" / "serve" / "service.py")}
+    assert "lion1" in service and not service & {"fastapi", "starlette", "uvicorn", "http"}
+    transport = {m.split(".")[0] for m in _imports(ROOT / "hub" / "serve" / "transport.py")}
+    assert {"fastapi", "uvicorn"} <= transport
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["dependencies"] == ["pydantic>=2.11"]
+    assert project["optional-dependencies"]["serve"] == ["fastapi>=0.115", "uvicorn>=0.30"]
 
 
 # --- C1, C2, D2, D13 --------------------------------------------------------------------------------
