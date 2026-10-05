@@ -1267,7 +1267,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.100" },
-    { name = "pydantic", specifier = ">=2.10.1" },
+    { name = "pydantic", specifier = ">=2.11" },
     { name = "runta-sdk", marker = "extra == 'runta'", specifier = ">=0.2.1" },
 ]
 provides-extras = ["daytona", "runta"]

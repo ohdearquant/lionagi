@@ -78,12 +78,6 @@ class AliasedEither(BaseModel):
     text: str = Field(alias="wire_text")
 
 
-# `validate_by_alias` arrived in pydantic 2.11; earlier releases ignore the key and read the alias
-by_name_only = pytest.mark.skipif(
-    "validate_by_alias" not in ConfigDict.__annotations__, reason="pydantic before 2.11 reads aliases only"
-)
-
-
 class Loose(BaseModel):
     model_config = ConfigDict(extra="allow")
     text: str
@@ -229,9 +223,7 @@ def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_comp
         (AliasedWithDefault, 'wire_text="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedChoices, 'text_on_wire="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedPath, "", {"head": "kept", "text": "changed"}, {"head": "kept", "text": "changed"}),
-        pytest.param(
-            AliasedByName, 'text="asked"', {"text": "changed"}, {"text": "changed"}, marks=by_name_only
-        ),
+        (AliasedByName, 'text="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedEither, 'text="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedEither, 'wire_text="asked"', {"text": "changed"}, {"text": "changed"}),
         (Loose, 'text="asked", note="asked"', {"note": "changed"}, {"text": "asked", "note": "changed"}),

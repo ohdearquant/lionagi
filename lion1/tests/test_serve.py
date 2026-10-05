@@ -247,7 +247,7 @@ def test_serve_imports_the_standard_library_pydantic_and_lion1_only_and_adds_no_
         "lion1",
     }
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["dependencies"] == ["pydantic>=2.10.1"]
+    assert project["dependencies"] == ["pydantic>=2.11"]
 
 
 # --- C1, C2, D2, D13 --------------------------------------------------------------------------------
