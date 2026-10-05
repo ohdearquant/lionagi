@@ -680,5 +680,6 @@ the key unchanged; only the refusal of the act that took a key releases it.
   warning. A stream whose peer reads nothing holds the end for uvicorn's 5 seconds, and uvicorn logs
   its cancel as an error; the runs do not wait for it (C11).
 - **S24**: Nothing bounds a connection that sends no request or a head still arriving: uvicorn holds
-  both open, and only the end closes them. Any process on the machine can hold as many sockets as it
-  opens; the caps count requests once read (C10).
+  both open, and only the end closes them. No idle timeout covers either in this design: uvicorn's
+  keep-alive timeout starts only once a response is sent. Any process on the machine can hold as
+  many sockets as it opens; the caps count requests once read (C10).
