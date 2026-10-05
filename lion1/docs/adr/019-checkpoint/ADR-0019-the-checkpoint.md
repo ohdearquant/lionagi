@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook that starts a Claude Code session's checkpoint, and a Codex session's take from its rollout and its restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, and the agent no longer checkpoints, its wake continuing its last run by ADR-0026 C6, while the scanners stay as the readers of ADR-0025 C4)
+liveness: operating (the transcript and rollout scans, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook, and a Codex session's take and restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, and the agent no longer checkpoints, its wake continuing its last run by ADR-0026 C6; and now superseded for the harness session too: its checkpoint is computed from the store, each session's exchanges its message rows (ADR-0025 C4), the take appending only those past the count the store holds and the restore folding them back, so the file-written checkpoint of C1, C3, C6, D1 and D3 is gone, its `save`, `load`, `to_history` and `.khive/context/` files removed, the claims below standing as the record of that earlier file-based design)
 date: "2026-09-25"
 area: checkpoint
 kind: new

@@ -667,3 +667,40 @@ def test_the_same_run_against_the_built_binary(binary_dirs, monkeypatch):
     assert _daemons(binary, tmp_path)
     _stop(binary, tmp_path)
     assert _daemons(binary, tmp_path) == []
+
+
+@pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
+def test_a_harness_session_rides_the_same_tables_against_the_built_binary(binary_dirs, monkeypatch):
+    # ADR-0025 C4: a Claude Code or Codex session is a session in the store's own tables, each exchange
+    # a message row. The checkpoint's own functions write and read them against the real binary, not the
+    # stub, so the Rust producer and the Python consumer are proven to agree on the row shapes.
+    from hub.backend.checkpoint import exchanges_of, latest_session, record_exchanges, session_of
+
+    binary = os.environ["LION1_KHIVE"]
+    monkeypatch.delenv("KHIVE_DB", raising=False)
+    monkeypatch.delenv("KHIVE_NO_DAEMON")
+    home, tmp_path = binary_dirs
+    monkeypatch.setenv("HOME", str(home))
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config(ACTOR, tmp_path, packs=("kg", "lion")))
+    k = Khive(tmp_path, ACTOR, kkernel=binary)
+    sid = "cc-built"
+    exchanges = [
+        {"turn": 0, "at": "t0", "input": "hello", "text": "hi", "kind": "prompt"},
+        {"turn": 1, "at": "t1", "input": "again", "text": "ok", "kind": "prompt"},
+    ]
+    kw = {
+        "source": "claude-code",
+        "session_id": sid,
+        "actor": ACTOR,
+        "transcript": "/t/cc.jsonl",
+        "why": "manual",
+    }
+    assert asyncio.run(session_of(k, sid)) is None
+    assert asyncio.run(record_exchanges(k, exchanges=exchanges, **kw)) == (2, 2)
+    # a second take of the session at the same count writes nothing
+    assert asyncio.run(record_exchanges(k, exchanges=exchanges, **kw)) == (2, 0)
+    row = asyncio.run(latest_session(k, ACTOR))
+    assert (row["id"], row["source"], row["transcript"]) == (sid, "claude_code", "/t/cc.jsonl")
+    assert asyncio.run(exchanges_of(k, sid)) == [{**e, "why": "manual"} for e in exchanges]
+    _stop(binary, tmp_path)

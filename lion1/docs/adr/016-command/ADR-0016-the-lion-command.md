@@ -71,7 +71,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--khive-config` names the file its khive calls sign with, and a file that names no actor or leaves the lion tables unrouted refuses the chat before it starts ([[ADR-0026-the-submission|ADR-0026]] C7, C8); the instruction files close its guidance | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; its record and notes as rows of the lion database ([[ADR-0025-the-graph|ADR-0025]]); a box's patch, applied only under `--apply`; the clipboard under `/copy` and `/copy all` |
 | `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from, then the instruction files it composes | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
-| `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code or Codex session's checkpoint and restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]]); `checkpoint --codex` and `status --codex` read a Codex rollout, and `checkpoint` takes a rollout given as `--transcript` as one | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
+| `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code or Codex session's checkpoint in the store and its restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]], [[ADR-0025-the-graph#^c4|ADR-0025/C4]]); `checkpoint --codex` and `status --codex` read a Codex rollout, and `checkpoint` takes a rollout given as `--transcript` as one | the store's `sessions` and `messages` rows for the session, and the actor's `context.<name>` notes for declared vars |
 
 The gate is code review of any second console script beside `lion`.
 
@@ -285,11 +285,11 @@ there).
   by the tests of D4.
 - **S8**: The serve log is standard output; `lion areas` reads it as `serve.log` in the agent
   directory, so a served agent's output has to land there. `lion agent` does not redirect it.
-- **S9**: An agent directory is whatever `--dir` names, and only a checkpoint written there checks
-  where it sits: inside a git work tree whose ignore rules miss `.khive/context/`, the write refuses
-  ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]). The lock, notes, ledgers and landing files are written
-  wherever the directory is, so it belongs where no checkout tracks it. The implementation's own
-  repository ignores `.khive/`, where the bench example keeps its directory.
+- **S9**: An agent directory is whatever `--dir` names; the checkpoint no longer writes a file
+  there, being the store's rows ([[ADR-0025-the-graph#^c4|ADR-0025/C4]]). The lock, ledgers and
+  landing files are written wherever the directory is, so it belongs where no checkout tracks it.
+  The implementation's own repository ignores `.khive/`, where the bench example keeps its
+  directory.
 - **S10**: A day's row written before the count carries no `unknown`; its calls cannot be counted
   later. Every reader takes the missing key as `None`, and the first wake after it writes `None`
   there for the rest of the day. So the readers print `(partial: calls of unknown cost before this

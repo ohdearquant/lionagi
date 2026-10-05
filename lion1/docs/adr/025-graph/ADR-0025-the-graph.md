@@ -1,7 +1,7 @@
 ---
 adr: ADR-0025
 status: proposed
-liveness: partial (the pack builds and serves fourteen verbs; the core writes every row of a run and replays one from them, pinned on a stub binary and on the built one; the flow driver, the harness-session ingest and the pack's own tests are owed, S1)
+liveness: partial (the pack builds and serves fifteen verbs; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver and the pack's own tests are owed, S1)
 date: "2026-10-04"
 area: graph
 kind: new
@@ -96,15 +96,20 @@ record's checkpoint is not taken here (S2). A chain naming a run the store lacks
 refuses the resume. Tests compare a resumed job's views entry by entry (S1) and count seven rows per
 wake over five ([[ADR-0026-the-submission|ADR-0026]] C6).
 
-### C4: A harness session is a session in the same tables _(enforced: mechanical; owed, S1)_ ^c4
+### C4: A harness session is a session in the same tables _(enforced: mechanical)_ ^c4
 - **Subject**: every Claude Code or Codex session the runtime drives.
 - **Violated when**: its turns are readable only from the CLI's transcript file.
 
-The scanners of [[ADR-0019-the-checkpoint|ADR-0019]] already read the CLI's transcript into turns.
-Each turn becomes a message of a session whose source names the CLI and whose provider session id is
-the CLI's; its role is the chat role and its kind the CLI's own type of row. The transcript's path
-stays on the session for the turns the scanner cut. A test feeds a recorded transcript and reads the
-same turns back from the store (S1).
+The scanners of [[ADR-0019-the-checkpoint|ADR-0019]] read the CLI's transcript into exchanges. The
+session row names the CLI as its source and the CLI's own session id as its provider session id, and
+keeps the transcript's path. Each exchange is one `user` row of kind `exchange`, its `raw` the
+recorded exchange (`{turn, at, input, text, kind, why}`) and its `text` the prompt.
+
+A take appends only the exchanges past the count the store holds, so taking the same session twice
+writes nothing, and the restore folds them back. The functions `record_exchanges`, `latest_session`
+and `exchanges_of` (`hub/backend/checkpoint.py`) write and read them, pinned on the stub binary by
+the context tests and on the built one by
+`test_a_harness_session_rides_the_same_tables_against_the_built_binary` (`tests/test_store.py`).
 
 ### C5: A run names its trigger, its session and its outcome _(enforced: mechanical)_ ^c5
 - **Subject**: every run, including an agent's wake.
