@@ -380,6 +380,9 @@ async def agent_main(a: argparse.Namespace) -> None:
             print(text)
             print(f"landed: {land(directory, 'arm', text)}")
             raise SystemExit(rc)
+        why = None if a.once or a.rerun else agent.unservable()
+        if why is not None:  # refused before the start makes its ticks: a refused serve acts on nothing
+            raise AgentError(why)
         # a chair runs no chore: no digest, no aged pass, no tick in its box (each would be a model call)
         created = [] if "chair" in cfg else await chores.ensure_ticks()
         if a.once or a.rerun:

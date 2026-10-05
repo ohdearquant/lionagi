@@ -1215,7 +1215,10 @@ class Agent:
         """Wake on mail until `until()` says stop. One process per identity; a failed wake is recorded
         and the loop waits one poll; a budget cap waits too, and the mail waits with it. `log` gets one
         line per wake, per failure, and per change of hold: a served agent is read through its log and
-        its cursor, nothing else."""
+        its cursor, nothing else. An agent `unservable` names a reason for is refused before it claims."""
+        why = self.unservable()
+        if why is not None:
+            raise AgentError(why)
         pid = self._claim()
         say = log or (lambda line: None)
         self._say, self._until, self._serving = say, until, True
@@ -1240,6 +1243,18 @@ class Agent:
         finally:
             self._serving, self._carry = False, None
             self._release(pid)
+
+    def unservable(self) -> str | None:
+        """Why this agent may not be served, or None. ADR-0026 C6, still owed, has each wake continue the
+        last run and replay its chain whole, and no fold point bounds that chain yet, so a served agent's
+        history would grow without bound: a store that routes the lion tables is refused until one
+        exists. A test double routes nothing."""
+        if self.actor.store.database is not None:
+            return (
+                f"{self.khive.actor} is not served: its directory routes the lion tables, and no fold "
+                "point yet bounds the chain ADR-0026 C6 has each wake continue"
+            )
+        return None
 
     # bookkeeping
 

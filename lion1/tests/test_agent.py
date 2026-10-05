@@ -20,7 +20,7 @@ from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
 from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
-from lion1 import Actor, KhiveNoteStore, Kind, Message, Profile, Success
+from lion1 import Actor, KhiveNoteStore, Kind, Message, Profile, Store, Success
 from lion1.checkpoint import load as load_from
 from lion1.khive import Khive, context_dir
 from tests.lionfake import LionFake, LionKhive, resident_store, routed_config
@@ -1447,6 +1447,82 @@ def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
     path = agent._claim()
     asyncio.run(agent.serve(until=lambda: True))
     assert agent.errors == [] and not path.exists() and agent._lock_fd is None
+
+
+def test_serve_refuses_a_directory_that_routes_the_lion_tables_while_nothing_folds_the_chain(
+    tmp_path, monkeypatch
+):
+    """ADR-0026 C6 has each wake continue the last run and replay its chain whole; with no fold point, a
+    served agent over routed lion tables would replay a history that only grows, so it is refused before
+    it acts."""
+    from tests.lionfake import actor_dir, patch_khive
+
+    patch_khive(monkeypatch)
+    d = actor_dir(tmp_path / "routed", "lambda:a:echo")
+    store = Store(Khive(d, "lambda:a:echo"))
+    assert store.database == d / ".khive" / "lion.db"  # routed: the lion tables have their own file
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    backend = Scripted(REPLY, DONE, khive=khive)
+    agent = Agent(Actor("echo", privileges={"comm.send"}, store=store), khive, backend, profile_for)
+    with pytest.raises(AgentError, match="routes the lion tables, and no fold point yet bounds the chain"):
+        asyncio.run(agent.serve(until=lambda: True))
+    # refused before the claim: no lock taken, no mail read, no model called
+    assert not (d / "agent.pid").exists() and khive.log == [] and backend.seen == []
+
+
+def test_serve_runs_a_store_that_routes_nothing(tmp_path):
+    """The control: the same serve over a double, which routes no tables, claims, serves and releases."""
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    agent = build(khive, REPLY, DONE)
+    assert agent.unservable() is None and agent.actor.store.database is None
+    lines: list[str] = []
+    asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
+    assert khive.sent == [SENT] and not (tmp_path / "agent.pid").exists()
+
+
+@pytest.mark.parametrize(("asked", "refused"), [({}, True), ({"once": True}, False)], ids=["serve", "once"])
+def test_the_serve_form_is_refused_before_the_start_makes_its_ticks(tmp_path, monkeypatch, asked, refused):
+    """`lion agent --dir D` asks `unservable` after the claim and before any tick; a one-shot wake does not
+    serve, so it is not asked. The claim is the pid file's real lock: a refused serve lets it go, so a
+    `--once` on the same directory then claims it and wakes."""
+    from types import SimpleNamespace
+
+    seen: dict = {"order": []}
+
+    class Ticks:
+        async def ensure_ticks(self):
+            seen["order"].append("ticks")
+            return []
+
+    class Routed:
+        _claim, _release = Agent._claim, Agent._release  # the lock an agent takes, on its directory
+
+        def __init__(self):
+            self.khive, self._lock_fd = SimpleNamespace(actor="lambda:x", cwd=tmp_path), None
+
+        def unservable(self):
+            seen["order"].append("asked")
+            return "lambda:x is not served: its directory routes the lion tables"
+
+        async def wake(self, wait_ms=None):
+            seen["order"].append("wake")
+            assert (tmp_path / "agent.pid").read_text() == str(os.getpid())  # woken under the lock
+
+    (tmp_path / "chores.toml").write_text('model = "deepseek/deepseek-v4.1-flash"\n')
+    monkeypatch.setattr("lion_cli.agent.build", lambda directory, backend: (Ticks(), Routed()))
+    base = dict(dir=str(tmp_path), stats=False, model=None, check=None, ticks=False, arm=False, once=False)
+    a = argparse.Namespace(**{**base, "rerun": None, "wait": 0, **asked})
+    if refused:
+        with pytest.raises(AgentError, match="routes the lion tables"):
+            asyncio.run(agent_main(a))
+        assert seen["order"] == ["asked"] and not (tmp_path / "agent.pid").exists()
+        # the refusal released the lock it claimed: a --once on the same directory claims it and wakes
+        asyncio.run(agent_main(argparse.Namespace(**{**vars(a), "once": True})))
+        assert seen["order"] == ["asked", "ticks", "wake"]
+    else:
+        asyncio.run(agent_main(a))
+        assert seen["order"] == ["ticks", "wake"]
+    assert not (tmp_path / "agent.pid").exists()
 
 
 # the actor as the resident: `[chair]` in chores.toml, the claude CLI as the backend

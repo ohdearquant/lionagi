@@ -61,7 +61,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 
 | form | what it runs | what it writes |
 | ---- | ------------ | -------------- |
-| `lion agent --dir D` | the agent built from `D`, serving until interrupted | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
+| `lion agent --dir D` | the agent built from `D`, serving until interrupted; refused after the claim and before any other act while `D` routes the lion tables and no fold point bounds the chain [[ADR-0026-the-submission|ADR-0026]] C6 has its wakes continue | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
 | `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | the missing reminders first, none for a chair, and a failed agenda read raises there, before the wake (`test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for`); what a wake writes; the record printed |
 | `lion agent --dir D --check NAME` | one instrument, outside its chore | a landing file; no ledger row, nothing sent |
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
@@ -152,8 +152,9 @@ a chat quietly on an interrupt. `context` takes its verbs as a second level of s
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
 
 Serves C1 and C2. `build()` makes the agent from `chores.toml`: the trusted senders, the bounded
-khive client, the gate, the chores, and the desk when configured. `agent_main` claims before any
-branch. `land()` writes a landing file. `arm()` reads the actor's own inbox and requires rows
+khive client, the gate, the chores, and the desk when configured. `agent_main` claims first,
+`--stats` aside. `Agent.unservable`'s reason refuses the serving form, and `Agent.serve` before its
+claim. `land()` writes a landing file. `arm()` reads the actor's own inbox and requires rows
 addressed to it, tries five operations and a send to an outsider that the client must each refuse,
 quotes each refusal, and fails when `ANTHROPIC_API_KEY` is set in the environment the CLI child
 inherits.
@@ -164,6 +165,9 @@ inherits.
   `test_the_rerun_flag_takes_read_mail_through_one_wake_by_id`,
   `test_the_identity_is_a_lock_the_process_keeps_not_a_pid_it_wrote`,
   `test_serve_keeps_the_lock_its_process_already_claimed`,
+  `test_serve_refuses_a_directory_that_routes_the_lion_tables_while_nothing_folds_the_chain`,
+  `test_serve_runs_a_store_that_routes_nothing`,
+  `test_the_serve_form_is_refused_before_the_start_makes_its_ticks`,
   `test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key`.
 
 ### D3: `backend_for` maps a model name to a backend that keeps envelopes ^d3
