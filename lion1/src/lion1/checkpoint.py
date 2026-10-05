@@ -18,7 +18,7 @@ from typing import Any, get_args
 
 from pydantic import BaseModel
 
-from .actor import Result
+from .actor import Reason, Result
 from .record import Directive, Entry, Kind, Op
 
 __all__ = (
@@ -45,6 +45,7 @@ WHYS = ("threshold", "end", "manual")
 LAZY = 400
 
 _OPS = get_args(Op)
+_REASONS = get_args(Reason)
 _KEEP = ("inbound", "origin", "reply", "execution", "request", "returned", "unread", "refused")
 
 
@@ -123,6 +124,10 @@ def entry_of(row: dict) -> Entry | None:
     kind = Kind[row["kind"]]
     content: Any = row["content"]
     if kind is Kind.RESULT and isinstance(content, dict) and "spec" in content:
+        # a reason this runtime does not name (a hook's own, written before reasons were a closed set)
+        # reads back as none given; the error text keeps what it said
+        if content.get("reason") not in (None, *_REASONS):
+            content = {**content, "reason": None}
         content = Result(**content)
     # `execution`: whether a result's handler was called; an older log has none, which says nothing
     kept = row.get("meta") or {}
@@ -145,11 +150,15 @@ def entry_of(row: dict) -> Entry | None:
             seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
         )
 
-    # an op this runtime has not got (a row a later one wrote) is left out, as the fold would leave it
-    if isinstance(d := kept.get("directive"), dict) and d.get("op") in _OPS:
+    def known(d: Any) -> bool:
+        """An op this runtime has not got (a row a later one wrote) is left out, as the fold would leave
+        it; a directive with no op is malformed, and `directive` raises on it."""
+        return "op" not in d or d["op"] in _OPS
+
+    if isinstance(d := kept.get("directive"), dict) and known(d):
         meta["directive"] = directive(d)
     if isinstance(ds := kept.get("consumed"), list):  # a program's consumed results ride a notification too
-        meta["consumed"] = tuple(directive(d) for d in ds if d.get("op") in _OPS)
+        meta["consumed"] = tuple(directive(d) for d in ds if known(d))
     if isinstance(bs := kept.get("bound"), list):  # the values a program bound and nothing read yet
         meta["bound"] = tuple((str(b[0]), int(b[1]), int(b[2]), str(b[3])) for b in bs)
     if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value,

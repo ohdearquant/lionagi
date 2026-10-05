@@ -92,9 +92,10 @@ A profile with `language="program"` takes one fenced program per turn instead (A
 
 ### The bus
 
-- **Event** (`Event`): a `kind`, a `payload` and the time. `bus.emit(kind, **payload)` records the
-  event and calls every subscriber, awaiting none of them inline. `bus.subscribe(pattern, fn)` takes
-  a kind, `"*"`, or a prefix ending in a dot such as `"command."`.
+- **Event** (`Event`): a `kind`, a `payload` and the time. `bus.emit(kind, **payload)` keeps the
+  event in the bus's log, which holds the last `keep` events (none when `keep` is 0), and calls each
+  subscriber whose pattern matches it, awaiting none of them inline. `bus.subscribe(pattern, fn)`
+  takes a kind, `"*"`, or a prefix ending in a dot such as `"command."`.
 - The runtime emits `run.started`, `turn.started`, `turn.retry`, `command.requested`,
   `command.settled`, `run.completed`, `inbox.queued` and `inbox.answered`; the served actor adds
   `run.waiting`. Handlers and apps emit kinds of their own.
@@ -145,7 +146,8 @@ These stay strings on purpose, because their values are another party's to name:
 
 ## Read next
 
-- [examples/README.md](../examples/README.md): what to run first, one idea per file, offline.
+- [examples/README.md](../examples/README.md): what to run first, one idea per file; all but
+  `examples/backends.py`, which calls a real model, run offline.
 - [adr/INDEX.md](adr/INDEX.md): every design record, its status, and how much of it runs.
 - [`tests/test_value_sets.py`](../tests/test_value_sets.py) pins the value sets above, and
   [`tests/test_docs.py`](../tests/test_docs.py) keeps this page in step with the code.

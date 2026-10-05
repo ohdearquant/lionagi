@@ -4,6 +4,7 @@ to name stays a string: an event's kind (any handler may emit its own) and a che
 why (each taker passes its own lists)."""
 
 import asyncio
+import json
 import typing
 
 import pytest
@@ -19,12 +20,13 @@ from lion1.actor import (
     Reason,
     Result,
     Role,
+    Run,
     Spent,
 )
 from lion1.bus import Event
-from lion1.checkpoint import Var
+from lion1.checkpoint import Var, entry_of, entry_row, load_log
 from lion1.record import Directive, Entry, Kind, Op
-from lion1.store import CallStatus
+from lion1.store import CallStatus, Store
 from tests.lionfake import store
 
 from .test_actor import Echo
@@ -57,7 +59,9 @@ def test_a_closed_value_set_is_the_fields_type_and_any_other_value_is_refused_na
     assert typing.get_args(alias) == values
     for value in values:
         make(value)
-    for wrong in ("", "nope", values[0].upper(), f" {values[0]}"):
+    # None is a value too, but where the field may be unset (a result's reason) it is not a wrong one
+    wrongs = ("", "nope", values[0].upper(), f" {values[0]}", 0, *(() if alias is Reason else (None,)))
+    for wrong in wrongs:
         with pytest.raises((ValueError, ProfileError)) as refused:
             make(wrong)
         assert str(refused.value) == f"{what} {wrong!r} is not one of {', '.join(values)}"
@@ -72,10 +76,28 @@ def test_a_closed_value_set_is_the_fields_type_and_any_other_value_is_refused_na
         (Result, "reason", Reason | None),
         (Exhausted, "reason", Spent),
         (Directive, "op", Op),
+        (Entry, "kind", Kind),
     ],
 )
 def test_each_field_is_annotated_with_its_set(cls, field, alias):
     assert typing.get_type_hints(cls)[field] == alias
+
+
+def test_a_call_closes_with_a_status_of_its_set():
+    assert typing.get_type_hints(Store.call_close, localns={"Run": Run})["status"] == CallStatus
+
+
+def test_a_stored_result_whose_reason_the_set_lacks_reads_back_with_none_and_its_error(tmp_path):
+    # a hook could give a result any reason before the set was closed, and such a row is in the store
+    row = entry_row(Entry(4, Kind.RESULT, Result("echo", False, error="took too long", reason="failed")))
+    row["content"]["reason"] = "timeout"
+    back = entry_of(json.loads(json.dumps(row)))
+    assert (back.content.reason, back.content.error, back.content.ok) == (None, "took too long", False)
+    log = tmp_path / "old.jsonl"
+    log.write_text(json.dumps(row) + "\n")
+    assert [e.content.reason for e in load_log(log)] == [None]
+    kept = entry_row(Entry(4, Kind.RESULT, Result("echo", False, error="no", reason="refused")))
+    assert entry_of(json.loads(json.dumps(kept))).content.reason == "refused"  # one of the set stands
 
 
 def test_a_result_with_no_reason_is_one_that_succeeded_or_was_never_given_one():

@@ -349,6 +349,10 @@ def test_an_unknown_op_is_refused_when_made_and_a_row_carrying_one_reads_back_wi
     replayed = make(Kind.TEXT, Kind.RESULT)  # the carrier read back, its consumed hides left aside
     replayed.append(back.kind, back.content, **{k: v for k, v in back.meta.items() if k != "consumed"})
     assert shape(fold(replayed)) == ["_m0", "_r1", "_r2"]
+    malformed = {k: v for k, v in known.items() if k != "op"}  # no op at all is no directive, never skipped
+    for meta in ({"directive": malformed}, {"consumed": [known, malformed]}):
+        with pytest.raises(KeyError, match="op"):
+            entry_of({**row, "meta": meta})
 
 
 def test_a_system_entry_carries_the_runtimes_own_hide():

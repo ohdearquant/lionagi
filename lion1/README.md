@@ -7,7 +7,8 @@ the LION runtime
 The design records under `docs/adr/` are its specification, and the code cites them as `ADR-000N/Cn`.
 
 Start with [docs/README.md](docs/README.md): what each module holds, the words the code uses, and the
-values each state field takes. The [examples](examples/README.md) run offline, one idea per file.
+values each state field takes. The [examples](examples/README.md) take one idea per file, and all but
+the live backend one run offline.
 
 Work on it with [uv](https://docs.astral.sh/uv/):
 
