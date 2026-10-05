@@ -197,6 +197,7 @@ file under the crate's `sql/`, pulled in at compile time.
 | `lion.run_open`, `lion.run_close` | a run row before the first call, its step row with it; the outcome of both |
 | `lion.get` | one row of any table by id; a session's messages, a flow run's steps, in order |
 | `lion.runs` | runs newest first, by actor |
+| `lion.sessions` | sessions newest first, by source and by actor when either is named |
 
 - **Landing evidence**: the binary builds under `khive/` and
   `tests/test_store.py::test_the_same_run_against_the_built_binary` runs the run on it when
@@ -256,9 +257,8 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
 | The CLI's transcript as the harness session's source of truth | it is one file on one machine that the CLI rewrites, and the runtime cannot search it |
 
 ## Consequences
-- **S1**: Owed: the flow driver that writes `steps` rows (the table exists, nothing writes it), the
-  harness-session ingest (C4: the scanners of [[ADR-0019-the-checkpoint|ADR-0019]] do not yet write
-  these tables), and the pack's own tests in Rust. Each lands with tests named here.
+- **S1**: Owed: the flow driver that writes `steps` rows (the table exists, nothing writes it) and
+  the pack's own tests in Rust. Each lands with tests named here.
 - **S2**: [[ADR-0019-the-checkpoint|ADR-0019]] is superseded for runs of this runtime: a run with a
   store takes no checkpoint and restores by D5; its liveness line says so in the same change. Its
   scanners stay as the readers of C4.  The served actor's resume
