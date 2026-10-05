@@ -16,7 +16,6 @@ from hub import files
 from hub.chat import chat, entry_row, load_log
 from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
-from lion1.checkpoint import CheckpointError, load, save, take, to_history
 from tests.lionfake import routed_config
 from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
@@ -947,7 +946,7 @@ def test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_u
     assert [p.read_text() for p in sorted((src / ".lion" / "chats").glob("*.patch"))] == [patch, patch]
 
 
-def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
+def test_a_log_read_back_as_history_resumes_the_view_the_run_last_showed(tmp_path):
     from lion1.record import fold
 
     (tmp_path / "a.txt").write_text("alpha\n")
@@ -970,12 +969,9 @@ def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_pat
                 say=lambda e: fh.write(json.dumps(entry_row(e)) + "\n"),
             )
         )
-    source = {"record": str(log), "run": run1.id}
-    ckpt = take(source, [], actor="c", why="manual", budget=60_000, record=run1.record)
-    save(ckpt, tmp_path)
-    history = to_history(load(tmp_path))
+    history = load_log(log)  # the log's rows back as entries, as the store's `history` reads its rows
     rows = lambda es: [(e.seq, e.kind, e.content, e.alias, e.meta) for e in es]  # noqa: E731
-    assert rows(history) == rows(load_log(log)) == rows(run1.record)
+    assert rows(history) == rows(run1.record)
     seen: list[list[Message]] = []
     inner = scripted("Still folded.")
 
@@ -989,18 +985,22 @@ def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_pat
     ended = [(m.role, m.content, m.name) for m in _messages(fold(run1.record))]
     assert [(m.role, m.content, m.name) for m in seen[0][1 : 1 + len(ended)]] == ended
     assert any(m.content.startswith("[hidden;") for m in seen[0]) and "b was beta" in seen[0][1 + 4].content
-    # a record that no longer folds to the checkpoint's view is refused, never replayed
+    # the directives ride the rows: without them the resumed view holds nothing folded
     lines = log.read_text().splitlines()
     cut = [json.loads(ln) for ln in lines]
     for r in cut:
         r["meta"].pop("directive", None)
     log.write_text("".join(json.dumps(r) + "\n" for r in cut))
-    try:
-        to_history(load(tmp_path))
-    except CheckpointError as e:
-        assert "no longer folds to the view" in str(e)
-    else:
-        raise AssertionError("a record without its directives replayed")
+    seen.clear()
+    inner2 = scripted("Still folded.")
+
+    async def backend2(messages):
+        seen.append(messages)
+        return await inner2(messages)
+
+    actor3, profile3 = reader(tmp_path)
+    asyncio.run(chat(actor3, profile3, backend2, asks("and?", None), history=load_log(log)))
+    assert not any(m.content.startswith("[hidden;") for m in seen[0])
 
 
 def _row(seq: int, content: str) -> dict:

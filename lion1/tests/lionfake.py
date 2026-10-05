@@ -267,6 +267,16 @@ class LionFake:
                 rows = [r for r in rows if r["actor"] == p["actor"]]
             rows = [dict(r) for r in rows[:limit]]
             return {"count": len(rows), "rows": rows}
+        if name == "sessions":
+            limit = p.get("limit", 20)
+            if not 1 <= limit <= 200:
+                raise KhiveError(f"limit {limit}: 1 to 200")
+            rows = sorted(self.sessions.values(), key=lambda s: -s["started"])
+            for key in ("source", "actor"):
+                if p.get(key) is not None:
+                    rows = [s for s in rows if s[key] == p[key]]
+            rows = [dict(s) for s in rows[:limit]]
+            return {"count": len(rows), "rows": rows}
         if name.startswith("note_"):
             return self._note(name, p)
         raise KhiveError(f"unknown verb: lion does not serve {verb!r}")

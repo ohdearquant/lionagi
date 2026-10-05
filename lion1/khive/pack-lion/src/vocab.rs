@@ -35,7 +35,7 @@ const fn verb(name: &'static str, description: &'static str, category: VerbCateg
     HandlerDef { name, description, visibility: Visibility::Verb, category, params }
 }
 
-pub(crate) static HANDLERS: [HandlerDef; 14] = [
+pub(crate) static HANDLERS: [HandlerDef; 15] = [
     verb("lion.session_open", "Start a session row: one history a model is shown. Returns its id.", VerbCategory::Commissive, &[
         p("source", "string", true, "Who keeps the history: lion1, claude_code or codex."),
         p("provider_session_id", "string", false, "The CLI's own session id, for a harness session."),
@@ -100,6 +100,11 @@ pub(crate) static HANDLERS: [HandlerDef; 14] = [
     ]),
     verb("lion.runs", "Runs newest first, in the caller's namespace.", VerbCategory::Assertive, &[
         p("limit", "integer", false, "1 to 200; 20."),
+        p("actor", "string", false, "Only this actor's."),
+    ]),
+    verb("lion.sessions", "Sessions newest first, in the caller's namespace.", VerbCategory::Assertive, &[
+        p("limit", "integer", false, "1 to 200; 20."),
+        p("source", "string", false, "Only this source's: lion1, claude_code or codex."),
         p("actor", "string", false, "Only this actor's."),
     ]),
     verb("lion.note_put", "Write a profile's note, or replace it and count its version up.", VerbCategory::Commissive, &[

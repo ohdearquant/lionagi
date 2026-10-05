@@ -31,7 +31,7 @@ from typing import Any
 
 from lion1.checkpoint import KINDS, WHYS, Checkpoint, CheckpointError, Var, listed, take
 
-from .checkpoint import (
+from ..checkpoint import (
     DIRECTIVES,
     RETAKES,
     SPAWN_HOURS,
@@ -45,7 +45,7 @@ from .checkpoint import (
     restored,
     snapshot_of,
 )
-from .codex import _THREAD
+from . import _THREAD
 
 __all__ = (
     "CODEX_KINDS",
@@ -58,6 +58,7 @@ __all__ = (
     "newest_rollout",
     "rollout_of",
     "rollout_source",
+    "rollout_exchanges",
     "rollout_turns",
     "directives",
     "spawns",
@@ -106,6 +107,7 @@ class _Scan:
     meta: dict = field(default_factory=dict)  # the thread's own session_meta, its `_META` keys
     model: str | None = None  # the newest turn_context's
     words: list[tuple[str, str]] = field(default_factory=list)  # the newest DIRECTIVES prompts, at
+    prompts: list[dict] = field(default_factory=list)  # every exchange: {turn, at, input, text, kind}
     view: dict | None = None  # `fold_turns` of every prompt to the snapshot's budget
     last: tuple[str, str] | None = None  # the last assistant text and its row's time
     agents: dict[str, dict] = field(default_factory=dict)  # thread id -> {id, path, at, last}
@@ -234,6 +236,7 @@ def _read(snap: Snapshot) -> _Scan:
                 elif thread in s.agents:  # an agent another thread spawned is not this one's
                     s.agents[thread]["last"] = item.get("kind")
     s.words = [(p["input"], p["at"]) for p in prompts[-DIRECTIVES:]]
+    s.prompts = prompts
     s.view = fold_turns(prompts, snap.budget) if snap.budget is not None else None
     return s
 
@@ -310,6 +313,12 @@ def rollout_source(path: str | Path) -> dict:
         "unread_lines": s.unread,
         "unmarked_messages": s.unmarked,
     }
+
+
+def rollout_exchanges(path: str | Path | Snapshot) -> list[dict]:
+    """Every exchange of the rollout, oldest first: the person's prompt with its turn's final text
+    (`{turn, at, input, text, kind}`); what a take writes into the store."""
+    return [dict(p) for p in _scan(path).prompts]
 
 
 def rollout_turns(path: str | Path, budget: int) -> dict:

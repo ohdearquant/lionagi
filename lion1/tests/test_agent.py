@@ -22,10 +22,8 @@ from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
 from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
-from lion1 import Actor, KhiveNoteStore, Kind, Message, Profile, Record, Store, Success
-from lion1.checkpoint import entry_row, save, take, to_history
-from lion1.checkpoint import load as load_from
-from lion1.khive import LOST, Khive, KhiveError, context_dir
+from lion1 import Actor, KhiveNoteStore, Kind, Message, Profile, Store, Success
+from lion1.khive import LOST, Khive, KhiveError
 from tests.lionfake import LionFake, LionKhive, resident_store, routed_config
 from tests.lionfake import store as fresh_store
 
@@ -307,30 +305,19 @@ def test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_fil
     assert [(e.kind, e.content) for e in history] == [(e.kind, e.content) for e in one.record]
     assert [e.content for e in list(two.record)[: len(history)]] == [e.content for e in one.record]
     assert "say hi back" in "\n".join(m.content for m in second.backend.seen[0])
-    # nothing under .khive/context/, and no file at all, was written
-    assert not context_dir(d).exists() and sorted(p.relative_to(d) for p in d.rglob("*")) == tree
+    # no file at all was written: the store is the whole of what the next wake reads
+    assert sorted(p.relative_to(d) for p in d.rglob("*")) == tree
 
 
-def test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file(tmp_path, store):
+def test_a_wake_with_no_last_run_continues_nothing(tmp_path, store):
     d = agent_dir(tmp_path)
-    # a checkpoint the agent used to take, under .khive/context/: alive (it replays), and never read
-    ctx = context_dir(d)
-    ctx.mkdir()
-    old = Record("r-old")
-    old.append(Kind.INPUT, "DECOY-MARK")
-    log = ctx / "record-r-old.jsonl"
-    log.write_text("".join(json.dumps(entry_row(e)) + "\n" for e in old))
-    source = {"record": str(log), "run": "r-old"}
-    save(take(source, [], actor="lambda:a:echo", why="end", budget=100, record=old), ctx)
-    assert [e.content for e in to_history(load_from(ctx))] == ["DECOY-MARK"]
-    files = {p.name: p.read_bytes() for p in ctx.iterdir()}
+    tree = sorted(p.relative_to(d) for p in d.rglob("*"))
     agent = on(store, FakeKhive(mail("lambda:a", "say hi back"), cwd=d), REPLY, DONE)
     run = asyncio.run(agent.wake(wait_ms=0))
     assert isinstance(run.outcome, Success) and agent.errors == []
     assert run.request.continues is None and run.request.history == ()
     assert run_row(store, run.id)["continues"] is None
-    assert not any("DECOY-MARK" in str(e.content) for e in run.record)
-    assert {p.name: p.read_bytes() for p in ctx.iterdir()} == files
+    assert sorted(p.relative_to(d) for p in d.rglob("*")) == tree
 
 
 def test_each_wake_stores_only_its_own_entries_and_replays_the_whole_chain(tmp_path, store):

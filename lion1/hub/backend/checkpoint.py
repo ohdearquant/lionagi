@@ -2,12 +2,13 @@
 directory's actor, its lanes (active gtd rows, the threads its unread mail awaits a reply on, its open
 pull requests), its loop cursor, the fold of a session's exchanges, the restore prompt's body, and the
 one file state a take reads its session's file in (`Snapshot`). Each harness's own scan and its first
-line are its module's: `claude_code.checkpoint` for a Claude Code session, `codex_checkpoint` for a
+line are its module's: `claude_code.checkpoint` for a Claude Code session, `codex.checkpoint` for a
 Codex one. A source that is absent is a value, never a failed take.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -18,8 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable
-from lion1.khive import Khive, lit
+from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable, row_json
+from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
 
 from ..agent.instruments import GH, PR_PAGE, Runner, sh
@@ -29,9 +30,17 @@ __all__ = (
     "SPAWN_HOURS",
     "MAIL_PAGE",
     "RETAKES",
+    "SOURCES",
+    "DECLARED",
     "Snapshot",
     "snapshot_of",
     "actor_id",
+    "session_of",
+    "latest_session",
+    "exchanges_of",
+    "record_exchanges",
+    "declare",
+    "declared",
     "lanes",
     "pulls",
     "cursor",
@@ -40,6 +49,12 @@ __all__ = (
     "opening",
     "restored",
 )
+
+SOURCES = {
+    "claude-code": "claude_code",
+    "codex": "codex",
+}  # a checkpoint's `source.kind` -> the store's source
+DECLARED = "context."  # a declared value is the actor's note under this prefix, its name after it
 
 DIRECTIVES = 8  # the person's words a restore carries, never more: a prompt hook's ring length
 SPAWN_HOURS = 12  # a spawn older than this with nothing ending it is taken as dead
@@ -153,6 +168,88 @@ def actor_id(directory: str | Path) -> str:
     if not actor:
         raise CheckpointError(f"{cfg} has no [actor] id; the actor that takes the checkpoint is named there")
     return str(actor)
+
+
+# --- the session in the store: a harness session is a session of its own source (ADR-0025 D1) ---
+
+
+async def session_of(khive: Khive, session_id: str) -> dict | None:
+    """The store's row for the session, None when it holds none."""
+    try:
+        (row,) = await khive.exec(f'lion.get(table="sessions", id={lit(session_id)})')
+    except KhiveError as e:
+        if e.kind == "not_found":
+            return None
+        raise
+    return row
+
+
+async def latest_session(khive: Khive, actor: str) -> dict | None:
+    """The actor's newest harness session in the store, of either source; None when there is none."""
+    ops = ", ".join(f"lion.sessions(limit=1, actor={lit(actor)}, source={lit(s)})" for s in SOURCES.values())
+    found = [r for got in await khive.exec(f"[{ops}]") for r in got["rows"]]
+    return max(found, key=lambda r: r["started"], default=None)
+
+
+async def exchanges_of(khive: Khive, session_id: str) -> list[dict]:
+    """The session's exchanges as the store holds them, in order: each message row's `raw`, the exchange
+    as it was recorded (`{turn, at, input, text, kind, why}`)."""
+    (got,) = await khive.exec(f'lion.get(table="messages", id={lit(session_id)})')
+    return [json.loads(r["raw"]) for r in got["rows"]]
+
+
+async def record_exchanges(
+    khive: Khive,
+    *,
+    source: str,
+    session_id: str,
+    actor: str,
+    transcript: str,
+    exchanges: Sequence[dict],
+    why: str,
+) -> tuple[int, int]:
+    """The session's exchanges past the count the store holds, appended as its message rows, each with
+    the reason of the take that wrote it; the session row opened when absent. `(turns, appended)`: how
+    many the store holds now, and how many this call wrote. A take of a session the store holds to the
+    same count writes nothing."""
+    if await session_of(khive, session_id) is None:
+        await khive.exec(
+            f"lion.session_open(id={lit(session_id)}, source={lit(SOURCES[source])}, "
+            f"provider_session_id={lit(session_id)}, actor={lit(actor)}, transcript={lit(transcript)})"
+        )
+        held = 0
+    else:
+        held = len(await exchanges_of(khive, session_id))
+    rows = []
+    for seq, t in enumerate(exchanges[held:], held):
+        row = {**t, "why": why}
+        rows.append(
+            f"lion.message_append(session_id={lit(session_id)}, seq={seq}, role={lit('user')}, "
+            f"kind={lit('exchange')}, text={lit(str(t.get('input') or ''))}, "
+            f"raw={lit(row_json(row, ensure_ascii=False))}, turn={seq})"
+        )
+    for i in range(0, len(rows), 50):
+        batch = rows[i : i + 50]
+        await khive.exec(f"[{', '.join(batch)}]" if len(batch) > 1 else batch[0])
+    return held + len(rows), len(rows)
+
+
+def declare(khive: Khive, actor: str, var: Var) -> Var:
+    """A declared value, written as the actor's note `context.<name>`; the var written. A later
+    declaration of the name replaces the earlier."""
+    doc = row_json(dataclasses.asdict(var), ensure_ascii=False)
+    khive.exec_sync(
+        f"lion.note_put(profile={lit(actor)}, key={lit(DECLARED + var.name)}, value={lit(doc)}, "
+        f"run={lit('context')}, seq=0)"
+    )
+    return var
+
+
+def declared(khive: Khive, actor: str) -> list[Var]:
+    """Every value declared for the actor, oldest written first."""
+    (got,) = khive.exec_sync(f"lion.note_list(profile={lit(actor)}, prefix={lit(DECLARED)})")
+    rows = sorted(got["rows"], key=lambda r: r["written"])
+    return [Var(**json.loads(r["value"])) for r in rows]
 
 
 def _valid(rows: list, kind: str) -> tuple[list[dict], str]:
@@ -384,22 +481,15 @@ def restored(c: Checkpoint, first: str) -> list[str]:
     view = c.view or {}
     kept, hidden = view.get("kept") or [], view.get("hidden") or []
     lines.append("")
-    if c.source.get("kind") == "resident":
-        lines.append(
-            f"The record {c.source.get('record')} to seq {c.source.get('seq')}: {len(kept)} entries in "
-            f"view, {len(hidden)} out of it, {len(view.get('summaries') or [])} summaries; the run's "
-            "history replays it."
-        )
-    else:
-        lines.append(
-            f"The last {len(kept)} exchange(s) as they stood; {len(hidden)} earlier folded, the "
-            f"transcript keeps them: {c.source.get('transcript')}"
-        )
-        for t in kept:
-            opener = "wake" if t.get("kind") == "event" else "in"
-            lines += [f"[{t.get('at')}] {opener}:", _fenced(str(t.get("input") or ""))]
-            if t.get("text"):
-                lines += ["out:", _fenced(str(t["text"]))]
+    lines.append(
+        f"The last {len(kept)} exchange(s) as they stood; {len(hidden)} earlier folded, the store keeps "
+        f"them under session {c.source.get('session_id')} (the transcript: {c.source.get('transcript')})"
+    )
+    for t in kept:
+        opener = "wake" if t.get("kind") == "event" else "in"
+        lines += [f"[{t.get('at')}] {opener}:", _fenced(str(t.get("input") or ""))]
+        if t.get("text"):
+            lines += ["out:", _fenced(str(t["text"]))]
     for v in of["posture"]:
         label = (
             "Your posture at the take:" if v.name == "posture" else f"Your loop file's posture ({v.name}):"

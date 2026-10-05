@@ -33,7 +33,7 @@ turn ([[ADR-0002-the-run|ADR-0002]]); a native tool call in its answer is read b
 Which model a name resolves to, through which route and on whose key, and whether the model that
 answered is the one named, are decided below this boundary: here a backend is built with a model
 name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/lion1/actor.py`;
-`hub/backend/openrouter.py`, `hub/backend/claude_code/__init__.py`, `hub/backend/codex.py`.
+`hub/backend/openrouter.py`, `hub/backend/claude_code/__init__.py`, `hub/backend/codex/__init__.py`.
 
 ## Definitions
 
@@ -60,7 +60,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/li
 | #  | statement                                                                                                                         | source                                                                                                                                                                                                    | if false                                                                                              |
 | -- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | A1 | A provider's prompt count is the size of the context the model saw on that attempt.                                               | the router's `usage.prompt_tokens`; the session CLI's input, cache read and cache write per turn; on 4,240 bench calls the count read 1.20 times the view estimate plus 1,695 ([[ADR-0006-the-notification#Assumptions\|ADR-0006/A3]]) | the anchor is exact about the wrong prompt; the figure returns to the estimate                        |
-| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags and the rebuilt catalogue of `hub/backend/codex.py` the model lists no tool and can run no command, search or spawn, measured on its 0.156.1 release (S19 to S21), every other release refused (S22); the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
+| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags and the rebuilt catalogue of `hub/backend/codex/__init__.py` the model lists no tool and can run no command, search or spawn, measured on its 0.156.1 release (S19 to S21), every other release refused (S22); the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
 | A3 | What a count stands above the view at its least is fixed context; what it later stands above that is history the record never saw. | the session CLI reads 34k cached input per call with its settings loaded against 3.9k without; on a served run one call read 14.8M tokens over its tool turns while the estimate never moved (2026-09-24) | the fold fires every turn past a budget the fixed context exceeds, or never sees the tool turns       |
 | A4 | On the subscription CLI, input its provider's cache holds costs a tenth of fresh input, and the cache lives 5 to 10 minutes from its last read: 300 seconds, the low end, is the figure taken. | the provider's published terms, not measured: a subscription bills neither, and on one thread the second call read 3,840 of 4,305 input tokens from the cache and the third none | a changed view starts a new thread too early or too late; nothing is billed either way |
 
@@ -211,7 +211,7 @@ child; the gate settles (C6).
   waiting, a large one forking, the whole view, the fold, the cache's hour, the seed, the notice,
   one session per run, failed calls' bills and cache reads, the gate (S11).
 
-### D3: The subscription CLI backend in `hub/backend/codex.py` ^d3
+### D3: The subscription CLI backend in `hub/backend/codex/__init__.py` ^d3
 
 Serves C1 and C5. `Codex` runs the CLI once per turn in a scratch directory with every acting
 feature off: by flag, by a rebuilt catalogue (S20), by refusing an unmeasured CLI release (S22). Web
@@ -254,7 +254,7 @@ swallowed too: a spin.
   the call returns at the bound with the warning, under a caller cancelling every turn too, and the
   real hook exits 2 while the abandoned ask's later allow reaches nothing.
 
-### D6: The subscription CLI's session in `hub/backend/codex.py` ^d6
+### D6: The subscription CLI's session in `hub/backend/codex/__init__.py` ^d6
 
 Serves C2, C5 and C7. `CodexSession` keeps one CLI thread per run: a start is a persisted `exec`,
 each later call `exec resume` with what the view gained, under D3's flags, catalogue and release

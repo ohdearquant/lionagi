@@ -153,13 +153,21 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     here.add_argument(
         "--dir", default=".", help="the session's directory: .khive/config.toml names the actor"
     )
-    cx = sub.add_parser("context", help="a Claude Code or Codex session's checkpoint and restore (ADR-0019)")
+    cx = sub.add_parser(
+        "context", help="a Claude Code or Codex session's checkpoint in the store, and its restore (ADR-0019)"
+    )
     verbs = cx.add_subparsers(dest="verb", required=True)
-    cs = verbs.add_parser("set", parents=[here], help="declare a var; the next checkpoint takes it")
+    cs = verbs.add_parser(
+        "set", parents=[here], help="declare a var; every restore carries it until it is declared again"
+    )
     cs.add_argument("--name", required=True)
     cs.add_argument("--kind", required=True, choices=SESSION_KINDS)
     cs.add_argument("--value", required=True, help="text, or JSON when it opens with { or [")
-    cc = verbs.add_parser("checkpoint", parents=[here], help="take the checkpoint, no model call")
+    cc = verbs.add_parser(
+        "checkpoint",
+        parents=[here],
+        help="write the session's exchanges since the last take into the store, no model call",
+    )
     cc.add_argument("--why", choices=SESSION_WHYS, default="manual")
     cc.add_argument(
         "--session", default=None, help="default: the newest transcript's session; with --codex, a thread id"
@@ -170,7 +178,9 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         help="default: the newest *.jsonl under ~/.claude/projects/<cwd slug>/, never a _precompact_ copy; "
         "a Codex rollout given here is taken as a Codex session",
     )
-    cc.add_argument("--budget", type=int, default=BUDGET, help="tokens; the kept view is half of it")
+    cc.add_argument(
+        "--budget", type=int, default=BUDGET, help="tokens a restore folds to; a take keeps every exchange"
+    )
     how = cc.add_mutually_exclusive_group()
     how.add_argument(
         "--hook",
@@ -185,7 +195,11 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         "is --dir, never a sub-agent's",
     )
     cr = verbs.add_parser("restore", parents=[here], help="print the first prompt of the fresh session")
-    cr.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
+    cr.add_argument(
+        "--id",
+        default=None,
+        help="a session id, or <session>@<turns>; default: the latest session at its last turn",
+    )
     cr.add_argument("--json", action="store_true", help="print {id, first_prompt, watches, spawns}")
     ct = verbs.add_parser("status", parents=[here], help="the latest checkpoint and the figure now")
     ct.add_argument(
@@ -196,7 +210,11 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     )
     cv = verbs.add_parser("show", parents=[here], help="print one var's value, a lazy one included")
     cv.add_argument("--var", required=True, help="the var's name, as the restore prompt gives it")
-    cv.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
+    cv.add_argument(
+        "--id",
+        default=None,
+        help="the checkpoint id the restore prompt names; a declared value is the actor's whichever",
+    )
     return ap
 
 

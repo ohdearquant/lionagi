@@ -29,12 +29,10 @@ from hub.backend.claude_code.checkpoint import (
     transcript_source,
     transcript_turns,
 )
-from lion1 import checkpoint as core
-from lion1.checkpoint import KINDS, LAZY, WHYS, Checkpoint, CheckpointError, Var
-from lion1.khive import context_dir
+from lion1.checkpoint import KINDS, LAZY, WHYS, CheckpointError, Var
 from tests.test_checkpoint import ACTOR, AT, ID, Book, Mark, Tags, turn, var
 from tests.test_codex_checkpoint import at, write
-from tests.test_context import TASK, TaskKhive, actor_dir, gh_says
+from tests.test_context import actor_dir, gh_says, held, load, store_khive
 
 IMAGE = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
 
@@ -134,9 +132,9 @@ def test_a_long_var_is_its_name_size_and_loader_while_directives_and_watches_sta
         var("harvested", "fact", None, "transcript", size=1234),
     ]
     assert len(words) > LAZY < len(command)
-    c = take_session({}, given, actor=ACTOR, why="manual", budget=100, now=AT)
+    c = take_session({"session_id": "s1"}, given, actor=ACTOR, why="manual", budget=100, now=AT)
     by = {v.name: v for v in c.vars}
-    # a ref names the store that keeps the value; without one the checkpoint file keeps it
+    # a ref names the store that keeps the value; without one the checkpoint carries it
     assert (by["posture"].value, by["posture"].size) == (None, LAZY + 1)
     assert by["lanes"].value == lanes and by["lanes"].size == len(json.dumps(lanes, ensure_ascii=False))
     assert by["short"].size is None and by["directive.1"].size is None and by["watch.t1"].size is None
@@ -184,30 +182,6 @@ def test_fold_turns_keeps_the_latest_and_folds_no_more_than_it_must(pairs, budge
             assert sum(size[hidden - 1 :]) > budget // 2  # the last one folded had to go
 
 
-def test_a_residents_checkpoint_restores_as_its_record_replayed_never_as_exchanges():
-    view = {
-        "budget": 100,
-        "kept": [{"turn": "_in0", "at": 0}, {"turn": "_m3", "at": 3}, {"turn": "_sys4", "at": 4}],
-        "hidden": ["_m1", "_r2"],
-        "summaries": [{"before": "_m1", "text": "looked for a note"}],
-    }
-    c = Checkpoint(
-        ID,
-        ACTOR,
-        AT.isoformat(),
-        "end",
-        {"kind": "resident", "record": "/r/r0.jsonl", "seq": 5},
-        (var("last_wake", "fact", "10:04"),),
-        view,
-    )
-    prompt = render_prompt(c)
-    assert (
-        "The record /r/r0.jsonl to seq 5: 3 entries in view, 2 out of it, 1 summaries; "
-        "the run's history replays it." in prompt
-    )
-    assert "exchange(s)" not in prompt and "] in:" not in prompt and "- last_wake: 10:04" in prompt
-
-
 def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     turns = [turn(1, "t" * 400), turn(2, "text two"), turn(3, "", kind="event"), turn(4, "text four")]
     view = fold_turns(turns, 100)  # 102 + 4 + 2 + 4: the first goes
@@ -245,7 +219,7 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     ]
     c = take_session(source, given, actor=ACTOR, why="threshold", budget=100, view=view, now=AT)
     expected = [
-        f"Checkpoint {ID} of actor:one, taken 2026-09-24T10:05:00+00:00 (threshold); context at the take "
+        "Checkpoint s1@4 of actor:one, taken 2026-09-24T10:05:00+00:00 (threshold); context at the take "
         "~900 of 1000 tokens (90%). Before any other work, re-arm these 3 watch(es) with the Monitor tool, "
         "each command exactly as written:",
         "1. the inbox (timeout_ms 1800000, persistent True):",
@@ -279,7 +253,8 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
         "Declared:",
         "- branch: src/lion1/checkpoint",
         "",
-        "The last 3 exchange(s) as they stood; 1 earlier folded, the transcript keeps them: /t/x.jsonl",
+        "The last 3 exchange(s) as they stood; 1 earlier folded, the store keeps them under session s1 "
+        "(the transcript: /t/x.jsonl)",
         "[2026-09-24T10:00:02Z] in:",
         "```",
         "prompt 2",
@@ -315,7 +290,7 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
 
 def test_a_bare_checkpoint_renders_what_it_lacks_as_such_and_a_lazy_posture_by_its_loader():
     c = take_session(
-        {"transcript": "/t/x.jsonl", "context": {}},
+        {"session_id": "s1", "transcript": "/t/x.jsonl", "context": {}},
         [var("posture", "posture", "p" * (LAZY + 1), "transcript")],
         actor=ACTOR,
         why="manual",
@@ -330,7 +305,8 @@ def test_a_bare_checkpoint_renders_what_it_lacks_as_such_and_a_lazy_posture_by_i
             "Lanes (not read):",
             "- none",
             "",
-            "The last 0 exchange(s) as they stood; 0 earlier folded, the transcript keeps them: /t/x.jsonl",
+            "The last 0 exchange(s) as they stood; 0 earlier folded, the store keeps them under session s1 "
+            "(the transcript: /t/x.jsonl)",
             "",
             "Your posture at the take:",
             f"{LAZY + 1} chars, not shown here; load it with `lion context show --id {ID} --var posture`",
@@ -476,7 +452,7 @@ def test_a_row_appended_while_the_transcript_is_read_is_after_the_take(tmp_path,
     # a take: a prompt landing after its read of the transcript is in none of its readers
     import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     live = write(tmp_path / "live.jsonl", [typed("placeholder prompt one", "u1"), said("placeholder one")])
@@ -490,7 +466,7 @@ def test_a_row_appended_while_the_transcript_is_read_is_after_the_take(tmp_path,
     monkeypatch.setattr(cli, "pulls", pulls_then_a_prompt)
     main(["context", "checkpoint", "--dir", str(d), "--transcript", str(live)])
     done = json.loads(capsys.readouterr().out)
-    c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    c = load(d, k, done["id"])
     assert "LATE-PROMPT-MARK" in live.read_text() and c.source["kind"] == "claude-code"
     assert "LATE-PROMPT-MARK" not in json.dumps([dataclasses.asdict(v) for v in c.vars]) + json.dumps(c.view)
 
@@ -569,7 +545,7 @@ def test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_
     # UUID, so no name says which of two is newer
     import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     projects = tmp_path / "projects"
@@ -599,8 +575,8 @@ def test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_
         said_out, said_err = capsys.readouterr()
         assert out.value.code == 1 and said_out == ""
         assert one.name in said_err and two.name in said_err and "same nanosecond" in said_err
-        assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
+        assert held(k) == {}
     os.utime(two, ns=(ns + 1, ns + 1))  # the control: the same take, the tie broken, is taken
     main(["context", "checkpoint", "--dir", str(d)])
     done = json.loads(capsys.readouterr().out)
-    assert [f.name for f in context_dir(d).iterdir() if done["id"] in f.name] and done["id"]
+    assert held(k) == {two.stem: 1} and done["id"] == f"{two.stem}@1"
