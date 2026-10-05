@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable
+from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable, row_json
 from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
 
@@ -226,7 +226,7 @@ async def record_exchanges(
         rows.append(
             f"lion.message_append(session_id={lit(session_id)}, seq={seq}, role={lit('user')}, "
             f"kind={lit('exchange')}, text={lit(str(t.get('input') or ''))}, "
-            f"raw={lit(json.dumps(row, ensure_ascii=False, default=jsonable))}, turn={seq})"
+            f"raw={lit(row_json(row, ensure_ascii=False))}, turn={seq})"
         )
     for i in range(0, len(rows), 50):
         batch = rows[i : i + 50]
@@ -237,7 +237,7 @@ async def record_exchanges(
 def declare(khive: Khive, actor: str, var: Var) -> Var:
     """A declared value, written as the actor's note `context.<name>`; the var written. A later
     declaration of the name replaces the earlier."""
-    doc = json.dumps(dataclasses.asdict(var), ensure_ascii=False, default=jsonable)
+    doc = row_json(dataclasses.asdict(var), ensure_ascii=False)
     khive.exec_sync(
         f"lion.note_put(profile={lit(actor)}, key={lit(DECLARED + var.name)}, value={lit(doc)}, "
         f"run={lit('context')}, seq=0)"

@@ -261,7 +261,8 @@ def take(
     exchanges folded (`hub.backend.checkpoint.fold_turns`). Pure: no model call, nothing written. Vars keep
     their order and a later one of the same name stands (a declared var over a harvested one). A kind or
     a why outside `kinds` and `whys` is refused (ADR-0019/C1); a var of a kind in `eager` is never made
-    lazy. The id is `<session_id>@<turns>` from `source`, the time `now`."""
+    lazy. The id is `<session_id>@<turns>` from `source`, the turns the view's when `source` names
+    none; the time `now`."""
     kinds, whys, eager = tuple(kinds), tuple(whys), frozenset(eager)
     if why not in whys:
         raise CheckpointError(f"why {why!r}: one of {', '.join(whys)}")
@@ -283,8 +284,9 @@ def take(
         if view is not None
         else {"budget": budget, "kept": [], "hidden": [], "summaries": []}
     )
+    turns = source.get("turns", len(view.get("kept") or ()) + len(view.get("hidden") or ()))
     return Checkpoint(
-        id=f"{source.get('session_id')}@{source.get('turns', 0)}",
+        id=f"{source.get('session_id')}@{turns}",
         actor=actor,
         taken_at=now.isoformat(),
         why=why,

@@ -24,14 +24,13 @@ from hub.backend.checkpoint import (
     session_of,
 )
 from hub.backend.claude_code.checkpoint import (
+    DIRECTIVES,
     PROJECTS,
     SESSION_KINDS,
     SESSION_WHYS,
-    TYPED,
     actor_id,
     context_figure,
     cursor,
-    directives,
     fold_turns,
     lanes,
     newest_transcript,
@@ -48,10 +47,10 @@ from hub.backend.claude_code.checkpoint import (
 )
 from hub.backend.codex import _THREAD
 from hub.backend.codex import checkpoint as codex_checkpoint
-from lion1.checkpoint import CheckpointError, Var
+from lion1.checkpoint import Checkpoint, CheckpointError, Var
 from lion1.khive import Khive, KhiveError
 
-__all__ = ("BUDGET", "set_var", "checkpoint", "restore", "status", "show", "context_main")
+__all__ = ("BUDGET", "set_var", "checkpoint", "taken", "restore", "status", "show", "context_main")
 
 # tokens, estimated: the kept view is half of it, so a fresh session starts from a few thousand
 BUDGET = 8_000
@@ -221,12 +220,17 @@ def _take(d: Path, khive: Khive, actor: str, row: dict, turns: int | None, budge
     now = now or datetime.now().astimezone()
     why = str(exchanges[-1].get("why") or "manual") if exchanges else "manual"
     source: dict = {"session_id": sid, "transcript": str(path), "cwd": str(d), "turns": len(exchanges)}
-    last = (exchanges[-1]["text"], exchanges[-1]["at"]) if exchanges and exchanges[-1].get("text") else None
+    # the posture is the newest answered exchange's text, an unanswered re-queued prompt at the end aside
+    last = next(((e["text"], e["at"]) for e in reversed(exchanges) if e.get("text")), None)
     lane_vars, lane_note = asyncio.run(lanes(khive))
     pr_vars, pr_note = asyncio.run(pulls(d))
     source["lanes"] = f"{lane_note}; {pr_note}"
     codex = row.get("source") == "codex"
     if codex:
+        # the rollout the store names is frozen (its session has ended): its own meta names the thread's
+        # model and CLI the restore shows, the store's session_id, transcript and turns winning
+        meta = codex_checkpoint.rollout_source(path) if path.is_file() else {}
+        source = {**meta, **source}
         own = codex_checkpoint.spawns(path, now) if path.is_file() else []
         source["context"] = codex_checkpoint.context_figure(path if path.is_file() else None)
         taker = codex_checkpoint.take_codex
@@ -238,10 +242,9 @@ def _take(d: Path, khive: Khive, actor: str, row: dict, turns: int | None, budge
         ]
         source["context"] = context_figure(sid)
         taker = take_session
-    said = [
-        Var(f"directive.{i}", "directive", t["input"], "store", t["at"]) for i, t in enumerate(exchanges, 1)
-    ]
-    said = said[-8:] if codex else (directives(sid, path, TYPED) if path.is_file() else said[-8:])
+    # the person's words are the stored exchanges, the newest eight, an event that woke the actor aside
+    words = [t for t in exchanges if t.get("kind") != "event"][-DIRECTIVES:]
+    said = [Var(f"directive.{i}", "directive", t["input"], "store", t["at"]) for i, t in enumerate(words, 1)]
     harvested = [*said, *own, *lane_vars, *pr_vars, *posture_of(last, "store"), *cursor(d)]
     return taker(
         source,
@@ -254,21 +257,35 @@ def _take(d: Path, khive: Khive, actor: str, row: dict, turns: int | None, budge
     )
 
 
+def taken(
+    directory: str | Path,
+    id: str | None = None,
+    *,
+    budget: int = BUDGET,
+    khive: Khive | None = None,
+    now: datetime | None = None,
+) -> Checkpoint:
+    """The checkpoint `id` (a session, or `<session>@<turns>`), the latest session at its last turn by
+    default, computed from the store now: the exchanges to that turn folded to `budget`, the harness's
+    live state and the declared values beside them."""
+    d = Path(directory).resolve()
+    actor = actor_id(d)
+    k = _khive(d, actor, khive)
+    try:
+        row, turns = _session(k, actor, id)
+        return _take(d, k, actor, row, turns, budget, now)
+    except KhiveError as e:
+        raise CheckpointError(f"the store could not be read: {e}") from None
+
+
 def restore(
     directory: str | Path, id: str | None = None, *, budget: int = BUDGET, khive: Khive | None = None
 ) -> dict:
     """`{id, first_prompt, watches, spawns}` of the checkpoint `id` (a session, or `<session>@<turns>`),
     the latest session at its last turn by default; a Codex session's renders on the Codex session's
     lists."""
-    d = Path(directory).resolve()
-    actor = actor_id(d)
-    k = _khive(d, actor, khive)
-    try:
-        row, turns = _session(k, actor, id)
-        c = _take(d, k, actor, row, turns, budget, None)
-    except KhiveError as e:
-        raise CheckpointError(f"the store could not be read: {e}") from None
-    render = codex_checkpoint.render_prompt if row.get("source") == "codex" else render_prompt
+    c = taken(directory, id, budget=budget, khive=khive)
+    render = codex_checkpoint.render_prompt if c.source.get("kind") == "codex" else render_prompt
     return {
         "id": c.id,
         "first_prompt": render(c),
@@ -320,17 +337,12 @@ def status(
 
 
 def show(directory: str | Path, name: str, id: str | None = None, *, khive: Khive | None = None) -> Any:
-    """The value of the declared var `name`: what a lazy var's line in the restore prompt points at. `id`
-    is accepted for the prompt's line and names no other store: a declared value is the actor's."""
-    d = Path(directory).resolve()
-    actor = actor_id(d)
-    _named(id)
-    try:
-        found = [v for v in declared(_khive(d, actor, khive), actor) if v.name == name]
-    except KhiveError as e:
-        raise CheckpointError(f"the store could not be read: {e}") from None
+    """The value of the var `name` in the checkpoint `id`, computed as `taken` computes it: what a lazy
+    var's line in the restore prompt points at."""
+    c = taken(directory, id, khive=khive)
+    found = [v for v in c.vars if v.name == name]
     if not found:
-        raise CheckpointError(f"{actor} has no declared var {name!r}")
+        raise CheckpointError(f"{c.id} has no var {name!r}")
     v = found[-1]
     if v.ref is not None and v.value is None:
         raise CheckpointError(f"{v.name!r} is not carried ({v.size} chars): {v.ref} loads it")

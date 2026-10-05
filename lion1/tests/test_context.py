@@ -5,23 +5,20 @@ text throughout; each source harvests its kind, and an absent source is a value.
 import asyncio
 import io
 import json
-import os
 import shlex
-import subprocess
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from lion_cli.areas import context_api
-from lion_cli.context import checkpoint, restore, show, status
+from lion_cli.context import checkpoint, restore, show, status, taken
 from lion_cli.main import main
 
+from hub.backend.checkpoint import declared
 from hub.backend.claude_code.checkpoint import (
     DIRECTIVES,
     INBOX_MONITOR,
-    SESSION_KINDS,
-    SESSION_WHYS,
     context_figure,
     cursor,
     directives,
@@ -35,22 +32,11 @@ from hub.backend.claude_code.checkpoint import (
     transcript_turns,
     watches,
 )
-from lion1 import Actor, Record
-from lion1 import checkpoint as core
-from lion1.checkpoint import LAZY, Var, take
-from lion1.khive import KhiveError, NotIgnored, assert_ignored, context_dir
-from tests.lionfake import routed_config
+from lion1 import Actor
+from lion1.checkpoint import LAZY, CheckpointError, Var
+from lion1.khive import KhiveError
+from tests.lionfake import LionFake, routed_config
 from tests.test_areas import call, registry, serve_on
-
-
-def load(directory, id=None):
-    """An actor directory's checkpoint, as `lion context` reads it: its folder, the session's lists."""
-    return core.load(context_dir(directory), id, kinds=SESSION_KINDS, whys=SESSION_WHYS)
-
-
-def save(c, directory):
-    return core.save(c, context_dir(directory), kinds=SESSION_KINDS, whys=SESSION_WHYS)
-
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session_transcript.jsonl"
 AT_TAKE = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)  # the fixture's timed Monitor has not timed out yet
@@ -126,18 +112,28 @@ def harvest(root: Path, now: datetime = AT_TAKE) -> list[Var]:
 
 
 class TaskKhive:
-    """gtd.tasks as khive answers it: a bare list of task rows; the unread box as `Khive.inbox` hands it
-    (a list of messages, or an error to raise)."""
+    """The store a take writes and a restore reads, the lion pack's verbs answered by a `LionFake`;
+    gtd.tasks as khive answers it: a bare list of task rows, or `fail` raised; the unread box as
+    `Khive.inbox` hands it (a list of messages, or an error to raise)."""
 
     def __init__(self, tasks=None, fail: str | None = None, mail=()):
         self.actor, self.cwd, self.ops = ACTOR, None, []
         self.tasks, self.fail, self.mail = tasks or [], fail, mail
+        self.lion = LionFake()
 
-    async def exec(self, ops: str) -> list:
+    def _answer(self, ops: str) -> list:
         self.ops.append(ops)
+        if ops.lstrip("[ ").startswith("lion."):
+            return self.lion.answer(ops)
         if self.fail:
             raise KhiveError(self.fail)
         return [self.tasks]
+
+    async def exec(self, ops: str) -> list:
+        return self._answer(ops)
+
+    def exec_sync(self, ops: str) -> list:
+        return self._answer(ops)
 
     async def inbox(self, *, limit: int = 50, **kw) -> list:
         self.ops.append(f"inbox limit={limit} {kw}")
@@ -146,6 +142,24 @@ class TaskKhive:
         if isinstance(self.mail, Exception):
             raise self.mail
         return list(self.mail)[:limit] if isinstance(self.mail, list | tuple) else self.mail
+
+
+def store_khive(monkeypatch, tasks=None, **kw) -> TaskKhive:
+    """One `TaskKhive` every `Khive` the CLI builds in this test is: the store's rows persist from the
+    take to the restore, as the binary's do."""
+    k = TaskKhive([TASK] if tasks is None else tasks, **kw)
+    monkeypatch.setattr("lion_cli.context.Khive", lambda *a: k)
+    return k
+
+
+def held(k: TaskKhive) -> dict[str, int]:
+    """What the store holds: each session's id and how many exchanges it has."""
+    return {sid: len(rows) for sid, rows in k.lion.messages.items()}
+
+
+def load(directory, k: TaskKhive, id=None, now: datetime = AT_TAKE):
+    """The directory's checkpoint as `lion context restore` computes it from the store."""
+    return taken(directory, id, khive=k, now=now)
 
 
 TASK = {"id": "1ane0001", "title": "placeholder lane", "priority": "p1", "status": "active", "properties": {}}
@@ -172,13 +186,6 @@ def gh_says(monkeypatch, rc: int = 0, out: str = "[]", err: str = "") -> list:
 
     monkeypatch.setattr("hub.backend.checkpoint.sh", run)
     return calls
-
-
-def isolated_git(monkeypatch, root: Path) -> None:
-    """No global or system git config (a global excludes file would answer the ignore question)."""
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(root / "no-global-gitconfig"))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "xdg"))
 
 
 def test_the_reader_keeps_each_prompt_with_its_final_text_and_no_dropped_kind_survives(tmp_path):
@@ -267,7 +274,8 @@ def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_ope
     d = actor_dir(tmp_path)
     khive = TaskKhive([TASK], mail=box)
     done = checkpoint(d, "manual", transcript=FIXTURE, khive=khive, now=AT_TAKE)
-    ckpt = load(d)
+    ckpt = load(d, khive)
+    assert ckpt.id == done["id"] == f"{FIXTURE.stem}@14" and done["turns"] == 14
     said = (
         "gtd.tasks active; comm.inbox unread (1 invalid; the first: str, not an object); "
         "gh pr list open, authored by @me (1 invalid; the first: str, not an object)"
@@ -308,10 +316,9 @@ def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_ope
             "url": "https://example.invalid/pull/7",
         },
     }
-    assert set(got) <= set(done["vars"])
     assert {v.source for v in ckpt.vars if v.kind == "lane"} == {"khive", "gh"}
     # the box is read unread and without a wait; nothing marks it read
-    assert khive.ops[1:] == ["inbox limit=50 {}"]
+    assert [op for op in khive.ops if op.startswith("inbox")] == ["inbox limit=50 {}"]
     # the directory's own repository, the gh account's own pull requests, open
     ((argv, cwd),) = calls
     assert cwd == str(d.resolve()) and argv[1:3] == ["pr", "list"]
@@ -370,8 +377,9 @@ def test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take(t
     prs = [{**PR, "number": n} if n is not None else {"title": "placeholder"} for n in numbers]
     gh_says(monkeypatch, out=json.dumps([*prs, PR]))
     d = actor_dir(tmp_path)
-    checkpoint(d, "manual", transcript=FIXTURE, khive=TaskKhive(tasks, mail=box), now=AT_TAKE)
-    ckpt = load(d)
+    k = TaskKhive(tasks, mail=box)
+    checkpoint(d, "manual", transcript=FIXTURE, khive=k, now=AT_TAKE)
+    ckpt = load(d, k)
     assert ckpt.source["lanes"] == (
         "gtd.tasks active (2 invalid; the first: properties int, not an object); "
         "comm.inbox unread (3 invalid; the first: properties int, not an object); "
@@ -542,38 +550,46 @@ def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_a
     assert [w.name for w in watches(ended, ACTOR, AT_TAKE)] == ["watch.tmon1", "watch.inbox"]
 
 
-def test_concurrent_saves_each_land_and_latest_names_one_of_them(tmp_path):
-    import threading
-
+def test_a_take_of_a_session_the_store_holds_appends_its_new_exchanges_and_nothing_twice(
+    tmp_path, monkeypatch
+):
+    # the store is the checkpoint: a take writes the exchanges past the count the store holds, a take
+    # of the same state writes nothing, and the id names the session at its turn count
+    gh_says(monkeypatch)
     d = actor_dir(tmp_path)
-    source = {"transcript": str(FIXTURE), "context": {"used": 1, "window": 10, "pct": 10}}
-    view = transcript_turns(FIXTURE, 400)
-    ckpts = [
-        take_session(source, harvest(tmp_path), actor=ACTOR, why="manual", budget=400, view=view)
-        for _ in range(12)
-    ]
-    errors: list[BaseException] = []
+    k = TaskKhive([TASK])
+    live = tmp_path / "live.jsonl"
+    lines = FIXTURE.read_text().splitlines(keepends=True)
+    cut = next(i for i, line in enumerate(lines) if '"placeholder prompt 10"' in line)
+    live.write_text("".join(lines[:cut]))
+    first = checkpoint(d, "manual", transcript=live, khive=k, now=AT_TAKE)
+    assert (first["id"], first["turns"], first["appended"]) == (f"{live.stem}@12", 12, 12)
+    assert held(k) == {"live": 12}
+    again = checkpoint(d, "rotate", transcript=live, khive=k, now=AT_TAKE)
+    assert (again["id"], again["turns"], again["appended"]) == (f"{live.stem}@12", 12, 0)
+    live.write_text("".join(lines))
+    grown = checkpoint(d, "threshold", transcript=live, khive=k, now=AT_TAKE)
+    assert (grown["id"], grown["turns"], grown["appended"]) == (f"{live.stem}@14", 14, 2)
+    rows = [json.loads(r["raw"]) for r in k.lion.messages["live"].values()]
+    assert [r["why"] for r in rows] == ["manual"] * 12 + ["threshold"] * 2
+    assert [r["input"] for r in rows[-2:]] == [PROMPTS[-2], PROMPTS[-1]]
+    # a checkpoint at an earlier turn is computed from the rows to that turn; past the count, refused
+    at_12 = load(d, k, f"{live.stem}@12")
+    assert at_12.id == f"{live.stem}@12" and at_12.view["kept"][-1]["input"] == PROMPTS[-3]
+    assert at_12.why == "manual" and load(d, k).why == "threshold"
+    with pytest.raises(CheckpointError, match="holds 14 turn\\(s\\), not 15"):
+        load(d, k, f"{live.stem}@15")
+    with pytest.raises(CheckpointError, match="the store holds no session nosuch"):
+        load(d, k, "nosuch")
+    with pytest.raises(CheckpointError, match="is not a session id, or one with a turn count after @"):
+        load(d, k, "live@x")
+    session = k.lion.sessions["live"]
+    assert (session["source"], session["actor"], session["transcript"]) == ("claude_code", ACTOR, str(live))
 
-    def go(c):
-        try:
-            save(c, d)
-        except BaseException as e:  # noqa: BLE001 - the test reports whatever a thread raised
-            errors.append(e)
 
-    threads = [threading.Thread(target=go, args=(c,)) for c in ckpts]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert errors == []
-    ctx = d / ".khive" / "context"
-    files = sorted(ctx.glob("ckpt-*.json"))
-    assert len(files) == 12 and not list(ctx.glob(".latest.json.*"))
-    latest = json.loads((ctx / "latest.json").read_text())["id"]
-    assert (ctx / f"{latest}.json").exists()
-
-
-def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_as_a_wake(tmp_path):
+def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_as_a_wake(
+    tmp_path, monkeypatch
+):
     d = actor_dir(tmp_path)
     loop = d / ".khive" / "loop"
     loop.mkdir(parents=True)
@@ -593,8 +609,10 @@ def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_a
     ckpt_long = take_session({}, cursor(d), actor=ACTOR, why="manual", budget=400)
     long_prompt = render_prompt(ckpt_long)
     assert "HEADER-LONG-MARK HEADER-LONG-MARK" not in long_prompt and "cursor.header" in long_prompt
-    save(ckpt_long, d)
-    assert show(d, "cursor.header") == long_header.strip()
+    gh_says(monkeypatch)
+    k = TaskKhive([TASK])
+    checkpoint(d, "manual", transcript=FIXTURE, khive=k, now=AT_TAKE)
+    assert show(d, "cursor.header", khive=k) == long_header.strip()  # computed whole, as the restore is
     (loop / "x_loop.md").write_text(
         "# lambda:x loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
         "## LOG\nLOG-MARK 10:00 did things\n"
@@ -735,41 +753,6 @@ def test_a_prompt_the_harness_requeued_is_one_turn(tmp_path):
     assert view["kept"][-2]["input"] == PROMPTS[-1] and view["kept"][-2]["text"] == before[-1]["text"]
 
 
-def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands(
-    tmp_path, monkeypatch, capsys
-):
-    isolated_git(monkeypatch, tmp_path)
-    repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    d = actor_dir(repo)
-    ckpt = take_session({}, [], actor=ACTOR, why="manual", budget=100)
-    with pytest.raises(NotIgnored, match="does not ignore it"):
-        assert_ignored(d)
-    assert not (d / ".khive" / "context").exists()
-    with pytest.raises(SystemExit) as out:
-        main(["context", "checkpoint", "--dir", str(d), "--transcript", str(FIXTURE)])
-    assert out.value.code == 1
-    assert "lion context checkpoint: " in capsys.readouterr().err
-    assert not (d / ".khive" / "context").exists()
-    # the pattern a repo that tracks other .khive files uses, checked before the directory exists
-    # (measured: `check-ignore .khive/context` said no, the directory form says yes)
-    # (this actor dir sits BELOW the repo root, so the pattern needs `**/`; an actor that is the root
-    # writes `.khive/context/`, the form the remedy names)
-    (repo / ".gitignore").write_text("**/.khive/context/\n")
-    assert not (d / ".khive" / "context").exists()
-    assert_ignored(d)
-    written = save(ckpt, d)
-    assert written.is_file() and json.loads((written.parent / "latest.json").read_text()) == {
-        "id": written.stem
-    }
-    # outside any repository the take proceeds
-    outside = tmp_path / "plain"
-    probe = subprocess.run(["git", "-C", str(tmp_path), "rev-parse"], capture_output=True, text=True)
-    assert "not a git repository" in probe.stderr  # the control: tmp_path itself is outside a repository
-    away = actor_dir(outside)
-    assert assert_ignored(away) is None and save(ckpt, away).is_file()
-
-
 def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path, monkeypatch):
     called: list[str] = []
 
@@ -780,66 +763,79 @@ def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path
     monkeypatch.setattr(Actor, "run", no_run)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
-    done = checkpoint(d, "manual", transcript=FIXTURE, khive=TaskKhive([TASK]), now=AT_TAKE)
+    k = store_khive(monkeypatch)
+    done = checkpoint(d, "manual", transcript=FIXTURE, khive=k, now=AT_TAKE)
     got = restore(d)
-    now = status(d, session="no-such-session")
+    now = status(d)
     assert called == []
-    assert done["id"] == got["id"] == now["latest"] and done["kept"] + done["hidden"] == 14
-    assert "watch.tmon1" in done["vars"] and "lane.1ane0001" in done["vars"]
+    assert done["id"] == got["id"] == now["latest"] and done["turns"] == 14
+    names = [v.name for v in load(d, k).vars]
+    assert "watch.tmon1" in names and "lane.1ane0001" in names
 
 
-@pytest.mark.parametrize("kind", ["transcript", "record"])
-def test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too(tmp_path, kind):
-    pointed = tmp_path / f"{kind}.jsonl"
-    pointed.write_text("placeholder\n")
-    rec = Record("r0") if kind == "record" else None
-    ckpt = take(
-        {kind: str(pointed)},
-        [],
-        actor=ACTOR,
-        why="manual",
-        budget=100,
-        record=rec,
-        now=AT_TAKE + timedelta(milliseconds=900),
-    )
-    # a whole-second taken_at reads as its second's start
-    whole = replace(ckpt, taken_at=AT_TAKE.isoformat())
-    assert ckpt.taken_at == (AT_TAKE + timedelta(milliseconds=900)).isoformat()
-    d, d_whole = actor_dir(tmp_path / "fraction"), actor_dir(tmp_path / "whole")
-    save(ckpt, d)
-    save(whole, d_whole)
-    epoch = datetime(1970, 1, 1, tzinfo=UTC)
-    for written, stale, stale_whole in (
-        (AT_TAKE - timedelta(milliseconds=500), False, False),  # before the take's second
-        (AT_TAKE + timedelta(milliseconds=100), False, True),  # the same second, before the take
-        (AT_TAKE + timedelta(milliseconds=950), True, True),  # the same second, after the take
-        (AT_TAKE + timedelta(milliseconds=1_100), True, True),  # the next second
-    ):
-        ns = (written - epoch) // timedelta(microseconds=1) * 1_000
-        os.utime(pointed, ns=(ns, ns))
-        got = tuple(status(at, session="no-such-session")["stale"] for at in (d, d_whole))
-        assert got == (stale, stale_whole), written
+def test_the_status_is_stale_when_the_transcript_holds_an_exchange_the_store_does_not(tmp_path, monkeypatch):
+    import lion_cli.context as cli
+
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    k = store_khive(monkeypatch)
+    live = tmp_path / "live.jsonl"
+    lines = FIXTURE.read_text().splitlines(keepends=True)
+    cut = next(i for i, line in enumerate(lines) if '"placeholder prompt 11"' in line)
+    live.write_text("".join(lines[:cut]))
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: live)
+    none = {"used": None, "window": None, "pct": None}
+    assert status(d) == {"latest": None, "taken_at": None, "context_now": none, "stale": True, "declared": 0}
+    done = checkpoint(d, "manual", transcript=live, now=AT_TAKE)
+    now = status(d)
+    assert (now["latest"], now["stale"]) == (done["id"], False)
+    assert now["taken_at"] == max(json.loads(r["raw"])["at"] for r in k.lion.messages["live"].values())
+    live.write_text("".join(lines))  # a prompt lands after the take: the store is behind the file
+    assert status(d)["stale"] is True
+    checkpoint(d, "manual", transcript=live, now=AT_TAKE)
+    assert status(d)["stale"] is False
+    # the last exchange's text grows under the same count (the turn was answered after the take)
+    rows = k.lion.messages["live"]
+    last = max(rows)
+    raw = json.loads(rows[last]["raw"])
+    rows[last]["raw"] = json.dumps({**raw, "text": "an earlier state of the answer"})
+    assert status(d)["stale"] is True
+    # another file than the one the store's session names: not comparable, and stale
+    other = tmp_path / "other.jsonl"
+    other.write_bytes(live.read_bytes())
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: other)
+    assert status(d)["stale"] is True
+    # no transcript to read at all: stale, and the figure not known
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: tmp_path / "absent.jsonl")
+    assert status(d)["stale"] is True and status(d)["context_now"] == {
+        "used": None,
+        "window": None,
+        "pct": None,
+    }
 
 
 def test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take(tmp_path, monkeypatch):
-    import time
-
     import lion_cli.context as cli
 
+    gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     transcript = tmp_path / "live.jsonl"
     transcript.write_bytes(FIXTURE.read_bytes())
-    read = cli.transcript_turns
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: transcript)
+    read = cli.transcript_exchanges
+    late = json.dumps({"type": "user", "uuid": "late", "promptSource": "typed", "message": {"content": "x"}})
 
-    def read_then_written(path, budget):
-        view = read(path, budget)
-        ns = time.time_ns() + 1_000  # a prompt lands just after the read, before the take is saved
-        os.utime(transcript, ns=(ns, ns))
-        return view
+    def read_then_written(snap):
+        exchanges = read(snap)
+        with transcript.open("a") as f:  # a prompt lands just after the read, before the take is written
+            f.write(late + "\n")
+        return exchanges
 
-    monkeypatch.setattr(cli, "transcript_turns", read_then_written)
-    checkpoint(d, "manual", transcript=transcript, khive=TaskKhive([TASK]))
-    assert status(d, session="no-such-session")["stale"] is True
+    monkeypatch.setattr(cli, "transcript_exchanges", read_then_written)
+    k = store_khive(monkeypatch)
+    done = checkpoint(d, "manual", transcript=transcript)
+    monkeypatch.setattr(cli, "transcript_exchanges", read)
+    assert done["turns"] == held(k)["live"] == 14 and status(d)["stale"] is True
 
 
 def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watches_stay_whole(tmp_path):
@@ -879,13 +875,10 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
     import lion_cli.context as cli
 
     monkeypatch.setattr("hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("lambda:owner",))
-
-    def down(*a, **k):
-        raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
-
-    monkeypatch.setattr(cli, "Khive", down)
+    k = store_khive(monkeypatch, fail="kkernel exited 1: gtd down")  # the lanes down, the store up
     gh_says(monkeypatch, rc=1, err="no git remotes found")
     d = actor_dir(tmp_path)
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: FIXTURE)
     big = "b" * (LAZY + 100)
     main(
         ["context", "set", "--dir", str(d), "--name", "next", "--kind", "fact", "--value", "placeholder next"]
@@ -897,21 +890,26 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
     declared = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert declared["value"] == ["khive", "lion"] and declared["source"] == "declared"
     before = status(d)
-    assert (before["pending_vars"], before["latest"], before["stale"]) == (3, None, True)
+    assert (before["declared"], before["latest"], before["stale"]) == (3, None, True)
     main(["context", "checkpoint", "--dir", str(d), "--transcript", str(FIXTURE), "--why", "rotate"])
     done = json.loads(capsys.readouterr().out)
-    assert {"next", "big", "mcp"} <= set(done["vars"]) and done["context"] == {
-        "used": None,
-        "window": None,
-        "pct": None,
+    assert done == {
+        "id": f"{FIXTURE.stem}@14",
+        "session": FIXTURE.stem,
+        "turns": 14,
+        "appended": 14,
+        "context": {"used": None, "window": None, "pct": None},
     }
-    assert load(d).source["lanes"] == (
-        "gtd.tasks and comm.inbox unavailable: kkernel not found on PATH or under ~/.cargo/bin; "
+    ckpt = load(d, k)
+    assert {"next", "big", "mcp"} <= {v.name for v in ckpt.vars} and ckpt.why == "rotate"
+    assert ckpt.source["lanes"] == (
+        "gtd.tasks unavailable: KhiveError: kkernel exited 1: gtd down; "
+        "comm.inbox unavailable: KhiveError: kkernel exited 1: gtd down; "
         "gh pr list unavailable: no git remotes found"
     )
     after = status(d)
-    assert after["latest"] == done["id"] and after["pending_vars"] == 0  # the checkpoint drained them
-    assert after["stale"] is False  # the transcript was last written before the take
+    assert after["latest"] == done["id"] and after["declared"] == 3  # declared values outlive a take
+    assert after["stale"] is False  # the store holds every exchange the transcript does
     main(["context", "restore", "--dir", str(d)])
     prompt = capsys.readouterr().out
     assert prompt.startswith(f"Checkpoint {done['id']} of {ACTOR}")
@@ -928,13 +926,17 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
     assert json.loads(capsys.readouterr().out) == ["khive", "lion"]
     main(["context", "restore", "--dir", str(d), "--json"])
     got = json.loads(capsys.readouterr().out)
-    assert set(got) == {"id", "first_prompt", "watches", "spawns"} and got["first_prompt"] == prompt.rstrip(
-        "\n"
-    )
+    assert set(got) == {"id", "first_prompt", "watches", "spawns"} and got["id"] == done["id"]
+    # computed at each restore: the first line carries that time, the rest is the same
+    first, rest = got["first_prompt"].split("\n", 1)
+    assert first.startswith(f"Checkpoint {done['id']} of {ACTOR}, taken ")
+    assert rest == prompt.rstrip("\n").split("\n", 1)[1]
     assert got["watches"][-1]["command"].endswith(f"{ACTOR} lambda:owner")
     for argv, said in (
-        (["restore", "--id", "../../etc/passwd"], "is not a name"),
+        (["restore", "--id", "../../etc/passwd"], "the store holds no session ../../etc/passwd"),
+        (["restore", "--id", "@3"], "is not a session id"),
         (["show", "--var", "nosuch"], "has no var 'nosuch'"),
+        (["show", "--var", "big", "--id", f"{FIXTURE.stem}@99"], "holds 14 turn(s), not 99"),
     ):
         with pytest.raises(SystemExit) as out:
             main(["context", argv[0], "--dir", str(d), *argv[1:]])
@@ -947,50 +949,58 @@ def test_a_declared_value_holding_a_line_separator_is_read_back_whole(tmp_path):
     import lion_cli.context as cli
 
     d = actor_dir(tmp_path)
+    k = TaskKhive([TASK])
     odd = ["a\nb", "a\x85b", "a\u2028b", "a\u2029b"]  # the writer keeps all but LF unescaped
     for i, value in enumerate(odd):
-        cli.set_var(d, f"v{i}", "fact", value)
-    got, _ = cli._pending(d)
-    assert [v.value for v in got] == odd and status(d)["pending_vars"] == 4
+        cli.set_var(d, f"v{i}", "fact", value, khive=k)
+    got = declared(k, ACTOR)
+    assert [v.value for v in got] == odd and status(d, khive=k)["declared"] == 4
+    # declared again under a name: the later value stands, once
+    cli.set_var(d, "v0", "fact", "again", khive=k)
+    assert [(v.name, v.value) for v in declared(k, ACTOR)][-1] == ("v0", "again")
+    assert len(declared(k, ACTOR)) == 4 and k.lion.notes[ACTOR]["context.v0"]["version"] == 2
 
 
 def test_the_context_routes_answer_for_a_registered_desk_only(tmp_path, monkeypatch):
     import lion_cli.context as cli
 
     d = actor_dir(tmp_path)
+    k = store_khive(monkeypatch)
     reg = registry(tmp_path, d)
     code, doc = context_api(reg, "GET", "/api/context/status", {"dir": str(d)})
     assert code == 200 and doc["latest"] is None
     code, doc = context_api(reg, "GET", "/api/context/status", {"dir": str(tmp_path / "elsewhere")})
     assert code == 404 and "not a desk" in doc["detail"]
     code, doc = context_api(reg, "GET", "/api/context/restore", {"dir": str(d)})
-    assert code == 409 and "latest.json is absent" in doc["detail"]
+    assert code == 409 and f"no checkpoint: no session of {ACTOR}" in doc["detail"]
     # the desk has no transcript of its own here: the take refuses, and says so
     code, doc = context_api(reg, "POST", "/api/context/checkpoint", {"dir": str(d), "why": "end"})
     assert code == 409 and doc["ok"] is False and "no Claude Code transcript" in doc["detail"]
+    assert held(k) == {}
     monkeypatch.setattr(cli, "newest_transcript", lambda directory: FIXTURE)
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
     gh_says(monkeypatch)
     code, doc = context_api(reg, "POST", "/api/context/checkpoint", {"dir": str(d), "why": "end"})
-    assert code == 200 and doc["id"].startswith("ckpt-") and "lane.1ane0001" in doc["vars"]
+    assert code == 200 and doc["id"] == f"{FIXTURE.stem}@14" and held(k) == {FIXTURE.stem: 14}
+    assert "lane.1ane0001" in [v.name for v in load(d, k).vars]
     code, doc = context_api(reg, "GET", "/api/context/restore", {"dir": str(d), "id": doc["id"]})
-    assert code == 200 and doc["first_prompt"].startswith("Checkpoint ckpt-")
+    assert code == 200 and doc["first_prompt"].startswith(f"Checkpoint {FIXTURE.stem}@14")
     assert context_api(reg, "DELETE", "/api/context/status", {"dir": str(d)})[0] == 404
-    # a declaration over the wire: the same pending file `lion context set` writes, refused on a bad kind
-    declared = {"dir": str(d), "name": "n", "kind": "fact", "value": "v"}
-    code, doc = context_api(reg, "POST", "/api/context/set", declared)
+    # a declaration over the wire: the same note `lion context set` writes, refused on a bad kind
+    given = {"dir": str(d), "name": "n", "kind": "fact", "value": "v"}
+    code, doc = context_api(reg, "POST", "/api/context/set", given)
     assert code == 200 and doc["name"] == "n" and doc["source"] == "declared"
-    assert (d / ".khive" / "context" / "pending.jsonl").read_text().count("\n") == 1
+    assert [(v.name, v.value) for v in declared(k, ACTOR)] == [("n", "v")]
     code, doc = context_api(reg, "POST", "/api/context/set", {"dir": str(d), "name": "n", "kind": "nope"})
     assert code == 409 and "kind" in doc["detail"]
     assert context_api(reg, "POST", "/api/context/set", {"dir": str(tmp_path / "x"), "name": "n"})[0] == 404
 
 
-def test_the_served_context_routes_sit_behind_the_same_gates(tmp_path):
+def test_the_served_context_routes_sit_behind_the_same_gates(tmp_path, monkeypatch):
     d = actor_dir(tmp_path)
+    k = store_khive(monkeypatch)
     port = serve_on(registry(tmp_path, d))
     code, text, _ = call(port, "GET", f"/api/context/status?dir={d}")
-    assert code == 200 and json.loads(text)["pending_vars"] == 0
+    assert code == 200 and json.loads(text)["declared"] == 0
     assert call(port, "GET", f"/api/context/status?dir={tmp_path}")[0] == 404
     code, text, _ = call(
         port, "GET", f"/api/context/status?dir={d}", headers={"Host": f"evil.example:{port}"}
@@ -1004,7 +1014,7 @@ def test_the_served_context_routes_sit_behind_the_same_gates(tmp_path):
     )
     code, text, _ = call(port, "POST", "/api/context/checkpoint", body, json_type)
     assert code == 409 and json.loads(text)["ok"] is False  # no transcript for this desk: refused, said
-    assert not (d / ".khive" / "context").exists() or not list((d / ".khive" / "context").glob("ckpt-*.json"))
+    assert held(k) == {}
 
 
 def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it(
@@ -1012,9 +1022,8 @@ def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_h
 ):
     # nothing in the code started a Claude Code session's checkpoint: a person or a program had to run
     # `lion context checkpoint`, and the newest transcript stood in for the session compacting
-    import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     given = {
@@ -1027,8 +1036,9 @@ def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_h
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(given)))
     main(["context", "checkpoint", "--hook"])  # no --dir: the hook's cwd names the session's directory
     done = json.loads(capsys.readouterr().out)
-    ckpt = load(d)
-    assert ckpt.id == done["id"] and ckpt.why == "precompact" and "lane.1ane0001" in done["vars"]
+    ckpt = load(d, k)
+    assert ckpt.id == done["id"] == "s-compacting@14" and ckpt.why == "precompact"
+    assert "lane.1ane0001" in [v.name for v in ckpt.vars]
     assert (ckpt.source["session_id"], ckpt.source["transcript"], ckpt.source["cwd"]) == (
         "s-compacting",
         str(FIXTURE),
@@ -1050,7 +1060,7 @@ def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_h
         with pytest.raises(SystemExit) as out:
             main(["context", "checkpoint", "--hook"])
         assert out.value.code == 1 and said in capsys.readouterr().err
-    assert [p.stem for p in (d / ".khive" / "context").glob("ckpt-*.json")] == [done["id"]]
+    assert held(k) == {"s-compacting": 14}  # each refusal wrote nothing
 
 
 def test_only_the_first_invalid_row_is_spelled_out():
