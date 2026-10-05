@@ -100,16 +100,35 @@ def values_of(hint: typing.Any) -> list[str]:
     return values_of(next(a for a in typing.get_args(hint) if a is not type(None)))  # X | None
 
 
+# a values cell: the values in backticks, then at most one note after "; " or in parentheses
+_LISTED = re.compile(r"(?P<values>`[^`]+`(?:, `[^`]+`)*)(?:; (?P<said>.+)| \((?P<aside>[^()]+)\))?")
+# a type cell: the alias, the alias or None, the alias as an enum, or an inline Literal
+_KIND = re.compile(r"`(?P<module>\w+)\.(?P<alias>\w+)`(?P<tail>| or None|, an enum)|a `Literal`")
+
+
 def test_each_value_set_row_names_a_field_whose_type_holds_exactly_its_values():
     table = rows()
     assert len(table) >= 11 and table[0][0] == "`Message.role`"  # the parse reads what it should
+    classes = {n for m in MODULES.values() for n, c in vars(m).items() if isinstance(c, type)}
+    aliases = [
+        v for m in MODULES.values() for v in vars(m).values() if typing.get_origin(v) is typing.Literal
+    ]
     for field, kind, listed in table:
         hint = declared(field)
-        assert re.findall(r"`([^`]+)`", re.split(r"[;(]", listed)[0]) == values_of(hint), field
-        named = re.match(r"`(\w+)\.(\w+)`", kind)
-        if named:  # the type cell names the alias the field is annotated with
-            alias = getattr(MODULES[named[1]], named[2])
-            assert hint in (alias, alias | None), field
+        cell = _LISTED.fullmatch(listed)
+        assert cell, f"{field}: values cell {listed!r}"
+        assert re.findall(r"`([^`]+)`", cell["values"]) == values_of(hint), field
+        note = cell["said"] or cell["aside"] or ""
+        named = [n for n in re.findall(r"`([^`]+)`", note) if n not in classes]
+        assert named == [], f"{field}: a note names a value"
+        typed = _KIND.fullmatch(kind)
+        assert typed, f"{field}: type cell {kind!r}"
+        if typed["alias"] is None:  # an inline Literal, which no module names
+            assert typing.get_origin(hint) is typing.Literal and hint not in aliases, field
+            continue
+        alias = getattr(MODULES[typed["module"]], typed["alias"])
+        assert hint == (alias | None if typed["tail"] == " or None" else alias), field
+        assert typed["tail"] != ", an enum" or (isinstance(alias, type) and issubclass(alias, Enum)), field
 
 
 def test_every_closed_value_set_the_code_declares_has_a_row():
