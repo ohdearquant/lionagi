@@ -1,10 +1,9 @@
-"""The served actor (ADR-0021): a service over one actor's offers and the runs it started, and one HTTP
-transport bound to loopback.
+"""The served actor's service (ADR-0021): one actor's offers and the runs it started.
 
 An offer is a profile, a backend and a request template the owner lets a client run. A client starts a
 run of an offer with data only, reads it as rows and bus events, speaks to it and ends it; the run is
 `Actor.run`'s own. A row is a record entry in the chat log's form, appended to the run's log before any
-subscriber has it. The service knows no HTTP; `Service.serve` carries it over a socket.
+subscriber has it. The service knows no HTTP; `hub.serve.transport` carries it.
 """
 
 from __future__ import annotations
@@ -13,9 +12,6 @@ import asyncio
 import contextlib
 import dataclasses
 import functools
-import http.client
-import io
-import ipaddress
 import json
 import math
 import os
@@ -25,15 +21,14 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
 from pydantic_core import to_jsonable_python
 
-from .actor import _ACTORS, Actor, Backend, Handle, Inbound, Profile, Run, RunRequest, Success
-from .checkpoint import entry_row, load_log
-from .spec import spec_name
+from lion1.actor import _ACTORS, Actor, Backend, Handle, Inbound, Profile, Run, RunRequest, Success
+from lion1.checkpoint import entry_row, load_log
+from lion1.spec import spec_name
 
 __all__ = (
     "ServeError",
@@ -43,7 +38,6 @@ __all__ = (
 
 _PROTOCOL = 1  # the card's protocol version: a change that breaks a client raises it (ADR-0021/D9)
 _TEMPLATE = RunRequest()
-_HOSTS = ("127.0.0.1", "::1")
 _ID = re.compile(r"[0-9a-f]{16}")
 _ONCE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _FIELDS = ("offer", "inputs", "bounds", "resume", "once")
@@ -57,59 +51,9 @@ _KEYS = 100  # `once` keys held per operation
 _GONE = 10_000  # ids of dropped runs remembered, the oldest forgotten first
 _FRAMES = 1_000  # frames queued for one subscriber
 _PAGE = 500  # rows one record read returns
-_CONNECTIONS = 64
 _SUBSCRIBERS = 32
-_DEADLINE = 10.0  # seconds for a whole request, however its bytes arrive
-_WRITE = 5.0  # seconds for one write, or for a connection to close
-_PING = 15.0  # seconds between a stream's comment lines
-_HEAD = 16 * 1024
-_LINES = 64  # header fields in one head
 _DEPTH = 32  # how deep a value pydantic cannot project as a whole is projected part by part
 _COMMENT = (None, None)  # a stream's keep-alive, written as a comment line
-_STATUS = {
-    "bad_request": 400,
-    "forbidden": 403,
-    "unknown_offer": 404,
-    "unknown_run": 404,
-    "not_found": 404,
-    "method_not_allowed": 405,
-    "timeout": 408,
-    "ended": 409,
-    "starting": 409,
-    "not_conversation": 409,
-    "no_resume": 409,
-    "unreadable_log": 409,
-    "conflict": 409,
-    "gone": 410,
-    "too_large": 413,
-    "unsupported_type": 415,
-    "refused": 422,
-    "too_many": 429,
-    "log_failed": 500,
-    "busy": 503,
-}
-# a request's own form, read on the raw bytes before the standard library's parser sees them (D8)
-_BARE_LF = re.compile(rb"(?<!\r)\n")
-_REQUEST_LINE = re.compile(
-    r"(GET|POST) (/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/]|%[0-9A-Fa-f]{2})*"
-    r"(?:\?(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9A-Fa-f]{2})*)?) HTTP/1\.1"
-)
-_FIELD = re.compile(r"([!#$%&'*+\-.^_`|~0-9A-Za-z]+):([\x20-\x7e]*)")
-_ONE = ("host", "origin", "content-type", "content-length")
-_DIGITS = re.compile(r"[0-9]+")
-_START = re.compile(r"start=([0-9]{1,18})")  # a row count: never a number `int` refuses to read
-_ROUTES = {  # route -> the method it answers
-    "card": "GET",
-    "all": "GET",
-    "run": "GET",
-    "record": "GET",
-    "events": "GET",
-    "input": "POST",
-    "end": "POST",
-    "interrupt": "POST",
-    "stop": "POST",
-    "cancel": "POST",
-}
 
 
 class ServeError(Exception):
@@ -219,7 +163,6 @@ class Service:
         self.keep = keep
         self.offers: dict[str, Offer] = {}
         self.runs: dict[str, _Served] = {}  # live and kept, in the order they were held
-        self.port: int | None = None  # the port `serve` bound, once it has
         self._ended: OrderedDict[str, None] = OrderedDict()  # the kept runs, the first to end first
         # the last `_GONE` ids no longer held, each with whether its log failed while it was: read from
         # the log, or gone; one forgotten reads as its log has it, or as an unknown run
@@ -228,11 +171,8 @@ class Service:
         self._by_run: dict[str, _Served] = {}  # live runs by the runtime's id, which routes events (S11)
         self._all: set[_Sub] = set()  # the streams of every run
         self._subs: set[_Sub] = set()  # every open stream, against the cap
-        self._conns: set[asyncio.Task] = set()
-        self._hosts: frozenset[str] = frozenset()
         self._off: Callable[[], None] | None = None  # the bus subscription, while the service holds one
         self._closing = False
-        self._sleep = asyncio.sleep  # the stream's clock between comment lines
         if self.dir is not None:
             self._list()
 
@@ -749,209 +689,40 @@ class Service:
         if s.phase not in _LIVE:
             raise ServeError("ended", f"run {s.id} is {s.phase}; {what} is refused")
 
-    # the transport
+    # ending
 
-    async def serve(
-        self,
-        host: str = "127.0.0.1",
-        port: int = 8710,
-        grace: float = 10.0,
-        *,
-        ready: Callable[[str, int], Any] | None = None,
-    ) -> None:
-        """Serve the offers over HTTP on loopback until cancelled (ADR-0021/D8); a port of 0 takes a free
-        one, and `ready` is called with the address bound. Ending stops what the service started."""
-        if host not in _HOSTS:
-            raise ValueError(f"host {host!r}: the transport binds 127.0.0.1 or ::1, nothing else")
-        self._closing = False
-        server = await asyncio.start_server(self._accept, host, port)
-        try:
-            self.port = server.sockets[0].getsockname()[1]
-            spelled = "[::1]" if host == "::1" else host
-            self._hosts = frozenset({f"{spelled}:{self.port}", f"localhost:{self.port}"})
-            if ready is not None:
-                ready(host, self.port)
-            await asyncio.get_running_loop().create_future()  # until cancelled
-        finally:
-            await _through(self._shutdown(server, grace))
+    @property
+    def closing(self) -> bool:
+        """Whether the service began ending: a start is refused busy, and so is a request."""
+        return self._closing
 
-    async def _shutdown(self, server: asyncio.Server, grace: float) -> None:
-        """Admission closes first, then the connections, streams and pings, then the runs; the END rows
-        are written as each task ends, and the bus subscription goes last (ADR-0021/D10)."""
+    def halt(self) -> None:
+        """Begin the end (ADR-0021/D10): no start is admitted from here, every open stream closes with
+        what is queued still read, and then every live run is stopped, so no stream takes a run's end.
+        The transport calls it before it closes its connections; a second call changes nothing."""
+        if self._closing:
+            return
         self._closing = True
-        server.close()
-        conns = list(self._conns)
-        for task in conns:
-            task.cancel()
-        await asyncio.gather(*conns, return_exceptions=True)
+        for sub in list(self._subs):
+            sub.close()
+        for s in self.runs.values():
+            if s.phase in _LIVE:
+                self._halt(s)
+
+    async def close(self, grace: float = 10.0) -> None:
+        """End what the service started (ADR-0021/C11): `halt`, then every live run awaited under
+        `grace`, what remains cancelled and awaited, the bus subscription last. A run's END row is
+        written as its task ends."""
+        self.halt()
         live = [s for s in self.runs.values() if s.phase in _LIVE]
-        for s in live:
-            self._halt(s)
         if live:
             _, late = await asyncio.wait([s.task for s in live], timeout=grace)
             for task in late:
                 task.cancel()
             await asyncio.gather(*late, return_exceptions=True)
-        await server.wait_closed()
         if self._off is not None:
             self._off()
             self._off = None
-
-    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """A connection, admitted or refused in the step it arrives: a plain function, so the server
-        starts no task the service does not hold."""
-        if self._closing:
-            writer.transport.abort()
-            return
-        if len(self._conns) >= _CONNECTIONS:
-            writer.write(_answer(503, _error(ServeError("busy", f"{_CONNECTIONS} connections are open"))))
-            writer.close()
-            return
-        task = asyncio.ensure_future(self._connection(reader, writer))
-        self._conns.add(task)
-        task.add_done_callback(self._conns.discard)
-
-    async def _connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """One request, read whole under one deadline, then answered; the connection then closes."""
-        try:
-            if not _loopback(_peer(writer)):
-                await _write(
-                    writer, _answer(403, _error(ServeError("forbidden", "the peer is not loopback")))
-                )
-                return
-            try:
-                async with asyncio.timeout(_DEADLINE):
-                    request = await self._read(reader)
-            except TimeoutError:
-                refusal = ServeError(
-                    "timeout", f"the request did not arrive whole within {_DEADLINE:g} seconds"
-                )
-                await _write(writer, _answer(408, _error(refusal)))
-                return
-            except ServeError as e:
-                await _write(writer, _answer(_STATUS[e.code], _error(e)))
-                return
-            if request is not None:
-                await self._dispatch(*request, writer)
-        except OSError:  # the peer went away, or a write outlived its bound
-            writer.transport.abort()
-        finally:
-            await _close(writer)
-
-    async def _read(self, reader: asyncio.StreamReader) -> tuple[str, str, str | None, dict | None] | None:
-        """One request in D8's form, the raw head checked before `http.client.parse_headers` reads it:
-        (method, path, query, body). None when the peer closed before it arrived whole."""
-        buf = b""
-        while (end := buf.find(b"\r\n\r\n")) < 0:
-            if _BARE_LF.search(buf):
-                raise ServeError("bad_request", "a line ends in a bare line feed; lines end in CRLF")
-            if len(buf) >= _HEAD:
-                raise ServeError("too_large", f"the head is past {_HEAD} bytes")
-            chunk = await reader.read(_HEAD)
-            if not chunk:
-                return None
-            buf += chunk
-        if end + 4 > _HEAD:
-            raise ServeError("too_large", f"the head is past {_HEAD} bytes")
-        method, target, fields = _head(buf[:end])
-        if fields["host"].lower() not in self._hosts:
-            raise ServeError("forbidden", f"Host {fields['host']!r} is not this server")
-        origin = fields.get("origin")
-        if origin is not None and not (origin.startswith("http://") and origin[7:].lower() in self._hosts):
-            raise ServeError("forbidden", f"Origin {origin!r} is not this server")
-        path, _, query = target.partition("?")
-        query = query if "?" in target else None
-        body, length = buf[end + 4 :], fields.get("content-length")
-        if method == "GET":
-            if body or (length is not None and not (_DIGITS.fullmatch(length) and not length.strip("0"))):
-                raise ServeError("bad_request", "a GET carries no body")
-            return method, path, query, None
-        if (fields.get("content-type") or "").lower() != "application/json":
-            raise ServeError("unsupported_type", "a POST carries application/json")
-        if length is None or not _DIGITS.fullmatch(length):
-            raise ServeError("bad_request", "a POST carries one decimal Content-Length")
-        # the digits decide before `int` reads them: a length of thousands of digits is past the cap, and
-        # `int` would raise on it where no refusal is written
-        digits = length.lstrip("0")
-        if len(digits) > len(str(_MIB)) or (size := int(digits or "0")) > _MIB:
-            raise ServeError("too_large", f"the body is past {_MIB} bytes")
-        if len(body) > size:
-            raise ServeError("bad_request", "bytes follow the body; one request per connection")
-        try:
-            body += await reader.readexactly(size - len(body))
-        except asyncio.IncompleteReadError:
-            return None
-        return method, path, query, _object(body)
-
-    async def _dispatch(
-        self, method: str, path: str, query: str | None, body: dict | None, writer: asyncio.StreamWriter
-    ) -> None:
-        try:
-            if self._closing:  # read whole, but the service began ending meanwhile
-                raise ServeError("busy", "the service is ending")
-            route, sid = _route(path)
-            if route == "runs":
-                answer = await self._runs(method, query, body)
-            else:
-                if method != _ROUTES[route]:
-                    raise ServeError("method_not_allowed", f"{path} answers {_ROUTES[route]}")
-                if query is not None and route != "record":
-                    raise ServeError("bad_request", "only a record read takes a query")
-                if route in ("all", "events"):
-                    await self._stream(sid, writer)
-                    return
-                answer = await self._answer(route, sid, query, body)
-        except ServeError as e:
-            answer = (_STATUS[e.code], _error(e))
-        await _write(writer, _answer(*answer))
-
-    async def _runs(self, method: str, query: str | None, body: dict | None) -> tuple[int, dict]:
-        if query is not None:
-            raise ServeError("bad_request", "only a record read takes a query")
-        if method == "GET":
-            return 200, self.runs_state()
-        state, first = await self.start(body)
-        return (201 if first else 200), state
-
-    async def _answer(self, route: str, sid: str, query: str | None, body: dict | None) -> tuple[int, dict]:
-        if route == "card":
-            return 200, self.card()
-        if route == "run":
-            return 200, self.state(sid)
-        if route == "record":
-            start = 0
-            if query is not None:
-                m = _START.fullmatch(query)
-                if m is None:
-                    raise ServeError("bad_request", "a record read takes start=N and nothing else")
-                start = int(m[1])
-            return 200, self.record(sid, start)
-        if route == "input":
-            if "text" not in body or set(body) - {"text", "once"} or body.get("once", "") is None:
-                raise ServeError("bad_request", "input is {text, once?} and no other key, once never null")
-            return 202, {"id": sid, "handle": self.say(sid, body["text"], body.get("once"))}
-        if body:
-            raise ServeError("bad_request", f"{route} takes an empty object")
-        if route == "cancel":
-            return 202, await self.cancel(sid)
-        return 202, getattr(self, route)(sid)
-
-    async def _stream(self, sid: str | None, writer: asyncio.StreamWriter) -> None:
-        sub = self.events(sid)  # a refusal is raised before any byte of the stream is written
-        ping = asyncio.ensure_future(self._ping(sub))
-        try:
-            await _write(writer, _STREAM)
-            async for name, data in sub:
-                await _write(writer, _frame(name, data))
-        finally:
-            sub.close()
-            ping.cancel()
-            await asyncio.wait({ping})
-
-    async def _ping(self, sub: _Sub) -> None:
-        while True:
-            await self._sleep(_PING)
-            sub.ping()
 
 
 # the log
@@ -1129,148 +900,3 @@ def _repr(value: Any) -> dict:
         return {"repr": repr(value)}
     except Exception:  # a repr that raises, or one that recurses past the limit
         return {"repr": object.__repr__(value)}
-
-
-# the wire
-
-
-def _head(raw: bytes) -> tuple[str, str, dict[str, str]]:
-    """The request line and the headers D8 admits, checked on the raw bytes, then parsed by the
-    standard library; a parse with a defect is refused. (method, target, {lowercased name: value})."""
-    if not raw.isascii():
-        raise ServeError("bad_request", "the head is not ASCII")
-    lines = raw.decode("ascii").split("\r\n")
-    if any("\r" in line or "\n" in line for line in lines):
-        raise ServeError("bad_request", "a line ends in a bare CR or LF; lines end in CRLF")
-    request = _REQUEST_LINE.fullmatch(lines[0])
-    if request is None:
-        raise ServeError("bad_request", "the request line is GET or POST, an origin-form target and HTTP/1.1")
-    if len(lines) - 1 > _LINES:
-        raise ServeError("too_large", f"the head is past {_LINES} header fields")
-    fields: dict[str, str] = {}
-    for line in lines[1:]:
-        if line[:1] in (" ", "\t"):
-            raise ServeError("bad_request", "a header line starts with a space or a tab")
-        m = _FIELD.fullmatch(line)
-        if m is None:
-            raise ServeError(
-                "bad_request", f"a header line is not a name, a colon and a plain value: {line[:40]!r}"
-            )
-        name = m[1].lower()
-        if name in ("transfer-encoding", "expect"):
-            raise ServeError("bad_request", f"{m[1]} is refused")
-        if name in _ONE and name in fields:
-            raise ServeError("bad_request", f"{m[1]} is given twice")
-        if name in _ONE:
-            fields[name] = m[2].strip(" ")
-    if "host" not in fields:
-        raise ServeError("bad_request", "Host is required")
-    try:
-        message = http.client.parse_headers(io.BytesIO("\r\n".join([*lines[1:], "", ""]).encode("ascii")))
-    except http.client.HTTPException as e:
-        raise ServeError("bad_request", f"the headers do not parse: {e}") from None
-    if message.defects:
-        raise ServeError("bad_request", f"the headers parse with a defect: {message.defects[0]!r}")
-    return request[1], request[2], fields
-
-
-def _object(body: bytes) -> dict:
-    """A POST's body: one JSON object in UTF-8, no key twice and no NaN or Infinity."""
-    try:
-        doc = json.loads(body.decode(), object_pairs_hook=_unique, parse_constant=_constant)
-    except (ValueError, RecursionError) as e:  # UnicodeDecodeError and JSONDecodeError are ValueErrors
-        raise ServeError("bad_request", f"the body is not one JSON object in UTF-8: {e}") from None
-    if not isinstance(doc, dict):
-        raise ServeError("bad_request", "the body is not a JSON object")
-    return doc
-
-
-def _unique(pairs: list[tuple[str, Any]]) -> dict:
-    doc = dict(pairs)
-    if len(doc) != len(pairs):
-        raise ValueError("a key is given twice")
-    return doc
-
-
-def _constant(name: str) -> Any:
-    raise ValueError(f"{name} is not JSON")
-
-
-def _route(path: str) -> tuple[str, str | None]:
-    parts = path.split("/")[1:]
-    if parts == [""]:
-        return "card", None
-    if parts == ["runs"]:
-        return "runs", None
-    if parts == ["events"]:
-        return "all", None
-    if len(parts) == 2 and parts[0] == "runs":
-        return "run", parts[1]
-    if len(parts) == 3 and parts[0] == "runs" and parts[2] in ("record", "events", "input", *_CONTROLS):
-        return parts[2], parts[1]
-    raise ServeError("not_found", f"no route {path}")
-
-
-_CONTROLS = ("end", "interrupt", "stop", "cancel")
-
-
-def _peer(writer: asyncio.StreamWriter) -> str:
-    return (writer.get_extra_info("peername") or ("",))[0]
-
-
-def _loopback(host: str) -> bool:
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def _error(e: ServeError) -> dict:
-    return {"error": e.code, "reason": e.reason}
-
-
-_SAFE = b"X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n"
-_STREAM = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" + _SAFE + b"\r\n"
-
-
-def _answer(status: int, doc: dict) -> bytes:
-    body = json.dumps(doc).encode()
-    head = f"HTTP/1.1 {status} {HTTPStatus(status).phrase}\r\nContent-Type: application/json\r\n"
-    return head.encode() + f"Content-Length: {len(body)}\r\n".encode() + _SAFE + b"\r\n" + body
-
-
-def _frame(name: str | None, data: dict | None) -> bytes:
-    if name is None:
-        return b": ping\n\n"
-    return f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
-
-
-async def _write(writer: asyncio.StreamWriter, data: bytes) -> None:
-    """One write within its bound. `asyncio.timeout`, never `wait_for`: on 3.11 a cancel that lands in
-    the step the drain finishes is dropped by `wait_for`, and the end would wait on this connection."""
-    writer.write(data)
-    async with asyncio.timeout(_WRITE):
-        await writer.drain()
-
-
-async def _close(writer: asyncio.StreamWriter) -> None:
-    """Close within the write bound; what a peer has not taken by then is cut, on every way out."""
-    writer.close()
-    try:
-        with contextlib.suppress(OSError):  # the bound passed (a TimeoutError), or the peer reset
-            async with asyncio.timeout(_WRITE):
-                await writer.wait_closed()
-    finally:
-        writer.transport.abort()  # nothing on a connection already closed
-
-
-async def _through(coro: Any) -> None:
-    """Await `coro` to its end whatever cancels the caller meanwhile: a shutdown cut short would leave
-    alive what it was ending."""
-    task = asyncio.ensure_future(coro)
-    while not task.done():
-        # `wait` cancels nothing; a shield would have the loop report the task's later failure as
-        # nobody's (CPython 3.14.7), though the last line reads it
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait((task,))
-    task.result()
