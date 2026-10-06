@@ -401,3 +401,11 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   cancelled before the id included. It keeps the child's exit and the last 8 KiB of its standard
   error for `result`; a child that ends with no newline printed has all it printed for its id. Only
   what its standard output held when it was reaped can be its id.
+- **S16**: A descendant that inherits the child's standard output and writes there before the reap
+  supplies bytes the server reads as the id; the CLI starts no such descendant, and a child that
+  does so has handed its identity away.
+- **S17**: A `lion mcp` child that closes its standard output with no id and runs on fails the call
+  within a second, naming its pid, and is reaped when it ends.
+- **S18**: A second interrupt that lands before the box's end takes no patch and stops nothing, and
+  standard error names what it left: the box, kept with its work, or the local sandbox, which may
+  still run.
