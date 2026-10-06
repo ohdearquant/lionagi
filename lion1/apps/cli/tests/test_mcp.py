@@ -22,7 +22,9 @@ from test_submit import PROFILES, TWO, backends, lion, out
 # job only once a `print` file appears. A `--say=wait` job then waits for a `go` file before it writes
 # `done`; a `--say=mailfail` job says on standard error that its mail failed, and exits 1; a `--say=chatty`
 # job says more than the server keeps, then a last line, and exits 3. A `--say=bare` job prints its id
-# with no newline; a `--say=forks` job starts a process that holds both its pipes, then exits.
+# with no newline; a `--say=forks` job starts a process that holds both its pipes, then exits; a
+# `--say=handsoff` job prints no id and exits, and the process it started prints a line on the pipe once
+# it has ended, then writes a `wrote` file.
 CHILD = """
 import json, os, sys, time
 from pathlib import Path
@@ -42,6 +44,16 @@ if "--say=slow" in argv:  # the id only once a `print` file appears
         time.sleep(0.05)
 if "--say=bare" in argv:
     sys.stdout.write(f"{argv[0]}-id")
+    sys.exit(0)
+if "--say=handsoff" in argv:  # no id of its own; what comes on the pipe after it ended is another's
+    import subprocess
+    code = (
+        f"import os, sys, time\\nwhile os.getppid() == {os.getpid()}:\\n    time.sleep(0.01)\\n"
+        f"time.sleep(0.3)\\nprint('forged-id', flush=True)\\nopen({str(here / 'wrote')!r}, 'w').close()\\n"
+        "time.sleep(60)\\n"
+    )
+    held = subprocess.Popen([sys.executable, "-c", code])
+    (here / "held").write_text(str(held.pid))
     sys.exit(0)
 print(f"{argv[0]}-id", flush=True)
 if "--say=forks" in argv:  # the process it starts inherits both pipes and outlives it
@@ -285,6 +297,18 @@ def test_an_id_the_child_wrote_with_no_newline_before_it_ended_is_its_id(actor_d
     assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "bare"})).structured_content == {
         "id": "run-id"
     }
+
+
+def test_a_line_a_process_the_child_started_prints_after_the_child_ended_is_not_its_id(actor_dir, child):
+    here, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+    try:
+        with pytest.raises(ToolError, match="lion run ended with 0 before printing an id"):
+            asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "handsoff"}))
+        assert waited(here / "wrote")  # its line went on the pipe while the server still read it
+    finally:
+        if waited(here / "held"):
+            os.kill(int((here / "held").read_text()), signal.SIGKILL)
 
 
 def test_a_value_that_starts_with_a_dash_reaches_the_command_as_a_value(actor_dir):

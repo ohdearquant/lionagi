@@ -7,10 +7,13 @@ server started, how it ended: what it said on standard error is where a mail tha
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import selectors
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -31,8 +34,12 @@ LION = (sys.executable, "-m", "lion_cli.main")  # the command a child runs: this
 
 
 _SAID = 8192  # bytes of a child's standard error the server keeps: its last
-_LOOK_S = 0.2  # how often a child that writes nothing is looked at, to see whether it has ended
 _LEFT_S = 1.0  # how long what an ended child left in its pipes is read: a process it started may hold one
+
+
+def _unread(pipe: Any) -> int:
+    """The bytes written to `pipe` and not yet read."""
+    return struct.unpack("i", fcntl.ioctl(pipe.fileno(), termios.FIONREAD, b"\0\0\0\0"))[0]
 
 
 def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], ended: dict[str, Any]) -> None:
@@ -40,40 +47,64 @@ def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], en
     standard output, or all of it when it ended without a newline, and what it wrote on standard error
     meanwhile, or an empty line when it printed nothing; the rest is drained, so the child never waits on
     a full pipe. Its pipes are read until they end, or, once the child has ended, for `_LEFT_S` more,
-    for a process it started may hold them open. Then they close, the child is reaped, and its exit and
-    the last of its standard error are kept in `ended` under its id. A call cancelled while it waited for
-    the id changes none of this."""
+    for a process it started may hold them open. Its end is seen as it is reaped, and only what its
+    standard output held then can be its id: what comes after is that process's. Then the pipes close,
+    and its exit and the last of its standard error are kept in `ended` under its id. A call cancelled
+    while it waited for the id changes none of this."""
     assert child.stdout is not None and child.stderr is not None
     out = err = b""
     line: str | None = None
+    told = False
+    owed: int | None = None  # once the child has ended: the bytes of its standard output still to read
     left: float | None = None  # once the child has ended: when reading what it left stops
+    woken, wake = os.pipe()  # ends as the child is reaped, so the reading sees its end at once
+
+    def reaped() -> None:
+        child.wait()
+        os.close(wake)
+
+    def tell(said: str | None) -> None:
+        nonlocal line, told
+        line, told = said, True
+        if said is not None:
+            ended[said] = None  # running
+        first(said or "", err.decode(errors="replace"))
+
+    threading.Thread(target=reaped, daemon=True).start()
     try:
         with selectors.DefaultSelector() as ends:
-            ends.register(child.stdout, selectors.EVENT_READ)
-            ends.register(child.stderr, selectors.EVENT_READ)
+            for pipe in (child.stdout, child.stderr, woken):
+                ends.register(pipe, selectors.EVENT_READ)
             while ends.get_map():
-                if left is None and child.poll() is not None:
-                    left = time.monotonic() + _LEFT_S
+                if not told and owed == 0:  # all it wrote is read, with no newline: all of it is its id
+                    tell(out.decode() or None)
                 if left is not None and time.monotonic() >= left:
                     break
-                for key, _ in ends.select(_LOOK_S if left is None else left - time.monotonic()):
-                    chunk = os.read(key.fd, 65536)
+                ready = ends.select(None if left is None else left - time.monotonic())
+                if any(key.fileobj == woken for key, _ in ready):  # measured before any of its pipes is read
+                    ends.unregister(woken)
+                    left, owed = time.monotonic() + _LEFT_S, _unread(child.stdout)
+                    continue
+                for key, _ in ready:
+                    mine = key.fileobj is child.stdout and not told  # may hold its id
+                    chunk = os.read(key.fd, owed if mine and owed is not None else 65536)
                     if not chunk:
                         ends.unregister(key.fileobj)
+                        if mine:
+                            tell(out.decode() or None)
                     elif key.fileobj is child.stderr:
                         err = (err + chunk)[-_SAID:]
-                    elif line is None and b"\n" in (out := out + chunk):
-                        line = out.split(b"\n", 1)[0].decode()
-                        ended[line] = None  # running
-                        first(line, err.decode(errors="replace"))
+                    elif mine:
+                        out += chunk
+                        owed = None if owed is None else owed - len(chunk)
+                        if b"\n" in out:
+                            tell(out.split(b"\n", 1)[0].decode())
     finally:
         child.stdout.close()
         child.stderr.close()
-        if line is None:
-            line = out.decode() or None  # an id the child wrote without a newline before it ended
-            if line is not None:
-                ended[line] = None
-            first(line or "", err.decode(errors="replace"))
+        os.close(woken)
+        if not told:
+            tell(out.decode() or None)
         code = child.wait()
         if line is not None:
             ended[line] = {"exit": code, "said": err.decode(errors="replace")}

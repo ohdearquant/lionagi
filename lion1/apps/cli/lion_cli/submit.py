@@ -274,6 +274,14 @@ async def _through(aw: Awaitable[_T], carry: bool = True) -> tuple[_T, BaseExcep
         return await task, e
 
 
+def _second(e: BaseException) -> bool:
+    """`e` is the command's second interrupt: its task has been cancelled twice, as `asyncio.run` does
+    at a second SIGINT when it ends the loop, or `e` is the `KeyboardInterrupt` that SIGINT raises where it
+    lands. Whatever caught the first, the second ends the command (S13)."""
+    task = asyncio.current_task()
+    return isinstance(e, KeyboardInterrupt) or (task is not None and task.cancelling() > 1)
+
+
 def _stopped_before_its_end(what: str, directory: Path, run_id: str) -> None:
     """The command's second interrupt, wherever its first landed, stops the end at once (`_through`), so
     the mail may not have gone: standard error says so, with the `lion result` command for the id, as the
@@ -389,6 +397,9 @@ async def run_main(a: argparse.Namespace) -> int:
     except BaseException as e:  # a cancellation: the same, and then it goes on up
         if not opened:
             raise
+        if _second(e):  # in its box's end: nothing after it, the mail included
+            _stopped_before_its_end(f"run {opened[0]}", directory, opened[0])
+            raise
         error, interrupted = _why(e), e
     run_id = opened[0]
     outcome = type(run.outcome).__name__.lower() if run is not None and run.outcome is not None else "stopped"
@@ -463,6 +474,9 @@ async def flow_main(a: argparse.Namespace) -> int:
         error = _why(e)
     except BaseException as e:  # a cancellation: the same, and then it goes on up
         if not flows:
+            raise
+        if _second(e):  # in a step's box's end: nothing after it, the mail included
+            _stopped_before_its_end(f"flow {flow.name} {flows[0]}", directory, flows[0])
             raise
         error, interrupted = _why(e), e
     if ended is None:

@@ -824,6 +824,50 @@ def test_a_second_interrupt_cuts_a_carried_stop_and_names_the_box(tmp_path, monk
     assert (tmp_path / "saved" / "c1.patch").read_text() == PATCH  # the work was saved before the stop
 
 
+def test_a_stop_cut_short_names_the_box_its_daytona_handle_forgot(tmp_path, monkeypatch):
+    from lion_cli.chat import end_box
+
+    from hub.tools.daytona import DaytonaSandbox
+
+    async def ending():
+        deleting = asyncio.Event()
+
+        class Remote:  # the provider's box, whose delete never ends
+            id = "dtn-7"
+
+            async def delete(self):
+                deleting.set()
+                await asyncio.Event().wait()
+
+        async def diff(self, base="HEAD"):
+            return PATCH
+
+        monkeypatch.setattr(DaytonaSandbox, "diff", diff)
+        box = DaytonaSandbox("img", workdir="/w")
+        box._box, box.started = Remote(), True
+        said: list[str] = []
+        task = asyncio.create_task(
+            end_box(
+                box,
+                tmp_path,
+                tmp_path / "saved",
+                "c1",
+                baseline="b",
+                apply=False,
+                say=said.append,
+                show=False,
+            )
+        )
+        await deleting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return box, said
+
+    box, said = asyncio.run(ending())
+    assert box.box_id is None and said[-1] == STOP_CUT.format("dtn-7")  # its stop forgot it, cut or not
+
+
 def test_an_interrupt_cuts_a_stop_without_carry_at_once_and_names_the_box(tmp_path, monkeypatch):
     box, said, cut = _stopped_while(tmp_path, monkeypatch, carry=False, cancels=1)
     assert cut == [True] and not box.stopped and said[-1] == STOP_CUT.format(box.box_id)

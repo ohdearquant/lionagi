@@ -295,8 +295,8 @@ reads `Store.result`, a flow's steps and, with `history`, the messages; for a ch
 `child` is `running`, or its exit and the last of its standard error, where a failed mail is named.
 
 - **Landing evidence**: `apps/cli/tests/test_mcp.py`: C5's tests; a child that ends before its id,
-  or whose pipes a process it started holds; a call cancelled before the id; an id with no newline;
-  `result` with its `child`; `lion mcp` through `main()`.
+  or whose pipes a process it started holds, or prints on; a call cancelled before the id; an id
+  with no newline; `result` with its `child`; `lion mcp` through `main()`.
 
 ### D6: The agent's run continues the last ^d6
 
@@ -383,7 +383,7 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   under the `comm.send` privilege the profile then holds. With `box = "daytona"` the shell runs in a
   box holding a copy of the directory. Its diff is saved as `.lion/runs/<run id>.patch` and never
   applied; a patch not taken whole, a cancellation included, keeps the box and names it, through
-  `end_box`, which `lion chat` shares, and the mail carries the name.
+  `end_box`, which `lion chat` shares, and any mail carries the name.
 - **S12**: `lion mcp` starts a child in a session of its own, so the caller's end or signal does not
   reach it. The child has no standard input, for the server's own is the protocol, and each value is
   joined to its flag, so a value that starts with a dash stays a value. A child that ends before an
@@ -391,12 +391,13 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   lion-cli.
 - **S13**: A command carries one interrupt, wherever it lands after the id: a run or flow still
   going stops, its box's patch is taken whole and the box stopped, and its one mail goes with every
-  notice; then it exits 130. The next interrupt stops what it lands in at once: a patch keeps its
-  box and names it, a stop names the box, which may run on, and a mail it stops is said on standard
-  error with `lion result --dir D <id>`.
+  notice; then it exits 130. The next interrupt ends the command at once: a patch it lands in keeps
+  its box and names it, a stop names the box, which may run on, and no mail goes after it, as
+  standard error says with `lion result --dir D <id>`.
 - **S14**: A reader that has gone costs a run nothing: its lines go to the null device, for the rows
   and the mail carry them.
 - **S15**: A thread started with `lion mcp`'s child reads both its pipes to their end, or for a
   second past the child's own end while a process it started holds one, and reaps it, a call
   cancelled before the id included. It keeps the child's exit and the last 8 KiB of its standard
-  error for `result`; a child that ends with no newline printed has all it printed for its id.
+  error for `result`; a child that ends with no newline printed has all it printed for its id. Only
+  what its standard output held when it was reaped can be its id.

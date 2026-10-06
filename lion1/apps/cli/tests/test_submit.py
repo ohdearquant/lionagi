@@ -576,6 +576,25 @@ def test_a_flow_interrupted_twice_while_its_mail_is_sent_stops_at_once_and_says_
     ) in printed.err.splitlines()
 
 
+def test_a_second_interrupt_raised_where_it_lands_ends_the_run_with_no_mail(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    # a second SIGINT raises KeyboardInterrupt in the frame it lands in, here as the run's rows close
+    backends(monkeypatch, **{"fake/writer": interrupting})
+    exec_ = Khive.exec
+
+    async def exec(self, ops: str) -> list:
+        if ops.startswith("lion.run_close("):
+            raise KeyboardInterrupt
+        return await exec_(self, ops)
+
+    monkeypatch.setattr(Khive, "exec", exec)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 130
+    (run_id,) = console_khive.runs
+    assert console_khive.sent == []
+    assert f"run {run_id} stopped before its end: " in capsys.readouterr().err
+
+
 def test_a_run_interrupted_in_its_run_then_while_its_mail_is_sent_stops_at_once(
     actor_dir, console_khive, monkeypatch, capsys
 ):
@@ -816,10 +835,21 @@ def test_a_boxed_run_whose_patch_fails_keeps_the_box_and_still_mails_its_end(
     assert kept in mail["content"]
 
 
-def interrupted_in_its(monkeypatch, step: str) -> list[str]:
-    """The box's `step`, its diff or its stop, cancels the command's own task once, as an interrupt
-    landing there would, then goes on; `cut` lands in the list returned if it was cut short, and `mail`
-    as the result mail goes."""
+def command_task() -> asyncio.Task:
+    (command,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ in ("run_main", "flow_main")]
+    return command
+
+
+async def interrupting(messages):
+    """A model call the command's first interrupt lands in: its task cancelled, as by a first SIGINT."""
+    command_task().cancel()
+    await asyncio.Event().wait()
+
+
+def interrupted_in_its(monkeypatch, step: str, times: int = 1) -> list[str]:
+    """The box's `step`, its diff or its stop, cancels the command's own task `times` times, as
+    interrupts landing there would, then goes on; `cut` lands in the list returned if it was cut short,
+    and `mail` as the result mail goes."""
     real, exec_, seen = getattr(Box, step), Khive.exec, []
 
     async def exec(self, ops: str) -> list:
@@ -828,11 +858,11 @@ def interrupted_in_its(monkeypatch, step: str) -> list[str]:
         return await exec_(self, ops)
 
     async def interrupted(self, *args):
-        (command,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "run_main"]
-        command.cancel()
         try:
-            for _ in range(3):
-                await asyncio.sleep(0)
+            for _ in range(times):
+                command_task().cancel()
+                for _ in range(3):
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             seen.append("cut")
             raise
@@ -857,23 +887,19 @@ def test_a_boxed_run_interrupted_while_its_patch_is_taken_takes_it_whole_and_mai
     assert "\nnotice: box: not applied; " in mail["content"]
 
 
-def test_a_boxed_run_interrupted_in_its_run_then_while_its_patch_is_taken_keeps_the_box_and_mails_it(
-    actor_dir, console_khive, boxes, monkeypatch
+def test_a_boxed_run_interrupted_in_its_run_then_while_its_patch_is_taken_keeps_the_box_and_ends_there(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
 ):
     made, _ = boxes
-
-    async def cancelled(messages):
-        raise asyncio.CancelledError
-
-    backends(monkeypatch, **{"fake/boxed": cancelled})
+    backends(monkeypatch, **{"fake/boxed": interrupting})
     seen = interrupted_in_its(monkeypatch, "diff")  # the command's second interrupt: the first was the run's
     assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
     (run_id,) = console_khive.runs
-    assert seen == ["cut", "mail"] and not made[0].stopped  # the patch stopped before the mail, not after
+    assert seen == ["cut"] and not made[0].stopped and console_khive.sent == []  # no mail after it
     assert not (actor_dir / ".lion" / "runs" / f"{run_id}.patch").exists()
-    (mail,) = console_khive.sent
-    kept = "\nnotice: box sbx-1: kept, not stopped: interrupted while its patch was taken; "
-    assert kept in mail["content"]
+    err = capsys.readouterr().err
+    assert "box sbx-1: kept, not stopped: interrupted while its patch was taken; " in err
+    assert f"run {run_id} stopped before its end: " in err
 
 
 def test_a_boxed_run_interrupted_while_its_box_stops_waits_for_the_stop_then_mails(
@@ -887,25 +913,52 @@ def test_a_boxed_run_interrupted_while_its_box_stops_waits_for_the_stop_then_mai
     assert "while it was stopped" not in mail["content"]
 
 
-def test_a_boxed_run_interrupted_in_its_run_then_while_its_box_stops_cuts_the_stop_and_mails_it(
-    actor_dir, console_khive, boxes, monkeypatch
+def test_a_boxed_run_interrupted_in_its_run_then_while_its_box_stops_cuts_the_stop_and_ends_there(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
 ):
     made, _ = boxes
-
-    async def cancelled(messages):
-        raise asyncio.CancelledError
-
-    backends(monkeypatch, **{"fake/boxed": cancelled})
+    backends(monkeypatch, **{"fake/boxed": interrupting})
     seen = interrupted_in_its(monkeypatch, "stop")  # the command's second interrupt: the first was the run's
     assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
     (run_id,) = console_khive.runs
-    assert seen == ["cut", "mail"] and not made[0].stopped  # the stop cut before the mail, not after
+    assert seen == ["cut"] and not made[0].stopped and console_khive.sent == []  # no mail after it
     assert (actor_dir / ".lion" / "runs" / f"{run_id}.patch").read_text() == made[0].patch
-    (mail,) = console_khive.sent
-    assert (
-        "\nnotice: box sbx-1: interrupted while it was stopped; it may still be running, at "
-        in mail["content"]
-    )
+    err = capsys.readouterr().err
+    assert "box sbx-1: interrupted while it was stopped; it may still be running, at " in err
+    assert f"run {run_id} stopped before its end: " in err
+
+
+def test_a_boxed_run_interrupted_twice_while_its_box_stops_cuts_the_stop_and_ends_there(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
+):
+    made, _ = boxes
+    seen = interrupted_in_its(
+        monkeypatch, "stop", times=2
+    )  # the first is carried by the stop, not the second
+    assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
+    (run_id,) = console_khive.runs
+    assert seen == ["cut"] and not made[0].stopped and console_khive.sent == []
+    assert console_khive.runs[run_id]["outcome"] == "success"
+    err = capsys.readouterr().err
+    assert "box sbx-1: interrupted while it was stopped; it may still be running, at " in err
+    assert f"run {run_id} stopped before its end: " in err
+
+
+def test_a_flow_interrupted_at_a_boxed_step_then_while_its_box_stops_ends_there(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
+):
+    made, _ = boxes
+    flows = TWO.replace('profile = "writer"\nsay = "plan', 'profile = "boxed"\nsay = "plan')
+    (actor_dir / "flows.toml").write_text(flows)
+    backends(monkeypatch, **{"fake/boxed": interrupting})
+    seen = interrupted_in_its(monkeypatch, "stop")
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert seen == ["cut"] and not made[0].stopped and console_khive.sent == []
+    assert console_khive.runs[flow_id]["outcome"] == "stopped"
+    err = capsys.readouterr().err
+    assert "box sbx-1: interrupted while it was stopped; it may still be running, at " in err
+    assert f"flow two {flow_id} stopped before its end: " in err
 
 
 def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outcome_and_the_error(

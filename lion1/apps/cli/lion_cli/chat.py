@@ -265,7 +265,7 @@ async def end_box(
     raises. An interrupt stops the patch, so nothing it says comes after the box is named, or the box's
     stop, which names the box, for it may run on; with `carry`, when the command has had no interrupt
     yet, the first waits for the patch, each git call of it under its timeout, and for the stop, and is
-    raised once the box has stopped, and a second stops either at once."""
+    raised once the box has stopped, and a second stops either at once and is raised as itself."""
     interrupted: BaseException | None = None
     if box.dead is not None:
         say(f"box: it ended before its patch was read ({box.dead}); recovery unavailable")
@@ -295,10 +295,11 @@ async def end_box(
             else:
                 reason = box.dead or "the provider named no box"
                 say(f"box {ident or '?'}: {why}; recovery unavailable: {reason}")
-            if interrupted is not None:  # the run was interrupted whatever then stopped its patch
-                raise interrupted from e
-            raise
+            if interrupted is not None and not isinstance(e, asyncio.CancelledError | KeyboardInterrupt):
+                raise interrupted from e  # the run was interrupted whatever then failed its patch
+            raise  # a second interrupt goes on up as itself, for the command ends at it
     holds = carry and interrupted is None  # the command's first interrupt is still to come: the stop takes it
+    ident = getattr(box, "box_id", None)  # read first: a stop forgets the box, done or not
     stop = asyncio.ensure_future(box.stop())
     try:
         try:
@@ -308,13 +309,11 @@ async def end_box(
                 raise
             interrupted = e  # the command's first interrupt: the box is stopped first
             await stop  # a second cancels it
-    except (asyncio.CancelledError, KeyboardInterrupt) as e:  # the patch is saved; the box may run on
+    except (asyncio.CancelledError, KeyboardInterrupt):  # the patch is saved; the box may run on
         say(
-            f"box {getattr(box, 'box_id', None) or '?'}: interrupted while it was stopped; it may still be "
-            f"running, at {box.workdir}, until the box's idle stop deletes it"
+            f"box {ident or '?'}: interrupted while it was stopped; it may still be running, at "
+            f"{box.workdir}, until the box's idle stop deletes it"
         )
-        if interrupted is not None:
-            raise interrupted from e
         raise
     if interrupted is not None:
         raise interrupted
