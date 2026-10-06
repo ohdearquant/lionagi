@@ -171,6 +171,27 @@ def test_every_real_box_test_is_opt_in():
         assert os.environ.get(var) == "1" or mark.args[0], f"{fn.__name__} runs without {var}=1"
 
 
+def test_the_tool_descriptions_every_box_shares_claim_nothing_only_the_vm_has():
+    # `lion chat --box daytona` registers the same Bash and Python models as the VM, so what only the VM
+    # supplies (the mount, the /opt volume, its tools) is said in the VM's own guidance
+    import inspect
+    from pathlib import Path
+
+    from hub.tools.shell import Bash, Python
+
+    said = " ".join(
+        [
+            Bash.__doc__,
+            Python.__doc__,
+            *(f.description or "" for m in (Bash, Python) for f in m.model_fields.values()),
+        ]
+    )
+    vm = (Path(inspect.getfile(Bash)).parent.parent / "guidance" / "sandbox.md").read_text()
+    for vm_only in ("VM", "mounted", "volume", "kept from one conversation", "no other host path", "`rg`"):
+        assert vm_only not in said, vm_only
+        assert vm_only in vm, vm_only
+
+
 @pytest.mark.parametrize(("cut_at", "stops"), [("volume", False), ("run", True)])
 def test_a_sandbox_whose_start_was_cut_stops_a_container_once_its_run_was_sent(tmp_path, cut_at, stops):
     calls = []

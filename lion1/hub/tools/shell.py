@@ -28,23 +28,22 @@ SANDBOX_DIR = Path(__file__).resolve().parent / "sandbox"  # the Dockerfile the 
 
 
 class Bash(BaseModel):
-    """Run a shell line in the sandbox: a Linux VM with this directory mounted at the same path,
-    `uv`, `git`, `rg`, `jq`, and /opt on a volume kept from one conversation to the next; no other host
-    path is mounted. Returns rc, stdout, stderr, elapsed, whole."""
+    """Run a shell line in the sandbox, the machine the sandbox guidance describes.
+    Returns rc, stdout, stderr, elapsed, whole."""
 
     command: str = Field(
         description="one shell line, run by `bash -o pipefail -c` from the console's directory: a "
         "pipeline's rc is its first failing command's, so `pytest | tail` still fails when pytest does"
     )
-    timeout: float = Field(default=120, description="seconds; the command is ended in the VM at this")
+    timeout: float = Field(default=120, description="seconds; the command is ended in the sandbox at this")
 
 
 class Python(BaseModel):
-    """Run Python source in the sandbox with the project's environment (uv's, under /opt/venv).
+    """Run Python source in the sandbox, with uv's environment under /opt/venv when the box has one.
     Returns rc, stdout, stderr, elapsed, whole."""
 
     code: str = Field(description="the source, run as a script from the console's directory")
-    timeout: float = Field(default=120, description="seconds; ended in the VM at this")
+    timeout: float = Field(default=120, description="seconds; ended in the sandbox at this")
 
 
 @dataclass
