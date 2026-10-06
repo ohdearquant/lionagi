@@ -77,6 +77,12 @@ LOCK_WAIT = 120.0  # seconds a pick waits for the evidence file's lock before it
 _SECURITY = "/usr/bin/security"
 _SERVICE = "lion.account.claude_code"  # the keychain item's service; its account is the pool's name
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
+_MODEL = re.compile(r"[A-Za-z0-9._:/@-]+")
+# a label the pool keeps and shows (a name, a plan group, a probe model) is never shaped as a Claude Code
+# credential, which begins `sk-ant-` and runs past 64 characters, so a token pasted there is refused
+_LABEL_MAX = 64
+_LABEL = "letters, digits, '.', '_' and '-', at most 64 of them, not beginning 'sk-ant-'"
+_ACCOUNT_HEADER = re.compile(r"\s*\[\[\s*account\s*\]\]\s*(#.*)?$")  # one `[[account]]` line
 _TOKEN_MAX = 2048
 _ACCOUNT_KEYS = ("name", "provider", "credential", "group")
 _MINUTES = {300: "five_hour", 10080: "seven_day"}  # a Codex window is told by its length
@@ -141,29 +147,45 @@ def _number(v: Any) -> bool:
     return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
 
 
+def _label(value: Any, form: re.Pattern[str] = _NAME) -> bool:
+    """A value the pool keeps and shows as written: `form`'s characters, at most 64, and not beginning as
+    a Claude Code credential does (ADR-0024/C1)."""
+    return (
+        isinstance(value, str)
+        and len(value) <= _LABEL_MAX
+        and bool(form.fullmatch(value))
+        and not value.lower().startswith("sk-ant-")
+    )
+
+
+def _key(key: str) -> str:
+    """A key a refusal names: as written when it is a label, else only that it is not one of them."""
+    return repr(key) if _label(key) else "outside the rule"
+
+
 def _settings(path: Path, t: Any) -> Settings:
+    """`[pick]` against ADR-0024/D1. A refusal names the key and its rule, never the value."""
     if not isinstance(t, dict):
         raise AccountsError(f"{path}: pick is a table, [pick]")
     known = Settings()
     for key, v in t.items():
         if key in ("max_age", "keep"):
             if not (_number(v) and v > 0):
-                raise AccountsError(f"{path}: [pick] {key} = {v!r} is not a number of seconds above zero")
+                raise AccountsError(f"{path}: [pick] {key} is not a number of seconds above zero")
         elif key in ("seven_day", "five_hour"):
             if not (_number(v) and 0 < v <= 1):
-                raise AccountsError(f"{path}: [pick] {key} = {v!r} is not a fraction above 0 and at most 1")
+                raise AccountsError(f"{path}: [pick] {key} is not a fraction above 0 and at most 1")
         elif key == "probe_model":
-            if not isinstance(v, dict) or not all(
-                p in PROVIDERS and isinstance(m, str) and m.strip() for p, m in v.items()
-            ):
+            if not isinstance(v, dict) or not all(p in PROVIDERS and _label(m, _MODEL) for p, m in v.items()):
                 raise AccountsError(
                     f"{path}: [pick] probe_model is a table of a model name per provider, "
-                    f"{' and '.join(PROVIDERS)}"
+                    f"{' and '.join(PROVIDERS)}; a model name is letters, digits and '.', '_', ':', '/', "
+                    "'@' and '-', at most 64 of them, not beginning 'sk-ant-'"
                 )
         else:
             raise AccountsError(
-                f"{path}: [pick] has no key {key!r}; the keys are max_age, keep, seven_day, five_hour "
-                "and probe_model"
+                f"{path}: [pick] has no key {_key(key)}; the keys are max_age, keep, seven_day, "
+                "five_hour and probe_model"
             )
     models = {**known.probe_model, **t.get("probe_model", {})}
     values = {k: float(t[k]) for k in ("max_age", "keep", "seven_day", "five_hour") if k in t}
@@ -171,25 +193,26 @@ def _settings(path: Path, t: Any) -> Settings:
 
 
 def _account(where: str, row: Any, seen: set[str]) -> Account:
-    """One `[[account]]` table checked against ADR-0024/D1. A refusal names the entry and never repeats
-    a credential: a token pasted where a reference belongs must not come back in the message."""
+    """One `[[account]]` table checked against ADR-0024/D1. A refusal names the entry by its name once
+    the name is a label, and the key and its rule, never a value: a token pasted where a reference or a
+    label belongs must not come back in the message."""
     if not isinstance(row, dict):
         raise AccountsError(f"{where} is not a table")
     for key in row:
         if key not in _ACCOUNT_KEYS:
             raise AccountsError(
-                f"{where}: no key {key!r}; an account takes name, provider, credential, group"
+                f"{where}: no key {_key(key)}; an account takes name, provider, credential, group"
             )
     name = row.get("name")
-    if not isinstance(name, str) or not _NAME.fullmatch(name):
-        raise AccountsError(f"{where}: its name is missing or not letters, digits, '.', '_' and '-'")
+    if not _label(name):
+        raise AccountsError(f"{where}: its name is missing or not {_LABEL}")
     where = f"{where.rsplit(' ', 1)[0]} {name!r}"
     if name in seen:
         raise AccountsError(f"{where} is named twice")
     seen.add(name)
     provider = row.get("provider")
     if provider not in PROVIDERS:
-        raise AccountsError(f"{where}: provider {provider!r} is not {' or '.join(PROVIDERS)}")
+        raise AccountsError(f"{where}: its provider is not {' or '.join(PROVIDERS)}")
     credential = row.get("credential")
     if not isinstance(credential, str):
         raise AccountsError(f"{where}: credential is missing or not text")
@@ -201,8 +224,8 @@ def _account(where: str, row: Any, seen: set[str]) -> Account:
             raise AccountsError(f"{where}: a Codex credential is default or a home directory's absolute path")
         credential = home
     group = row.get("group")
-    if group is not None and not (isinstance(group, str) and _NAME.fullmatch(group)):
-        raise AccountsError(f"{where}: group {group!r} is not letters, digits, '.', '_' and '-'")
+    if group is not None and not _label(group):
+        raise AccountsError(f"{where}: its group is not {_LABEL}")
     return Account(name, provider, credential, group)
 
 
@@ -214,12 +237,18 @@ def parse_pool(text: str, path: Path) -> Pool:
         raise AccountsError(f"{path}: {e}") from None
     for key in doc:
         if key not in ("account", "pick"):
-            raise AccountsError(f"{path}: no key {key!r}; the file holds [[account]] tables and [pick]")
+            raise AccountsError(f"{path}: no key {_key(key)}; the file holds [[account]] tables and [pick]")
     rows = doc.get("account", [])
     if not isinstance(rows, list):
         raise AccountsError(f"{path}: account is an array of tables, [[account]]")
     seen: set[str] = set()
     accounts = tuple(_account(f"{path}: account {i}", row, seen) for i, row in enumerate(rows, 1))
+    # `lion account` edits the file by its `[[account]]` lines (D8): an array written inline, or a table
+    # named any other way, would load here and then be refused by every edit, so it is refused here
+    if sum(1 for line in text.splitlines() if _ACCOUNT_HEADER.match(line)) != len(rows):
+        raise AccountsError(
+            f"{path}: each account is its own [[account]] table, its header on a line of its own"
+        )
     return Pool(accounts, _settings(path, doc.get("pick", {})), path)
 
 
@@ -236,20 +265,26 @@ def load_pool(path: Path | str = DEFAULT_POOL) -> Pool:
 
 
 def _check_name(name: str) -> None:
-    # the name rides a line the keychain tool splits on spaces: only the pool's characters pass
-    if not isinstance(name, str) or not _NAME.fullmatch(name):
-        raise AccountsError("an account's name is letters, digits, '.', '_' and '-'")
+    # the name rides a line the keychain tool splits on spaces: only the pool's labels pass
+    if not _label(name):
+        raise AccountsError(f"an account's name is {_LABEL}")
 
 
 def _shaped(value: Any) -> bool:
     return isinstance(value, str) and 0 < len(value) <= _TOKEN_MAX and bool(_NAME.fullmatch(value))
 
 
-def _said(text: str, secret: str | None) -> str:
-    """The tool's own words for an error: the token replaced, on one line."""
-    if secret:
-        text = text.replace(secret, "[token]")
-    return " ".join(text.split()) or "nothing said"
+def _exited(out: subprocess.CompletedProcess) -> str:
+    # the tool's own words are never relayed: what it prints may hold the token or a part of it (C1)
+    return f"the keychain tool exited {out.returncode}"
+
+
+def _deletes(name: str) -> str:
+    return f"`security delete-generic-password -a {name} -s {_SERVICE}` deletes it"
+
+
+def _left(name: str) -> str:
+    return f"its keychain item may still hold the token; {_deletes(name)}"
 
 
 def _security(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -271,17 +306,18 @@ def token(name: str) -> str:
     if out.returncode == 44:
         raise AccountsError(f"account {name!r} has no keychain item; `lion account add` writes it")
     if out.returncode:
-        said = _said(out.stderr, value)
-        raise AccountsError(f"account {name!r}: the keychain tool exited {out.returncode}: {said}")
+        raise AccountsError(f"account {name!r}: {_exited(out)}")
     if not _shaped(value):
         raise AccountsError(f"account {name!r}: its keychain item does not hold a token of the expected form")
     return value
 
 
 def store_token(name: str, value: str) -> None:
-    """Write a Claude Code account's token into its keychain item, replacing one already there. The
-    token goes to the tool on its standard input, never in an argument; a refusal never repeats it,
-    any part of it or its length."""
+    """Write a Claude Code account's token into its keychain item, replacing one already there, and read
+    it back. The token goes to the tool on its standard input, never in an argument; a refusal never
+    repeats it, any part of it or its length. A write the tool failed is read back as well, since the
+    tool may fail after writing: an item that holds the token then is deleted, or the refusal names the
+    command that deletes it, so no refused write leaves the token behind."""
     _check_name(name)
     if not isinstance(value, str) or not value:
         raise AccountsError(f"account {name!r}: no token was given; nothing was written")
@@ -293,17 +329,32 @@ def store_token(name: str, value: str) -> None:
         raise AccountsError(
             f"account {name!r}: a token is letters, digits, '-', '_' and '.' only; nothing was written"
         )
-    out = _security(["-i"], f"add-generic-password -U -a {name} -s {_SERVICE} -w {value}\n")
-    said = _said(out.stdout + " " + out.stderr, value)
-    if out.returncode:
-        raise AccountsError(f"account {name!r}: the keychain tool exited {out.returncode}: {said}")
+    try:
+        out = _security(["-i"], f"add-generic-password -U -a {name} -s {_SERVICE} -w {value}\n")
+        failed = _exited(out) if out.returncode else None
+    except AccountsError as e:  # it did not answer, or could not run: what it wrote is read below
+        failed = str(e)
     # what `-i` exits with when a command it read fails is not measured, so the item is read back
-    back = _security(["find-generic-password", "-a", name, "-s", _SERVICE, "-w"])
-    if back.returncode or back.stdout.strip() != value:
-        raise AccountsError(
-            f"account {name!r}: the keychain item did not read back as written: "
-            f"{said}; {_said(back.stderr, value)}"
+    try:
+        back = _security(["find-generic-password", "-a", name, "-s", _SERVICE, "-w"])
+        written, unread = (
+            back.returncode == 0 and back.stdout.strip() == value,
+            back.returncode not in (0, 44),
         )
+    except AccountsError:
+        written, unread = False, True
+    if failed is None and written:
+        return
+    why = failed or "the keychain item did not read back as written"
+    if written:
+        try:
+            remove_token(name)
+            why += "; the item it wrote was deleted"
+        except AccountsError:
+            why += f"; {_left(name)}"
+    elif unread:
+        why += f"; it could not be read back, so {_left(name)}"
+    raise AccountsError(f"account {name!r}: {why}")
 
 
 def remove_token(name: str) -> bool:
@@ -311,8 +362,7 @@ def remove_token(name: str) -> bool:
     _check_name(name)
     out = _security(["delete-generic-password", "-a", name, "-s", _SERVICE])
     if out.returncode not in (0, 44):
-        said = _said(out.stderr, None)
-        raise AccountsError(f"account {name!r}: the keychain tool exited {out.returncode}: {said}")
+        raise AccountsError(f"account {name!r}: {_exited(out)}, so its keychain item was not deleted")
     return out.returncode == 0
 
 
@@ -322,7 +372,9 @@ def child_env(
     """The environment a child on `account` starts with (ADR-0024/C2): `environ` less every variable
     the account's CLI takes a credential from, then the chosen one. A Claude Code account with a token
     sets `CLAUDE_CODE_OAUTH_TOKEN`; a Codex child runs from the agent's private home `home`, whose login
-    the pick points at the account's; `default` sets no credential. Nothing is started here."""
+    link must resolve to the account's (`default`'s is `environ`'s `CODEX_HOME`, else `~/.codex`),
+    resolved without opening either file; `default` with no private home sets no credential. Nothing is
+    started here."""
     env = {k: v for k, v in environ.items() if k not in CREDENTIAL_VARIABLES[account.provider]}
     if account.provider == "claude_code":
         if account.credential == "keychain":
@@ -335,6 +387,16 @@ def child_env(
     if token is not None:
         raise AccountsError(f"account {account.name!r} is a Codex account and takes no token")
     if home is not None:
+        own = account.credential
+        if own == "default":
+            own = environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+        if os.path.realpath(os.path.join(home, "auth.json")) != os.path.realpath(
+            os.path.join(own, "auth.json")
+        ):
+            raise AccountsError(
+                f"account {account.name!r}: the private home's login is not this account's; the pick points "
+                "it at the account's before a child starts"
+            )
         env["CODEX_HOME"] = home
     elif account.credential != "default":
         raise AccountsError(

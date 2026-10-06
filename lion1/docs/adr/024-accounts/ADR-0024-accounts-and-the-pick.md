@@ -1,7 +1,7 @@
 ---
 adr: ADR-0024
 status: proposed
-liveness: partial (the pool file, a Claude Code token's keychain item, the child's environment as a function that starts nothing, the evidence file under its lock with the two limit-row parsers, and `lion account` add, list and remove are under tests; the agent's `accounts` key, the private home's link, the pick, the probe, the refusal classes, the launch record and every backend's use of these are owed, S1)
+liveness: partial (the pool file, a Claude Code token's keychain item, the child's environment as a function that starts nothing, the evidence file under its lock with the two limit-row parsers, and `lion account` add, list and remove are under tests; the agent's `accounts` key, pointing the private home's link, the pick, the probe, the refusal classes, the launch record and every backend's use of these are owed, S1)
 date: "2026-10-04"
 area: accounts
 kind: new
@@ -71,23 +71,23 @@ keys and the app's screen are later records (S3, S4). Source: `hub/backend/claud
 | A2 | A keychain item can be read by a job the operating system starts in the background, with the screen locked. | the router's key is read from a keychain item by name (`api_key` in `hub/backend/openrouter.py`); a locked screen was not measured | a served agent cannot set a token, so its Claude Code accounts other than `default` hold its wakes until custody is amended |
 | A3 | Two Codex homes keep separate sign-ins, and the CLI writes a refreshed credential back into the home it read it from. | the backend's private home reads one login through a link the CLI writes in place (`hub/backend/codex.py`); two real homes were not measured | Codex accounts cannot be told apart by home, and Codex runs on `default` alone |
 | A4 | A Codex `token_count` row names each window's length and the instant it resets. | the session tests' rows carry `used_percent` and `window_minutes` (`tests/test_codex_session.py`); no code here reads a reset | a Codex limit reading has no reset, and only `max_age` ends it |
+| A5 | A Claude Code token begins `sk-ant-` and runs past 64 characters. | gitleaks 8.30.1's rules for Anthropic keys: `sk-ant-api03-` and `sk-ant-admin01-`, each with 95 characters more; the token `claude setup-token` prints was not measured | a token of another form passes as a label, and C1's label clause does not keep it out of the pool file |
 
 ## Claims
 
 ### C1: A credential is written once and shown nowhere _(enforced: mechanical; owed, S1)_ ^c1
 
-- **Subject**: every command's output, route answer, log line, error, envelope, state file and
-  screen of the runtime, and every child's arguments.
-- **Violated when**: any of them holds a Claude Code token, any part of one, its length or its
-  prefix; or the runtime opens the credential file in a Codex home.
+- **Subject**: the Claude Code token `lion account add` reads on standard input and the runtime
+  reads back, wherever the runtime writes: output, route answers, logs, errors, envelopes, state
+  files, screens and every child's arguments.
+- **Violated when**: any of them holds that token, any part of it, its length or its prefix; the
+  pool keeps a label shaped as a credential (A5); or the runtime opens a Codex home's login file.
 
-A token is written once, by `lion account add`, which reads it without echo (D8). The runtime reads
-it back only to build a child's environment (C2), never onto a command line. Text a CLI prints that
-reaches an error or an envelope has the chosen token replaced before it is kept.
-
-A Codex account's credential is the CLI's own file in its home, written by the CLI's sign-in and
-read by the CLI alone. A test puts a made-up token through every command, route, log and error and
-finds it in nothing they wrote (S1).
+No form of `lion account` takes a token as an argument, and the runtime reads one back only for a
+child's environment (C2). A keychain tool's failure gives its exit code, never its words. A label
+the pool shows is shown as written, so one past 64 characters or beginning `sk-ant-` is refused, and
+a refusal names the key, never the value. A test puts a made-up token through every command, route,
+log and error, and `lion account add` as its own process: it is nowhere (S1).
 
 ### C2: A child's environment holds the chosen account's credential and no competing one _(enforced: mechanical; owed, S1)_ ^c2
 
@@ -101,7 +101,8 @@ when it is set (`arm` in `apps/cli/lion_cli/agent.py`), and `CLAUDE_CODE_OAUTH_T
 a token. `CC_ACCOUNT`, the earlier tool's name for an account, goes too.
 
 For Codex, `CODEX_ACCESS_TOKEN` goes (named in `hub/backend/codex.py`), and `CODEX_HOME` is the
-agent's private home, whose login the pick points at the account's (D2). The `default` account sets
+agent's private home, whose login the pick points at the account's (D2). A private home whose login
+resolves to another is refused, and neither file is opened to tell. The `default` account sets
 nothing. The list is completed before D3 lands (S9).
 
 ### C3: A limit reading comes from its source, and an unknown figure is never a number _(enforced: mechanical; owed, S1)_ ^c3
@@ -200,45 +201,49 @@ plan group draw on one limit. Declaring a Codex account in the pool changes none
 
 ### D1: `accounts.toml` beside the areas registry, and the agent's `accounts` key ^d1
 
-Serves C4, C5 and C9. The file sits beside `areas.toml` ([[ADR-0017-the-desk|ADR-0017]]). Each table
-in its `account` array holds the keys below, and a `[pick]` table holds the settings. A repeated
-name, an unknown key or a value outside its rule refuses the file by name. An agent's definition
-takes `accounts`, a list of names of its model's provider. With no file, each provider's pool is one
-account on `default`, as today.
+Serves C1, C4, C5 and C9. The file sits beside `areas.toml` ([[ADR-0017-the-desk|ADR-0017]]). Each
+account is a table of the `account` array under a header line of its own; an inline array is
+refused, since D8 edits by those lines. A `[pick]` table holds the settings. A repeated name, an
+unknown key or a value outside its rule refuses the file, naming the key and rule. An agent's
+definition takes `accounts`, names of its model's provider. With no file, each provider's pool is
+one account on `default`.
 
 | key | rule |
 | --- | ---- |
-| `name` | unique; letters, digits, `.`, `_` and `-` |
+| `name` | unique; a label: letters, digits, `.`, `_` and `-`, at most 64, not beginning `sk-ant-` (C1) |
 | `provider` | `claude_code` or `codex` |
 | `credential` | the credential reference: `keychain` for Claude Code, a home directory for Codex, or `default` |
-| `group` | optional; the plan group's name |
+| `group` | optional; the plan group's name, a label as `name` is |
 | `[pick]` `max_age` | seconds a limit reading stays fresh; 600 |
 | `[pick]` `keep` | seconds after its last use an agent keeps its account; 3600, the prompt cache's life (`_CACHE_TTL_S`) |
 | `[pick]` `seven_day`, `five_hour` | the fractions under which an account is usable; 0.97 and 0.95 |
-| `[pick]` `probe_model` | the model a probe calls, per provider; `haiku` for Claude Code, the CLI's default for Codex |
+| `[pick]` `probe_model` | the model a probe calls, per provider; `haiku` for Claude Code, the CLI's default for Codex; a label that may also hold `:`, `/` and `@` |
 
 - **Landing evidence**: `tests/test_accounts.py`:
   `test_a_pool_file_declares_its_accounts_their_plan_groups_and_the_pick_settings`,
   `test_every_refusal_of_the_pool_file_names_the_entry_and_the_rule`,
+  `test_no_refusal_of_the_pool_file_repeats_a_value_shaped_as_a_credential`,
   `test_no_file_is_one_account_per_provider_named_default_on_the_default_credential`,
   `test_the_pool_sits_beside_the_areas_registry_and_the_evidence_file_beside_the_pool`; the agent's
   `accounts` key is owed with the pick (S7).
 
 ### D2: A keychain item per Claude Code account, a home per Codex account ^d2
 
-Serves C1 and C2. `lion account add` writes a Claude Code token, read without echo, to a keychain
-item named by the account. The runtime reads it as the router's key is read (`api_key` in
-`hub/backend/openrouter.py`), only to build a child's environment. A Codex account's home is one the
-person signs the CLI in under. The agent's private home ([[ADR-0009-backends#^d3|ADR-0009/D3]])
-keeps its login as a link, which the pick points at the chosen home's while no child runs. An agent
-with no private home runs on `default` alone.
+Serves C1 and C2. `lion account add` writes a Claude Code token, read on standard input, to a
+keychain item and reads it back; a refused write that left the item holding it deletes it, or names
+the command that does. The runtime reads the item as the router's key is read. An agent's private
+home ([[ADR-0009-backends#^d3|ADR-0009/D3]]) links its login to the chosen Codex account's home
+while no child runs. A child is refused while it links elsewhere, and with no private home Codex
+runs on `default`.
 
 - **Landing evidence**: `tests/test_accounts.py`:
   `test_a_token_goes_to_the_keychain_tool_on_standard_input_and_reads_back`,
   `test_a_token_outside_its_form_is_refused_before_the_tool_runs_and_never_repeated`,
-  `test_what_the_keychain_tool_says_reaches_an_error_with_the_token_replaced`,
+  `test_the_keychain_tools_words_never_reach_an_error_only_its_exit_code`,
+  `test_a_write_the_tool_failed_after_storing_deletes_the_item_or_names_the_command_that_does`,
   `test_a_claude_code_child_carries_its_accounts_token_and_no_competing_credential`,
-  `test_a_codex_child_runs_from_the_private_home_and_keeps_no_access_token`; pointing the private
+  `test_a_codex_child_runs_from_the_private_home_and_keeps_no_access_token`,
+  `test_a_codex_child_whose_private_home_is_not_its_accounts_login_is_refused`; pointing the private
   home's link is owed with the pick (S1).
 
 ### D3: Each backend builds its child's environment from the pick ^d3
@@ -309,19 +314,24 @@ and out, and calls of unknown cost. `arm` names the pool's accounts where it now
 
 ### D8: `lion account` and its four forms ^d8
 
-Serves C1 and C3. `add <name> --provider P --credential R [--group G]` writes the entry, and for
-`keychain` reads the token without echo into its item. `list` shows each account's name, provider,
-group, readings with their age and source, and marks; never a credential or where one is kept.
-`probe [<name>]` probes now unless C6's bound was reached, and then says when it can. `remove
-<name>` deletes the entry and a Claude Code account's keychain item, and leaves a Codex home to its
-person.
+Serves C1 and C3. `add <name> --provider P --credential R [--group G]` writes the entry and, for
+`keychain`, the token from standard input into its item. `list` shows each account's name, provider,
+group, readings with age and source, and marks; never a credential or where one is kept. `probe
+[<name>]` probes unless C6's bound was reached, then says when it can. `remove <name>` writes the
+file, then deletes a Claude Code account's item, restoring the table if that fails; a Codex home
+stays. Both hold `.accounts.toml.lock` from read to write.
 
 - **Landing evidence**: `tests/test_accounts.py`:
   `test_add_writes_the_entry_at_the_end_and_keeps_every_other_byte`,
   `test_add_reads_the_token_without_echo_at_a_terminal`,
   `test_remove_deletes_the_table_and_its_item_and_leaves_the_rest_and_a_codex_home`,
+  `test_remove_writes_the_file_before_it_deletes_the_item`,
+  `test_a_remove_whose_item_is_not_deleted_puts_its_table_back`,
+  `test_two_adds_at_once_on_one_pool_both_land`,
   `test_list_shows_each_window_with_its_age_and_source_and_each_mark`,
-  `test_a_made_up_token_is_in_nothing_any_command_or_refusal_wrote`; `probe` is owed (S1).
+  `test_a_made_up_token_is_in_nothing_any_command_or_refusal_wrote`,
+  `test_lion_account_add_as_its_own_process_has_the_token_in_no_processs_arguments`; `probe` is owed
+  (S1).
 
 ## Alternatives
 

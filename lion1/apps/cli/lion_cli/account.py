@@ -2,27 +2,35 @@
 token in its keychain item, and what `evidence.json` says of each account. The file is rewritten in
 place, every other byte kept, and read back before it is written. A refusal exits non-zero with the
 reason on stderr; no output names a credential, or where one is kept beyond the word `keychain`,
-`default` or `home`."""
+`default` or `home`. `add` and `remove` hold a lock file beside the pool from their read to their
+write, so two of them on one pool run one after the other."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import getpass
 import json
 import os
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 from hub.accounts import (
+    _ACCOUNT_HEADER,
+    _LABEL,
+    LOCK_WAIT,
     WINDOWS,
     Account,
     AccountsError,
     Kept,
+    _deletes,
+    _label,
     fresh,
     load_pool,
     parse_pool,
@@ -35,7 +43,6 @@ from hub.accounts import (
 __all__ = ("add", "remove", "rows", "account_main")
 
 _HEADER = re.compile(r"\s*\[")  # a table's header, `[t]` or `[[t]]`
-_ACCOUNT = re.compile(r"\s*\[\[\s*account\s*\]\]\s*(#.*)?$")
 
 
 def _read(path: Path) -> str:
@@ -60,11 +67,44 @@ def _write(path: Path, text: str) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _locked(path: Path, wait: float = LOCK_WAIT) -> Iterator[None]:
+    """An exclusive `flock` on `.accounts.toml.lock` beside the pool, held from a command's read to its
+    write. The lock file is never replaced, so a waiter that takes it holds the one every writer takes;
+    one that waits past `wait` seconds is refused before it reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path.with_name(f".{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise AccountsError(
+                        f"{path} is being changed by another command past {wait:g} seconds; "
+                        "nothing was written"
+                    ) from None
+                time.sleep(0.01)
+        yield
+    finally:
+        os.close(fd)
+
+
 def add(
     path: Path, name: str, provider: str, credential: str, group: str | None, secret: Callable[[], str]
 ) -> Account:
     """Declare an account at the end of the pool's file and, for `keychain`, write the token `secret`
-    returns into its item. Every refusal but the token's own comes before the token is asked for."""
+    returns into its item, under the pool's lock. Every refusal but the token's own comes before the token
+    is asked for; a file write that fails takes the item back."""
+    with _locked(path):
+        return _add(path, name, provider, credential, group, secret)
+
+
+def _add(
+    path: Path, name: str, provider: str, credential: str, group: str | None, secret: Callable[[], str]
+) -> Account:
     text = _read(path)
     before = parse_pool(text, path)
     if any(a.name == name for a in before.accounts):
@@ -87,17 +127,29 @@ def add(
         store_token(got.name, secret())
     try:
         _write(path, new_text)
-    except BaseException:
+    except BaseException as e:
         if got.credential == "keychain":
-            remove_token(got.name)  # the item goes with the entry it was written for
+            try:
+                remove_token(got.name)  # the item goes with the entry it was written for
+            except AccountsError as left:
+                e.add_note(f"{left}; {_deletes(got.name)}")
         raise
     return got
 
 
 def remove(path: Path, name: str) -> tuple[Account, bool]:
-    """Delete an account's `[[account]]` table and, for `keychain`, its item; a Codex home is its
-    person's and stays. Comments right above a table are its own and go with it; those below its last
-    key are the next table's and stay. (the account, whether a keychain item was deleted)."""
+    """Delete an account's `[[account]]` table and, for `keychain`, its item, under the pool's lock; a
+    Codex home is its person's and stays. Comments right above a table are its own and go with it; those
+    below its last key are the next table's and stay. The file is written first and the item deleted
+    after, and a delete that fails puts the table back. (the account, whether a keychain item was
+    deleted)."""
+    if not _label(name):  # never shown: a token pasted as the name must not come back
+        raise AccountsError(f"an account's name is {_LABEL}; nothing was changed")
+    with _locked(path):
+        return _remove(path, name)
+
+
+def _remove(path: Path, name: str) -> tuple[Account, bool]:
     text = _read(path)
     before = parse_pool(text, path)
     target = next((a for a in before.accounts if a.name == name), None)
@@ -108,7 +160,7 @@ def remove(path: Path, name: str) -> tuple[Account, bool]:
     new_text = None
     for start, stop in zip(heads, heads[1:], strict=False):
         if (
-            _ACCOUNT.match(lines[start])
+            _ACCOUNT_HEADER.match(lines[start])
             and parse_pool("".join(lines[start:stop]), path).accounts[0] == target
         ):
             first, end = start, stop
@@ -124,9 +176,20 @@ def remove(path: Path, name: str) -> tuple[Account, bool]:
     rest = tuple(a for a in before.accounts if a != target)
     if after is None or after.accounts != rest or after.settings != before.settings:
         raise AccountsError(f"{path}: account {name!r} could not be removed in place, so nothing was changed")
-    had = remove_token(name) if target.credential == "keychain" else False
     _write(path, new_text)
-    return target, had
+    if target.credential != "keychain":
+        return target, False
+    try:
+        return target, remove_token(name)
+    except AccountsError as e:
+        try:
+            _write(path, text)
+        except BaseException as back:
+            raise AccountsError(
+                f"{e}, and {path} could not be put back ({type(back).__name__}), so the item is left with no "
+                f"entry; {_deletes(name)}"
+            ) from None
+        raise AccountsError(f"{e}; its table was put back, so nothing was changed") from None
 
 
 def rows(path: Path, now: float | None = None) -> list[dict]:
