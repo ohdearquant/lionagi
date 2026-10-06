@@ -58,6 +58,7 @@ class Sandbox(BoxBase):
     volume: str = "lion-sandbox-opt"  # /opt across conversations: uv's environment and cache
     cli: str = field(default_factory=lambda: shutil.which("container") or "container")
     started: bool = False
+    launched: bool = False  # its container's `run` was sent: from then one may exist
 
     @property
     def workdir(self) -> str:  # the directory is mounted at its own path: the same string inside
@@ -104,7 +105,19 @@ class Sandbox(BoxBase):
             argv += ["-e", f"TZ={zone}"]  # the sandbox's clock reads like the notice's
         if self.offline:
             argv += ["--network", OFFLINE_NETWORK]
-        rc, out, err = await self._cli(*argv, self.image, "sleep", "infinity", timeout=120)
+
+        async def launch() -> tuple[int, str, str]:
+            self.launched = True  # in the step that sends it: a task cut before that step sent nothing
+            return await self._cli(*argv, self.image, "sleep", "infinity", timeout=120)
+
+        run = asyncio.ensure_future(launch())
+        try:
+            rc, out, err = await asyncio.shield(run)
+        except (
+            asyncio.CancelledError
+        ):  # the `run` reaches its answer first, so a stop then finds what it made
+            await asyncio.wait([run])
+            raise
         if rc != 0:
             raise RuntimeError(f"sandbox {self.name} did not start: {(err or out).strip()[-400:]}")
         self.started = True
@@ -132,10 +145,20 @@ class Sandbox(BoxBase):
         return {"rc": rc, "stdout": out, "stderr": err, "elapsed": elapsed, "timed_out": timed_out}
 
     async def stop(self) -> None:
-        if self.started:
+        """Stop and delete the container once its `run` was sent, even when that `run` never answered.
+        Such a `run` may have made nothing, so a delete that fails counts only while the container is
+        still listed after it, or the list cannot be read: then this raises, and a later stop tries
+        again."""
+        if self.started or self.launched:  # a `run` whose answer never came may have made it
             await self._cli("stop", self.name, timeout=60)
-            await self._cli("delete", self.name, timeout=60)
-            self.started = False
+            rc, out, err = await self._cli("delete", self.name, timeout=60)
+            if rc != 0:
+                listed, names, _ = await self._cli("list", "--all", "--format", "json", timeout=60)
+                if listed != 0 or f'"{self.name}"' in names:  # the name as a whole value
+                    raise RuntimeError(
+                        f"sandbox {self.name}: its delete exited {rc}: {(err or out).strip()[-200:]}"
+                    )
+            self.started = self.launched = False
 
 
 def shell(actor: Actor, sandbox: Box) -> set[str]:
