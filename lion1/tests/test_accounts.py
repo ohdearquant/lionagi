@@ -3,6 +3,7 @@ keychain item, the child's environment, the evidence file under its lock, the tw
 `lion account`. No test reaches the keychain: `security` is a script that keeps its items in a file and
 logs its arguments, and every token here is made up."""
 
+import dataclasses
 import io
 import json
 import os
@@ -1070,6 +1071,35 @@ def test_add_refuses_a_name_already_present_and_a_file_it_cannot_add_to_in_place
         assert "Zq7xW" not in err and path.read_text() == POOL_TEXT and items(store) == {}
 
 
+@pytest.mark.parametrize("reread", ["refused", "another account"])
+def test_an_add_whose_text_does_not_read_back_as_the_one_account_added_writes_nothing(
+    tmp_path, keychain, monkeypatch, capsys, reread
+):
+    # the pool's own rules leave no file whose added text reads back otherwise; the read-back is the
+    # backstop for one that ever does, so the parse of the added text is made to differ here
+    store, argv, _ = keychain
+    path = tmp_path / "accounts.toml"
+    path.write_text(POOL_TEXT)
+    real = account_cli.parse_pool
+
+    def parse(text, where):
+        pool = real(text, where)
+        if text.startswith(POOL_TEXT) and text != POOL_TEXT:  # the text with the entry added
+            if reread == "refused":
+                raise AccountsError("made-up refusal")
+            return dataclasses.replace(pool, accounts=pool.accounts[:-1])
+        return pool
+
+    monkeypatch.setattr(account_cli, "parse_pool", parse)
+    add = ["account", "add", "work", "--provider", "claude_code", "--credential", "keychain"]
+    code, out, err = run([*add, "--file", str(path)], capsys, stdin=CANARY)
+    assert code == 1 and out == ""
+    assert (
+        err == f"lion account add: {path}: the account could not be added in place, so nothing was written\n"
+    )
+    assert path.read_text() == POOL_TEXT and logged(argv) == [] and items(store) == {}
+
+
 def test_a_file_write_that_fails_after_the_item_takes_the_item_back(tmp_path, keychain, monkeypatch, capsys):
     store, argv, _ = keychain
     path = tmp_path / "accounts.toml"
@@ -1104,6 +1134,29 @@ def test_a_file_write_that_fails_after_the_item_takes_the_item_back(tmp_path, ke
             capsys,
         )
     assert path.read_text() == POOL_TEXT and len(logged(argv)) == calls
+
+
+def test_a_file_write_that_fails_with_an_item_that_cannot_be_taken_back_names_the_command_that_deletes_it(
+    tmp_path, keychain, monkeypatch, capsys
+):
+    store, argv, fail = keychain
+    path = tmp_path / "accounts.toml"
+    path.write_text(POOL_TEXT)
+
+    def broken(src, dst):
+        fail.write_text("sticky")  # from here on the tool keeps every item it is asked to delete
+        raise OSError("made-up failure")
+
+    monkeypatch.setattr(account_cli.os, "replace", broken)
+    add = ["account", "add", "work", "--provider", "claude_code", "--credential", "keychain"]
+    with pytest.raises(OSError, match="made-up failure") as raised:
+        run([*add, "--file", str(path)], capsys, stdin=CANARY)
+    assert raised.value.__notes__ == [
+        "account 'work': the keychain tool exited 1, so its keychain item was not deleted; "
+        "`security delete-generic-password -a work -s lion.account.claude_code` deletes it"
+    ]
+    assert path.read_text() == POOL_TEXT and items(store) == {"work/lion.account.claude_code": CANARY}
+    assert logged(argv)[-1][0] == "delete-generic-password"
 
 
 REMOVE_TEXT = (
@@ -1224,6 +1277,38 @@ def test_remove_refuses_an_absent_name_and_an_account_it_cannot_remove_in_place(
     path.write_bytes(b"\xff")
     code, _, err = run(["account", "remove", "a", "--file", str(path)], capsys)
     assert code == 1 and "is not UTF-8, so nothing was written" in err
+
+
+def test_a_remove_that_finds_no_table_of_its_account_in_the_text_changes_nothing(
+    tmp_path, keychain, monkeypatch, capsys
+):
+    # as with add: no file the pool accepts has an account whose table the text does not hold, so each
+    # table's own parse is made to name another account here
+    store, argv, _ = keychain
+    path = tmp_path / "accounts.toml"
+    text = REMOVE_TEXT.replace("HOME", str(tmp_path))
+    path.write_text(text)
+    store_token("b", CANARY)
+    calls = len(logged(argv))
+    real = account_cli.parse_pool
+
+    def parse(source, where):
+        pool = real(source, where)
+        if source == text:
+            return pool
+        return dataclasses.replace(  # one table, as remove reads it out of the text
+            pool, accounts=tuple(dataclasses.replace(a, name=a.name + "x") for a in pool.accounts)
+        )
+
+    monkeypatch.setattr(account_cli, "parse_pool", parse)
+    code, out, err = run(["account", "remove", "b", "--file", str(path)], capsys)
+    assert code == 1 and out == ""
+    assert (
+        err
+        == f"lion account remove: {path}: account 'b' could not be removed in place, so nothing was changed\n"
+    )
+    assert path.read_text() == text and len(logged(argv)) == calls
+    assert items(store) == {"b/lion.account.claude_code": CANARY}
 
 
 WRAPPER = """import sys
