@@ -24,7 +24,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
@@ -57,20 +57,25 @@ from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
 __all__ = (
+    "Role",
     "Message",
     "Reply",
     "SessionPlan",
     "Backend",
+    "Language",
     "Profile",
     "HandlerFn",
     "BeforeFn",
     "AfterFn",
+    "Effect",
     "Handler",
     "ProfileError",
     "JobError",
+    "Reason",
     "Result",
     "Success",
     "Continue",
+    "Spent",
     "Exhausted",
     "Refused",
     "Stopped",
@@ -100,9 +105,13 @@ if TYPE_CHECKING:
     from .store import Store
 
 
+Role = Literal["system", "user", "assistant"]
+_ROLES = get_args(Role)
+
+
 @dataclass(frozen=True)
 class Message:
-    role: str  # system | user | assistant
+    role: Role
     content: str
     name: str | None = None  # the record entry this message renders, when it renders one
     spec: str | None = None  # for a RESULT that landed: its command (a failed one changed nothing)
@@ -110,6 +119,10 @@ class Message:
     # a stand-in for entries the view no longer shows whole: a placeholder or a summary. A session that
     # still holds the entry under this name holds more than the view, which it may keep (ADR-0009/C4)
     folded: bool = False
+
+    def __post_init__(self) -> None:
+        if self.role not in _ROLES:
+            raise ValueError(f"message role {self.role!r} is not one of {', '.join(_ROLES)}")
 
 
 class Reply(str):
@@ -157,6 +170,9 @@ size (ADR-0009/C1, ADR-0009/C2)."""
 
 # --- agents and handlers -----------------------------------------------------------------------
 
+Language = Literal["core", "program"]  # core: the three constructs; program: one fenced program (ADR-0008/C6)
+_LANGUAGES = get_args(Language)
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -171,7 +187,7 @@ class Profile:
     privileges: frozenset[str] = frozenset()
     system: str = ""  # the role's own prose, ahead of the generated guidance
     notes: NoteStore | None = None  # None: the actor keeps one per profile name
-    language: str = "core"  # core: the three constructs; program: one fenced program (ADR-0008/C6)
+    language: Language = "core"
     # the role's values for the job's bounds, taken where the job leaves one unset (ADR-0003/C1)
     defaults: dict[str, float] = field(default_factory=dict, hash=False)
 
@@ -179,8 +195,8 @@ class Profile:
         # the name keys the profile's note in the store and names it on the command line, so it is one word
         if not _PROFILE_NAME.fullmatch(self.name) or ".." in self.name:
             raise ProfileError(f"profile name {self.name!r}: letters, digits, _ . - only, it names a file")
-        if self.language not in ("core", "program"):
-            raise ProfileError(f"profile language {self.language!r}: core or program")
+        if self.language not in _LANGUAGES:
+            raise ProfileError(f"profile language {self.language!r} is not one of {', '.join(_LANGUAGES)}")
         unknown = sorted(set(self.defaults) - set(_BOUNDS))
         if unknown:
             raise ProfileError(f"profile {self.name!r} defaults name no bound: {unknown}")
@@ -200,7 +216,8 @@ BeforeFn = Callable[
 # it; a hook that raises is told in the next notice and the result stands (the command already ran)
 AfterFn = Callable[["Run", Lact, BaseModel, "Result"], "Awaitable[Result | None] | Result | None"]
 
-_EFFECTS = ("write", "read", "pure")  # what a handler does to live state, for the whole invocation
+Effect = Literal["write", "read", "pure"]  # what a handler does to live state, for the whole invocation
+_EFFECTS = get_args(Effect)
 
 
 @dataclass(frozen=True)
@@ -210,7 +227,7 @@ class Handler:
     requires: frozenset[str] = frozenset()
     # write: waits for every earlier command of its turn but the pure ones; read: for the nearest
     # earlier write; pure: for its pointers only (ADR-0005/C6)
-    effect: str = "write"
+    effect: Effect = "write"
 
     def __post_init__(self) -> None:
         if self.effect not in _EFFECTS:
@@ -232,6 +249,12 @@ class JobError(Exception):
 # --- results and outcomes ----------------------------------------------------------------------
 
 
+# why a command failed: no such command, arguments that did not validate, a privilege the run lacks, a
+# hook's refusal, a handler that raised, a cancel before or while it ran
+Reason = Literal["unknown", "invalid", "privilege", "refused", "failed", "cancelled"]
+_REASONS = get_args(Reason)
+
+
 @dataclass(frozen=True)
 class Result:
     """What a settled command put on the record."""
@@ -240,7 +263,11 @@ class Result:
     ok: bool
     value: Any = None
     error: str | None = None
-    reason: str | None = None  # unknown | invalid | privilege | refused | failed | cancelled
+    reason: Reason | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason is not None and self.reason not in _REASONS:
+            raise ValueError(f"result reason {self.reason!r} is not one of {', '.join(_REASONS)}")
 
     def preview(self, width: int = 120) -> str:
         text = self.error if not self.ok else _text(self.value)
@@ -258,13 +285,21 @@ class Continue:
     pass
 
 
+Spent = Literal["turns", "idle", "time", "cost", "context"]
+_SPENT = get_args(Spent)
+
+
 @dataclass(frozen=True)
 class Exhausted:
     """A bound was spent at a turn's start, `turns` turns in: `reason` names it, turns (max_turns),
     idle (max_idle), time (time_budget), cost (cost_budget) or context (context_budget)."""
 
     turns: int
-    reason: str = "turns"
+    reason: Spent = "turns"
+
+    def __post_init__(self) -> None:
+        if self.reason not in _SPENT:
+            raise ValueError(f"exhausted reason {self.reason!r} is not one of {', '.join(_SPENT)}")
 
 
 @dataclass(frozen=True)
@@ -1948,7 +1983,7 @@ def _clock(seconds: float) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
-def _spent(run: Run) -> str | None:
+def _spent(run: Run) -> Spent | None:
     """The bound spent at a turn's start, in the order the record names them (ADR-0003/C2): time,
     cost, turns, idle turns, and the context figure the last notification told; a deadline that
     falls on the last turn reads time."""
@@ -1961,7 +1996,7 @@ def _spent(run: Run) -> str | None:
     return "context" if run.context_figure > run.bounds["context_budget"] else None
 
 
-def _over(run: Run) -> str | None:
+def _over(run: Run) -> Spent | None:
     """Time or cost spent: read at a turn's start and again before each handler starts."""
     if run.bounds["time_budget"] is not None and run.elapsed >= run.bounds["time_budget"]:
         return "time"

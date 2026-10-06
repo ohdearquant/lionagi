@@ -1,10 +1,12 @@
 import dataclasses
+import json
 import sys
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from lion1.checkpoint import entry_of, entry_row
 from lion1.record import Directive, Entry, Kind, Record, ViewEntry, directives, fold
 
 # The record's own names, spelled out here so the tests do not borrow the module's table (ADR-0007/C1).
@@ -334,10 +336,23 @@ def test_a_name_that_resolves_to_nothing_is_skipped():
     assert shape(fold(r)) == ["_in0", "_m1 hidden", "_r2", "_r3"]
 
 
-def test_an_unknown_op_changes_nothing():
+def test_an_unknown_op_is_refused_when_made_and_a_row_carrying_one_reads_back_without_it():
+    with pytest.raises(ValueError, match="directive op 'delete' is not one of hide, show, summarize"):
+        Directive("delete", ("_m0",))
     r = make(Kind.TEXT, Kind.RESULT)
-    direct(r, "delete", "_m0", "_r1")
-    assert shape(fold(r)) == ["_m0", "_r1", "_r2"]
+    row = entry_row(direct(r, "hide", "_m0", "_r1"))
+    known = row["meta"]["directive"]
+    unknown = {**known, "op": "delete"}  # as a later runtime might write it
+    row["meta"].update(directive=unknown, consumed=[unknown, known])
+    back = entry_of(json.loads(json.dumps(row)))
+    assert "directive" not in back.meta and [d.op for d in back.meta["consumed"]] == ["hide"]
+    replayed = make(Kind.TEXT, Kind.RESULT)  # the carrier read back, its consumed hides left aside
+    replayed.append(back.kind, back.content, **{k: v for k, v in back.meta.items() if k != "consumed"})
+    assert shape(fold(replayed)) == ["_m0", "_r1", "_r2"]
+    malformed = {k: v for k, v in known.items() if k != "op"}  # no op at all is no directive, never skipped
+    for meta in ({"directive": malformed}, {"consumed": [known, malformed]}):
+        with pytest.raises(KeyError, match="op"):
+            entry_of({**row, "meta": meta})
 
 
 def test_a_system_entry_carries_the_runtimes_own_hide():
