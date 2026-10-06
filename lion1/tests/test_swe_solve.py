@@ -273,9 +273,17 @@ def test_a_cost_cap_on_an_unmetered_backend_is_refused_before_a_box_or_a_call(tm
     assert backend.calls == [] and backend.costs == [None]
 
 
-@pytest.mark.parametrize("cap", [float("nan"), -0.01], ids=["nan", "negative"])
+class Lying(float):  # a cap whose comparison says it is zero or more
+    def __ge__(self, other):
+        return True
+
+
+@pytest.mark.parametrize(
+    "cap", [float("nan"), -0.01, True, Lying(-0.1), "1"], ids=["nan", "negative", "bool", "lying", "str"]
+)
 def test_a_cap_no_spend_is_under_is_refused_before_a_call(tmp_path: Path, cap):
-    # `not spent < cap` holds at $0 for both, so the run would read as stopped by cost with nothing spent
+    # `not spent < cap` holds at $0 for NaN and a negative, so the run would read as stopped by cost with
+    # nothing spent; a bool, a subclass or a string is not the exact int or float a cost is (ADR-0003 S7)
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
 
     def run(cap, backend):
@@ -294,7 +302,7 @@ def test_a_cap_no_spend_is_under_is_refused_before_a_call(tmp_path: Path, cap):
         )
 
     backend = Costs(0.1)
-    with pytest.raises(ValueError, match=r"a cap is dollars, zero or more"):
+    with pytest.raises(ValueError, match=r"a cap is an int or float of dollars, zero or more"):
         run(cap, backend)
     assert backend.calls == [] and backend.costs == [0.1]
     # the controls: a cap of 0 still stops before the first call, and infinity is no cap
@@ -340,9 +348,10 @@ def test_missing_usage_is_incomplete_not_zero(tmp_path: Path):
     assert "cost $0.40 known" in text and "unknown or partial on 2 of 4 rows" in text
 
 
-@pytest.mark.parametrize("figure", [-0.3, float("nan")], ids=["negative", "nan"])
+@pytest.mark.parametrize("figure", [-0.3, float("nan"), None], ids=["negative", "nan", "none"])
 def test_a_malformed_cost_figure_stops_a_capped_run_as_spent(tmp_path: Path, figure):
-    # a figure the run would not sum (ADR-0003/S7) is spent under the cap, never room
+    # a figure the run would not sum (ADR-0003/S7) is spent under the cap, never room; a call that said
+    # no cost is one, as the bench's cap reads as the run's, and the record marks the cost incomplete
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
 
     def run(*costs):
@@ -364,6 +373,7 @@ def test_a_malformed_cost_figure_stops_a_capped_run_as_spent(tmp_path: Path, fig
     assert good["stopped_by"] == "cost" and good["turns"] == 2
     bad = run(figure, figure, figure)
     assert bad["stopped_by"] == "cost" and bad["turns"] == 1
+    assert bad["cost_complete"] is False
 
 
 @pytest.mark.parametrize("cap, turns", [(float("inf"), 3), (1.75e308, 2)], ids=["infinite", "finite"])

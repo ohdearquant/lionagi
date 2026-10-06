@@ -1151,6 +1151,17 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
     out = stats(tmp_path).splitlines()
     assert out[0].startswith("day 20260922: 5 model call(s), 12000 in, 800 out, $0.0000 (partial: ")
     assert out[-1] == "desk: not counted, the spend row's day 20260922 is not a date"
+    store.put("spend", {k: v for k, v in spend.items() if k != "day"}, run="-", seq=3)  # a row with no day
+    out = stats(tmp_path).splitlines()
+    assert out[0].startswith("day None: 5 model call(s), 12000 in, 800 out, $0.0000 (partial: ")
+    assert out[-1] == "desk: not counted, the spend row's day None is not a date"
+    # a desk row with no date, or one that is not a string, is on no day, never a crash
+    store.put("spend", spend, run="-", seq=4)
+    undated = [*desk, {"at": 20260922, "class": "answered"}, {"class": "routed"}, {"at": None}]
+    (tmp_path / "desk.jsonl").write_text("\n".join(json.dumps(r) for r in undated) + "\n")
+    assert stats(tmp_path).splitlines()[-1] == (
+        "desk: 2 of the owner's message(s) read today, 1 answered, 1 left, 3 row(s) with no date not counted"
+    )
 
 
 def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(
