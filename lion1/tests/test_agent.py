@@ -1162,6 +1162,21 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
     assert stats(tmp_path).splitlines()[-1] == (
         "desk: 2 of the owner's message(s) read today, 1 answered, 1 left, 3 row(s) with no date not counted"
     )
+    # nor is a row that is no object, or an `at` that only starts with the day; a timestamp with a zone is
+    junk = [[], None, "x", 7, {"at": "2026-09-22junk"}, {"at": "2026-09-220 12:00:00"}]
+    zoned = {"at": "2026-09-22T12:00:00.5Z", "class": "answered"}
+    (tmp_path / "desk.jsonl").write_text("\n".join(json.dumps(r) for r in (*desk, *junk, zoned)) + "\n")
+    assert stats(tmp_path).splitlines()[-1] == (
+        "desk: 3 of the owner's message(s) read today, 2 answered, 1 left, 6 row(s) with no date not counted"
+    )
+    (tmp_path / "ledger.jsonl").write_text('{"answered": true}\n[]\nnull\n"x"\n7\n')
+    assert stats(tmp_path).splitlines()[-2] == "ledger: 5 check(s), 1 answered, 4 not"
+    # counts that are no numbers are not divided: the line says so
+    for odd in ({"mail": "1"}, {"in": "12000"}, {"out": None}, {"mail": True}):
+        store.put("spend", {**spend, **odd}, run="-", seq=5)
+        assert stats(tmp_path).splitlines()[1] == (
+            "per handled message: not computed, the spend row's counts are not all numbers"
+        )
 
 
 def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(

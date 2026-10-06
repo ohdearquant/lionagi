@@ -8,6 +8,7 @@ import json
 import os
 import time
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +265,7 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
     cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
     tokens = cursor.get("tokens") or {}
     mail = spend.get("mail", 0)
+    used = (spend.get("in", 0), spend.get("out", 0))
     lines = [
         f"day {spend.get('day')}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
         f"{spend.get('out', 0)} out, ${cost:.4f}"
@@ -271,9 +273,11 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
         + f"; {spend.get('runs', 0)} wake(s) with {mail} mail; "
         f"{spend.get('idle', 0)} idle poll(s) at 0 tokens",
         (
-            f"per handled message: {(spend.get('in', 0) + spend.get('out', 0)) / mail:.0f} tokens"
-            if mail
-            else "per handled message: no mail handled today"
+            "per handled message: no mail handled today"
+            if not mail
+            else f"per handled message: {sum(used) / mail:.0f} tokens"
+            if all(type(n) in (int, float) for n in (mail, *used))
+            else "per handled message: not computed, the spend row's counts are not all numbers"
         ),
         f"last wake {cursor.get('wake')} at {cursor.get('at')}: {cursor.get('outcome')} after "
         f"{cursor.get('turns')} turn(s), {len(cursor.get('mail') or [])} mail, {cursor.get('sent')} sent; "
@@ -285,7 +289,7 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
     ledger = directory / "ledger.jsonl"
     if ledger.exists():
         rows = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
-        answered = sum(1 for r in rows if r.get("answered", r.get("control")))
+        answered = sum(1 for r in rows if isinstance(r, dict) and r.get("answered", r.get("control")))
         lines.append(f"ledger: {len(rows)} check(s), {answered} answered, {len(rows) - answered} not")
     desk, day = directory / "desk.jsonl", spend.get("day")
     if desk.exists() and spend and not isinstance(day, str):
@@ -294,8 +298,14 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
         lines.append(f"desk: not counted, the spend row's day {day!r} is not a date")
     elif desk.exists() and day:
         rows = [json.loads(ln) for ln in desk.read_text().splitlines() if ln.strip()]
-        dated = [r for r in rows if isinstance(r.get("at"), str)]  # a row with no date is on no day
-        mine = [r for r in dated if r["at"].startswith(day)]
+        dated = []  # a row that is no object, or whose `at` is no timestamp, is on no day
+        for r in rows:
+            try:
+                datetime.fromisoformat(r["at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            dated.append(r)
+        mine = [r for r in dated if r["at"][:10] == day]
         answered = sum(1 for r in mine if r.get("class") == "answered")
         left = len(mine) - answered
         undated = len(rows) - len(dated)
