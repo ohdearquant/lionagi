@@ -29,7 +29,8 @@ SANDBOX_DIR = Path(__file__).resolve().parent / "sandbox"  # the Dockerfile the 
 
 class Bash(BaseModel):
     """Run a shell line in the sandbox: a Linux VM with this directory mounted at the same path,
-    `uv`, `git`, `rg`, `jq`; no other host path is mounted. Returns rc, stdout, stderr, elapsed, whole."""
+    `uv`, `git`, `rg`, `jq`, and /opt on a volume kept from one conversation to the next; no other host
+    path is mounted. Returns rc, stdout, stderr, elapsed, whole."""
 
     command: str = Field(
         description="one shell line, run by `bash -o pipefail -c` from the console's directory: a "
