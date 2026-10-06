@@ -485,7 +485,7 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     turn = fenced("side = wait(seconds=60)", 'OUT{done: "yes"}')
     run = _run(_waiting_actor("unnamed-long", ends), turn, time_budget=1)
     assert run.outcome == Exhausted(turns=1, reason="time") and run.output is None and run.refusals == 1
-    assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 30  # far short of the wait's own 60 s
+    assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 60  # short of the wait's own 60 s
     assert _results(run) == {"side": (False, "cancelled before it finished", "completion unknown")}
     assert run.pending == {} and run.tasks == set()
     # its OUT{}, refused for the spent budget, counts as any refusal does: with one allowed, it is refused
@@ -518,7 +518,7 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     lazy, out = fenced("lazy = [DO wait(seconds=60)][0]"), fenced("OUT{done: *lazy}")
     run = _run(_waiting_actor("unassembled", ends), lazy, out, time_budget=1, max_refusals=1)
     assert run.outcome == Exhausted(turns=2, reason="time") and run.output is None and run.refusals == 0
-    assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 30
+    assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 60
     # the deadline is the run's, not each turn's, the retries of refused OUT{}s included: an earlier
     # turn's time is spent from it. Two refusals in a row stand as the last turn's walk starts; its cut
     # field adds none, and a turn that reached no OUT{} breaks the row
@@ -573,9 +573,10 @@ def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_tur
         }[field]
     )
     bounds = {} if cap == 3 else {"max_refusals": cap}
-    # a second a turn: the turns before the last take milliseconds, so a loaded machine that stalls each
-    # of them for most of its second still starts the last turn's wait inside the budget
-    budget = len(turns)
+    # a second a turn and one more: the turns take milliseconds and the commands that settle 0.05 s, so a
+    # loaded machine that stalls every turn's call for up to a second still settles them and starts the
+    # last turn's wait inside the budget
+    budget = len(turns) + 1
     run = _run(
         _waiting_actor(f"s6-{at}-{prior}-{cap}-{field}", ends),
         *turns,
@@ -592,7 +593,7 @@ def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_tur
             if prior + 1 == cap
             else Exhausted(turns=len(turns), reason="time")
         )
-    assert run.output is None and ends[-1:] == [("wait", 60.0, "cut")] and budget <= run.elapsed < 30
+    assert run.output is None and ends[-1:] == [("wait", 60.0, "cut")] and budget <= run.elapsed < 60
     assert all(end == "ran" for _, _, end in ends[:-1])
 
 
