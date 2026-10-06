@@ -478,6 +478,32 @@ def test_a_delete_the_tool_failed_after_deleting_reads_back_gone(keychain):
     assert logged(argv)[-1] == ["find-generic-password", "-a", "work", "-s", "lion.account.claude_code"]
 
 
+def test_a_delete_that_does_not_answer_is_read_back_and_one_whose_read_back_does_not_is_unknown(
+    keychain, monkeypatch
+):
+    store, _, _ = keychain
+    real = accounts._security
+    silent = {"delete-generic-password"}
+
+    def answer(args, stdin=None):
+        if args[0] in silent:
+            real(args, stdin)  # it did its work, then did not answer
+            raise AccountsError("the keychain tool did not answer in 10 seconds")
+        return real(args, stdin)
+
+    monkeypatch.setattr(accounts, "_security", answer)
+    store_token("work", CANARY)
+    assert remove_token("work") is True and items(store) == {}
+    store_token("work", CANARY)
+    silent.add("find-generic-password")
+    with pytest.raises(KeychainUnknown) as got:
+        remove_token("work")
+    assert str(got.value) == (
+        "account 'work': the keychain tool did not answer in 10 seconds, and whether its keychain item is "
+        "gone is unknown"
+    )
+
+
 def test_a_write_whose_read_back_cannot_be_read_names_the_command_that_deletes_the_item(
     keychain, monkeypatch
 ):

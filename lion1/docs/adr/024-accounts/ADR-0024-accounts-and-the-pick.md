@@ -349,6 +349,7 @@ command.
   `test_a_write_whose_read_back_cannot_be_read_names_the_command_that_deletes_the_item`,
   `test_a_remove_whose_item_is_not_deleted_puts_its_table_back`,
   `test_a_delete_the_tool_failed_after_deleting_reads_back_gone`,
+  `test_a_delete_that_does_not_answer_is_read_back_and_one_whose_read_back_does_not_is_unknown`,
   `test_a_remove_whose_delete_failed_after_deleting_or_cannot_be_read_back_keeps_the_table_out`.
 
 ## Alternatives
