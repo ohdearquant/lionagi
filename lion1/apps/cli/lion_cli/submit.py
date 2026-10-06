@@ -251,10 +251,13 @@ async def result_mail(
 _T = TypeVar("_T")
 
 
-async def _through(aw: Awaitable[_T]) -> tuple[_T, BaseException | None]:
+async def _through(aw: Awaitable[_T], carry: bool = True) -> tuple[_T, BaseException | None]:
     """`aw` run to its end through one cancellation, which comes back beside the result for the caller to
     raise once its end is said: a run's read-back and its one mail are never cut off half done by it, and
-    the mail is never sent twice. A second cancellation stops `aw` as well."""
+    the mail is never sent twice. A second cancellation stops `aw` as well; without `carry`, when the
+    command has had its one already, the first does."""
+    if not carry:
+        return await aw, None
     task = asyncio.ensure_future(aw)
     try:
         return await asyncio.shield(task), None
@@ -263,8 +266,9 @@ async def _through(aw: Awaitable[_T]) -> tuple[_T, BaseException | None]:
 
 
 def _stopped_before_its_end(what: str, directory: Path, run_id: str) -> None:
-    """A second interrupt, through `_through`, stops the end at once, so the mail may not have gone:
-    standard error says so, with the `lion result` command for the id, as the mail's body ends."""
+    """The command's second interrupt, wherever its first landed, stops the end at once (`_through`), so
+    the mail may not have gone: standard error says so, with the `lion result` command for the id, as the
+    mail's body ends."""
     _emit(
         f"{what} stopped before its end: its result mail may not have gone; "
         f"lion result --dir {shlex.quote(str(directory))} {run_id}",
@@ -394,7 +398,7 @@ async def run_main(a: argparse.Namespace) -> int:
         return unread, mailed
 
     try:
-        (unread, mailed), late = await _through(end())
+        (unread, mailed), late = await _through(end(), carry=interrupted is None)
     except (asyncio.CancelledError, KeyboardInterrupt):
         _stopped_before_its_end(f"run {run_id}", directory, run_id)
         raise
@@ -455,7 +459,8 @@ async def flow_main(a: argparse.Namespace) -> int:
                 ended.id,
                 thread=a.thread,
                 error=error,
-            )
+            ),
+            carry=interrupted is None,
         )
     except (asyncio.CancelledError, KeyboardInterrupt):
         _stopped_before_its_end(f"flow {flow.name} {ended.id}", directory, ended.id)
