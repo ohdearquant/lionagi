@@ -470,6 +470,25 @@ def test_a_late_launch_outliving_every_command_the_settle_began_with_is_cut_at_t
     assert run.pending == {} and run.tasks == set()
 
 
+def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_bounds_the_wait():
+    # ADR-0002 C1 and S4: a program's walk settles every command it launched before its OUT{} assembles,
+    # one the output does not name included; only the tag form's OUT{} waits for what it names alone
+    ends: list = []
+    run = _run(_waiting_actor("unnamed", ends), fenced("side = wait(seconds=0.3)", 'OUT{done: "yes"}'))
+    assert isinstance(run.outcome, Success) and run.output == {"done": "yes"}
+    assert ends == [("wait", 0.3, "ran")] and run.elapsed >= 0.3
+    assert _results(run) == {"side": (True, None, "started")}
+    # so one that outlives the time budget holds the output to the deadline, where it is cut and the run
+    # is out of time with no output: the budget bounds `Success`
+    ends.clear()
+    turn = fenced("side = wait(seconds=8)", 'OUT{done: "yes"}')
+    run = _run(_waiting_actor("unnamed-long", ends), turn, time_budget=1)
+    assert run.outcome == Exhausted(turns=1, reason="time") and run.output is None
+    assert ends == [("wait", 8.0, "cut")] and 1 <= run.elapsed < 5
+    assert _results(run) == {"side": (False, "cancelled before it finished", "completion unknown")}
+    assert run.pending == {} and run.tasks == set()
+
+
 def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through(caplog):
     ends: list = []
     actor = _waiting_actor("launch-after-cut", ends)
