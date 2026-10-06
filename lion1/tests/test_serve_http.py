@@ -1009,7 +1009,8 @@ def test_a_stream_whose_reader_stalls_is_closed_at_its_frame_cap_and_the_run_nev
             writer.transport.abort()
             return open_, state, None
 
-    open_, state, seen = bounded(main)
+    # the 8 MB row takes most of the default 10 s under coverage on a loaded machine; this only ends a hang
+    open_, state, seen = bounded(main, seconds=60.0)
     assert state["closed"] is True
     assert service.state(state["id"])["outcome"] == {"kind": "Stopped", "turn": 5}
     if reads:
@@ -1073,7 +1074,8 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
             refused = True
         return served.cancelled(), took, await stopped, unanswered, seen, refused, talk, work
 
-    cancelled, took, talk_took, unanswered, seen, refused, talk, work = bounded(main)
+    # as above for the 8 MB row; the two timings below are what this test holds the end to
+    cancelled, took, talk_took, unanswered, seen, refused, talk, work = bounded(main, seconds=60.0)
     assert cancelled and refused and unanswered == b""
     assert 2.0 <= took < 5.0  # the stalled write held the end for uvicorn's grace, and no longer
     assert talk_took < 1.0  # the conversation ended long before that grace was out
