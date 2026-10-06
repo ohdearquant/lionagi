@@ -170,7 +170,7 @@ async def cast(
     runs: list[str] = []
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(ev.payload["run"]))
     baseline = ""
-    started = interrupted = False
+    started = interrupted = second = False
     try:
         if boxed:
             started = True
@@ -185,9 +185,21 @@ async def cast(
         except (asyncio.CancelledError, KeyboardInterrupt):
             interrupted = True  # the command's one carried interrupt was the run's
             raise
+    except BaseException as e:
+        second = _second(e)  # the command ends at once: no patch is taken and nothing is stopped (S13)
+        raise
     finally:
         off()
-        if started:
+        if started and second:  # named, for it runs on
+            if boxed:
+                ident = getattr(sandbox, "box_id", None)
+                say(
+                    f"box {ident or '?'}: kept, not stopped: interrupted twice before its patch was taken; "
+                    f"the work is there, at {sandbox.workdir}, until the box's idle stop deletes it"
+                )
+            else:
+                say(f"sandbox {sandbox.name}: interrupted twice before it was stopped; it may be running")
+        elif started:
             if boxed and runs:  # the patch first, named by the run: stop deletes the box
                 await end_box(
                     sandbox,

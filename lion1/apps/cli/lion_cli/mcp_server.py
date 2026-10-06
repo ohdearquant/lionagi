@@ -145,8 +145,13 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
 
         threading.Thread(target=_watch, args=(child, first, children), daemon=True).start()
         line, err = await said
-        if not line:
-            code = await asyncio.to_thread(child.wait)
+        if not line:  # no id can come: the call fails now, and the child is reaped whenever it ends
+            try:
+                code = await asyncio.to_thread(child.wait, _LEFT_S)
+            except subprocess.TimeoutExpired:
+                closed = f"lion {argv[0]} closed its standard output before printing an id"
+                said_all = filter(None, (err.strip(), f"{closed}; it runs on as pid {child.pid}"))
+                raise ToolError("\n".join(said_all)) from None
             raise ToolError(err.strip() or f"lion {argv[0]} ended with {code} before printing an id")
         return {"id": line}
 

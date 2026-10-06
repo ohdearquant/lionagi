@@ -961,6 +961,102 @@ def test_a_flow_interrupted_at_a_boxed_step_then_while_its_box_stops_ends_there(
     assert f"flow two {flow_id} stopped before its end: " in err
 
 
+def second_as_the_rows_close(monkeypatch) -> list[str]:
+    """The command's second interrupt as SIGINT gives it, a `KeyboardInterrupt` raised where it lands, here
+    as the run's rows close; `second` lands in the list returned then, and after it `patch`, `stop` or
+    `mail` for each that starts."""
+    exec_, diff, stop, seen = Khive.exec, Box.diff, Box.stop, []
+
+    async def exec(self, ops: str) -> list:
+        if ops.startswith("comm.send("):
+            seen.append("mail")
+        if ops.startswith("lion.run_close(") and "second" not in seen:
+            seen.append("second")
+            raise KeyboardInterrupt
+        return await exec_(self, ops)
+
+    async def diffed(self, *args):
+        seen.append("patch")
+        return await diff(self, *args)
+
+    async def stopped(self):
+        seen.append("stop")
+        return await stop(self)
+
+    monkeypatch.setattr(Khive, "exec", exec)
+    monkeypatch.setattr(Box, "diff", diffed)
+    monkeypatch.setattr(Box, "stop", stopped)
+    return seen
+
+
+def test_a_boxed_run_interrupted_in_its_run_then_as_its_rows_close_takes_no_patch_and_names_the_box(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
+):
+    made, _ = boxes
+    backends(monkeypatch, **{"fake/boxed": interrupting})
+    seen = second_as_the_rows_close(monkeypatch)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
+    (run_id,) = console_khive.runs
+    assert seen == ["second"] and not made[0].stopped and console_khive.sent == []  # nothing after it
+    assert not (actor_dir / ".lion" / "runs" / f"{run_id}.patch").exists()
+    err = capsys.readouterr().err
+    assert "box sbx-1: kept, not stopped: interrupted twice before its patch was taken; " in err
+    assert f"run {run_id} stopped before its end: " in err
+
+
+def test_a_flow_interrupted_at_a_boxed_step_then_as_its_rows_close_takes_no_patch_and_names_the_box(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
+):
+    made, _ = boxes
+    flows = TWO.replace('profile = "writer"\nsay = "plan', 'profile = "boxed"\nsay = "plan')
+    (actor_dir / "flows.toml").write_text(flows)
+    backends(monkeypatch, **{"fake/boxed": interrupting})
+    seen = second_as_the_rows_close(monkeypatch)
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert seen == ["second"] and not made[0].stopped and console_khive.sent == []
+    err = capsys.readouterr().err
+    assert "box sbx-1: kept, not stopped: interrupted twice before its patch was taken; " in err
+    assert f"flow two {flow_id} stopped before its end: " in err
+
+
+class Local:
+    """A local sandbox for `cast`: started and stopped, by name, and nothing else."""
+
+    made: list[Local] = []
+
+    def __init__(self, directory, name, offline=False):
+        self.name, self.stopped = name, False
+        Local.made.append(self)
+
+    async def ensure_image(self):
+        return None
+
+    async def start(self):
+        return self
+
+    async def stop(self):
+        self.stopped = True
+
+
+def test_a_sandboxed_run_interrupted_in_its_run_then_as_its_rows_close_names_the_sandbox_unstopped(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    with (actor_dir / "profiles.toml").open("a") as f:
+        f.write('\n[profile.local]\ntools = ["shell"]\nmodel = "fake/local"\n')
+    Local.made = []
+    monkeypatch.setattr(submit, "Sandbox", Local)
+    backends(monkeypatch, **{"fake/local": interrupting})
+    seen = second_as_the_rows_close(monkeypatch)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "local", "--say", "list") == 130
+    (run_id,) = console_khive.runs
+    (box,) = Local.made
+    assert seen == ["second"] and not box.stopped and console_khive.sent == []
+    err = capsys.readouterr().err
+    assert f"sandbox {box.name}: interrupted twice before it was stopped; it may be running" in err
+    assert f"run {run_id} stopped before its end: " in err
+
+
 def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outcome_and_the_error(
     actor_dir, console_khive, boxes
 ):

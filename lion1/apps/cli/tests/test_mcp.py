@@ -45,6 +45,13 @@ if "--say=slow" in argv:  # the id only once a `print` file appears
 if "--say=bare" in argv:
     sys.stdout.write(f"{argv[0]}-id")
     sys.exit(0)
+if "--say=mute" in argv:  # its standard output closed with no id, it runs on until a `go` file appears
+    os.close(1)
+    for _ in range(600):
+        if (here / "go").exists():
+            break
+        time.sleep(0.05)
+    sys.exit(0)
 if "--say=handsoff" in argv:  # no id of its own; what comes on the pipe after it ended is another's
     import subprocess
     code = (
@@ -189,6 +196,26 @@ def test_a_child_that_ends_before_its_id_fails_the_call_with_what_it_said(actor_
         asyncio.run(mcp.call_tool("run", {"profile": "refused", "say": "go"}))
 
 
+def test_a_child_that_closes_its_output_with_no_id_fails_the_call_at_once_and_is_still_reaped(
+    actor_dir, child
+):
+    # no id can come once its standard output has ended, so the call fails then, naming the child that runs on
+    here, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+    began = time.monotonic()
+    try:
+        with pytest.raises(
+            ToolError, match="lion run closed its standard output before printing an id; it runs on"
+        ):
+            asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "mute"}))
+        assert time.monotonic() - began < 10  # far short of the child's own 30 s
+        started = json.loads((here / "run.json").read_text())
+        assert not gone(started["pid"], 0.2)  # still running
+    finally:
+        (here / "go").write_text("")
+    assert gone(started["pid"])  # and reaped once it ended
+
+
 def test_a_call_cancelled_before_the_id_still_has_its_child_reaped(actor_dir, child):
     here, command = child
     mcp = mcp_server.server(actor_dir, lion=command)
@@ -301,7 +328,8 @@ def test_an_id_the_child_wrote_with_no_newline_before_it_ended_is_its_id(actor_d
 
 def test_a_line_a_process_the_child_started_prints_after_the_child_ended_is_not_its_id(actor_dir, child):
     # what the pipe holds is measured just after the reap, so a line the process wrote in the moment
-    # between them would still count as the id: this one writes 0.3 s after the child has ended
+    # between them would still count as the id, and so would one it wrote before the child ended: a
+    # pipe does not say which process wrote to it. This one writes 0.3 s after the child has ended
     here, command = child
     mcp = mcp_server.server(actor_dir, lion=command)
     try:
