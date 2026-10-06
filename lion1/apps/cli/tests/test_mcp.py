@@ -300,6 +300,8 @@ def test_an_id_the_child_wrote_with_no_newline_before_it_ended_is_its_id(actor_d
 
 
 def test_a_line_a_process_the_child_started_prints_after_the_child_ended_is_not_its_id(actor_dir, child):
+    # what the pipe holds is measured just after the reap, so a line the process wrote in the moment
+    # between them would still count as the id: this one writes 0.3 s after the child has ended
     here, command = child
     mcp = mcp_server.server(actor_dir, lion=command)
     try:
