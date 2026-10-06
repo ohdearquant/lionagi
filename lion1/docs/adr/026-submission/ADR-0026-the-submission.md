@@ -395,7 +395,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   its box and names it, a stop names the box, which may run on, and no mail goes after it, as
   standard error says with `lion result --dir D <id>`.
 - **S14**: A reader that has gone costs a run nothing: its lines go to the null device, for the rows
-  and the mail carry them.
+  and the mail carry them. A notice standard error cannot take is dropped, and an interrupt it was
+  printed for goes on as itself.
 - **S15**: A thread started with `lion mcp`'s child reads both its pipes to their end, or for a
   second past the child's own end while a process it started holds one, and reaps it, a call
   cancelled before the id included. It keeps the child's exit and the last 8 KiB of its standard
@@ -405,7 +406,12 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   supplies bytes the server reads as the id; the CLI starts no such descendant, and a child that
   does so has handed its identity away.
 - **S17**: A `lion mcp` child that closes its standard output with no id and runs on fails the call
-  within a second, naming its pid, and is reaped when it ends.
+  within a second, however many calls wait at once, naming its pid, and is reaped when it ends.
 - **S18**: A second interrupt that lands before the box's end takes no patch and stops nothing, and
   standard error names what it left: the box, kept with its work, or the local sandbox, which may
   still run.
+- **S19**: A local sandbox's stop takes the command's interrupts as a box's stop does (S13): the
+  first waits for the stop, and the next cuts it and names the sandbox, which may still run.
+- **S20**: With no thread to spare, `lion mcp` still reaps each child. One no thread can read fails
+  the call at once, naming its pid, and the server's loop reaps it when it ends. One whose reaping
+  no thread can take is read until its pipes end, past the second S15 gives, and is reaped then.

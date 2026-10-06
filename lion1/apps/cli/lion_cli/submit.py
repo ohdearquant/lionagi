@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -187,6 +188,7 @@ async def cast(
             raise
     except BaseException as e:
         second = _second(e)  # the command ends at once: no patch is taken and nothing is stopped (S13)
+        interrupted = interrupted or isinstance(e, asyncio.CancelledError)  # one before the run included
         raise
     finally:
         off()
@@ -212,8 +214,24 @@ async def cast(
                     show=False,
                     carry=not interrupted,
                 )
-            else:
-                await asyncio.shield(sandbox.stop())
+            else:  # a box with no run to patch, or the local sandbox: stopped as `end_box` stops a box
+                ident = getattr(sandbox, "box_id", None) if boxed else None  # a stop forgets the box
+                stop = asyncio.ensure_future(sandbox.stop())
+                late: BaseException | None = None
+                try:
+                    try:
+                        await (stop if interrupted else asyncio.shield(stop))
+                    except asyncio.CancelledError as e:
+                        if interrupted:
+                            raise
+                        late = e  # the command's first interrupt: the stop ends first
+                        await stop  # a second cancels it
+                except (asyncio.CancelledError, KeyboardInterrupt):  # the second: named, for it may run on
+                    what = f"box {ident or '?'}" if boxed else f"sandbox {sandbox.name}"
+                    say(f"{what}: interrupted while it was stopped; it may still be running")
+                    raise
+                if late is not None:
+                    raise late
 
 
 def variables(given: list[str] | None) -> dict[str, str]:
@@ -297,12 +315,13 @@ def _second(e: BaseException) -> bool:
 def _stopped_before_its_end(what: str, directory: Path, run_id: str) -> None:
     """The command's second interrupt, wherever its first landed, stops the end at once (`_through`), so
     the mail may not have gone: standard error says so, with the `lion result` command for the id, as the
-    mail's body ends."""
-    _emit(
-        f"{what} stopped before its end: its result mail may not have gone; "
-        f"lion result --dir {shlex.quote(str(directory))} {run_id}",
-        sys.stderr,
-    )
+    mail's body ends. A line standard error cannot take is dropped: the interrupt goes on up as itself."""
+    with contextlib.suppress(Exception):
+        _emit(
+            f"{what} stopped before its end: its result mail may not have gone; "
+            f"lion result --dir {shlex.quote(str(directory))} {run_id}",
+            sys.stderr,
+        )
 
 
 def _why(e: BaseException) -> str:
@@ -325,12 +344,14 @@ def _emit(line: str, stream: TextIO | None = None) -> None:
 def _notices() -> tuple[list[str], Callable[[str], None]]:
     """A run's notices (a box's push, its patch, a box kept), and the `say` that takes each: on standard
     error, for standard output holds the ids first and the end last, its line and then the output (C1),
-    and kept for the result mail."""
+    and kept for the result mail. One standard error cannot take is dropped there and changes nothing,
+    an interrupt it was said for included."""
     kept: list[str] = []
 
     def say(line: str) -> None:
         kept.append(line)
-        _emit(line, sys.stderr)
+        with contextlib.suppress(Exception):
+            _emit(line, sys.stderr)
 
     return kept, say
 

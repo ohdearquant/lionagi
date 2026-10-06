@@ -6,9 +6,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from lion_cli import mcp_server
@@ -214,6 +217,93 @@ def test_a_child_that_closes_its_output_with_no_id_fails_the_call_at_once_and_is
     finally:
         (here / "go").write_text("")
     assert gone(started["pid"])  # and reaped once it ended
+
+
+def test_calls_whose_children_close_their_output_fail_in_about_a_second_with_the_shared_pool_held(
+    actor_dir, child
+):
+    # the wait for each child is the loop's own, so a pool of threads every call shares, held here by
+    # another job for 4 s, delays none of them
+    here, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+
+    async def main() -> tuple[list, float]:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        held = loop.run_in_executor(None, time.sleep, 4)
+        began = time.monotonic()
+        calls = (mcp.call_tool("run", {"profile": "writer", "say": "mute"}) for _ in range(3))
+        failed = await asyncio.gather(*calls, return_exceptions=True)
+        took = time.monotonic() - began
+        await held
+        return failed, took
+
+    try:
+        failed, took = asyncio.run(main())
+    finally:
+        (here / "go").write_text("")
+    assert all(isinstance(e, ToolError) and "it runs on as pid" in str(e) for e in failed)
+    assert took < 3.5  # each about a second; behind the held pool the first alone would take 5
+    for e in failed:
+        assert gone(int(re.search(r"pid (\d+)", str(e)).group(1)))
+
+
+def test_a_child_no_thread_can_read_fails_the_call_naming_it_and_the_loop_reaps_it(
+    actor_dir, child, monkeypatch
+):
+    here, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+    start = threading.Thread.start
+
+    def refused(self):
+        if self._target is mcp_server._watch:
+            raise RuntimeError("can't start new thread")
+        start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", refused)
+
+    async def main() -> bool:
+        with pytest.raises(ToolError, match=r"lion run started and could not be read \(can't start new") as e:
+            await mcp.call_tool("run", {"profile": "writer", "say": "mute"})
+        pid = int(re.search(r"it runs on as pid (\d+)", str(e.value)).group(1))
+        assert waited(here / "run.json") and json.loads((here / "run.json").read_text())["pid"] == pid
+        (here / "go").write_text("")
+        for _ in range(600):  # the server's loop goes on, as it does under a client, and reaps it
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    assert asyncio.run(main())
+
+
+def test_a_child_no_thread_can_reap_still_gives_its_id_and_is_reaped_when_its_pipes_end(
+    actor_dir, console_khive, child, monkeypatch
+):
+    here, command = child
+    console_khive.answer(
+        'lion.session_open(id="run-id", source="lion1", actor="console", profile="writer") | '
+        'lion.run_open(id="run-id", profile="writer", session_id="run-id", actor="console")'
+    )
+    mcp = mcp_server.server(actor_dir, lion=command)
+    start = threading.Thread.start
+
+    def refused(self):
+        if getattr(self._target, "__name__", "") == "reaped":
+            raise RuntimeError("can't start new thread")
+        start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", refused)
+    fds = len(os.listdir("/dev/fd"))
+    call = mcp.call_tool("run", {"profile": "writer", "say": "wait"})
+    got = asyncio.run(asyncio.wait_for(call, 30))
+    assert got.structured_content == {"id": "run-id"}
+    pid = json.loads((here / "run.json").read_text())["pid"]
+    (here / "go").write_text("")
+    assert ended(mcp, "run-id") == {"exit": 0, "said": ""} and gone(pid)
+    assert len(os.listdir("/dev/fd")) == fds  # the pipe its reaping would have woken the reader with: closed
 
 
 def test_a_call_cancelled_before_the_id_still_has_its_child_reaped(actor_dir, child):

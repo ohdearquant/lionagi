@@ -846,11 +846,12 @@ async def interrupting(messages):
     await asyncio.Event().wait()
 
 
-def interrupted_in_its(monkeypatch, step: str, times: int = 1) -> list[str]:
+def interrupted_in_its(monkeypatch, step: str, times: int = 1, on: type | None = None) -> list[str]:
     """The box's `step`, its diff or its stop, cancels the command's own task `times` times, as
     interrupts landing there would, then goes on; `cut` lands in the list returned if it was cut short,
-    and `mail` as the result mail goes."""
-    real, exec_, seen = getattr(Box, step), Khive.exec, []
+    and `mail` as the result mail goes. `on` is the sandbox class, the Daytona box's when not given."""
+    on = on or Box
+    real, exec_, seen = getattr(on, step), Khive.exec, []
 
     async def exec(self, ops: str) -> list:
         if ops.startswith("comm.send("):
@@ -868,7 +869,7 @@ def interrupted_in_its(monkeypatch, step: str, times: int = 1) -> list[str]:
             raise
         return await real(self, *args)
 
-    monkeypatch.setattr(Box, step, interrupted)
+    monkeypatch.setattr(on, step, interrupted)
     monkeypatch.setattr(Khive, "exec", exec)
     return seen
 
@@ -1055,6 +1056,85 @@ def test_a_sandboxed_run_interrupted_in_its_run_then_as_its_rows_close_names_the
     err = capsys.readouterr().err
     assert f"sandbox {box.name}: interrupted twice before it was stopped; it may be running" in err
     assert f"run {run_id} stopped before its end: " in err
+
+
+@pytest.fixture
+def local(actor_dir, monkeypatch):
+    """`[profile.local]`, its shell in a local sandbox; returns the sandboxes made."""
+    with (actor_dir / "profiles.toml").open("a") as f:
+        f.write('\n[profile.local]\ntools = ["shell"]\nmodel = "fake/local"\n')
+    Local.made = []
+    monkeypatch.setattr(submit, "Sandbox", Local)
+    backends(monkeypatch, **{"fake/local": lambda m: out("done")})
+    return Local.made
+
+
+def test_a_sandboxed_run_interrupted_while_its_sandbox_stops_waits_for_the_stop_then_mails(
+    actor_dir, console_khive, local, monkeypatch
+):
+    seen = interrupted_in_its(monkeypatch, "stop", on=Local)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "local", "--say", "list") == 130
+    (box,) = local
+    assert seen == ["mail"] and box.stopped
+
+
+@pytest.mark.parametrize("first", ["in its run", "as it stops"])
+def test_a_sandboxed_runs_second_interrupt_as_its_sandbox_stops_cuts_the_stop_and_names_it(
+    actor_dir, console_khive, local, monkeypatch, capsys, first
+):
+    if first == "in its run":
+        backends(monkeypatch, **{"fake/local": interrupting})
+    seen = interrupted_in_its(monkeypatch, "stop", times=1 if first == "in its run" else 2, on=Local)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "local", "--say", "list") == 130
+    (run_id,) = console_khive.runs
+    (box,) = local
+    assert seen == ["cut"] and not box.stopped and console_khive.sent == []  # no mail after it
+    err = capsys.readouterr().err
+    assert f"sandbox {box.name}: interrupted while it was stopped; it may still be running" in err
+    assert f"run {run_id} stopped before its end: " in err
+
+
+def test_a_boxed_run_interrupted_before_its_run_then_as_its_box_stops_names_the_box(
+    actor_dir, console_khive, boxes, monkeypatch, capsys
+):
+    # the first interrupt lands as the box is filled, before any run: no patch, and the box is stopped
+    made, _ = boxes
+    push = Box.push
+
+    async def pushed(self, directory):
+        command_task().cancel()
+        await asyncio.sleep(0)
+        return await push(self, directory)
+
+    monkeypatch.setattr(Box, "push", pushed)
+    seen = interrupted_in_its(monkeypatch, "stop")  # the second, as it stops
+    assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
+    assert seen == ["cut"] and not made[0].stopped and console_khive.runs == {}
+    assert "box sbx-1: interrupted while it was stopped; it may still be running" in capsys.readouterr().err
+
+
+class Unwritable:
+    """A standard error that takes no line."""
+
+    def write(self, text):
+        raise OSError(5, "Input/output error")
+
+    def flush(self):
+        pass
+
+
+@pytest.mark.parametrize("on", ["box", "sandbox"])
+def test_a_second_interrupt_whose_notices_standard_error_cannot_take_still_ends_with_130_and_no_mail(
+    actor_dir, console_khive, boxes, local, monkeypatch, on
+):
+    made, _ = boxes
+    profile = "boxed" if on == "box" else "local"
+    backends(monkeypatch, **{f"fake/{profile}": interrupting})
+    seen = second_as_the_rows_close(monkeypatch)
+    monkeypatch.setattr(sys, "stderr", Unwritable())
+    assert lion("run", "--dir", str(actor_dir), "--profile", profile, "--say", "edit f") == 130
+    assert seen == ["second"] and console_khive.sent == []  # the interrupt, never the failed line
+    assert not (made or local)[0].stopped
 
 
 def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outcome_and_the_error(

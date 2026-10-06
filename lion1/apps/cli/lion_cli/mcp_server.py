@@ -50,13 +50,15 @@ def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], en
     for a process it started may hold them open. Its end is seen as it is reaped, and only what its
     standard output held then can be its id: what comes after is that process's. Then the pipes close,
     and its exit and the last of its standard error are kept in `ended` under its id. A call cancelled
-    while it waited for the id changes none of this."""
+    while it waited for the id changes none of this. With no thread to spare for the reaping, its pipes
+    are read to their end and it is reaped after."""
     assert child.stdout is not None and child.stderr is not None
     out = err = b""
     line: str | None = None
     told = False
     owed: int | None = None  # once the child has ended: the bytes of its standard output still to read
     left: float | None = None  # once the child has ended: when reading what it left stops
+    woken: int | None
     woken, wake = os.pipe()  # ends as the child is reaped, so the reading sees its end at once
 
     def reaped() -> None:
@@ -70,11 +72,17 @@ def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], en
             ended[said] = None  # running
         first(said or "", err.decode(errors="replace"))
 
-    threading.Thread(target=reaped, daemon=True).start()
+    try:
+        threading.Thread(target=reaped, daemon=True).start()
+    except RuntimeError:  # no thread to spare: its pipes are read to their end, and it is reaped after
+        os.close(wake)
+        os.close(woken)
+        woken = None
     try:
         with selectors.DefaultSelector() as ends:
             for pipe in (child.stdout, child.stderr, woken):
-                ends.register(pipe, selectors.EVENT_READ)
+                if pipe is not None:
+                    ends.register(pipe, selectors.EVENT_READ)
             while ends.get_map():
                 if not told and owed == 0:  # all it wrote is read, with no newline: all of it is its id
                     tell(out.decode() or None)
@@ -102,12 +110,24 @@ def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], en
     finally:
         child.stdout.close()
         child.stderr.close()
-        os.close(woken)
+        if woken is not None:
+            os.close(woken)
         if not told:
             tell(out.decode() or None)
         code = child.wait()
         if line is not None:
             ended[line] = {"exit": code, "said": err.decode(errors="replace")}
+
+
+async def _reaped(child: subprocess.Popen[bytes], within: float | None) -> int | None:
+    """The child's exit once it is reaped, or None once `within` seconds pass first. Polled on the loop:
+    a thread of the shared pool can be seconds away when many calls wait at once."""
+    deadline = None if within is None else time.monotonic() + within
+    while (code := child.poll()) is None:
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.02 if deadline is not None else 1.0)
+    return code
 
 
 def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
@@ -121,6 +141,7 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
         raise SubmitError(str(e)) from None
 
     children: dict[str, Any] = {}  # id: None while the child runs, then its exit and what it said
+    reaping: set[asyncio.Future[int | None]] = set()  # children no thread reads, reaped by the loop
 
     async def started(argv: list[str]) -> dict[str, str]:
         child = subprocess.Popen(
@@ -143,12 +164,21 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
             except RuntimeError:  # the loop is gone: no call waits
                 pass
 
-        threading.Thread(target=_watch, args=(child, first, children), daemon=True).start()
+        try:
+            threading.Thread(target=_watch, args=(child, first, children), daemon=True).start()
+        except RuntimeError as e:  # no thread reads it: its pipes close, and the loop reaps it when it ends
+            assert child.stdout is not None and child.stderr is not None
+            child.stdout.close()
+            child.stderr.close()
+            reaper = asyncio.ensure_future(_reaped(child, None))
+            reaping.add(reaper)
+            reaper.add_done_callback(reaping.discard)
+            unread = f"lion {argv[0]} started and could not be read ({e})"
+            raise ToolError(f"{unread}; it runs on as pid {child.pid}") from None
         line, err = await said
         if not line:  # no id can come: the call fails now, and the child is reaped whenever it ends
-            try:
-                code = await asyncio.to_thread(child.wait, _LEFT_S)
-            except subprocess.TimeoutExpired:
+            code = await _reaped(child, _LEFT_S)
+            if code is None:
                 closed = f"lion {argv[0]} closed its standard output before printing an id"
                 said_all = filter(None, (err.strip(), f"{closed}; it runs on as pid {child.pid}"))
                 raise ToolError("\n".join(said_all)) from None
