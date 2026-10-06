@@ -539,6 +539,60 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     assert 2.5 <= run.elapsed < 4  # a turn given the whole budget again would end at 4.5
 
 
+# every OUT{} the deadline can find (ADR-0002 S6), by the turn it is in, the refusals in a row before it,
+# `max_refusals` (3 when unset) and what its field reads: a literal, a command settled earlier in its turn,
+# one settled in an earlier turn, or one still computing at the deadline
+_S6_CELLS = [
+    ("first", 0, cap, field) for cap in (1, 2, 3) for field in ("literal", "this turn", "computing")
+] + [
+    ("later", prior, cap, field)
+    for cap in (1, 2, 3)
+    for prior in range(cap)  # at `max_refusals` refusals the run has already ended
+    for field in ("literal", "this turn", "an earlier turn", "computing")
+]
+
+
+@pytest.mark.parametrize(("at", "prior", "cap", "field"), _S6_CELLS)
+def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_turn(at, prior, cap, field):
+    ends: list = []
+    turns = []
+    if at == "later":
+        refused = [f'OUT{{done: "refused-{n}"}}' for n in range(1, prior + 1)]
+        if field == "an earlier turn":  # the command the last turn's field reads settles in the first
+            turns.append(fenced("a = wait(seconds=0.05)", *refused[:1]))
+            refused = refused[1:]
+        elif not refused:
+            turns.append("No program this turn.")
+        turns += [fenced(r) for r in refused]
+    turns.append(
+        {
+            "literal": fenced("side = wait(seconds=60)", 'OUT{done: "yes"}'),
+            "this turn": fenced("a = wait(seconds=0.05)", "side = wait(seconds=60)", "OUT{done: *a}"),
+            "an earlier turn": fenced("side = wait(seconds=60)", "OUT{done: *a}"),
+            "computing": fenced("a = wait(seconds=60)", "OUT{done: *a}"),
+        }[field]
+    )
+    bounds = {} if cap == 3 else {"max_refusals": cap}
+    run = _run(
+        _waiting_actor(f"s6-{at}-{prior}-{cap}-{field}", ends),
+        *turns,
+        time_budget=1,  # wide enough that a loaded machine still starts the last turn in it
+        accept=lambda r, o: "refused in time" if o["done"].startswith("refused-") else None,
+        **bounds,
+    )
+    if field == "computing":  # never assembled: cut with its turn, no refusal, and the row is broken
+        assert run.outcome == Exhausted(turns=len(turns), reason="time") and run.refusals == 0
+    else:  # assembled past the deadline: refused for the spent budget, and counted
+        assert run.refusals == prior + 1
+        assert run.outcome == (
+            Refused("the time_budget of 1 is spent", prior + 1)
+            if prior + 1 == cap
+            else Exhausted(turns=len(turns), reason="time")
+        )
+    assert run.output is None and ends[-1] == ("wait", 60.0, "cut") and 1 <= run.elapsed < 30
+    assert all(end == "ran" for _, _, end in ends[:-1])
+
+
 def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through(caplog):
     ends: list = []
     actor = _waiting_actor("launch-after-cut", ends)
