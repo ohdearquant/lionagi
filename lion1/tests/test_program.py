@@ -513,10 +513,21 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     run = _run(_waiting_actor("unassembled", ends), lazy, out, time_budget=1, max_refusals=1)
     assert run.outcome == Exhausted(turns=2, reason="time") and run.output is None and run.refusals == 0
     assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 30
-    # the deadline is the run's, not each turn's: an earlier turn's time is spent from it
+    # the deadline is the run's, not each turn's, the retries of refused OUT{}s included: an earlier
+    # turn's time is spent from it. Two refusals in a row stand as the last turn's walk starts; its cut
+    # field adds none, and a turn that reached no OUT{} breaks the row
     ends.clear()
-    spent = fenced("first = wait(seconds=2)")
-    run = _run(_waiting_actor("spent-before", ends), spent, lazy, out, time_budget=2.5, max_refusals=1)
+    spent = fenced("first = wait(seconds=2)", 'OUT{done: "first"}')
+    held = fenced("lazy = [DO wait(seconds=60)][0]", 'OUT{done: "second"}')
+    run = _run(
+        _waiting_actor("spent-before", ends),
+        spent,
+        held,
+        out,
+        time_budget=2.5,
+        max_refusals=3,
+        accept=lambda r, o: "not yet" if o["done"] in ("first", "second") else None,
+    )
     assert run.outcome == Exhausted(turns=3, reason="time") and run.refusals == 0
     assert ends == [("wait", 2.0, "ran"), ("wait", 60.0, "cut")]
     assert 2.5 <= run.elapsed < 4  # a turn given the whole budget again would end at 4.5
