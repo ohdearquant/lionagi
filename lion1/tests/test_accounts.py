@@ -226,6 +226,12 @@ def test_a_pool_file_declares_its_accounts_their_plan_groups_and_the_pick_settin
     assert [a.kept for a in pool.accounts] == ["keychain", "home", "default"]
     assert pool.settings == Settings(900.0, 1800.5, 1.0, 0.5, {"claude_code": "haiku", "codex": "gpt-small"})
     assert parse_pool("", path).accounts == ()  # an empty file declares no account
+    # every header line cuts the file, so a table under `[pick]` and `[pick]` above the accounts are kept
+    moved = '[pick]\nmax_age = 900\n[pick.probe_model]\ncodex = "gpt-small"\n[[account]]\nname = "a"\n'
+    moved += 'provider = "claude_code"\ncredential = "default"\n'
+    got = parse_pool(moved, path)
+    assert got.accounts == (Account("a", "claude_code", "default"),)
+    assert got.settings.max_age == 900 and got.settings.probe_model["codex"] == "gpt-small"
 
 
 ACCOUNT = '[[account]]\nname = "a"\nprovider = "claude_code"\ncredential = "default"\n'
@@ -287,6 +293,10 @@ ACCOUNT = '[[account]]\nname = "a"\nprovider = "claude_code"\ncredential = "defa
         ('[pick]\nprobe_model = { codex = "sk-ant" }\n', "never holding 'sk-ant'"),  # the stem alone
         (ACCOUNT.replace('"a"', '"SK-Ant"'), "never holding 'sk-ant'"),
         ("account = []\n", "each account is its own [[account]] table"),  # inline, and empty
+        (  # a line inside a value that starts like a header, where `lion account` would cut the file
+            ACCOUNT.replace('"claude_code"', '"codex"').replace('"default"', '"""/srv/a\n[pick]\n"""'),
+            "no line inside a value starts with '['",
+        ),
     ],
 )
 def test_every_refusal_of_the_pool_file_names_the_entry_and_the_rule(tmp_path, text, said):
@@ -1145,7 +1155,8 @@ def test_add_refuses_a_name_already_present_and_a_file_it_cannot_add_to_in_place
     inline = 'account = [{ name = "a", provider = "codex", credential = "default" }]\n'
     # the same, with a header line inside a string so the lines count one header for one account
     hidden = 'account = [{ name = "a", provider = "codex", credential = """/srv/a\n[[account]]\n""" }]\n'
-    for text in (inline, hidden, "account = []\n"):
+    held = '[[account]]\nname = "a"\nprovider = "codex"\ncredential = """/srv/a\n[pick]\n"""\n'
+    for text in (inline, hidden, held, "account = []\n"):
         path.write_text(text)
         code, _, err = run(add, capsys, stdin=CANARY)
         assert code == 1 and "each account is its own [[account]] table" in err
@@ -1393,10 +1404,13 @@ def test_remove_refuses_an_absent_name_and_an_account_it_cannot_remove_in_place(
     code, _, err = run(["account", "remove", SHAPED, "--file", str(path)], capsys)
     assert code == 1 and "an account's name is letters" in err and "Zq7xW" not in err
     inline = 'account = [{ name = "a", provider = "claude_code", credential = "keychain" }]\n'
-    path.write_text(inline)
-    code, _, err = run(["account", "remove", "a", "--file", str(path)], capsys)
-    assert code == 1 and "each account is its own [[account]] table" in err
-    assert path.read_text() == inline and logged(argv) == []
+    # a home whose value holds a line starting like a header, where remove would cut the table short
+    held = '[[account]]\nname = "a"\nprovider = "codex"\ncredential = """/srv/a\n[pick]\n"""\n'
+    for text in (inline, held):
+        path.write_text(text)
+        code, _, err = run(["account", "remove", "a", "--file", str(path)], capsys)
+        assert code == 1 and "each account is its own [[account]] table" in err
+        assert path.read_text() == text and logged(argv) == []
     path.write_bytes(b"\xff")
     code, _, err = run(["account", "remove", "a", "--file", str(path)], capsys)
     assert code == 1 and "is not UTF-8, so nothing was written" in err

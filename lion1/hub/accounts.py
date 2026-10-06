@@ -87,6 +87,7 @@ _LABEL = "letters, digits, '.', '_' and '-', at most 64 of them, never holding '
 _TOKEN = re.compile(r"sk-ant-[A-Za-z0-9._-]{58,2041}")
 _TOKEN_FORM = "'sk-ant-' then letters, digits, '-', '_' and '.', 65 to 2048 characters in all"
 _ACCOUNT_HEADER = re.compile(r"\s*\[\[\s*account\s*\]\]\s*(#.*)?$")  # one `[[account]]` line
+_HEADER = re.compile(r"\s*\[")  # a table's header, `[t]` or `[[t]]`, as `lion account` cuts the file
 _ACCOUNT_KEYS = ("name", "provider", "credential", "group")
 _MINUTES = {300: "five_hour", 10080: "seven_day"}  # a Codex window is told by its length
 
@@ -250,11 +251,15 @@ def parse_pool(text: str, path: Path) -> Pool:
         raise AccountsError(f"{path}: account is an array of tables, [[account]]")
     seen: set[str] = set()
     accounts = tuple(_account(f"{path}: account {i}", row, seen) for i, row in enumerate(rows, 1))
-    # `lion account` edits the file by its `[[account]]` lines (D8): an array written inline, a table named
-    # any other way, or such a line inside a string would load here and then be refused by every edit, so
-    # the file is read again cut at those lines, and each piece after a cut must be its one account
+    # `lion account` edits the file by its header lines, every line starting with `[` (D8): an array written
+    # inline, a table named any other way, or such a line inside a value would load here and then be cut
+    # wrong by an edit, so the file is read again cut at those lines; the piece before the first has no
+    # account, each piece under an `[[account]]` line is its one account, in order, and every other has none
     lines = text.splitlines(keepends=True)
-    cuts = [0, *(i for i, line in enumerate(lines) if _ACCOUNT_HEADER.match(line)), len(lines)]
+    heads = [i for i, line in enumerate(lines) if _HEADER.match(line)]
+    left = iter(rows)
+    want = [[], *([next(left, None)] if _ACCOUNT_HEADER.match(lines[i]) else [] for i in heads)]
+    cuts = [0, *heads, len(lines)]
     try:
         pieces = [
             tomllib.loads("".join(lines[a:b])).get("account", [])
@@ -263,9 +268,10 @@ def parse_pool(text: str, path: Path) -> Pool:
     except tomllib.TOMLDecodeError:
         pieces = None
     # `account = []` cuts nowhere and loads as no account, so it passes the comparison: refused by name
-    if pieces is None or pieces != [[], *([row] for row in rows)] or ("account" in doc and not rows):
+    if pieces != want or ("account" in doc and not rows):
         raise AccountsError(
-            f"{path}: each account is its own [[account]] table, its header on a line of its own"
+            f"{path}: each account is its own [[account]] table, its header on a line of its own, and no "
+            "line inside a value starts with '['"
         )
     return Pool(accounts, _settings(path, doc.get("pick", {})), path)
 

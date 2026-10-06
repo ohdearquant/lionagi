@@ -13,7 +13,6 @@ import fcntl
 import getpass
 import json
 import os
-import re
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -23,6 +22,7 @@ from pathlib import Path
 
 from hub.accounts import (
     _ACCOUNT_HEADER,
+    _HEADER,
     _LABEL,
     LOCK_WAIT,
     WINDOWS,
@@ -42,8 +42,6 @@ from hub.accounts import (
 )
 
 __all__ = ("add", "remove", "rows", "account_main")
-
-_HEADER = re.compile(r"\s*\[")  # a table's header, `[t]` or `[[t]]`
 
 
 def _read(path: Path) -> str:
