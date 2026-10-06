@@ -131,7 +131,10 @@ def console(
     if coding:
         specs |= code(actor, tree)
         said.append("read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)")
-        about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory))
+        # with no shell (a run profile with code and no shell) the guidance names no bash to run anything
+        about_sandbox += "\n\n" + guidance(
+            "code" if sandbox is not None else "code-noshell", root=directory, branch=_branch(directory)
+        )
     if "khive" in given:
         khive = Bounded(actor.store.khive, recipients=frozenset())
         specs |= khive_ops(actor, khive)
@@ -578,6 +581,8 @@ async def _chat_main(
     sandbox: Box | None = None
     tree = about_box = None
     if boxed:
+        if a.offline:  # as a run profile is refused: the Daytona box has a network of its own
+            raise SystemExit("--offline puts only the VM's shell on a host-only network; the box is daytona")
         sandbox = DaytonaSandbox(image, workdir=str(directory))
         tree = BoxTree(sandbox)
         about_box = guidance("box", kind="Daytona", image=image, root=directory)

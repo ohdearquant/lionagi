@@ -187,11 +187,13 @@ def test_the_tool_descriptions_every_box_shares_claim_nothing_only_the_vm_has():
             Python.__doc__,
             *(f.description or "" for m in (Bash, Python) for f in m.model_fields.values()),
             (guidance / "code.md").read_text(),
+            (guidance / "code-noshell.md").read_text(),
         ]
     )
     vm = (guidance / "sandbox.md").read_text()
     only = ("VM", "mounted", "volume", "kept from one conversation", "no other host path")
-    for vm_only in (*only, "`uv`", "`git`", "`rg`", "`jq`"):
+    works = ("`uv run ...`", "`uv sync`")  # what the VM's environment lets a command do
+    for vm_only in (*only, *works, "`uv`", "`git`", "`rg`", "`jq`"):
         assert vm_only not in said, vm_only
         assert vm_only in vm, vm_only
     assert "every tool" not in (guidance / "box.md").read_text()
