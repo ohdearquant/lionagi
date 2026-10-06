@@ -2125,20 +2125,24 @@ class Nap(BaseModel):
 def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing():
     profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
     turn = fenced(f"v = {LONG}", "n = echo(text=*v)", 'note.k = note["j"]')
-    request, _ = _spent(turn, inner=LIMIT // 10)  # the listings and the 0.2 s budget; the backend is prompt
+    listings, _ = _spent(turn, inner=LIMIT)  # v takes some 20 s to compute here; the backend is prompt
+    # 2 s ahead: a loaded machine still starts the write before the deadline, and v still computes at it
+    request = RunRequest(inputs=("go",), history=listings.history, time_budget=2, max_turns=1)
 
     async def main():
         actor = _actor("settle-raises", [])
+        started = time.monotonic()
         with pytest.raises(RuntimeError, match="the store is down"):
             await actor.run(profile, request, scripted(turn))
-        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        return time.monotonic() - started, [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
 
     # the write reads the store, with the budget still ahead, and fails in its own task, which the settle
     # raises after the deadline cancelled the command reading *v; the value, computed in a task of its own,
     # was left computing for nobody once the walk raised. A comprehension is the one computation that
     # yields on its own account, and so the one that outlives the readers a spent budget cancels: a value
     # of commands ends at its next step, which the spent budget refuses
-    assert asyncio.run(main()) == []
+    elapsed, left = asyncio.run(main())
+    assert left == [] and 2 <= elapsed < 15  # raised at the deadline, far short of v's own end
 
 
 def test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget_ends():
