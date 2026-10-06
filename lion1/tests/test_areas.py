@@ -1150,17 +1150,32 @@ def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch,
     # it polls on, no ping falls due, and the client never goes: only the server's end stops it.
     # `serve` ends with `server_close` alone, after a Ctrl-C, so that ends it too. The residents' rows
     # hold still, so the stream has nothing to write: a write to the socket the end shut would end it
-    # whatever its wait did
-    monkeypatch.setattr(areas_cli, "_POLL_S", 0.2)
+    # whatever its wait did. Its wait is held until the server has ended, so the end lands in the wait,
+    # and from there it makes no other read of the residents
+    waiting, gate = threading.Event(), threading.Semaphore(0)
+
+    def sleep(_s):
+        waiting.set()
+        gate.acquire(timeout=10)
+
+    clock = types.SimpleNamespace(**{k: getattr(time, k) for k in dir(time) if not k.startswith("_")})
+    clock.sleep = sleep
+    monkeypatch.setattr(areas_cli, "time", clock)
+    monkeypatch.setattr(areas_cli, "_POLL_S", 0.0)  # every pass reads the residents
     monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
-    real, held = areas_cli.area_rows, []
+    real, real_status, held, reads = areas_cli.area_rows, areas_cli.status, [], []
 
     def area_rows(found):  # the first rows, every read after
         if not held:
             held.append(real(found))
         return held[0]
 
+    def status(found):
+        reads.append(found)
+        return real_status(found)
+
     monkeypatch.setattr(areas_cli, "area_rows", area_rows)
+    monkeypatch.setattr(areas_cli, "status", status)
     d = app_dir(tmp_path)
     server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
     # `shutdown` waits for `serve_forever`; one request served is enough for `server_close`
@@ -1175,10 +1190,77 @@ def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch,
         assert resp.status == 200 and stream.is_alive()
         # its first pass written (`areas`, or `/v2`'s `today`): from here it has nothing left to write
         read_events(resp, lambda ev: len(ev) > 0, 10)
+        assert waiting.wait(10), f"{path} never waited"
         getattr(server, end)()
+        made = len(reads)
+        gate.release()
         stream.join(10)
         assert not stream.is_alive(), f"{path} served on past the server's {end}"
+        assert len(reads) == made  # no read of the residents after the wait the end came during
     finally:  # the server ends on a failure too, so no stream of it outlives the test
+        gate.release(5)
+        if end == "shutdown":
+            server.shutdown()
+        server.server_close()
+        conn.close()
+
+
+@pytest.mark.parametrize("path", ["/events", "/v2/events"])
+@pytest.mark.parametrize("end", ["shutdown", "server_close"])
+def test_a_stream_reading_the_residents_as_its_server_ends_ends_as_the_read_returns(
+    tmp_path, monkeypatch, path, end
+):
+    # the stream's second read of the residents is held, and the server ends during it: nothing cuts the
+    # read short, but once it returns the stream reads no log, makes no other read and ends. The rows hold
+    # still, so the stream has nothing to write that a socket the end shut would refuse
+    monkeypatch.setattr(areas_cli, "_POLL_S", 0.2)
+    monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
+    real_rows, real_status, real_tail = areas_cli.area_rows, areas_cli.status, areas_cli._tail
+    held_rows: list = []
+    reads: list[float] = []
+    tails: list[float] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def area_rows(found):  # the first rows, every read after
+        if not held_rows:
+            held_rows.append(real_rows(found))
+        return held_rows[0]
+
+    def status(found):
+        reads.append(time.monotonic())
+        if len(reads) == 2:
+            entered.set()
+            release.wait(10)
+        return real_status(found)
+
+    def tail(path_, at):
+        tails.append(time.monotonic())
+        return real_tail(path_, at)
+
+    monkeypatch.setattr(areas_cli, "area_rows", area_rows)
+    monkeypatch.setattr(areas_cli, "status", status)
+    monkeypatch.setattr(areas_cli, "_tail", tail)
+    d = app_dir(tmp_path)
+    server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
+    serving = server.serve_forever if end == "shutdown" else server.handle_request
+    threading.Thread(target=serving, daemon=True).start()
+    before = set(handlers())
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        (stream,) = [t for t in handlers() if t not in before]
+        assert resp.status == 200
+        assert entered.wait(10), "the stream never made its second read"
+        getattr(server, end)()
+        assert stream.is_alive()  # in the read, which runs on
+        released = time.monotonic()
+        release.set()
+        stream.join(5)
+        assert not stream.is_alive(), f"{path} served on past the server's {end}"
+        assert len(reads) == 2 and [t for t in tails if t >= released] == []
+    finally:
+        release.set()
         if end == "shutdown":
             server.shutdown()
         server.server_close()
@@ -1196,6 +1278,21 @@ def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
     monkeypatch.setattr(areas_cli, "_PING_S", 0.3)
     d = app_dir(tmp_path)
     server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
+    # the stream's write of the long line, marked as it begins and as it returns, with what it returned
+    real_emit = server.RequestHandlerClass.emit
+    began, returned, gave = threading.Event(), threading.Event(), []
+
+    def emit(self, event, data, revision=0):
+        if len(json.dumps(data)) < 1 << 20:
+            return real_emit(self, event, data, revision)
+        began.set()
+        try:
+            gave.append(real_emit(self, event, data, revision))
+            return gave[-1]
+        finally:
+            returned.set()
+
+    monkeypatch.setattr(server.RequestHandlerClass, "emit", emit)
     serving = server.serve_forever if end == "shutdown" else server.handle_request
     threading.Thread(target=serving, daemon=True).start()
     before = set(handlers())
@@ -1214,11 +1311,12 @@ def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
         long = WAKE_LINE.replace("Success", "x" * (16 << 20))  # still a wake line, so `/v2/events` sends it
         with open(d / "serve.log", "a") as f:
             f.write(long + "\n")
-        time.sleep(1)  # read, and its write begun
-        assert stream.is_alive()
+        assert began.wait(10), f"{path} never began writing the long line"
+        assert not returned.wait(0.5), "the long line's write did not block"
         getattr(server, end)()
         stream.join(5)
         assert not stream.is_alive(), f"{path} stayed blocked in a write past the server's {end}"
+        assert gave == [False]  # it ended in that write, which the end broke
     finally:
         if end == "shutdown":
             server.shutdown()

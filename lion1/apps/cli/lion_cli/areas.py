@@ -242,9 +242,10 @@ def make_server(
     snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None, "rev": 0}
     snapshot_lock = threading.Lock()
     # set when the server ends, and every open stream's socket shut down with it: a stream stops after
-    # its current wait, and at once in a write a client that does not read has blocked, never serving on
-    # for a client that may not read again (a handler thread outlives `shutdown`, which only ends
-    # `serve_forever`). Shutting the socket down wakes a blocked write; closing it does not
+    # its current wait, at once in a write a client that does not read has blocked, and as its current
+    # read of the residents returns, which nothing cuts short, sending and reading nothing more. It never
+    # serves on for a client that may not read again (a handler thread outlives `shutdown`, which only
+    # ends `serve_forever`). Shutting the socket down wakes a blocked write; closing it does not
     stopping = threading.Event()
     streams: set[socket.socket] = set()
     streams_lock = threading.Lock()
@@ -463,6 +464,8 @@ def make_server(
             next_ping = time.monotonic() + _PING_S
             while True:
                 areas, rows, revision = poll_rows()
+                if stopping.is_set():  # the server ended during the read
+                    return
                 if rows is not None and revision > sent:
                     if not emit("areas", rows, revision):
                         return
@@ -627,6 +630,8 @@ def make_server(
             next_mail = time.monotonic()
             while True:
                 areas, rows, revision = poll_rows()
+                if stopping.is_set():  # the server ended during the read
+                    return
                 found = agent_ids(areas)
                 if rows is not None and revision > sent_rev:
                     sent_rev, day = revision, time.strftime("%Y-%m-%d")
