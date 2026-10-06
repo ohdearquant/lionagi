@@ -1067,9 +1067,11 @@ class Actor:
                 refused = getattr(text, "refused", None)
                 if isinstance(text, str):
                     text = str(text)  # a Reply's count and cost are read; the record keeps a plain str
-                if isinstance(cost, int | float) and not isinstance(cost, bool):
+                if isinstance(cost, int | float) and not isinstance(cost, bool) and cost >= 0:
                     run.cost += cost
-                elif cost is not None:  # a cost that is not a number reads as spent, never as room
+                elif cost is not None:
+                    # a backend owes an int or float of zero or more; anything else, a Decimal or a
+                    # negative figure included, reads as spent, never as room
                     run.cost = math.nan
                 if isinstance(reported, int) and not isinstance(reported, bool) and reported > 0:
                     if run.anchor is not None and run.view_est > run.anchor[1]:

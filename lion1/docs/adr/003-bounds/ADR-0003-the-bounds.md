@@ -143,7 +143,7 @@ the resolved values; nothing re-reads the profile.
   `test_a_wait_that_outlasts_the_time_budget_admits_no_further_call`,
   `test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_it`,
   `test_reported_cost_ends_the_run_and_a_command_asked_once_it_is_spent_never_starts`,
-  `test_a_reported_cost_that_is_not_a_number_reads_as_spent`,
+  `test_a_reported_cost_that_is_not_an_int_or_float_of_zero_or_more_reads_as_spent`,
   `test_the_context_figure_the_last_notification_told_ends_the_run_over_its_budget`,
   `test_a_job_over_its_context_budget_before_any_call_is_refused_as_a_job_error`,
   `test_repeated_refusals_end_the_run_as_refused`.
@@ -218,9 +218,8 @@ refuse, and the caller receives the value it judged.
   requests and grants (C3), and output dispatch through hooks (C4). Still owed with C3: the
   notification naming idle turns, cost and refusals with their remainders. `Reply` carries a cost
   and the run sums it, but no backend hands one back yet, so `cost_budget` reads nothing spent; a
-  cost that is not a number reads as spent, never as room
-  (`test_a_reported_cost_that_is_not_a_number_reads_as_spent`). `RunRequest` takes every field by
-  name, so a new bound never shifts another (`test_a_run_request_takes_its_fields_by_name_only`).
+  malformed cost reads as spent (S7). `RunRequest` takes every field by name, so a new bound never
+  shifts another (`test_a_run_request_takes_its_fields_by_name_only`).
 - **S5**: A grant of time landing after the deadline raises the bound for what follows the turn. A
   pending command, held by the turn's wait or left out by `OUT{}`, is refused if its handler has not
   started. Behind a synchronous grant that held the loop past the deadline, it would otherwise find
@@ -231,3 +230,6 @@ refuse, and the caller receives the value it judged.
 - **S6**: S5's refusal is checked beside the C2 re-read, after the command's arguments are evaluated
   and its before hooks run, as a spent budget's is: a hook may see a call that is then refused
   (`test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler`).
+- **S7**: A backend owes a cost as an int or float of zero or more. Any other reads as spent, never
+  as room: a `Decimal`, whose figure would serve, and a negative figure, which would hand back what
+  was spent (`test_a_reported_cost_that_is_not_an_int_or_float_of_zero_or_more_reads_as_spent`).
