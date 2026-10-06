@@ -132,7 +132,7 @@ def limits(monkeypatch) -> list:
     it was made, when its own timer fired, and when its run was made, read here before and after the run's
     making and never from the run. Its deadline is computed in between from what the budget has left: where
     the run's budget ends, or the making itself once the budget is spent, and no further past that than the
-    making took."""
+    making took. A limit a settle waited under also keeps the tasks that settle cut for its deadline."""
     made: list = []
     runs: dict[int, tuple[float, float]] = {}  # id of a live run -> the clock around its making
 
@@ -144,6 +144,7 @@ def limits(monkeypatch) -> list:
             self.made_at = loop.time()
             self.run_made = runs[id(run)]
             self.fired = None
+            self.cut = None
             made.append(self)
 
         def _on_timeout(self) -> None:
@@ -157,20 +158,34 @@ def limits(monkeypatch) -> list:
         making(run, *args, **kwargs)
         runs[id(run)] = (before, time.monotonic())
 
+    settle = actor_module._settle
+
+    async def settled(run, tasks, by_deadline=True, limit=None):
+        cut, budget = await settle(run, tasks, by_deadline, limit)
+        if isinstance(limit, Kept):
+            limit.cut = list(cut)
+        return cut, budget
+
     monkeypatch.setattr(actor_module.Run, "__init__", timed)
     monkeypatch.setattr(actor_module, "_Limit", Kept)
+    monkeypatch.setattr(actor_module, "_settle", settled)
     return made
 
 
 def _cut_at_the_deadline(cuts: list) -> None:
-    """The one wait the deadline cut was cut once its run's latest limit, the settlement's, had fired on
-    its timer; that limit's deadline is where the run's time budget ends, counted from when the run was
-    made, and the cut is not before it. How long after it the loop got to the cut is the loop's: a machine
-    that stalls the loop delays every timer alike."""
-    ((at, limit),) = cuts
+    """The one wait the deadline cut was cut by its run's latest limit, the settlement's: that limit fired
+    on its timer, the settle under it cut the wait's task for it, and nothing else asked the task to stop.
+    The limit's deadline is where the run's time budget ends, counted from when the run was made, and the
+    cut is not before it. How long after it the loop got to the cut is the loop's: a machine that stalls
+    the loop delays every timer alike."""
+    ((at, limit, task, asked),) = cuts
     assert limit is not None and limit.fired is not None, (
         "the wait was cut before its run's latest limit fired"
     )
+    assert limit.cut is not None and task in limit.cut, (
+        "the settle under the latest limit did not cut the wait"
+    )
+    assert asked == 1, f"the wait was asked to stop {asked} times, so not by its deadline alone"
     (before, after), span = limit.run_made, limit.made_at - limit.entered
     end = (before + limit.budget, after + limit.budget)
     assert end[0] <= limit.when() <= max(end[1], limit.entered) + span, (end, limit.when(), span)
@@ -447,7 +462,8 @@ class Drop(BaseModel):
 
 def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list | None = None) -> Actor:
     """An actor whose `wait` records how it ended in `ends`, and, given the `limits` the runtime made, the
-    loop's time a cut wait was cut at and its run's latest limit then, in `cuts`."""
+    loop's time a cut wait was cut at, its run's latest limit then, its task and the cancels pending on that
+    task, in `cuts`."""
     actor = _actor(name, ends)
 
     @actor.handler(Wait)
@@ -458,7 +474,8 @@ def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list
             ends.append(("wait", req.seconds, "cut"))
             if cuts is not None:
                 latest = [limit for limit in limits if limit.run is ctx.run][-1:]
-                cuts.append((asyncio.get_running_loop().time(), *(latest or [None])))
+                task = asyncio.current_task()
+                cuts.append((asyncio.get_running_loop().time(), *(latest or [None]), task, task.cancelling()))
             raise
         ends.append(("wait", req.seconds, "ran"))
         return "rested"
