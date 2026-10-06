@@ -58,7 +58,7 @@ size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.p
 | A1 | Every box has bash, coreutils `timeout`, git and `cat`.                          | the evaluation images, `python:3.12-slim`, the console's own image                  | `exec` needs a per-box guard and a file API    |
 | A2 | An `old` that occurs once is the right unit of an edit.                          | 952 bench turns; ambiguous edits refused ([[ADR-0012-the-bench|ADR-0012]], the bench)    | line-number edits, which drift after one edit  |
 | A3 | A command run after a change is the model's verification, whatever it ran.       | on the bench the run that ran nothing after its edits was wrong; resolved runs ran tests | the gate names the tests it wants         |
-| A4 | The threat a sandbox answers is the host, not the network.                       | a VM with no egress cannot install anything; a console over a project needs to      | the network is off by default                  |
+| A4 | The threat a sandbox answers is the host, not the network.                       | a VM with no egress cannot install from the internet; a console over a project needs to      | the network is off by default                  |
 | A5 | A new file outside a tracked top-level directory is scaffolding, never the fix. | django-12273 in the 952-turn Mini-50 bench run ([[ADR-0012-the-bench#^c9\|ADR-0012/C9]]): a root `repro.py` and a new `tt/` package counted as the fix, and the settle rule stopped the run unresolved after 15 turns | a fix that adds such a file starts no clock, and the gate refuses a finish that holds nothing else |
 
 ## Claims
