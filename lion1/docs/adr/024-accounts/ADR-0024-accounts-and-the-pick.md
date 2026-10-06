@@ -336,12 +336,12 @@ file, then deletes a Claude Code account's item, which D9 reads back; a Codex ho
 
 ### D9: A keychain item is read back after a write and after a failed delete ^d9
 
-Serves C1 and C2. The keychain tool's exit code after a failure is not measured, so it decides
-nothing. After `add` writes a token the item is read back. A refused write that left the token there
-deletes it or names the command that does; one that left another value, perhaps part of it, names
-that command. A delete the tool failed is read back without the secret: still there, `remove`
-restores its table; gone, the delete held; unreadable, the table stays out and the refusal names the
-delete command.
+Serves C1 and C2. What the keychain tool exits with after a failure is not measured, so the item is
+read back after `add` writes a token and after a failed delete. A refused write that left the token
+there deletes it or names the command that does; one that left another value, perhaps part of it,
+names that command. The delete's read-back takes no secret: still there, `remove` restores its
+table; gone, the delete held; unreadable, the table stays out and the refusal names the delete
+command.
 
 - **Landing evidence**: `tests/test_accounts.py`:
   `test_a_write_the_tool_failed_after_storing_deletes_the_item_or_names_the_command_that_does`,
