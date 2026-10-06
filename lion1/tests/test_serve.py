@@ -1918,3 +1918,51 @@ def test_a_second_end_while_the_run_is_live_answers_its_state_and_sends_no_frame
     assert first == second and first["closed"] is True
     assert phases(frames) == [("working", False), ("working", True), ("ended", True)]
     assert service.state(sid)["outcome"] == {"kind": "Stopped", "turn": 2}
+
+
+def _phases_written(tree: ast.Module) -> set[str]:
+    """Every phase the service writes as a literal: to a `.phase` attribute, or under a "phase" key."""
+    found = set()
+    for node in ast.walk(tree):
+        pairs = []
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple):
+                    pairs += zip(target.elts, node.value.elts, strict=True)
+                else:
+                    pairs.append((target, node.value))
+            found |= {
+                v.value
+                for t, v in pairs
+                if isinstance(t, ast.Attribute) and t.attr == "phase" and isinstance(v, ast.Constant)
+            }
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Attribute):
+            if node.target.attr == "phase" and isinstance(node.value, ast.Constant):
+                found.add(node.value.value)
+        elif isinstance(node, ast.Dict):
+            found |= {
+                v.value
+                for k, v in zip(node.keys, node.values, strict=True)
+                if isinstance(k, ast.Constant) and k.value == "phase" and isinstance(v, ast.Constant)
+            }
+    return found
+
+
+def test_a_served_runs_phase_and_a_refusals_code_are_closed_sets_the_types_carry():
+    import typing
+
+    from hub.serve import transport
+
+    assert typing.get_args(serve.Phase) == ("starting", "working", "waiting", "ended", "aborted", "cut_short")
+    assert set(serve._LIVE) < set(typing.get_args(serve.Phase))
+    assert _phases_written(ast.parse((ROOT / "hub" / "serve" / "service.py").read_text())) == set(
+        typing.get_args(serve.Phase)
+    )
+    # the transport answers every code with a status, in the set's order, and no code the set lacks
+    assert tuple(transport._STATUS) == typing.get_args(serve.Code)
+    codes = ", ".join(typing.get_args(serve.Code))
+    for wrong in ("", "nope", "BUSY", None):
+        with pytest.raises(ValueError) as refused:
+            ServeError(wrong, "why")
+        assert str(refused.value) == f"serve error code {wrong!r} is not one of {codes}"
+    assert ServeError("busy", "why").code == "busy"

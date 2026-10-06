@@ -22,7 +22,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic_core import to_jsonable_python
 
@@ -31,6 +31,8 @@ from lion1.checkpoint import entry_row, load_log
 from lion1.spec import spec_name
 
 __all__ = (
+    "Code",
+    "Phase",
     "ServeError",
     "Offer",
     "Service",
@@ -43,7 +45,34 @@ _ONCE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _FIELDS = ("offer", "inputs", "bounds", "resume", "once")
 _COUNTS = ("max_turns", "max_idle", "max_refusals", "context_budget")
 _AMOUNTS = ("time_budget", "cost_budget")
-_LIVE = ("starting", "working", "waiting")
+# where a served run is (ADR-0021/D9): starting until `run.started`, then working or waiting, and last
+# ended or aborted; cut_short for a run whose log stops before its END row
+Phase = Literal["starting", "working", "waiting", "ended", "aborted", "cut_short"]
+_LIVE: tuple[Phase, ...] = ("starting", "working", "waiting")
+# a refusal's code, ADR-0021/D9's table by status; the transport answers each with its own
+Code = Literal[
+    "bad_request",
+    "forbidden",
+    "unknown_offer",
+    "unknown_run",
+    "not_found",
+    "method_not_allowed",
+    "timeout",
+    "ended",
+    "starting",
+    "not_conversation",
+    "no_resume",
+    "unreadable_log",
+    "conflict",
+    "gone",
+    "too_large",
+    "unsupported_type",
+    "refused",
+    "too_many",
+    "log_failed",
+    "busy",
+]
+_CODES = get_args(Code)
 _MIB = 1 << 20  # an input, a body
 _INPUTS = 16  # inputs one start carries
 _UNTAKEN = 64  # inputs a run holds not yet taken
@@ -59,7 +88,9 @@ _COMMENT = (None, None)  # a stream's keep-alive, written as a comment line
 class ServeError(Exception):
     """A refusal a client reads: a code of ADR-0021/D9's table and a sentence saying why."""
 
-    def __init__(self, code: str, reason: str):
+    def __init__(self, code: Code, reason: str):
+        if code not in _CODES:
+            raise ValueError(f"serve error code {code!r} is not one of {', '.join(_CODES)}")
         super().__init__(f"{code}: {reason}")
         self.code = code
         self.reason = reason
@@ -126,6 +157,8 @@ class _Sub:
 
 class _Served:
     """A run the service started, or one its log describes."""
+
+    phase: Phase
 
     def __init__(self, sid: str, offer: str, resumed: str | None, converse: bool = False):
         self.id = sid

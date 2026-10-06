@@ -13,11 +13,11 @@ import shlex
 import sys
 import tomllib
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, TypeVar
 
 from hub import BoxTree, DaytonaSandbox, Sandbox, guidance
 from hub.flow import Ended, Step, flow_from, read, render, run_flow
@@ -252,6 +252,20 @@ async def result_mail(
     return None
 
 
+_T = TypeVar("_T")
+
+
+async def _through(aw: Awaitable[_T]) -> tuple[_T, BaseException | None]:
+    """`aw` run to its end through one cancellation, which comes back beside the result for the caller to
+    raise once its end is said: a run's read-back and its one mail are never cut off half done by it, and
+    the mail is never sent twice. A second cancellation stops `aw` as well."""
+    task = asyncio.ensure_future(aw)
+    try:
+        return await asyncio.shield(task), None
+    except asyncio.CancelledError as e:
+        return await task, e
+
+
 def _why(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
 
@@ -358,26 +372,32 @@ async def run_main(a: argparse.Namespace) -> int:
             raise
         error, interrupted = _why(e), e
     run_id = opened[0]
-    unread = None
-    if run is None:  # it ended in an error, which may have come before its row was written
-        try:
-            await store.result(run_id)
-        except Exception as e:
-            unread = _why(e)
     outcome = type(run.outcome).__name__.lower() if run is not None and run.outcome is not None else "stopped"
     output = run.output if run is not None else None
-    mailed = await result_mail(
-        store.khive,
-        to,
-        f"run {run_id} {outcome}",
-        output,
-        directory,
-        run_id,
-        thread=a.thread,
-        error=error,
-        unread=unread,
-        notices=notices,
-    )
+
+    async def end() -> tuple[str | None, str | None]:
+        unread = None
+        if run is None:  # it ended in an error, which may have come before its row was written
+            try:
+                await store.result(run_id)
+            except Exception as e:
+                unread = _why(e)
+        mailed = await result_mail(
+            store.khive,
+            to,
+            f"run {run_id} {outcome}",
+            output,
+            directory,
+            run_id,
+            thread=a.thread,
+            error=error,
+            unread=unread,
+            notices=notices,
+        )
+        return unread, mailed
+
+    (unread, mailed), late = await _through(end())
+    interrupted = interrupted or late
     code = _ended("run", run_id, outcome, output, None, mailed, error)
     if unread is not None:
         _emit(f"its row could not be read back: {unread}", sys.stderr)
@@ -424,17 +444,20 @@ async def flow_main(a: argparse.Namespace) -> int:
         error, interrupted = _why(e), e
     if ended is None:
         ended = Ended(flows[0], "stopped", None, None)
-    mailed = await result_mail(
-        store.khive,
-        to,
-        f"flow {flow.name} {ended.id} {ended.outcome}",
-        ended.output,
-        directory,
-        ended.id,
-        thread=a.thread,
-        error=error,
-        notices=notices,
+    mailed, late = await _through(
+        result_mail(
+            store.khive,
+            to,
+            f"flow {flow.name} {ended.id} {ended.outcome}",
+            ended.output,
+            directory,
+            ended.id,
+            thread=a.thread,
+            error=error,
+            notices=notices,
+        )
     )
+    interrupted = interrupted or late
     code = _ended(f"flow {flow.name}", ended.id, ended.outcome, ended.output, ended.failed, mailed, error)
     if interrupted is not None:
         raise interrupted
