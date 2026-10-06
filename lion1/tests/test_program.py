@@ -2122,12 +2122,20 @@ class Nap(BaseModel):
     seconds: float
 
 
-def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing():
+def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing(monkeypatch):
     profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
     turn = fenced(f"v = {LONG}", "n = echo(text=*v)", 'note.k = note["j"]')
     listings, _ = _spent(turn, inner=LIMIT)  # v takes some 20 s to compute here; the backend is prompt
     # 2 s ahead: a loaded machine still starts the write before the deadline, and v still computes at it
     request = RunRequest(inputs=("go",), history=listings.history, time_budget=2, max_turns=1)
+    computing: list[asyncio.Task] = []
+    compute = actor_module._Walk._compute
+
+    async def recorded(self, *args):
+        computing.append(asyncio.current_task())
+        return await compute(self, *args)
+
+    monkeypatch.setattr(actor_module._Walk, "_compute", recorded)
 
     async def main():
         actor = _actor("settle-raises", [])
@@ -2142,7 +2150,10 @@ def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing():
     # yields on its own account, and so the one that outlives the readers a spent budget cancels: a value
     # of commands ends at its next step, which the spent budget refuses
     elapsed, left = asyncio.run(main())
-    assert left == [] and 2 <= elapsed < 15  # raised at the deadline, far short of v's own end
+    # raised at the deadline or after, however loaded the machine, with v stopped in its computation: a
+    # value that finished first, or a walk that waited it out, leaves its task done, never cancelled
+    assert left == [] and elapsed >= 2
+    assert len(computing) == 1 and computing[0].cancelled()
 
 
 def test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget_ends():
