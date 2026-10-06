@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
-from lion_cli.main import parser
+from lion_cli.main import main, parser
 from lion_cli.view import RESULT_LINES, Console
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, model_serializer
 
@@ -477,6 +477,150 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     rows = [json.loads(ln) for ln in resumed.read_text().splitlines()]
     assert [r["content"] for r in rows if r.get("kind") == "INPUT"] == ["hi", "and?"]
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
+
+
+@pytest.mark.parametrize("deleted", [True, False])
+def test_an_interrupt_as_the_sandbox_starts_stops_the_container_its_run_made(
+    tmp_path, monkeypatch, console_khive, capsys, deleted
+):
+    """Ctrl-C while the local sandbox starts, before the console takes Ctrl-C itself: the container's
+    `run` answers, then the sandbox is stopped and deleted, and the interrupt goes on. A delete that
+    fails with the container still listed is named, and the interrupt still goes on."""
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if argv[0] == "run":
+            (chatting,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "chat_main"]
+            chatting.cancel()  # the first interrupt, as `asyncio.run`'s own SIGINT handler gives it
+            await asyncio.sleep(0.01)
+        if argv[0] == "delete" and not deleted:
+            return 1, "", "made-up: container is busy"
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("never asked"))
+    args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(chat_main(parser().parse_args(args)))
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
+    if deleted:
+        assert calls == ["image", "volume", "run", "stop", "delete"] and "its stop failed" not in said
+    else:
+        assert calls == ["image", "volume", "run", "stop", "delete", "list"]
+        assert re.search(
+            r"sandbox \S+: its stop failed \(RuntimeError: sandbox \S+: its delete exited 1: ", said
+        )
+        assert "it may still run" in said
+
+
+@pytest.mark.parametrize("ending", [False, True])
+def test_a_sandbox_whose_stop_is_cut_by_another_interrupt_is_named_as_it_may_still_run(
+    tmp_path, monkeypatch, console_khive, capsys, ending
+):
+    """Ctrl-C again while the local sandbox stops, at a start that was cut or as the conversation ends:
+    the stop is cut, and the sandbox is named, for it may still run; the command exits 130 either way."""
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if (argv[0] == "run" and not ending) or argv[0] == "stop":
+            (chatting,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "chat_main"]
+            chatting.cancel()  # an interrupt, as `asyncio.run`'s handler or the console's own gives it
+            await asyncio.sleep(30 if argv[0] == "stop" else 0.01)
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    def leave(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli.os, "_exit", leave)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
+    args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
+    with pytest.raises(SystemExit) as left:  # through the command's own entry, which gives its exit status
+        main([*args, "--turns", "1"])
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
+    assert calls == ["image", "volume", "run", "stop"] and left.value.code == 130
+    assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
+    assert ("interrupted ·" in said) is ending  # a cut start never opened the conversation's close
+
+
+def test_a_start_cut_by_two_real_interrupts_names_the_sandbox_and_exits_130(
+    tmp_path, monkeypatch, console_khive, capsys
+):
+    """The interrupts as a terminal sends them: the first, as the container's `run` is sent, cancels the
+    command, and the second, as its sandbox stops, is the `KeyboardInterrupt` `asyncio.run` raises."""
+    import signal
+
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if argv[0] in ("run", "stop"):
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.sleep(30)
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("never asked"))
+    args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)  # `asyncio.run` takes it only then
+    try:
+        with pytest.raises(SystemExit) as left:
+            main([*args, "--turns", "1"])
+    except KeyboardInterrupt:  # failed here, rather than ending the test session with it
+        pytest.fail("the second interrupt left `lion chat` as a KeyboardInterrupt, not an exit")
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
+    assert calls == ["image", "volume", "run", "stop"] and left.value.code == 130
+    assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
+
+
+def test_a_sandbox_whose_stop_fails_as_the_conversation_ends_is_named_and_the_conversation_closes(
+    tmp_path, monkeypatch, console_khive, capsys
+):
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if argv[0] == "delete":
+            return 1, "", "made-up: container is busy"
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
+    log = tmp_path / "chat.jsonl"
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--shell", "--say", "hi", "--turns", "1"]
+    asyncio.run(chat_main(parser().parse_args(args)))
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
+    assert calls == ["image", "volume", "run", "stop", "delete", "list"]
+    assert re.search(r"sandbox \S+: its stop failed \(RuntimeError: sandbox \S+: its delete exited 1: ", said)
+    assert "it may still run" in said and said.index("it may still run") < said.index("ended ")
 
 
 def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(

@@ -257,18 +257,31 @@ async def end_box(
     apply: bool,
     say: Callable[[str], None],
     show: bool = True,
+    carry: bool = False,
 ) -> None:
     """The end of a Daytona box: its patch taken (`take_patch`, saved under `saved` as `<name>.patch`),
     then the box stopped, which deletes it. A box that ended first is said to have no recovery. A patch
     not taken whole leaves the box running and named, for it may hold the only copy of the work, and
-    raises."""
+    raises. A stop that fails names the box too. An interrupt stops the patch, so nothing it says comes
+    after the box is named, or the box's stop, which names the box, for it may run on; with `carry`,
+    when the command has had no interrupt yet, the first waits for the patch, each git call of it under
+    its timeout, and for the stop, and is raised once the box has stopped, in place of any error either
+    raised, and a second stops either at once and is raised as itself."""
+    interrupted: BaseException | None = None
     if box.dead is not None:
         say(f"box: it ended before its patch was read ({box.dead}); recovery unavailable")
     else:
+        took = asyncio.ensure_future(
+            take_patch(box, directory, saved, name, baseline=baseline, apply=apply, say=say, show=show)
+        )
         try:
-            await asyncio.shield(
-                take_patch(box, directory, saved, name, baseline=baseline, apply=apply, say=say, show=show)
-            )
+            try:
+                await (asyncio.shield(took) if carry else took)
+            except asyncio.CancelledError as e:
+                if not carry:
+                    raise
+                interrupted = e  # the command's first interrupt: the patch is taken whole first
+                await took  # a second cancels it
         except BaseException as e:  # not taken whole, a cancellation included: the box may hold the only copy
             ident = getattr(box, "box_id", None)
             if isinstance(e, asyncio.CancelledError | KeyboardInterrupt):
@@ -283,8 +296,36 @@ async def end_box(
             else:
                 reason = box.dead or "the provider named no box"
                 say(f"box {ident or '?'}: {why}; recovery unavailable: {reason}")
-            raise
-    await asyncio.shield(box.stop())
+            if interrupted is not None and not isinstance(e, asyncio.CancelledError | KeyboardInterrupt):
+                raise interrupted from e  # the run was interrupted whatever then failed its patch
+            raise  # a second interrupt goes on up as itself, for the command ends at it
+    holds = carry and interrupted is None  # the command's first interrupt is still to come: the stop takes it
+    ident = getattr(box, "box_id", None)  # read first: a stop forgets the box, done or not
+    stop = asyncio.ensure_future(box.stop())
+    try:
+        try:
+            await (asyncio.shield(stop) if holds else stop)
+        except asyncio.CancelledError as e:
+            if not holds:
+                raise
+            interrupted = e  # the command's first interrupt: the box is stopped first
+            await stop  # a second cancels it
+    except (asyncio.CancelledError, KeyboardInterrupt):  # the patch is saved; the box may run on
+        say(
+            f"box {ident or '?'}: interrupted while it was stopped; it may still be running, at "
+            f"{box.workdir}, until the box's idle stop deletes it"
+        )
+        raise
+    except Exception as e:  # the same, and an interrupt it carried goes on in place of the error
+        say(
+            f"box {ident or '?'}: its stop failed ({type(e).__name__}: {e}); it may still be running, "
+            f"at {box.workdir}, until the box's idle stop deletes it"
+        )
+        if interrupted is not None:
+            raise interrupted from e
+        raise
+    if interrupted is not None:
+        raise interrupted
 
 
 def _git_apply(directory: Path, *args: str, timeout: float) -> list[str]:
@@ -609,7 +650,19 @@ async def _chat_main(
         if (build := await sandbox.ensure_image()) is not None:
             raise SystemExit(f"the sandbox image {sandbox.image} did not build:\n{build}")
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
-        await sandbox.start()
+        try:
+            await sandbox.start()
+        except BaseException:  # a container its `run` made is stopped: no conversation has begun in it
+            try:
+                await asyncio.shield(sandbox.stop())
+            except (asyncio.CancelledError, KeyboardInterrupt):  # the next interrupt cuts the stop: named
+                say.notice(f"sandbox {sandbox.name}: interrupted while it was stopped; it may still run")
+                raise
+            except Exception as e:  # named, and the start's own end goes on
+                say.notice(
+                    f"sandbox {sandbox.name}: its stop failed ({type(e).__name__}: {e}); it may still run"
+                )
+            raise
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
     off_turn = actor.bus.subscribe("turn.started", lambda ev: say.working("thinking"))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
@@ -653,7 +706,18 @@ async def _chat_main(
                         sandbox, directory, chats, chat_id, baseline=baseline, apply=a.apply, say=say.notice
                     )
                 else:
-                    await asyncio.shield(sandbox.stop())
+                    try:
+                        await asyncio.shield(sandbox.stop())
+                    except asyncio.CancelledError:  # cut, and left to run on as the process exits: named
+                        say.notice(
+                            f"sandbox {sandbox.name}: interrupted while it was stopped; it may still run"
+                        )
+                        raise
+                    except Exception as e:  # named; the conversation still closes
+                        say.notice(
+                            f"sandbox {sandbox.name}: its stop failed ({type(e).__name__}: {e}); "
+                            "it may still run"
+                        )
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])

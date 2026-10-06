@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import shlex
 import sys
 import tomllib
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -136,7 +137,8 @@ async def cast(
     """The actor, profile and backend a run of `shape` takes, built by `console`'s keyword form, and the
     box its shell needs for as long as the run: a VM over the directory, or a Daytona box holding a copy
     of it, whose diff is saved as `.lion/runs/<run id>.patch` and never applied. A Daytona box whose
-    patch is not taken whole is kept, named through `say`, and its error raised (`end_box`)."""
+    patch is not taken whole is kept, named through `say`, and its error raised (`end_box`); a stop that
+    fails is named the same. After an interrupt the interrupt is raised in place of either error."""
     sandbox: Any = None
     tree = about_box = None
     boxed = shape.box == "daytona"
@@ -170,7 +172,7 @@ async def cast(
     runs: list[str] = []
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(ev.payload["run"]))
     baseline = ""
-    started = False
+    started = interrupted = second = False
     try:
         if boxed:
             started = True
@@ -180,23 +182,68 @@ async def cast(
                 raise SubmitError(f"the sandbox image {sandbox.image} did not build:\n{build}")
             started = True
             await sandbox.start()
-        yield actor, profile, backend
+        try:
+            yield actor, profile, backend
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            interrupted = True  # the command's one carried interrupt was the run's
+            raise
+    except BaseException as e:
+        second = _second(e)  # the command ends at once: no patch is taken and nothing is stopped (S13)
+        interrupted = interrupted or isinstance(e, asyncio.CancelledError)  # one before the run included
+        raise
     finally:
         off()
-        if started:
-            if boxed and runs:  # the patch first, named by the run: stop deletes the box
-                await end_box(
-                    sandbox,
-                    directory,
-                    directory / ".lion" / "runs",
-                    runs[-1],
-                    baseline=baseline,
-                    apply=False,
-                    say=say,
-                    show=False,
+        if started and second:  # named, for it runs on
+            if boxed:
+                ident = getattr(sandbox, "box_id", None)
+                say(
+                    f"box {ident or '?'}: kept, not stopped: interrupted twice before its patch was taken; "
+                    f"the work is there, at {sandbox.workdir}, until the box's idle stop deletes it"
                 )
+            elif getattr(sandbox, "launched", True):  # its container's `run` was sent
+                say(f"sandbox {sandbox.name}: interrupted twice before it was stopped; it may be running")
             else:
-                await asyncio.shield(sandbox.stop())
+                say(f"sandbox {sandbox.name}: interrupted twice before its container was started; none runs")
+        elif started:
+            try:
+                if boxed and runs:  # the patch first, named by the run: stop deletes the box
+                    await end_box(
+                        sandbox,
+                        directory,
+                        directory / ".lion" / "runs",
+                        runs[-1],
+                        baseline=baseline,
+                        apply=False,
+                        say=say,
+                        show=False,
+                        carry=not interrupted,
+                    )
+                else:  # a box with no run to patch, or the local sandbox: stopped as `end_box` stops a box
+                    ident = getattr(sandbox, "box_id", None) if boxed else None  # a stop forgets the box
+                    what = f"box {ident or '?'}" if boxed else f"sandbox {sandbox.name}"
+                    stop = asyncio.ensure_future(sandbox.stop())
+                    late: BaseException | None = None
+                    try:
+                        try:
+                            await (stop if interrupted else asyncio.shield(stop))
+                        except asyncio.CancelledError as e:
+                            if interrupted:
+                                raise
+                            late = e  # the command's first interrupt: the stop ends first
+                            await stop  # a second cancels it
+                    except (asyncio.CancelledError, KeyboardInterrupt):  # the second: named, as it may run on
+                        say(f"{what}: interrupted while it was stopped; it may still be running")
+                        raise
+                    except Exception as e:  # named the same, and an interrupt it took goes on in its place
+                        say(f"{what}: its stop failed ({_why(e)}); it may still be running")
+                        if late is not None:
+                            raise late from e
+                        raise
+                    if late is not None:
+                        raise late
+            except Exception:  # the end failed, naming what it left; the run's interrupt goes on (S13)
+                if not interrupted:
+                    raise
 
 
 def variables(given: list[str] | None) -> dict[str, str]:
@@ -230,12 +277,16 @@ async def result_mail(
     thread: str | None = None,
     error: str | None = None,
     unread: str | None = None,
+    notices: Sequence[str] = (),
 ) -> str | None:
     """The one result message (C4, D4): the subject names the id and the outcome, the body the output's
     first lines and the command that reads the rest, after why the row could not be read back when it
-    could not: a store that was gone may hold it later. Sent after the rows close; a send that fails is
-    returned as the error, never raised, for the rows stand without it."""
+    could not: a store that was gone may hold it later. The run's notices head the body, for a submitter
+    that never read standard error (an MCP caller) learns a kept box's name only here. Sent after the
+    rows close; a send that fails is returned as the error, never raised, for the rows stand without it."""
     body = _head(output) if output is not None else "(no output)"
+    if notices:
+        body = "\n".join(f"notice: {n}" for n in notices) + f"\n\n{body}"
     if error:
         body = f"error: {error}\n\n{body}"
     if unread is not None:
@@ -265,15 +316,24 @@ async def _through(aw: Awaitable[_T], carry: bool = True) -> tuple[_T, BaseExcep
         return await task, e
 
 
+def _second(e: BaseException) -> bool:
+    """`e` is the command's second interrupt: its task has been cancelled twice, as `asyncio.run` does
+    at a second SIGINT when it ends the loop, or `e` is the `KeyboardInterrupt` that SIGINT raises where it
+    lands. Whatever caught the first, the second ends the command (S13)."""
+    task = asyncio.current_task()
+    return isinstance(e, KeyboardInterrupt) or (task is not None and task.cancelling() > 1)
+
+
 def _stopped_before_its_end(what: str, directory: Path, run_id: str) -> None:
     """The command's second interrupt, wherever its first landed, stops the end at once (`_through`), so
     the mail may not have gone: standard error says so, with the `lion result` command for the id, as the
-    mail's body ends."""
-    _emit(
-        f"{what} stopped before its end: its result mail may not have gone; "
-        f"lion result --dir {shlex.quote(str(directory))} {run_id}",
-        sys.stderr,
-    )
+    mail's body ends. A line standard error cannot take is dropped: the interrupt goes on up as itself."""
+    with contextlib.suppress(Exception):
+        _emit(
+            f"{what} stopped before its end: its result mail may not have gone; "
+            f"lion result --dir {shlex.quote(str(directory))} {run_id}",
+            sys.stderr,
+        )
 
 
 def _why(e: BaseException) -> str:
@@ -293,10 +353,19 @@ def _emit(line: str, stream: TextIO | None = None) -> None:
         os.close(null)
 
 
-def _say(line: str) -> None:
-    """A notice (a box's push, its patch): on standard error, for standard output holds the ids first
-    and the end last, its line and then the output (C1)."""
-    _emit(line, sys.stderr)
+def _notices() -> tuple[list[str], Callable[[str], None]]:
+    """A run's notices (a box's push, its patch, a box kept), and the `say` that takes each: on standard
+    error, for standard output holds the ids first and the end last, its line and then the output (C1),
+    and kept for the result mail. One standard error cannot take is dropped there and changes nothing,
+    an interrupt it was said for included."""
+    kept: list[str] = []
+
+    def say(line: str) -> None:
+        kept.append(line)
+        with contextlib.suppress(Exception):
+            _emit(line, sys.stderr)
+
+    return kept, say
 
 
 def _submitter(directory: Path, notify: str | None) -> tuple[str, str]:
@@ -347,6 +416,7 @@ async def run_main(a: argparse.Namespace) -> int:
         except OSError as e:
             raise SubmitError(f"--file {f}: {e}") from None
     opened: list[str] = []
+    notices, say = _notices()
 
     def tell(ev: Any) -> None:
         opened.append(ev.payload["run"])
@@ -354,7 +424,7 @@ async def run_main(a: argparse.Namespace) -> int:
 
     run = store = error = interrupted = None
     try:
-        async with cast(directory, shape, submitter=to, thread=a.thread, say=_say) as (
+        async with cast(directory, shape, submitter=to, thread=a.thread, say=say) as (
             actor,
             profile,
             backend,
@@ -371,6 +441,9 @@ async def run_main(a: argparse.Namespace) -> int:
         error = _why(e)
     except BaseException as e:  # a cancellation: the same, and then it goes on up
         if not opened:
+            raise
+        if _second(e):  # in its box's end: nothing after it, the mail included
+            _stopped_before_its_end(f"run {opened[0]}", directory, opened[0])
             raise
         error, interrupted = _why(e), e
     run_id = opened[0]
@@ -394,6 +467,7 @@ async def run_main(a: argparse.Namespace) -> int:
             thread=a.thread,
             error=error,
             unread=unread,
+            notices=notices,
         )
         return unread, mailed
 
@@ -426,6 +500,7 @@ async def flow_main(a: argparse.Namespace) -> int:
         raise SubmitError(str(e)) from None
 
     flows: list[str] = []
+    notices, say = _notices()
 
     def opened(what: str, run_id: str) -> None:
         if what.startswith("flow "):
@@ -433,7 +508,7 @@ async def flow_main(a: argparse.Namespace) -> int:
         _emit(run_id if what.startswith("flow ") else f"{what} {run_id}")
 
     def step_cast(name: str) -> Any:
-        return cast(directory, shapes[name], submitter=to, thread=a.thread, say=_say)
+        return cast(directory, shapes[name], submitter=to, thread=a.thread, say=say)
 
     ended = error = interrupted = None
     try:
@@ -441,9 +516,16 @@ async def flow_main(a: argparse.Namespace) -> int:
     except Exception as e:  # the driver closed the flow stopped; the mail says why
         if not flows:
             raise
+        for note in getattr(e, "__notes__", ()):
+            say(note)
         error = _why(e)
     except BaseException as e:  # a cancellation: the same, and then it goes on up
-        if not flows:
+        for note in getattr(e, "__notes__", ()):  # what the flow's open or close left, cut or failed
+            say(note)
+        if not flows:  # before its id: no mail, and the notes have said what its row may be
+            raise
+        if _second(e):  # in a step's box's end or the flow's close: nothing after it, the mail included
+            _stopped_before_its_end(f"flow {flow.name} {flows[0]}", directory, flows[0])
             raise
         error, interrupted = _why(e), e
     if ended is None:
@@ -459,6 +541,7 @@ async def flow_main(a: argparse.Namespace) -> int:
                 ended.id,
                 thread=a.thread,
                 error=error,
+                notices=notices,
             ),
             carry=interrupted is None,
         )

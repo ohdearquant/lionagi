@@ -13,6 +13,7 @@ dependencies = [
 lion = "lion_cli.main:main"
 
 [project.optional-dependencies]
+mcp = ["mcp>=2.1"]  # lion mcp: the stdio server over run, flow and result
 voice = [
     "mlx-whisper>=0.4",
     "sounddevice>=0.5",

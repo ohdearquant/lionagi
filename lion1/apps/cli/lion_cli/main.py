@@ -155,6 +155,10 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     rs.add_argument("id", type=_run_id, help="the id `lion run` or `lion flow` printed first")
     rs.add_argument("--dir", default=".", help="the actor's directory the run's rows are in")
     rs.add_argument("--history", action="store_true", help="the run's messages too, in order")
+    mc = sub.add_parser(
+        "mcp", help="a stdio MCP server whose tools are run, flow and result, for the directory"
+    )
+    mc.add_argument("--dir", default=".", help="the actor's directory: the submitter, its profiles and flows")
     cf = sub.add_parser(
         "config", help="the [chat] values a bare `lion chat` runs with, and the file each came from"
     )
@@ -279,8 +283,8 @@ def main(argv: list[str] | None = None) -> None:
     elif a.command == "chat":
         try:
             asyncio.run(chat_main(a))
-        except KeyboardInterrupt:
-            pass
+        except (KeyboardInterrupt, asyncio.CancelledError):  # one that ends it before its close: 130 too
+            raise SystemExit(130) from None
     elif a.command in ("run", "flow", "result"):
         act = {"run": run_main, "flow": flow_main, "result": result_main}[a.command]
         try:
@@ -290,6 +294,18 @@ def main(argv: list[str] | None = None) -> None:
         except (KeyboardInterrupt, asyncio.CancelledError):  # once: after its end and mail; again: at once
             raise SystemExit(130) from None
         raise SystemExit(code)
+    elif a.command == "mcp":
+        try:
+            from .mcp_server import server
+        except ImportError as e:  # the mcp extra, which `lion mcp` alone needs
+            if not (e.name or "").startswith("mcp"):
+                raise
+            raise SystemExit("lion mcp: the mcp package is not installed; install lion-cli[mcp]") from None
+        try:
+            mcp = server(Path(a.dir))
+        except SubmitError as e:  # no actor, or no lion database
+            raise SystemExit(f"lion mcp: {e}") from None
+        asyncio.run(mcp.run_stdio_async())
 
 
 if __name__ == "__main__":

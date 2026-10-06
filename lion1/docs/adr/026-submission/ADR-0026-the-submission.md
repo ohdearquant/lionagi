@@ -1,7 +1,7 @@
 ---
 adr: ADR-0026
 status: proposed
-liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, an agent's wake continues its last run with no checkpoint, and `lion run`, `lion flow` and `lion result` run a profile or a flow, write its step rows and mail its result, each pinned by tests; the MCP server is owed, S1)
+liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, an agent's wake continues its last run with no checkpoint, and `lion run`, `lion flow` and `lion result` run a profile or a flow, write its step rows and mail its result, and `lion mcp` serves them as three tools, each pinned by tests)
 date: "2026-10-04"
 area: submission
 kind: new
@@ -136,7 +136,7 @@ step's `.output`. `{{` and `}}` are one brace. `lion run`'s `--say` is a templat
 
 When a run or a flow ends in any outcome, the run's actor sends the submitter one message, on the
 submission's thread when it named one. The subject carries the id and the outcome; the body, the
-output's head and the command that reads the rest.
+run's notices, the output's head and the command that reads the rest.
 
 A send that fails is printed and kept as an error; the rows are complete without it. `lion result
 --dir D ID` prints the run row with its output, a flow's step rows beside it, and with `--history`
@@ -148,15 +148,16 @@ the session's messages.
 - `test_lion_result_prints_the_row_and_with_history_the_messages`
 - `test_lion_result_prints_a_flows_step_rows_beside_its_row`
 
-### C5: The MCP server exposes the same three acts and nothing else _(enforced: mechanical; owed, S1)_ ^c5
+### C5: The MCP server exposes the same three acts and nothing else _(enforced: mechanical)_ ^c5
 
 - **Subject**: the tool list `lion mcp --dir D` serves, and what each tool does.
 - **Violated when**: a fourth tool is listed, `run` or `flow` returns after the child ends, the
   child runs on a model the caller named, or a tool sends mail, moves task state or writes a file.
 
 `run` and `flow` start the command of C1 as a child process with the server's actor as the
-submitter, and return the id as soon as it prints; `result` reads the rows. The model behind the
-tool is the profile's, never the caller's; the caller's own tools are not reached.
+submitter, and return the id as soon as it prints; `result` reads the rows and, for a child this
+server started, how it ended. The model behind the tool is the profile's, never the caller's; the
+caller's own tools are not reached.
 
 - `test_the_mcp_run_tool_returns_the_id_once_printed_and_the_child_runs_on`
 - `test_the_mcp_server_lists_run_flow_and_result_and_no_other_tool`
@@ -233,7 +234,7 @@ restarted unasked would lose what the refusal keeps.
 
 ## Decisions
 
-### D1: `lion run`, `lion flow`, `lion result` and `lion mcp` in `apps/cli/lion_cli/submit.py` ^d1
+### D1: `lion run`, `lion flow` and `lion result` in `apps/cli/lion_cli/submit.py`, `lion mcp` in `mcp_server.py` ^d1
 
 Serves C1, C4, C5 and C8. Four subcommands, each taking `--dir`, the actor's directory; each builds
 its store first, which refuses without the lion database (C8). `run` takes `--profile`, `--say`,
@@ -243,7 +244,7 @@ and `--notify ACTOR` (default: the directory's own actor). `flow` takes `--name`
 C1's table and D1 gain these rows in the same change; S10 gives the exit codes.
 
 - **Landing evidence**: `run`, `flow` and `result`: `apps/cli/tests/test_submit.py`, C1 to C4's
-  tests through `main()`. `mcp` is owed with D5.
+  tests through `main()`; `mcp`: `apps/cli/tests/test_mcp.py`.
 
 ### D2: The profile file, read by `profile_from(dir, name, model)` ^d2
 
@@ -285,15 +286,17 @@ first forty lines and `lion result --dir D <id>`.
   `test_a_flows_step_rows_against_the_built_binary` reads the steps, runs and messages back from the
   real pack.
 
-### D5: The MCP server, `apps/mcp/server.py` ^d5
+### D5: The MCP server, `apps/cli/lion_cli/mcp_server.py` ^d5
 
-Serves C5. A stdio server over the `mcp` package, started by `lion mcp --dir D`. `run` and `flow`
-spawn the command of D1 with `--notify` set to the server's actor and return `{"id": ...}` once the
-first line prints; the child is started in its own session so the caller's exit does not end it.
-`result` calls `Store.result` and returns the row. A caller registers the server in its own MCP
-configuration with its directory.
+Serves C5. `lion mcp --dir D` is a stdio server in the CLI package, for it starts the CLI's own
+commands. `run` and `flow` spawn D1's command with `--notify` set to the server's actor and return
+`{"id": ...}` once its first line prints; the child runs on in its own session (S12, S15). `result`
+reads `Store.result`, a flow's steps and, with `history`, the messages; for a child it started,
+`child` is `running`, or its exit and the last of its standard error, where a failed mail is named.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `apps/cli/tests/test_mcp.py`: C5's tests; a child that ends before its id,
+  or whose pipes a process it started holds, or prints on; a call cancelled before the id; an id
+  with no newline; `result` with its `child`; `lion mcp` through `main()`.
 
 ### D6: The agent's run continues the last ^d6
 
@@ -341,8 +344,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 
 ## Consequences
 
-- **S1**: Owed: C5, with the tests named there, landing with D5. C1 to C4 landed with D1 to D4, and
-  C6, C7 and C8 before them.
+- **S1**: C1 to C5 landed with D1 to D5, and C6, C7 and C8 before them; S5, S7 and S8 name what is
+  still owed.
 - **S2**: [[ADR-0016-the-lion-command|ADR-0016]] C1's table and D1 gain the four subcommands in the
   change that adds them. [[ADR-0013-the-agent|ADR-0013]] D3 is amended: the agent's history is its
   last run's session, and its cursor names that run.
@@ -379,5 +382,44 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   to ask, ended by `OUT{}`. The `send` tool mails the submitter alone, on the submission's thread,
   under the `comm.send` privilege the profile then holds. With `box = "daytona"` the shell runs in a
   box holding a copy of the directory. Its diff is saved as `.lion/runs/<run id>.patch` and never
-  applied; a patch not taken whole keeps the box and names it, through `end_box`, which `lion chat`
-  now shares.
+  applied; a patch not taken whole, a cancellation included, keeps the box and names it, through
+  `end_box`, which `lion chat` shares, and any mail carries the name.
+- **S12**: `lion mcp` starts a child in a session of its own, so the caller's end or signal does not
+  reach it. The child has no standard input, for the server's own is the protocol, and each value is
+  joined to its flag, so a value that starts with a dash stays a value. A child that ends before an
+  id fails the call with what it wrote on standard error. The `mcp` package is the `mcp` extra of
+  lion-cli.
+- **S13**: A command carries one interrupt, wherever it lands after the id: a run or flow still
+  going stops, its box's patch is taken whole and the box stopped, and its one mail goes with every
+  notice; then it exits 130. The next interrupt ends the command at once (S21): a patch it lands in
+  keeps its box and names it, a stop names the box, which may run on, and no mail goes after it, as
+  standard error says with `lion result --dir D <id>`.
+- **S14**: A reader that has gone costs a run nothing: its lines go to the null device, for the rows
+  and the mail carry them. A notice whose write to standard error fails is dropped, and an interrupt
+  it was printed for goes on as itself; a full pipe holds that write until its reader reads, as it
+  holds any program's.
+- **S15**: A thread started with `lion mcp`'s child reads both its pipes to their end, or for a
+  second past the child's own end while a process it started holds one, and reaps it, a call
+  cancelled before the id included. It keeps the child's exit and the last 8 KiB of its standard
+  error for `result`; a child that ends with no newline printed has all it printed for its id. Only
+  what its standard output held when it was reaped can be its id.
+- **S16**: A descendant that inherits the child's standard output and writes there before the reap
+  supplies bytes the server reads as the id; the CLI starts no such descendant, and a child that
+  does so has handed its identity away.
+- **S17**: A `lion mcp` child that closes its standard output with no id and runs on fails the call
+  within a second, however many calls wait at once, naming its pid, and is reaped when it ends.
+- **S18**: A second interrupt that lands before the box's end takes no patch and stops nothing, and
+  standard error names what it left: the box, kept with its work, or the local sandbox. The sandbox
+  may still run once its container's `run` was sent, and none of it runs before that.
+- **S19**: A local sandbox's stop takes the command's interrupts as a box's stop does (S13): the
+  first waits for the stop, and the next cuts it and names the sandbox, which may still run.
+- **S20**: With no thread to spare, `lion mcp` still reaps each child while it runs. One no thread
+  can read fails the call at once, naming its pid, or its exit when it has already ended, and the
+  server's loop reaps it when it ends. One whose reaping no thread can take is read until its pipes
+  end, past the second S15 gives, and is reaped then. The server exits as its loop ends, and a child
+  still running then runs on (S12).
+- **S21**: A flow's driver closes its row at every end once the store has said it opened it. The
+  command's first interrupt, landing in that open or that close, lets it finish and goes on after
+  it; a second cuts it, and standard error says the row may stay open. A patch, a stop, or the
+  flow's open or close that fails after either interrupt is named as a cut one is, and the interrupt
+  goes on in place of its error.
