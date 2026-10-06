@@ -5,6 +5,7 @@ import asyncio
 import gc
 import json
 import re
+import sys
 import time
 from typing import Any
 
@@ -126,15 +127,35 @@ def _run(actor: Actor, *turns: str, profile: Profile = PROGRAM, seen: list | Non
     return asyncio.run(actor.run(profile, RunRequest(**request), scripted(*turns, seen=seen)))
 
 
+_SETTLE = actor_module._settle.__code__  # the settle's own code, read before any test wraps it
+
+
 @pytest.fixture
 def limits(monkeypatch) -> list:
     """Every time limit the runtime makes in the test, each with the loop's time just before and just after
     it was made, when its own timer fired, and when its run was made, read here before and after the run's
     making and never from the run. Its deadline is computed in between from what the budget has left: where
     the run's budget ends, or the making itself once the budget is spent, and no further past that than the
-    making took. A limit a settle waited under also keeps the tasks that settle cut for its deadline."""
+    making took. A limit a settle waited under also keeps the tasks that settle cut for its deadline. Every
+    task started once a run is made keeps each cancel that reached it while it ran, as it was asked: the
+    loop's time, the code that asked, and the time limit that code held, if it held one."""
     made: list = []
     runs: dict[int, tuple[float, float]] = {}  # id of a live run -> the clock around its making
+
+    class Asked(asyncio.Task):
+        def __init__(self, *args, **kwargs) -> None:
+            self.asked: list = []
+            super().__init__(*args, **kwargs)
+
+        def cancel(self, msg=None) -> bool:
+            caller = sys._getframe(1)
+            reached = super().cancel(msg)
+            if reached:  # a task already done is not asked anything
+                self.asked.append((self.get_loop().time(), caller.f_code, caller.f_locals.get("limit")))
+            return reached
+
+    def asking(loop, coro, **kwargs):
+        return Asked(coro, loop=loop, **kwargs)
 
     class Kept(actor_module._Limit):
         def __init__(self, run):
@@ -157,6 +178,7 @@ def limits(monkeypatch) -> list:
         before = time.monotonic()
         making(run, *args, **kwargs)
         runs[id(run)] = (before, time.monotonic())
+        asyncio.get_running_loop().set_task_factory(asking)
 
     settle = actor_module._settle
 
@@ -174,22 +196,26 @@ def limits(monkeypatch) -> list:
 
 def _cut_at_the_deadline(cuts: list) -> None:
     """The one wait the deadline cut was cut by its run's latest limit, the settlement's: that limit fired
-    on its timer, the settle under it cut the wait's task for it, and nothing else asked the task to stop.
-    The limit's deadline is where the run's time budget ends, counted from when the run was made, and the
-    cut is not before it. How long after it the loop got to the cut is the loop's: a machine that stalls
-    the loop delays every timer alike."""
+    on its timer, the one cancel that reached the wait's task was the settle's, asked under that limit once
+    it fired, and the settle returned the task as cut. The limit's deadline is where the run's time budget
+    ends, counted from when the run was made, and the cut is not before it. How long after it the loop got
+    to the cut is the loop's: a machine that stalls the loop delays every timer alike."""
     ((at, limit, task, asked),) = cuts
     assert limit is not None and limit.fired is not None, (
         "the wait was cut before its run's latest limit fired"
     )
+    assert len(asked) == 1, f"the wait was asked to stop {len(asked)} times, so not by its deadline alone"
+    ((when, by, under),) = asked
+    assert by is _SETTLE, f"the wait was asked to stop by {by.co_name}, not by the settle"
+    assert under is limit, "the settle that cut the wait held another limit than its run's latest"
     assert limit.cut is not None and task in limit.cut, (
-        "the settle under the latest limit did not cut the wait"
+        "the settle under the latest limit did not return the wait as cut"
     )
-    assert asked == 1, f"the wait was asked to stop {asked} times, so not by its deadline alone"
     (before, after), span = limit.run_made, limit.made_at - limit.entered
     end = (before + limit.budget, after + limit.budget)
     assert end[0] <= limit.when() <= max(end[1], limit.entered) + span, (end, limit.when(), span)
-    assert at >= limit.fired >= limit.when() - time.get_clock_info("monotonic").resolution, (at, limit.fired)
+    resolution = time.get_clock_info("monotonic").resolution
+    assert at >= when >= limit.fired >= limit.when() - resolution, (at, when, limit.fired)
 
 
 def _notices(run) -> str:
@@ -462,8 +488,8 @@ class Drop(BaseModel):
 
 def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list | None = None) -> Actor:
     """An actor whose `wait` records how it ended in `ends`, and, given the `limits` the runtime made, the
-    loop's time a cut wait was cut at, its run's latest limit then, its task and the cancels pending on that
-    task, in `cuts`."""
+    loop's time a cut wait was cut at, its run's latest limit then, its task and each cancel that reached
+    that task, in `cuts`."""
     actor = _actor(name, ends)
 
     @actor.handler(Wait)
@@ -475,7 +501,7 @@ def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list
             if cuts is not None:
                 latest = [limit for limit in limits if limit.run is ctx.run][-1:]
                 task = asyncio.current_task()
-                cuts.append((asyncio.get_running_loop().time(), *(latest or [None]), task, task.cancelling()))
+                cuts.append((asyncio.get_running_loop().time(), *(latest or [None]), task, list(task.asked)))
             raise
         ends.append(("wait", req.seconds, "ran"))
         return "rested"
@@ -600,7 +626,8 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     # turn's time is spent from it. Two refusals in a row stand as the last turn's walk starts; its cut
     # field adds none, and a turn that reached no OUT{} breaks the row. The first second is spent before
     # the last turn's wait starts, so a limit given the whole budget again would end a second or more past
-    # the run's; the other four are room for a loaded machine to finish the first wait inside the budget
+    # the run's; of the other six, a loop stalled for up to five seconds still finishes the first wait
+    # inside the budget, with a second left for the turns' own work
     ends.clear()
     cuts.clear()
     spent = fenced("first = wait(seconds=1)", 'OUT{done: "first"}')
@@ -610,12 +637,12 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
         spent,
         held,
         out,
-        time_budget=5,
+        time_budget=7,
         max_refusals=3,
         accept=lambda r, o: "not yet" if o["done"] in ("first", "second") else None,
     )
     assert run.outcome == Exhausted(turns=3, reason="time") and run.refusals == 0
-    assert ends == [("wait", 1.0, "ran"), ("wait", 60.0, "cut")] and run.elapsed >= 5
+    assert ends == [("wait", 1.0, "ran"), ("wait", 60.0, "cut")] and run.elapsed >= 7
     _cut_at_the_deadline(cuts)
 
 
