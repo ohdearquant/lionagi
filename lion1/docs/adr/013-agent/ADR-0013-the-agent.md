@@ -320,7 +320,9 @@ probes that `gtd.transition` and `gtd.complete` refuse. `Gtd.load` refuses `work
   thread or not at all.
 - **S3**: A backend that writes no cost spends 0 against the day's cap, so an agent on the
   subscription CLI is bounded by wakes per hour alone; its spend is unknown, never zero
-  ([[ADR-0009-backends#^c5|ADR-0009/C5]]).
+  ([[ADR-0009-backends#^c5|ADR-0009/C5]]). A figure the run would not sum (ADR-0003/S7) is none: it
+  counts among the calls of unknown cost and never lowers the day's spend
+  (`test_a_malformed_cost_figure_adds_nothing_and_counts_as_a_call_of_unknown_cost`).
 - **S4**: Two sends bypass `Agent.deliver`: the owner's notice of a lost batch goes to the transport
   directly, and the bench example's job child mails the agent itself through the khive CLI. Neither
   is capped or counted. The bench report of the row goes through `deliver`. A handler calling the

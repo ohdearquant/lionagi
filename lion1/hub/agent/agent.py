@@ -27,8 +27,10 @@ import asyncio
 import fcntl
 import fnmatch
 import json
+import math
 import os
 import re
+import sys
 import time
 import tomllib
 import uuid
@@ -40,13 +42,24 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
+from lion1.actor import (
+    Actor,
+    Backend,
+    Context,
+    Handle,
+    Inbound,
+    Profile,
+    Run,
+    RunRequest,
+    Success,
+    reported_cost,
+)
 from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
 from lion1.notes import NoteStore
 from lion1.record import Kind
 
-from ..areas import partial
+from ..areas import day_spend, partial
 from ..backend.claude_code import _prompt_tokens
 
 __all__ = (
@@ -506,9 +519,7 @@ class Agent:
                 return f"wakes_per_hour is {self.budget.wakes_per_hour}: no wakes until it is raised"
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
-        today = spend.get("day") == _day(now)
-        # a same-day row with no count is from before the count: uncounted, never complete
-        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown")) if today else (0.0, 0)
+        cost, unknown = _day_spend(self.state, _day(now))
         if cost >= self.budget.cost_per_day:
             return (
                 f"${cost:.4f} spent today"
@@ -663,8 +674,7 @@ class Agent:
         if self.wake_rules is None:
             take = list(mail)
         else:
-            spend = _value(self.state, "spend", {})
-            cost = spend.get("cost", 0.0) if spend.get("day") == _day(now) else 0.0
+            cost, _ = _day_spend(self.state, _day(now))
             spent = cost / self.budget.cost_per_day if self.budget.cost_per_day > 0 else 0.0
             for m in mail:
                 verdict = self.wake_rules.decide(m, spent)
@@ -1039,8 +1049,7 @@ class Agent:
         this burst's calls counted, ends the run; serve() starts a new one on the next mail, which
         continues it."""
         b = self._burst
-        spend = _value(self.state, "spend", {})
-        today = spend.get("cost", 0.0) if spend.get("day") == _day(self.clock()) else 0.0
+        today, _ = _day_spend(self.state, _day(self.clock()))
         return run.turn - b["turn0"] > self.max_turns or (
             today + self._usage(b["before"])["cost"] >= self.budget.cost_per_day
         )
@@ -1275,8 +1284,9 @@ class Agent:
 
     def _usage(self, before: int) -> dict:
         """What the backend calls since `before` cost: their count, tokens in and out, dollars, and
-        the calls the dollars miss (no figure, or the router's `cost_complete` false). Read off the
-        envelopes the backend keeps (`calls`); a backend without them spent 0 of everything."""
+        the calls the dollars miss (no figure, one the run would not sum (ADR-0003/S7), or the router's
+        `cost_complete` false). Read off the envelopes the backend keeps (`calls`); a backend without
+        them spent 0 of everything."""
         calls = [c for c in (getattr(self.backend, "calls", None) or [])[before:] if isinstance(c, dict)]
         tokens_in = tokens_out = 0
         for c in calls:
@@ -1290,8 +1300,14 @@ class Agent:
                 )
             )
             tokens_out += int(u.get("completion_tokens") or u.get("output_tokens") or 0)
-        cost = sum((c.get("total_cost_usd") or 0.0) for c in calls)
-        unknown = sum(1 for c in calls if c.get("total_cost_usd") is None or c.get("cost_complete") is False)
+        cost, unknown = 0.0, 0
+        for c in calls:
+            # a malformed figure is no figure: never room against the day's cap (ADR-0013/C5)
+            figure = math.nan if c.get("total_cost_usd") is None else reported_cost(c["total_cost_usd"])
+            if not math.isnan(figure):
+                cost = min(cost + figure, sys.float_info.max)  # past any cap, and a note takes no infinity
+            if math.isnan(figure) or c.get("cost_complete") is False:
+                unknown += 1
         # the context the last call's last turn stood in: what the next turn will pay for, and what
         # the fold decides on; the sum `in` above is the call's cost over all its turns
         context = _prompt_tokens(calls[-1]) if calls else None
@@ -1329,12 +1345,11 @@ class Agent:
             self._last_wake = now
         day = _day(now)
         same_day = spend.get("day") == day
-        # a same-day row with no count is from before the count: its calls went uncounted, and no
-        # later wake can count them, so the day reads as partial to its end (None, never 0)
-        counted = spend.get("unknown") if same_day else 0
+        before, counted = _day_spend(self.state, day)
         row = {
             "day": day,
-            "cost": (spend.get("cost", 0.0) if same_day else 0.0) + cost,
+            # a sum past a float's range is past any cap, and the note takes no infinity: the largest float
+            "cost": min(before + cost, sys.float_info.max),
             "unknown": None if counted is None else counted + unknown,
             "wakes": wakes,
             "calls": (spend.get("calls", 0) if same_day else 0) + calls,
@@ -1460,3 +1475,9 @@ def _value(store: NoteStore, key: str, default: Any) -> Any:
 
 def _day(now: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _day_spend(store: NoteStore, day: str) -> tuple[float, int | None]:
+    """The day's row as the cap reads it (`day_spend`): the note as stored, whatever it holds."""
+    note = store.get("spend")
+    return day_spend(None if note is None else note.value, day)

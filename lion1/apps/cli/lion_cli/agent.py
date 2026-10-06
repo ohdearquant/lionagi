@@ -8,6 +8,8 @@ import json
 import os
 import time
 import tomllib
+from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +18,7 @@ from hub.agent.chores import SPAWN_SALIENCE, Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
-from hub.areas import agent_notes, partial
+from hub.areas import agent_notes, day_spend, partial
 from hub.backend import ClaudeCodeSession, Codex, CodexSession, OpenRouter
 from hub.guidance import guidance
 from hub.hooks import install, load
@@ -260,17 +262,21 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
     if not notes:
         return f"no notes at {directory}: the agent has not run from this directory"
     spend = notes.get("spend") if isinstance(notes.get("spend"), dict) else {}
+    cost, unknown = day_spend(notes.get("spend"), spend.get("day"))  # the row's own day, as the cap read it
     cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
     tokens = cursor.get("tokens") or {}
     mail = spend.get("mail", 0)
+    used = (spend.get("in", 0), spend.get("out", 0))
     lines = [
         f"day {spend.get('day')}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
-        f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}"
-        + partial(spend.get("unknown") if spend else 0)  # a row with no count is from before the count
+        f"{spend.get('out', 0)} out, ${cost:.4f}"
+        + partial(unknown)
         + f"; {spend.get('runs', 0)} wake(s) with {mail} mail; "
         f"{spend.get('idle', 0)} idle poll(s) at 0 tokens",
-        (
-            f"per handled message: {(spend.get('in', 0) + spend.get('out', 0)) / mail:.0f} tokens"
+        (  # counts are whole numbers as the agent writes them; any other is not divided, an absent one is 0
+            "per handled message: not computed, the spend row's counts are not all whole numbers under 2**63"
+            if not all(type(n) is int and 0 <= n < 2**63 for n in (mail, *used))
+            else f"per handled message: {round(Fraction(sum(used), mail))} tokens"
             if mail
             else "per handled message: no mail handled today"
         ),
@@ -284,16 +290,30 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
     ledger = directory / "ledger.jsonl"
     if ledger.exists():
         rows = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
-        answered = sum(1 for r in rows if r.get("answered", r.get("control")))
+        answered = sum(1 for r in rows if isinstance(r, dict) and r.get("answered", r.get("control")))
         lines.append(f"ledger: {len(rows)} check(s), {answered} answered, {len(rows) - answered} not")
-    desk = directory / "desk.jsonl"
-    if desk.exists() and spend.get("day"):
+    desk, day = directory / "desk.jsonl", spend.get("day")
+    if desk.exists() and spend and not isinstance(day, str):
+        # a day the agent would not have written (none, or not a string) places no desk row on it, as
+        # day_spend reads it partial
+        lines.append(f"desk: not counted, the spend row's day {day!r} is not a date")
+    elif desk.exists() and day:
         rows = [json.loads(ln) for ln in desk.read_text().splitlines() if ln.strip()]
-        mine = [r for r in rows if r["at"].startswith(spend["day"])]
-        answered = sum(1 for r in mine if r["class"] == "answered")
+        dated, mine = 0, []  # a row that is no object, or whose `at` is no timestamp, is on no day
+        for r in rows:
+            try:
+                on = datetime.fromisoformat(r["at"]).date().isoformat()
+            except (KeyError, TypeError, ValueError):
+                continue
+            dated += 1
+            if on == day:  # the date the timestamp reads as, however it is written
+                mine.append(r)
+        answered = sum(1 for r in mine if r.get("class") == "answered")
         left = len(mine) - answered
+        undated = len(rows) - dated
         lines.append(
             f"desk: {len(mine)} of the owner's message(s) read today, {answered} answered, {left} left"
+            + (f", {undated} row(s) with no date not counted" if undated else "")
         )
     return "\n".join(lines)
 

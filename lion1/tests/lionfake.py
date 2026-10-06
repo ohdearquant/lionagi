@@ -7,6 +7,7 @@ client and a test through a patched `exec` see one behaviour."""
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -74,8 +75,13 @@ def parse(ops: str) -> list[tuple[str, dict]]:
     args: dict = {}
     for pair in _split(rest[:-1], ","):
         k, _, v = pair.partition("=")
-        args[k.strip()] = json.loads(v)
+        args[k.strip()] = json.loads(v, parse_constant=_bareword)
     return [(verb.strip(), args)]
+
+
+def _bareword(word: str) -> None:
+    # Python's JSON takes NaN and Infinity; the pack's parser refuses them, and so does this one
+    raise ValueError(f"{word!r} is a bareword, not a valid value")
 
 
 def _fresh() -> str:
@@ -381,8 +387,9 @@ class _Unflushed(Store):
 
     async def close(self, run) -> None:
         outcome = type(run.outcome).__name__.lower() if run.outcome is not None else "stopped"
+        cost = run.cost if math.isfinite(run.cost) else None  # as `Store.close`: the store takes no NaN
         await self.khive.exec(
-            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(run.cost)}, "
+            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(cost)}, "
             f"turns={run.turn}, output=null) | lion.session_close(id={lit(run.id)})"
         )
 

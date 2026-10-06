@@ -13,6 +13,7 @@ import errno
 import fcntl
 import html
 import json
+import math
 import os
 import plistlib
 import re
@@ -27,6 +28,7 @@ from typing import Any
 from urllib.parse import urlencode
 from xml.parsers.expat import ExpatError
 
+from lion1.actor import reported_cost
 from lion1.khive import Khive, KhiveError, lit
 from lion1.store import KhiveNoteStore, Store
 
@@ -34,6 +36,7 @@ __all__ = (
     "DEFAULT_REGISTRY",
     "NOTES_UNREAD",
     "partial",
+    "day_spend",
     "Area",
     "Resident",
     "load_areas",
@@ -97,6 +100,30 @@ def partial(unknown: int | None) -> str:
     if unknown is None:
         return " (partial: calls of unknown cost before this count went uncounted)"
     return f" (partial: {unknown} call(s) of unknown cost)" if unknown else ""
+
+
+def day_spend(row: Any, day: str | None) -> tuple[float, int | None]:
+    """A resident's stored day row as the cap and every report read it: dollars spent and calls of
+    unknown cost, (0, 0) with no row or another day's. A same-day row with no count is from before the
+    count: its calls went uncounted, and no later wake can count them, so the day reads as partial to
+    its end (None, never 0). A row the agent would not have written reads as none spent and the day as
+    partial, never as room below zero: dollars the run would not sum (ADR-0003/S7), as a negative sum
+    an earlier version kept; no dollars; dollars or a count with no day to place them; a note that is
+    not a row. Such a row's dollars are lost to the cap, as a sum is never split back into the figures
+    it summed. A count that is not a whole number of calls keeps the row's dollars and reads as None."""
+    if row is None:
+        return 0.0, 0
+    if not isinstance(row, dict) or not isinstance(row.get("day", ""), str):
+        return 0.0, None
+    if "day" not in row:
+        return (0.0, None) if "cost" in row or "unknown" in row else (0.0, 0)
+    if row["day"] != day:
+        return 0.0, 0
+    cost = reported_cost(row["cost"]) if "cost" in row else math.nan
+    if math.isnan(cost):
+        return 0.0, None
+    unknown = row.get("unknown")
+    return cost, unknown if unknown is None or (type(unknown) is int and unknown >= 0) else None
 
 
 @dataclass
@@ -203,6 +230,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         problem.append(f"agent.pid: {e}")
     cursor: dict[str, Any] = {}
     spend: dict[str, Any] = {}
+    row: Any = None  # the day's row as stored, read by `day_spend` as the cap reads it
     try:
         notes = agent_notes(d)
     except (KhiveError, ValueError) as e:
@@ -211,10 +239,11 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         if not notes:
             problem.append("no notes yet: never ran from this directory")
         cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
-        spend = notes.get("spend") if isinstance(notes.get("spend"), dict) else {}
+        row = notes.get("spend")
+        spend = row if isinstance(row, dict) else {}
     if spend.get("day") != today:
         spend = {}
-    unknown = spend.get("unknown") if spend else 0  # a row with no count is from before the count
+    cost, unknown = day_spend(row, today)
     return Resident(
         area=area.name,
         chair=area.chair,
@@ -230,8 +259,8 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         last_outcome=str(cursor.get("outcome") or ""),
         runs_today=int(spend.get("runs") or 0),
         mail_today=int(spend.get("mail") or 0),
-        cost_today=float(spend.get("cost") or 0.0),
-        unknown_today=None if unknown is None else int(unknown or 0),
+        cost_today=cost,
+        unknown_today=unknown,
         problem="; ".join(problem),
     )
 

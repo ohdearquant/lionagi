@@ -2125,10 +2125,23 @@ def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse(store):
     assert isinstance(run.outcome, Refused) and "validation error" in run.outcome.why
 
 
+class _Lying(float):  # holds a negative figure and says it is zero or more
+    def __ge__(self, other):
+        return True
+
+
+class _Raising(float):  # its comparison raises
+    def __ge__(self, other):
+        raise RuntimeError("made-up: a comparison that fails")
+
+
 @pytest.mark.parametrize(
-    "cost", [float("nan"), Decimal("0.25"), "0.25", False], ids=["nan", "decimal", "str", "bool"]
+    "cost",
+    [float("nan"), Decimal("0.25"), "0.25", False, -0.25]
+    + [_Lying(-0.25), _Raising(0.25), 10**400, float("inf")],
+    ids=["nan", "decimal", "str", "bool", "negative", "lying", "raising", "huge", "inf"],
 )
-def test_a_reported_cost_that_is_not_a_number_reads_as_spent(cost):
+def test_a_reported_cost_that_is_not_an_int_or_float_of_zero_or_more_reads_as_spent(cost):
     from lion1.actor import Reply as Said
 
     def run_with(cost):
@@ -2143,7 +2156,10 @@ def test_a_reported_cost_that_is_not_a_number_reads_as_spent(cost):
             )
         )
 
-    run = run_with(cost)  # a cost with no number in it is not room, whatever it would coerce to
+    # a backend owes an int or float, exactly those types, finite and zero or more: anything else is
+    # not room, a Decimal whose figure would serve, a negative figure that would give back what was
+    # spent, a subclass whose comparison could say anything and an int no float holds included
+    run = run_with(cost)
     assert run.outcome == Exhausted(1, "cost")
     assert run.resolve("a1") == Result(
         "echo", False, error="refused: the cost_budget of 1 is spent", reason="refused"

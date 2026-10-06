@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -272,6 +273,45 @@ def test_a_cost_cap_on_an_unmetered_backend_is_refused_before_a_box_or_a_call(tm
     assert backend.calls == [] and backend.costs == [None]
 
 
+class Lying(float):  # a cap whose comparison says it is zero or more
+    def __ge__(self, other):
+        return True
+
+
+@pytest.mark.parametrize(
+    "cap", [float("nan"), -0.01, True, Lying(-0.1), "1"], ids=["nan", "negative", "bool", "lying", "str"]
+)
+def test_a_cap_no_spend_is_under_is_refused_before_a_call(tmp_path: Path, cap):
+    # `not spent < cap` holds at $0 for NaN and a negative, so the run would read as stopped by cost with
+    # nothing spent; a bool, a subclass or a string is not the exact int or float a cost is (ADR-0003 S7)
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+
+    def run(cap, backend):
+        return asyncio.run(
+            run_swe.solve(
+                row,
+                "m",
+                1,
+                tmp_path,
+                "openrouter",
+                box=ToolBox(),
+                backend=backend,
+                cost_budget=cap,
+                store=fresh_store(),
+            )
+        )
+
+    backend = Costs(0.1)
+    with pytest.raises(ValueError, match=r"a cap is an int or float of dollars, zero or more"):
+        run(cap, backend)
+    assert backend.calls == [] and backend.costs == [0.1]
+    # the controls: a cap of 0 still stops before the first call, and infinity is no cap
+    assert (run(0.0, Costs(0.1))["stopped_by"], run(float("inf"), Costs(0.1)).get("stopped_by")) == (
+        "cost",
+        None,
+    )
+
+
 def test_missing_usage_is_incomplete_not_zero(tmp_path: Path):
     import run_set
 
@@ -306,6 +346,91 @@ def test_missing_usage_is_incomplete_not_zero(tmp_path: Path):
     ledger.write_text("".join(json.dumps(r) + "\n" for r in (unmetered, mixed, known, nothing)))
     text = run_set.summary(ledger)
     assert "cost $0.40 known" in text and "unknown or partial on 2 of 4 rows" in text
+
+
+@pytest.mark.parametrize("figure", [-0.3, float("nan"), None], ids=["negative", "nan", "none"])
+def test_a_malformed_cost_figure_stops_a_capped_run_as_spent(tmp_path: Path, figure):
+    # a figure the run would not sum (ADR-0003/S7) is spent under the cap, never room; a call that said
+    # no cost is one, as the bench's cap reads as the run's, and the record marks the cost incomplete
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+
+    def run(*costs):
+        return asyncio.run(
+            run_swe.solve(
+                row,
+                "m",
+                len(costs),
+                tmp_path,
+                "openrouter",
+                box=ToolBox(),
+                backend=Costs(*costs),
+                cost_budget=0.5,
+                store=fresh_store(),
+            )
+        )
+
+    good = run(0.3, 0.3, 0.3)  # the control: the cap stops a spend that serves at $0.60
+    assert good["stopped_by"] == "cost" and good["turns"] == 2
+    bad = run(figure, figure, figure)
+    assert bad["stopped_by"] == "cost" and bad["turns"] == 1
+    assert bad["cost_complete"] is False
+
+
+@pytest.mark.parametrize("cap, turns", [(float("inf"), 3), (1.75e308, 2)], ids=["infinite", "finite"])
+def test_a_sum_past_a_floats_range_stops_a_finite_cap_and_never_an_infinite_one(tmp_path: Path, cap, turns):
+    # the stop reads the sum as the record keeps it, the largest float: past any finite cap, under infinity
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    rec = asyncio.run(
+        run_swe.solve(
+            row,
+            "m",
+            3,
+            tmp_path,
+            "openrouter",
+            box=ToolBox(),
+            backend=Costs(1.7e308, 1.7e308, 1.7e308),
+            cost_budget=cap,
+            store=fresh_store(),
+        )
+    )
+    assert (rec.get("stopped_by"), rec["turns"]) == ("cost" if turns == 2 else None, turns)
+    assert (rec["cost_usd"], rec["cost_complete"]) == (sys.float_info.max, True)
+
+
+@pytest.mark.parametrize(
+    "costs, total, complete, each",
+    [
+        ((1.7e308, 1.7e308), sys.float_info.max, True, [1.7e308, 1.7e308]),
+        ((-0.3, 0.1), 0.1, False, [None, 0.1]),
+        ((float("nan"), 0.1), 0.1, False, [None, 0.1]),
+        (("0.3", 0.1), 0.1, False, [None, 0.1]),
+    ],
+    ids=["past-range", "negative", "nan", "str"],
+)
+def test_a_record_keeps_only_figures_the_run_would_sum(tmp_path: Path, costs, total, complete, each):
+    # a figure the run would not sum (ADR-0003/S7) is unknown in the record too, never a negative or a
+    # non-finite cost, and a sum past a float's range is the largest float: the record stays JSON
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    rec = asyncio.run(
+        run_swe.solve(
+            row,
+            "m",
+            len(costs),
+            tmp_path,
+            "openrouter",
+            box=ToolBox(),
+            backend=Costs(*costs),
+            store=fresh_store(),
+        )
+    )
+    assert (rec["cost_usd"], rec["cost_complete"]) == (pytest.approx(total), complete)
+    assert [c["cost_usd"] for c in rec["calls"]] == each
+
+    def bare(name):
+        raise ValueError(name)
+
+    written = json.loads((tmp_path / "pkg__pkg-1.json").read_text(), parse_constant=bare)
+    assert written["cost_usd"] == pytest.approx(total)
 
 
 class FailedEnvelopeThenRaise(Costs):

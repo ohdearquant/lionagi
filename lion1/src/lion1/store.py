@@ -8,6 +8,7 @@ chain names are the whole of what a resume needs (C3)."""
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import tomllib
@@ -227,8 +228,10 @@ class Store:
         await self.flush(run)
         outcome = type(run.outcome).__name__.lower() if run.outcome is not None else "stopped"
         output = row_json(run.output) if run.output is not None else None
+        # a cost the run read as spent (NaN, ADR-0003/S7) has no figure, and the store takes no NaN
+        cost = run.cost if math.isfinite(run.cost) else None
         await self.khive.exec(
-            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(run.cost)}, "
+            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(cost)}, "
             f"turns={run.turn}, output={lit(output)}) | lion.session_close(id={lit(run.id)})"
         )
 

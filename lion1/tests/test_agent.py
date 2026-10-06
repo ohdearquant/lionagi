@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import itertools
 import json
+import math
 import os
 import re
 import subprocess
@@ -870,6 +871,155 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
     assert "0 out, $0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s) before it" in last
 
 
+class _Lying(float):  # holds a negative figure and says it is zero or more
+    def __ge__(self, other):
+        return True
+
+
+@pytest.mark.parametrize(
+    "figure",
+    [-0.3, float("nan"), "0.3", True, _Lying(-0.3)],
+    ids=["negative", "nan", "str", "bool", "subclass"],
+)
+def test_a_malformed_cost_figure_adds_nothing_and_counts_as_a_call_of_unknown_cost(store, figure):
+    # a figure the run would not sum (ADR-0003/S7) is no figure (ADR-0013/C5): it never lowers the
+    # day's spend, so the cap still holds once the figures that serve reach it
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [{"total_cost_usd": 0.3}, {"total_cost_usd": figure}, {"total_cost_usd": 0.3}]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    backend = Billed(DONE, DONE, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, budget=Budget(cost_per_day=0.5), clock=lambda: now[0])
+    rows = []
+    for n in range(3):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+        rows.append({k: agent.state.get("spend").value[k] for k in ("cost", "unknown")})
+    assert rows == [
+        {"cost": 0.3, "unknown": 0},
+        {"cost": 0.3, "unknown": 1},
+        {"cost": pytest.approx(0.6), "unknown": 1},
+    ]
+    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == "$0.6000 spent today (partial: 1 call(s) of unknown cost) (cap $0.5); next day"
+
+
+def test_a_days_spend_past_a_floats_range_is_kept_as_the_largest_float(store):
+    # two figures that each serve can sum past what a float holds: the row keeps the largest float, past
+    # any cap, where an infinite sum could not be written at all
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [{"total_cost_usd": 1.7e308}, {"total_cost_usd": 1.7e308}]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    backend = Billed(DONE, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    budget = Budget(cost_per_day=math.inf)
+    agent = Agent(actor, khive, backend, profile_for, budget=budget, clock=lambda: now[0])
+    for n in range(2):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    assert agent.state.get("spend").value["cost"] == sys.float_info.max
+
+
+def test_one_wakes_calls_summing_past_a_floats_range_still_write_its_cursor(store):
+    # the wake's own sum is read for the cursor as well as the day: past a float's range it is the
+    # largest float there too, where an infinite one would fail the cursor's write after the calls
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    backend = Scripted(REPLY, DONE, cost=1.7e308, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    budget = Budget(cost_per_day=1.75e308)
+    agent = Agent(actor, khive, backend, profile_for, budget=budget, clock=lambda: 1_000_000.0)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    assert len(backend.calls) == 2
+    assert agent.state.get("cursor").value["tokens"]["cost"] == sys.float_info.max
+    assert agent.state.get("spend").value["cost"] == sys.float_info.max
+    assert agent.hold() is not None
+
+
+ROWS = {
+    "negative": {"cost": -0.6, "unknown": 0},  # an earlier version summed the envelopes as they came
+    "str": {"cost": "0.6", "unknown": 0},
+    "bool": {"cost": True, "unknown": 0},
+    "no-cost": {"unknown": 0},
+    "no-day": {"cost": 0.6, "unknown": 0, "day": None},
+    "day-not-str": {"cost": 0.6, "unknown": 0, "day": 20261006},
+    "not-a-row": None,
+}
+
+
+@pytest.mark.parametrize("kind", list(ROWS))
+def test_a_day_row_the_agent_would_not_have_written_reads_as_none_spent_and_partial(tmp_path, store, kind):
+    # never room against a wake that serves: none spent, and the day partial to its end, in `stats` too
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    if ROWS[kind] is None:
+        state.put("spend", [_day(now), 0.6, 0], run="-", seq=0)
+    else:
+        row = {"day": _day(now), "calls": 2, "wakes": [], "runs": 1, **ROWS[kind]}
+        state.put("spend", {k: v for k, v in row.items() if v is not None}, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(
+        actor, khive, backend, profile_for, state=state, budget=Budget(cost_per_day=0.5), clock=lambda: now
+    )
+    assert agent.hold() is None  # none spent: the day's row lends no room and takes none
+    uncounted = "(partial: calls of unknown cost before this count went uncounted)"
+    assert f" out, $0.0000 {uncounted}; " in stats(tmp_path, noted(state)).splitlines()[0]
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.6), None)
+    assert agent.hold() == (
+        "$0.6000 spent today (partial: calls of unknown cost before this count went uncounted)"
+        " (cap $0.5); next day"
+    )
+
+
+@pytest.mark.parametrize("count", ["2", True, -1, 1.0], ids=["str", "bool", "negative", "float"])
+def test_a_day_row_whose_count_is_no_number_of_calls_keeps_its_dollars_and_reads_as_partial(
+    tmp_path, store, count
+):
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": count, "calls": 2, "wakes": [], "runs": 1}
+    state.put("spend", row, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(
+        actor, khive, backend, profile_for, state=state, budget=Budget(cost_per_day=0.5), clock=lambda: now
+    )
+    assert agent.hold() is None
+    uncounted = "(partial: calls of unknown cost before this count went uncounted)"
+    assert f" out, $0.1000 {uncounted}; " in stats(tmp_path, noted(state)).splitlines()[0]
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None  # the booking takes the count as unknown
+    assert len(backend.calls) == 2
+    row = agent.state.get("spend").value
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.7), None)
+    assert agent.hold() == (
+        "$0.7000 spent today (partial: calls of unknown cost before this count went uncounted)"
+        " (cap $0.5); next day"
+    )
+
+
 def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end(
     tmp_path, store
 ):
@@ -995,6 +1145,51 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "desk: 2 of the owner's message(s) read today, 1 answered, 1 left"
     )
     store.put("spend", {**spend, "mail": 0}, run="-", seq=1)
+    assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
+    # a row whose day is no date reads as partial and places no desk row on that day, never a crash
+    store.put("spend", {**spend, "day": 20260922}, run="-", seq=2)
+    out = stats(tmp_path).splitlines()
+    assert out[0].startswith("day 20260922: 5 model call(s), 12000 in, 800 out, $0.0000 (partial: ")
+    assert out[-1] == "desk: not counted, the spend row's day 20260922 is not a date"
+    store.put("spend", {k: v for k, v in spend.items() if k != "day"}, run="-", seq=3)  # a row with no day
+    out = stats(tmp_path).splitlines()
+    assert out[0].startswith("day None: 5 model call(s), 12000 in, 800 out, $0.0000 (partial: ")
+    assert out[-1] == "desk: not counted, the spend row's day None is not a date"
+    # a desk row with no date, or one that is not a string, is on no day, never a crash
+    store.put("spend", spend, run="-", seq=4)
+    undated = [*desk, {"at": 20260922, "class": "answered"}, {"class": "routed"}, {"at": None}]
+    (tmp_path / "desk.jsonl").write_text("\n".join(json.dumps(r) for r in undated) + "\n")
+    assert stats(tmp_path).splitlines()[-1] == (
+        "desk: 2 of the owner's message(s) read today, 1 answered, 1 left, 3 row(s) with no date not counted"
+    )
+    # nor is a row that is no object, or an `at` that only starts with the day; a timestamp with a zone is
+    junk = [[], None, "x", 7, {"at": "2026-09-22junk"}, {"at": "2026-09-220 12:00:00"}]
+    zoned = {"at": "2026-09-22T12:00:00.5Z", "class": "answered"}
+    basic = {"at": "20260922T120000", "class": "routed"}  # the same day, written without its dashes
+    (tmp_path / "desk.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in (*desk, *junk, zoned, basic)) + "\n"
+    )
+    assert stats(tmp_path).splitlines()[-1] == (
+        "desk: 4 of the owner's message(s) read today, 2 answered, 2 left, 6 row(s) with no date not counted"
+    )
+    (tmp_path / "ledger.jsonl").write_text('{"answered": true}\n[]\nnull\n"x"\n7\n')
+    assert stats(tmp_path).splitlines()[-2] == "ledger: 5 check(s), 1 answered, 4 not"
+    # counts that are no numbers are not divided: the line says so
+    odds = ({"mail": "1"}, {"in": "12000"}, {"out": None}, {"mail": True}, {"mail": None}, {"mail": 0.0})
+    huge = int("9" * 4300)  # the longest whole number a JSON row can hold: two of them sum past it
+    for odd in (*odds, {"mail": -1}, {"in": 1.5}, {"in": 2**63}, {"mail": 2**63}, {"in": huge, "out": huge}):
+        store.put("spend", {**spend, **odd}, run="-", seq=5)
+        assert stats(tmp_path).splitlines()[1] == (
+            "per handled message: not computed, the spend row's counts are not all whole numbers under 2**63"
+        )
+    # the largest counts divide exactly, where a float would round them up, and a half rounds as it did
+    store.put("spend", {**spend, "in": 2**63 - 1, "out": 2**63 - 1, "mail": 2}, run="-", seq=6)
+    assert stats(tmp_path).splitlines()[1] == f"per handled message: {2**63 - 1} tokens"
+    store.put("spend", {**spend, "in": 5, "out": 0, "mail": 2}, run="-", seq=7)
+    assert stats(tmp_path).splitlines()[1] == "per handled message: 2 tokens"
+    store.put(
+        "spend", {k: v for k, v in spend.items() if k != "mail"}, run="-", seq=8
+    )  # absent: none handled
     assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
 
 

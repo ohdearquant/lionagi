@@ -318,6 +318,8 @@ def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], diges
 async def main(args: argparse.Namespace) -> None:
     # refused before any box: a cap nothing can enforce
     unmetered = args.harness == "codex-cli" or args.backend == "codex"
+    if args.cost_budget is not None and not args.cost_budget >= 0:
+        raise SystemExit(f"--cost-budget {args.cost_budget}: a cap is dollars, zero or more (0: never)")
     if args.cost_budget and unmetered:
         raise SystemExit(
             f"--cost-budget {args.cost_budget}: this arm has no cost meter to cap against (the codex "
