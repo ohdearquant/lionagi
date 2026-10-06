@@ -58,7 +58,7 @@ size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.p
 | A1 | Every box has bash, coreutils `timeout`, git and `cat`.                          | the evaluation images, `python:3.12-slim`, the console's own image                  | `exec` needs a per-box guard and a file API    |
 | A2 | An `old` that occurs once is the right unit of an edit.                          | 952 bench turns; ambiguous edits refused ([[ADR-0012-the-bench|ADR-0012]], the bench)    | line-number edits, which drift after one edit  |
 | A3 | A command run after a change is the model's verification, whatever it ran.       | on the bench the run that ran nothing after its edits was wrong; resolved runs ran tests | the gate names the tests it wants         |
-| A4 | The threat a sandbox answers is the host, not the network.                       | a VM with no egress cannot install anything; a console over a project needs to      | the network is off by default                  |
+| A4 | The threat a sandbox answers is the host, not the network.                       | a VM with no egress cannot install from the internet; a console over a project needs to      | the network is off by default                  |
 | A5 | A new file outside a tracked top-level directory is scaffolding, never the fix. | django-12273 in the 952-turn Mini-50 bench run ([[ADR-0012-the-bench#^c9\|ADR-0012/C9]]): a root `repro.py` and a new `tt/` package counted as the fix, and the settle rule stopped the run unresolved after 15 turns | a fix that adds such a file starts no clock, and the gate refuses a finish that holds nothing else |
 
 ## Claims
@@ -79,7 +79,7 @@ combined output, rc 124 at the timeout.
 of its own overrides the two file verbs. `read` refuses a file that is not UTF-8, since an edit
 through a lossy decode would rewrite every bad byte.
 
-### C2: A command touches the box and nothing else of the host, and ends at its timeout whole _(enforced: mechanical)_ ^c2
+### C2: A command touches the box and no other host path, and ends at its timeout whole _(enforced: mechanical)_ ^c2
 
 - **Subject**: every `bash` and `python` call.
 - **Violated when**: a command reads or writes a host path outside the mounted directory, a hung
@@ -92,7 +92,7 @@ and takes the host's time zone as `TZ`; the host's home is not there. Each comma
 guest's `timeout -s KILL`; the host waits fifteen seconds longer, then ends its own client.
 
 The result is rc, stdout, stderr and elapsed, whole. The network is on by default; `--offline`
-attaches an internal network with no DNS, no egress and no reach to the host.
+attaches a host-only network with no DNS and no egress, from which the host is still reached (S20).
 
 ### C3: Three tools over a tree, the tree may be anywhere, and an edit lands once _(enforced: mechanical)_ ^c3
 
@@ -201,12 +201,15 @@ classifier calls a path a test under a `tests` directory, as a `conftest.py`, or
   refused and rerun, the finish refused until a command ran, the racing declarations) and the solve
   test that lands an edit beside a refused finish.
 
-### D4: Network on by default, `--offline` for none ^d4
+### D4: Network on by default, `--offline` for host-only ^d4
 
-Serves C2, on A4. A VM with no egress cannot install anything, and a console over a project needs
-to; the person picks `--offline` when the directory holds what the network must not see.
+Serves C2, on A4. A VM with no egress cannot install from the internet, and a console over a project
+needs to; the person picks `--offline` when the directory holds what the internet must not see.
 
-- **Landing evidence**: the internal network measured without DNS, egress or host reach, 2026-09-21.
+- **Landing evidence**: measured 2026-10-06 on container 1.4.1, whose `--internal` is host-only: no
+  DNS, no egress and no answer from the LAN's router, while the host itself answered (S20). Opt-in:
+  `test_an_offline_sandbox_has_no_dns_and_no_egress_and_still_reaches_the_host` in
+  `tests/test_shell.py` probes both networks.
 
 ### D5: `hub/tools/runta.py`, a box under an egress policy ^d5
 
@@ -326,3 +329,11 @@ to `start`. `exec` keeps the remote box's timeout seam, files use the runtime's 
   omits is not found and the image is built again
   (`test_find_image_does_not_find_a_build_the_page_leaves_out`,
   `test_find_image_orders_builds_by_the_instant_and_a_row_without_one_is_the_oldest`).
+- **S20**: Either network reaches the host. A service it serves on all its addresses answered the VM
+  at the network's gateway and at the host's LAN address, on both networks, 2026-10-06; on the
+  host-only one, a service bound to loopback did not. C2 bounds the host paths a command touches,
+  not the host's services, so `--offline` cuts the VM's own way to the internet, not its way to what
+  the host serves.
+- **S21**: The host-only network is one named `lion-offline`, made with `--internal` when missing.
+  The start reads its mode back from the CLI and refuses one that is not host-only, attaching none:
+  a network of that name made another way would give the VM its egress.

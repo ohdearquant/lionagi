@@ -126,12 +126,15 @@ def console(
         if about_box is not None:
             about_sandbox = about_box
         else:
-            network = " The VM has no network." if getattr(sandbox, "offline", False) else ""
+            network = " The VM has no internet and no DNS." if getattr(sandbox, "offline", False) else ""
             about_sandbox = guidance("sandbox", network=network)
     if coding:
         specs |= code(actor, tree)
         said.append("read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)")
-        about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory))
+        # with no shell (a run profile with code and no shell) the guidance names no bash to run anything
+        about_sandbox += "\n\n" + guidance(
+            "code" if sandbox is not None else "code-noshell", root=directory, branch=_branch(directory)
+        )
     if "khive" in given:
         khive = Bounded(actor.store.khive, recipients=frozenset())
         specs |= khive_ops(actor, khive)
@@ -575,9 +578,13 @@ async def _chat_main(
     box = getattr(a, "box", None) or ran.get("box", "vm")
     image = getattr(a, "image", None) or ran.get("image", "python:3.12")
     boxed = box == "daytona"
+    if getattr(a, "image", None) and not boxed:  # as a run profile is refused: the VM's image is its own
+        raise SystemExit("--image is the Daytona box's, and the box is not daytona")
     sandbox: Box | None = None
     tree = about_box = None
     if boxed:
+        if a.offline:  # as a run profile is refused: the Daytona box has a network of its own
+            raise SystemExit("--offline puts only the VM's shell on a host-only network; the box is daytona")
         sandbox = DaytonaSandbox(image, workdir=str(directory))
         tree = BoxTree(sandbox)
         about_box = guidance("box", kind="Daytona", image=image, root=directory)
@@ -649,7 +656,9 @@ async def _chat_main(
     elif sandbox is not None:
         if (build := await sandbox.ensure_image()) is not None:
             raise SystemExit(f"the sandbox image {sandbox.image} did not build:\n{build}")
-        say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
+        say.notice(
+            f"sandbox {sandbox.name}: a VM over {directory}" + (", host-only network" if a.offline else "")
+        )
         try:
             await sandbox.start()
         except BaseException:  # a container its `run` made is stopped: no conversation has begun in it

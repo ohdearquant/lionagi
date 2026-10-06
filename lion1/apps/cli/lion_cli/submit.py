@@ -113,7 +113,7 @@ def profile_from(directory: Path, name: str, model: str | None = None) -> Shape:
         raise SubmitError(f"{where}: image is the Daytona box's, and box is not daytona")
     if not isinstance(offline, bool) or (offline and ("shell" not in tools or box == "daytona")):
         raise SubmitError(
-            f"{where}: offline takes true or false, and cuts the network of the VM's shell only"
+            f"{where}: offline takes true or false, and puts only the VM's shell on a host-only network"
         )
     defaults = p.get("defaults", {})
     if not isinstance(defaults, dict):

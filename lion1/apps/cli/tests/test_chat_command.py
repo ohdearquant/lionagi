@@ -1247,3 +1247,29 @@ def test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_inval
         refused = by_alias(rows, alias)
         assert (refused["ok"], refused["reason"], refused["error"]) == (False, "invalid", error)
     assert got == [Mark(title="Dune")]  # neither refused command ran
+
+
+@pytest.mark.parametrize("flags", [["--shell"], ["--code"], ["--box", "vm", "--shell"], []])
+def test_an_image_without_the_daytona_box_is_refused_before_anything_starts(tmp_path, flags):
+    # as a run profile naming one is: the VM's image is its own, and the flag would silently not be used
+    with pytest.raises(SystemExit, match="--image is the Daytona box's, and the box is not daytona"):
+        asyncio.run(
+            chat_main(
+                parser().parse_args(
+                    ["chat", "--dir", str(tmp_path), *flags, "--image", "custom", "--say", "x"]
+                )
+            )
+        )
+
+
+def test_offline_with_the_daytona_box_is_refused_before_anything_starts(tmp_path):
+    # as a run profile naming both is: --offline puts the VM's shell on a host-only network, and the
+    # Daytona box has a network of its own that the flag would silently not touch
+    with pytest.raises(SystemExit, match="--offline puts only the VM's shell on a host-only network"):
+        asyncio.run(
+            chat_main(
+                parser().parse_args(
+                    ["chat", "--dir", str(tmp_path), "--box", "daytona", "--offline", "--say", "x"]
+                )
+            )
+        )

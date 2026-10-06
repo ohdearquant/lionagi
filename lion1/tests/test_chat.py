@@ -1602,3 +1602,21 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
     say.working("thinking")
     say.close("ended", 0, 0.0, 0, None)  # closing clears the live region too
     assert say.live is None
+
+
+def test_coding_with_no_shell_is_told_nothing_here_runs_a_command(tmp_path, console_khive):
+    # a run profile with code and no shell: the guidance names no bash to reproduce or test with
+    from lion_cli.chat import console
+
+    _, profile = console(tmp_path, model="m", coding=True)
+    assert "there is no shell, so nothing here runs a command or a test" in profile.system
+    assert "bash" not in profile.system.split("Coding here:")[1]
+
+    class FakeBox:
+        workdir, prelude, dead = "/w", "", None
+
+        async def exec(self, argv, *, stdin=None, timeout=120, env=None):
+            return {"rc": 0, "stdout": "", "stderr": ""}
+
+    _, profile = console(tmp_path, model="m", sandbox=FakeBox(), coding=True, about_box="THE BOX RULES")
+    assert "bash runs its commands and tests" in profile.system and "nothing here runs" not in profile.system

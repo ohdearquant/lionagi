@@ -115,12 +115,13 @@ or one at an empty prompt, ends the chat.
 Every chat gets `read` and `list_dir` over its tree, and the context and note commands. `khive_ops`
 comes when the directory's khive config names an actor, bounded to an allow list, sending to no one.
 `--shell` adds `bash` and `python` in a local VM mounting the directory at its own path; `--offline`
-cuts that VM's network. `--code` adds `read_lines`, `search` and `edit`, and the VM when there is no
-box. In a boxed chat `bash` and `python` run in the remote box, and the file and code tools work its
-copy.
+cuts that VM's internet. `--code` adds `read_lines`, `search` and `edit`, and the VM when there is
+no box. In a boxed chat `bash` and `python` run in the remote box, and the file and code tools work
+its copy.
 
 The guidance is `hub/guidance/console.md` holding `sandbox.md` for the VM or `box.md` for the box,
-then with `--code` `code.md`: the root, the branch and the root's `AGENTS.md` and `CLAUDE.md`.
+then with `--code` `code.md` (`code-noshell.md` without a shell): the root, the branch and the
+root's `AGENTS.md` and `CLAUDE.md`.
 
 ### C3: Without a box the tools work the person's tree; with one, a copy _(enforced: mechanical)_ ^c3
 
@@ -634,13 +635,15 @@ last.
 - **S4**: The chat log holds every value JSON can hold whole, and the rest as D16 writes it; the
   console prints a result as one line. The closing line sums the cost on every call's envelope,
   failed attempts included; a call whose envelope carries no cost adds nothing and is not flagged.
-- **S5**: `--offline` reaches the local VM only; nothing in the chat restricts a remote box's
-  network.
+- **S5**: `--offline` reaches the local VM only, and with a remote box the chat refuses it before
+  the box is built, as it refuses `--image` without one; nothing in the chat restricts a remote
+  box's network.
 - **S6**: The copy's baseline needs git in the image; an image without it fails the preparation, and
   the box stops before the model works. The remote box needs the `daytona` extra; without it the
   start fails on import before any box exists.
-- **S7**: The code guidance names the branch of the person's tree and calls the box a VM; in a boxed
-  chat the copy's repository starts from the baseline commit alone.
+- **S7**: The code guidance names the branch of the person's tree and says bash runs at the same
+  path, naming no kind of box; in a boxed chat the copy's repository starts from the baseline commit
+  alone.
 - **S8**: With `--code` the root's `AGENTS.md` and `CLAUDE.md` enter the guidance whole, and the
   guidance goes out with every turn's call, so a long rules file adds its length to every turn's
   input.

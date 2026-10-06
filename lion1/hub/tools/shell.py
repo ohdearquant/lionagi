@@ -7,6 +7,7 @@ under the guest's `timeout -s KILL`, so a hung one ends there, not on the host."
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import time
@@ -23,27 +24,27 @@ from .box import Box, BoxBase
 __all__ = ("IMAGE", "OFFLINE_NETWORK", "SANDBOX_DIR", "Bash", "Python", "Sandbox", "shell", "host_zone")
 
 IMAGE = "lion-sandbox"
-OFFLINE_NETWORK = "lion-offline"  # `container network create --internal`: no DNS, no egress, no host
+OFFLINE_NETWORK = "lion-offline"  # `container network create --internal`: host-only, no DNS, no egress
 SANDBOX_DIR = Path(__file__).resolve().parent / "sandbox"  # the Dockerfile the image is built from
 
 
 class Bash(BaseModel):
-    """Run a shell line in the sandbox: a Linux VM with this directory mounted at the same path,
-    `uv`, `git`, `rg`, `jq`; nothing else of the host. Returns rc, stdout, stderr, elapsed, whole."""
+    """Run a shell line in the sandbox, the machine the sandbox guidance describes.
+    Returns rc, stdout, stderr, elapsed, whole."""
 
     command: str = Field(
         description="one shell line, run by `bash -o pipefail -c` from the console's directory: a "
         "pipeline's rc is its first failing command's, so `pytest | tail` still fails when pytest does"
     )
-    timeout: float = Field(default=120, description="seconds; the command is ended in the VM at this")
+    timeout: float = Field(default=120, description="seconds; the command is ended in the sandbox at this")
 
 
 class Python(BaseModel):
-    """Run Python source in the sandbox with the project's environment (uv's, under /opt/venv).
+    """Run Python source in the sandbox, with uv's environment under /opt/venv when the box has one.
     Returns rc, stdout, stderr, elapsed, whole."""
 
     code: str = Field(description="the source, run as a script from the console's directory")
-    timeout: float = Field(default=120, description="seconds; ended in the VM at this")
+    timeout: float = Field(default=120, description="seconds; ended in the sandbox at this")
 
 
 @dataclass
@@ -52,7 +53,7 @@ class Sandbox(BoxBase):
     name: str  # the container's name; one per conversation
     prelude: str = ""
     image: str = IMAGE
-    offline: bool = False  # the internal network: no DNS, no egress; else the default network
+    offline: bool = False  # the host-only network: no DNS, no egress; else the default network
     cpus: int = 2
     memory: str = "4G"
     volume: str = "lion-sandbox-opt"  # /opt across conversations: uv's environment and cache
@@ -90,12 +91,33 @@ class Sandbox(BoxBase):
         rc, out, err = await self._cli("build", "-t", self.image, str(SANDBOX_DIR), timeout=600)
         return None if rc == 0 else (err or out)[-800:]
 
+    async def host_only(self) -> None:
+        """The offline network, made when it is missing, and refused unless the CLI says it is
+        host-only: one of that name made without `--internal` would hand the VM its egress back."""
+        mode = None
+        for made in (False, True):
+            rc, out, _ = await self._cli("network", "inspect", OFFLINE_NETWORK)
+            try:  # an inspect that failed found nothing, whatever it printed
+                found = [n for n in json.loads(out if rc == 0 else "[]") if isinstance(n, dict)]
+                found = [n for n in found if n.get("id") == OFFLINE_NETWORK]
+            except (ValueError, TypeError):  # no JSON, or none that lists networks
+                found = []
+            if found:  # two of the name are not one network whose mode can be read
+                config = found[0].get("configuration") if len(found) == 1 else None
+                mode = config.get("mode") if isinstance(config, dict) else None
+                break
+            if not made:
+                await self._cli("network", "create", "--internal", OFFLINE_NETWORK)
+        if mode != "hostOnly":
+            raise RuntimeError(
+                f"sandbox {self.name} did not start: the network {OFFLINE_NETWORK} is not host-only "
+                f"(its mode reads {mode!r}); `container network delete {OFFLINE_NETWORK}` and start again"
+            )
+
     async def start(self) -> None:
         directory = str(Path(self.directory).resolve())
         if self.offline:
-            _, out, _ = await self._cli("network", "list", "--format", "json")
-            if OFFLINE_NETWORK not in out:
-                await self._cli("network", "create", "--internal", OFFLINE_NETWORK)
+            await self.host_only()
         _, out, _ = await self._cli("volume", "list", "--format", "json")
         if self.volume not in out:
             await self._cli("volume", "create", self.volume)
