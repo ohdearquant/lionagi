@@ -1152,3 +1152,69 @@ def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outco
     assert console_khive.runs[flow_id]["outcome"] == "stopped" and not made[0].stopped
     (mail,) = console_khive.sent
     assert "\nnotice: box sbx-1: kept, not stopped: taking its patch failed" in mail["content"]
+
+
+def failing_stop(monkeypatch, on: type, interrupts: int) -> None:
+    """`on`'s stop fails with an I/O error, after the command's own task is cancelled `interrupts` times in
+    it; a cut it takes ends in the error too, as a stop whose own cleanup fails can end."""
+
+    async def stop(self):
+        try:
+            for _ in range(interrupts):
+                command_task().cancel()
+                for _ in range(3):
+                    await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass
+        raise OSError(5, "stop EIO")
+
+    monkeypatch.setattr(on, "stop", stop)
+
+
+@pytest.mark.parametrize("on", ["box", "sandbox"])
+@pytest.mark.parametrize(
+    "interrupted", ["never", "in its run", "as it stops", "in its run and as it stops", "twice as it stops"]
+)
+def test_a_stop_that_fails_names_what_it_left_and_never_takes_the_place_of_an_interrupt(
+    actor_dir, console_khive, boxes, local, monkeypatch, capsys, on, interrupted
+):
+    made, _ = boxes
+    profile = "boxed" if on == "box" else "local"
+    model = interrupting if "in its run" in interrupted else lambda m: out("done")
+    backends(monkeypatch, **{f"fake/{profile}": model})  # the fixtures each set theirs alone
+    stops = {"never": 0, "in its run": 0, "as it stops": 1, "in its run and as it stops": 1}
+    failing_stop(monkeypatch, Box if on == "box" else Local, stops.get(interrupted, 2))
+    code = lion("run", "--dir", str(actor_dir), "--profile", profile, "--say", "edit f")
+    (run_id,) = console_khive.runs
+    failed = "its stop failed (OSError: [Errno 5] stop EIO); it may still be running"
+    named = f"box sbx-1: {failed}, at " if on == "box" else f"sandbox {local[0].name}: {failed}"
+    err = capsys.readouterr().err
+    assert named in err and not (made or local)[0].stopped
+    if interrupted == "never":  # the error is the run's
+        assert code == 1
+        (mail,) = console_khive.sent
+        assert mail["content"].startswith("error: OSError: [Errno 5] stop EIO")
+        assert f"notice: {named}" in mail["content"]
+    elif interrupted in ("in its run", "as it stops"):  # the command's first: its mail goes, then 130
+        assert code == 130
+        (mail,) = console_khive.sent
+        assert mail["content"].startswith("error: CancelledError") and f"notice: {named}" in mail["content"]
+    else:  # its second, though the stop turned it into its error: no mail after it
+        assert code == 130 and console_khive.sent == []
+        assert f"run {run_id} stopped before its end: " in err
+
+
+def test_a_box_whose_patch_fails_after_the_runs_interrupt_is_kept_and_the_interrupt_goes_on(
+    actor_dir, console_khive, boxes, monkeypatch
+):
+    made, broken = boxes
+    backends(monkeypatch, **{"fake/boxed": interrupting})
+    broken[0] = "patch EIO"
+    assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
+    assert not made[0].stopped
+    (mail,) = console_khive.sent
+    assert mail["content"].startswith("error: CancelledError")
+    assert (
+        "notice: box sbx-1: kept, not stopped: taking its patch failed (RuntimeError: patch EIO)"
+        in mail["content"]
+    )

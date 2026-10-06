@@ -391,12 +391,13 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   lion-cli.
 - **S13**: A command carries one interrupt, wherever it lands after the id: a run or flow still
   going stops, its box's patch is taken whole and the box stopped, and its one mail goes with every
-  notice; then it exits 130. The next interrupt ends the command at once: a patch it lands in keeps
-  its box and names it, a stop names the box, which may run on, and no mail goes after it, as
+  notice; then it exits 130. The next interrupt ends the command at once (S21): a patch it lands in
+  keeps its box and names it, a stop names the box, which may run on, and no mail goes after it, as
   standard error says with `lion result --dir D <id>`.
 - **S14**: A reader that has gone costs a run nothing: its lines go to the null device, for the rows
-  and the mail carry them. A notice standard error cannot take is dropped, and an interrupt it was
-  printed for goes on as itself.
+  and the mail carry them. A notice whose write to standard error fails is dropped, and an interrupt
+  it was printed for goes on as itself; a full pipe holds that write until its reader reads, as it
+  holds any program's.
 - **S15**: A thread started with `lion mcp`'s child reads both its pipes to their end, or for a
   second past the child's own end while a process it started holds one, and reaps it, a call
   cancelled before the id included. It keeps the child's exit and the last 8 KiB of its standard
@@ -412,6 +413,11 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   still run.
 - **S19**: A local sandbox's stop takes the command's interrupts as a box's stop does (S13): the
   first waits for the stop, and the next cuts it and names the sandbox, which may still run.
-- **S20**: With no thread to spare, `lion mcp` still reaps each child. One no thread can read fails
-  the call at once, naming its pid, and the server's loop reaps it when it ends. One whose reaping
-  no thread can take is read until its pipes end, past the second S15 gives, and is reaped then.
+- **S20**: With no thread to spare, `lion mcp` still reaps each child while it runs. One no thread
+  can read fails the call at once, naming its pid, or its exit when it has already ended, and the
+  server's loop reaps it when it ends. One whose reaping no thread can take is read until its pipes
+  end, past the second S15 gives, and is reaped then. The server exits as its loop ends, and a child
+  still running then runs on (S12).
+- **S21**: A flow closes its own row before a second interrupt ends the command, as its driver does
+  at every end, within the store's bound on a call. A patch or a stop that fails after either
+  interrupt is named as a cut one is, and the interrupt goes on in place of its error.

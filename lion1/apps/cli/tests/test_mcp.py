@@ -279,6 +279,24 @@ def test_a_child_no_thread_can_read_fails_the_call_naming_it_and_the_loop_reaps_
     assert asyncio.run(main())
 
 
+def test_a_child_no_thread_can_read_that_has_already_ended_fails_the_call_with_its_exit(
+    actor_dir, child, monkeypatch
+):
+    _, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+    start = threading.Thread.start
+
+    def refused(self):
+        if self._target is mcp_server._watch:
+            self._args[0].wait(timeout=30)  # it ends before the server learns no thread can read it
+            raise RuntimeError("can't start new thread")
+        start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", refused)
+    with pytest.raises(ToolError, match=r"could not be read \(can't start new thread\); it ended with 0$"):
+        asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "go"}))
+
+
 def test_a_child_no_thread_can_reap_still_gives_its_id_and_is_reaped_when_its_pipes_end(
     actor_dir, console_khive, child, monkeypatch
 ):

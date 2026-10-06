@@ -873,6 +873,60 @@ def test_an_interrupt_cuts_a_stop_without_carry_at_once_and_names_the_box(tmp_pa
     assert cut == [True] and not box.stopped and said[-1] == STOP_CUT.format(box.box_id)
 
 
+@pytest.mark.parametrize("carried", [False, True])
+def test_a_stop_that_fails_names_the_box_and_a_carried_interrupt_is_raised_in_place_of_its_error(
+    tmp_path, monkeypatch, carried
+):
+    from lion_cli.chat import end_box
+
+    from tests.test_daytona import ChatBox
+
+    async def ending() -> tuple[ChatBox, list[str], BaseException]:
+        stopping, go = asyncio.Event(), asyncio.Event()
+
+        async def diff(self, base="HEAD"):
+            return PATCH
+
+        async def stop(self):
+            stopping.set()
+            await go.wait()
+            raise OSError(5, "stop EIO")
+
+        monkeypatch.setattr(ChatBox, "diff", diff)
+        monkeypatch.setattr(ChatBox, "stop", stop)
+        box, said = ChatBox("img", "/w"), []
+        ends = end_box(
+            box,
+            tmp_path,
+            tmp_path / "saved",
+            "c1",
+            baseline="b",
+            apply=False,
+            say=said.append,
+            show=False,
+            carry=True,
+        )
+        task = asyncio.create_task(ends)
+        await stopping.wait()
+        if carried:
+            task.cancel()
+            for _ in range(3):
+                await asyncio.sleep(0)
+            assert not task.done()  # the first is carried: the stop goes on
+        go.set()
+        with pytest.raises(asyncio.CancelledError if carried else OSError) as raised:
+            await task
+        return box, said, raised.value
+
+    ChatBox.made.clear()
+    box, said, raised = asyncio.run(ending())
+    failed = (
+        f"box {box.box_id}: its stop failed (OSError: [Errno 5] stop EIO); it may still be running, at /w, "
+    )
+    assert said[-1] == failed + "until the box's idle stop deletes it" and not box.stopped
+    assert isinstance(raised, asyncio.CancelledError) == carried
+
+
 def test_a_save_failure_or_a_dead_box_keeps_the_error_and_says_whether_the_box_can_be_reached(
     tmp_path, monkeypatch, capsys
 ):

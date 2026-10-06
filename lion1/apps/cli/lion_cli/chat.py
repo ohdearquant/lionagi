@@ -262,10 +262,11 @@ async def end_box(
     """The end of a Daytona box: its patch taken (`take_patch`, saved under `saved` as `<name>.patch`),
     then the box stopped, which deletes it. A box that ended first is said to have no recovery. A patch
     not taken whole leaves the box running and named, for it may hold the only copy of the work, and
-    raises. An interrupt stops the patch, so nothing it says comes after the box is named, or the box's
-    stop, which names the box, for it may run on; with `carry`, when the command has had no interrupt
-    yet, the first waits for the patch, each git call of it under its timeout, and for the stop, and is
-    raised once the box has stopped, and a second stops either at once and is raised as itself."""
+    raises. A stop that fails names the box too. An interrupt stops the patch, so nothing it says comes
+    after the box is named, or the box's stop, which names the box, for it may run on; with `carry`,
+    when the command has had no interrupt yet, the first waits for the patch, each git call of it under
+    its timeout, and for the stop, and is raised once the box has stopped, in place of any error either
+    raised, and a second stops either at once and is raised as itself."""
     interrupted: BaseException | None = None
     if box.dead is not None:
         say(f"box: it ended before its patch was read ({box.dead}); recovery unavailable")
@@ -314,6 +315,14 @@ async def end_box(
             f"box {ident or '?'}: interrupted while it was stopped; it may still be running, at "
             f"{box.workdir}, until the box's idle stop deletes it"
         )
+        raise
+    except Exception as e:  # the same, and an interrupt it carried goes on in place of the error
+        say(
+            f"box {ident or '?'}: its stop failed ({type(e).__name__}: {e}); it may still be running, "
+            f"at {box.workdir}, until the box's idle stop deletes it"
+        )
+        if interrupted is not None:
+            raise interrupted from e
         raise
     if interrupted is not None:
         raise interrupted

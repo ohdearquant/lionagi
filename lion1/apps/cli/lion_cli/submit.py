@@ -137,7 +137,8 @@ async def cast(
     """The actor, profile and backend a run of `shape` takes, built by `console`'s keyword form, and the
     box its shell needs for as long as the run: a VM over the directory, or a Daytona box holding a copy
     of it, whose diff is saved as `.lion/runs/<run id>.patch` and never applied. A Daytona box whose
-    patch is not taken whole is kept, named through `say`, and its error raised (`end_box`)."""
+    patch is not taken whole is kept, named through `say`, and its error raised (`end_box`); a stop that
+    fails is named the same. After an interrupt the interrupt is raised in place of either error."""
     sandbox: Any = None
     tree = about_box = None
     boxed = shape.box == "daytona"
@@ -202,36 +203,45 @@ async def cast(
             else:
                 say(f"sandbox {sandbox.name}: interrupted twice before it was stopped; it may be running")
         elif started:
-            if boxed and runs:  # the patch first, named by the run: stop deletes the box
-                await end_box(
-                    sandbox,
-                    directory,
-                    directory / ".lion" / "runs",
-                    runs[-1],
-                    baseline=baseline,
-                    apply=False,
-                    say=say,
-                    show=False,
-                    carry=not interrupted,
-                )
-            else:  # a box with no run to patch, or the local sandbox: stopped as `end_box` stops a box
-                ident = getattr(sandbox, "box_id", None) if boxed else None  # a stop forgets the box
-                stop = asyncio.ensure_future(sandbox.stop())
-                late: BaseException | None = None
-                try:
-                    try:
-                        await (stop if interrupted else asyncio.shield(stop))
-                    except asyncio.CancelledError as e:
-                        if interrupted:
-                            raise
-                        late = e  # the command's first interrupt: the stop ends first
-                        await stop  # a second cancels it
-                except (asyncio.CancelledError, KeyboardInterrupt):  # the second: named, for it may run on
+            try:
+                if boxed and runs:  # the patch first, named by the run: stop deletes the box
+                    await end_box(
+                        sandbox,
+                        directory,
+                        directory / ".lion" / "runs",
+                        runs[-1],
+                        baseline=baseline,
+                        apply=False,
+                        say=say,
+                        show=False,
+                        carry=not interrupted,
+                    )
+                else:  # a box with no run to patch, or the local sandbox: stopped as `end_box` stops a box
+                    ident = getattr(sandbox, "box_id", None) if boxed else None  # a stop forgets the box
                     what = f"box {ident or '?'}" if boxed else f"sandbox {sandbox.name}"
-                    say(f"{what}: interrupted while it was stopped; it may still be running")
+                    stop = asyncio.ensure_future(sandbox.stop())
+                    late: BaseException | None = None
+                    try:
+                        try:
+                            await (stop if interrupted else asyncio.shield(stop))
+                        except asyncio.CancelledError as e:
+                            if interrupted:
+                                raise
+                            late = e  # the command's first interrupt: the stop ends first
+                            await stop  # a second cancels it
+                    except (asyncio.CancelledError, KeyboardInterrupt):  # the second: named, as it may run on
+                        say(f"{what}: interrupted while it was stopped; it may still be running")
+                        raise
+                    except Exception as e:  # named the same, and an interrupt it took goes on in its place
+                        say(f"{what}: its stop failed ({_why(e)}); it may still be running")
+                        if late is not None:
+                            raise late from e
+                        raise
+                    if late is not None:
+                        raise late
+            except Exception:  # the end failed, naming what it left; the run's interrupt goes on (S13)
+                if not interrupted:
                     raise
-                if late is not None:
-                    raise late
 
 
 def variables(given: list[str] | None) -> dict[str, str]:

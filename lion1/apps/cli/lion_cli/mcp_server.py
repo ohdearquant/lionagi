@@ -170,10 +170,12 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
             assert child.stdout is not None and child.stderr is not None
             child.stdout.close()
             child.stderr.close()
+            unread = f"lion {argv[0]} started and could not be read ({e})"
+            if (code := child.poll()) is not None:
+                raise ToolError(f"{unread}; it ended with {code}") from None
             reaper = asyncio.ensure_future(_reaped(child, None))
             reaping.add(reaper)
             reaper.add_done_callback(reaping.discard)
-            unread = f"lion {argv[0]} started and could not be read ({e})"
             raise ToolError(f"{unread}; it runs on as pid {child.pid}") from None
         line, err = await said
         if not line:  # no id can come: the call fails now, and the child is reaped whenever it ends
