@@ -11,6 +11,7 @@ import math
 import os
 import plistlib
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -219,7 +220,7 @@ def make_server(
     `identity`. `/events` streams the rows and the logs live, `POST /control` is the write path back
     onto a resident. A dir the registry does not name is 404 everywhere, so nothing is read,
     written or mailed outside it. Bound, not yet serving: `serve_forever` runs it, `shutdown` then
-    `server_close` end it; `hosts` on it are the names it answers to."""
+    `server_close` end it, its streams included; `hosts` on it are the names it answers to."""
     me, khive = identity or (None, None)
     v2 = Daemon(registry, me, khive)
     # `/v2`'s writes by (method, path, once): a replay is answered the first answer, nothing done twice
@@ -240,6 +241,25 @@ def make_server(
     # one with the higher revision is the later change
     snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None, "rev": 0}
     snapshot_lock = threading.Lock()
+    # set when the server ends, and every open stream's socket shut down with it: a stream stops after
+    # its current wait, at once in a write a client that does not read has blocked, and as its current
+    # read returns, which nothing cuts short. Each write asks the flag first, and so does each read of
+    # the residents, a log or the mail: what a read returns after the end is not sent, and the one read
+    # or write a stream had asked for just before the end is the last it makes. A stream never serves on
+    # for a client that may not read again (a handler thread outlives `shutdown`, which only ends
+    # `serve_forever`). Shutting the socket down wakes a blocked write; closing it does not
+    stopping = threading.Event()
+    streams: set[socket.socket] = set()
+    streams_lock = threading.Lock()
+
+    def end_streams() -> None:
+        with streams_lock:
+            stopping.set()
+            for conn in streams:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:  # the client already went
+                    pass
 
     def read_rows() -> None:  # with `snapshot_lock` held
         areas = load_areas(registry)
@@ -437,21 +457,25 @@ def make_server(
             included, has a revision above the last sent, its rows changed or not, its `id` that
             revision; per desk the last `_HISTORY` serve.log lines as history on first sight, then
             each new line; `ping` every `_PING_S`. A write the client is gone for, or stalled on,
-            ends the thread."""
+            ends the thread, and so does the server's end."""
             if not self.opened():
                 return
             emit = self.emit
             tails: dict[str, tuple[int, bytes, int]] = {}
             sent = 0  # the revision of the last `areas` event
             next_ping = time.monotonic() + _PING_S
-            while True:
+            while not stopping.is_set():  # no pass starts after the server's end, the first included
                 areas, rows, revision = poll_rows()
+                if stopping.is_set():  # the server ended during the read
+                    return
                 if rows is not None and revision > sent:
                     if not emit("areas", rows, revision):
                         return
                     sent = revision
                 for a in areas:
                     for listed in a.desks:
+                        if stopping.is_set():  # nor is a log read after it
+                            return
                         d = str(Path(listed))  # as the row's `dir` prints it, so the app can join them
                         lines, tails[d] = _tail(Path(d) / "serve.log", tails.get(d))
                         for line, history in lines:
@@ -464,7 +488,12 @@ def make_server(
                 time.sleep(_POLL_S)
 
         def opened(self) -> bool:
-            # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone
+            # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone, or the
+            # server ended
+            with streams_lock:
+                if stopping.is_set():
+                    return False
+                streams.add(self.connection)
             try:
                 self.connection.settimeout(_WRITE_S)
                 self.send_response(200)
@@ -476,6 +505,8 @@ def make_server(
             return True
 
         def emit(self, event: str, data: Any, revision: int = 0) -> bool:
+            if stopping.is_set():  # a read returned after the end: the socket may not be shut yet
+                return False
             try:
                 stamp = f"id: {revision}\n" if revision else ""
                 self.wfile.write(f"{stamp}event: {event}\ndata: {json.dumps(data)}\n\n".encode())
@@ -601,8 +632,10 @@ def make_server(
             models_at = _mtime(v2.models_path)
             next_ping = time.monotonic() + _PING_S
             next_mail = time.monotonic()
-            while True:
+            while not stopping.is_set():  # no pass starts after the server's end, the first included
                 areas, rows, revision = poll_rows()
+                if stopping.is_set():  # the server ended during the read
+                    return
                 found = agent_ids(areas)
                 if rows is not None and revision > sent_rev:
                     sent_rev, day = revision, time.strftime("%Y-%m-%d")
@@ -611,6 +644,8 @@ def make_server(
                         seen, states[i] = states.get(i), (row["state"], row["now"])
                         if seen is not None and seen != states[i] and not self.emit("agent", row):
                             return
+                    if stopping.is_set():  # nor is any read after it
+                        return
                     try:
                         today = v2.today(self.run)
                     except (OSError, ValueError):  # a registry mid-write: the next change reads it whole
@@ -621,6 +656,8 @@ def make_server(
                             return
                         last_today = now
                 for i, _, d in found:
+                    if stopping.is_set():
+                        return
                     lines, tails[d] = _tail(Path(d) / "serve.log", tails.get(d))
                     for line, history in lines:
                         w = None if history else wake_row(line)
@@ -635,6 +672,8 @@ def make_server(
                     if not self.emit("library", {"what": "models"}):
                         return
                 if khive is not None and time.monotonic() >= next_mail:
+                    if stopping.is_set():
+                        return
                     next_mail = time.monotonic() + _FORYOU_S
                     code, doc = v2.foryou(self.run)
                     items = {x["id"]: x for x in doc.get("items", [])} if code == 200 else None
@@ -844,7 +883,21 @@ def make_server(
         def log_message(self, fmt: str, *args) -> None:  # one line per request is noise here
             pass
 
-    server = ThreadingHTTPServer((host, port), Handler)
+        def finish(self) -> None:
+            with streams_lock:
+                streams.discard(self.connection)
+            super().finish()
+
+    class Server(ThreadingHTTPServer):
+        def shutdown(self) -> None:
+            end_streams()
+            super().shutdown()
+
+        def server_close(self) -> None:  # `serve` ends with this alone, after a Ctrl-C
+            end_streams()
+            super().server_close()
+
+    server = Server((host, port), Handler)
     bound = server.server_address[1]
     hosts.update({f"{host}:{bound}", f"127.0.0.1:{bound}", f"localhost:{bound}"})
     for a in allow or []:
@@ -854,6 +907,7 @@ def make_server(
     v2_hosts.update({f"127.0.0.1:{bound}", f"localhost:{bound}"})
     v2_origins.update(f"http://{h}" for h in v2_hosts)
     server.hosts = frozenset(hosts)  # type: ignore[attr-defined]
+    server.streams = streams  # type: ignore[attr-defined]  # the event streams open now, each until it ends
     return server
 
 
