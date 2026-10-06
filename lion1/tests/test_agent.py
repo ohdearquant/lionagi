@@ -1176,14 +1176,15 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
     assert stats(tmp_path).splitlines()[-2] == "ledger: 5 check(s), 1 answered, 4 not"
     # counts that are no numbers are not divided: the line says so
     odds = ({"mail": "1"}, {"in": "12000"}, {"out": None}, {"mail": True}, {"mail": None}, {"mail": 0.0})
-    for odd in (*odds, {"mail": -1}, {"in": 1.5}):
+    huge = int("9" * 4300)  # the longest whole number a JSON row can hold: two of them sum past it
+    for odd in (*odds, {"mail": -1}, {"in": 1.5}, {"in": 2**63}, {"mail": 2**63}, {"in": huge, "out": huge}):
         store.put("spend", {**spend, **odd}, run="-", seq=5)
         assert stats(tmp_path).splitlines()[1] == (
-            "per handled message: not computed, the spend row's counts are not all whole numbers"
+            "per handled message: not computed, the spend row's counts are not all whole numbers under 2**63"
         )
-    # a whole number past a float's range still divides, and a half rounds as the line always did
-    store.put("spend", {**spend, "in": 10**400, "out": 0, "mail": 1}, run="-", seq=6)
-    assert stats(tmp_path).splitlines()[1] == f"per handled message: {10**400} tokens"
+    # the largest counts divide exactly, where a float would round them up, and a half rounds as it did
+    store.put("spend", {**spend, "in": 2**63 - 1, "out": 2**63 - 1, "mail": 2}, run="-", seq=6)
+    assert stats(tmp_path).splitlines()[1] == f"per handled message: {2**63 - 1} tokens"
     store.put("spend", {**spend, "in": 5, "out": 0, "mail": 2}, run="-", seq=7)
     assert stats(tmp_path).splitlines()[1] == "per handled message: 2 tokens"
     store.put(

@@ -274,8 +274,8 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
         + f"; {spend.get('runs', 0)} wake(s) with {mail} mail; "
         f"{spend.get('idle', 0)} idle poll(s) at 0 tokens",
         (  # counts are whole numbers as the agent writes them; any other is not divided, an absent one is 0
-            "per handled message: not computed, the spend row's counts are not all whole numbers"
-            if not all(type(n) is int and n >= 0 for n in (mail, *used))
+            "per handled message: not computed, the spend row's counts are not all whole numbers under 2**63"
+            if not all(type(n) is int and 0 <= n < 2**63 for n in (mail, *used))
             else f"per handled message: {round(Fraction(sum(used), mail))} tokens"
             if mail
             else "per handled message: no mail handled today"
