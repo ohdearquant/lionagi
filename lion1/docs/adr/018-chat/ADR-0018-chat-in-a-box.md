@@ -120,7 +120,8 @@ no box. In a boxed chat `bash` and `python` run in the remote box, and the file 
 its copy.
 
 The guidance is `hub/guidance/console.md` holding `sandbox.md` for the VM or `box.md` for the box,
-then with `--code` `code.md`: the root, the branch and the root's `AGENTS.md` and `CLAUDE.md`.
+then with `--code` `code.md` (`code-noshell.md` without a shell): the root, the branch and the
+root's `AGENTS.md` and `CLAUDE.md`.
 
 ### C3: Without a box the tools work the person's tree; with one, a copy _(enforced: mechanical)_ ^c3
 
@@ -634,8 +635,8 @@ last.
 - **S4**: The chat log holds every value JSON can hold whole, and the rest as D16 writes it; the
   console prints a result as one line. The closing line sums the cost on every call's envelope,
   failed attempts included; a call whose envelope carries no cost adds nothing and is not flagged.
-- **S5**: `--offline` reaches the local VM only; nothing in the chat restricts a remote box's
-  network.
+- **S5**: `--offline` reaches the local VM only, and with a remote box the chat refuses it before
+  the box is built; nothing in the chat restricts a remote box's network.
 - **S6**: The copy's baseline needs git in the image; an image without it fails the preparation, and
   the box stops before the model works. The remote box needs the `daytona` extra; without it the
   start fails on import before any box exists.
