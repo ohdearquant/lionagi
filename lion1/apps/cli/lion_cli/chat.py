@@ -257,18 +257,29 @@ async def end_box(
     apply: bool,
     say: Callable[[str], None],
     show: bool = True,
+    carry: bool = False,
 ) -> None:
     """The end of a Daytona box: its patch taken (`take_patch`, saved under `saved` as `<name>.patch`),
     then the box stopped, which deletes it. A box that ended first is said to have no recovery. A patch
     not taken whole leaves the box running and named, for it may hold the only copy of the work, and
-    raises."""
+    raises. An interrupt stops the patch, so nothing it says comes after the box is named; with `carry`,
+    when the command has had no interrupt yet, the first waits for the patch, each git call of it under
+    its timeout, and is raised once the box has stopped, and a second stops it."""
+    interrupted: BaseException | None = None
     if box.dead is not None:
         say(f"box: it ended before its patch was read ({box.dead}); recovery unavailable")
     else:
+        took = asyncio.ensure_future(
+            take_patch(box, directory, saved, name, baseline=baseline, apply=apply, say=say, show=show)
+        )
         try:
-            await asyncio.shield(
-                take_patch(box, directory, saved, name, baseline=baseline, apply=apply, say=say, show=show)
-            )
+            try:
+                await (asyncio.shield(took) if carry else took)
+            except asyncio.CancelledError as e:
+                if not carry:
+                    raise
+                interrupted = e  # the command's first interrupt: the patch is taken whole first
+                await took  # a second cancels it
         except BaseException as e:  # not taken whole, a cancellation included: the box may hold the only copy
             ident = getattr(box, "box_id", None)
             if isinstance(e, asyncio.CancelledError | KeyboardInterrupt):
@@ -283,8 +294,12 @@ async def end_box(
             else:
                 reason = box.dead or "the provider named no box"
                 say(f"box {ident or '?'}: {why}; recovery unavailable: {reason}")
+            if interrupted is not None:  # the run was interrupted whatever then stopped its patch
+                raise interrupted from e
             raise
     await asyncio.shield(box.stop())
+    if interrupted is not None:
+        raise interrupted
 
 
 def _git_apply(directory: Path, *args: str, timeout: float) -> list[str]:

@@ -1,7 +1,8 @@
 """`lion mcp` (ADR-0026 C5, D5): a stdio MCP server over an actor's directory with three tools and no
 other. `run` and `flow` start `lion run` or `lion flow` as a child in a session of its own, the server's
 actor as the submitter, and return the id as soon as the child prints it; the child runs on, and its
-result reaches the submitter by mail. `result` reads a run's or a flow's rows back."""
+result reaches the submitter by mail. `result` reads a run's or a flow's rows back, and for a child this
+server started, how it ended: what it said on standard error is where a mail that failed is named."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import selectors
 import subprocess
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -28,25 +29,41 @@ __all__ = ("LION", "server")
 LION = (sys.executable, "-m", "lion_cli.main")  # the command a child runs: this interpreter's `lion`
 
 
-def _first_line(child: subprocess.Popen[bytes]) -> tuple[str, str]:
-    """The child's first line on standard output, and what it wrote on standard error meanwhile; an
-    empty line when standard output ended without one. Both pipes are read together, so a child that
-    says much on standard error before its id never waits on a full pipe."""
+_SAID = 8192  # bytes of a child's standard error the server keeps: its last
+
+
+def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], ended: dict[str, Any]) -> None:
+    """A child read to its end, in a thread of its own started with it: `first` gets the first line of its
+    standard output and what it wrote on standard error meanwhile, or an empty line when its standard
+    output ended without one; the rest is drained, so the child never waits on a full pipe. Then the
+    pipes close, the child is reaped, and its exit and the last of its standard error are kept in `ended`
+    under its id. A call cancelled while it waited for the id changes none of this."""
     assert child.stdout is not None and child.stderr is not None
     out = err = b""
-    with selectors.DefaultSelector() as ends:
-        ends.register(child.stdout, selectors.EVENT_READ)
-        ends.register(child.stderr, selectors.EVENT_READ)
-        while ends.get_map():
-            for key, _ in ends.select():
-                chunk = os.read(key.fd, 65536)
-                if not chunk:
-                    ends.unregister(key.fileobj)
-                elif key.fileobj is child.stderr:
-                    err += chunk
-                elif b"\n" in (out := out + chunk):
-                    return out.split(b"\n", 1)[0].decode(), err.decode(errors="replace")
-    return "", err.decode(errors="replace")
+    line: str | None = None
+    try:
+        with selectors.DefaultSelector() as ends:
+            ends.register(child.stdout, selectors.EVENT_READ)
+            ends.register(child.stderr, selectors.EVENT_READ)
+            while ends.get_map():
+                for key, _ in ends.select():
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        ends.unregister(key.fileobj)
+                    elif key.fileobj is child.stderr:
+                        err = (err + chunk)[-_SAID:]
+                    elif line is None and b"\n" in (out := out + chunk):
+                        line = out.split(b"\n", 1)[0].decode()
+                        ended[line] = None  # running
+                        first(line, err.decode(errors="replace"))
+    finally:
+        child.stdout.close()
+        child.stderr.close()
+        if line is None:
+            first("", err.decode(errors="replace"))
+        code = child.wait()
+        if line is not None:
+            ended[line] = {"exit": code, "said": err.decode(errors="replace")}
 
 
 def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
@@ -59,6 +76,8 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
     except KhiveError as e:
         raise SubmitError(str(e)) from None
 
+    children: dict[str, Any] = {}  # id: None while the child runs, then its exit and what it said
+
     async def started(argv: list[str]) -> dict[str, str]:
         child = subprocess.Popen(
             [*lion, *argv, f"--dir={directory}", f"--notify={own}"],
@@ -67,13 +86,24 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
             stderr=subprocess.PIPE,
             start_new_session=True,  # the caller's end, or its signal, is not the child's
         )
-        line, err = await asyncio.to_thread(_first_line, child)
-        child.stdout.close()  # type: ignore[union-attr]  # the child's lines after the id are its own
-        child.stderr.close()  # type: ignore[union-attr]
+        loop = asyncio.get_running_loop()
+        said: asyncio.Future[tuple[str, str]] = loop.create_future()
+
+        def first(line: str, err: str) -> None:
+            def give() -> None:
+                if not said.done():  # a call cancelled while it waited has no reader left
+                    said.set_result((line, err))
+
+            try:
+                loop.call_soon_threadsafe(give)
+            except RuntimeError:  # the loop is gone: no call waits
+                pass
+
+        threading.Thread(target=_watch, args=(child, first, children), daemon=True).start()
+        line, err = await said
         if not line:
             code = await asyncio.to_thread(child.wait)
             raise ToolError(err.strip() or f"lion {argv[0]} ended with {code} before printing an id")
-        threading.Thread(target=child.wait, daemon=True).start()  # reaped when it ends, whenever that is
         return {"id": line}
 
     def options(variables: dict[str, str] | None, thread: str | None) -> list[str]:
@@ -105,7 +135,8 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
 
     async def result(id: str, history: bool = False) -> dict[str, Any]:
         """A run's or a flow's row with its output, `outcome` empty while it runs; a flow's step rows
-        beside it; and with `history` the run's messages, in order."""
+        beside it; with `history` the run's messages, in order; and for a run or flow this server
+        started, `child`: `running`, or its `exit` and the last of what it `said` on standard error."""
         try:
             row = await store.result(id)
             got: dict[str, Any] = {"row": row}
@@ -115,6 +146,8 @@ def server(directory: Path, lion: Sequence[str] = LION) -> MCPServer:
                 got["messages"] = await store.messages(id)
         except KhiveError as e:
             raise ToolError(str(e)) from None
+        if id in children:  # a child this server started: its exit, and what it said, once it ended
+            got["child"] = children[id] if children[id] is not None else {"running": True}
         return got
 
     mcp = MCPServer("lion", instructions=f"Runs of the actor {own}'s profiles and flows, from {directory}.")

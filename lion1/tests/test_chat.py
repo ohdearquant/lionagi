@@ -648,7 +648,11 @@ def test_a_patch_cut_short_by_a_cancellation_keeps_the_box_and_names_it(tmp_path
 
         async def stuck(self, base="HEAD"):
             reading.set()
-            await asyncio.Event().wait()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cut.append(True)
+                raise
 
         monkeypatch.setattr(ChatBox, "diff", stuck)
         box = ChatBox("img", "/w")
@@ -660,8 +664,10 @@ def test_a_patch_cut_short_by_a_cancellation_keeps_the_box_and_names_it(tmp_path
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert cut == [True]  # the patch was stopped, not left to say more after the box was named
         return box, said
 
+    cut: list[bool] = []
     ChatBox.made.clear()
     box, said = asyncio.run(ending())
     assert not box.stopped
@@ -669,6 +675,77 @@ def test_a_patch_cut_short_by_a_cancellation_keeps_the_box_and_names_it(tmp_path
         f"box {box.box_id}: kept, not stopped: interrupted while its patch was taken; the work is there, "
         "at /w, until the box's idle stop deletes it"
     )
+
+
+PATCH = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+
+
+def _carried(tmp_path, monkeypatch, cancels: int):
+    """`end_box` with `carry`, cancelled once while its diff is read, then a second time or the diff let
+    go. The box, what was said, and whether the diff was cut."""
+    from lion_cli.chat import end_box
+
+    from tests.test_daytona import ChatBox
+
+    cut: list[bool] = []
+
+    async def ending():
+        reading, go = asyncio.Event(), asyncio.Event()
+
+        async def diff(self, base="HEAD"):
+            reading.set()
+            try:
+                await go.wait()
+            except asyncio.CancelledError:
+                cut.append(True)
+                raise
+            return PATCH
+
+        monkeypatch.setattr(ChatBox, "diff", diff)
+        box = ChatBox("img", "/w")
+        said: list[str] = []
+        task = asyncio.create_task(
+            end_box(
+                box,
+                tmp_path,
+                tmp_path / "saved",
+                "c1",
+                baseline="b",
+                apply=False,
+                say=said.append,
+                show=False,
+                carry=True,
+            )
+        )
+        await reading.wait()
+        task.cancel()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not task.done()  # the first is carried: the patch goes on
+        if cancels == 2:
+            task.cancel()
+        else:
+            go.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return box, said
+
+    ChatBox.made.clear()
+    box, said = asyncio.run(ending())
+    return box, said, cut
+
+
+def test_a_carried_interrupt_takes_the_patch_whole_stops_the_box_then_is_raised(tmp_path, monkeypatch):
+    box, said, cut = _carried(tmp_path, monkeypatch, cancels=1)
+    assert box.stopped and not cut
+    assert (tmp_path / "saved" / "c1.patch").read_text() == PATCH
+    assert any("saved as" in line for line in said) and said[-1].startswith("box: not applied")
+
+
+def test_a_second_interrupt_stops_a_carried_patch_keeps_the_box_and_names_it(tmp_path, monkeypatch):
+    box, said, cut = _carried(tmp_path, monkeypatch, cancels=2)
+    assert cut == [True] and not box.stopped and not (tmp_path / "saved" / "c1.patch").exists()
+    assert said[-1].startswith(f"box {box.box_id}: kept, not stopped: interrupted while its patch was taken")
 
 
 def test_a_save_failure_or_a_dead_box_keeps_the_error_and_says_whether_the_box_can_be_reached(

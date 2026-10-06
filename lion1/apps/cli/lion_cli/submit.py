@@ -170,7 +170,7 @@ async def cast(
     runs: list[str] = []
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(ev.payload["run"]))
     baseline = ""
-    started = False
+    started = interrupted = False
     try:
         if boxed:
             started = True
@@ -180,7 +180,11 @@ async def cast(
                 raise SubmitError(f"the sandbox image {sandbox.image} did not build:\n{build}")
             started = True
             await sandbox.start()
-        yield actor, profile, backend
+        try:
+            yield actor, profile, backend
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            interrupted = True  # the command's one carried interrupt was the run's
+            raise
     finally:
         off()
         if started:
@@ -194,6 +198,7 @@ async def cast(
                     apply=False,
                     say=say,
                     show=False,
+                    carry=not interrupted,
                 )
             else:
                 await asyncio.shield(sandbox.stop())

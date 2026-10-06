@@ -746,6 +746,59 @@ def test_a_boxed_run_whose_patch_fails_keeps_the_box_and_still_mails_its_end(
     assert kept in mail["content"]
 
 
+def interrupted_in_its_diff(monkeypatch) -> list[bool]:
+    """The box's diff cancels the command's own task once, as an interrupt landing there would, then is
+    read; whether it was cut short."""
+    diff, cut = Box.diff, []
+
+    async def interrupted(self, base="HEAD"):
+        (command,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "run_main"]
+        command.cancel()
+        try:
+            for _ in range(3):
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            cut.append(True)
+            raise
+        return await diff(self, base)
+
+    monkeypatch.setattr(Box, "diff", interrupted)
+    return cut
+
+
+def test_a_boxed_run_interrupted_while_its_patch_is_taken_takes_it_whole_and_mails_every_notice(
+    actor_dir, console_khive, boxes, monkeypatch
+):
+    made, _ = boxes
+    cut = interrupted_in_its_diff(monkeypatch)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
+    (run_id,) = console_khive.runs
+    patch = actor_dir / ".lion" / "runs" / f"{run_id}.patch"
+    assert not cut and made[0].stopped and patch.read_text() == made[0].patch
+    (mail,) = console_khive.sent
+    assert f"line(s), saved as {patch}\n" in mail["content"]
+    assert "\nnotice: box: not applied; " in mail["content"]
+
+
+def test_a_boxed_run_interrupted_in_its_run_then_while_its_patch_is_taken_keeps_the_box_and_mails_it(
+    actor_dir, console_khive, boxes, monkeypatch
+):
+    made, _ = boxes
+
+    async def cancelled(messages):
+        raise asyncio.CancelledError
+
+    backends(monkeypatch, **{"fake/boxed": cancelled})
+    cut = interrupted_in_its_diff(monkeypatch)  # the command's second interrupt: the first was the run's
+    assert lion("run", "--dir", str(actor_dir), "--profile", "boxed", "--say", "edit f") == 130
+    (run_id,) = console_khive.runs
+    assert cut == [True] and not made[0].stopped
+    assert not (actor_dir / ".lion" / "runs" / f"{run_id}.patch").exists()
+    (mail,) = console_khive.sent
+    kept = "\nnotice: box sbx-1: kept, not stopped: interrupted while its patch was taken; "
+    assert kept in mail["content"]
+
+
 def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outcome_and_the_error(
     actor_dir, console_khive, boxes
 ):

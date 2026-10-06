@@ -17,8 +17,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from test_submit import PROFILES, TWO, backends, lion, out
 
 # A stand-in for `lion run` and `lion flow`: it keeps its argv and what it was started with, refuses a
-# profile named `refused` on standard error as the command does, and otherwise prints an id; a `--say=wait`
-# job then waits for a `go` file before it writes `done`.
+# profile named `refused` on standard error as the command does, and otherwise prints an id: a `--say=slow`
+# job only once a `print` file appears. A `--say=wait` job then waits for a `go` file before it writes
+# `done`; a `--say=mailfail` job says on standard error that its mail failed, and exits 1; a `--say=chatty`
+# job says more than the server keeps, then a last line, and exits 3.
 CHILD = """
 import json, os, sys, time
 from pathlib import Path
@@ -31,7 +33,18 @@ null = os.stat(os.devnull)
 if "--profile=refused" in argv:
     print("lion run: profiles.toml has no [profile.refused]", file=sys.stderr, flush=True)
     sys.exit(1)
+if "--say=slow" in argv:  # the id only once a `print` file appears
+    for _ in range(600):
+        if (here / "print").exists():
+            break
+        time.sleep(0.05)
 print(f"{argv[0]}-id", flush=True)
+if "--say=mailfail" in argv:
+    print("the result mail was not sent: KhiveError: comm down", file=sys.stderr, flush=True)
+    sys.exit(1)
+if "--say=chatty" in argv:
+    print("x" * 20000 + "\\nthe last of it", file=sys.stderr, flush=True)
+    sys.exit(3)
 if "--say=wait" in argv:
     for _ in range(600):
         if (here / "go").exists():
@@ -76,6 +89,17 @@ def waited(path, seconds: float = 30.0) -> bool:
             return False
         time.sleep(0.05)
     return True
+
+
+def ended(mcp, id: str, seconds: float = 30.0) -> dict:
+    """`result`'s `child` for `id` once the server has seen the child end: the watcher reaps it first and
+    records its exit just after, so a reaped pid alone does not say the record is there."""
+    end = time.monotonic() + seconds
+    while True:
+        child = asyncio.run(mcp.call_tool("result", {"id": id})).structured_content["child"]
+        if child != {"running": True} or time.monotonic() > end:
+            return child
+        time.sleep(0.05)
 
 
 def test_the_mcp_server_lists_run_flow_and_result_and_no_other_tool(actor_dir):
@@ -141,6 +165,85 @@ def test_a_child_that_ends_before_its_id_fails_the_call_with_what_it_said(actor_
     mcp = mcp_server.server(actor_dir, lion=command)
     with pytest.raises(ToolError, match=r"lion run: profiles.toml has no \[profile.refused\]"):
         asyncio.run(mcp.call_tool("run", {"profile": "refused", "say": "go"}))
+
+
+def test_a_call_cancelled_before_the_id_still_has_its_child_reaped(actor_dir, child):
+    here, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+
+    async def cancelled() -> None:
+        call = asyncio.ensure_future(mcp.call_tool("run", {"profile": "writer", "say": "slow"}))
+        for _ in range(1500):  # the child has started, and waits for `print`
+            if (here / "run.json").exists():
+                break
+            await asyncio.sleep(0.02)
+        assert (here / "run.json").exists()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+    asyncio.run(cancelled())  # the loop the call waited on is gone before the child prints
+    started = json.loads((here / "run.json").read_text())
+    (here / "print").write_text("")
+    assert gone(started["pid"])  # the child printed its id to no one, ended, and was reaped
+
+
+def test_the_result_tool_tells_how_a_child_it_started_ended_a_failed_mail_included(
+    actor_dir, console_khive, child
+):
+    here, command = child
+    for name in ("run-id", "flow-id"):  # the rows a real child writes before it prints the id
+        console_khive.answer(
+            f'lion.session_open(id="{name}", source="lion1", actor="console", profile="writer") | '
+            f'lion.run_open(id="{name}", profile="writer", session_id="{name}", actor="console")'
+        )
+    mcp = mcp_server.server(actor_dir, lion=command)
+
+    assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "mailfail"})).structured_content == {
+        "id": "run-id"
+    }
+    said = "the result mail was not sent: KhiveError: comm down\n"
+    assert ended(mcp, "run-id") == {"exit": 1, "said": said}
+    assert gone(json.loads((here / "run.json").read_text())["pid"])
+    assert asyncio.run(mcp.call_tool("flow", {"name": "two"})).structured_content == {"id": "flow-id"}
+    assert ended(mcp, "flow-id") == {"exit": 0, "said": ""}
+    # a run of another's, or one before this server, carries no `child`
+    console_khive.answer(
+        'lion.session_open(id="other", source="lion1", actor="console", profile="writer") | '
+        'lion.run_open(id="other", profile="writer", session_id="other", actor="console")'
+    )
+    assert "child" not in asyncio.run(mcp.call_tool("result", {"id": "other"})).structured_content
+
+
+def test_the_result_tool_says_a_child_it_started_is_still_running(actor_dir, console_khive, child):
+    here, command = child
+    console_khive.answer(
+        'lion.session_open(id="run-id", source="lion1", actor="console", profile="writer") | '
+        'lion.run_open(id="run-id", profile="writer", session_id="run-id", actor="console")'
+    )
+    mcp = mcp_server.server(actor_dir, lion=command)
+    assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "wait"})).structured_content == {
+        "id": "run-id"
+    }
+    got = asyncio.run(mcp.call_tool("result", {"id": "run-id"})).structured_content
+    assert got["child"] == {"running": True}
+    (here / "go").write_text("")
+    assert ended(mcp, "run-id") == {"exit": 0, "said": ""}
+    assert gone(json.loads((here / "run.json").read_text())["pid"])
+
+
+def test_the_result_tool_keeps_the_last_of_what_a_child_said(actor_dir, console_khive, child):
+    console_khive.answer(
+        'lion.session_open(id="run-id", source="lion1", actor="console", profile="writer") | '
+        'lion.run_open(id="run-id", profile="writer", session_id="run-id", actor="console")'
+    )
+    mcp = mcp_server.server(actor_dir, lion=child[1])
+    assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "chatty"})).structured_content == {
+        "id": "run-id"
+    }
+    got = ended(mcp, "run-id")
+    assert got["exit"] == 3 and got["said"].endswith("x\nthe last of it\n")
+    assert len(got["said"]) == mcp_server._SAID
 
 
 def test_a_value_that_starts_with_a_dash_reaches_the_command_as_a_value(actor_dir):
