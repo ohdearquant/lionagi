@@ -1,7 +1,7 @@
 ---
 adr: ADR-0026
 status: proposed
-liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, and an agent's wake continues its last run with no checkpoint, each pinned by tests; the commands, the driver, the result mail and the MCP server are owed, S1)
+liveness: partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, an agent's wake continues its last run with no checkpoint, and `lion run`, `lion flow` and `lion result` run a profile or a flow, write its step rows and mail its result, each pinned by tests; the MCP server is owed, S1)
 date: "2026-10-04"
 area: submission
 kind: new
@@ -73,23 +73,24 @@ Source: `apps/cli/lion_cli/main.py`, `apps/cli/lion_cli/chat.py` (`profile`),
 
 ## Claims
 
-### C1: A run or a flow is submitted by name, from a directory, and leaves rows before anything else _(enforced: mechanical; owed, S1)_ ^c1
+### C1: A run or a flow is submitted by name, from a directory, and leaves rows before anything else _(enforced: mechanical)_ ^c1
 
 - **Subject**: `lion run --dir D --profile P --say TEXT` and `lion flow --dir D --name N`, their
   standard output and the store's rows.
 - **Violated when**: a call to the model goes out before the run row exists, or the id prints after
   the first call, or a step's id prints after its run opens.
 
-The command builds the actor `D` names, the profile `P` from the profile file or the flow `N` from
-the flow file, and runs one job on the model the profile or `--model` names. The id prints first, so
-a caller that stops reading still holds the handle; the row exists in the store before the first
-call (ADR-0025 C1, C5); the output prints when the run ends. A flow prints its own id, then each
-step's as it opens.
+The command builds the actor `D` names and the profile `P` or the flow `N` from its file, and runs
+on the model the profile or `--model` names. The id prints first, so a caller that stops reading
+still holds the handle; notices go to standard error. The row exists in the store before the first
+call (ADR-0025 C1, C5); the output prints when the run ends. A flow prints its own id, then `step
+<name> <id>` as each step opens.
 
 - `test_lion_run_prints_the_id_before_the_first_call_and_the_row_exists_then`
 - `test_lion_flow_prints_the_flow_id_then_each_steps_as_it_opens`
+- `test_a_boxed_run_prints_its_id_first_and_keeps_its_patch_unapplied_beside_its_rows`
 
-### C2: Every step is a run of its own, and the flow's run names them all _(enforced: mechanical; owed, S1)_ ^c2
+### C2: Every step is a run of its own, and the flow's run names them all _(enforced: mechanical)_ ^c2
 
 - **Subject**: the step rows under a flow run, and the run rows they name.
 - **Violated when**: a step's work has no run row of its own, a step row names no run, a fanout item
@@ -97,15 +98,18 @@ step's as it opens.
 
 A step's work is one run under the step's profile, with its own session, run, message and call rows,
 its trigger the flow run's id. The flow run's step rows name each step's run, in order, and what it
-read. A fanout step writes one step row per item, named `<step>[k]`, each with its own run. A step
-whose run ends other than in success closes with that outcome, the steps after it do not open, and
-the flow run closes `stopped` with the failed step named in its output.
+read. A fanout step writes one step row per item, named `<step>[k]`, each with its own run.
+
+A step whose run ends other than in success, or whose box cannot hand back its patch, stops the
+flow. No later step opens, and the flow run closes `stopped`, naming the step, its outcome and any
+error.
 
 - `test_a_flows_steps_are_runs_of_their_own_named_by_the_flow_runs_step_rows`
 - `test_a_fanout_step_writes_one_step_row_and_one_run_per_item_in_order`
 - `test_a_failed_step_closes_the_flow_stopped_and_opens_no_step_after_it`
+- `test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outcome_and_the_error`
 
-### C3: A step reads only what the template names, and what it names must exist _(enforced: mechanical; owed, S1)_ ^c3
+### C3: A step reads only what the template names, and what it names must exist _(enforced: mechanical)_ ^c3
 
 - **Subject**: a step's resolved `say`, and its row's `inputs_from`.
 - **Violated when**: a step's text holds an earlier step's result its template did not name, or
@@ -114,27 +118,35 @@ the flow run closes `stopped` with the failed step named in its output.
 A template's `{name}` resolves against the submission's variables and the steps before it, and
 nothing else: `inputs_from` lists the steps the template read. A name that resolves to nothing
 refuses the flow before its run row is written, naming the step and the name. `{step.text}` is the
-run's last text entry; `{step.output}` is its declared output as JSON; a fanout's output is the list
-of its items' outputs.
+run's last text entry, `{step.output}` its declared output as JSON; a fanout's are lists.
+
+In a fanout step `{item}` is the item; `each` names a variable holding a JSON list, or an earlier
+step's `.output`. `{{` and `}}` are one brace. `lion run`'s `--say` is a template only beside
+`--var`.
 
 - `test_a_steps_inputs_from_lists_exactly_the_steps_its_template_read`
 - `test_a_template_naming_nothing_refuses_the_flow_before_any_row`
+- `test_lion_run_fills_its_text_from_vars_and_takes_each_file_as_an_input`
 
-### C4: The result reaches the submitter by mail, and the rows hold it regardless _(enforced: mechanical; owed, S1)_ ^c4
+### C4: The result reaches the submitter by mail, and the rows hold it regardless _(enforced: mechanical)_ ^c4
 
 - **Subject**: the submitter's inbox after a run or a flow ends, the run row, and `lion result`.
 - **Violated when**: a run ends in any outcome and no mail is sent or its send's failure is silent,
   or a row is missing because the send failed, or `lion result` prints less than the row.
 
-When a run or a flow ends in any outcome, the run's actor sends the submitter one message: the
-subject carries the id and the outcome, the body the output's head and the command that reads the
-rest. A submission that named a thread gets its result on that thread. A send that fails is printed
-and kept as an error; the rows are complete without it, and `lion result --dir D ID` prints the run
-row with its output, `--history` the session's messages.
+When a run or a flow ends in any outcome, the run's actor sends the submitter one message, on the
+submission's thread when it named one. The subject carries the id and the outcome; the body, the
+output's head and the command that reads the rest.
+
+A send that fails is printed and kept as an error; the rows are complete without it. `lion result
+--dir D ID` prints the run row with its output, a flow's step rows beside it, and with `--history`
+the session's messages.
 
 - `test_a_run_that_ends_mails_the_submitter_its_id_outcome_and_output_head`
+- `test_a_boxed_run_whose_patch_fails_keeps_the_box_and_still_mails_its_end`
 - `test_a_result_mail_that_fails_leaves_the_rows_complete_and_prints_the_error`
 - `test_lion_result_prints_the_row_and_with_history_the_messages`
+- `test_lion_result_prints_a_flows_step_rows_beside_its_row`
 
 ### C5: The MCP server exposes the same three acts and nothing else _(enforced: mechanical; owed, S1)_ ^c5
 
@@ -228,41 +240,50 @@ its store first, which refuses without the lion database (C8). `run` takes `--pr
 `--file` (repeatable; each file's text is an input after `--say`), `--model`, `--var`, `--thread`
 and `--notify ACTOR` (default: the directory's own actor). `flow` takes `--name`, `--var`,
 `--thread` and `--notify`. `result` takes the id and `--history`. `mcp` takes nothing more. ADR-0016
-C1's table and D1 gain these rows in the same change.
+C1's table and D1 gain these rows in the same change; S10 gives the exit codes.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `run`, `flow` and `result`: `apps/cli/tests/test_submit.py`, C1 to C4's
+  tests through `main()`. `mcp` is owed with D5.
 
 ### D2: The profile file, read by `profile_from(dir, name, model)` ^d2
 
 Serves C1. `[profile.<name>]` holds `system` (text, or `system_file`), `tools` (names among `files`,
 `code`, `shell`, `khive`, `send`), `model`, `box`, `image`, `offline`, and `defaults` (the bounds).
-The function builds the `Profile` the way `lion chat` does from the matching flags, so the two share
-one builder, `apps/cli/lion_cli/chat.py` `profile`, which gains the keyword form. An unknown key
-refuses with its name. A profile is a file read at submission and no entity of the graph; ADR-0025
-D1 says so in the same change.
+The function reads and checks the table and refuses an unknown key or tool by its name. `cast`, in
+`apps/cli/lion_cli/submit.py`, builds the actor and the `Profile` through `console`, the builder
+`lion chat` uses, which gains the keyword form (S11), and the backend through `backend_for`. A
+profile is a file read at submission and no entity of the graph; ADR-0025 D1 says so.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `apps/cli/tests/test_submit.py`:
+  `test_the_profile_file_refuses_what_it_does_not_name`,
+  `test_a_profile_file_or_profile_that_is_not_there_refuses_naming_what_is`,
+  `test_a_profile_builds_through_the_chats_builder_with_exactly_its_tools`,
+  `test_the_send_tool_mails_the_submitter_alone_on_the_submissions_thread`;
+  `tests/test_guidance.py`.
 
 ### D3: The flow file and the driver, `hub/flow/driver.py` ^d3
 
-Serves C1, C2 and C3. `[flow.<name>]` holds `output` (the step whose result is the flow's; default
-the last) and `parallel` (a fanout's width, default 4). Each table of its `step` array holds `name`,
-`profile`, `say` and optionally `each`. `run_flow(actor, flow, vars, backend_for)` opens the flow
-run; per step: resolve the template (C3), write the step row, run it as `Actor.run` under its
-profile, close the step row; then close the flow run with the named output. A flow is a file read at
-submission and no entity of the graph.
+Serves C1, C2 and C3. `[flow.<name>]` holds `output` (the result step, default the last) and
+`parallel` (a fanout's width, default 4). Each `step` table holds `name`, `profile`, `say` and
+optionally `each`. `run_flow(store, flow, variables, cast)` checks every template (`read`, C3), then
+opens the flow run. Each step runs as `Actor.run` under what `cast` builds from its profile, its
+step row in the run's request (D4). The flow closes with the named output, or `stopped`. A flow is a
+file read at submission and no entity of the graph.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: C2's and C3's tests, and D4's on the real pack.
 
 ### D4: The result mail and `Store.steps` ^d4
 
-Serves C2 and C4. `Store` gains `step_open`, `step_close` and `steps(flow_run_id)` over the pack's
-three step verbs, and `result(run_id)`, the row with its output. The mail is one `comm.send` through
-the actor's own client, sent from a `finally` after the rows close, so a failing send never loses a
-row. Its subject is `run <id> <outcome>` or `flow <name> <id> <outcome>`; its body is the output's
+Serves C2 and C4. `Store.open` writes a step's row in its run's `lion.run_open`, and `close` closes
+both, so no step row stands without its run ([[ADR-0025-the-graph|ADR-0025]] D4). `Store` gains
+`open_flow` and `close_flow` for the flow's row, and `steps`, `messages` and `result`, each one
+`lion.get`. The mail is one `comm.send`, sent once the rows close, so a failing send never loses a
+row. Its subject is `run <id> <outcome>` or `flow <name> <id> <outcome>`; its body the output's
 first forty lines and `lion result --dir D <id>`.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: C4's tests; `tests/test_store.py`:
+  `test_a_flows_step_rows_against_the_built_binary` reads the steps, runs and messages back from the
+  real pack.
 
 ### D5: The MCP server, `apps/mcp/server.py` ^d5
 
@@ -320,8 +341,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 
 ## Consequences
 
-- **S1**: Owed: C1 to C5, each with the tests named there; C6, C7 and C8 have landed. Landing order:
-  D2 to D4 with `lion run`, `lion flow`, `lion result`, then D5.
+- **S1**: Owed: C5, with the tests named there, landing with D5. C1 to C4 landed with D1 to D4, and
+  C6, C7 and C8 before them.
 - **S2**: [[ADR-0016-the-lion-command|ADR-0016]] C1's table and D1 gain the four subcommands in the
   change that adds them. [[ADR-0013-the-agent|ADR-0013]] D3 is amended: the agent's history is its
   last run's session, and its cursor names that run.
@@ -347,3 +368,16 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   wake replays the whole of it. A fold point, after which a wake starts fresh from its cursor and
   posture, is owed beside S5. Until it lands, and until the agent's directory routes the lion tables
   (C8), no agent is served from this runtime.
+- **S9**: A step's box holds its own copy of the directory, and its patch is saved, never applied: a
+  later step does not see an earlier step's edits.
+- **S10**: `lion run` and `lion flow` exit 0 only when the run or the flow ended in success, nothing
+  failed after it, and the result mail was sent; `lion result`, when it read the row. A refusal
+  before any row (a profile or flow file, a template, a `--var`) prints `lion <command>: <why>`. A
+  mail to the directory's own actor carries `self_send`, which comm requires. The mail goes once a
+  run's box has ended, so an error there heads its body.
+- **S11**: A submitted job's guidance is `hub/guidance/job.md`: one job for the submitter, nothing
+  to ask, ended by `OUT{}`. The `send` tool mails the submitter alone, on the submission's thread,
+  under the `comm.send` privilege the profile then holds. With `box = "daytona"` the shell runs in a
+  box holding a copy of the directory. Its diff is saved as `.lion/runs/<run id>.patch` and never
+  applied; a patch not taken whole keeps the box and names it, through `end_box`, which `lion chat`
+  now shares.

@@ -8,7 +8,7 @@ from hub.guidance import names
 
 
 def test_each_guidance_file_is_read_by_name_and_its_fields_filled():
-    assert {"box", "chair", "chores", "code", "console", "desk", "reader", "sandbox"} <= set(names())
+    assert {"box", "chair", "chores", "code", "console", "desk", "job", "reader", "sandbox"} <= set(names())
     text = guidance("console", model="m1", tools="read(path)")
     assert text.startswith("You are m1, talking with a person") and "Tools: read(path)." in text
     assert "OUT{}" in text and not text.endswith("\n")
@@ -24,8 +24,12 @@ def test_each_guidance_file_is_read_by_name_and_its_fields_filled():
         and "Mail from a, lambda:owner is your work" in chair
     )
     assert "$owner" in guidance("chores", chores="- disk")
+    job = guidance("job", model="m1", submitter="a:caller", tools="none")
+    # a submitted job has nobody to answer it, and it ends with OUT{} where the console never writes one
+    assert job.startswith("You are m1, doing one job on lion1 for a:caller") and "ask nothing" in job
+    assert "The job ends when you write OUT{...}" in job and "what a:caller reads back" in job
     with pytest.raises(
         KeyError,
-        match="no guidance 'nope'; there is box, chair, chores, code, console, desk, reader, sandbox",
+        match="no guidance 'nope'; there is box, chair, chores, code, console, desk, job, reader, sandbox",
     ):
         guidance("nope")

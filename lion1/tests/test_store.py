@@ -704,3 +704,53 @@ def test_a_harness_session_rides_the_same_tables_against_the_built_binary(binary
     assert (row["id"], row["source"], row["transcript"]) == (sid, "claude_code", "/t/cc.jsonl")
     assert asyncio.run(exchanges_of(k, sid)) == [{**e, "why": "manual"} for e in exchanges]
     _stop(binary, tmp_path)
+
+
+@pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
+def test_a_flows_step_rows_against_the_built_binary(binary_dirs, monkeypatch):
+    # ADR-0026 C2 on the real pack: each step's row written by `run_open` as the driver hands it, closed
+    # with its run, and the rows read back by `steps`, `result` and `messages`
+    from contextlib import asynccontextmanager
+
+    from hub.flow import Flow, Step, run_flow
+
+    binary = os.environ["LION1_KHIVE"]
+    monkeypatch.delenv("KHIVE_DB", raising=False)
+    monkeypatch.delenv("KHIVE_NO_DAEMON")
+    home, tmp_path = binary_dirs
+    monkeypatch.setenv("HOME", str(home))
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config(ACTOR, tmp_path, packs=("kg", "lion")))
+    store = Store(Khive(tmp_path, ACTOR, kkernel=binary))
+
+    @asynccontextmanager
+    async def cast(name):
+        yield Actor(ACTOR, store=store), Profile(name), scripted('OUT{result: "done"}')
+
+    flow = Flow(
+        "two",
+        (
+            Step("plan", "writer", "plan {topic}"),
+            Step("fan", "writer", "do {item} after {plan.text}", "items"),
+        ),
+        "fan",
+    )
+    ended = asyncio.run(run_flow(store, flow, {"topic": "tea", "items": '["a", "b"]'}, cast))
+    assert ended.outcome == "success" and ended.output == [{"result": "done"}, {"result": "done"}]
+    steps = asyncio.run(store.steps(ended.id))
+    assert [
+        (s["idx"], s["name"], s["profile"], s["outcome"], json.loads(s["inputs_from"])) for s in steps
+    ] == [
+        (0, "plan", "writer", "success", []),
+        (1, "fan[0]", "writer", "success", ["plan"]),
+        (2, "fan[1]", "writer", "success", ["plan"]),
+    ]
+    for s in steps:
+        row = asyncio.run(store.result(s["run_id"]))
+        assert row["outcome"] == "success" and json.loads(row["trigger"]) == [ended.id]
+    texts = [m["text"] for m in asyncio.run(store.messages(steps[2]["run_id"])) if m["role"] == "user"]
+    assert texts == ['do b after OUT{result: "done"}']
+    flow_row = asyncio.run(store.result(ended.id))
+    assert (flow_row["profile"], flow_row["outcome"], flow_row["turns"]) == ("flow:two", "success", 0)
+    assert json.loads(flow_row["output"]) == [{"result": "done"}, {"result": "done"}]
+    _stop(binary, tmp_path)
