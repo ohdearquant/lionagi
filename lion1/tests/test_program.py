@@ -513,6 +513,13 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     run = _run(_waiting_actor("unassembled", ends), lazy, out, time_budget=1, max_refusals=1)
     assert run.outcome == Exhausted(turns=2, reason="time") and run.output is None and run.refusals == 0
     assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 30
+    # the deadline is the run's, not each turn's: an earlier turn's time is spent from it
+    ends.clear()
+    spent = fenced("first = wait(seconds=2)")
+    run = _run(_waiting_actor("spent-before", ends), spent, lazy, out, time_budget=2.5, max_refusals=1)
+    assert run.outcome == Exhausted(turns=3, reason="time") and run.refusals == 0
+    assert ends == [("wait", 2.0, "ran"), ("wait", 60.0, "cut")]
+    assert 2.5 <= run.elapsed < 4  # a turn given the whole budget again would end at 4.5
 
 
 def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through(caplog):
