@@ -11,6 +11,7 @@ import math
 import os
 import plistlib
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -240,9 +241,22 @@ def make_server(
     # one with the higher revision is the later change
     snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None, "rev": 0}
     snapshot_lock = threading.Lock()
-    # set when the server ends: a stream stops after its current wait, never polling on for a client
-    # that may not read again (a handler thread outlives `shutdown`, which only ends `serve_forever`)
+    # set when the server ends, and every open stream's socket shut down with it: a stream stops after
+    # its current wait, and at once in a write a client that does not read has blocked, never serving on
+    # for a client that may not read again (a handler thread outlives `shutdown`, which only ends
+    # `serve_forever`). Shutting the socket down wakes a blocked write; closing it does not
     stopping = threading.Event()
+    streams: set[socket.socket] = set()
+    streams_lock = threading.Lock()
+
+    def end_streams() -> None:
+        with streams_lock:
+            stopping.set()
+            for conn in streams:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:  # the client already went
+                    pass
 
     def read_rows() -> None:  # with `snapshot_lock` held
         areas = load_areas(registry)
@@ -469,7 +483,12 @@ def make_server(
                     return
 
         def opened(self) -> bool:
-            # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone
+            # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone, or the
+            # server ended
+            with streams_lock:
+                if stopping.is_set():
+                    return False
+                streams.add(self.connection)
             try:
                 self.connection.settimeout(_WRITE_S)
                 self.send_response(200)
@@ -851,13 +870,18 @@ def make_server(
         def log_message(self, fmt: str, *args) -> None:  # one line per request is noise here
             pass
 
+        def finish(self) -> None:
+            with streams_lock:
+                streams.discard(self.connection)
+            super().finish()
+
     class Server(ThreadingHTTPServer):
         def shutdown(self) -> None:
-            stopping.set()
+            end_streams()
             super().shutdown()
 
         def server_close(self) -> None:  # `serve` ends with this alone, after a Ctrl-C
-            stopping.set()
+            end_streams()
             super().server_close()
 
     server = Server((host, port), Handler)

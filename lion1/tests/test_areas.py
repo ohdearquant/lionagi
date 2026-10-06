@@ -12,6 +12,7 @@ import os
 import plistlib
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -1147,9 +1148,19 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
 @pytest.mark.parametrize("end", ["shutdown", "server_close"])
 def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch, path, end):
     # it polls on, no ping falls due, and the client never goes: only the server's end stops it.
-    # `serve` ends with `server_close` alone, after a Ctrl-C, so that ends it too
+    # `serve` ends with `server_close` alone, after a Ctrl-C, so that ends it too. The residents' rows
+    # hold still, so the stream has nothing to write: a write to the socket the end shut would end it
+    # whatever its wait did
     monkeypatch.setattr(areas_cli, "_POLL_S", 0.2)
     monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
+    real, held = areas_cli.area_rows, []
+
+    def area_rows(found):  # the first rows, every read after
+        if not held:
+            held.append(real(found))
+        return held[0]
+
+    monkeypatch.setattr(areas_cli, "area_rows", area_rows)
     d = app_dir(tmp_path)
     server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
     # `shutdown` waits for `serve_forever`; one request served is enough for `server_close`
@@ -1157,15 +1168,62 @@ def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch,
     threading.Thread(target=serving, daemon=True).start()
     before = set(handlers())
     conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
-    conn.request("GET", path)
-    resp = conn.getresponse()
-    (stream,) = [t for t in handlers() if t not in before]
-    assert resp.status == 200 and stream.is_alive()
-    getattr(server, end)()
-    stream.join(10)
-    assert not stream.is_alive(), f"{path} served on past the server's {end}"
-    server.server_close()
-    conn.close()
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        (stream,) = [t for t in handlers() if t not in before]
+        assert resp.status == 200 and stream.is_alive()
+        # its first pass written (`areas`, or `/v2`'s `today`): from here it has nothing left to write
+        read_events(resp, lambda ev: len(ev) > 0, 10)
+        getattr(server, end)()
+        stream.join(10)
+        assert not stream.is_alive(), f"{path} served on past the server's {end}"
+    finally:  # the server ends on a failure too, so no stream of it outlives the test
+        if end == "shutdown":
+            server.shutdown()
+        server.server_close()
+        conn.close()
+
+
+@pytest.mark.parametrize("path", ["/events", "/v2/events"])
+@pytest.mark.parametrize("end", ["shutdown", "server_close"])
+def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
+    tmp_path, monkeypatch, path, end
+):
+    # the client takes in a few KiB and then reads nothing, so a 16 MiB wake line fills the buffers and
+    # the stream's write of it blocks, for up to `_WRITE_S` (30 s): the server's end breaks it at once
+    monkeypatch.setattr(areas_cli, "_POLL_S", 0.02)
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.3)
+    d = app_dir(tmp_path)
+    server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
+    serving = server.serve_forever if end == "shutdown" else server.handle_request
+    threading.Thread(target=serving, daemon=True).start()
+    before = set(handlers())
+    small = socket.socket()
+    small.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)  # before the connect, or it is not offered
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    try:
+        small.connect(server.server_address)
+        conn.sock = small
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        (stream,) = [t for t in handlers() if t not in before]
+        assert resp.status == 200
+        # a ping ends a pass that has read serve.log once; a line written before that read is history
+        read_events(resp, lambda ev: any(e == "ping" for e, _ in ev), 10)
+        long = WAKE_LINE.replace("Success", "x" * (16 << 20))  # still a wake line, so `/v2/events` sends it
+        with open(d / "serve.log", "a") as f:
+            f.write(long + "\n")
+        time.sleep(1)  # read, and its write begun
+        assert stream.is_alive()
+        getattr(server, end)()
+        stream.join(5)
+        assert not stream.is_alive(), f"{path} stayed blocked in a write past the server's {end}"
+    finally:
+        if end == "shutdown":
+            server.shutdown()
+        server.server_close()
+        conn.close()
 
 
 def open_stream(port: int):
