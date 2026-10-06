@@ -1207,6 +1207,65 @@ def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("path", ["/events", "/v2/events"])
+def test_a_read_that_returns_once_the_end_has_begun_is_not_sent(tmp_path, monkeypatch, path):
+    # the end sets its flag, then shuts each stream's socket. Here the shutting is held and never done,
+    # so the socket stays open, and a read the stream was in returns something to send: the flag alone
+    # refuses the write, and the client is sent nothing of it
+    monkeypatch.setattr(areas_cli, "_POLL_S", 0.2)
+    monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
+    real_tail, real_today, real_shut = areas_cli._tail, areas_cli.Daemon.today, socket.socket.shutdown
+    entered, release, ending, ended = (threading.Event() for _ in range(4))
+
+    def tail(path_, at):
+        if path != "/events":
+            return real_tail(path_, at)
+        entered.set()
+        release.wait(10)
+        return [("a line read as the server ended", False)], (0, b"", 0)
+
+    def today(self, run):
+        entered.set()
+        release.wait(10)
+        return real_today(self, run)
+
+    def shut(self, how):
+        if how != socket.SHUT_RDWR:  # the handler's own goodbye, as its thread ends
+            return real_shut(self, how)
+        ending.set()
+        ended.wait(10)
+
+    monkeypatch.setattr(areas_cli, "_tail", tail)
+    monkeypatch.setattr(areas_cli.Daemon, "today", today)
+    monkeypatch.setattr(socket.socket, "shutdown", shut)
+    d = app_dir(tmp_path)
+    server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    before = set(handlers())
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    end = threading.Thread(target=server.shutdown, daemon=True)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        (stream,) = [t for t in handlers() if t not in before]
+        assert resp.status == 200 and entered.wait(10), "the stream never made the read"
+        end.start()
+        assert ending.wait(10), "the end never reached the stream's socket"
+        release.set()  # the read returns: the flag is set, the socket is open
+        ended.set()  # a stream leaves the tracked set under the lock the end holds
+        stream.join(5)
+        end.join(5)
+        assert not stream.is_alive() and not end.is_alive()
+        sent = resp.read().decode()
+        assert "event: log" not in sent and "event: today" not in sent
+    finally:
+        release.set()
+        ended.set()
+        server.shutdown()
+        server.server_close()
+        conn.close()
+
+
+@pytest.mark.parametrize("path", ["/events", "/v2/events"])
 @pytest.mark.parametrize("end", ["shutdown", "server_close"])
 def test_a_stream_reading_the_residents_as_its_server_ends_ends_as_the_read_returns(
     tmp_path, monkeypatch, path, end

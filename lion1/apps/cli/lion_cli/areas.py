@@ -243,9 +243,11 @@ def make_server(
     snapshot_lock = threading.Lock()
     # set when the server ends, and every open stream's socket shut down with it: a stream stops after
     # its current wait, at once in a write a client that does not read has blocked, and as its current
-    # read of the residents returns, which nothing cuts short, sending and reading nothing more. It never
-    # serves on for a client that may not read again (a handler thread outlives `shutdown`, which only
-    # ends `serve_forever`). Shutting the socket down wakes a blocked write; closing it does not
+    # read returns, which nothing cuts short. Each write asks the flag first, and so does each read of
+    # the residents, a log or the mail: what a read returns after the end is not sent, and the one read
+    # or write a stream had asked for just before the end is the last it makes. A stream never serves on
+    # for a client that may not read again (a handler thread outlives `shutdown`, which only ends
+    # `serve_forever`). Shutting the socket down wakes a blocked write; closing it does not
     stopping = threading.Event()
     streams: set[socket.socket] = set()
     streams_lock = threading.Lock()
@@ -503,6 +505,8 @@ def make_server(
             return True
 
         def emit(self, event: str, data: Any, revision: int = 0) -> bool:
+            if stopping.is_set():  # a read returned after the end: the socket may not be shut yet
+                return False
             try:
                 stamp = f"id: {revision}\n" if revision else ""
                 self.wfile.write(f"{stamp}event: {event}\ndata: {json.dumps(data)}\n\n".encode())
