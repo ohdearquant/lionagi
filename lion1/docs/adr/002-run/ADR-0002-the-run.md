@@ -203,6 +203,7 @@ value.
 - **S6**: A program's walk settles every command it launched before its `OUT{}` assembles, one the
   output does not name included, for its notes are written as their commands settle
   ([[ADR-0008-the-program#^d3|ADR-0008/D3]]). Such a command holds `Success` to the time budget.
-  Past it the run has no output, and its `OUT{}`, refused for the spent budget, counts as any
-  refusal does: the run ends out of time, or `Refused` when that refusal reaches `max_refusals`
+  Past it the run has no output: an `OUT{}` assembled then is refused for the spent budget and
+  counts as any refusal, so the run ends out of time or `Refused` at `max_refusals`. One whose field
+  still computes at the deadline is cut with its turn, no refusal
   (`test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_bounds_the_wait`).

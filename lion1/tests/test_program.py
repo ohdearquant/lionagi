@@ -482,17 +482,37 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     # so one that outlives the time budget holds the output to the deadline, where it is cut and the run
     # is out of time with no output: the budget bounds `Success`
     ends.clear()
-    turn = fenced("side = wait(seconds=8)", 'OUT{done: "yes"}')
+    turn = fenced("side = wait(seconds=60)", 'OUT{done: "yes"}')
     run = _run(_waiting_actor("unnamed-long", ends), turn, time_budget=1)
     assert run.outcome == Exhausted(turns=1, reason="time") and run.output is None and run.refusals == 1
-    assert ends == [("wait", 8.0, "cut")] and 1 <= run.elapsed < 8  # short of the wait's own 8 s
+    assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 30  # far short of the wait's own 60 s
     assert _results(run) == {"side": (False, "cancelled before it finished", "completion unknown")}
     assert run.pending == {} and run.tasks == set()
     # its OUT{}, refused for the spent budget, counts as any refusal does: with one allowed, it is refused
     ends.clear()
     run = _run(_waiting_actor("unnamed-one-refusal", ends), turn, time_budget=1, max_refusals=1)
     assert run.outcome == Refused("the time_budget of 1 is spent", 1) and run.output is None
-    assert ends == [("wait", 8.0, "cut")]
+    assert ends == [("wait", 60.0, "cut")]
+    # and with two allowed, it is refused as the second when one was refused before it
+    ends.clear()
+    first = fenced('OUT{done: "first"}')
+    run = _run(
+        _waiting_actor("unnamed-second-refusal", ends),
+        first,
+        turn,
+        time_budget=1,
+        max_refusals=2,
+        accept=lambda r, o: "not the first" if o["done"] == "first" else None,
+    )
+    assert run.outcome == Refused("the time_budget of 1 is spent", 2) and run.output is None
+    assert ends == [("wait", 60.0, "cut")]
+    # an OUT{} whose own field still computes at the deadline never assembles: it is cut with its turn and
+    # is no refusal, so even with one allowed the run ends out of time
+    ends.clear()
+    lazy, out = fenced("lazy = [DO wait(seconds=60)][0]"), fenced("OUT{done: *lazy}")
+    run = _run(_waiting_actor("unassembled", ends), lazy, out, time_budget=1, max_refusals=1)
+    assert run.outcome == Exhausted(turns=2, reason="time") and run.output is None and run.refusals == 0
+    assert ends == [("wait", 60.0, "cut")] and 1 <= run.elapsed < 30
 
 
 def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through(caplog):
