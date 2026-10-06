@@ -1146,6 +1146,11 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
     )
     store.put("spend", {**spend, "mail": 0}, run="-", seq=1)
     assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
+    # a row whose day is no date reads as partial and places no desk row on that day, never a crash
+    store.put("spend", {**spend, "day": 20260922}, run="-", seq=2)
+    out = stats(tmp_path).splitlines()
+    assert out[0].startswith("day 20260922: 5 model call(s), 12000 in, 800 out, $0.0000 (partial: ")
+    assert out[-1] == "desk: not counted, the spend row's day 20260922 is not a date"
 
 
 def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(

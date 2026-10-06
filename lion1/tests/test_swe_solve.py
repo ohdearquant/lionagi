@@ -273,6 +273,37 @@ def test_a_cost_cap_on_an_unmetered_backend_is_refused_before_a_box_or_a_call(tm
     assert backend.calls == [] and backend.costs == [None]
 
 
+@pytest.mark.parametrize("cap", [float("nan"), -0.01], ids=["nan", "negative"])
+def test_a_cap_no_spend_is_under_is_refused_before_a_call(tmp_path: Path, cap):
+    # `not spent < cap` holds at $0 for both, so the run would read as stopped by cost with nothing spent
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+
+    def run(cap, backend):
+        return asyncio.run(
+            run_swe.solve(
+                row,
+                "m",
+                1,
+                tmp_path,
+                "openrouter",
+                box=ToolBox(),
+                backend=backend,
+                cost_budget=cap,
+                store=fresh_store(),
+            )
+        )
+
+    backend = Costs(0.1)
+    with pytest.raises(ValueError, match=r"a cap is dollars, zero or more"):
+        run(cap, backend)
+    assert backend.calls == [] and backend.costs == [0.1]
+    # the controls: a cap of 0 still stops before the first call, and infinity is no cap
+    assert (run(0.0, Costs(0.1))["stopped_by"], run(float("inf"), Costs(0.1)).get("stopped_by")) == (
+        "cost",
+        None,
+    )
+
+
 def test_missing_usage_is_incomplete_not_zero(tmp_path: Path):
     import run_set
 

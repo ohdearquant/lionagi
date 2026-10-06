@@ -238,7 +238,10 @@ async def solve(
     unchanged (0: never), `time_budget` seconds of wall clock, `cost_budget` dollars on the backend.
     One instance without a cap is one parallel slot gone for as long as the model cares to go on.
     The codex backend has no meter (a subscription), so a cost cap there is refused before anything
-    starts rather than never reached."""
+    starts rather than never reached. A cap no spend is under (NaN, or below zero) is refused too, as it
+    would stop the run by cost before its first call; infinity is no cap."""
+    if cost_budget is not None and not cost_budget >= 0:
+        raise ValueError(f"cost_budget {cost_budget}: a cap is dollars, zero or more")
     if cost_budget and backend_kind == "codex":
         raise ValueError(f"cost_budget {cost_budget}: the codex backend reports no cost to cap against")
     iid = row["instance_id"]
@@ -355,6 +358,8 @@ async def solve(
             if watch.stop():
                 stopped_by.append("criteria" if watch.passed else "settle")
                 return True
+            # a call that said no cost is unknown: the cap counts none of it, as the agent's day cap counts
+            # a backend that writes none (ADR-0013 C5), and the record marks the run's cost incomplete
             said = [c["total_cost_usd"] for c in backend.calls if c.get("total_cost_usd") is not None]
             # past a float's range the sum is the largest float, as the record keeps it: past any finite cap
             spent = min(sum(reported_cost(figure) for figure in said), sys.float_info.max)

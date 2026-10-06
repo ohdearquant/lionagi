@@ -287,10 +287,13 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
         rows = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
         answered = sum(1 for r in rows if r.get("answered", r.get("control")))
         lines.append(f"ledger: {len(rows)} check(s), {answered} answered, {len(rows) - answered} not")
-    desk = directory / "desk.jsonl"
-    if desk.exists() and spend.get("day"):
+    desk, day = directory / "desk.jsonl", spend.get("day")
+    if desk.exists() and day and not isinstance(day, str):
+        # a day the agent would not have written places no desk row on it, as day_spend reads it partial
+        lines.append(f"desk: not counted, the spend row's day {day!r} is not a date")
+    elif desk.exists() and day:
         rows = [json.loads(ln) for ln in desk.read_text().splitlines() if ln.strip()]
-        mine = [r for r in rows if r["at"].startswith(spend["day"])]
+        mine = [r for r in rows if r["at"].startswith(day)]
         answered = sum(1 for r in mine if r["class"] == "answered")
         left = len(mine) - answered
         lines.append(

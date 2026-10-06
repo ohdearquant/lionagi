@@ -129,6 +129,9 @@ def test_unsupported_cost_limit_is_refused_before_run(tmp_path, monkeypatch, cap
     for arm in (dict(harness="codex-cli"), dict(backend="codex")):
         with pytest.raises(SystemExit, match="--cost-budget"):
             asyncio.run(run_set.main(_args(cost_budget=0.5, **arm)))
+    for cap in (float("nan"), -1.0):  # a cap no spend is under, on any arm
+        with pytest.raises(SystemExit, match="a cap is dollars, zero or more"):
+            asyncio.run(run_set.main(_args(cost_budget=cap)))
     assert ran == [] and not (tmp_path / "results").exists()  # no run directory, no manifest, no box
     # the controls: an unmetered arm with no cap runs; a metered arm gets the default cap
     asyncio.run(run_set.main(_args(harness="codex-cli", cost_budget=None, run_id="r2")))
