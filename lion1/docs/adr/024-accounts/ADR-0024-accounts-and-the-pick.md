@@ -318,10 +318,10 @@ and out, and calls of unknown cost. `arm` names the pool's accounts where it now
 
 Serves C1 and C3. `add <name> --provider P --credential R [--group G]` writes the entry and, for
 `keychain`, the standard-input token into its item. `list` shows each account's name, provider,
-group, readings with age and source, and marks; never a credential or where one is kept. `probe
-[<name>]` probes unless C6's bound was reached, then says when it can. `remove <name>` writes the
-file, then deletes a Claude Code account's item, which D9 reads back; a Codex home stays. Both hold
-`.accounts.toml.lock` from read to write, refusing it taken late.
+group, readings with age and source, and marks, and of its credential only the word `keychain`,
+`home` or `default`. `probe [<name>]` probes unless C6's bound was reached, then says when. `remove
+<name>` writes the file, then deletes a Claude Code item, which D9 reads back; a Codex home stays.
+Both hold `.accounts.toml.lock` from read to write, refusing it taken late.
 
 - **Landing evidence**: `tests/test_accounts.py`:
   `test_add_writes_the_entry_at_the_end_and_keeps_every_other_byte`,
