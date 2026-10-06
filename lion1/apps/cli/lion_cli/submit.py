@@ -13,7 +13,7 @@ import shlex
 import sys
 import tomllib
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,12 +230,16 @@ async def result_mail(
     thread: str | None = None,
     error: str | None = None,
     unread: str | None = None,
+    notices: Sequence[str] = (),
 ) -> str | None:
     """The one result message (C4, D4): the subject names the id and the outcome, the body the output's
     first lines and the command that reads the rest, after why the row could not be read back when it
-    could not: a store that was gone may hold it later. Sent after the rows close; a send that fails is
-    returned as the error, never raised, for the rows stand without it."""
+    could not: a store that was gone may hold it later. The run's notices head the body, for a submitter
+    that never read standard error (an MCP caller) learns a kept box's name only here. Sent after the
+    rows close; a send that fails is returned as the error, never raised, for the rows stand without it."""
     body = _head(output) if output is not None else "(no output)"
+    if notices:
+        body = "\n".join(f"notice: {n}" for n in notices) + f"\n\n{body}"
     if error:
         body = f"error: {error}\n\n{body}"
     if unread is not None:
@@ -265,10 +269,17 @@ def _emit(line: str, stream: TextIO | None = None) -> None:
         os.close(null)
 
 
-def _say(line: str) -> None:
-    """A notice (a box's push, its patch): on standard error, for standard output holds the ids first
-    and the end last, its line and then the output (C1)."""
-    _emit(line, sys.stderr)
+def _notices() -> tuple[list[str], Callable[[str], None]]:
+    """A run's notices (a box's push, its patch, a box kept), and the `say` that takes each: on standard
+    error, for standard output holds the ids first and the end last, its line and then the output (C1),
+    and kept for the result mail."""
+    kept: list[str] = []
+
+    def say(line: str) -> None:
+        kept.append(line)
+        _emit(line, sys.stderr)
+
+    return kept, say
 
 
 def _submitter(directory: Path, notify: str | None) -> tuple[str, str]:
@@ -319,6 +330,7 @@ async def run_main(a: argparse.Namespace) -> int:
         except OSError as e:
             raise SubmitError(f"--file {f}: {e}") from None
     opened: list[str] = []
+    notices, say = _notices()
 
     def tell(ev: Any) -> None:
         opened.append(ev.payload["run"])
@@ -326,7 +338,7 @@ async def run_main(a: argparse.Namespace) -> int:
 
     run = store = error = interrupted = None
     try:
-        async with cast(directory, shape, submitter=to, thread=a.thread, say=_say) as (
+        async with cast(directory, shape, submitter=to, thread=a.thread, say=say) as (
             actor,
             profile,
             backend,
@@ -364,6 +376,7 @@ async def run_main(a: argparse.Namespace) -> int:
         thread=a.thread,
         error=error,
         unread=unread,
+        notices=notices,
     )
     code = _ended("run", run_id, outcome, output, None, mailed, error)
     if unread is not None:
@@ -388,6 +401,7 @@ async def flow_main(a: argparse.Namespace) -> int:
         raise SubmitError(str(e)) from None
 
     flows: list[str] = []
+    notices, say = _notices()
 
     def opened(what: str, run_id: str) -> None:
         if what.startswith("flow "):
@@ -395,7 +409,7 @@ async def flow_main(a: argparse.Namespace) -> int:
         _emit(run_id if what.startswith("flow ") else f"{what} {run_id}")
 
     def step_cast(name: str) -> Any:
-        return cast(directory, shapes[name], submitter=to, thread=a.thread, say=_say)
+        return cast(directory, shapes[name], submitter=to, thread=a.thread, say=say)
 
     ended = error = interrupted = None
     try:
@@ -419,6 +433,7 @@ async def flow_main(a: argparse.Namespace) -> int:
         ended.id,
         thread=a.thread,
         error=error,
+        notices=notices,
     )
     code = _ended(f"flow {flow.name}", ended.id, ended.outcome, ended.output, ended.failed, mailed, error)
     if interrupted is not None:

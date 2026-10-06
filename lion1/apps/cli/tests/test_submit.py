@@ -674,6 +674,9 @@ def test_a_boxed_run_whose_patch_fails_keeps_the_box_and_still_mails_its_end(
     (mail,) = console_khive.sent
     assert mail["subject"] == f"run {run_id} success"
     assert mail["content"].startswith(f"error: RuntimeError: {broken[0]}")
+    # a submitter that never reads standard error (an MCP caller) learns the kept box's name here
+    kept = f"notice: box sbx-1: kept, not stopped: taking its patch failed (RuntimeError: {broken[0]})"
+    assert kept in mail["content"]
 
 
 def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outcome_and_the_error(
@@ -689,3 +692,5 @@ def test_a_step_whose_box_fails_after_its_run_stops_the_flow_with_the_runs_outco
     failed = json.loads(console_khive.runs[flow_id]["output"])
     assert failed == {"failed": "plan", "outcome": "success", "error": f"RuntimeError: {broken[0]}"}
     assert console_khive.runs[flow_id]["outcome"] == "stopped" and not made[0].stopped
+    (mail,) = console_khive.sent
+    assert "\nnotice: box sbx-1: kept, not stopped: taking its patch failed" in mail["content"]
