@@ -508,7 +508,8 @@ def test_an_interrupt_as_the_sandbox_starts_stops_the_container_its_run_made(
     args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(chat_main(parser().parse_args(args)))
-    said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
     if deleted:
         assert calls == ["image", "volume", "run", "stop", "delete"] and "its stop failed" not in said
     else:
@@ -549,7 +550,8 @@ def test_a_sandbox_whose_stop_is_cut_by_another_interrupt_is_named_as_it_may_sti
     args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
     with pytest.raises(SystemExit) as left:  # through the command's own entry, which gives its exit status
         main([*args, "--turns", "1"])
-    said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
     assert calls == ["image", "volume", "run", "stop"] and left.value.code == 130
     assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
     assert ("interrupted ·" in said) is ending  # a cut start never opened the conversation's close
@@ -587,7 +589,8 @@ def test_a_start_cut_by_two_real_interrupts_names_the_sandbox_and_exits_130(
         pytest.fail("the second interrupt left `lion chat` as a KeyboardInterrupt, not an exit")
     finally:
         signal.signal(signal.SIGINT, previous)
-    said = " ".join("".join(capsys.readouterr()).split())
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
     assert calls == ["image", "volume", "run", "stop"] and left.value.code == 130
     assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
 
@@ -613,7 +616,8 @@ def test_a_sandbox_whose_stop_fails_as_the_conversation_ends_is_named_and_the_co
     log = tmp_path / "chat.jsonl"
     args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--shell", "--say", "hi", "--turns", "1"]
     asyncio.run(chat_main(parser().parse_args(args)))
-    said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
+    # the console wraps at its width, and CI forces color (FORCE_COLOR=1)
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", "".join(capsys.readouterr())).split())
     assert calls == ["image", "volume", "run", "stop", "delete", "list"]
     assert re.search(r"sandbox \S+: its stop failed \(RuntimeError: sandbox \S+: its delete exited 1: ", said)
     assert "it may still run" in said and said.index("it may still run") < said.index("ended ")
