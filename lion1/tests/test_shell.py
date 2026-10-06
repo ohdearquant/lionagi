@@ -1,11 +1,14 @@
 """The shell tool: `bash` and `python` handlers over a sandbox. The handlers are tested on a fake
 sandbox (what argv and stdin they hand it, the result shape); the real sandbox, an Apple `container`
-VM, is exercised once end to end with `LION_CONTAINER_E2E=1` on a machine with that CLI: mount,
-environment, exit code, timeout, no host access, stop."""
+VM, is exercised end to end with `LION_CONTAINER_E2E=1` on a machine with that CLI: mount,
+environment, exit code, timeout, the host's home absent, stop, and the offline network."""
 
 import asyncio
+import http.server
+import json
 import os
 import shutil
+import threading
 import time
 
 import pytest
@@ -56,8 +59,8 @@ def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and
 
     async def go():
         assert await box.ensure_image() is None
-        await box.start()
-        try:
+        try:  # a start that fails after its `run` was sent still has a VM to stop
+            await box.start()
             probe = "cat a.txt; echo made > b.txt; pwd; id -u; ls ~/.ssh 2>&1 | head -1; "
             probe += "date +%Z; exit 3"
             backend = scripted(
@@ -83,6 +86,72 @@ def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and
     assert not box.started
 
 
+# from inside the VM: its gateway, whether a name resolves, whether a public address takes a connection,
+# and what the host's server answers at the gateway
+_NETWORK_PROBE = """
+import json, socket, struct, urllib.request
+routes = [line.split() for line in open("/proc/net/route").read().splitlines()[1:]]
+gw = next(socket.inet_ntoa(struct.pack("<L", int(f[2], 16))) for f in routes if f[1] == "00000000")
+out = {}
+try:
+    socket.getaddrinfo("example.com", 80)
+    out["dns"] = True
+except OSError:
+    out["dns"] = False
+try:
+    socket.create_connection(("1.1.1.1", 80), timeout=5).close()
+    out["egress"] = True
+except OSError:
+    out["egress"] = False
+try:
+    out["host"] = urllib.request.urlopen(f"http://{gw}:PORT/", timeout=5).read().decode()
+except OSError as e:
+    out["host"] = repr(e)
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.skipif(
+    os.environ.get("LION_CONTAINER_E2E") != "1" or shutil.which("container") is None,
+    reason="LION_CONTAINER_E2E=1 boots a real VM with Apple's container CLI",
+)
+def test_an_offline_sandbox_has_no_dns_and_no_egress_and_still_reaches_the_host(tmp_path):
+    # `--offline` is a host-only network (ADR-0011 S20): a server the host runs on all its addresses
+    # answers the VM at the network's gateway. The same probe on the default network is the control
+    # that makes the two refusals mean something: there the name resolves and the address connects
+    class Answer(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"the host")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Answer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    probe = _NETWORK_PROBE.replace("PORT", str(server.server_address[1])).encode()
+
+    async def seen(offline: bool) -> dict:
+        box = Sandbox(tmp_path, f"lion-test-net-{int(offline)}-{int(time.time())}", offline=offline)
+        assert await box.ensure_image() is None
+        try:
+            await box.start()
+            got = await box.exec(["python3", "-"], stdin=probe, timeout=60)
+        finally:
+            await box.stop()
+        assert got["rc"] == 0, got
+        return json.loads(got["stdout"])
+
+    try:
+        online, offline = asyncio.run(seen(False)), asyncio.run(seen(True))
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert online == {"dns": True, "egress": True, "host": "the host"}
+    assert offline == {"dns": False, "egress": False, "host": "the host"}
+
+
 def test_every_real_box_test_is_opt_in():
     # a test that boots a real VM or box is
     # skipped unless its opt-in variable is set (the original asserted both variables unset instead)
@@ -95,10 +164,107 @@ def test_every_real_box_test_is_opt_in():
             "LION_CONTAINER_E2E",
             test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and_stops,
         ),
+        ("LION_CONTAINER_E2E", test_an_offline_sandbox_has_no_dns_and_no_egress_and_still_reaches_the_host),
         ("LION_RUNTA_E2E", runta.test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops),
     ):
         (mark,) = [m for m in fn.pytestmark if m.name == "skipif"]
         assert os.environ.get(var) == "1" or mark.args[0], f"{fn.__name__} runs without {var}=1"
+
+
+def test_the_tool_descriptions_every_box_shares_claim_nothing_only_the_vm_has():
+    # `lion chat --box daytona` registers the same Bash and Python models as the VM and appends the same
+    # coding guidance, so what only the VM supplies (the mount, the /opt volume, each of its tools) is said
+    # in the VM's own guidance; the Daytona guidance names the tools that work on the copy, not every tool
+    import inspect
+    from pathlib import Path
+
+    from hub.tools.shell import Bash, Python
+
+    guidance = Path(inspect.getfile(Bash)).parent.parent / "guidance"
+    said = " ".join(
+        [
+            Bash.__doc__,
+            Python.__doc__,
+            *(f.description or "" for m in (Bash, Python) for f in m.model_fields.values()),
+            (guidance / "code.md").read_text(),
+            (guidance / "code-noshell.md").read_text(),
+        ]
+    )
+    vm = (guidance / "sandbox.md").read_text()
+    only = ("VM", "mounted", "volume", "kept from one conversation", "no other host path")
+    works = ("`uv run ...`", "`uv sync`")  # what the VM's environment lets a command do
+    for vm_only in (*only, *works, "`uv`", "`git`", "`rg`", "`jq`"):
+        assert vm_only not in said, vm_only
+        assert vm_only in vm, vm_only
+    assert "every tool" not in (guidance / "box.md").read_text()
+
+
+HOST_ONLY = json.dumps(
+    [{"id": "lion-offline", "configuration": {"mode": "hostOnly", "name": "lion-offline"}}]
+)
+NAT = json.dumps([{"id": "lion-offline", "configuration": {"mode": "nat"}}])
+
+
+@pytest.mark.parametrize(
+    ("inspected", "creates", "starts"),
+    [
+        ([(0, HOST_ONLY)], False, True),  # there and host-only: attached as it is
+        ([(1, ""), (0, HOST_ONLY)], True, True),  # missing: made with --internal, then read back
+        ([(0, "[]"), (0, HOST_ONLY)], True, True),
+        ([(0, NAT)], False, False),  # one of that name with egress: never attached
+        ([(1, ""), (0, NAT)], True, False),  # nor one the create did not make host-only
+        ([(1, ""), (1, "")], True, False),  # nor one that cannot be read back
+        (
+            [(0, json.dumps([{"id": "lion-offline-2", "configuration": {"mode": "hostOnly"}}]))] * 2,
+            True,
+            False,
+        ),
+        ([(0, json.dumps([{"id": "lion-offline", "configuration": "hostOnly"}]))], False, False),
+        ([(0, json.dumps([{"id": "lion-offline"}]))], False, False),
+        ([(0, "7"), (0, '{"id": "lion-offline"}')], True, False),  # JSON that lists no network
+        ([(1, HOST_ONLY), (1, HOST_ONLY)], True, False),  # an inspect that failed found nothing
+        ([(0, json.dumps(json.loads(HOST_ONLY) + json.loads(NAT)))], False, False),  # two of the name
+        ([(0, json.dumps(json.loads(NAT) + json.loads(HOST_ONLY)))], False, False),
+        ([(0, HOST_ONLY[1:-1]), (0, HOST_ONLY[1:-1])], True, False),  # the network alone, in no list
+    ],
+)
+def test_an_offline_sandbox_attaches_only_a_network_the_cli_says_is_host_only(
+    tmp_path, inspected, creates, starts
+):
+    calls, answers = [], list(inspected)
+
+    class Fake(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv)
+            if argv[:2] == ("network", "inspect"):
+                rc, out = answers.pop(0)
+                return rc, out, ""
+            return 0, "", ""
+
+    box = Fake(tmp_path, "lion-test-net", offline=True)
+    if starts:
+        asyncio.run(box.start())
+        (run,) = [c for c in calls if c[0] == "run"]
+        assert run[run.index("--network") + 1] == "lion-offline"
+    else:
+        with pytest.raises(RuntimeError, match="the network lion-offline is not host-only"):
+            asyncio.run(box.start())
+        assert not [c for c in calls if c[0] == "run"] and not box.launched
+    made = [c for c in calls if c[:2] == ("network", "create")]
+    assert made == ([("network", "create", "--internal", "lion-offline")] if creates else [])
+    assert all(c == ("network", "inspect", "lion-offline") for c in calls if c[:2] == ("network", "inspect"))
+
+
+def test_a_sandbox_that_is_not_offline_asks_nothing_of_the_network(tmp_path):
+    calls = []
+
+    class Fake(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv)
+            return 0, "", ""
+
+    asyncio.run(Fake(tmp_path, "lion-test-net").start())
+    assert not [c for c in calls if c[0] == "network"] and "--network" not in calls[-1]
 
 
 @pytest.mark.parametrize(("cut_at", "stops"), [("volume", False), ("run", True)])
