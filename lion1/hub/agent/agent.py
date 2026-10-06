@@ -27,6 +27,7 @@ import asyncio
 import fcntl
 import fnmatch
 import json
+import math
 import os
 import re
 import time
@@ -40,7 +41,18 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lion1.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
+from lion1.actor import (
+    Actor,
+    Backend,
+    Context,
+    Handle,
+    Inbound,
+    Profile,
+    Run,
+    RunRequest,
+    Success,
+    reported_cost,
+)
 from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
 from lion1.notes import NoteStore
@@ -1275,8 +1287,9 @@ class Agent:
 
     def _usage(self, before: int) -> dict:
         """What the backend calls since `before` cost: their count, tokens in and out, dollars, and
-        the calls the dollars miss (no figure, or the router's `cost_complete` false). Read off the
-        envelopes the backend keeps (`calls`); a backend without them spent 0 of everything."""
+        the calls the dollars miss (no figure, one the run would not sum (ADR-0003/S7), or the router's
+        `cost_complete` false). Read off the envelopes the backend keeps (`calls`); a backend without
+        them spent 0 of everything."""
         calls = [c for c in (getattr(self.backend, "calls", None) or [])[before:] if isinstance(c, dict)]
         tokens_in = tokens_out = 0
         for c in calls:
@@ -1290,8 +1303,14 @@ class Agent:
                 )
             )
             tokens_out += int(u.get("completion_tokens") or u.get("output_tokens") or 0)
-        cost = sum((c.get("total_cost_usd") or 0.0) for c in calls)
-        unknown = sum(1 for c in calls if c.get("total_cost_usd") is None or c.get("cost_complete") is False)
+        cost, unknown = 0.0, 0
+        for c in calls:
+            # a malformed figure is no figure: never room against the day's cap (ADR-0013/C5)
+            figure = math.nan if c.get("total_cost_usd") is None else reported_cost(c["total_cost_usd"])
+            if not math.isnan(figure):
+                cost += figure
+            if math.isnan(figure) or c.get("cost_complete") is False:
+                unknown += 1
         # the context the last call's last turn stood in: what the next turn will pay for, and what
         # the fold decides on; the sum `in` above is the call's cost over all its turns
         context = _prompt_tokens(calls[-1]) if calls else None

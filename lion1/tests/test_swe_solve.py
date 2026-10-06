@@ -308,6 +308,32 @@ def test_missing_usage_is_incomplete_not_zero(tmp_path: Path):
     assert "cost $0.40 known" in text and "unknown or partial on 2 of 4 rows" in text
 
 
+@pytest.mark.parametrize("figure", [-0.3, float("nan")], ids=["negative", "nan"])
+def test_a_malformed_cost_figure_stops_a_capped_run_as_spent(tmp_path: Path, figure):
+    # a figure the run would not sum (ADR-0003/S7) is spent under the cap, never room
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+
+    def run(*costs):
+        return asyncio.run(
+            run_swe.solve(
+                row,
+                "m",
+                len(costs),
+                tmp_path,
+                "openrouter",
+                box=ToolBox(),
+                backend=Costs(*costs),
+                cost_budget=0.5,
+                store=fresh_store(),
+            )
+        )
+
+    good = run(0.3, 0.3, 0.3)  # the control: the cap stops a spend that serves at $0.60
+    assert good["stopped_by"] == "cost" and good["turns"] == 2
+    bad = run(figure, figure, figure)
+    assert bad["stopped_by"] == "cost" and bad["turns"] == 1
+
+
 class FailedEnvelopeThenRaise(Costs):
     """A backend that, like OpenRouter and Codex, lands a failed call's envelope on `calls` and raises."""
 

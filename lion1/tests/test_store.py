@@ -220,6 +220,26 @@ def test_a_refused_reply_closes_its_call_refused_with_the_reason(tmp_path, kkern
     assert rows_of(k, run.id)["run"]["outcome"] == type(run.outcome).__name__.lower()
 
 
+def test_a_malformed_cost_reaches_no_row_and_the_run_still_closes(tmp_path, kkernel_stub):
+    # a call's row keeps only a figure the run would sum, and a run read as spent by a malformed one
+    # (ADR-0003/S7) closes its row with no cost: the store, like the pack's parser, takes no NaN
+    k = client(tmp_path)
+    actor = Actor("clerk", store=Store(k))
+    costs = iter([0.25, -0.3])
+
+    async def billed(messages):  # noqa: RUF029
+        return Reply("still reading", cost=next(costs))
+
+    runs = [
+        asyncio.run(actor.run(Profile("clerk"), RunRequest(inputs=("x",), max_turns=1), billed))
+        for _ in range(2)
+    ]
+    closed = [parse(o["ops"])[0][1] for o in k.calls if "lion.call_close(" in o["ops"]]
+    assert [c["cost"] for c in closed] == [0.25, None]
+    assert [rows_of(k, run.id)["run"]["cost"] for run in runs] == [0.25, None]
+    assert [rows_of(k, run.id)["run"]["outcome"] for run in runs] == ["exhausted", "exhausted"]
+
+
 def test_a_request_that_raises_closes_its_call_failed_and_the_run_stopped(tmp_path, kkernel_stub):
     k = client(tmp_path)
     actor = Actor("clerk", store=Store(k))

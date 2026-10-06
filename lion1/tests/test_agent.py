@@ -870,6 +870,47 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
     assert "0 out, $0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s) before it" in last
 
 
+class _Lying(float):  # holds a negative figure and says it is zero or more
+    def __ge__(self, other):
+        return True
+
+
+@pytest.mark.parametrize(
+    "figure",
+    [-0.3, float("nan"), "0.3", True, _Lying(-0.3)],
+    ids=["negative", "nan", "str", "bool", "subclass"],
+)
+def test_a_malformed_cost_figure_adds_nothing_and_counts_as_a_call_of_unknown_cost(store, figure):
+    # a figure the run would not sum (ADR-0003/S7) is no figure (ADR-0013/C5): it never lowers the
+    # day's spend, so the cap still holds once the figures that serve reach it
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [{"total_cost_usd": 0.3}, {"total_cost_usd": figure}, {"total_cost_usd": 0.3}]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    backend = Billed(DONE, DONE, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, budget=Budget(cost_per_day=0.5), clock=lambda: now[0])
+    rows = []
+    for n in range(3):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+        rows.append({k: agent.state.get("spend").value[k] for k in ("cost", "unknown")})
+    assert rows == [
+        {"cost": 0.3, "unknown": 0},
+        {"cost": 0.3, "unknown": 1},
+        {"cost": pytest.approx(0.6), "unknown": 1},
+    ]
+    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == "$0.6000 spent today (partial: 1 call(s) of unknown cost) (cap $0.5); next day"
+
+
 def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end(
     tmp_path, store
 ):

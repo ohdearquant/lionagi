@@ -35,6 +35,7 @@ from hub.tools import Box, BoxTree, SandboxDead, code, shell
 from hub.tools import watch as watching
 from hub.tools.watch import Watch
 from lion1 import Actor, Exhausted, Kind, Profile, RunRequest, Store, Success
+from lion1.actor import reported_cost
 from lion1.khive import Khive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -349,8 +350,10 @@ async def solve(
             if watch.stop():
                 stopped_by.append("criteria" if watch.passed else "settle")
                 return True
-            spent = sum(float(c.get("total_cost_usd") or 0) for c in backend.calls)
-            if cost_budget is not None and spent >= cost_budget:
+            said = [c["total_cost_usd"] for c in backend.calls if c.get("total_cost_usd") is not None]
+            spent = sum(reported_cost(figure) for figure in said)
+            # "not under", as the run's own check: a malformed figure (NaN) stops the run as spent
+            if cost_budget is not None and not spent < cost_budget:
                 stopped_by.append("cost")
                 return True
             return False

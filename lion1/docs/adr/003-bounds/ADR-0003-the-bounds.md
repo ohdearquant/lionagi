@@ -230,6 +230,11 @@ refuse, and the caller receives the value it judged.
 - **S6**: S5's refusal is checked beside the C2 re-read, after the command's arguments are evaluated
   and its before hooks run, as a spent budget's is: a hook may see a call that is then refused
   (`test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler`).
-- **S7**: A backend owes a cost as an int or float of zero or more. Any other reads as spent, never
-  as room: a `Decimal`, whose figure would serve, and a negative figure, which would hand back what
-  was spent (`test_a_reported_cost_that_is_not_an_int_or_float_of_zero_or_more_reads_as_spent`).
+- **S7**: A backend owes a cost as an exact int or float, finite and zero or more (`reported_cost`).
+  Any other reads as spent, never as room: a `Decimal`, whose figure would serve; a negative figure,
+  which would hand back what was spent; a subclass, whose comparison could lie; an int no float
+  holds. A call's row keeps only a figure that serves; a run read as spent closes its row with no
+  cost, as the store takes no NaN. The bench's cost cap reads the same
+  (`test_a_reported_cost_that_is_not_an_int_or_float_of_zero_or_more_reads_as_spent`,
+  `test_a_malformed_cost_reaches_no_row_and_the_run_still_closes`,
+  `test_a_malformed_cost_figure_stops_a_capped_run_as_spent`).

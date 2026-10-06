@@ -60,6 +60,7 @@ __all__ = (
     "Role",
     "Message",
     "Reply",
+    "reported_cost",
     "SessionPlan",
     "Backend",
     "Language",
@@ -147,6 +148,20 @@ class Reply(str):
         reply.cost = cost
         reply.refused = refused
         return reply
+
+
+def reported_cost(cost: object) -> float:
+    """A cost a backend reported, as the caps read it (ADR-0003/S7): the float of an int or float,
+    exactly those types, finite and zero or more. Anything else is NaN, never room: a negative figure
+    would hand back what was spent, a subclass's comparison could say anything, a bool or a `Decimal`
+    is not the figure owed, and an int past a float's range has no figure to sum."""
+    if type(cost) is not int and type(cost) is not float:
+        return math.nan
+    try:
+        figure = float(cost)
+    except OverflowError:
+        return math.nan
+    return figure if math.isfinite(figure) and figure >= 0 else math.nan
 
 
 @dataclass(frozen=True)
@@ -1067,12 +1082,9 @@ class Actor:
                 refused = getattr(text, "refused", None)
                 if isinstance(text, str):
                     text = str(text)  # a Reply's count and cost are read; the record keeps a plain str
-                if isinstance(cost, int | float) and not isinstance(cost, bool) and cost >= 0:
-                    run.cost += cost
-                elif cost is not None:
-                    # a backend owes an int or float of zero or more; anything else, a Decimal or a
-                    # negative figure included, reads as spent, never as room
-                    run.cost = math.nan
+                figure = None if cost is None else reported_cost(cost)
+                if figure is not None:
+                    run.cost += figure  # a malformed figure is NaN: the run reads as spent from then on
                 if isinstance(reported, int) and not isinstance(reported, bool) and reported > 0:
                     if run.anchor is not None and run.view_est > run.anchor[1]:
                         run.grown = (
@@ -1090,14 +1102,14 @@ class Actor:
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
                 counted = isinstance(reported, int) and not isinstance(reported, bool)
-                priced = isinstance(cost, int | float) and not isinstance(cost, bool)
+                priced = figure is not None and not math.isnan(figure)  # a row keeps only a figure
                 await self.store.call_close(
                     run,
                     call,
                     status="refused" if refused else "ok",
                     reply_seq=m.seq,
                     tokens_in=reported if counted else None,
-                    cost=cost if priced else None,
+                    cost=figure if priced else None,
                     error=refused,
                 )
                 call = None  # closed: a request that raises later is not this call

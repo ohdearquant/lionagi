@@ -74,8 +74,13 @@ def parse(ops: str) -> list[tuple[str, dict]]:
     args: dict = {}
     for pair in _split(rest[:-1], ","):
         k, _, v = pair.partition("=")
-        args[k.strip()] = json.loads(v)
+        args[k.strip()] = json.loads(v, parse_constant=_bareword)
     return [(verb.strip(), args)]
+
+
+def _bareword(word: str) -> None:
+    # Python's JSON takes NaN and Infinity; the pack's parser refuses them, and so does this one
+    raise ValueError(f"{word!r} is a bareword, not a valid value")
 
 
 def _fresh() -> str:
