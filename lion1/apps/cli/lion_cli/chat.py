@@ -269,9 +269,12 @@ async def end_box(
             await asyncio.shield(
                 take_patch(box, directory, saved, name, baseline=baseline, apply=apply, say=say, show=show)
             )
-        except Exception as e:  # the patch was not taken whole: the box may hold the only copy
+        except BaseException as e:  # not taken whole, a cancellation included: the box may hold the only copy
             ident = getattr(box, "box_id", None)
-            why = f"taking its patch failed ({type(e).__name__}: {e})"
+            if isinstance(e, asyncio.CancelledError | KeyboardInterrupt):
+                why = "interrupted while its patch was taken"
+            else:
+                why = f"taking its patch failed ({type(e).__name__}: {e})"
             if box.dead is None and ident:
                 say(
                     f"box {ident}: kept, not stopped: {why}; the work is there, at "

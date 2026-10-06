@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import sys
 import tomllib
 import uuid
@@ -19,8 +20,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from hub import BoxTree, DaytonaSandbox, Sandbox, guidance
+from hub.flow import Ended, Step, flow_from, read, render, run_flow
 from hub.flow import Flow as _Flow
-from hub.flow import Step, flow_from, read, render, run_flow
 from lion1 import Actor, Profile, RunRequest, Store
 from lion1.actor import ProfileError
 from lion1.khive import Khive, KhiveError
@@ -228,19 +229,27 @@ async def result_mail(
     *,
     thread: str | None = None,
     error: str | None = None,
+    unread: str | None = None,
 ) -> str | None:
     """The one result message (C4, D4): the subject names the id and the outcome, the body the output's
-    first lines and the command that reads the rest. Sent after the rows close; a send that fails is
+    first lines and the command that reads the rest, after why the row could not be read back when it
+    could not: a store that was gone may hold it later. Sent after the rows close; a send that fails is
     returned as the error, never raised, for the rows stand without it."""
     body = _head(output) if output is not None else "(no output)"
     if error:
         body = f"error: {error}\n\n{body}"
-    body += f"\n\nlion result --dir {directory} {run_id}"
+    if unread is not None:
+        body += f"\n\nits row could not be read back: {unread}"
+    body += f"\n\nlion result --dir {shlex.quote(str(directory))} {run_id}"
     try:
         await khive.send(to, body, subject=subject, thread_id=thread, self_send=to == khive.actor)
     except Exception as e:  # KhiveError, a timeout, a transport that died
         return f"{type(e).__name__}: {e}"
     return None
+
+
+def _why(e: BaseException) -> str:
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
 
 
 def _emit(line: str, stream: TextIO | None = None) -> None:
@@ -258,7 +267,7 @@ def _emit(line: str, stream: TextIO | None = None) -> None:
 
 def _say(line: str) -> None:
     """A notice (a box's push, its patch): on standard error, for standard output holds the ids first
-    and the end last (C1)."""
+    and the end last, its line and then the output (C1)."""
     _emit(line, sys.stderr)
 
 
@@ -315,14 +324,14 @@ async def run_main(a: argparse.Namespace) -> int:
         opened.append(ev.payload["run"])
         _emit(ev.payload["run"])
 
-    run = khive = error = None
+    run = store = error = interrupted = None
     try:
         async with cast(directory, shape, submitter=to, thread=a.thread, say=_say) as (
             actor,
             profile,
             backend,
         ):
-            khive = actor.store.khive
+            store = actor.store
             off = actor.bus.subscribe("run.started", tell)
             try:
                 run = await actor.run(profile, RunRequest(inputs=tuple(inputs)), backend)
@@ -331,14 +340,37 @@ async def run_main(a: argparse.Namespace) -> int:
     except Exception as e:  # the run's, or its box's end: the actor closed the rows; the mail says so
         if not opened:
             raise
-        error = f"{type(e).__name__}: {e}"
+        error = _why(e)
+    except BaseException as e:  # a cancellation: the same, and then it goes on up
+        if not opened:
+            raise
+        error, interrupted = _why(e), e
     run_id = opened[0]
+    unread = None
+    if run is None:  # it ended in an error, which may have come before its row was written
+        try:
+            await store.result(run_id)
+        except Exception as e:
+            unread = _why(e)
     outcome = type(run.outcome).__name__.lower() if run is not None and run.outcome is not None else "stopped"
     output = run.output if run is not None else None
     mailed = await result_mail(
-        khive, to, f"run {run_id} {outcome}", output, directory, run_id, thread=a.thread, error=error
+        store.khive,
+        to,
+        f"run {run_id} {outcome}",
+        output,
+        directory,
+        run_id,
+        thread=a.thread,
+        error=error,
+        unread=unread,
     )
-    return _ended("run", run_id, outcome, output, None, mailed, error)
+    code = _ended("run", run_id, outcome, output, None, mailed, error)
+    if unread is not None:
+        _emit(f"its row could not be read back: {unread}", sys.stderr)
+    if interrupted is not None:
+        raise interrupted
+    return code
 
 
 async def flow_main(a: argparse.Namespace) -> int:
@@ -355,13 +387,29 @@ async def flow_main(a: argparse.Namespace) -> int:
     except KhiveError as e:
         raise SubmitError(str(e)) from None
 
+    flows: list[str] = []
+
     def opened(what: str, run_id: str) -> None:
+        if what.startswith("flow "):
+            flows.append(run_id)
         _emit(run_id if what.startswith("flow ") else f"{what} {run_id}")
 
     def step_cast(name: str) -> Any:
         return cast(directory, shapes[name], submitter=to, thread=a.thread, say=_say)
 
-    ended = await run_flow(store, flow, given, step_cast, opened=opened)
+    ended = error = interrupted = None
+    try:
+        ended = await run_flow(store, flow, given, step_cast, opened=opened)
+    except Exception as e:  # the driver closed the flow stopped; the mail says why
+        if not flows:
+            raise
+        error = _why(e)
+    except BaseException as e:  # a cancellation: the same, and then it goes on up
+        if not flows:
+            raise
+        error, interrupted = _why(e), e
+    if ended is None:
+        ended = Ended(flows[0], "stopped", None, None)
     mailed = await result_mail(
         store.khive,
         to,
@@ -370,8 +418,12 @@ async def flow_main(a: argparse.Namespace) -> int:
         directory,
         ended.id,
         thread=a.thread,
+        error=error,
     )
-    return _ended(f"flow {flow.name}", ended.id, ended.outcome, ended.output, ended.failed, mailed)
+    code = _ended(f"flow {flow.name}", ended.id, ended.outcome, ended.output, ended.failed, mailed, error)
+    if interrupted is not None:
+        raise interrupted
+    return code
 
 
 async def result_main(a: argparse.Namespace) -> int:
