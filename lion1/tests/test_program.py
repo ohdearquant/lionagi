@@ -573,10 +573,13 @@ def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_tur
         }[field]
     )
     bounds = {} if cap == 3 else {"max_refusals": cap}
+    # a second a turn: the turns before the last take milliseconds, so a loaded machine that stalls each
+    # of them for most of its second still starts the last turn's wait inside the budget
+    budget = len(turns)
     run = _run(
         _waiting_actor(f"s6-{at}-{prior}-{cap}-{field}", ends),
         *turns,
-        time_budget=1,  # wide enough that a loaded machine still starts the last turn in it
+        time_budget=budget,
         accept=lambda r, o: "refused in time" if o["done"].startswith("refused-") else None,
         **bounds,
     )
@@ -585,11 +588,11 @@ def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_tur
     else:  # assembled past the deadline: refused for the spent budget, and counted
         assert run.refusals == prior + 1
         assert run.outcome == (
-            Refused("the time_budget of 1 is spent", prior + 1)
+            Refused(f"the time_budget of {budget} is spent", prior + 1)
             if prior + 1 == cap
             else Exhausted(turns=len(turns), reason="time")
         )
-    assert run.output is None and ends[-1] == ("wait", 60.0, "cut") and 1 <= run.elapsed < 30
+    assert run.output is None and ends[-1:] == [("wait", 60.0, "cut")] and budget <= run.elapsed < 30
     assert all(end == "ran" for _, _, end in ends[:-1])
 
 
