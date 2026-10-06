@@ -8,7 +8,9 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import sys
+from pathlib import Path
 
 import pytest
 from lion_cli import submit
@@ -16,6 +18,7 @@ from lion_cli.main import main
 from lion_cli.submit import SubmitError, cast, profile_from
 
 from lion1.actor import DEFAULT_HANDLERS
+from lion1.khive import KhiveError
 
 PROFILES = """
 [profile.writer]
@@ -432,6 +435,79 @@ def test_a_flow_whose_reader_leaves_after_its_id_runs_every_step_and_mails_its_e
     assert console_khive.runs[flow_id]["outcome"] == "success"
     (mail,) = console_khive.sent
     assert mail["subject"] == f"flow two {flow_id} success"
+
+
+def test_a_cancelled_run_closes_its_rows_stopped_mails_its_end_and_exits_130(
+    actor_dir, console_khive, monkeypatch
+):
+    async def cancelled(messages):
+        raise asyncio.CancelledError
+
+    backends(monkeypatch, **{"fake/writer": cancelled})
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 130
+    (run_id,) = console_khive.runs
+    assert console_khive.runs[run_id]["outcome"] == "stopped"
+    (mail,) = console_khive.sent
+    assert mail["subject"] == f"run {run_id} stopped" and mail["content"].startswith(
+        "error: CancelledError\n"
+    )
+
+
+def test_a_cancelled_flow_closes_stopped_at_its_step_mails_its_end_and_exits_130(
+    actor_dir, console_khive, monkeypatch
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+
+    async def answer(messages):
+        if said(messages).startswith("write"):
+            raise asyncio.CancelledError
+        return out(said(messages).split()[0])
+
+    backends(monkeypatch, **{"fake/writer": answer})
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    flow = console_khive.runs[flow_id]
+    assert flow["outcome"] == "stopped" and json.loads(flow["output"])["failed"] == "write"
+    (mail,) = console_khive.sent
+    assert mail["subject"] == f"flow two {flow_id} stopped"
+    assert mail["content"].startswith("error: CancelledError\n")
+
+
+def test_a_run_whose_row_was_never_written_says_so_in_its_end_and_its_mail(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    one = console_khive.one
+
+    def refusing(verb, p):
+        if verb == "lion.run_open":
+            raise KhiveError("run_open: the disk is full")
+        return one(verb, p)
+
+    monkeypatch.setattr(console_khive, "one", refusing)
+    backends(monkeypatch, **{"fake/writer": lambda m: out("never")})
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 1
+    printed = capsys.readouterr()
+    run_id = printed.out.split()[0]
+    assert run_id not in console_khive.runs and printed.out.splitlines()[1] == f"run {run_id} stopped"
+    assert "its row could not be read back: KhiveError" in printed.err
+    (mail,) = console_khive.sent
+    assert mail["content"].startswith("error: KhiveError: run_open: the disk is full\n")
+    body = mail["content"].split("\n\n")
+    assert body[-2].startswith("its row could not be read back: KhiveError")
+    assert body[-1] == f"lion result --dir {actor_dir} {run_id}"  # a store that was gone may hold it later
+
+
+def test_the_result_mails_command_reads_back_a_directory_with_a_space():
+    class Khive:
+        actor = "a"
+        sent: list[str] = []
+
+        async def send(self, to, body, **kw):
+            self.sent.append(body)
+
+    khive = Khive()
+    asyncio.run(submit.result_mail(khive, "a", "s", "out", Path("/tmp/My Project"), "r1"))
+    assert shlex.split(khive.sent[0].splitlines()[-1]) == ["lion", "result", "--dir", "/tmp/My Project", "r1"]
 
 
 def test_lion_result_prints_the_row_and_with_history_the_messages(

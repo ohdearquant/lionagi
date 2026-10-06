@@ -291,6 +291,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(act(a))
         except (SubmitError, FlowError) as e:  # refused before any row
             raise SystemExit(f"lion {a.command}: {e}") from None
+        except (KeyboardInterrupt, asyncio.CancelledError):  # interrupted: its rows and mail are done
+            raise SystemExit(130) from None
         raise SystemExit(code)
     elif a.command == "mcp":
         try:
