@@ -20,9 +20,11 @@ from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
 from hub.agent.verdicts import Verdicts
-from hub.khive import LOST, Khive, KhiveError
 from lion1 import Actor, Kind, RunRequest
-from lion1.notes import FileNoteStore
+from lion1.khive import LOST, Khive, KhiveError
+from tests.lionfake import LionFake, routed_config
+from tests.lionfake import store as fresh_store
+from tests.test_agent import own
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Probe, Scripted, full, mail
 
 ASKER = "lambda:a"  # an agent that wrote to the owner; not in the agent's trusted set
@@ -92,6 +94,7 @@ def inbox_row(sender: str, subject: str, content: str, mid: str, thread: str, at
 
 
 SWEEP = "<lact s1>sweep()</lact>"
+SWEEP2 = "<lact s2>sweep()</lact>"  # a later wake's: it replays the last run's aliases, `s1` among them
 Q1 = inbox_row(ASKER, "disk?", "how much disk is free under the roots right now?", "m-q1", "t-q1")
 NOTICE = inbox_row("lambda:b", "FYI quota", "weekly at 87%, nothing to do", "m-n1", "t-n1")
 PERSON = inbox_row(
@@ -116,11 +119,11 @@ def build(
     admit_replies: bool = False,
     **probes: Probe,
 ):
-    actor = Actor("chores", privileges={"comm.send"})
+    actor = Actor("chores", privileges={"comm.send"}, store=fresh_store())
     agent = Agent(
         actor,
         khive,
-        Scripted(*turns),
+        Scripted(*fresh(turns)),
         lambda mail: profile,
         admit=lambda m: chores.admit(m),
         max_turns=6,
@@ -142,9 +145,23 @@ def build(
     return desk, chores, agent
 
 
+def fresh(turns: list[str]) -> list[str]:
+    """`turns` with an alias written in an earlier turn named afresh: each wake continues the last run
+    and replays its aliases, so a model reading its history gives a later command a name of its own."""
+    seen: set[str] = set()
+    out = []
+    for i, turn in enumerate(turns):
+        names = re.findall(r"<lact (\w+)>", turn)
+        for name in set(names) & seen:
+            turn = turn.replace(f"<lact {name}>", f"<lact {name}w{i}>")
+        seen.update(names)
+        out.append(turn)
+    return out
+
+
 def results(run) -> list[str]:
     return [
-        str(e.content.value if e.content.ok else e.content.error) for e in run.record if e.kind is Kind.RESULT
+        str(e.content.value if e.content.ok else e.content.error) for e in own(run) if e.kind is Kind.RESULT
     ]
 
 
@@ -430,9 +447,9 @@ def test_a_lost_escalation_receipt_is_settled_by_its_keyed_replay_and_never_list
 def test_build_reads_the_escalation_rule_from_chores_toml(tmp_path, kkernel_stub):
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         f"[desk]\nactor_dir = {json.dumps(str(chair))}\n"
@@ -737,6 +754,9 @@ class YieldingReader(FakeReader):
         return await super().exec(ops)
 
 
+_STATES: dict = {}  # the agent's state per directory: the process after a restart reads the same rows
+
+
 def over_state(tmp_path, inner: FakeKhive, *rows: dict, body: str = TASK_BODY) -> tuple[Desk, Agent]:
     """A desk over the state file and the ledgers in `tmp_path`; called again, it is the process after a
     restart, and `inner`, the store, keeps what it wrote. TASK's thread holds `body`, the `disk` chore
@@ -746,7 +766,9 @@ def over_state(tmp_path, inner: FakeKhive, *rows: dict, body: str = TASK_BODY) -
     khive = Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF, BUILD}))
     desk, _, agent = build(tmp_path, khive, reader, [], disk=Probe("disk", full()))
     desk.routes = {"build": BUILD}
-    agent.state = FileNoteStore(tmp_path / "state.json")
+    agent.state = _STATES.setdefault(
+        tmp_path, fresh_store().notes("agent")
+    )  # one store per directory, as the rows are
     if agent.state.get("desk_since") is None:
         agent.state.put("desk_since", LIVE, run="-", seq=0)
     return desk, agent
@@ -1004,7 +1026,7 @@ def test_a_clean_window_briefs_the_liveness_line_with_the_sweeps_run_and_then_st
     agent.state.put("desk_since", iso(T0), run="-", seq=0)
     asyncio.run(agent.wake())
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
-    agent.backend.turns = [SWEEP, DONE]
+    agent.backend.turns = [SWEEP2, DONE]
     asyncio.run(agent.wake())
     t = time.time() + 5
     agent.clock = lambda: t
@@ -1162,7 +1184,11 @@ def test_the_brief_is_the_digest_tick_repeating_as_desk_brief_says(
 ):
     ops: list[str] = []
 
+    lion = LionFake()
+
     async def recorded(self, op):
+        if op.lstrip("[").startswith("lion."):
+            return lion.answer(op)
         ops.append(op)
         return [{"events": []}] if op.startswith("schedule.agenda") else [{"ok": True}]
 
@@ -1175,7 +1201,7 @@ def test_the_brief_is_the_digest_tick_repeating_as_desk_brief_says(
 
 def test_a_desk_less_agent_keeps_the_daily_digest(tmp_path, kkernel_stub):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\n')
     chores, agent = cli_build(tmp_path, backend=None)
     assert getattr(chores, "digest_every", "daily") == "daily" and getattr(agent, "desk", None) is None
@@ -1307,9 +1333,9 @@ def test_a_refused_reply_spends_only_its_own_attempt():
 def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp_path, kkernel_stub):
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         '[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
@@ -1344,9 +1370,9 @@ def chair_agent(tmp_path, extra: str = "") -> Agent:
     appended to its chores.toml."""
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         f"[desk]\nactor_dir = {json.dumps(str(chair))}\n" + extra
@@ -1360,7 +1386,11 @@ def test_reader_helpers_cannot_write(tmp_path, kkernel_stub, monkeypatch):
     is a refusal too."""
     reached: list[tuple[str, str]] = []
 
+    lion = LionFake()
+
     async def recorded(self, ops):
+        if ops.lstrip("[").startswith("lion."):
+            return lion.answer(ops)
         reached.append((self.actor, ops))
         return [{"messages": []}]
 
@@ -1457,7 +1487,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
     # a wake whose sweep listed nothing, and a wake with no sweep at all, end on their first OUT
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 7  # 2 turns, no retry
+    assert type(run.outcome).__name__ == "Success" and len(own(run)) == 7  # 2 turns, no retry
 
 
 CQ = inbox_row(ASKER, "disk or pr?", "is it the disk under the roots or PR 12 that is red?", "m-c1", "t-c1")
@@ -1698,7 +1728,7 @@ def test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolv
     run = asyncio.run(agent.wake())
     if then == "batch":  # the held mail runs now, the same envelope, and finds it handled
         assert run is not None and stored(agent, "cursor")["mail"] == [ANSWER] and held() == []
-        first = next(e for e in run.record if e.kind is Kind.INPUT).content
+        first = next(e for e in own(run) if e.kind is Kind.INPUT).content
         assert f"[mail {ANSWER} from {ASKER} thread t-c1 subject 's' waited since" in first
         said = results(run)
         assert any(r.startswith(f"sweep: nothing new for {OWNER}") for r in said)
@@ -1797,7 +1827,7 @@ def test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and
         "the disk under the roots"
     )
     assert said[2].startswith(f"{ANSWER_ID}: answered {ASKER} on thread t-c1 with disk")
-    inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
+    inputs = [e.content for e in own(run) if e.kind is Kind.INPUT]
     if then == "batch":  # the held mail joins the same run when its window opens, and finds it handled
         assert bursts() == 3 and len(inputs) == 3 and stored(agent, "cursor")["mail"] == [ANSWER]
         assert f"[mail {ANSWER} from {ASKER} thread t-c1 subject 's' waited since" in inputs[2]
@@ -2410,7 +2440,7 @@ def test_a_delivery_unresolved_is_refused_a_second_send_and_its_keyed_replay_set
     line = f"m-q1: delivery unresolved since {send['started']}, to {ASKER} on t-q1: leave(...) it or wait"
     inner.down = True
     inner.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
-    agent.backend.turns = [SWEEP, '<lact a2>answer(msg="m-q1", chore="disk")</lact>', DONE]
+    agent.backend.turns = [SWEEP2, '<lact a2>answer(msg="m-q1", chore="disk")</lact>', DONE]
     run = asyncio.run(agent.wake())  # every replay fails: nothing settles it, nothing new is sent
     assert type(run.outcome).__name__ == "Success" and sum(line in r for r in results(run)) == 2
     assert len(inner.sent) == 1 and desk.rows() == [] and pending(agent)["m-q1"]["send"] == send
@@ -2438,7 +2468,7 @@ def test_leaving_a_delivery_unresolved_writes_its_row_and_sends_nothing(tmp_path
     first = asyncio.run(agent.wake())
     inner.down = True  # the replay cannot settle it, so the sweep lists it for a disposition
     inner.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
-    agent.backend.turns = [SWEEP, '<lact l1>leave(msg="m-q1", why="notice")</lact>', DONE]
+    agent.backend.turns = [SWEEP2, '<lact l1>leave(msg="m-q1", why="notice")</lact>', DONE]
     asyncio.run(agent.wake())
     rows = [(r["msg"], r["class"], r["why"], (r.get("send") or {}).get("attempt")) for r in desk.rows()]
     assert rows == [("m-q1", "left", "delivery unresolved", first.id)]
@@ -2481,12 +2511,16 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
     client marks, sends or is granted a recipient. A helper that is not there is a refusal too."""
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
     stub = tmp_path / "kkernel"
     stub.write_text("")
     reached: list[tuple[str, str]] = []
 
+    lion = LionFake()
+
     async def recorded(self, ops):
+        if ops.lstrip("[").startswith("lion."):
+            return lion.answer(ops)
         reached.append((self.actor, ops))
         return [{"messages": []}]
 

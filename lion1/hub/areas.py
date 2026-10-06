@@ -27,10 +27,12 @@ from typing import Any
 from urllib.parse import urlencode
 from xml.parsers.expat import ExpatError
 
-from .khive import Khive, lit
+from lion1.khive import Khive, KhiveError, lit
+from lion1.store import KhiveNoteStore, Store
 
 __all__ = (
     "DEFAULT_REGISTRY",
+    "NOTES_UNREAD",
     "partial",
     "Area",
     "Resident",
@@ -40,11 +42,13 @@ __all__ = (
     "table",
     "page",
     "controls_info",
+    "chores_toml",
     "budget_table",
     "wake_table",
     "waiting_mail",
     "area_rows",
     "rows_json",
+    "wake_row",
     "wakes",
     "log_tail",
     "identity",
@@ -102,6 +106,10 @@ class Area:
     desks: list[str] = field(default_factory=list)  # the desks' directories, one resident each
 
 
+# how a resident's `problem` opens when its notes cannot be read: its day is then unknown
+NOTES_UNREAD = "notes: "
+
+
 @dataclass
 class Resident:
     area: str
@@ -125,16 +133,27 @@ class Resident:
 
 def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
     """The registry: `[area.<name>]` tables with `chair` and `desks`. A missing file is no
-    areas, said by the caller; a table missing `chair` raises with the name."""
+    areas, said by the caller; a table missing `chair` raises with the name, and so does an area
+    that lists one directory twice, since two rows of one directory are one agent named twice."""
     path = Path(path)
     if not path.exists():
         return []
     doc = tomllib.loads(path.read_text())
+    areas = doc.get("area", {})  # absent is no areas; false, 0, "" and [] are not a table either
+    if not isinstance(areas, dict):
+        raise ValueError("areas.toml: area is not a table of areas")
     out = []
-    for name, t in (doc.get("area") or {}).items():
-        if "chair" not in t:
+    for name, t in areas.items():
+        if not isinstance(t, dict) or "chair" not in t:
             raise ValueError(f"areas.toml: [area.{name}] has no chair")
-        out.append(Area(name, str(t["chair"]), [str(a) for a in t.get("desks", [])]))
+        desks = t.get("desks", [])
+        if not isinstance(desks, list):
+            raise ValueError(f"areas.toml: [area.{name}] desks is not a list of directories")
+        desks = [str(a) for a in desks]
+        for i, a in enumerate(desks):
+            if Path(a) in [Path(b) for b in desks[:i]]:
+                raise ValueError(f"areas.toml: [area.{name}] desks lists {a} twice")
+        out.append(Area(name, str(t["chair"]), desks))
     return out
 
 
@@ -184,16 +203,15 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         problem.append(f"agent.pid: {e}")
     cursor: dict[str, Any] = {}
     spend: dict[str, Any] = {}
-    notes = d / "notes" / "agent.json"
-    if notes.exists():
-        try:
-            store = json.loads(notes.read_text()).get("notes", {})
-            cursor = (store.get("cursor") or {}).get("value") or {}
-            spend = (store.get("spend") or {}).get("value") or {}
-        except (OSError, ValueError) as e:
-            problem.append(f"notes/agent.json: {e}")
+    try:
+        notes = agent_notes(d)
+    except (KhiveError, ValueError) as e:
+        problem.append(f"{NOTES_UNREAD}{e}")
     else:
-        problem.append("no notes yet: never ran from this directory")
+        if not notes:
+            problem.append("no notes yet: never ran from this directory")
+        cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
+        spend = notes.get("spend") if isinstance(notes.get("spend"), dict) else {}
     if spend.get("day") != today:
         spend = {}
     unknown = spend.get("unknown") if spend else 0  # a row with no count is from before the count
@@ -336,10 +354,10 @@ def controls_info(directory: str) -> dict:
         # idle only on a cursor that names a finished wake: a first wake starts before any cursor
         # exists, and an unreadable one says nothing, so both read as busy, as an unread pgrep does
         try:
-            store = json.loads((d / "notes" / "agent.json").read_text()).get("notes", {})
-            outcome = ((store.get("cursor") or {}).get("value") or {}).get("outcome")
+            cursor = agent_notes(d).get("cursor")
+            outcome = cursor.get("outcome") if isinstance(cursor, dict) else None
             idle = isinstance(outcome, str) and outcome not in ("", "running")
-        except (OSError, ValueError, AttributeError):
+        except (KhiveError, ValueError):
             idle = False
     if idle and pid_file.exists():
         try:
@@ -366,7 +384,26 @@ def controls_info(directory: str) -> dict:
     }
 
 
-def _chores(directory: str) -> dict:
+def agent_store(directory: str | Path) -> KhiveNoteStore:
+    """The `agent` notes of the resident at `directory`, in the store its actor writes (ADR-0025 D6):
+    `chores.toml` names the actor, the directory's own `.khive/config.toml` must agree, and each read
+    is one call of the binary. Raises `KhiveError` when the binary or the config is missing, or when
+    the config would put the lion pack's tables in the main store (a `Store`'s refusal, ADR-0026 C8),
+    and `ValueError` when chores.toml names no actor."""
+    actor = chores_toml(directory).get("actor")
+    if not isinstance(actor, str) or not actor:
+        raise ValueError("chores.toml names no actor")
+    return Store(Khive(Path(directory), actor)).notes("agent")
+
+
+def agent_notes(directory: str | Path) -> dict[str, Any]:
+    """Every note of the resident at `directory`, value by key, in one call of the binary; empty when
+    it never ran from there. Raises as `agent_store` does, and `KhiveError` when the store refuses."""
+    return {n.key: n.value for n in agent_store(directory).list()}
+
+
+def chores_toml(directory: str) -> dict:
+    """The resident's chores.toml as a table; one that is missing or does not parse is empty."""
     try:
         return tomllib.loads((Path(directory) / "chores.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError):
@@ -374,26 +411,22 @@ def _chores(directory: str) -> dict:
 
 
 def budget_table(directory: str) -> dict:
-    return dict(_chores(directory).get("budget") or {})
+    return dict(chores_toml(directory).get("budget") or {})
 
 
 def wake_table(directory: str) -> dict:
-    return dict(_chores(directory).get("wake") or {})
+    return dict(chores_toml(directory).get("wake") or {})
 
 
-def waiting_mail(directory: str) -> list[dict]:
+def waiting_mail(directory: str) -> list[dict] | None:
     """The mail a `[wake]` rule deferred, kept under the `deferred` note until the batch window
     opens (hub/agent/agent.py `_triage` keeps each whole, stamped `deferred_at`/`deferred_ts`): who
     sent it, the subject and when it was deferred, the body left in the note. No note yet is no mail
-    waiting."""
-    notes = Path(directory) / "notes" / "agent.json"
-    if not notes.exists():
-        return []
+    waiting; notes that cannot be read are None, never a count of zero."""
     try:
-        store = json.loads(notes.read_text()).get("notes", {})
-        deferred = (store.get("deferred") or {}).get("value")
-    except (OSError, ValueError, AttributeError):
-        return []
+        deferred = agent_notes(directory).get("deferred")
+    except (KhiveError, ValueError):
+        return None
     mail = deferred.get("mail") if isinstance(deferred, dict) else None
     out = []
     for m in mail if isinstance(mail, list) else []:
@@ -419,10 +452,11 @@ def waiting_mail(directory: str) -> list[dict]:
 def _api_row(r: Resident, controls: dict | None = None, waiting: list[dict] | None = None) -> dict:
     """One resident as the app reads it: `_row` plus its live `controls` and the count of mail
     waiting for the window."""
+    found = waiting if waiting is not None else waiting_mail(r.dir)
     return {
         **_row(r),
         "controls": controls if controls is not None else controls_info(r.dir),
-        "waiting": len(waiting if waiting is not None else waiting_mail(r.dir)),
+        "waiting": None if found is None else len(found),  # null: the notes could not be read
     }
 
 
@@ -434,6 +468,36 @@ def area_rows(rows: list[Resident]) -> list[dict]:
 
 def rows_json(rows: list[Resident]) -> str:
     return json.dumps(area_rows(rows), indent=1)
+
+
+def wake_row(line: str) -> dict | None:
+    """One serve.log line read as a wake: the numbers `serve` printed, or the line kept whole with its
+    time when it is a wake line of another shape; None for a line that is no wake line."""
+    m = _WAKE.match(line)
+    if m is None:
+        return None
+    if m["wake"] is None:
+        return {"at": m["at"], "raw": line}
+    row: dict[str, Any] = {}
+    for k, v in m.groupdict().items():
+        if k in ("at", "outcome"):
+            row[k] = v
+        elif k == "cost":
+            row[k] = float(v)
+        elif k not in ("context", "restarts", "tasks", "unknown"):
+            row[k] = int(v)
+    # the context and restarts suffixes: absent on an older line; a line that stood in a
+    # context and started no session over prints no restarts, which is 0 restarts
+    if m["context"] is not None:
+        row["context"] = int(m["context"])
+        row["restarts"] = int(m["restarts"] or 0)
+    elif m["restarts"] is not None:
+        row["restarts"] = int(m["restarts"])
+    if m["tasks"] is not None:  # the queue tasks the wake presented
+        row["tasks"] = int(m["tasks"])
+    if m["unknown"] is not None:  # calls the wake's dollars miss
+        row["unknown"] = int(m["unknown"])
+    return {**row, "raw": line}
 
 
 def wakes(directory: str, n: int = 30) -> list[dict]:
@@ -448,30 +512,8 @@ def wakes(directory: str, n: int = 30) -> list[dict]:
     for line in text.splitlines():
         if line.startswith("serving "):
             rows.append({"at": "", "raw": line, "restart": True})
-        elif m := _WAKE.match(line):
-            if m["wake"] is None:
-                rows.append({"at": m["at"], "raw": line})
-                continue
-            row: dict[str, Any] = {}
-            for k, v in m.groupdict().items():
-                if k in ("at", "outcome"):
-                    row[k] = v
-                elif k == "cost":
-                    row[k] = float(v)
-                elif k not in ("context", "restarts", "tasks", "unknown"):
-                    row[k] = int(v)
-            # the context and restarts suffixes: absent on an older line; a line that stood in a
-            # context and started no session over prints no restarts, which is 0 restarts
-            if m["context"] is not None:
-                row["context"] = int(m["context"])
-                row["restarts"] = int(m["restarts"] or 0)
-            elif m["restarts"] is not None:
-                row["restarts"] = int(m["restarts"])
-            if m["tasks"] is not None:  # the queue tasks the wake presented
-                row["tasks"] = int(m["tasks"])
-            if m["unknown"] is not None:  # calls the wake's dollars miss
-                row["unknown"] = int(m["unknown"])
-            rows.append({**row, "raw": line})
+        elif (row := wake_row(line)) is not None:
+            rows.append(row)
     return rows[max(len(rows) - n, 0) :][::-1]
 
 

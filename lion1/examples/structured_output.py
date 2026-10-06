@@ -15,12 +15,17 @@ invented; scripted backend; runs offline.
 """
 
 import asyncio
+import atexit
 import re
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from lion1 import Actor, Kind, Message, Profile, RunRequest, render_guidance
+from lion1 import Actor, Kind, Message, Profile, RunRequest, Store, render_guidance
+from lion1.khive import Khive
 
 NOTE = (
     "58-year-old man with type 2 diabetes and hypertension, seen for follow-up. Takes metformin 500 mg "
@@ -148,8 +153,24 @@ BY_FIELD = (
 )
 
 
+def a_store() -> Store:
+    """The store the run's rows go to: the khive binary, as the actor of a scratch directory."""
+    scratch = Path(tempfile.mkdtemp())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)  # the scratch goes with the process
+    (scratch / ".khive").mkdir()
+    (scratch / ".khive" / "config.toml").write_text(
+        # the actor, and the lion pack's tables routed to their own file beside a main store (the
+        # store refuses a config that would put them in the default one under the home directory)
+        '[actor]\nid = "example"\n'
+        f'\n[[backends]]\nname = "main"\npath = "{scratch / ".khive" / "main.db"}"\n'
+        f'\n[[backends]]\nname = "lion"\npath = "{scratch / ".khive" / "lion.db"}"\n'
+        '\n[packs.lion]\nbackend = "lion"\n'
+    )
+    return Store(Khive(scratch, "example"))
+
+
 async def main() -> None:
-    actor = Actor("extractor")
+    actor = Actor("extractor", store=a_store())
     profile = Profile("extractor", system=SYSTEM)
     request = RunRequest(inputs=(NOTE,), emits=(Extraction,), max_turns=5, accept=evidence_is_in_the_note)
 

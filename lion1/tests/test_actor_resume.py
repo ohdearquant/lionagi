@@ -11,6 +11,7 @@ from hub import files
 from hub.chat import chat, entry_row, load_log
 from lion1 import Actor, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -23,8 +24,8 @@ class Echo(BaseModel):
     text: str
 
 
-def _resume_actor(name: str, calls: list[str], notes_dir=None) -> Actor:
-    actor = Actor(name, notes_dir=notes_dir)
+def _resume_actor(name: str, calls: list[str]) -> Actor:
+    actor = Actor(name, store=fresh_store())
 
     @actor.handler(Echo)
     def echo(req: Echo, ctx) -> str:
@@ -83,8 +84,8 @@ def test_resume_cannot_resurrect_refused_values():
     assert calls == ["genuine"]  # the handler ran once, live; a resume runs no command
 
 
-def test_resume_preserves_note_value_version_writer(tmp_path):
-    actor = _resume_actor("resume-note", [], notes_dir=tmp_path)
+def test_resume_preserves_note_value_version_writer():
+    actor = _resume_actor("resume-note", [])
     first = _resume_live(actor, "<lvar note.plan>old</lvar>", "<lvar note.done>written live</lvar>")
     notes = first.notes
     notes.put("plan", "newer", run="another-run", seq=19)  # a later writer, after the logged session
@@ -105,8 +106,8 @@ def test_warned_but_admitted_value_survives_resume():
     assert resumed.resolve("w") == "warned value" and resumed.resolve("v") == 'echo(text="x")'
 
 
-def test_a_resumed_run_resolves_a_redeclared_value_to_its_latest_declaration():
-    actor = Actor("resume-redeclared")
+def test_a_resumed_run_resolves_a_redeclared_value_to_its_latest_declaration(store):
+    actor = Actor("resume-redeclared", store=store)
     first = asyncio.run(
         actor.run(
             Profile("p"),
@@ -134,10 +135,14 @@ def _lnr01_asks(*messages):
     return ask
 
 
+_STORES: dict = {}  # one note store per directory, shared by the actors that read it, as the store's rows are
+
+
 def _lnr01_reader(directory, name):
-    actor = Actor(name, notes_dir=directory / "notes")
+    actor = Actor(name, store=fresh_store())
     specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
-    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text.")
+    notes = _STORES.setdefault(directory, fresh_store().notes("p"))
+    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text.", notes=notes)
 
 
 def _lnr01_session(tmp_path, name, turns, msgs):

@@ -14,7 +14,8 @@ from pydantic import ValidationError
 
 from hub.agent import AgentError
 from lion1 import Kind, Success
-from tests.test_agent import FakeKhive, Scripted, mail
+from tests.lionfake import store as fresh_store
+from tests.test_agent import FakeKhive, Scripted, mail, own
 
 spec = importlib.util.spec_from_file_location(
     "bench_agent", Path(__file__).resolve().parents[1] / "examples" / "bench_agent.py"
@@ -53,6 +54,8 @@ class BenchKhive(FakeKhive):
         self.ops: list[str] = []
 
     async def exec(self, ops):
+        if ops.startswith("comm.read("):  # the mark-read is the box's, not a write the tests count
+            return await super().exec(ops)
         self.ops.append(ops)
         return [{"id": "mem1"}]
 
@@ -80,7 +83,9 @@ def test_an_ask_launches_a_child_and_its_finish_mail_reports_the_row_on_the_thre
     khive = BenchKhive(mail("lambda:a", "mini50, limit 1, deepseek"), cwd=tmp_path)
     ask = f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", set="mini50", limit=1, run_id="t1")</lact>'
     agent = bench_agent.build(
-        khive, Scripted(ask, 'OUT{posture: {done: "launched t1", awaiting: "t1"}}', khive=khive)
+        khive,
+        Scripted(ask, 'OUT{posture: {done: "launched t1", awaiting: "t1"}}', khive=khive),
+        fresh_store(),
     )
     run = asyncio.run(agent.wake(wait_ms=0))
     assert isinstance(run.outcome, Success) and run.profile.name == "acting"
@@ -124,18 +129,19 @@ def test_a_finish_for_an_unknown_job_and_a_second_launch_of_the_same_id_are_refu
             'OUT{posture: {done: "no such job", awaiting: ""}}',
             khive=khive,
         ),
+        fresh_store(),
     )
     run = asyncio.run(agent.wake(wait_ms=0))
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
     assert not result.ok and "no job nope" in str(result.error) and khive.sent == []
 
-    launch = f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", run_id="dup")</lact>'
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
     for n, expect_ok in ((1, True), (2, False)):
         khive.mail.append(mail("lambda:a", "again", mid=f"d{n}"))
+        launch = f'<lact l{n}>launch(asker="lambda:a", thread="{THREAD}", run_id="dup")</lact>'
         agent.backend = Scripted(launch, done, khive=khive)
         run = asyncio.run(agent.wake(wait_ms=0))
-        result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "launch")
+        result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "launch")
         assert result.ok is expect_ok
     assert "already launched" in str(result.error)
 
@@ -150,6 +156,7 @@ def test_mail_from_a_stranger_runs_the_reader_profile_and_launches_nothing(tmp_p
             'OUT{posture: {done: "read one from someone:else", awaiting: ""}}',
             khive=khive,
         ),
+        fresh_store(),
     )
     run = asyncio.run(agent.wake(wait_ms=0))
     assert run.profile.name == "reader" and agent.state.get("jobs") is None and khive.sent == []
@@ -206,7 +213,9 @@ def test_a_report_goes_through_the_agents_counted_send_and_a_reported_job_is_not
     )
     twice = '<lact r1>report(run_id="t1")</lact><lact r2>report(run_id="t1")</lact>'
     agent = bench_agent.build(
-        khive, Scripted(twice, 'OUT{posture: {done: "reported t1", awaiting: ""}}', khive=khive)
+        khive,
+        Scripted(twice, 'OUT{posture: {done: "reported t1", awaiting: ""}}', khive=khive),
+        fresh_store(),
     )
     _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
@@ -220,12 +229,12 @@ def test_a_report_goes_through_the_agents_counted_send_and_a_reported_job_is_not
         '<lact r3>report(run_id="t1")</lact>', 'OUT{posture: {done: "x", awaiting: ""}}', khive=khive
     )
     run = asyncio.run(agent.wake(wait_ms=0))
-    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "report")
     assert not result.ok and "not again" in result.error and len(khive.sent) == 1
 
 
 def test_the_acting_profile_is_the_typed_pair_and_has_no_prose_send(tmp_path):
-    agent = bench_agent.build(BenchKhive(cwd=tmp_path), Scripted())
+    agent = bench_agent.build(BenchKhive(cwd=tmp_path), Scripted(), fresh_store())
     assert set(agent.actor.subset(bench_agent.ACTING)) == {"launch", "report"}
 
 
@@ -243,7 +252,7 @@ def test_an_unconfigured_identity_is_refused_before_anything_is_built(tmp_path, 
     khive = BenchKhive(cwd=tmp_path)
     monkeypatch.setattr(bench_agent, unset, None)
     with pytest.raises(AgentError, match="identity is not configured"):
-        bench_agent.build(khive, Scripted())
+        bench_agent.build(khive, Scripted(), fresh_store())
     assert not (tmp_path / "bench").exists()  # refused before its directories were made
 
 
@@ -280,7 +289,9 @@ def test_finish_report_carries_selected_set_and_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(bench_agent, "notify_line", lambda run_id: "true")
     khive = BenchKhive(mail("lambda:a", "run it"), cwd=base)
     ask = f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", run_id="t2")</lact>'
-    agent = bench_agent.build(khive, Scripted(ask, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive))
+    agent = bench_agent.build(
+        khive, Scripted(ask, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive), fresh_store()
+    )
     asyncio.run(agent.wake(wait_ms=0))
     exit_file = base / "jobs" / "t2.exit"
     for _ in range(50):  # the child is a shell line; give it a moment
@@ -329,7 +340,9 @@ def test_delivery_receipt_precedes_remember_failure(tmp_path, monkeypatch):
         mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f1"), cwd=tmp_path
     )
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
-    agent = bench_agent.build(khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive))
+    agent = bench_agent.build(
+        khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive), fresh_store()
+    )
     _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
@@ -339,7 +352,7 @@ def test_delivery_receipt_precedes_remember_failure(tmp_path, monkeypatch):
     khive.mail.append(mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f2"))
     agent.backend = Scripted('<lact r2>report(run_id="t1")</lact>', done, khive=khive)
     run = asyncio.run(agent.wake(wait_ms=0))
-    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "report")
     assert len(khive.sent) == 1, f"the asker got the row {len(khive.sent)} times"
     assert result.ok and len(khive.ops) == 1 and "memory.remember" in khive.ops[0]  # the retry wrote it
     assert agent.state.get("jobs").value["t1"]["remember_pending"] is False
@@ -364,6 +377,7 @@ def test_the_report_send_is_keyed_by_the_job_so_a_lost_receipt_replays_and_never
         Scripted(
             '<lact r1>report(run_id="t1")</lact>', 'OUT{posture: {done: "x", awaiting: ""}}', khive=khive
         ),
+        fresh_store(),
     )
     _put_job(agent)
     asyncio.run(agent.wake(wait_ms=0))
@@ -387,7 +401,9 @@ def test_a_report_retried_after_a_lost_receipt_sends_the_body_it_first_sent(tmp_
 
     khive.send = send
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
-    agent = bench_agent.build(khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive))
+    agent = bench_agent.build(
+        khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive), fresh_store()
+    )
     _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
@@ -400,7 +416,7 @@ def test_a_report_retried_after_a_lost_receipt_sends_the_body_it_first_sent(tmp_
     khive.mail.append(mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f2"))
     agent.backend = Scripted('<lact r2>report(run_id="t1")</lact>', done, khive=khive)
     run = asyncio.run(agent.wake(wait_ms=0))
-    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "report")
     assert result.ok and bodies[1] == bodies[0] and len(khive.sent) == 1
     assert agent.state.get("jobs").value["t1"]["row"] == json.loads(bodies[0])
 
@@ -424,7 +440,7 @@ def test_a_launch_during_a_reports_send_is_not_written_away_by_the_report(tmp_pa
         f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", set="mini50", limit=1, run_id="t2")</lact>'
     )
     agent = bench_agent.build(
-        khive, Scripted(program, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive)
+        khive, Scripted(program, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive), fresh_store()
     )
     _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))

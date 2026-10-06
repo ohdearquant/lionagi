@@ -31,19 +31,34 @@ from typing import Any
 
 from lion1.checkpoint import KINDS, WHYS, Checkpoint, CheckpointError, Var, listed, take
 
-from .checkpoint import DIRECTIVES, SPAWN_HOURS, _at, _open, fold_turns, opening, posture_of, restored
-from .codex import _THREAD
+from ..checkpoint import (
+    DIRECTIVES,
+    RETAKES,
+    SPAWN_HOURS,
+    Snapshot,
+    _at,
+    _lines,
+    _open,
+    fold_turns,
+    opening,
+    posture_of,
+    restored,
+    snapshot_of,
+)
+from . import _THREAD
 
 __all__ = (
     "CODEX_KINDS",
     "CODEX_WHYS",
     "OWNERS",
+    "RETAKES",
     "Snapshot",
     "snapshot",
     "is_rollout",
     "newest_rollout",
     "rollout_of",
     "rollout_source",
+    "rollout_exchanges",
     "rollout_turns",
     "directives",
     "spawns",
@@ -85,28 +100,6 @@ _META = (
 )
 # the thread_source of a thread whose owner is known: a person's, or a sub-agent's
 OWNERS = ("user", "subagent")
-RETAKES = 2  # a rollout that changed under its read is stat and read again this many times
-
-
-@dataclass(frozen=True)
-class Snapshot:
-    """One file state of a rollout, captured once: every read of a take reads exactly its `size`
-    bytes, and its scan keeps the view `budget` folds to, none when it is None."""
-
-    path: str
-    size: int
-    mtime_ns: int
-    dev: int  # an inode names a file on its own device only
-    ino: int  # a file put in its place
-    ctime_ns: int  # a rewrite in place keeps the size and can restore the mtime, never this
-    budget: int | None = None
-
-    def __fspath__(self) -> str:
-        return self.path
-
-
-class _Moved(CheckpointError):
-    """The file a snapshot names is not in the snapshot's state: put in its place, cut, or rewritten."""
 
 
 @dataclass
@@ -114,6 +107,7 @@ class _Scan:
     meta: dict = field(default_factory=dict)  # the thread's own session_meta, its `_META` keys
     model: str | None = None  # the newest turn_context's
     words: list[tuple[str, str]] = field(default_factory=list)  # the newest DIRECTIVES prompts, at
+    prompts: list[dict] = field(default_factory=list)  # every exchange: {turn, at, input, text, kind}
     view: dict | None = None  # `fold_turns` of every prompt to the snapshot's budget
     last: tuple[str, str] | None = None  # the last assistant text and its row's time
     agents: dict[str, dict] = field(default_factory=dict)  # thread id -> {id, path, at, last}
@@ -171,19 +165,6 @@ def _figure(info: dict) -> dict:
     return {"used": used, "window": window, "pct": pct}
 
 
-def _state(st: os.stat_result) -> tuple[int, int, int, int, int]:
-    return st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino, st.st_ctime_ns
-
-
-def _same(f: Any, snap: Snapshot) -> bool:
-    """Whether the open file is the snapshot's: in its very state, or the same file grown since. One
-    grown is taken as appended to, its bytes to the snapshot's size the snapshot's own."""
-    st = os.fstat(f.fileno())
-    return _state(st) == (snap.size, snap.mtime_ns, snap.dev, snap.ino, snap.ctime_ns) or (
-        (st.st_dev, st.st_ino) == (snap.dev, snap.ino) and st.st_size > snap.size
-    )
-
-
 @functools.lru_cache(maxsize=4)
 def _read(snap: Snapshot) -> _Scan:
     s = _Scan()
@@ -192,18 +173,11 @@ def _read(snap: Snapshot) -> _Scan:
     prompts: list[dict] = []  # {turn, at, input, text, kind: person}
     turn: dict | None = None
     with open(snap.path, "rb") as f:
-        if not _same(f, snap):  # another file put in its place, or this one cut or rewritten
-            raise _Moved(f"{snap.path} is not the file its snapshot was taken of")
-        left = snap.size  # a row appended after the snapshot is after the take
-        while left > 0:
-            raw = f.readline(left)
-            if not raw:  # cut while it was read: the check after the last byte refuses it
-                break
-            left -= len(raw)
+        for raw in _lines(f, snap):  # the snapshot's bytes, the file checked before and after
             lines += 1
             if not raw.endswith(b"\n"):  # the snapshot's last line, cut mid-write: never read
                 s.unread += 1
-                break
+                continue
             if not raw.strip():
                 continue
             try:
@@ -261,9 +235,8 @@ def _read(snap: Snapshot) -> _Scan:
                     }
                 elif thread in s.agents:  # an agent another thread spawned is not this one's
                     s.agents[thread]["last"] = item.get("kind")
-        if not _same(f, snap):
-            raise _Moved(f"{snap.path} was rewritten while it was read")
     s.words = [(p["input"], p["at"]) for p in prompts[-DIRECTIVES:]]
+    s.prompts = prompts
     s.view = fold_turns(prompts, snap.budget) if snap.budget is not None else None
     return s
 
@@ -272,18 +245,7 @@ def snapshot(path: str | Path, budget: int | None = None) -> Snapshot:
     """The rollout's file state now, for a take whose view folds to `budget`, read at once: the scan
     every reader of the snapshot gets is of that state. A file that changes between its stat and its
     read is taken again, RETAKES times at most."""
-    p = Path(path)
-    tries = 0
-    while True:
-        snap = Snapshot(str(p), *_state(p.stat()), budget)
-        try:
-            _read(snap)
-        except _Moved:
-            tries += 1
-            if tries > RETAKES:
-                raise
-        else:
-            return snap
+    return snapshot_of(path, _read, budget)
 
 
 def _scan(path: str | Path | Snapshot, budget: int | None = None) -> _Scan:
@@ -351,6 +313,12 @@ def rollout_source(path: str | Path) -> dict:
         "unread_lines": s.unread,
         "unmarked_messages": s.unmarked,
     }
+
+
+def rollout_exchanges(path: str | Path | Snapshot) -> list[dict]:
+    """Every exchange of the rollout, oldest first: the person's prompt with its turn's final text
+    (`{turn, at, input, text, kind}`); what a take writes into the store."""
+    return [dict(p) for p in _scan(path).prompts]
 
 
 def rollout_turns(path: str | Path, budget: int) -> dict:

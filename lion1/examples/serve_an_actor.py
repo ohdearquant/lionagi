@@ -1,26 +1,33 @@
 """Serving an actor: one offer over HTTP on loopback, and a client that reads the card, starts a run
 and follows its stream to the end.
 
-`Actor.serve(profile, backend, request=...)` serves one offer. The owner fixes the profile, the
-backend and the request template; a client chooses only the inputs, bounds at or below the offer's,
-and a resume. The transport binds 127.0.0.1 and answers this machine only, one request per
-connection; a POST carries `application/json`. Here the client is this script, over a real socket
+`Lion` serves an actor's offers: `lion.offer(profile, backend, request)`, then `lion.serve(actor)`.
+The owner fixes the profile, the backend and the request template; a client chooses only the inputs,
+bounds at or below the offer's, and a resume. The transport binds 127.0.0.1 and answers this machine
+only; a POST carries `application/json`. Here the client is this script, over a real socket
 with the standard library: `GET /` is the card, `POST /runs` starts a run, and
 `GET /runs/{id}/events` is its stream of server-sent events. A stream opens with the run's state, so
 a client that arrives after the end still reads it, and this one stops at the first state that says
 ended, whether that is the first frame or a later one. Scripted backend; runs offline.
 
-    uv run python examples/serve_an_actor.py
+    uv run --extra serve python examples/serve_an_actor.py
 """
 
 import asyncio
+import atexit
 import contextlib
+import http.client
 import json
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from lion1 import Actor, Profile, RunRequest
+from hub.serve import Lion
+from lion1 import Actor, Profile, RunRequest, Store
+from lion1.khive import Khive
 
 NOTE = (
     "58-year-old man with type 2 diabetes, seen for follow-up. Takes metformin 500 mg by mouth twice "
@@ -70,42 +77,65 @@ def scripted(*turns: str):
 
 
 async def ask(port: int, method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
-    """One request on its own connection, read to the server's close: (status, the JSON answer)."""
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    data = b"" if body is None else json.dumps(body).encode()
-    head = f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
-    if body is not None:
-        head += f"Content-Type: application/json\r\nContent-Length: {len(data)}\r\n"
-    writer.write(head.encode() + b"\r\n" + data)
-    raw = await reader.read()
-    writer.close()
-    await writer.wait_closed()
-    status, _, rest = raw.partition(b"\r\n")
-    return int(status.split()[1]), json.loads(rest.partition(b"\r\n\r\n")[2])
+    """One request with the standard library's client, run off the loop: (status, the JSON answer)."""
+
+    def call() -> tuple[int, dict]:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        try:
+            if body is None:
+                conn.request(method, path)
+            else:
+                conn.request(method, path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+            answer = conn.getresponse()
+            return answer.status, json.loads(answer.read())
+        finally:
+            conn.close()
+
+    return await asyncio.to_thread(call)
 
 
 async def follow(port: int, sid: str) -> list[tuple[str, dict]]:
     """The run's stream, frame by frame, to the first state that says ended."""
-    reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=1 << 20)
-    try:
-        writer.write(f"GET /runs/{sid}/events HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
-        await reader.readuntil(b"\r\n\r\n")  # the head: 200, text/event-stream
-        frames = []
-        while True:
-            block = (await reader.readuntil(b"\n\n")).decode()
-            if block.startswith(":"):  # a comment line, sent every 15 seconds, keeps a quiet stream open
-                continue
-            event, data = block.split("\n")[:2]
-            frames.append((event.removeprefix("event: "), json.loads(data.removeprefix("data: "))))
-            if frames[-1][0] == "state" and frames[-1][1]["phase"] == "ended":
-                return frames
-    finally:
-        writer.close()
-        await writer.wait_closed()
+
+    def read() -> list[tuple[str, dict]]:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        try:
+            conn.request("GET", f"/runs/{sid}/events")
+            stream = conn.getresponse()  # 200, text/event-stream
+            frames, event = [], None
+            while True:
+                line = stream.readline().decode().rstrip("\n")
+                # a line starting ':' is a comment, sent every 15 seconds to keep a quiet stream open
+                if line.startswith("event: "):
+                    event = line.removeprefix("event: ")
+                elif line.startswith("data: "):
+                    frames.append((event, json.loads(line.removeprefix("data: "))))
+                    if event == "state" and frames[-1][1]["phase"] == "ended":
+                        return frames
+        finally:
+            conn.close()
+
+    return await asyncio.to_thread(read)
+
+
+def a_store() -> Store:
+    """The store the run's rows go to: the khive binary, as the actor of a scratch directory."""
+    scratch = Path(tempfile.mkdtemp())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)  # the scratch goes with the process
+    (scratch / ".khive").mkdir()
+    (scratch / ".khive" / "config.toml").write_text(
+        # the actor, and the lion pack's tables routed to their own file beside a main store (the
+        # store refuses a config that would put them in the default one under the home directory)
+        '[actor]\nid = "example"\n'
+        f'\n[[backends]]\nname = "main"\npath = "{scratch / ".khive" / "main.db"}"\n'
+        f'\n[[backends]]\nname = "lion"\npath = "{scratch / ".khive" / "lion.db"}"\n'
+        '\n[packs.lion]\nbackend = "lion"\n'
+    )
+    return Store(Khive(scratch, "example"))
 
 
 async def main() -> None:
-    actor = Actor("extractor")
+    actor = Actor("extractor", store=a_store())
 
     @actor.handler(Route, effect="pure")
     async def route(req: Route, ctx) -> str:
@@ -118,11 +148,8 @@ async def main() -> None:
     )
     request = RunRequest(emits=(Extraction,), max_turns=4)
     bound = asyncio.get_running_loop().create_future()
-    served = asyncio.create_task(
-        actor.serve(
-            profile, scripted(*TURNS), request=request, port=0, ready=lambda h, p: bound.set_result(p)
-        )
-    )
+    lion = Lion(port=0).offer(profile, scripted(*TURNS), request)
+    served = asyncio.create_task(lion.serve(actor, ready=lambda h, p: bound.set_result(p)))
     await asyncio.wait({bound, served}, return_when=asyncio.FIRST_COMPLETED)
     if served.done():  # it could not bind: the error says why
         served.result()

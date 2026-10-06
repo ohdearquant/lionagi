@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import types
 from pathlib import Path
@@ -23,6 +24,7 @@ from hub import BoxTree, DaytonaSandbox, code, shell
 from hub.tools import daytona as daytona_mod
 from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
+from tests.lionfake import actor_dir, patch_khive
 from tests.test_actor import scripted
 
 
@@ -137,11 +139,11 @@ def test_exec_splits_stdout_from_stderr_carries_the_rc_and_feeds_stdin(stubbed):
     assert r["rc"] == 124 and r["timed_out"] is False
 
 
-def test_the_shell_and_code_tools_run_in_the_box_through_the_same_registrations(stubbed):
+def test_the_shell_and_code_tools_run_in_the_box_through_the_same_registrations(stubbed, store):
     box, work, _, _ = stubbed
     (work / "pkg").mkdir()
     (work / "pkg" / "m.py").write_text("def f():\n    return 1\n\n\ndef g():\n    return f()\n")
-    actor = Actor("d")
+    actor = Actor("d", store=store)
     specs = shell(actor, box) | code(actor, BoxTree(box)) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="d", specs=frozenset(specs), system="x")
     backend = scripted(
@@ -225,7 +227,7 @@ def test_push_counts_what_was_actually_uploaded_not_what_git_listed(stubbed, tmp
 
 
 @pytest.mark.skipif(os.environ.get("LION_DAYTONA_E2E") != "1", reason="LION_DAYTONA_E2E=1 runs a real box")
-def test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory(tmp_path):
+def test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory(tmp_path, store):
     src = tmp_path / "proj"
     src.mkdir()
     (src / "calc.py").write_text("def add(a, b):\n    return a - b\n")
@@ -233,7 +235,7 @@ def test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory(tmp_pa
         "from calc import add\n\n\ndef test_add():\n    assert add(2, 2) == 4\n"
     )
     box = DaytonaSandbox("python:3.12-slim", workdir="/work", label="lionagi-test", cpu=1, memory=1, disk=3)
-    actor = Actor("e")
+    actor = Actor("e", store=store)
     specs = shell(actor, box) | code(actor, BoxTree(box)) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="e", specs=frozenset(specs), system="x")
 
@@ -430,7 +432,9 @@ def test_a_stalled_git_whose_kill_is_refused_again_after_the_reap_raises_permiss
     gone(pids)
 
 
-def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(stubbed, tmp_path, capsys):
+def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(
+    stubbed, tmp_path, capsys, store
+):
     """`lion chat --box daytona` end to end on the stub: the directory pushed at the same path, the
     file tools over the box's tree, a git baseline for the copy, the diff saved as the chat's patch
     and applied to the directory with --apply."""
@@ -462,7 +466,7 @@ def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(s
     assert asyncio.run(tree.list_dir(".")) == [".git/", "calc.py", "sub/"]
     with pytest.raises(PermissionError, match="outside"):
         asyncio.run(tree.list_dir(".."))
-    actor = Actor("d")
+    actor = Actor("d", store=store)
     assert files(actor, tree) == {"read", "list_dir"}
     specs = {"read", "list_dir"} | code(actor, tree) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="d", specs=frozenset(specs), system="x")
@@ -518,6 +522,7 @@ def box_chat(monkeypatch, make_box, directory: Path, *turns: str, **flags) -> Ba
     from lion_cli.chat import chat_main
 
     monkeypatch.setattr("lion_cli.chat.DaytonaSandbox", make_box)
+    patch_khive(monkeypatch)
     monkeypatch.setattr("lion_cli.chat.backend_for", lambda model: scripted(*turns))
 
     async def eof(*a, **k):
@@ -527,7 +532,9 @@ def box_chat(monkeypatch, make_box, directory: Path, *turns: str, **flags) -> Ba
     a = dict(dir=str(directory), resume=None, log=None, shell=False, code=False, offline=False, model="x")
     a |= dict(turns=4, raw=True, say="hi", verbose=False, box="daytona", image="img", apply=False)
     try:
-        asyncio.run(chat_main(argparse.Namespace(**(a | flags))))
+        with tempfile.TemporaryDirectory() as signer:  # the actor it signs as, beside the copied directory
+            a |= dict(khive_config=str(actor_dir(Path(signer)) / ".khive" / "config.toml"))
+            asyncio.run(chat_main(argparse.Namespace(**(a | flags))))
     except Exception as e:  # noqa: BLE001 - what the chat ended on is the evidence
         return e
     return None

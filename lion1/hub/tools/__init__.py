@@ -6,7 +6,7 @@ from .code import Edit, LocalTree, ReadLines, Search, Tree, code
 from .daytona import DaytonaSandbox, SandboxDead
 from .docker import DockerSandbox, docker
 from .fs import ListDir, Read, files
-from .khive import KhiveOps, khive_ops
+from .khive import KhiveOps, Send, khive_ops, send
 from .runta import Egress, EgressSecret, RuntaSandbox, SecretInjection
 from .shell import Bash, Python, Sandbox, shell
 from .watch import Criteria, Watch, criteria
@@ -44,6 +44,8 @@ __all__ = (
     "files",
     "KhiveOps",
     "khive_ops",
+    "Send",
+    "send",
     "Egress",
     "EgressSecret",
     "RuntaSandbox",

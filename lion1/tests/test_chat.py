@@ -16,7 +16,8 @@ from hub import files
 from hub.chat import chat, entry_row, load_log
 from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
-from lion1.checkpoint import CheckpointError, load, save, take, to_history
+from tests.lionfake import routed_config
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -29,10 +30,16 @@ def asks(*messages: str | None):
     return ask
 
 
+_NOTES: dict = {}  # one note store per directory: the store outlives the actor, as the graph's does
+
+
 def reader(directory) -> tuple[Actor, Profile]:
-    actor = Actor("c", notes_dir=directory / "notes")
+    actor = Actor("c", store=fresh_store())
     specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
-    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text. Never write OUT{}.")
+    notes = _NOTES.setdefault(directory, fresh_store().notes("p"))
+    return actor, Profile(
+        name="c", specs=frozenset(specs), system="Reply in plain text. Never write OUT{}.", notes=notes
+    )
 
 
 def test_a_plain_turn_is_the_reply_and_the_next_message_is_in_the_same_record(tmp_path):
@@ -343,7 +350,7 @@ def test_a_log_cut_mid_write_recovers_its_whole_lines_and_names_the_cut(tmp_path
         load_log(log, [])
 
 
-def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path):
+def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path, store):
     # a slow tool beside an instant one: the turn and the instant result reach the log while the
     # slow one still runs; a signal in that window used to lose them and the resume notice went
     # silent about a command that had run
@@ -357,7 +364,7 @@ def test_each_entry_is_said_as_it_lands_not_at_the_next_turn_boundary(tmp_path):
     class Slow(BaseModel):
         pass
 
-    actor = Actor("c", notes_dir=tmp_path / "notes")
+    actor = Actor("c", store=store)
     said: list = []
     seen: list = []
 
@@ -396,7 +403,9 @@ def test_an_exact_chat_id_resolves_beside_its_same_second_sibling(tmp_path):
         raise AssertionError("a short prefix of two logs resolved")
 
 
-def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_history(tmp_path, monkeypatch):
+def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_history(
+    tmp_path, monkeypatch, console_khive
+):
     # a bad hooks.toml failed the start after the new log was reserved; `-c` then chose the
     # empty log and the previous history was gone from the next session
     import argparse
@@ -446,7 +455,9 @@ def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_histor
     assert sorted(p.name for p in chats.iterdir()) == [old.name]
 
 
-def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call(tmp_path, monkeypatch):
+def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call(
+    tmp_path, monkeypatch, console_khive
+):
     """A continued chat's new CLI session starts from the whole view; its first figure stands on the
     count the last call reported and the characters that call stood in, both from the log's bill."""
     import argparse
@@ -564,7 +575,7 @@ def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
     assert [e.content for e in run.record if e.kind is Kind.TEXT][-1] == "Still here."
 
 
-def test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance(tmp_path):
+def test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance(tmp_path, console_khive):
     """`console(tree=..., about_box=...)`: the file and code tools work the tree handed in, not the
     directory, and the shell guidance is the box's, not the VM's."""
     from lion_cli.chat import console
@@ -624,6 +635,40 @@ def test_capture_failure_retains_box_and_reports_identity(tmp_path, monkeypatch,
     assert box.started and not box.stopped  # retained
     out = " ".join(capsys.readouterr().out.split())
     assert f"box {box.box_id}: kept, not stopped" in out  # and named, so it can be reached
+
+
+def test_a_patch_cut_short_by_a_cancellation_keeps_the_box_and_names_it(tmp_path, monkeypatch):
+    # an interrupt while the copy is read: the box may hold the only copy, so it is kept and named
+    from lion_cli.chat import end_box
+
+    from tests.test_daytona import ChatBox
+
+    async def ending():
+        reading = asyncio.Event()
+
+        async def stuck(self, base="HEAD"):
+            reading.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(ChatBox, "diff", stuck)
+        box = ChatBox("img", "/w")
+        said: list[str] = []
+        task = asyncio.create_task(
+            end_box(box, tmp_path, tmp_path / "saved", "c1", baseline="b", apply=False, say=said.append)
+        )
+        await reading.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return box, said
+
+    ChatBox.made.clear()
+    box, said = asyncio.run(ending())
+    assert not box.stopped
+    assert said[-1] == (
+        f"box {box.box_id}: kept, not stopped: interrupted while its patch was taken; the work is there, "
+        "at /w, until the box's idle stop deletes it"
+    )
 
 
 def test_a_save_failure_or_a_dead_box_keeps_the_error_and_says_whether_the_box_can_be_reached(
@@ -868,7 +913,7 @@ def test_a_resumed_chat_whose_git_hangs_is_told_its_patch_could_not_be_checked_w
 
 
 def test_a_resumed_coding_chat_whose_git_hangs_starts_with_the_branch_said_unknown_within_its_bound(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, console_khive
 ):
     # with --code the guidance names the branch, read from git with no time limit: past the bounded
     # patch check, a git that hangs still held the resumed chat before its first call
@@ -935,7 +980,7 @@ def test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_u
     assert [p.read_text() for p in sorted((src / ".lion" / "chats").glob("*.patch"))] == [patch, patch]
 
 
-def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
+def test_a_log_read_back_as_history_resumes_the_view_the_run_last_showed(tmp_path):
     from lion1.record import fold
 
     (tmp_path / "a.txt").write_text("alpha\n")
@@ -958,12 +1003,9 @@ def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_pat
                 say=lambda e: fh.write(json.dumps(entry_row(e)) + "\n"),
             )
         )
-    source = {"record": str(log), "run": run1.id}
-    ckpt = take(source, [], actor="c", why="manual", budget=60_000, record=run1.record)
-    save(ckpt, tmp_path)
-    history = to_history(load(tmp_path))
+    history = load_log(log)  # the log's rows back as entries, as the store's `history` reads its rows
     rows = lambda es: [(e.seq, e.kind, e.content, e.alias, e.meta) for e in es]  # noqa: E731
-    assert rows(history) == rows(load_log(log)) == rows(run1.record)
+    assert rows(history) == rows(run1.record)
     seen: list[list[Message]] = []
     inner = scripted("Still folded.")
 
@@ -977,18 +1019,22 @@ def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_pat
     ended = [(m.role, m.content, m.name) for m in _messages(fold(run1.record))]
     assert [(m.role, m.content, m.name) for m in seen[0][1 : 1 + len(ended)]] == ended
     assert any(m.content.startswith("[hidden;") for m in seen[0]) and "b was beta" in seen[0][1 + 4].content
-    # a record that no longer folds to the checkpoint's view is refused, never replayed
+    # the directives ride the rows: without them the resumed view holds nothing folded
     lines = log.read_text().splitlines()
     cut = [json.loads(ln) for ln in lines]
     for r in cut:
         r["meta"].pop("directive", None)
     log.write_text("".join(json.dumps(r) + "\n" for r in cut))
-    try:
-        to_history(load(tmp_path))
-    except CheckpointError as e:
-        assert "no longer folds to the view" in str(e)
-    else:
-        raise AssertionError("a record without its directives replayed")
+    seen.clear()
+    inner2 = scripted("Still folded.")
+
+    async def backend2(messages):
+        seen.append(messages)
+        return await inner2(messages)
+
+    actor3, profile3 = reader(tmp_path)
+    asyncio.run(chat(actor3, profile3, backend2, asks("and?", None), history=load_log(log)))
+    assert not any(m.content.startswith("[hidden;") for m in seen[0])
 
 
 def _row(seq: int, content: str) -> dict:
@@ -1144,7 +1190,7 @@ def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp
             return Reply(text, prompt_tokens=14_100)
 
     actor, profile, runs, before, shown, figure = drive(Billed())
-    assert before == "inbox 0 · notes 1 (7 chars) · $0.0000"  # the notes file outlives the actor
+    assert before == "inbox 0 · notes 1 (7 chars) · $0.0000"  # the note store outlives the actor
     assert runs[0].anchor[0] == 14_100 and 14_100 < figure < 15_000
     assert shown == [
         f"inbox 0 · ctx ~{figure / 1000:.1f}k/200k (last call 14.1k) · notes 1 (7 chars) · "
@@ -1246,7 +1292,7 @@ def test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked(tmp
         "claude-sonnet-5-5 · no actor · inbox 0"
     )
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     assert signer(tmp_path) == "lambda:x"
     line = status_line(actor, profile, [], None, "m", signer(tmp_path))
     assert line.startswith("m · lambda:x · inbox 0")

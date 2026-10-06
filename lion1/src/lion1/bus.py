@@ -2,7 +2,8 @@
 
 An in-process observer on one event loop. `emit` records the event, calls every matching handler,
 and schedules any coroutine a handler returns as a task the bus tracks. A handler that raises is
-recorded in `errors` and never breaks the emitter.
+recorded in `errors` and never breaks the emitter. `log` holds the last `keep` events and `errors` the
+last `keep` failures; a bus with `keep` 0 holds neither.
 """
 
 from __future__ import annotations
@@ -75,11 +76,19 @@ class Bus:
             try:
                 result = handler(event)
             except Exception as e:
-                self.errors.append((event, handler, e))
+                self._failed(event, handler, e)
                 continue
             if inspect.isawaitable(result):
                 self._schedule(event, handler, result)
         return event
+
+    def _failed(self, event: Event, handler: Handler, error: BaseException) -> None:
+        # bounded like the log: a subscriber failing on every event of a resident agent would
+        # otherwise grow this, and each exception keeps its traceback's frames alive
+        if self.keep:
+            self.errors.append((event, handler, error))
+            if len(self.errors) > self.keep:
+                del self.errors[: len(self.errors) - self.keep]
 
     def _schedule(self, event: Event, handler: Handler, awaitable: Awaitable[None]) -> None:
         # The awaitable itself is tracked, never a wrapper around it: cancelling a tracked task
@@ -88,13 +97,13 @@ class Bus:
         try:
             task = asyncio.ensure_future(awaitable, loop=asyncio.get_running_loop())
         except ValueError as e:  # a future bound to another loop: recorded, as a handler that raised
-            self.errors.append((event, handler, e))
+            self._failed(event, handler, e)
             return
 
         def done(task: asyncio.Future) -> None:
             self.tasks.discard(task)
             if not task.cancelled() and isinstance(e := task.exception(), Exception):
-                self.errors.append((event, handler, e))
+                self._failed(event, handler, e)
 
         self.tasks.add(task)
         task.add_done_callback(done)

@@ -565,7 +565,7 @@ def test_an_empty_answer_is_retried_and_both_attempts_usage_is_counted(fake_cli)
     assert any(n.startswith("attempt 1 failed: no message: events") for n in call["notes"])
 
 
-def test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it(fake_cli):
+def test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it(fake_cli, store):
     # the answering attempt's count, cache read included; the envelope's sum over two attempts is the
     # size of neither prompt (ADR-0009/C2)
     backend = Codex(cli=fake_cli)
@@ -579,7 +579,7 @@ def test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_st
         return await backend(messages)
 
     run = asyncio.run(
-        Actor("codex-count").run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), watched)
+        Actor("codex-count", store=store).run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), watched)
     )
     (f1, v1), (f2, v2) = seen
     assert f1 == v1 and v2 > v1  # nothing reported yet: the view estimate

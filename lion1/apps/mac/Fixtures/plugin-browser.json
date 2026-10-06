@@ -1,0 +1,54 @@
+{
+  "name": "browser",
+  "about": "A headless browser: open pages, click, read.",
+  "source": "installed",
+  "kind": "mcp",
+  "on": false,
+  "from": {
+    "marketplace": "community-plugins",
+    "address": "github.com/example/community-plugins",
+    "version": "0.4.0",
+    "installed_at": "2026-09-14T16:30:00Z"
+  },
+  "agents": [],
+  "skills": [],
+  "tools": [
+    {
+      "name": "open_page",
+      "kind": "mcp",
+      "about": "Open a page",
+      "args": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "about": "the address"
+        }
+      ],
+      "effect": "read",
+      "on": false
+    },
+    {
+      "name": "click",
+      "kind": "mcp",
+      "about": "Click an element",
+      "args": [
+        {
+          "name": "selector",
+          "type": "string",
+          "required": true,
+          "about": "a CSS selector"
+        }
+      ],
+      "effect": "write",
+      "on": false
+    }
+  ],
+  "server": {
+    "command": "browser-server",
+    "env": [],
+    "state": "off"
+  },
+  "not_used": [],
+  "given_to": []
+}

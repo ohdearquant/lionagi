@@ -14,10 +14,15 @@ acceptance checks. Scripted backend; runs offline.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import shutil
+import tempfile
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from lion1 import Actor, Context, Kind, Profile, RunRequest
+from lion1 import Actor, Context, Kind, Profile, RunRequest, Store
+from lion1.khive import Khive
 
 
 class Write(BaseModel):
@@ -45,9 +50,25 @@ def scripted(*turns):
     return backend
 
 
+def a_store() -> Store:
+    """The store the run's rows go to: the khive binary, as the actor of a scratch directory."""
+    scratch = Path(tempfile.mkdtemp())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)  # the scratch goes with the process
+    (scratch / ".khive").mkdir()
+    (scratch / ".khive" / "config.toml").write_text(
+        # the actor, and the lion pack's tables routed to their own file beside a main store (the
+        # store refuses a config that would put them in the default one under the home directory)
+        '[actor]\nid = "example"\n'
+        f'\n[[backends]]\nname = "main"\npath = "{scratch / ".khive" / "main.db"}"\n'
+        f'\n[[backends]]\nname = "lion"\npath = "{scratch / ".khive" / "lion.db"}"\n'
+        '\n[packs.lion]\nbackend = "lion"\n'
+    )
+    return Store(Khive(scratch, "example"))
+
+
 async def main() -> None:
     state = {"draft": "", "last": None, "stood": 0}
-    actor = Actor("drafter")
+    actor = Actor("drafter", store=a_store())
 
     @actor.handler(Write)
     async def write(req: Write, ctx: Context) -> str:

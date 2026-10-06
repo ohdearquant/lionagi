@@ -1,0 +1,96 @@
+{
+  "name": "swe-kit",
+  "about": "Tools for making and testing code changes.",
+  "source": "installed",
+  "kind": "plugin",
+  "on": true,
+  "from": {
+    "marketplace": "sample-plugins",
+    "address": "github.com/example/sample-plugins",
+    "version": "0.9.1",
+    "installed_at": "2026-09-30T09:12:00Z"
+  },
+  "folder": "~/.lion/plugins/swe-kit/",
+  "agents": [
+    {
+      "name": "builder",
+      "about": "Makes code changes on a branch and opens a pull request.",
+      "in_use": 2
+    }
+  ],
+  "skills": [
+    {
+      "name": "fix-a-failing-test",
+      "loaded_when": "a test fails",
+      "on": true,
+      "text": "# Fix a failing test\n\nReproduce it first; change the code, not the test, unless the test is wrong."
+    },
+    {
+      "name": "open-a-branch",
+      "loaded_when": "work starts on a change",
+      "on": true,
+      "text": "# Open a branch\n\nOne branch per change, named for what it does."
+    }
+  ],
+  "tools": [
+    {
+      "name": "run_tests",
+      "kind": "function",
+      "about": "Run the project's tests",
+      "args": [
+        {
+          "name": "filter",
+          "type": "string",
+          "required": false,
+          "about": "only tests matching this"
+        }
+      ],
+      "effect": "run",
+      "on": true
+    },
+    {
+      "name": "open_pr",
+      "kind": "function",
+      "about": "Open a pull request from the current branch",
+      "args": [
+        {
+          "name": "title",
+          "type": "string",
+          "required": true,
+          "about": "the title"
+        }
+      ],
+      "effect": "write",
+      "on": true
+    },
+    {
+      "name": "diff",
+      "kind": "function",
+      "about": "Show the branch's changes",
+      "args": [],
+      "effect": "read",
+      "on": true
+    },
+    {
+      "name": "format_code",
+      "kind": "function",
+      "about": "Format the changed files",
+      "args": [],
+      "effect": "write",
+      "on": true
+    },
+    {
+      "name": "lint",
+      "kind": "function",
+      "about": "Lint the changed files",
+      "args": [],
+      "effect": "read",
+      "on": true
+    }
+  ],
+  "not_used": [],
+  "given_to": [
+    "platform/builder",
+    "support/builder"
+  ]
+}

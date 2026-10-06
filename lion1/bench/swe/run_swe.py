@@ -4,7 +4,11 @@ Per instance: start the eval image as a box, give the model the issue and the hu
 python, read_lines, search, edit), let it work in turns, take `git diff` as the patch when it
 finishes with OUT{}, write predictions.jsonl. `--oracle` then scores with the official harness.
 
-    uv run python bench/swe/run_swe.py --instances django__django-11119 [--model sonnet] [--oracle]
+    uv run python bench/swe/run_swe.py --instances django__django-11119 --khive-dir DIR \\
+        [--model sonnet] [--oracle]
+
+`--khive-dir` names the directory whose `.khive/config.toml` names the actor and routes the lion
+pack's tables to their own file (ADR-0026 C8); every run's rows go there.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -29,7 +34,8 @@ from hub.backend import ClaudeCode, ClaudeCodeSession, Codex, OpenRouter
 from hub.tools import Box, BoxTree, SandboxDead, code, shell
 from hub.tools import watch as watching
 from hub.tools.watch import Watch
-from lion1 import Actor, Exhausted, Kind, Profile, RunRequest, Success
+from lion1 import Actor, Exhausted, Kind, Profile, RunRequest, Store, Success
+from lion1.khive import Khive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox import testbed  # noqa: E402
@@ -68,10 +74,16 @@ def _reasoning(thinking: str) -> dict | None:
     raise ValueError(f"--thinking takes off, on, low, medium, high, xhigh, max or a budget, not {thinking!r}")
 
 
-def build_actor(box: Box, watch: Watch | None = None) -> Actor:
+def store_of(directory: str | Path) -> Store:
+    """The store a run writes its rows to: the actor the directory's `.khive/config.toml` names."""
+    d = Path(directory)
+    return Store(Khive(d, tomllib.loads((d / ".khive" / "config.toml").read_text())["actor"]["id"]))
+
+
+def build_actor(box: Box, store: Store, watch: Watch | None = None) -> Actor:
     """The hub's tools over the box: `bash` and `python` (shell), `read_lines`, `search` and `edit`
     (code); plus `criteria` when the run ends on the model's own checks."""
-    actor = Actor("swe", privileges={"sandbox"})
+    actor = Actor("swe", privileges={"sandbox"}, store=store)
     if watch is not None:
         watching.criteria(actor, watch)
     shell(actor, box)
@@ -210,6 +222,8 @@ async def solve(
     criteria: bool = False,
     tdd: bool = False,
     backend: Any = None,
+    *,
+    store: Store,
 ) -> dict:
     """One instance through the loop. A caller-supplied `box` is already started and stays open
     afterwards (so it can be graded in place); otherwise a local docker box is made and closed here.
@@ -240,7 +254,7 @@ async def solve(
             await box.start()
         rec["base"] = await baseline(box)
         watch = Watch(box, settle_after=settle, base=rec["base"])
-        actor = build_actor(box, watch if criteria else None)
+        actor = build_actor(box, store, watch if criteria else None)
         actor.section(watch.section)
         progress = out_dir / "progress.log"  # one line per turn across the whole set, appended
 
@@ -525,7 +539,15 @@ async def main(args: argparse.Namespace) -> None:
 
     async def one(iid: str) -> dict:
         async with sem:
-            rec = await solve(rows[iid], args.model, args.max_turns, out_dir, args.backend, cost_budget=1.0)
+            rec = await solve(
+                rows[iid],
+                args.model,
+                args.max_turns,
+                out_dir,
+                args.backend,
+                cost_budget=1.0,
+                store=store_of(args.khive_dir),
+            )
             spent = rec.get("cost_usd", 0.0)
             print(
                 f"{iid}: {rec.get('outcome')} turns={rec.get('turns')} patch={len(rec['model_patch'])}c "
@@ -560,4 +582,7 @@ if __name__ == "__main__":
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--oracle", action="store_true")
     ap.add_argument("--backend", choices=["turns", "session", "openrouter"], default="turns")
+    ap.add_argument(
+        "--khive-dir", required=True, help="the directory whose .khive/config.toml names the actor"
+    )
     asyncio.run(main(ap.parse_args()))

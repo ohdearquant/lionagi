@@ -90,8 +90,9 @@ drops the alias on exit.
 Each command runs as its own task; the turn settles by gathering them. The bus is an in-process
 observer: `emit` records the event, calls each matching subscriber in turn, schedules any coroutine
 a subscriber returns as a tracked task, and keeps a subscriber's exception in `errors`. A subscriber
-that blocks holds the emitter, so a subscriber returns at once or hands back a coroutine; the log is
-bounded, and a tracked task leaves the set when it finishes; `drain` awaits the rest.
+that blocks holds the emitter, so a subscriber returns at once or hands back a coroutine; the log
+and `errors` hold the last `keep` events and failures, and a tracked task leaves the set when it
+finishes; `drain` awaits the rest.
 
 Patterns match exactly, by prefix (`command.`), or everything (`*`). Events: `run.started`,
 `turn.started`, `turn.retry`, `command.requested`, `command.settled`, `inbox.queued`,

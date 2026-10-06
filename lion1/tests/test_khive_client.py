@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from hub.khive import LOST, Khive, KhiveError
+from lion1.khive import LOST, Khive, KhiveError
+from tests.lionfake import routed_config
 
 
 class Dropping(Khive):
@@ -19,7 +20,7 @@ class Dropping(Khive):
 
     def __init__(self, tmp_path: Path, drops: int, error: str = LOST, page: dict | None = None):
         (tmp_path / ".khive").mkdir(exist_ok=True)
-        (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+        (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
         (tmp_path / "kkernel").write_text("")  # never run: exec is replaced below
         super().__init__(tmp_path, "lambda:x", kkernel=str(tmp_path / "kkernel"))
         self.drops, self.error, self.ops = drops, error, []
@@ -62,7 +63,7 @@ def test_ops_is_one_positional_argument(tmp_path):
     """A stub kkernel records the argv it was started with: the ops string, an option-shaped one
     included, arrives unchanged as the last argument, after `--`."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     log = tmp_path / "argv.jsonl"
     stub = tmp_path / "kkernel"
     stub.write_text(
@@ -84,7 +85,7 @@ def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch)
     # the child was left to the transport on cancel, and killed without a wait on timeout: its
     # grandchild held the pipes open past the loop's end
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     stub = tmp_path / "kkernel"
     stub.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'grandchild'}\nwait\n")
     stub.chmod(0o755)
@@ -128,7 +129,7 @@ def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch)
 
 def test_a_timeout_after_kkernel_exited_still_stops_what_it_left_holding_the_pipes(tmp_path):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     stub = tmp_path / "kkernel"
     stub.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'child'}\nexit 0\n")
     stub.chmod(0o755)
@@ -184,6 +185,53 @@ def test_an_explicit_config_rides_every_call_and_a_missing_one_is_refused_never_
         Khive(cwd, "lambda:y", kkernel=str(stub))
 
 
+def test_kkernel_reads_the_config_the_client_names_never_one_the_environment_names(tmp_path, monkeypatch):
+    """A relative `config=` reaches kkernel absolute, as named from the caller's directory, since kkernel
+    runs in `cwd`; and kkernel starts without KHIVE_CONFIG and KHIVE_DB, either of which would choose
+    another config or another database than the one a store checked. The rest of the environment rides
+    as it is."""
+    log = tmp_path / "seen.jsonl"
+    stub = tmp_path / "kkernel"
+    stub.write_text(
+        f"#!{sys.executable}\nimport json, os, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps([sys.argv[1:], os.getcwd(), "
+        "{k: os.environ.get(k) for k in ('KHIVE_CONFIG', 'KHIVE_DB', 'LION1_PROBE')}]) + '\\n')\n"
+        "print(json.dumps({'results': [{'ok': True, 'result': None}]}))\n"
+    )
+    stub.chmod(0o755)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "config.toml").write_text('[actor]\nid = "lambda:y"\n')
+    work = tmp_path / "work"
+    (work / ".khive").mkdir(parents=True)
+    (work / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:y"\n')
+    (work / "khive.toml").write_text('[actor]\nid = "lambda:y"\n')  # khive's own discovery prefers it
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("KHIVE_CONFIG", str(tmp_path / "other.toml"))
+    monkeypatch.setenv("KHIVE_DB", str(tmp_path / "other.db"))
+    monkeypatch.setenv("LION1_PROBE", "rides")
+    named = Khive(work, "lambda:y", kkernel=str(stub), config=Path("elsewhere/config.toml"))
+    own = Khive(work, "lambda:y", kkernel=str(stub))
+    for k in (named, own):
+        asyncio.run(k.exec("comm.inbox(limit=1)"))
+        k.exec_sync("comm.inbox(limit=1)")
+    seen = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(seen) == 4
+    for _, cwd, env in seen:
+        assert env == {"KHIVE_CONFIG": None, "KHIVE_DB": None, "LION1_PROBE": "rides"}
+        assert os.path.samefile(cwd, work)
+    for (
+        argv,
+        _,
+        _,
+    ) in seen:  # the file named, or with none named the cwd's .khive/config.toml, never khive.toml
+        config = argv[argv.index("--config") + 1]
+        assert os.path.isabs(config)
+    named_files = {argv[argv.index("--config") + 1] for argv, _, _ in seen[:2]}
+    own_files = {argv[argv.index("--config") + 1] for argv, _, _ in seen[2:]}
+    assert [os.path.samefile(f, tmp_path / "elsewhere" / "config.toml") for f in named_files] == [True]
+    assert [os.path.samefile(f, work / ".khive" / "config.toml") for f in own_files] == [True]
+
+
 @pytest.mark.parametrize("code", [0, 1])
 @pytest.mark.parametrize(
     "error, kind",
@@ -196,7 +244,7 @@ def test_an_explicit_config_rides_every_call_and_a_missing_one_is_refused_never_
 )
 def test_a_failed_op_raises_with_the_kind_the_store_gave_its_error_and_no_other(tmp_path, code, error, kind):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
     answer = {"results": [{"ok": False, "tool": "get", "error": error}], "status": "partial"}
     stub = tmp_path / "kkernel"
     stub.write_text(f"#!{sys.executable}\nimport sys\nprint({json.dumps(answer)!r})\nsys.exit({code})\n")
@@ -204,3 +252,16 @@ def test_a_failed_op_raises_with_the_kind_the_store_gave_its_error_and_no_other(
     with pytest.raises(KhiveError) as raised:
         asyncio.run(Khive(tmp_path, "lambda:x", kkernel=str(stub)).exec('get(id="ev1")'))
     assert raised.value.kind == kind
+
+
+def test_a_wait_past_the_cap_is_sliced_and_an_offset_rides_the_read(tmp_path):
+    k = Dropping(tmp_path, 0, page={"messages": []})
+    assert asyncio.run(k.inbox(wait_ms=45_000, status="read", offset=50)) == []
+    assert k.ops == [
+        'comm.inbox(status="read", limit=50, offset=50, wait_ms=20000)',
+        'comm.inbox(status="read", limit=50, offset=50, wait_ms=20000)',
+        'comm.inbox(status="read", limit=50, offset=50, wait_ms=5000)',
+    ]  # three slices under the daemon's deadline, until the wait is spent
+    k = Dropping(tmp_path, 0)
+    assert asyncio.run(k.inbox(wait_ms=45_000)) == [{"id": "m1"}] and len(k.ops) == 1  # mail ends the wait
+    assert not hasattr(k, "mark_read")  # the mark-read is written at its call site as the DSL (ADR-0025 D7)

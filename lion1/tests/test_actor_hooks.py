@@ -12,6 +12,7 @@ from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, comp
 from lion1 import Actor, Kind, Message, Profile, Result, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
 from lion1.spec import spec_name
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -77,12 +78,6 @@ class AliasedEither(BaseModel):
     text: str = Field(alias="wire_text")
 
 
-# `validate_by_alias` arrived in pydantic 2.11; earlier releases ignore the key and read the alias
-by_name_only = pytest.mark.skipif(
-    "validate_by_alias" not in ConfigDict.__annotations__, reason="pydantic before 2.11 reads aliases only"
-)
-
-
 class Loose(BaseModel):
     model_config = ConfigDict(extra="allow")
     text: str
@@ -93,7 +88,7 @@ class Tagged(BaseModel):
 
 
 def make() -> tuple[Actor, Profile]:
-    actor = Actor("hooked")
+    actor = Actor("hooked", store=fresh_store())
 
     @actor.handler(Echo)
     async def echo(req: Echo, ctx) -> str:
@@ -188,8 +183,8 @@ def test_an_after_hook_sees_every_result_and_may_replace_it_and_its_own_failure_
     )
 
 
-def test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_through_its_validator():
-    actor = Actor("hooked-rebuild")
+def test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_through_its_validator(store):
+    actor = Actor("hooked-rebuild", store=store)
 
     @actor.handler(Padded)
     async def padded(req: Padded, ctx) -> str:
@@ -206,8 +201,8 @@ def test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_thro
     assert r["a2"].ok and r["a2"].value == "never validated"
 
 
-def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_computed_ones():
-    actor = Actor("hooked-computed")
+def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_computed_ones(store):
+    actor = Actor("hooked-computed", store=store)
 
     @actor.handler(Counted)
     async def counted(req: Counted, ctx) -> str:
@@ -228,9 +223,7 @@ def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_comp
         (AliasedWithDefault, 'wire_text="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedChoices, 'text_on_wire="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedPath, "", {"head": "kept", "text": "changed"}, {"head": "kept", "text": "changed"}),
-        pytest.param(
-            AliasedByName, 'text="asked"', {"text": "changed"}, {"text": "changed"}, marks=by_name_only
-        ),
+        (AliasedByName, 'text="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedEither, 'text="asked"', {"text": "changed"}, {"text": "changed"}),
         (AliasedEither, 'wire_text="asked"', {"text": "changed"}, {"text": "changed"}),
         (Loose, 'text="asked", note="asked"', {"note": "changed"}, {"text": "asked", "note": "changed"}),
@@ -246,8 +239,8 @@ def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_comp
         "extras",
     ],
 )
-def test_a_replacement_instance_keeps_its_aliased_fields_and_its_extras(spec, args, update, expected):
-    actor = Actor("hooked-aliases")
+def test_a_replacement_instance_keeps_its_aliased_fields_and_its_extras(spec, args, update, expected, store):
+    actor = Actor("hooked-aliases", store=store)
 
     @actor.handler(spec)
     async def dump(req: BaseModel, ctx) -> dict:
@@ -265,8 +258,8 @@ def test_a_replacement_instance_keeps_its_aliased_fields_and_its_extras(spec, ar
 @pytest.mark.parametrize(
     "spec,args", [(Loose, 'text="x", tags=["asked"]'), (Tagged, 'tags=["asked"]')], ids=["extra", "set"]
 )
-def test_a_hooks_change_in_place_to_an_extra_or_a_set_changes_nothing(spec, args):
-    actor = Actor("hooked-in-place")
+def test_a_hooks_change_in_place_to_an_extra_or_a_set_changes_nothing(spec, args, store):
+    actor = Actor("hooked-in-place", store=store)
     entered: list[list[str]] = []
 
     def tags(req: BaseModel):
@@ -328,8 +321,8 @@ def test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_ref
     assert r["a4"].ok and r["a4"].value == "four"
 
 
-def test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies():
-    actor = Actor("hooked-captures")
+def test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies(store):
+    actor = Actor("hooked-captures", store=store)
     kept: list[list[str]] = []
     seen: list[tuple[str, list[str], list[str]]] = []
 
@@ -385,7 +378,7 @@ def test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entr
 
 
 def test_a_capture_copies_a_list_that_holds_itself_once():
-    actor = Actor("hooked-ring")
+    actor = Actor("hooked-ring", store=fresh_store())
     made: list[list] = []
 
     @actor.handler(Gather)
@@ -434,8 +427,8 @@ def test_a_capture_copies_a_value_reached_twice_once(shape):
 
 
 @pytest.mark.usefixtures("no_collection")
-def test_a_result_too_deep_to_capture_settles_the_command_failed_and_the_run_goes_on():
-    actor = Actor("hooked-deep")
+def test_a_result_too_deep_to_capture_settles_the_command_failed_and_the_run_goes_on(store):
+    actor = Actor("hooked-deep", store=store)
 
     @actor.handler(Gather)
     async def deep(req: Gather, ctx) -> list:
@@ -455,8 +448,8 @@ def test_a_result_too_deep_to_capture_settles_the_command_failed_and_the_run_goe
     assert got["s"].ok and got["s"].value == [[[["bottom"]]]]
 
 
-def test_a_capture_copies_what_a_tuple_holds():
-    actor = Actor("hooked-tuple")
+def test_a_capture_copies_what_a_tuple_holds(store):
+    actor = Actor("hooked-tuple", store=store)
     made: list[tuple] = []
 
     @actor.handler(Pair)

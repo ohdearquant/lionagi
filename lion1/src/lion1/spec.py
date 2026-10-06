@@ -15,7 +15,7 @@ import typing
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 
-from pydantic import AliasChoices, BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel
 
 __all__ = (
     "Spec",
@@ -29,9 +29,6 @@ __all__ = (
 Spec = type[BaseModel]
 
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-# pydantic 2.11 reads validate_by_alias and validate_by_name; before it a config may carry them, and
-# validation reads by alias, and by name too under populate_by_name, whatever they say
-_BY_SETTINGS = "validate_by_name" in ConfigDict.__annotations__
 # a key the actor's two readers both take bare: an OUT{} tag quotes a bare `[A-Za-z_]\w*` key (lndl's
 # `_BARE_KEY`), and a program reads a Python name, NFKC-normalized, never a keyword or a `__` name
 _BARE = re.compile(r"[A-Za-z_]\w*")
@@ -148,7 +145,7 @@ def _reads_back(keys: dict[str, list[str | int]], paths: dict[str, list[list[str
 
 def _one_key(spec: Spec, name: str) -> list[str | int]:
     alias = spec.model_fields[name].validation_alias
-    if _BY_SETTINGS and not spec.model_config.get("validate_by_alias", True):
+    if not spec.model_config.get("validate_by_alias", True):
         return [name]
     if isinstance(alias, AliasChoices):  # validation reads any one of them
         alias = next((c for c in alias.choices if isinstance(c, str)), alias.choices[0])
@@ -165,7 +162,7 @@ def _paths(spec: Spec, name: str) -> list[list[str | int]]:
     """Every path validation reads field `name` from, in the order it tries them: the alias, or each of
     its alternatives, then the name when the spec reads names too."""
     alias = spec.model_fields[name].validation_alias
-    if alias is None or (_BY_SETTINGS and not spec.model_config.get("validate_by_alias", True)):
+    if alias is None or not spec.model_config.get("validate_by_alias", True):
         return [[name]]
     choices = alias.choices if isinstance(alias, AliasChoices) else [alias]
     paths = [[c] if isinstance(c, str) else list(c.path) for c in choices]
@@ -173,11 +170,8 @@ def _paths(spec: Spec, name: str) -> list[list[str | int]]:
 
 
 def _by_name(spec: Spec) -> bool:
-    # pydantic 2.11 on: populate_by_name sets validate_by_name when it is unset
-    by_name = spec.model_config.get("validate_by_name") if _BY_SETTINGS else None
-    if by_name is None:  # before 2.11 only populate_by_name
-        by_name = spec.model_config.get("populate_by_name")
-    return bool(by_name)
+    # populate_by_name sets validate_by_name when the config leaves it unset
+    return bool(spec.model_config.get("validate_by_name"))
 
 
 def _overlap(a: list[str | int], b: list[str | int]) -> bool:

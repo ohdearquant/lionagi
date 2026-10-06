@@ -5,10 +5,11 @@ the file `--config` names, which wins over the cwd's (measured: from a directory
 names another actor, the file's actor resolves and `--expect-actor <the cwd's>` is refused). So a
 Khive is bound to a directory, or to a config file, and asserts on every call that it resolves to
 the actor it was built for (`--expect-actor`). Ops are the verb DSL the MCP `request` tool takes;
-string arguments are JSON literals, so they go through `json.dumps`.
-
-The directory's `.khive/` also keeps its checkpoints, under `.khive/context/` (`context_dir`), which
-git must ignore (`assert_ignored`, ADR-0019/C6).
+string arguments are JSON literals, so they go through `json.dumps`. The binary reads the file a
+`Store` checked (ADR-0026 C8) and no other: `--config` names `config`, made absolute from the directory
+it was named in since the binary runs in `cwd`, or else the cwd's `.khive/config.toml`, which khive's
+own discovery passes over for a `khive.toml` beside it; and the binary starts without `KHIVE_CONFIG`
+and `KHIVE_DB`, either of which would choose another config or another database.
 """
 
 from __future__ import annotations
@@ -24,16 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lion1.checkpoint import CheckpointError
-
 __all__ = (
     "KhiveError",
     "LOST",
     "lit",
     "Khive",
-    "NotIgnored",
-    "context_dir",
-    "assert_ignored",
 )
 
 
@@ -76,7 +72,7 @@ class Khive:
         if not Path(self.kkernel).exists():
             raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
         if self.config is not None:
-            self.config = Path(self.config)
+            self.config = Path(self.config).absolute()
             if not self.config.is_file():  # explicit means explicit: never the cwd's instead
                 raise KhiveError(f"{self.config}: no such khive config file")
         elif not (self.cwd / ".khive" / "config.toml").exists():
@@ -84,14 +80,10 @@ class Khive:
 
     async def exec(self, ops: str) -> list[Any]:
         """Run one DSL expression; each op's `result`, in order. An op that is not ok raises."""
-        # after `--`: an ops string that begins with `-` is the DSL, never an option
-        argv = [self.kkernel, "exec", "--strict", "--expect-actor", self.actor]
-        if self.config is not None:
-            argv += ["--config", str(self.config)]
-        argv += ["--", ops]
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *self._argv(ops),
             cwd=str(self.cwd),
+            env=self._env(),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -111,6 +103,45 @@ class Khive:
             if isinstance(e, asyncio.CancelledError):
                 raise
             raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
+        return self._answer(ops, proc.returncode, out, err)
+
+    def exec_sync(self, ops: str) -> list[Any]:
+        """`exec` for a caller that is not awaiting: the note store's five methods (ADR-0025 D6), each
+        one call of the binary, blocking the loop for its length. An async store is a later change."""
+        try:
+            done = subprocess.run(
+                self._argv(ops),
+                cwd=str(self.cwd),
+                env=self._env(),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=self.timeout,
+                start_new_session=True,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
+        return self._answer(ops, done.returncode, done.stdout, done.stderr)
+
+    def _env(self) -> dict[str, str]:
+        return {k: v for k, v in os.environ.items() if k not in ("KHIVE_CONFIG", "KHIVE_DB")}
+
+    def _argv(self, ops: str) -> list[str]:
+        # after `--`: an ops string that begins with `-` is the DSL, never an option
+        config = self.config or (self.cwd / ".khive" / "config.toml").absolute()
+        return [
+            self.kkernel,
+            "exec",
+            "--strict",
+            "--expect-actor",
+            self.actor,
+            "--config",
+            str(config),
+            "--",
+            ops,
+        ]
+
+    def _answer(self, ops: str, returncode: int | None, out: bytes, err: bytes) -> list[Any]:
         # the CLI prints a config warning and its database line on every call; keep the rest
         noise = (" WARN ", "database:")
         detail = [ln for ln in err.decode(errors="replace").splitlines() if not any(n in ln for n in noise)]
@@ -120,11 +151,11 @@ class Khive:
             raise KhiveError(f"unparseable kkernel output: {e}: {out[:300]!r}") from None
         results = data.get("results") or []
         bad = [r for r in results if not r.get("ok")]
-        if proc.returncode != 0:
+        if returncode != 0:
             # the op's own error is on stdout; stderr carries the refusal class and the actor line
             said = "; ".join(f"{r.get('tool')}: {str(r.get('error') or r)[:300]}" for r in bad)
             said = said or " | ".join(detail).strip() or out.decode(errors="replace").strip()
-            raise KhiveError(f"kkernel exited {proc.returncode}: {said[-600:]}", kind=_kind(bad))
+            raise KhiveError(f"kkernel exited {returncode}: {said[-600:]}", kind=_kind(bad))
         self.calls.append({"ops": ops, "status": data.get("status"), "summary": data.get("summary")})
         if bad:
             raise KhiveError(
@@ -167,10 +198,9 @@ class Khive:
             if mail or remaining <= 0:
                 return mail
 
-    async def mark_read(self, ids: list[str]) -> None:
-        if ids:
-            await self.exec(f"comm.read(ids={lit(ids)})")
-
+    # `send` is a method because the agent's boundary (`Bounded`) checks its recipient in code before
+    # the call; every other verb, the mark-read included, is written at its call site as the DSL
+    # (ADR-0025 D7)
     async def send(
         self,
         to: str,
@@ -179,9 +209,11 @@ class Khive:
         subject: str | None = None,
         thread_id: str | None = None,
         idempotency_key: str | None = None,
+        self_send: bool = False,
     ) -> dict:
         """With a key, the same request again replays the message that landed (`replayed: true`, the
-        same ids) instead of sending a second; another request under the key is `key_conflict`."""
+        same ids) instead of sending a second; another request under the key is `key_conflict`. comm
+        refuses a message to the sender's own actor unless `self_send` says it is meant."""
         args = [f"to={lit(to)}", f"content={lit(content)}"]
         if subject:
             args.append(f"subject={lit(subject)}")
@@ -189,62 +221,7 @@ class Khive:
             args.append(f"thread_id={lit(thread_id)}")
         if idempotency_key:
             args.append(f"idempotency_key={lit(idempotency_key)}")
+        if self_send:
+            args.append("self_send=true")
         (sent,) = await self.exec(f"comm.send({', '.join(args)})")
         return sent
-
-
-class NotIgnored(CheckpointError):
-    """`<dir>/.khive/context/` sits in a git work tree that does not ignore it."""
-
-
-def context_dir(directory: str | Path) -> Path:
-    """Where the directory keeps its checkpoints: `<dir>/.khive/context/`."""
-    return Path(directory) / ".khive" / "context"
-
-
-def assert_ignored(directory: str | Path) -> None:
-    """Checkpoints land under `<dir>/.khive/context/` (`context_dir`); inside a git work tree that path
-    must be ignored (`git check-ignore`) or the take refuses with NotIgnored. Outside a repository it
-    passes; a git that cannot answer refuses too, never passes."""
-    d = Path(directory)
-    git = shutil.which("git") or "/usr/bin/git"
-    try:
-        inside = subprocess.run(
-            [git, "-C", str(d), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise CheckpointError(f"git could not be asked about {d}: {e}; nothing was written") from None
-    if inside.returncode != 0:
-        if "not a git repository" in inside.stderr:
-            return
-        said = inside.stderr.strip() or f"rc {inside.returncode}"
-        raise CheckpointError(
-            f"git could not say whether {d} is in a repository: {said}; nothing was written"
-        )
-    if inside.stdout.strip() != "true":
-        return
-    try:
-        ignored = subprocess.run(
-            [git, "-C", str(d), "check-ignore", "-q", ".khive/context/"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise CheckpointError(
-            f"git check-ignore could not be asked about {d}: {e}; nothing was written"
-        ) from None
-    if ignored.returncode == 0:
-        return
-    if ignored.returncode == 1:
-        raise NotIgnored(
-            f"{d / '.khive' / 'context'} is inside a git work tree that does not ignore it, so a "
-            "checkpoint could be committed; add `.khive/context/` to the repository's .gitignore when "
-            "the directory is the repository root, `**/.khive/context/` when it sits below it. "
-            "Nothing was written"
-        )
-    said = ignored.stderr.strip() or f"rc {ignored.returncode}"
-    raise CheckpointError(f"git check-ignore could not answer for {d}: {said}; nothing was written")

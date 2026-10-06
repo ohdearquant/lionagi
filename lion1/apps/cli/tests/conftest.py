@@ -1,5 +1,5 @@
 """The suite's shared fixtures, from the root suite's conftest."""
 
-from tests.conftest import kkernel_stub
+from tests.conftest import console_khive, kkernel_stub, store
 
-__all__ = ("kkernel_stub",)
+__all__ = ("console_khive", "kkernel_stub", "store")

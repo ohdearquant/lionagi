@@ -7,7 +7,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.10.1",
+    "pydantic>=2.11",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -24,15 +24,19 @@ classifiers = [
 [project.optional-dependencies]
 daytona = ["daytona>=0.100"]  # hub.tools.daytona: a box on Daytona
 runta = ["runta-sdk>=0.2.1"]  # hub.tools.runta: a box on Runta
+serve = ["fastapi>=0.115", "uvicorn>=0.30", "h11>=0.16"]  # hub.serve over HTTP; h11 0.16: a chunk must end in CRLF
 
 [dependency-groups]
 dev = [
+    "fastapi>=0.115",
     "hypothesis>=6.100",
     "lion-cli",
     "pytest>=8.3",
     "pytest-cov>=5",
     "pytest-randomly>=3.15",
+    "pytest-xdist>=3.6",
     "ruff>=0.6",
+    "uvicorn>=0.30",
 ]
 
 [tool.uv.workspace]

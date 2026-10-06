@@ -1,0 +1,55 @@
+{
+  "name": "sample-plugins",
+  "address": "github.com/example/sample-plugins",
+  "updated_at": "2026-10-04T06:00:00Z",
+  "plugins": [
+    {
+      "name": "repo-review",
+      "holds": "2 skills · 1 agent",
+      "installed": true,
+      "version": "1.2.0"
+    },
+    {
+      "name": "swe-kit",
+      "holds": "5 tools · 2 skills · 1 agent",
+      "installed": true,
+      "version": "0.9.1"
+    },
+    {
+      "name": "notes-kit",
+      "holds": "2 skills · 1 agent",
+      "installed": false,
+      "version": "0.3.0"
+    },
+    {
+      "name": "postgres",
+      "holds": "MCP server · 9 tools",
+      "installed": false,
+      "version": "1.0.2"
+    },
+    {
+      "name": "tracker",
+      "holds": "MCP server · 14 tools",
+      "installed": false,
+      "version": "2.1.0"
+    },
+    {
+      "name": "changelog",
+      "holds": "1 skill",
+      "installed": false,
+      "version": "0.2.0"
+    },
+    {
+      "name": "release-notes",
+      "holds": "2 skills",
+      "installed": false,
+      "version": "0.5.1"
+    },
+    {
+      "name": "docs-writer",
+      "holds": "3 skills · 1 agent",
+      "installed": false,
+      "version": "1.1.0"
+    }
+  ]
+}

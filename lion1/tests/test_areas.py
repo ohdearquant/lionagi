@@ -30,6 +30,7 @@ from hub.agent.agent import _line
 from hub.areas import (
     _WAKE,
     Area,
+    agent_store,
     controls_info,
     identity,
     load_areas,
@@ -43,7 +44,8 @@ from hub.areas import (
     waiting_mail,
     wakes,
 )
-from hub.khive import KhiveError, lit
+from lion1.khive import KhiveError, lit
+from tests.lionfake import resident_store, unread
 
 TODAY = "2026-09-22"
 WAKE_LINE = (
@@ -51,6 +53,11 @@ WAKE_LINE = (
     "4321 out, $0.1234; 39 idle poll(s) before it at 0 tokens"
 )
 RESTART = "serving lambda:x:desk from /x as pid 4321; ticks created: []; programs gh=/g git=/t"
+
+
+@pytest.fixture(autouse=True)
+def _stub(kkernel_stub):
+    """Every resident directory here reads its notes through the stub binary (ADR-0025 D6)."""
 
 
 class FakeKhive:
@@ -68,22 +75,41 @@ class FakeKhive:
         return [{"id": "x"}]
 
 
-def fetch(url: str | urllib.request.Request, timeout: float = 2) -> bytes:
-    """A GET's body with its connection closed: the suite reads an unclosed socket as an error."""
+def fetch(url: str | urllib.request.Request, timeout: float = 10) -> bytes:
+    """A GET's body with its connection closed: the suite reads an unclosed socket as an error. A page
+    reads each resident's notes through the stub binary, a Python process per read, so under a full
+    suite's load a few residents take seconds; the bound is the stub's, measured, never the page's."""
     with urllib.request.urlopen(url, timeout=timeout) as r:
         return r.read()
 
 
 def agent_dir(tmp_path: Path, name: str, *, role: str, cursor: dict, spend: dict | None) -> Path:
     d = tmp_path / name
-    (d / "notes").mkdir(parents=True)
+    d.mkdir(parents=True)
     section = {"desk": "[desk]\nevery = 'every:5m'\n"}.get(role, "")
     (d / "chores.toml").write_text(f'actor = "lambda:x:{name}"\nowner = "lambda:x"\nmodel = "m"\n{section}')
-    notes = {"version": 1, "notes": {"cursor": {"key": "cursor", "value": cursor}}}
+    store = resident_store(d)
+    store.put("cursor", cursor, run="-", seq=0)
     if spend is not None:
-        notes["notes"]["spend"] = {"key": "spend", "value": spend}
-    (d / "notes" / "agent.json").write_text(json.dumps(notes))
+        store.put("spend", spend, run="-", seq=0)
     return d
+
+
+def test_a_residents_notes_are_refused_where_its_config_puts_them_in_the_main_store(tmp_path, kkernel_stub):
+    """`agent_store` builds a `Store`, so it refuses as every store does (ADR-0026 C8): a resident whose
+    config does not route the lion pack's tables gets no note store and nothing reaches the binary; the
+    page says the notes are unread."""
+    d = tmp_path / "r"
+    (d / ".khive").mkdir(parents=True)
+    (d / "chores.toml").write_text('actor = "lambda:x:r"\n')
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:r"\n')
+    with pytest.raises(KhiveError, match="would resolve to the main store"):
+        agent_store(d)
+    assert not kkernel_stub.with_name("lion.json").exists()  # the binary never ran
+    problem = resident(Area("a", "lambda:a", [str(d)]), str(d), TODAY).problem
+    assert problem.startswith("notes: ") and "would resolve to the main store" in problem
+    resident_store(d).put("cursor", {"wake": 1}, run="-", seq=0)  # the control: routed, the same call writes
+    assert kkernel_stub.with_name("lion.json").exists()
 
 
 def test_the_registry_reads_areas_and_a_missing_file_is_no_areas(tmp_path):
@@ -138,6 +164,7 @@ def test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid
     never = tmp_path / "never"
     never.mkdir()
     (never / "chores.toml").write_text('actor = "lambda:x:n"\n')
+    resident_store(never)
     r = resident(area, str(never), TODAY)
     assert r.problem == "no notes yet: never ran from this directory" and r.wake == 0
 
@@ -448,9 +475,7 @@ def app_dir(root: Path, *, plists: int = 1, deferred: list | None = None) -> Pat
         with open(d / f"job{i}.plist", "wb") as f:
             plistlib.dump({"Label": LABEL, "ProgramArguments": ["/usr/bin/true"]}, f)
     if deferred is not None:
-        notes = json.loads((d / "notes" / "agent.json").read_text())
-        notes["notes"]["deferred"] = {"key": "deferred", "value": {"mail": deferred}}
-        (d / "notes" / "agent.json").write_text(json.dumps(notes))
+        agent_store(d).put("deferred", {"mail": deferred}, run="-", seq=0)
     return d
 
 
@@ -651,7 +676,7 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
             "deferred_ts": 5.0,
         },
     ]
-    assert waiting_mail(str(tmp_path)) == []  # no notes: nothing waiting
+    assert waiting_mail(str(tmp_path)) is None  # no actor to read as: unread, never a count of zero
     port = serve_on(registry(tmp_path, d))
     (row,) = areas_rows(port)
     assert list(row) == ROW_KEYS and row["waiting"] == 2 and row["dir"] == str(d)
@@ -678,6 +703,10 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
     (d / "chores.toml").write_text('actor = "lambda:x:desk"\n')  # a missing table is {}
     api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
     assert api["budget"] == {} and api["wake"] == {}
+    unread(d)  # notes that cannot be read: the count is null on the row and the page, never zero
+    (row,) = areas_rows(port)
+    api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
+    assert row["waiting"] is None and api["waiting"] is None
     code, text, _ = call(port, "GET", "/api/resident?dir=/tmp/elsewhere")
     assert code == 404 and text.startswith("no resident at '/tmp/elsewhere'")
 
@@ -923,20 +952,17 @@ def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_
     assert controls_info(str(d))["idle"] is True  # nobody holds the lock: a stale cursor, not a wake
     fd = os.open(d / "agent.pid", os.O_RDWR)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    notes = d / "notes" / "agent.json"
+    notes = agent_store(d)
     try:
         assert controls_info(str(d))["idle"] is False
-        body = json.loads(notes.read_text())
-        body["notes"]["cursor"]["value"]["outcome"] = "Quiet"
-        notes.write_text(json.dumps(body))
+        notes.put("cursor", {"wake": 3, "outcome": "Quiet"}, run="-", seq=1)
         assert controls_info(str(d))["idle"] is True
-        body["notes"]["cursor"]["value"] = {"wake": 0}  # a cursor that names no outcome says nothing
-        notes.write_text(json.dumps(body))
+        notes.put("cursor", {"wake": 0}, run="-", seq=2)  # a cursor that names no outcome says nothing
         assert controls_info(str(d))["idle"] is False
-        notes.write_text("{not json")
-        assert controls_info(str(d))["idle"] is False  # unread reads as busy
-        notes.unlink()
+        notes.delete("cursor")
         assert controls_info(str(d))["idle"] is False  # served, no cursor yet: a first wake may be starting
+        unread(d)
+        assert controls_info(str(d))["idle"] is False  # unread reads as busy
     finally:
         os.close(fd)
 
@@ -1043,7 +1069,8 @@ def test_send_answers_json_under_accept_from_a_json_or_form_body_with_no_origin(
 
 def read_events(resp, until, timeout: float, ids: list | None = None) -> list[tuple[str, object]]:
     """(event, data) off an open `/events` response until `until(events)` holds; `ids`, when given, is
-    appended each event's (name, id), the id None for an event sent without one."""
+    appended each event's (name, id), the id None for an event sent without one. A pass reads every
+    resident's notes through the stub binary (see `fetch`), so the callers' deadline is the stub's."""
     events: list[tuple[str, object]] = []
     event, sent, deadline = "", None, time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1090,13 +1117,13 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     started = time.monotonic()
     with open(d / "serve.log", "a") as f:
         f.write(" line\n" + new + "\n")
-    got = read_events(resp, lambda ev: any(e == "log" and x["line"] == new for e, x in ev), 2.0)
+    got = read_events(resp, lambda ev: any(e == "log" and x["line"] == new for e, x in ev), 30)
     assert time.monotonic() - started < 2.0
     live = [x for e, x in got if e == "log"]
     assert [(x["line"], x["history"]) for x in live] == [("a partial line", False), (new, False)]
     # a row that changes is a new `areas` event; `ping` keeps the stream open
     (d / "hold").write_text("held by person from the app at now: r\n")
-    got = read_events(resp, lambda ev: {"areas", "ping"} <= {e for e, _ in ev}, 3)
+    got = read_events(resp, lambda ev: {"areas", "ping"} <= {e for e, _ in ev}, 30)
     assert [x for e, x in got if e == "areas"][-1][0]["controls"]["held_by_file"] is True
     assert ("ping", {}) in got
     # the client gone: its thread ends at the next write
@@ -1108,8 +1135,9 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
 
 
 def open_stream(port: int):
-    """An open `/events` response and the connection under it."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    """An open `/events` response and the connection under it. A pass of the stream reads every
+    resident's notes through the stub binary (see `fetch`), so the socket waits as long as that takes."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     conn.request("GET", "/events")
     return conn, conn.getresponse()
 
@@ -1125,7 +1153,7 @@ def test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll(tmp_pa
     d = app_dir(tmp_path)
     port = serve_on(registry(tmp_path, d))
     conn, resp = open_stream(port)
-    (first,) = read_events(resp, lambda ev: bool(ev), 5)
+    (first,) = read_events(resp, lambda ev: bool(ev), 30)
     assert first[0] == "areas" and first[1][0]["controls"]["held_by_file"] is False
     (d / "hold").write_text("held by person from the app at now: r\n")
     code, text, head = call(port, "GET", "/api/areas")  # the poll that saw the change
@@ -1152,7 +1180,7 @@ def test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision(tmp_pa
     polled = api_revision(port)
     conn, resp = open_stream(port)
     ids: list = []
-    read_events(resp, lambda ev: bool(ev), 5, ids)
+    read_events(resp, lambda ev: bool(ev), 30, ids)
     streamed = int(ids[0][1])
     assert ids[0][0] == "areas" and streamed >= polled  # the stream serves the read the poll last made
     (d / "hold").unlink()
@@ -1184,7 +1212,7 @@ def test_the_stream_sends_a_read_above_the_last_it_sent_though_its_rows_are_thos
 
     def a_pass() -> list[tuple[str, object, str | None]]:
         ids: list = []
-        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 5, ids)
+        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 30, ids)
         return [(e, x, i) for (e, x), (_, i) in zip(got, ids, strict=True)]
 
     try:
@@ -1223,7 +1251,7 @@ def test_a_read_whose_rows_are_unchanged_keeps_the_revision_and_the_stream_stays
 
     def a_pass() -> list[tuple[str, object, str | None]]:
         ids: list = []
-        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 5, ids)
+        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 30, ids)
         return [(e, x, i) for (e, x), (_, i) in zip(got, ids, strict=True)]
 
     try:

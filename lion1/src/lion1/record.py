@@ -10,11 +10,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, get_args
 
 __all__ = (
     "Kind",
     "Entry",
+    "Op",
     "Directive",
     "Record",
     "ViewEntry",
@@ -44,22 +45,34 @@ class Entry:
     turn: int = 0
     meta: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, Kind):  # a bare "text" too: the kind is the member, never its value
+            raise ValueError(f"entry kind {self.kind!r} is not one of {', '.join(str(k) for k in Kind)}")
+
     @property
     def name(self) -> str:
         """The runtime's name: kind prefix plus sequence, `_in3`, `_sys12`, `_m40`, `_r41`."""
         return f"{_PREFIX[self.kind]}{self.seq}"
 
 
+Op = Literal["hide", "show", "summarize"]
+_OPS = get_args(Op)
+
+
 @dataclass(frozen=True)
 class Directive:
     """One view directive, carried by a context command's RESULT or by a fold event's SYSTEM entry."""
 
-    op: str  # hide | show | summarize
+    op: Op
     refs: tuple[str, ...]
     text: str = ""
     at: int = 0  # the seq of the entry that carried it: a command's RESULT, or a fold event's SYSTEM
     seqs: tuple[int, ...] | None = None  # the targets, resolved once when the directive was made; None,
     # from a log row written before pins existed, makes the fold resolve `refs` by name
+
+    def __post_init__(self) -> None:
+        if self.op not in _OPS:
+            raise ValueError(f"directive op {self.op!r} is not one of {', '.join(_OPS)}")
 
 
 class Record:

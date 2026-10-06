@@ -417,6 +417,46 @@ def test_keep_zero_logs_nothing_and_still_delivers():
     assert bus.log == [] and bus.events() == []
 
 
+def test_keep_bounds_the_errors_to_the_newest_failures():
+    bus = Bus(keep=2)
+
+    def bad(e):
+        raise RuntimeError(e.kind)
+
+    bus.subscribe("*", bad)
+    events = [bus.emit(f"e{i}") for i in range(4)]
+    assert [(e, str(x)) for e, _, x in bus.errors] == [(events[2], "e2"), (events[3], "e3")]
+
+
+def test_keep_bounds_the_failures_of_coroutine_handlers_too():
+    async def main():
+        bus = Bus(keep=2)
+
+        async def bad(e):
+            raise RuntimeError(e.kind)
+
+        bus.subscribe("*", bad)
+        for i in range(4):
+            bus.emit(f"e{i}")
+        await bus.drain()
+        return bus
+
+    assert [str(x) for _, _, x in asyncio.run(main()).errors] == ["e2", "e3"]
+
+
+def test_keep_zero_keeps_no_failure_and_still_delivers():
+    bus = Bus(keep=0)
+    seen = []
+
+    def bad(e):
+        raise RuntimeError("no")
+
+    bus.subscribe("*", bad)
+    bus.subscribe("*", lambda e: seen.append(e.kind))
+    bus.emit("a")
+    assert seen == ["a"] and bus.errors == []
+
+
 def test_events_reads_the_log_through_a_pattern():
     bus = Bus()
     kinds = ["run.started", "command.requested", "command.settled", "inbox.queued", "run.completed"]

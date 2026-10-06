@@ -1,7 +1,7 @@
 ---
 adr: ADR-0013
 status: draft
-liveness: operating (the wake, the gate, the caps, the hop count, the cursor, the lock and the continuous run with its checkpoint are pinned by tests; supervision and the lease are not in the process)
+liveness: operating (the wake, the gate, the caps, the hop count, the cursor, the lock and the continuous run and each run continuing the last are pinned by tests; supervision and the lease are not in the process)
 date: "2026-09-25"
 area: agent
 kind: new
@@ -58,7 +58,7 @@ and `agent_main` in `apps/cli/lion_cli/agent.py`, `examples/echo_agent.py`,
 | -- | --------- | ------ | -------- |
 | A1 | Work reaches the agent as mail on its khive inbox, a watch's notice or a queue task; a timer or an outside event arrives as a message. | `wake` polls `Khive.inbox` and the watch; `wake` and `rerun` are the only callers of `_run_batch` | a second channel needs its own gate, cursor entry and cap |
 | A2 | A wake that dies unanswered costs less than a wake that answers twice. | `wake` writes `taking`, then marks read, then runs; `_recover` tells the owner | mail is marked read after the run and replies are deduplicated by key instead |
-| A3 | The notes and the cursor carry enough across the wakes of a per-wake agent. | the next INPUT opens with the cursor and the posture (`_input`) | the record has to cross wakes, as the continuous run's checkpoint does (C7) |
+| A3 | The notes, the cursor and the last run's rows carry enough across wakes. | the next INPUT opens with the cursor and the posture (`_input`), and its run continues the last ([[ADR-0026-the-submission|ADR-0026]] C6) | a wake needs what no row holds |
 | A4 | The host kernel drops an advisory file lock when its holder ends, however it ends. | `fcntl.flock` in `_claim`; a stale pid file nobody holds does not block a start | a dead process holds its identity until someone removes the file |
 
 ## Claims
@@ -139,11 +139,12 @@ A per-wake run is bounded at `max_turns` turns, 6 by default and as `lion agent`
 bound it ends exhausted: the cursor names that outcome and no posture is written. No test pins the
 six.
 
-### C6: The agent writes the posture, and a per-wake run starts new _(enforced: mechanical)_ ^c6
+### C6: The agent writes the posture, and a per-wake run continues the last _(enforced: mechanical)_ ^c6
 
 - **Subject**: the posture note, and the first INPUT of every wake.
 - **Violated when**: the runtime writes the posture, the INPUT omits the last cursor or posture, or
-  a per-wake run starts from an earlier wake's record with no checkpoint on disk.
+  a per-wake run replays anything but the last run's chain ([[ADR-0026-the-submission|ADR-0026]]
+  C6).
 
 A per-wake run declares `Posture` as its output and ends with `OUT{posture: ...}`
 ([[ADR-0003-the-bounds#^c4|ADR-0003/C4]]). After a `Success` the agent's own code writes its `done`
@@ -152,23 +153,22 @@ and `awaiting` as one line under `posture` in the profile's notes; the runtime's
 A continuous run declares no output: its plain reply at each quiet point is the posture, written
 even when empty, so an earlier burst's posture never stands for it; the model's stop writes its
 OUT{} literal the same way (C7). The next wake's INPUT opens with the last cursor and the posture,
-and the record stays with the run that made it.
+and its run continues the last from the store's rows ([[ADR-0026-the-submission|ADR-0026]] C6).
 
-### C7: A continuous run carries many wakes, and its checkpoint carries the record across a restart _(enforced: mechanical)_ ^c7
+### C7: A continuous run carries many wakes, and the store carries the record across a restart _(enforced: mechanical)_ ^c7
 
 - **Subject**: every run `serve` starts with `continuous` set.
 - **Violated when**: mail for the same profile starts a second run while the first stands, a burst
-  is booked twice, or the next process's first run starts from another view than the one
-  checkpointed.
+  is booked twice, or the next run replays anything but the last run's chain.
 
 `build` sets `continuous` for a chair. When a turn of plain text ends a burst (C9), `_wait` books it
 as one wake (spend, cursor, posture, the log line), polls under the same caps, and queues the next
 batch into the same run, whose view folds. A batch that maps to another profile ends the run and
 runs fresh, as the next mail does after the model's stop, an OUT{} whose literal is the posture.
 
-At a fold, and when a burst's turn bound, the day's cap or the model's stop ends the run, it writes
-a checkpoint ([[ADR-0019-the-checkpoint|ADR-0019]]) in the agent's directory, only where git ignores
-it; the next process's first run replays it as history.
+When a burst's turn bound, the day's cap or the model's stop ends the run, the next run, in this
+process or the next, continues it from the store's rows ([[ADR-0026-the-submission|ADR-0026]] C6);
+no checkpoint is written.
 
 ### C8: The bench example answers a typed ask through its typed pair only, and the row goes back as JSON _(enforced: mechanical)_ ^c8
 
@@ -231,10 +231,12 @@ Serves C1. `_claim` locks `agent.pid` without blocking and writes the pid for pe
 
 ### D3: The agent's own note store beside the profiles' notes ^d3
 
-Serves C3, C5 and C6. `notes/agent.json` in the agent's directory holds `cursor`, `taking`,
-`unreported`, `threads`, `hops_charged`, `spend` and `deferred`. The profiles' notes hold `posture`;
-`lion agent` keeps them in the same folder, one file per profile. The wake number continues from the
-stored cursor, so a restart keeps counting.
+Serves C3, C5 and C6. The `agent` profile's notes in the store ([[ADR-0025-the-graph|ADR-0025]] D6)
+hold `cursor`, `taking`, `unreported`, `threads`, `hops_charged`, `spend` and `deferred`. The
+profiles' notes hold `posture`, in the same store under their own names. The wake number continues
+from the stored cursor, so a restart keeps counting. The cursor names the wake's run, and the next
+wake's run continues it with that run's rows as its history ([[ADR-0026-the-submission|ADR-0026]]
+C6); the agent no longer checkpoints.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_the_cursor_names_the_batch_before_the_run_so_a_wake_that_dies_still_shows_what_it_took`,
@@ -254,19 +256,17 @@ whole life.
   replay, lost receipts, restart, cap refusal and transport refusal tests;
   `tests/test_bench_agent.py`.
 
-### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `src/lion1/checkpoint.py` ^d5
+### D5: The continuous run on the runtime's `wait` and `history` ^d5
 
 Serves C7. The request carries `wait=_wait`, `fold_inputs` and no declared output, with a stop that
-ends a burst past `max_turns` or the day's cap; `_run_batch` takes the same `end` checkpoint when
-the model's OUT{} ends the run. `_checkpoint` writes the record beside a checkpoint through `take`
-and `save`; `_restore` hands `to_history(load(...))` to the process's first run.
+ends a burst past `max_turns` or the day's cap. The run after it continues it with `continues` and
+the store's history ([[ADR-0026-the-submission|ADR-0026]] D6).
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_point_as_a_wake`,
   `test_mail_for_another_profile_ends_the_conversation_and_runs_fresh`,
-  `test_a_continuous_chairs_out_is_its_stop_its_posture_as_written_and_its_end_checkpointed`,
-  `test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst`;
-  `tests/test_checkpoint.py`: the fold, stop and failed-restore tests.
+  `test_a_continuous_chairs_out_is_its_stop_and_its_posture_as_written`,
+  `test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst`.
 
 ### D6: The bench example: two typed handlers on one `Agent` ^d6
 
@@ -335,9 +335,9 @@ probes that `gtd.transition` and `gtd.complete` refuse. `Gtd.load` refuses `work
 - **S7**: The watch is a second box polled beside the agent's own for the same wait; its notices are
   named apart on the cursor and never rerun, and a failed watch costs the agent's own mail nothing.
   The front desk sets it ([[ADR-0017-the-desk|ADR-0017]], the desk).
-- **S8**: The first run of any process replays the directory's latest checkpoint when it is a
-  continuous run's and its record still folds to the view taken; for any other the failure is kept
-  among the agent's errors and the run starts fresh.
+- **S8**: Closed: the first run of any process replayed the directory's latest checkpoint.
+  [[ADR-0026-the-submission|ADR-0026]] C6 replaced it: every run continues the last from the store,
+  and a last run the store cannot give refuses the wake.
 - **S9**: The boundary: the identity and its grants, the lease that says a process is alive by its
   turn activity, the one supervisor that starts and restarts it, killing it, and the durable record
   are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S11.

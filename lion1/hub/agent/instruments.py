@@ -27,9 +27,10 @@ from stat import S_ISREG
 from typing import Any
 from urllib.parse import quote
 
+from hub.areas import agent_notes
+from lion1.khive import Khive, KhiveError, lit
 from lion1.notes import NoteStore
 
-from ..khive import Khive, lit
 from .agent import LoopLock
 from .chores import Outcome
 
@@ -607,11 +608,13 @@ class Served:
                     findings.append(f"{d.name}: pid file names {pid} and it is not running ({stat})")
             else:
                 line += " no pid file (not serving)"
-            notes = d / "notes" / "agent.json"
-            if notes.exists():
-                cursor = (json.loads(notes.read_text()).get("notes", {}).get("cursor") or {}).get(
-                    "value"
-                ) or {}
+            try:
+                cursor = agent_notes(d).get("cursor")
+            except (KhiveError, ValueError) as e:
+                bad = True
+                findings.append(f"{d.name}: notes unread ({e})")
+                cursor = None
+            if isinstance(cursor, dict):
                 at = cursor.get("at")
                 if at:
                     age_min = (time.time() - time.mktime(time.strptime(at, "%Y-%m-%d %H:%M:%S"))) / 60
@@ -1343,13 +1346,16 @@ class BenchJobs:
         self.empty_expected = empty_expected
 
     async def run(self, args: dict[str, Any]) -> Outcome:
-        notes = self.dir / "notes" / "agent.json"
-        if not notes.exists():
+        try:
+            notes = agent_notes(self.dir)
+        except (KhiveError, ValueError) as e:
             return Outcome(
-                findings=(f"no bench notes at {notes}",), evidence=f"{notes}: absent", control=False
+                findings=(f"no bench notes at {self.dir}: {e}",),
+                evidence=f"{self.dir}: notes unread",
+                control=False,
             )
-        jobs = (json.loads(notes.read_text()).get("notes", {}).get("jobs") or {}).get("value") or {}
-        positive = f"{notes} read, {len(jobs)} job(s) noted"
+        jobs = notes.get("jobs") if isinstance(notes.get("jobs"), dict) else {}
+        positive = f"{self.dir} notes read, {len(jobs)} job(s) noted"
         findings, lines, gone = [], [f"control: {positive}"], 0
         for run_id, job in sorted(jobs.items()):
             if job.get("reported"):

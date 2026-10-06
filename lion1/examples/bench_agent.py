@@ -34,8 +34,8 @@ from pydantic import BaseModel, Field
 
 from hub.agent import Agent, AgentError
 from hub.backend import OpenRouter
-from hub.khive import Khive, lit
-from lion1 import Actor, Context, Profile
+from lion1 import Actor, Context, Profile, Store
+from lion1.khive import Khive, lit
 
 ROOT = Path(__file__).resolve().parents[1]
 DIR = ROOT / ".khive" / "agents" / "bench"
@@ -184,14 +184,14 @@ def profile_for(mail: list[dict]) -> Profile:
     return ACTING if all(sender(m) in trusted for m in mail) else READER
 
 
-def build(khive: Khive, backend) -> Agent:
+def build(khive: Khive, backend, store: Store) -> Agent:
     if not (ACTOR_ID and OWNER):
         raise AgentError(
             "the bench actor's identity is not configured: set ACTOR_ID and OWNER (--actor, --owner)"
         )
     (DIR / "notes").mkdir(parents=True, exist_ok=True)
     (DIR / "jobs").mkdir(parents=True, exist_ok=True)
-    actor = Actor("bench", privileges={"comm.send", "shell"}, notes_dir=DIR / "notes")
+    actor = Actor("bench", privileges={"comm.send", "shell"}, store=store)
     agent = Agent(actor, khive, backend, profile_for, owner=OWNER, max_turns=4)
     state = agent.state
 
@@ -301,13 +301,14 @@ async def main(model: str | None, once: bool, wait: int) -> None:
         reasoning={"max_tokens": 2000},
         stop=["<system turn="],
     )
-    agent = build(Khive(DIR, ACTOR_ID), backend)
+    khive = Khive(DIR, ACTOR_ID)
+    agent = build(khive, backend, Store(khive))
     if once:
         run = await agent.wake(wait_ms=wait * 1000)
         if run is None:
             print(f"no mail within {wait}s")
             return
-        for e in run.record:
+        for e in list(run.record)[len(run.request.history) :]:  # its own: the history is the last run's
             print(f"[{e.seq:>3} {e.name:>6} t{e.turn}]", str(e.content)[:400].replace("\n", "\n" + " " * 18))
         for n in agent.state.list():
             print(f"=== state {n.key} (v{n.version}): {n.value}")

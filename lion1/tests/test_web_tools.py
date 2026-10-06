@@ -29,6 +29,7 @@ from hub.tools.web import Brave, Hit, Jina, SearXNG, Tavily, WebError, WebFetch,
 from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
 from lion1.spec import render_guidance
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 w = importlib.import_module("hub.tools.web")  # `hub.tools.web` the attribute is the function
@@ -589,7 +590,7 @@ def test_provider_from_env_takes_the_first_configured_in_order(monkeypatch):
     assert isinstance(provider_from_env(), Brave)
 
 
-def test_provider_from_env_with_nothing_names_every_variable_it_looked_for(monkeypatch):
+def test_provider_from_env_with_nothing_names_every_variable_it_looked_for(monkeypatch, store):
     for var in w.ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(WebError) as e:
@@ -597,7 +598,7 @@ def test_provider_from_env_with_nothing_names_every_variable_it_looked_for(monke
     assert w.ENV_VARS == ("SEARXNG_URL", "BRAVE_API_KEY", "TAVILY_API_KEY", "JINA_API_KEY")
     assert all(var in str(e.value) for var in w.ENV_VARS)
     with pytest.raises(WebError, match="SEARXNG_URL"):
-        web_on(Actor("w"), None)
+        web_on(Actor("w", store=store), None)
 
 
 def web_on(actor, provider, **kw):
@@ -621,16 +622,16 @@ class Canned:
 
 
 def web_actor(provider, **kw):
-    actor = Actor("w")
+    actor = Actor("w", store=fresh_store())
     names = web_on(actor, provider, **kw)
     return actor, Profile(name="w", specs=frozenset(names | {h.name for h in DEFAULT_HANDLERS}), system="x")
 
 
-def test_web_registers_two_read_commands_named_from_their_classes():
-    actor = Actor("w")
+def test_web_registers_two_read_commands_named_from_their_classes(store):
+    actor = Actor("w", store=store)
     assert web_on(actor, Canned()) == {"web_search", "web_fetch"}
     assert {actor.handlers[n].effect for n in ("web_search", "web_fetch")} == {"read"}
-    assert web_on(Actor("n"), Canned(), fetch=False) == {"web_search"}
+    assert web_on(Actor("n", store=store), Canned(), fetch=False) == {"web_search"}
 
 
 def test_the_model_is_told_the_web_is_material_not_instructions():

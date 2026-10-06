@@ -43,8 +43,8 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `src/lion1/record.
 - **context commands**: `context.hide(refs)`, `context.show(refs)`, `context.summarize(refs, text)`;
   default handlers of every actor.
 - **note**: a value written under a `note.` key that outlives the run, per profile.
-- **note store**: the notes' carrier: the store a profile brings, else memory for the actor's
-  lifetime, or one JSON file per profile under `notes_dir`.
+- **note store**: the notes' carrier: the store a profile brings, else the actor's rows in the
+  graph's store ([[ADR-0025-the-graph|ADR-0025]] D6), else memory for the actor's lifetime.
 - **note commands**: `note.list(prefix)`, `note.find(query)`, `note.get(key)`, `note.delete(key)`,
   `note.read(profile, key)`; default handlers of every actor.
 
@@ -54,7 +54,7 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `src/lion1/record.
 | -- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | A1 | An append-only view keeps the provider's prefix cache warm; a fold moves the prefix, so traffic saved is not spend saved. | on the bench: cache hit 90.6% through the loop; uncached input 1 to 2k tokens per call; an outside study where a condensed run cost more | C2's event should fold earlier, or never |
 | A2 | Hiding an old result behind a placeholder costs no success.                                                | SWE-agent on SWE-bench Verified: raw 53.4% at $1.29, masked 54.8% at $0.61, summarized 53.8% at $0.64 per trajectory (The Complexity Trap, arXiv 2508.21433v2, Table 1, Qwen3-Coder 480B) | the fold event owes a summary, and a model call to write it |
-| A3 | One JSON file per profile is enough for the note volumes an actor writes.                                  | assumption; a 50-instance bench run wrote 6 notes in 952 turns                                                          | C5's carrier is replaced, the interface kept    |
+| A3 | One row per profile and key is enough for the note volumes an actor writes.                                | assumption; a 50-instance bench run wrote 6 notes in 952 turns; the carrier was one file per profile until ADR-0025 D6 | C5's carrier is replaced, the interface kept    |
 | A4 | The model curates its own view once a task is long enough to need it. | assumption; 9 context commands in 952 turns of short bench tasks (S3) | the runtime owes a summarizer of its own |
 
 ## Claims
@@ -144,8 +144,8 @@ In the tag form a value is written at declaration, once the message is read and 
 commands run; in a program a note assignment is a node, written when reached
 ([[ADR-0008-the-program#^c4|ADR-0008/C4]]). `*note.key` resolves to the value this run declared,
 else to the store, read once per command with its version; `note.get` always reads the store. A note
-carries the run and sequence that wrote it and its version. The carrier is memory, or with
-`notes_dir` one JSON file per profile.
+carries the run and sequence that wrote it and its version. The carrier is the graph's store, or
+memory for an actor without one.
 
 `note.list` returns key, size, run and version for an exact prefix; `note.find` refuses a blank
 query. `note.read` reads another profile's notes (S6).
@@ -165,12 +165,11 @@ without `seqs` can carry, so no directive crashes it;
 ### C7: A note is kept as given, and found without regard to case _(enforced: mechanical)_ ^c7
 
 - **Subject**: every put to a note store, and every `note.find`.
-- **Violated when**: an overwrite removes a key, the file store writes or coerces a value JSON
-  cannot carry whole, or `note.find` misses a note whose key or value holds the query in another
-  case.
+- **Violated when**: an overwrite removes a key, the store writes or coerces a value JSON cannot
+  carry whole, or `note.find` misses a note whose key or value holds the query in another case.
 
 A put replaces the value whole and raises the note's version, an empty value included, so a key
-leaves the store only by a delete, `note.delete` for the model. The file store refuses a value JSON
+leaves the store only by a delete, `note.delete` for the model. The store refuses a value JSON
 cannot carry whole, like NaN, a tuple or a non-string key, before it writes anything. `note.find`
 folds case as Unicode does and returns each hit's first 120 characters as its preview, with its
 size, run and version. A store the profile brings (`Profile.notes`) replaces the actor's for every
@@ -225,50 +224,32 @@ a command's directive, and stores none when a ref names nothing on the record.
   the notification, `meta["consumed"]`: `test_the_consumed_hide_survives_the_log_as_a_directive` and
   `test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context_show_do`.
 
-### D3: `notes.py` with a memory store and a file store ^d3
+### D3: `notes.py`: a memory store, or the graph's store ^d3
 
-Serves C5. `FileNoteStore` subclasses `MemoryNoteStore`; a put re-reads the file, replaces the whole
-value and rewrites the file atomically, under a lock every process on the directory shares. Two runs
-writing one key: the later put wins, and `version` says a write happened, never which was lost. The
-five note Specs and the three context Specs are the default handlers every actor gets. Every write
-is a put, from the `note.` declaration or a program's assignment, or `note.delete`'s delete; a gate
-on writing, when decided, sits on those two.
+Serves C5. `MemoryNoteStore` is the store of an actor without one; `KhiveNoteStore` is the one an
+actor's `Store` gives each profile ([[ADR-0025-the-graph|ADR-0025]] D6). Two runs writing one key:
+the later put wins, and `version` says a write happened, never which was lost. The five note Specs
+and the three context Specs are the default handlers every actor gets. Every write is a put, from
+the `note.` declaration or a program's assignment, or `note.delete`'s delete; a gate on writing,
+when decided, sits on those two.
 
 - **Landing evidence**: `tests/test_notes.py`; the bench records carry the live writes. A command's
   pointers and its handler's `Context.get` share one read per note, and its RESULT names each
   version read under `notes`, kept through the log
   (`test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`);
   the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`,
-  `test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_and_files_as_they_were`,
-  `test_note_read_reads_a_profiles_file_this_actor_never_opened_and_keeps_no_store_for_it`.
+  `test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_as_they_were`,
+  `test_note_read_reads_another_profiles_rows_and_keeps_no_store_for_it`.
 
-### D4: The file store keeps the copy it checked and reads only standard JSON ^d4
+### D4: The store's `put` keeps the copy it checked ^d4
 
-Serves C7. `FileNoteStore.put` renders the value and an int `seq`, not a bool, with
-`json.dumps(allow_nan=False)`, encodes key, run and text as UTF-8, reads it back with `json.loads`,
-and stores that copy: a later change, even during the lock wait, reaches nothing stored. Every write
-renders the same way. `_load` refuses NaN, Infinity, overflowing floats, integers past the digit
-limit, a `seq` or a file `version` that is not an int, non-UTF-8 bytes and a lone surrogate, naming
-the file and the place, repairing nothing. Underflow loads as a signed zero.
+Serves C7. `KhiveNoteStore.put` ([[ADR-0025-the-graph|ADR-0025]] D6) renders the value with
+`json.dumps(allow_nan=False)`, reads the text back with `json.loads` and sends that text: a step
+that raises `TypeError`, `ValueError` or `RecursionError`, or a copy unequal to the value (a tuple,
+an int key), raises `ValueError` before any call. A `seq` that is not an int, a bool included,
+raises `TypeError`. The pack refuses a value that is not JSON on its side as well.
 
-- **Landing evidence**:
-  `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
-  `test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in_the_file`,
-  `test_a_value_changed_after_put_returns_changes_nothing_stored`,
-  `test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant`,
-  `test_a_file_whose_version_is_not_an_integer_is_refused_on_load_naming_the_file`,
-  `test_a_negative_integer_past_the_digit_limit_is_counted_without_its_sign`,
-  `test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number`,
-  `test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them`,
-  `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`,
-  `test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is`,
-  `test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is`,
-  `test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byte_offset`,
-  `test_an_integer_past_the_digit_limit_is_refused_on_load_naming_the_file`,
-  `test_a_file_whose_seq_is_not_an_integer_is_refused_on_load_naming_the_file_and_the_note`,
-  `test_a_file_holding_a_lone_surrogate_is_refused_on_load_naming_where_and_the_file_stays`,
-  `test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the_store_changes` and
-  `test_put_refuses_a_seq_the_file_cannot_carry_before_the_store_changes`.
+- **Landing evidence**: owed with ADR-0025 S1: the round trip's refusals and the pack's.
 
 ### D5: `_notify` lists the store on the first turn ^d5
 
@@ -285,21 +266,20 @@ or said to be unprintable. A resumed chat is a new run and is told again.
   Controls: dropping the block, the catch, the sort, the plain string, the quoting, either cut, the
   escaping or the inner catch, or skipping a resumed run, fails a test.
 
-### D6: `put` refuses what JSON cannot carry, `find` folds case, and `_note_find` cuts the preview ^d6
+### D6: `find` folds case, and `_note_find` cuts the preview ^d6
 
-Serves C7. `MemoryNoteStore.put` keeps the value it is handed; `FileNoteStore.put` raises
-`ValueError` before the lock when a step of its round trip raises `TypeError`, `ValueError` or
-`RecursionError`, or the copy is unequal to the value. `MemoryNoteStore.find`, which `FileNoteStore`
-inherits, casefolds the query, each key and each value's text, so `STRASSE` finds `Straße`.
-`_note_find` calls `find` on the profile's store, and `Actor.notes_for` returns `Profile.notes`
-before it looks for a store of its own, so a store a profile brings answers for itself. `_note_find`
-slices each value's text at 120 characters.
+Serves C7. `MemoryNoteStore.put` keeps the value it is handed. `MemoryNoteStore.find` casefolds the
+query, each key and each value's text, so `STRASSE` finds `Straße`; the store's `find` folds ASCII
+case only ([[ADR-0025-the-graph|ADR-0025]] D6). `_note_find` calls `find` on the profile's store,
+and `Actor.notes_for` returns `Profile.notes` before it looks for a store of its own, so a store a
+profile brings answers for itself. `_note_find` slices each value's text at 120 characters.
 
-- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry`,
-  `test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_lock`,
-  `test_a_value_json_cannot_carry_whole_is_refused_before_the_lock`,
-  `test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error` and
-  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
+- **Landing evidence**:
+  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`,
+  `test_find_reads_a_structured_value_as_its_json_text_with_accents_kept_and_a_date_as_text`,
+  `test_find_falls_back_to_the_values_own_text_where_json_cannot_render_it`,
+  `test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json`,
+  `test_note_find_and_note_list_render_a_value_that_refers_to_itself`.
 
 ### D7: A note declared into a store the loader refuses ends the run ^d7
 
@@ -326,7 +306,7 @@ it would clobber it.
 | Truncate big values                               | hidden caps forced turns and wrong fixes that were blamed on the model                          |
 | A separate directive log                          | the record already orders directives; a second order would have to be reconciled on resume        |
 | A summary written by a model call at each fold    | costs a call per fold; a placeholder with name and size loses no success (A2)                     |
-| File-backed notes by default                      | a test actor should not touch disk; the actor opts in with `notes_dir`                            |
+| File-backed notes                                 | removed with ADR-0025 D6: a file per profile was a second store beside the graph's                 |
 
 ## Consequences
 

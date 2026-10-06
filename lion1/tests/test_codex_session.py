@@ -14,6 +14,7 @@ from hub.backend import CodexError, CodexSession
 from hub.backend import codex as codex_mod
 from hub.backend.codex import INSTRUCTIONS
 from lion1 import Message
+from tests.lionfake import actor_dir, patch_khive
 
 # Each thread is a file beside the script: the prompts it was sent and its running totals. A turn's
 # own input is 100 plus a quarter of every character the thread holds, so a resumed turn reads its
@@ -523,7 +524,7 @@ def test_no_session_file_adds_nothing(cli, tmp_path):
 
 
 def test_a_chat_on_a_codex_model_keeps_one_thread_and_a_continued_chat_stands_on_its_last_count(
-    cli, observed, tmp_path, monkeypatch
+    cli, observed, tmp_path, monkeypatch, kkernel_stub
 ):
     """`lion chat --model codex/<model>`: the console's system prompt is the CLI's instructions, the
     model has no tools of its own, and a chat continued from its log seeds the new session's first
@@ -548,7 +549,10 @@ def test_a_chat_on_a_codex_model_keeps_one_thread_and_a_continued_chat_stands_on
     monkeypatch.setattr(agent_mod, "CodexSession", Spy)
     work = tmp_path / "work"
     work.mkdir()
-    args, log = ["chat", "--dir", str(work), "--model", "codex/gpt-6-luna"], str(tmp_path / "c.jsonl")
+    patch_khive(monkeypatch)
+    signer = actor_dir(tmp_path / "signer") / ".khive" / "config.toml"  # the actor the chat signs as
+    args = ["chat", "--dir", str(work), "--khive-config", str(signer), "--model", "codex/gpt-6-luna"]
+    log = str(tmp_path / "c.jsonl")
     said = ["--say", "MUTEONCE hi", "--turns", "1"]  # the first attempt is billed and says nothing
     asyncio.run(chat_main(parser().parse_args([*args, "--log", log, *said])))
     muted, a = observed()

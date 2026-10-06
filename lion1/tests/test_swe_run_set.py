@@ -14,6 +14,8 @@ import pytest
 from tests import _git as isolated
 from tests._swe import DIFF, CodexBox, GatewayTimeoutBox, Started, codex_cli, run_set
 
+pytestmark = pytest.mark.usefixtures("bench_store")
+
 
 def _args(**kw) -> argparse.Namespace:
     base = dict(
@@ -40,6 +42,7 @@ def _args(**kw) -> argparse.Namespace:
         unaided=False,
         keep_images=False,
         parallel=2,
+        khive_dir=".",
     )
     base.update(kw)
     return argparse.Namespace(**base)

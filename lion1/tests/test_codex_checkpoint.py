@@ -16,10 +16,10 @@ import pytest
 from lion_cli.context import checkpoint, status
 from lion_cli.main import main
 
-from hub.backend import codex_checkpoint as cx
 from hub.backend.checkpoint import DIRECTIVES, SPAWN_HOURS, fold_turns
 from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
-from hub.backend.codex_checkpoint import (
+from hub.backend.codex import checkpoint as cx
+from hub.backend.codex.checkpoint import (
     CODEX_KINDS,
     CODEX_WHYS,
     context_figure,
@@ -28,19 +28,18 @@ from hub.backend.codex_checkpoint import (
     newest_rollout,
     posture,
     render_prompt,
+    rollout_exchanges,
     rollout_of,
     rollout_source,
     rollout_turns,
     spawns,
     take_codex,
 )
-from hub.khive import context_dir
 from lion1 import Actor
-from lion1 import checkpoint as core
 from lion1.checkpoint import KINDS, LAZY, WHYS, CheckpointError
 from tests.test_checkpoint import ACTOR as ONE
-from tests.test_checkpoint import AT, ID, turn, var
-from tests.test_context import ACTOR, TASK, TaskKhive, actor_dir, gh_says
+from tests.test_checkpoint import AT, turn, var
+from tests.test_context import ACTOR, TASK, TaskKhive, actor_dir, gh_says, held, load, store_khive
 
 THREAD = "01a00000-0000-7000-8000-000000000001"
 PARENT = "01a00000-0000-7000-8000-000000000002"
@@ -437,7 +436,7 @@ def test_a_row_appended_while_the_take_reads_is_after_the_take(tmp_path, monkeyp
     # a take: a prompt landing after its first read of the rollout is in none of its reads
     import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     live = write(tmp_path / "live.jsonl", session_rows(str(d)))
@@ -451,7 +450,7 @@ def test_a_row_appended_while_the_take_reads_is_after_the_take(tmp_path, monkeyp
     monkeypatch.setattr(cli, "pulls", pulls_then_a_prompt)
     main(["context", "checkpoint", "--dir", str(d), "--transcript", str(live)])
     done = json.loads(capsys.readouterr().out)
-    c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    c = load(d, k, done["id"])
     assert "LATE-PROMPT-MARK" in live.read_text()
     assert "LATE-PROMPT-MARK" not in json.dumps([dataclasses.asdict(v) for v in c.vars]) + json.dumps(c.view)
 
@@ -558,9 +557,8 @@ def test_a_rollout_rewritten_while_it_is_read_is_taken_again(tmp_path, monkeypat
 def test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken(
     tmp_path, monkeypatch, capsys
 ):
-    import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     live = write(tmp_path / "live.jsonl", session_rows(str(d)))
@@ -579,7 +577,7 @@ def test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--dir", str(d), "--transcript", str(live)])
     assert out.value.code == 1 and "is not the file its snapshot was taken of" in capsys.readouterr().err
-    assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
+    assert held(k) == {}
 
 
 @pytest.mark.parametrize(
@@ -589,9 +587,8 @@ def test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken
 def test_a_rollout_changed_after_the_directory_chose_it_is_taken_only_if_it_would_be_chosen(
     tmp_path, monkeypatch, capsys, owner, elsewhere, taken
 ):
-    import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(home))
@@ -614,19 +611,161 @@ def test_a_rollout_changed_after_the_directory_chose_it_is_taken_only_if_it_woul
     if taken:  # another person's thread of this directory: what the directory would choose
         main(["context", "checkpoint", "--dir", str(d), "--codex"])
         done = json.loads(capsys.readouterr().out)
-        c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+        c = load(d, k, done["id"])
         assert c.source["session_id"] == OTHER and c.view["kept"][0]["input"] == "placeholder changed"
         return
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--dir", str(d), "--codex"])
     assert out.value.code == 1 and "changed after it was chosen" in capsys.readouterr().err
-    assert changed and (not context_dir(d).exists() or not list(context_dir(d).iterdir()))
+    assert changed and (held(k) == {})
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("transcript", "rollout"),
+        ("rollout", "transcript"),
+        ("transcript", "transcript"),
+        ("rollout", "rollout"),
+    ],
+)
+def test_a_file_whose_kind_changed_after_the_route_peeked_at_it_is_refused(
+    tmp_path, monkeypatch, capsys, before, after
+):
+    # `--transcript` chose its reader on a peek at the first row, then handed the path on: a Claude
+    # Code transcript at the peek and a rollout at the read was saved as an empty Claude Code take
+
+    k = store_khive(monkeypatch)
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    claude = {"type": "user", "uuid": "u", "promptSource": "typed", "message": {"content": "placeholder"}}
+    rows = {"transcript": [claude], "rollout": [meta(THREAD, str(d)), typed("placeholder rollout", "m1")]}
+    path = write(tmp_path / "given.jsonl", rows[before])
+    peek, changed = cx.is_rollout, []
+
+    def change_after_the_peek(p):
+        said = peek(p)
+        if not changed:
+            changed.append(p)
+            write(path, rows[after])
+        return said
+
+    monkeypatch.setattr(cx, "is_rollout", change_after_the_peek)
+    argv = ["context", "checkpoint", "--dir", str(d), "--transcript", str(path)]
+    if before == after:  # the control: the kind the peek saw is the read's, and its reader takes it
+        main(argv)
+        kind = {"transcript": "claude-code", "rollout": "codex"}[after]
+        assert changed and load_kind(d, k, json.loads(capsys.readouterr().out)) == (kind, "manual")
+        return
+    with pytest.raises(SystemExit) as out:
+        main(argv)
+    why = {
+        "rollout": "its first row is a session_meta, so it is a Codex rollout",
+        "transcript": "its first row names no owner (thread_source None)",
+    }[after]
+    assert out.value.code == 1 and f"{path}: {why}" in capsys.readouterr().err
+    assert changed and (held(k) == {})
+
+
+@pytest.mark.parametrize("route", ["transcript", "session", "default"])
+@pytest.mark.parametrize("thread", [None, 7, THREAD])
+def test_a_rollout_whose_first_row_names_no_thread_id_at_the_read_is_refused_on_every_route(
+    tmp_path, monkeypatch, capsys, route, thread
+):
+    # only `--session` compared the read's thread with anything: `--codex` alone and `--transcript`
+    # took a rollout whose first row named no thread, and its `source.session_id` was null
+
+    k = store_khive(monkeypatch)
+    gh_says(monkeypatch)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    d = actor_dir(tmp_path)
+    path = write(
+        home / "sessions" / "2026" / "10" / "04" / f"rollout-2026-10-04T10-00-00-{THREAD}.jsonl",
+        [meta(THREAD, str(d)), typed("placeholder chosen", "m1")],
+    )
+    peek, changed = cx.is_rollout, []
+
+    def change_after_the_choice(p):  # the first row rewritten between the choice and the take's read
+        said = peek(p)
+        if not changed:
+            changed.append(p)
+            row = meta(THREAD, str(d))
+            row["payload"]["id"] = thread
+            if thread is None:
+                del row["payload"]["id"]
+            write(path, [row, typed("placeholder changed", "m2")])
+        return said
+
+    monkeypatch.setattr(cx, "is_rollout", change_after_the_choice)
+    given = {"transcript": ["--transcript", str(path)], "session": ["--codex", "--session", THREAD]}
+    argv = ["context", "checkpoint", "--dir", str(d), *given.get(route, ["--codex"])]
+    if thread == THREAD:  # the control: a first row that still names its thread is taken on every route
+        main(argv)
+        c = load(d, k)
+        assert c.source["session_id"] == THREAD and c.view["kept"][0]["input"] == "placeholder changed"
+        return
+    with pytest.raises(SystemExit) as out:
+        main(argv)
+    err = capsys.readouterr().err
+    assert out.value.code == 1 and f"{path}: its first row names no thread id (id {thread!r})" in err
+    assert changed and (held(k) == {})
+
+
+@pytest.mark.parametrize(
+    ("after", "owner", "elsewhere", "used"),
+    [
+        ("newest_rollout", "subagent", False, None),
+        ("newest_rollout", "user", True, None),
+        ("newest_rollout", "user", False, 9_000),  # another person's thread here: the directory's choice
+        ("rollout_of", "user", False, None),  # another thread than the one named
+        ("snapshot", "subagent", False, 1_000),  # changed after the one read: the figure is that read's
+    ],
+)
+def test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen(
+    tmp_path, monkeypatch, capsys, after, owner, elsewhere, used
+):
+    # the status chose a rollout, then read its figure from the path again: a file put in its place
+    # between the two gave another thread's figure
+    gh_says(monkeypatch)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    d = actor_dir(tmp_path)
+    path = write(
+        home / "sessions" / "2026" / "10" / "04" / f"rollout-2026-10-04T10-00-00-{THREAD}.jsonl",
+        [meta(THREAD, str(d)), typed("placeholder chosen", "m1"), counted(1_000, 10_000)],
+    )
+    checkpoint(d, "manual", codex=True, khive=store_khive(monkeypatch))  # the take the status is of
+    taken = path.stat()
+    step, changed = getattr(cx, after), []
+
+    def change_after_the_step(*a, **k):
+        done = step(*a, **k)
+        if not changed:
+            changed.append(1)
+            cwd = "/work/elsewhere" if elsewhere else str(d)
+            write(path, [meta(OTHER, cwd, thread_source=owner), counted(9_000, 10_000)])
+            # its time put back: only its first row says it changed after the take
+            os.utime(path, ns=(taken.st_atime_ns, taken.st_mtime_ns))
+        return done
+
+    monkeypatch.setattr(cx, after, change_after_the_step)
+    named = ["--session", THREAD] if after == "rollout_of" else []
+    main(["context", "status", "--dir", str(d), "--codex", *named])
+    now = json.loads(capsys.readouterr().out)
+    assert changed
+    if used is None:  # not known, and stale: never another thread's figure
+        assert now["context_now"] == {"used": None, "window": None, "pct": None} and now["stale"] is True
+        return
+    # the control: a file put back to its time at the take reads fresh, so the stale above is the check's
+    assert (
+        now["context_now"] == {"used": used, "window": 10_000, "pct": used // 100} and now["stale"] is False
+    )
 
 
 def test_a_session_meta_after_the_first_row_is_never_the_threads_own(tmp_path, monkeypatch, capsys):
-    import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     late = write(tmp_path / "late.jsonl", [typed("INHERITED-MARK", "u1"), meta(THREAD, str(d))])
@@ -637,7 +776,7 @@ def test_a_session_meta_after_the_first_row_is_never_the_threads_own(tmp_path, m
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--dir", str(d), "--transcript", str(late)])
     assert out.value.code == 1 and "its first row names no owner" in capsys.readouterr().err
-    assert not context_dir(d).exists() or not list(context_dir(d).iterdir())
+    assert held(k) == {}
 
 
 def test_a_scan_keeps_only_what_the_takes_readers_read(tmp_path):
@@ -647,12 +786,16 @@ def test_a_scan_keeps_only_what_the_takes_readers_read(tmp_path):
     ]
     rows = [meta(), typed(old, "msg_old"), said("OLD-ANSWER-MARK"), *(r for pair in newer for r in pair)]
     path = write(tmp_path / "r.jsonl", rows)
-    kept = json.dumps(dataclasses.asdict(cx._scan(path)))
-    assert [m for m in ("BASE-INSTRUCTIONS-MARK", "OLD-BODY-MARK", "OLD-ANSWER-MARK") if m in kept] == []
-    view = rollout_turns(path, 400)  # the old exchange folds at this budget: its name stays, its body goes
+    # the CLI's own context is a person's word in no reader of the scan
+    assert "BASE-INSTRUCTIONS-MARK" not in json.dumps(dataclasses.asdict(cx._scan(path)))
+    # every exchange, bodies and all, is what a take writes into the store (the store is the checkpoint)
+    ex = rollout_exchanges(path)
+    assert len(ex) == DIRECTIVES + 1 and ex[0]["input"] == old and ex[0]["text"] == "OLD-ANSWER-MARK"
+    # the view folds the old exchange at this budget: its name stays, its body goes
+    view = rollout_turns(path, 400)
     assert view["hidden"] == [f"msg_old@{at(1)}"] and len(view["kept"]) == DIRECTIVES
-    folded = json.dumps(dataclasses.asdict(cx._scan(path, 400)))
-    assert "OLD-BODY-MARK" not in folded and "OLD-ANSWER-MARK" not in folded
+    assert "OLD-BODY-MARK" not in json.dumps(view) and "OLD-ANSWER-MARK" not in json.dumps(view)
+    # the person's words a restore carries are the newest DIRECTIVES, the old one aside
     assert [v.value for v in directives(path)] == [f"placeholder prompt {i}" for i in range(DIRECTIVES)]
     assert rollout_turns(path, 10**6)["kept"][0]["input"] == old  # a budget that holds it keeps it
 
@@ -799,8 +942,9 @@ def test_the_codex_restore_names_the_thread_first_and_asks_for_no_re_arm():
         var("posture", "posture", "p" * (LAZY + 1), "rollout"),
     ]
     c = take_codex(source, given, actor=ONE, why="rotate", budget=100, view=view, now=AT)
+    assert c.id == f"{THREAD}@2"  # the thread the store holds, at its two exchanges, one folded
     assert render_prompt(c).splitlines() == [
-        f"Checkpoint {ID} of actor:one, taken 2026-09-24T10:05:00+00:00 (rotate); context at the take "
+        f"Checkpoint {c.id} of actor:one, taken 2026-09-24T10:05:00+00:00 (rotate); context at the take "
         f"~129200 of 258400 tokens (50%). It was taken from Codex thread {THREAD} (model gpt-test-b, CLI "
         "0.156.1).",
         "",
@@ -816,7 +960,8 @@ def test_the_codex_restore_names_the_thread_first_and_asks_for_no_re_arm():
         "Spawned agents the transcript shows running at the take:",
         '- {"id": "a", "path": "/root/one", "state": "running-at-take"}',
         "",
-        "The last 1 exchange(s) as they stood; 1 earlier folded, the transcript keeps them: /r/rollout.jsonl",
+        f"The last 1 exchange(s) as they stood; 1 earlier folded, the store keeps them under "
+        f"session {THREAD} (the transcript: /r/rollout.jsonl)",
         "[2026-09-24T10:00:02Z] in:",
         "```",
         "prompt 2",
@@ -827,7 +972,7 @@ def test_the_codex_restore_names_the_thread_first_and_asks_for_no_re_arm():
         "```",
         "",
         "Your posture at the take:",
-        f"{LAZY + 1} chars, not shown here; load it with `lion context show --id {ID} --var posture`",
+        f"{LAZY + 1} chars, not shown here; load it with `lion context show --id {c.id} --var posture`",
         "",
         "What to do first: take up the newest of the person's words and the lanes from where the posture "
         "leaves them.",
@@ -885,13 +1030,12 @@ def test_the_newest_rollout_is_the_directorys_own_thread_and_a_thread_id_names_o
 def test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_restores_it(
     tmp_path, monkeypatch, capsys
 ):
-    import lion_cli.context as cli
 
     async def no_run(*a, **k):
         raise AssertionError("a checkpoint ran a model")
 
     monkeypatch.setattr(Actor, "run", no_run)
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(home))
@@ -912,16 +1056,12 @@ def test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_re
         return json.loads(capsys.readouterr().out)
 
     done = ckpt("--codex")  # the directory's newest rollout, the sub-agent's written after it aside
-    c = core.load(context_dir(d), kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    c = load(d, k)
     assert (c.id, c.why, c.source["kind"], c.source["session_id"]) == (done["id"], "manual", "codex", THREAD)
-    assert (c.source["transcript"], c.source["cwd"], c.source["session_cwd"]) == (
-        str(path),
-        str(d.resolve()),
-        str(d),
-    )
+    assert (c.source["transcript"], c.source["cwd"]) == (str(path), str(d.resolve()))
     assert done["context"] == {"used": 129_200, "window": 258_400, "pct": 50}
     assert c.source["lanes"] == "gtd.tasks active; comm.inbox unread; gh pr list open, authored by @me"
-    assert done["vars"] == [
+    assert [v.name for v in c.vars] == [
         "directive.1",
         "directive.2",
         "directive.3",
@@ -930,7 +1070,8 @@ def test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_re
         "posture",
         "next",
     ]
-    assert (done["kept"], done["hidden"]) == (3, 0) and "SUB-MARK" not in json.dumps(c.view)
+    assert (len(c.view["kept"]), len(c.view["hidden"])) == (3, 0) and "SUB-MARK" not in json.dumps(c.view)
+    assert (done["turns"], done["appended"], held(k)) == (3, 3, {THREAD: 3})
     main(["context", "restore", "--dir", str(d)])
     prompt = capsys.readouterr().out
     assert prompt.startswith(f"Checkpoint {done['id']} of {ACTOR}, taken ")
@@ -944,9 +1085,11 @@ def test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_re
     assert status(d, session=OTHER, codex=True)["context_now"] == {"used": None, "window": None, "pct": None}
     main(["context", "status", "--dir", str(d), "--codex"])
     assert json.loads(capsys.readouterr().out)["context_now"]["window"] == 258_400
-    # the rollout handed as the transcript is taken as a Codex session with no flag; --session names it
-    assert load_kind(d, ckpt("--transcript", str(path), "--why", "rotate")) == ("codex", "rotate")
-    assert load_kind(d, ckpt("--codex", "--session", THREAD)) == ("codex", "manual")
+    # the rollout handed as the transcript is taken as a Codex session with no flag; --session names it.
+    # the session's three exchanges are already in the store, so each re-take appends nothing and the
+    # rows keep the why of the first take (manual); a why rides an exchange row, written once
+    assert load_kind(d, k, ckpt("--transcript", str(path), "--why", "rotate")) == ("codex", "manual")
+    assert load_kind(d, k, ckpt("--codex", "--session", THREAD)) == ("codex", "manual")
     claude = tmp_path / "claude.jsonl"
     claude.write_text(json.dumps({"type": "user", "uuid": "u", "message": {"content": "placeholder"}}) + "\n")
     for argv, why in (
@@ -972,28 +1115,29 @@ def test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_re
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--dir", str(elsewhere), "--codex"])
     assert out.value.code == 1 and "no Codex rollout under" in capsys.readouterr().err
-    # a declared watch has no Monitor to re-arm it in a Codex session: the take refuses it by name
+    # a declared watch has no Monitor to re-arm it in a Codex session: computing its restore, which runs
+    # the declared values through the Codex vocabulary, refuses it by name (the take itself writes only
+    # exchanges, so it is the restore, not the checkpoint, that meets the kind)
     main(["context", "set", "--dir", str(d), "--name", "w", "--kind", "watch", "--value", "bash /tmp/w.sh"])
     capsys.readouterr()
     with pytest.raises(SystemExit) as out:
-        main(["context", "checkpoint", "--dir", str(d), "--codex"])
+        main(["context", "restore", "--dir", str(d)])
     assert (
         out.value.code == 1 and "var 'w': kind 'watch' is not one of fact, posture" in capsys.readouterr().err
     )
-    assert len(list(context_dir(d).glob("ckpt-*.json"))) == 3  # each refusal wrote nothing
+    assert held(k) == {THREAD: 3}  # the two later takes of the same state and the restore wrote nothing
 
 
-def load_kind(d: Path, done: dict) -> tuple[str, str]:
-    c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+def load_kind(d: Path, k: TaskKhive, done: dict) -> tuple[str, str]:
+    c = load(d, k, done["id"])
     return c.source["kind"], c.why
 
 
 def test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing(tmp_path, monkeypatch, capsys):
     # the PreCompact hook's input still names a Claude Code transcript; a rollout handed there is a
     # Codex session's, whose reasons hold no precompact: the take refuses and writes nothing
-    import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     path = write(tmp_path / "r.jsonl", session_rows(str(d)))
@@ -1007,15 +1151,14 @@ def test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing(t
     with pytest.raises(SystemExit) as out:
         main(["context", "checkpoint", "--hook"])
     assert out.value.code == 1 and "why 'precompact': a Codex session's is one of" in capsys.readouterr().err
-    assert not context_dir(d).exists() or not any(context_dir(d).iterdir())
+    assert held(k) == {}
 
 
 def test_a_rollout_whose_first_row_names_no_owner_is_skipped_and_refused_by_name(
     tmp_path, monkeypatch, capsys
 ):
-    import lion_cli.context as cli
 
-    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    k = store_khive(monkeypatch)
     gh_says(monkeypatch)
     home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(home))
@@ -1032,7 +1175,7 @@ def test_a_rollout_whose_first_row_names_no_owner_is_skipped_and_refused_by_name
     os.utime(unowned, (mine.stat().st_mtime + 60, mine.stat().st_mtime + 60))
     main(["context", "checkpoint", "--dir", str(d), "--codex"])
     done = json.loads(capsys.readouterr().out)
-    c = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+    c = load(d, k, done["id"])
     assert c.source["session_id"] == THREAD and "INHERITED-MARK" not in json.dumps(c.view)
     assert done["skipped_unowned"] == 1
     assert directives(unowned) == []
@@ -1067,6 +1210,7 @@ def test_rollouts_written_in_the_same_nanosecond_are_ordered_by_name_the_later_f
         for thread in order:
             p = write(home / "sessions" / "2026" / "10" / "04" / names[thread], [meta(thread, str(d))])
             os.utime(p, ns=(10**18, 10**18))
-        done = checkpoint(d, "manual", codex=True, khive=TaskKhive([TASK]))
-        taken = core.load(context_dir(d), done["id"], kinds=SESSION_KINDS, whys=SESSION_WHYS)
+        k = TaskKhive([TASK])
+        done = checkpoint(d, "manual", codex=True, khive=k)
+        taken = load(d, k, done["id"])
         assert taken.source["session_id"] == PARENT, order

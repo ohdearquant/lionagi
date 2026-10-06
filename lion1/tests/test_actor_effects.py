@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from lion1 import Actor, Handler, Kind, Profile, RunRequest
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 
@@ -24,7 +25,7 @@ class Calc(BaseModel):
 
 
 def _actor(name: str, log: list[tuple[str, str]], released: asyncio.Event) -> Actor:
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
 
     async def step(req) -> str:
         log.append(("start", req.name))
@@ -97,8 +98,8 @@ def test_each_class_waits_for_what_c6_says_and_reads_overlap():
     assert start("r3") > end("w2")
 
 
-def test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves():
-    actor = Actor("effects-circle")
+def test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves(store):
+    actor = Actor("effects-circle", store=store)
 
     @actor.handler(Put)
     async def put(req: Put, ctx) -> str:
@@ -122,7 +123,7 @@ def test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves()
     assert r["c"].ok and r["c"].value == "d"
 
 
-def test_the_class_is_declared_on_the_handler_write_by_default_and_checked():
+def test_the_class_is_declared_on_the_handler_write_by_default_and_checked(store):
     async def fn(req, ctx):
         return None
 
@@ -133,7 +134,7 @@ def test_the_class_is_declared_on_the_handler_write_by_default_and_checked():
         async def __call__(self, req, ctx):
             return None
 
-    actor = Actor("effects-declared")
+    actor = Actor("effects-declared", store=store)
     assert Handler(Put, fn).effect == "write"
     assert actor.register(Looker()).effect == "read"
     assert actor.register(Handler(Calc, fn, effect="pure")).effect == "pure"

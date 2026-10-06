@@ -1,11 +1,11 @@
 """Notes that outlive a run, and a view the model curates without touching the record.
 
 A name with the `note.` prefix is written to the profile's note store as well as declared on the
-run; the store is a JSON file per profile and carries which run and sequence wrote each note. A
-second run of the same profile lists and points at them. `context.hide` and `context.summarize`
-change what the model sees, never what the record holds: hidden entries keep their names and
-resolve, and `context.show` brings them back. The model carries its big picture in notes and its
-details behind pointers. Scripted backend; runs offline.
+run; the store carries which run and sequence wrote each note (here the memory store; a served
+actor's is the graph's, ADR-0025). A second run of the same profile lists and points at them.
+`context.hide` and `context.summarize` change what the model sees, never what the record holds:
+hidden entries keep their names and resolve, and `context.show` brings them back. The model carries
+its big picture in notes and its details behind pointers. Scripted backend; runs offline.
 
     uv run python examples/notes_and_context.py
 """
@@ -20,7 +20,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from lion1 import Actor, Context, Kind, Profile, RunRequest, fold
+from lion1 import Actor, Context, Kind, Profile, RunRequest, Store, fold
+from lion1.khive import Khive
 
 root = Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process
@@ -52,8 +53,24 @@ def names_in_view(run):
     return [v.entry.name for v in fold(run.record) if not v.hidden]
 
 
+def a_store() -> Store:
+    """The store the run's rows go to: the khive binary, as the actor of a scratch directory."""
+    scratch = Path(tempfile.mkdtemp())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)  # the scratch goes with the process
+    (scratch / ".khive").mkdir()
+    (scratch / ".khive" / "config.toml").write_text(
+        # the actor, and the lion pack's tables routed to their own file beside a main store (the
+        # store refuses a config that would put them in the default one under the home directory)
+        '[actor]\nid = "example"\n'
+        f'\n[[backends]]\nname = "main"\npath = "{scratch / ".khive" / "main.db"}"\n'
+        f'\n[[backends]]\nname = "lion"\npath = "{scratch / ".khive" / "lion.db"}"\n'
+        '\n[packs.lion]\nbackend = "lion"\n'
+    )
+    return Store(Khive(scratch, "example"))
+
+
 async def main() -> None:
-    actor = Actor("clerk", privileges={"fs"}, notes_dir=root / "notes")
+    actor = Actor("clerk", privileges={"fs"}, store=a_store())
     clerk = Profile("clerk", privileges=frozenset({"fs"}))
 
     @actor.handler(ReadFile, requires={"fs"})
@@ -100,7 +117,7 @@ async def main() -> None:
     print(
         f"\nstore: {note.key} = {note.value!r}, written by run {note.run} at seq {note.seq}, v{note.version}"
     )
-    print("file:", sorted(p.name for p in (root / "notes").iterdir()))
+    print("store:", [n.key for n in actor.notes_for(clerk).list()])
 
 
 if __name__ == "__main__":

@@ -1,32 +1,46 @@
 """What a harness session's checkpoint reads and renders whatever the harness (ADR-0019): the
 directory's actor, its lanes (active gtd rows, the threads its unread mail awaits a reply on, its open
-pull requests), its loop cursor, the fold of a session's exchanges, and the restore prompt's body.
-Each harness's own scan and its first line are its module's: `claude_code.checkpoint` for a Claude
-Code session, `codex_checkpoint` for a Codex one. A source that is absent is a value, never a failed
-take.
+pull requests), its loop cursor, the fold of a session's exchanges, the restore prompt's body, and the
+one file state a take reads its session's file in (`Snapshot`). Each harness's own scan and its first
+line are its module's: `claude_code.checkpoint` for a Claude Code session, `codex.checkpoint` for a
+Codex one. A source that is absent is a value, never a failed take.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 import re
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable
+from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable, row_json
+from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
 
 from ..agent.instruments import GH, PR_PAGE, Runner, sh
-from ..khive import Khive, lit
 
 __all__ = (
     "DIRECTIVES",
     "SPAWN_HOURS",
     "MAIL_PAGE",
+    "RETAKES",
+    "SOURCES",
+    "DECLARED",
+    "Snapshot",
+    "snapshot_of",
     "actor_id",
+    "session_of",
+    "latest_session",
+    "exchanges_of",
+    "record_exchanges",
+    "declare",
+    "declared",
     "lanes",
     "pulls",
     "cursor",
@@ -36,9 +50,86 @@ __all__ = (
     "restored",
 )
 
+SOURCES = {
+    "claude-code": "claude_code",
+    "codex": "codex",
+}  # a checkpoint's `source.kind` -> the store's source
+DECLARED = "context."  # a declared value is the actor's note under this prefix, its name after it
+
 DIRECTIVES = 8  # the person's words a restore carries, never more: a prompt hook's ring length
 SPAWN_HOURS = 12  # a spawn older than this with nothing ending it is taken as dead
 MAIL_PAGE = 50  # unread messages one read returns; a full page is not every thread awaiting a reply
+RETAKES = 2  # a session's file that changed under its read is stat and read again this many times
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """One file state of a session's file, a transcript or a rollout, captured once: every read of a
+    take reads exactly its `size` bytes, and a rollout's scan keeps the view `budget` folds to, none
+    when it is None."""
+
+    path: str
+    size: int
+    mtime_ns: int
+    dev: int  # an inode names a file on its own device only
+    ino: int  # a file put in its place
+    ctime_ns: int  # a rewrite in place keeps the size and can restore the mtime, never this
+    budget: int | None = None
+
+    def __fspath__(self) -> str:
+        return self.path
+
+
+class _Moved(CheckpointError):
+    """The file a snapshot names is not in the snapshot's state: put in its place, cut, or rewritten."""
+
+
+def _state(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    return st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino, st.st_ctime_ns
+
+
+def _same(f: Any, snap: Snapshot) -> bool:
+    """Whether the open file is the snapshot's: in its very state, or the same file grown since. One
+    grown is taken as appended to, its bytes to the snapshot's size the snapshot's own."""
+    st = os.fstat(f.fileno())
+    return _state(st) == (snap.size, snap.mtime_ns, snap.dev, snap.ino, snap.ctime_ns) or (
+        (st.st_dev, st.st_ino) == (snap.dev, snap.ino) and st.st_size > snap.size
+    )
+
+
+def _lines(f: Any, snap: Snapshot) -> Iterator[bytes]:
+    """The lines of the open file `f` to the snapshot's size and no further, the last one without its
+    end when the snapshot cut it mid-write. The file is checked against the snapshot before the first
+    byte is read and after the last."""
+    if not _same(f, snap):  # another file put in its place, or this one cut or rewritten
+        raise _Moved(f"{snap.path} is not the file its snapshot was taken of")
+    left = snap.size  # a row appended after the snapshot is after the take
+    while left > 0:
+        raw = f.readline(left)
+        if not raw:  # cut while it was read: the check after the last byte refuses it
+            break
+        left -= len(raw)
+        yield raw
+    if not _same(f, snap):
+        raise _Moved(f"{snap.path} was rewritten while it was read")
+
+
+def snapshot_of(path: str | Path, read: Callable[[Snapshot], Any], budget: int | None = None) -> Snapshot:
+    """The file's state now, for a take whose view folds to `budget`, read at once by the harness's
+    `read`: the scan every reader of the snapshot gets is of that state. A file that changes between
+    its stat and its read is taken again, RETAKES times at most."""
+    p = Path(path)
+    tries = 0
+    while True:
+        snap = Snapshot(str(p), *_state(p.stat()), budget)
+        try:
+            read(snap)
+        except _Moved:
+            tries += 1
+            if tries > RETAKES:
+                raise
+        else:
+            return snap
 
 
 def _now() -> str:
@@ -77,6 +168,88 @@ def actor_id(directory: str | Path) -> str:
     if not actor:
         raise CheckpointError(f"{cfg} has no [actor] id; the actor that takes the checkpoint is named there")
     return str(actor)
+
+
+# --- the session in the store: a harness session is a session of its own source (ADR-0025 D1) ---
+
+
+async def session_of(khive: Khive, session_id: str) -> dict | None:
+    """The store's row for the session, None when it holds none."""
+    try:
+        (row,) = await khive.exec(f'lion.get(table="sessions", id={lit(session_id)})')
+    except KhiveError as e:
+        if e.kind == "not_found":
+            return None
+        raise
+    return row
+
+
+async def latest_session(khive: Khive, actor: str) -> dict | None:
+    """The actor's newest harness session in the store, of either source; None when there is none."""
+    ops = ", ".join(f"lion.sessions(limit=1, actor={lit(actor)}, source={lit(s)})" for s in SOURCES.values())
+    found = [r for got in await khive.exec(f"[{ops}]") for r in got["rows"]]
+    return max(found, key=lambda r: r["started"], default=None)
+
+
+async def exchanges_of(khive: Khive, session_id: str) -> list[dict]:
+    """The session's exchanges as the store holds them, in order: each message row's `raw`, the exchange
+    as it was recorded (`{turn, at, input, text, kind, why}`)."""
+    (got,) = await khive.exec(f'lion.get(table="messages", id={lit(session_id)})')
+    return [json.loads(r["raw"]) for r in got["rows"]]
+
+
+async def record_exchanges(
+    khive: Khive,
+    *,
+    source: str,
+    session_id: str,
+    actor: str,
+    transcript: str,
+    exchanges: Sequence[dict],
+    why: str,
+) -> tuple[int, int]:
+    """The session's exchanges past the count the store holds, appended as its message rows, each with
+    the reason of the take that wrote it; the session row opened when absent. `(turns, appended)`: how
+    many the store holds now, and how many this call wrote. A take of a session the store holds to the
+    same count writes nothing."""
+    if await session_of(khive, session_id) is None:
+        await khive.exec(
+            f"lion.session_open(id={lit(session_id)}, source={lit(SOURCES[source])}, "
+            f"provider_session_id={lit(session_id)}, actor={lit(actor)}, transcript={lit(transcript)})"
+        )
+        held = 0
+    else:
+        held = len(await exchanges_of(khive, session_id))
+    rows = []
+    for seq, t in enumerate(exchanges[held:], held):
+        row = {**t, "why": why}
+        rows.append(
+            f"lion.message_append(session_id={lit(session_id)}, seq={seq}, role={lit('user')}, "
+            f"kind={lit('exchange')}, text={lit(str(t.get('input') or ''))}, "
+            f"raw={lit(row_json(row, ensure_ascii=False))}, turn={seq})"
+        )
+    for i in range(0, len(rows), 50):
+        batch = rows[i : i + 50]
+        await khive.exec(f"[{', '.join(batch)}]" if len(batch) > 1 else batch[0])
+    return held + len(rows), len(rows)
+
+
+def declare(khive: Khive, actor: str, var: Var) -> Var:
+    """A declared value, written as the actor's note `context.<name>`; the var written. A later
+    declaration of the name replaces the earlier."""
+    doc = row_json(dataclasses.asdict(var), ensure_ascii=False)
+    khive.exec_sync(
+        f"lion.note_put(profile={lit(actor)}, key={lit(DECLARED + var.name)}, value={lit(doc)}, "
+        f"run={lit('context')}, seq=0)"
+    )
+    return var
+
+
+def declared(khive: Khive, actor: str) -> list[Var]:
+    """Every value declared for the actor, oldest written first."""
+    (got,) = khive.exec_sync(f"lion.note_list(profile={lit(actor)}, prefix={lit(DECLARED)})")
+    rows = sorted(got["rows"], key=lambda r: r["written"])
+    return [Var(**json.loads(r["value"])) for r in rows]
 
 
 def _valid(rows: list, kind: str) -> tuple[list[dict], str]:
@@ -308,22 +481,15 @@ def restored(c: Checkpoint, first: str) -> list[str]:
     view = c.view or {}
     kept, hidden = view.get("kept") or [], view.get("hidden") or []
     lines.append("")
-    if c.source.get("kind") == "resident":
-        lines.append(
-            f"The record {c.source.get('record')} to seq {c.source.get('seq')}: {len(kept)} entries in "
-            f"view, {len(hidden)} out of it, {len(view.get('summaries') or [])} summaries; the run's "
-            "history replays it."
-        )
-    else:
-        lines.append(
-            f"The last {len(kept)} exchange(s) as they stood; {len(hidden)} earlier folded, the "
-            f"transcript keeps them: {c.source.get('transcript')}"
-        )
-        for t in kept:
-            opener = "wake" if t.get("kind") == "event" else "in"
-            lines += [f"[{t.get('at')}] {opener}:", _fenced(str(t.get("input") or ""))]
-            if t.get("text"):
-                lines += ["out:", _fenced(str(t["text"]))]
+    lines.append(
+        f"The last {len(kept)} exchange(s) as they stood; {len(hidden)} earlier folded, the store keeps "
+        f"them under session {c.source.get('session_id')} (the transcript: {c.source.get('transcript')})"
+    )
+    for t in kept:
+        opener = "wake" if t.get("kind") == "event" else "in"
+        lines += [f"[{t.get('at')}] {opener}:", _fenced(str(t.get("input") or ""))]
+        if t.get("text"):
+            lines += ["out:", _fenced(str(t["text"]))]
     for v in of["posture"]:
         label = (
             "Your posture at the take:" if v.name == "posture" else f"Your loop file's posture ({v.name}):"

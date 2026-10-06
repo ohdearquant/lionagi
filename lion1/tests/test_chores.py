@@ -30,8 +30,10 @@ from hub.agent.chores import (
     sender_of,
     verbs,
 )
-from hub.khive import LOST, KhiveError
 from lion1 import Actor, Kind, Message
+from lion1.khive import LOST, KhiveError
+from tests.lionfake import store as fresh_store
+from tests.test_agent import own
 
 OWNER, STEWARD, SELF = "lambda:x", "lambda:owner", "lambda:x:agent"
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
@@ -128,6 +130,9 @@ class FakeKhive:
 
     async def exec(self, ops: str):
         self.ops.append(ops)
+        if ops.startswith("comm.read("):
+            await self.mark_read(json.loads(re.fullmatch(r"comm\.read\(ids=(\[.*\])\)", ops).group(1)))
+            return [{"status": "success"}]
         if ops.startswith("schedule.remind") and self.grows:
             content, at, repeat = re.search(
                 r'content="([^"]*)", at="([^"]*)", repeat="([^"]*)"', ops
@@ -236,7 +241,7 @@ CHECK = '<lact c1>check(chore="disk")</lact>'
 def build(
     tmp_path, khive: FakeKhive, turns: list[str], batch: int = 1, usage: dict | None = None, **probes: Probe
 ) -> tuple[Chores, Agent]:
-    actor = Actor("chores", privileges={"comm.send"})
+    actor = Actor("chores", privileges={"comm.send"}, store=fresh_store())
     agent = Agent(
         actor,
         khive,
@@ -265,14 +270,22 @@ def age_ledger(chores: Chores, hours: float) -> None:
 
 
 def results(run) -> list[str]:
-    return [str(e.content) for e in run.record if e.kind is Kind.RESULT]
+    return [str(e.content) for e in own(run) if e.kind is Kind.RESULT]
+
+
+def per_wake(turns: list[str], n: int) -> list[str]:
+    """`turns` for each of `n` wakes. A wake continues the last run and replays its aliases, so a later
+    wake names its commands afresh, as a model reading its history does: `c1` becomes `c1w2`."""
+    return [
+        t if k == 1 else re.sub(r"<lact (\w+)>", rf"<lact \1w{k}>", t) for k in range(1, n + 1) for t in turns
+    ]
 
 
 def test_a_tick_with_findings_reports_to_the_owner_on_a_chore_thread_the_day_keeps(tmp_path):
     khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"))
     first = full(findings=("apps steady: under the floor on /dev/disk3s5 (/a)",), evidence="df: ...")
     second = full(findings=("local_ci admit: under the floor on /dev/disk3s5 (/a)",), evidence="df: ...")
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", first, second))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 2), disk=Probe("disk", first, second))
     asyncio.run(agent.wake())
     asyncio.run(agent.wake())
     assert [s["to"] for s in khive.sent] == [OWNER, OWNER]
@@ -305,7 +318,7 @@ def test_the_instrument_is_handed_its_chore_run_as_source_event_over_whatever_th
 def test_the_same_findings_again_are_not_resent_and_the_row_says_which_report_they_repeat(tmp_path):
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(3)))
     out = full(findings=("apps steady: under the floor on /dev/disk3s5 (/a)",), evidence="df: ...")
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 3, disk=Probe("disk", out))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 3), disk=Probe("disk", out))
     for _ in range(3):
         run = asyncio.run(agent.wake())
     assert len(khive.sent) == 1  # a standing state is told once; the actor reads changes
@@ -342,7 +355,7 @@ def test_two_chores_opening_their_threads_in_one_turn_both_keep_them(tmp_path):
     both = '<lact c1>check(chore="disk")</lact><lact c2>check(chore="mem")</lact>'
     disk = Probe("disk", *(full(findings=(f"disk {w}",), evidence="df: ...") for w in ("low", "lower")))
     mem = Probe("mem", *(full(findings=(f"mem {w}",), evidence="vm_stat: ...") for w in ("low", "lower")))
-    chores, agent = build(tmp_path, khive, [both, DONE] * 2, disk=disk, mem=mem)
+    chores, agent = build(tmp_path, khive, per_wake([both, DONE], 2), disk=disk, mem=mem)
     asyncio.run(agent.wake())
     keys = {tuple(k.split(":", 2)[::2]) for k in agent.state.get("chore_threads").value}
     assert keys == {("disk", OWNER), ("mem", OWNER)}
@@ -372,7 +385,7 @@ def test_an_instrument_that_raises_or_whose_control_fails_escalates_to_owner_and
     chores, agent = build(
         tmp_path,
         khive,
-        ['<lact c1>check(chore="pr")</lact>', DONE, '<lact c1>check(chore="gtd")</lact>', DONE],
+        ['<lact c1>check(chore="pr")</lact>', DONE, '<lact c2>check(chore="gtd")</lact>', DONE],
         pr=Probe("pr", RuntimeError("gh: HTTP 502")),
         gtd=Probe("gtd", Outcome(findings=(), evidence="[]", control=False)),
     )
@@ -408,7 +421,7 @@ def test_an_outcome_without_population_predicate_count_or_known_positive_is_refu
     chores, agent = build(
         tmp_path,
         khive,
-        [CHECK, DONE, '<lact c1>check(chore="pr")</lact>', DONE],
+        [CHECK, DONE, '<lact c2>check(chore="pr")</lact>', DONE],
         disk=Probe("disk", Outcome(evidence="df: fine", positive="own pid alive")),  # no population
         pr=Probe("pr", full(evidence="gh: fine", positive="")),  # no known-positive read
     )
@@ -428,7 +441,7 @@ def test_an_empty_population_is_a_finding_unless_the_chore_declared_it_expected(
     chores, agent = build(
         tmp_path,
         khive,
-        [CHECK, DONE, '<lact c1>check(chore="pr")</lact>', DONE],
+        [CHECK, DONE, '<lact c2>check(chore="pr")</lact>', DONE],
         disk=Probe("disk", full(evidence="df: no device", count=0, population="volumes under ['/a']")),
         pr=pr,
     )
@@ -455,7 +468,7 @@ def test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_a
     chores, agent = build(
         tmp_path,
         khive,
-        [CHECK, DONE] * 6,
+        per_wake([CHECK, DONE], 6),
         disk=Probe("disk", dead, dead, dead, dead, full(), dead),
     )
     for _ in range(2):
@@ -492,7 +505,7 @@ def test_a_dead_instrument_notice_a_recipient_refused_is_sent_to_that_recipient_
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(5)))
     khive.refuse = {STEWARD}  # the steward's copies are refused, as a hop cap would
     dead = Outcome(findings=("NOT-MEASURED",), evidence="rc 1", control=False)
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 5, disk=Probe("disk", dead))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 5), disk=Probe("disk", dead))
 
     def notices() -> list[str]:
         return [s["to"] for s in khive.sent if s["subject"] == "ESCALATE disk: instrument dead"]
@@ -520,7 +533,7 @@ def test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(6)))
     khive.refuse = {OWNER, STEWARD}  # neither copy is delivered
     dead = Outcome(findings=("NOT-MEASURED",), evidence="rc 1", control=False)
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 6, disk=Probe("disk", dead))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 6), disk=Probe("disk", dead))
 
     def notices() -> list[str]:
         return [s["to"] for s in khive.sent if s["subject"] == "ESCALATE disk: instrument dead"]
@@ -565,7 +578,7 @@ def test_an_ask_is_answered_on_its_thread_whatever_the_outcome_and_the_owner_is_
     assert "nothing to report" in khive.sent[0]["content"]
     chores.instruments["disk"].outcomes = [loud]
     agent.backend.turns = [
-        f'<lact c1>check(chore="disk", asker="{STEWARD}", thread="t-steward")</lact>',
+        f'<lact c2>check(chore="disk", asker="{STEWARD}", thread="t-steward")</lact>',
         DONE,
     ]
     asyncio.run(agent.wake())
@@ -588,7 +601,7 @@ def test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repe
             DONE,
             "<lact a1>aged()</lact>",
             DONE,
-            CHECK,
+            CHECK.replace("<lact c1>", "<lact c2>"),
             DONE,
         ],
         disk=Probe("disk", loud),
@@ -614,7 +627,7 @@ def test_an_escalation_the_steward_did_not_receive_is_sent_at_the_next_run_thoug
     out = full(
         findings=("local_ci admit: under the floor on /dev/disk3s5 (/a)",), evidence="df", escalate=True
     )
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", out))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 2), disk=Probe("disk", out))
     asyncio.run(agent.wake())
     rows = chores.rows()
     assert rows[0]["sent_to"] == [OWNER] and rows[0]["undelivered"][0].startswith(f"{STEWARD}: hop limit")
@@ -677,7 +690,7 @@ def test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs
 def test_the_hop_cap_on_a_chore_thread_is_recorded_as_undelivered_not_raised(tmp_path):
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(3)))
     outs = [full(findings=(f"floor {n}: under",), evidence="df") for n in (1, 2, 3)]
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 3, disk=Probe("disk", *outs))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 3), disk=Probe("disk", *outs))
     for _ in range(3):
         asyncio.run(agent.wake())
     assert len(khive.sent) == 2  # Budget(hops_per_thread=2): the third report on the day's thread is held
@@ -706,7 +719,7 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
     chores, agent = build(
         tmp_path,
         khive,
-        [CHECK, DONE, '<lact c1>check(chore="pr")</lact>', DONE, "<lact d1>digest()</lact>", DONE],
+        [CHECK, DONE, '<lact c2>check(chore="pr")</lact>', DONE, "<lact d1>digest()</lact>", DONE],
         usage={"prompt_tokens": 1000, "completion_tokens": 50},
         disk=Probe("disk", full(findings=("low",), evidence="df")),
         pr=Probe("pr", RuntimeError("down")),
@@ -741,7 +754,7 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
 
 def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost(tmp_path):
     khive = FakeKhive(mail(SELF, "tick: digest"))
-    turns = ["<lact d1>digest()</lact>", DONE] * 2
+    turns = per_wake(["<lact d1>digest()</lact>", DONE], 2)
     chores, agent = build(tmp_path, khive, turns, disk=Probe("disk", full()))
     day = time.strftime("%Y-%m-%d")
     spend = {"day": day, "calls": 3, "in": 900, "out": 40, "cost": 0.3, "unknown": 2, "runs": 1, "mail": 1}
@@ -992,8 +1005,8 @@ def a_chore_w(tmp_path, ran: bool):
 @pytest.mark.parametrize("ran", [False, True], ids=["never-run", "monthly-run"])
 @pytest.mark.parametrize(
     "stored",
-    [float("nan"), float("inf"), float("-inf"), True, "x", 10**20, -(10**20), 10**400, _END + 1],
-    ids=["nan", "inf", "-inf", "bool", "text", "1e20", "-1e20", "huge-int", "year-10000"],
+    [True, "x", 10**20, -(10**20), 10**400, _END + 1],  # the store refuses NaN and infinity at the put
+    ids=["bool", "text", "1e20", "-1e20", "huge-int", "year-10000"],
 )
 def test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers(
     tmp_path, stored, ran
@@ -1448,11 +1461,11 @@ def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_
         [
             CHECK,
             DONE,
-            '<lact c1>check(chore="pr")</lact>',
+            '<lact c2>check(chore="pr")</lact>',
             DONE,
             "<lact a1>aged()</lact>",
             DONE,
-            "<lact a1>aged()</lact>",
+            "<lact a2>aged()</lact>",
             DONE,
         ],
         disk=Probe("disk", full(findings=("low",), evidence="df"), every="every:30m"),
@@ -1526,7 +1539,7 @@ def test_two_aged_passes_of_one_turn_tell_the_steward_once_and_keep_both_markers
     chores, agent = build(
         tmp_path,
         khive,
-        [CHECK, DONE, '<lact c1>check(chore="pr")</lact>', DONE, twice, DONE],
+        [CHECK, DONE, '<lact c2>check(chore="pr")</lact>', DONE, twice, DONE],
         disk=Probe("disk", full(findings=("low",), evidence="df"), every="every:30m"),
         pr=Probe("pr", full(findings=("#7 red",), evidence="gh"), every="every:30m"),
     )
@@ -1546,7 +1559,10 @@ def test_each_unanswered_report_is_told_to_the_steward_once_however_many_markers
 ):
     khive = FakeKhive(*(mail(SELF, "tick: aged", mid=f"a{i:07x}") for i in range(3)))
     chores, agent = build(
-        tmp_path, khive, ["<lact a1>aged()</lact>", DONE] * 3, disk=Probe("disk", full(), every="every:30m")
+        tmp_path,
+        khive,
+        per_wake(["<lact a1>aged()</lact>", DONE], 3),
+        disk=Probe("disk", full(), every="every:30m"),
     )
     start = time.time() - 86400  # a day back: every report is past two 30-minute periods
     rows = [
@@ -1645,7 +1661,7 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
     chores, agent = build(
         tmp_path,
         khive,
-        [CHECK, DONE] * 2,
+        per_wake([CHECK, DONE], 2),
         disk=Probe("disk", full()),
         pr=Probe("pr", full(findings=("#7 red",), evidence="gh")),
     )
@@ -1673,7 +1689,7 @@ def test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once(tmp_pat
     khive.filtered = True
     khive.bare_pages = bare_pages  # a full bare page is read as a page with more behind it
     chores, agent = build(
-        tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()), pr=Probe("pr", full())
+        tmp_path, khive, per_wake([CHECK, DONE], 2), disk=Probe("disk", full()), pr=Probe("pr", full())
     )
     asyncio.run(agent.wake())
     asyncio.run(agent.wake())
@@ -1699,7 +1715,7 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
         for i in range(501)
     ]
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"b{i:07x}") for i in range(5)), events=events)
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 5, disk=Probe("disk", full()))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 5), disk=Probe("disk", full()))
     asyncio.run(agent.wake())
     asyncio.run(agent.wake())
     noted = [len(r["caught_up"]) for r in chores.rows()]
@@ -1741,7 +1757,7 @@ def test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go(
 
     khive.exec = exec
     chores, agent = build(
-        tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()), pr=Probe("pr", full())
+        tmp_path, khive, per_wake([CHECK, DONE], 2), disk=Probe("disk", full()), pr=Probe("pr", full())
     )
     asyncio.run(agent.wake())
     asyncio.run(agent.wake())
@@ -1780,7 +1796,7 @@ def test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look(
     ]
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"c{i:07x}") for i in range(2)), events=events)
     khive.filtered = True
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()))
+    chores, agent = build(tmp_path, khive, per_wake([CHECK, DONE], 2), disk=Probe("disk", full()))
     asyncio.run(agent.wake())  # the warm pass: every id lands under missed_seen
     assert len(chores.rows()[0]["caught_up"]) == n
     for e in events:
@@ -1824,7 +1840,7 @@ def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp
 
     khive.exec = exec
     chores, agent = build(
-        tmp_path, khive, [CHECK, DONE] * 4, disk=Probe("disk", full()), pr=Probe("pr", full())
+        tmp_path, khive, per_wake([CHECK, DONE], 4), disk=Probe("disk", full()), pr=Probe("pr", full())
     )
     for _ in range(4):
         asyncio.run(agent.wake())
@@ -2428,8 +2444,6 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
         (datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp() - 3600, False),  # earlier
         ("soon", True),  # a record that is no instant is no record
         (True, True),
-        (float("nan"), True),
-        (float("inf"), True),
         (-(10**20), True),  # a number no UTC date names is no record, however early it reads
         (-1e11, True),
         (10**20, True),
@@ -2442,8 +2456,6 @@ def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_
         "earlier",
         "text",
         "bool",
-        "nan",
-        "inf",
         "below-year-1-huge",
         "below-year-1",
         "1e20",

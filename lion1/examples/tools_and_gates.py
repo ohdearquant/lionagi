@@ -20,7 +20,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from lion1 import Actor, Context, Kind, Profile, ProfileError, RunRequest
+from lion1 import Actor, Context, Kind, Profile, ProfileError, RunRequest, Store
+from lion1.khive import Khive
 
 root = Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process
@@ -92,8 +93,24 @@ def scripted(*turns):
     return backend
 
 
+def a_store() -> Store:
+    """The store the run's rows go to: the khive binary, as the actor of a scratch directory."""
+    scratch = Path(tempfile.mkdtemp())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)  # the scratch goes with the process
+    (scratch / ".khive").mkdir()
+    (scratch / ".khive" / "config.toml").write_text(
+        # the actor, and the lion pack's tables routed to their own file beside a main store (the
+        # store refuses a config that would put them in the default one under the home directory)
+        '[actor]\nid = "example"\n'
+        f'\n[[backends]]\nname = "main"\npath = "{scratch / ".khive" / "main.db"}"\n'
+        f'\n[[backends]]\nname = "lion"\npath = "{scratch / ".khive" / "lion.db"}"\n'
+        '\n[packs.lion]\nbackend = "lion"\n'
+    )
+    return Store(Khive(scratch, "example"))
+
+
 async def main() -> None:
-    actor = Actor("worker", privileges={"fs.read", "fs.write", "shell"})
+    actor = Actor("worker", privileges={"fs.read", "fs.write", "shell"}, store=a_store())
     for tool in TOOLS:
         actor.register(tool)
 

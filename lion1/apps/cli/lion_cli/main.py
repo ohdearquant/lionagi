@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hub.accounts import DEFAULT_POOL, PROVIDERS
 from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
+from hub.flow import FlowError
 
 from .account import account_main
 from .agent import agent_main
@@ -15,8 +16,15 @@ from .areas import areas_main
 from .chat import chat_main
 from .config import chat_config, config_main
 from .context import BUDGET, context_main
+from .submit import SubmitError, flow_main, result_main, run_main
 
 __all__ = ("parser", "main")
+
+
+def _run_id(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("expected a run id")
+    return value
 
 
 def parser(chat: dict | None = None) -> argparse.ArgumentParser:
@@ -35,6 +43,13 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         default=None,
         metavar="ID",
         help="read mail back through one wake, by id; then exit",
+    )
+    ag.add_argument(
+        "--forget",
+        default=None,
+        type=_run_id,
+        metavar="RUN",
+        help="let go of the run a refused wake names, so the next wake starts a new chain; then exit",
     )
     ag.add_argument("--wait", type=int, default=30, help="seconds --once waits for mail")
     ag.add_argument("--check", default=None, help="run one instrument, print and land it; nothing is sent")
@@ -106,6 +121,42 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", help="show results' first lines and the loop's notices"
     )
     ch.set_defaults(**(chat or {}))
+    after = argparse.ArgumentParser(add_help=False)  # where the result goes (ADR-0026 C4)
+    after.add_argument("--thread", default=None, help="the thread the result mail goes on")
+    after.add_argument(
+        "--notify",
+        default=None,
+        metavar="ACTOR",
+        help="who the result mail goes to; default: the directory's actor",
+    )
+    after.add_argument(
+        "--var",
+        action="append",
+        default=None,
+        metavar="NAME=VALUE",
+        help="a variable the text names as {NAME}",
+    )
+    rn = sub.add_parser(
+        "run", parents=[after], help="one job of a profile from the directory's profiles.toml; its id first"
+    )
+    rn.add_argument("--dir", default=".", help="the actor's directory: .khive/config.toml, profiles.toml")
+    rn.add_argument("--profile", required=True, help="a [profile.<name>] of profiles.toml")
+    rn.add_argument("--say", required=True, help="the job; a template of the --var names when any is given")
+    rn.add_argument(
+        "--file", action="append", default=None, help="a file whose text is an input after --say (repeatable)"
+    )
+    rn.add_argument("--model", default=None, help="the model; overrides the profile's")
+    fl = sub.add_parser(
+        "flow",
+        parents=[after],
+        help="a [flow.<name>] of the directory's flows.toml; its id, then each step's",
+    )
+    fl.add_argument("--dir", default=".", help="the actor's directory: .khive/config.toml, flows.toml")
+    fl.add_argument("--name", required=True, help="the flow")
+    rs = sub.add_parser("result", help="a run's or a flow's row with its output, read back by id")
+    rs.add_argument("id", type=_run_id, help="the id `lion run` or `lion flow` printed first")
+    rs.add_argument("--dir", default=".", help="the actor's directory the run's rows are in")
+    rs.add_argument("--history", action="store_true", help="the run's messages too, in order")
     cf = sub.add_parser(
         "config", help="the [chat] values a bare `lion chat` runs with, and the file each came from"
     )
@@ -142,13 +193,21 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     here.add_argument(
         "--dir", default=".", help="the session's directory: .khive/config.toml names the actor"
     )
-    cx = sub.add_parser("context", help="a Claude Code or Codex session's checkpoint and restore (ADR-0019)")
+    cx = sub.add_parser(
+        "context", help="a Claude Code or Codex session's checkpoint in the store, and its restore (ADR-0019)"
+    )
     verbs = cx.add_subparsers(dest="verb", required=True)
-    cs = verbs.add_parser("set", parents=[here], help="declare a var; the next checkpoint takes it")
+    cs = verbs.add_parser(
+        "set", parents=[here], help="declare a var; every restore carries it until it is declared again"
+    )
     cs.add_argument("--name", required=True)
     cs.add_argument("--kind", required=True, choices=SESSION_KINDS)
     cs.add_argument("--value", required=True, help="text, or JSON when it opens with { or [")
-    cc = verbs.add_parser("checkpoint", parents=[here], help="take the checkpoint, no model call")
+    cc = verbs.add_parser(
+        "checkpoint",
+        parents=[here],
+        help="write the session's exchanges since the last take into the store, no model call",
+    )
     cc.add_argument("--why", choices=SESSION_WHYS, default="manual")
     cc.add_argument(
         "--session", default=None, help="default: the newest transcript's session; with --codex, a thread id"
@@ -159,7 +218,9 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         help="default: the newest *.jsonl under ~/.claude/projects/<cwd slug>/, never a _precompact_ copy; "
         "a Codex rollout given here is taken as a Codex session",
     )
-    cc.add_argument("--budget", type=int, default=BUDGET, help="tokens; the kept view is half of it")
+    cc.add_argument(
+        "--budget", type=int, default=BUDGET, help="tokens a restore folds to; a take keeps every exchange"
+    )
     how = cc.add_mutually_exclusive_group()
     how.add_argument(
         "--hook",
@@ -174,7 +235,11 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         "is --dir, never a sub-agent's",
     )
     cr = verbs.add_parser("restore", parents=[here], help="print the first prompt of the fresh session")
-    cr.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
+    cr.add_argument(
+        "--id",
+        default=None,
+        help="a session id, or <session>@<turns>; default: the latest session at its last turn",
+    )
     cr.add_argument("--json", action="store_true", help="print {id, first_prompt, watches, spawns}")
     ct = verbs.add_parser("status", parents=[here], help="the latest checkpoint and the figure now")
     ct.add_argument(
@@ -185,7 +250,11 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     )
     cv = verbs.add_parser("show", parents=[here], help="print one var's value, a lazy one included")
     cv.add_argument("--var", required=True, help="the var's name, as the restore prompt gives it")
-    cv.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
+    cv.add_argument(
+        "--id",
+        default=None,
+        help="the checkpoint id the restore prompt names; a declared value is the actor's whichever",
+    )
     pool = argparse.ArgumentParser(add_help=False)
     pool.add_argument(
         "--file",
@@ -215,7 +284,13 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    a = parser().parse_args(argv)
+    ap = parser()
+    a = ap.parse_args(argv)
+    if a.command == "agent" and a.forget is not None:
+        # each action exits after itself, so another one beside the forget would run in its place
+        beside = [f"--{k}" for k in ("once", "rerun", "check", "ticks", "arm", "stats") if getattr(a, k)]
+        if beside:
+            ap.error(f"argument --forget: not allowed with {', '.join(beside)}")
     if a.command == "chat":
         # the directory's file is found by --dir, so the first parse reads it; the second takes the
         # files' values as defaults, which a flag given on the line beats even when it equals the default
@@ -235,6 +310,15 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(chat_main(a))
         except KeyboardInterrupt:
             pass
+    elif a.command in ("run", "flow", "result"):
+        act = {"run": run_main, "flow": flow_main, "result": result_main}[a.command]
+        try:
+            code = asyncio.run(act(a))
+        except (SubmitError, FlowError) as e:  # refused before any row
+            raise SystemExit(f"lion {a.command}: {e}") from None
+        except (KeyboardInterrupt, asyncio.CancelledError):  # once: after its end and mail; again: at once
+            raise SystemExit(130) from None
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

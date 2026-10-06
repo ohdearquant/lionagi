@@ -67,13 +67,6 @@ class PathOrNameByValidate(BaseModel):
     summary: str = Field(validation_alias=AliasPath("report", "summary"))
 
 
-# `validate_by_name` arrived in pydantic 2.11; earlier releases ignore the key and read the alias
-by_name_setting = pytest.mark.skipif(
-    "validate_by_name" not in ConfigDict.__annotations__,
-    reason="pydantic before 2.11 has no validate_by_name",
-)
-
-
 class PathThenKey(BaseModel):
     summary: str = Field(validation_alias=AliasChoices(AliasPath("report", "summary"), "alt_summary"))
 
@@ -263,7 +256,7 @@ def test_guidance_names_each_field_by_the_key_validation_accepts(spec):
     "spec, key",
     [
         (PathOrName, "summary"),
-        pytest.param(PathOrNameByValidate, "summary", marks=by_name_setting),
+        (PathOrNameByValidate, "summary"),
         (PathThenKey, "alt_summary"),
     ],
 )
@@ -393,9 +386,7 @@ def test_guidance_and_a_rebuilt_record_each_choose_the_keys_once(monkeypatch):
     "config",
     [
         pytest.param({"populate_by_name": True}, id="names read too"),
-        pytest.param(
-            {"validate_by_alias": False, "validate_by_name": True}, id="names only", marks=by_name_setting
-        ),
+        pytest.param({"validate_by_alias": False, "validate_by_name": True}, id="names only"),
     ],
 )
 def test_a_key_follows_a_config_changed_after_the_key_was_first_named(config):
@@ -436,7 +427,6 @@ def test_a_field_read_only_through_an_alias_path_is_said_as_the_nesting_it_reads
     assert spec.model_validate(data).summary == "done"
 
 
-@by_name_setting
 def test_a_spec_that_turns_reading_by_name_off_names_a_path_field_by_its_path():
     # validate_by_name=False wins over populate_by_name=True, as validation reads them
     spec = create_model(
@@ -457,7 +447,7 @@ def test_a_spec_that_turns_reading_by_name_off_names_a_path_field_by_its_path():
     ],
 )
 def test_a_field_is_named_by_a_key_the_installed_pydantic_reads_whatever_the_config_carries(config):
-    # before 2.11 a config may carry validate_by_name and validate_by_alias, and validation ignores them
+    # each way a config turns reading by name on or off: the key named is the one validation accepts
     spec = create_model(
         "Settings", __config__=config, summary=(str, Field(validation_alias=AliasPath("report", "summary")))
     )
@@ -537,7 +527,7 @@ def _said_path(first: str | int, rest: str | int) -> str:
         "",
     ],
 )
-def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, form):
+def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, form, store):
     """What the guidance says a path is, written back as the dict it names, fills the field: in an OUT{}
     tag and in a program, whichever of the key's positions it stands in."""
     leaf = _said_path("leaf", "leaf").removesuffix('["leaf"]')  # however the guidance says `leaf` first
@@ -552,7 +542,7 @@ def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, fo
         return turn
 
     run = asyncio.run(
-        Actor("t").run(profile, RunRequest(inputs=("go",), emits=(spec,), max_turns=1), backend)
+        Actor("t", store=store).run(profile, RunRequest(inputs=("go",), emits=(spec,), max_turns=1), backend)
     )
     assert isinstance(run.outcome, Success), run.refused
     assert run.output["path_spec"].value == "done"

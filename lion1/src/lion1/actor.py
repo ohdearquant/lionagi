@@ -24,8 +24,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
@@ -53,25 +52,30 @@ from .lndl import (
 )
 from .lndl import check as check_script
 from .lndl import read as read_script
-from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
+from .notes import Note, NoteStore, key_of
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
 __all__ = (
+    "Role",
     "Message",
     "Reply",
     "SessionPlan",
     "Backend",
+    "Language",
     "Profile",
     "HandlerFn",
     "BeforeFn",
     "AfterFn",
+    "Effect",
     "Handler",
     "ProfileError",
     "JobError",
+    "Reason",
     "Result",
     "Success",
     "Continue",
+    "Spent",
     "Exhausted",
     "Refused",
     "Stopped",
@@ -97,10 +101,17 @@ __all__ = (
 
 # --- what a backend sees ---------------------------------------------------------------------
 
+if TYPE_CHECKING:
+    from .store import Store
+
+
+Role = Literal["system", "user", "assistant"]
+_ROLES = get_args(Role)
+
 
 @dataclass(frozen=True)
 class Message:
-    role: str  # system | user | assistant
+    role: Role
     content: str
     name: str | None = None  # the record entry this message renders, when it renders one
     spec: str | None = None  # for a RESULT that landed: its command (a failed one changed nothing)
@@ -108,6 +119,10 @@ class Message:
     # a stand-in for entries the view no longer shows whole: a placeholder or a summary. A session that
     # still holds the entry under this name holds more than the view, which it may keep (ADR-0009/C4)
     folded: bool = False
+
+    def __post_init__(self) -> None:
+        if self.role not in _ROLES:
+            raise ValueError(f"message role {self.role!r} is not one of {', '.join(_ROLES)}")
 
 
 class Reply(str):
@@ -155,6 +170,9 @@ size (ADR-0009/C1, ADR-0009/C2)."""
 
 # --- agents and handlers -----------------------------------------------------------------------
 
+Language = Literal["core", "program"]  # core: the three constructs; program: one fenced program (ADR-0008/C6)
+_LANGUAGES = get_args(Language)
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -169,16 +187,16 @@ class Profile:
     privileges: frozenset[str] = frozenset()
     system: str = ""  # the role's own prose, ahead of the generated guidance
     notes: NoteStore | None = None  # None: the actor keeps one per profile name
-    language: str = "core"  # core: the three constructs; program: one fenced program (ADR-0008/C6)
+    language: Language = "core"
     # the role's values for the job's bounds, taken where the job leaves one unset (ADR-0003/C1)
     defaults: dict[str, float] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
-        # the name is the notes file's name under `notes_dir`: one file per profile, none outside it
+        # the name keys the profile's note in the store and names it on the command line, so it is one word
         if not _PROFILE_NAME.fullmatch(self.name) or ".." in self.name:
             raise ProfileError(f"profile name {self.name!r}: letters, digits, _ . - only, it names a file")
-        if self.language not in ("core", "program"):
-            raise ProfileError(f"profile language {self.language!r}: core or program")
+        if self.language not in _LANGUAGES:
+            raise ProfileError(f"profile language {self.language!r} is not one of {', '.join(_LANGUAGES)}")
         unknown = sorted(set(self.defaults) - set(_BOUNDS))
         if unknown:
             raise ProfileError(f"profile {self.name!r} defaults name no bound: {unknown}")
@@ -198,7 +216,8 @@ BeforeFn = Callable[
 # it; a hook that raises is told in the next notice and the result stands (the command already ran)
 AfterFn = Callable[["Run", Lact, BaseModel, "Result"], "Awaitable[Result | None] | Result | None"]
 
-_EFFECTS = ("write", "read", "pure")  # what a handler does to live state, for the whole invocation
+Effect = Literal["write", "read", "pure"]  # what a handler does to live state, for the whole invocation
+_EFFECTS = get_args(Effect)
 
 
 @dataclass(frozen=True)
@@ -208,7 +227,7 @@ class Handler:
     requires: frozenset[str] = frozenset()
     # write: waits for every earlier command of its turn but the pure ones; read: for the nearest
     # earlier write; pure: for its pointers only (ADR-0005/C6)
-    effect: str = "write"
+    effect: Effect = "write"
 
     def __post_init__(self) -> None:
         if self.effect not in _EFFECTS:
@@ -230,6 +249,12 @@ class JobError(Exception):
 # --- results and outcomes ----------------------------------------------------------------------
 
 
+# why a command failed: no such command, arguments that did not validate, a privilege the run lacks, a
+# hook's refusal, a handler that raised, a cancel before or while it ran
+Reason = Literal["unknown", "invalid", "privilege", "refused", "failed", "cancelled"]
+_REASONS = get_args(Reason)
+
+
 @dataclass(frozen=True)
 class Result:
     """What a settled command put on the record."""
@@ -238,7 +263,11 @@ class Result:
     ok: bool
     value: Any = None
     error: str | None = None
-    reason: str | None = None  # unknown | invalid | privilege | refused | failed | cancelled
+    reason: Reason | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason is not None and self.reason not in _REASONS:
+            raise ValueError(f"result reason {self.reason!r} is not one of {', '.join(_REASONS)}")
 
     def preview(self, width: int = 120) -> str:
         text = self.error if not self.ok else _text(self.value)
@@ -256,13 +285,21 @@ class Continue:
     pass
 
 
+Spent = Literal["turns", "idle", "time", "cost", "context"]
+_SPENT = get_args(Spent)
+
+
 @dataclass(frozen=True)
 class Exhausted:
     """A bound was spent at a turn's start, `turns` turns in: `reason` names it, turns (max_turns),
     idle (max_idle), time (time_budget), cost (cost_budget) or context (context_budget)."""
 
     turns: int
-    reason: str = "turns"
+    reason: Spent = "turns"
+
+    def __post_init__(self) -> None:
+        if self.reason not in _SPENT:
+            raise ValueError(f"exhausted reason {self.reason!r} is not one of {', '.join(_SPENT)}")
 
 
 @dataclass(frozen=True)
@@ -347,6 +384,12 @@ class RunRequest:
     # a resumed conversation: entries of an earlier run, replayed onto this run's record before its
     # inputs, their aliases and values in reach again (a pointer to an old result or value resolves)
     history: tuple[Entry, ...] = ()
+    # for the store (ADR-0025): what started this run, by id, and the run it resumes by replay
+    trigger: tuple[str, ...] = ()
+    continues: str | None = None
+    # for the store too: this run as one step of a flow's run (ADR-0026 D3), its row written with the
+    # run's own: `flow_run_id`, `idx`, `name` and `inputs_from`, the steps its text read
+    step: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -418,6 +461,8 @@ class Run:
         )
         self.pause = False  # hand the conversation back at the next turn boundary (a person's interrupt)
         self.call: asyncio.Future | None = None  # the backend call in flight, what `interrupt` cuts
+        self.store_flushed = 0  # entries of the record the store holds, by count (ADR-0025 C1)
+        self.store_call_started = 0.0  # when the open call row's request went out
         self.cut = False  # `interrupt` cancelled the call: the turn ends with no message, not the run
         self.same_turns = 0  # consecutive turns byte-identical to the one before
         self.same_errors = 0  # consecutive turns ending in the same retry error
@@ -652,12 +697,12 @@ async def _note_delete(req: NoteDelete, ctx: Context) -> str:
 
 async def _note_read(req: NoteRead, ctx: Context) -> dict:
     name, actor = Profile(req.profile).name, ctx.actor
-    # the store kept under that name, or its file; a read makes none, so a name with neither stays
-    # without one (a file store loads its file on every read, so the one made here is not kept)
-    store = actor._notes.get(name)
-    if store is None and actor.notes_dir is not None:
-        store = FileNoteStore(actor.notes_dir / f"{name}.json")
-    n = store.get(req.key) if store is not None else None
+    # the notes kept under that name, or the profile's rows in the actor's store; a read registers no
+    # notes for the name
+    notes = actor._notes.get(name)
+    if notes is None:
+        notes = actor.store.notes(name)
+    n = notes.get(req.key)
     if n is None:
         raise KeyError(f"no note {req.key!r} in the notes of {req.profile}")
     return {"profile": req.profile, "key": n.key, "value": n.value, "run": n.run, "version": n.version}
@@ -762,12 +807,17 @@ class Actor:
         *,
         privileges: Iterable[str] = (),
         bus: Bus | None = None,
-        notes_dir: str | Path | None = None,
+        store: Store,
     ):
+        if store is None:
+            raise TypeError(
+                "an Actor is built with a store: the run's rows and its profiles' notes are rows of khive "
+                "(ADR-0025 D3)"
+            )
         self.name = name
+        self.store = store  # the run's rows and the profiles' notes in khive (ADR-0025)
         self.privileges = frozenset(privileges)
         self.bus = bus or Bus()
-        self.notes_dir = Path(notes_dir) if notes_dir is not None else None
         self.handlers: dict[str, Handler] = {}
         self.operable = Operable()
         self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a turn
@@ -853,14 +903,11 @@ class Actor:
     def notes_for(self, profile: Profile) -> NoteStore:
         if profile.notes is not None:
             return profile.notes
-        store = self._notes.get(profile.name)
-        if store is None:
-            if self.notes_dir is not None:
-                store = FileNoteStore(self.notes_dir / f"{profile.name}.json")
-            else:
-                store = MemoryNoteStore()
-            self._notes[profile.name] = store
-        return store
+        notes = self._notes.get(profile.name)
+        if notes is None:
+            notes = self.store.notes(profile.name)
+            self._notes[profile.name] = notes
+        return notes
 
     def queue(self, content: Any, context: Context) -> Handle:
         """Hand something to this actor from inside a handler (ADR-0010/C1, ADR-0010/C2).
@@ -924,7 +971,15 @@ class Actor:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
         self.bus.emit("run.started", run=run.id, actor=self.name, profile=profile.name)
+        try:
+            await self.store.open(
+                run, trigger=list(request.trigger) or None, continues=request.continues, step=request.step
+            )
+        except BaseException:  # no rows: the run never started, and it is not left behind
+            self.runs.pop(run.id, None)
+            raise
 
+        call = None
         try:
             while True:
                 spent = _spent(run)  # the turn's first act: every bound, as resolved or raised
@@ -978,7 +1033,11 @@ class Actor:
                     run.outcome = Stopped(turn_no)
                     break
                 self.bus.emit("turn.started", run=run.id, turn=turn_no)
-                messages = self._render(run, subset)
+                view = self._fold(run)
+                messages = self._render(run, subset, view)
+                call = None
+                await self.store.flush(run)  # every entry so far is a row before this call goes (C1)
+                call = await self.store.call_open(run, turn_no, _model(backend), view)
                 text = backend(messages)
                 if inspect.isawaitable(text):
                     run.call = asyncio.ensure_future(text)
@@ -998,6 +1057,8 @@ class Actor:
                             "the person cut this turn short: its call was abandoned, no message came of it",
                             turn=turn_no,
                         )
+                        await self.store.call_close(run, call, status="cut")
+                        call = None
                         continue
                     finally:
                         run.call = None
@@ -1026,6 +1087,18 @@ class Actor:
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
+                counted = isinstance(reported, int) and not isinstance(reported, bool)
+                priced = isinstance(cost, int | float) and not isinstance(cost, bool)
+                await self.store.call_close(
+                    run,
+                    call,
+                    status="refused" if refused else "ok",
+                    reply_seq=m.seq,
+                    tokens_in=reported if counted else None,
+                    cost=cost if priced else None,
+                    error=refused,
+                )
+                call = None  # closed: a request that raises later is not this call
                 try:
                     program = _read(text, run.profile.language, refused)
                     run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
@@ -1173,6 +1246,15 @@ class Actor:
             finally:
                 self.runs.pop(run.id, None)
                 self._deliver(run, error=e)
+            # the open call and the run close as what they are (C2, C5); a store that fails here does not
+            # hide what ended the run
+            try:
+                if call is not None:
+                    why = f"{type(e).__name__}: {e}"
+                    await self.store.call_close(run, call, status="failed", error=why)
+                await self.store.close(run)
+            except Exception:
+                pass
             if cancelled and not isinstance(e, asyncio.CancelledError):
                 raise asyncio.CancelledError from e
             raise
@@ -1181,34 +1263,11 @@ class Actor:
                 if not answer.done():
                     answer.cancel()
 
+        await self.store.close(run)
         self.runs.pop(run.id, None)
         self._deliver(run)
         self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, turns=run.turn)
         return run
-
-    async def serve(
-        self,
-        profile: Profile,
-        backend: Backend,
-        *,
-        request: RunRequest | None = None,
-        converse: bool = False,
-        dir: str | Path | None = None,
-        max_live: int = 8,
-        keep: int = 100,
-        host: str = "127.0.0.1",
-        port: int = 8710,
-        grace: float = 10.0,
-        ready: Callable[[str, int], Any] | None = None,
-    ) -> None:
-        """Serve `profile` on `backend` over HTTP on loopback until cancelled (ADR-0021/D10): a service with
-        one offer, `request` its template and `converse` making each run a conversation; `dir`, `max_live`
-        and `keep` are the service's, `host`, `port`, `grace` and `ready` its transport's."""
-        from .serve import Service  # the service imports this module
-
-        service = Service(self, dir=dir, max_live=max_live, keep=keep)
-        service.offer(profile, backend, request if request is not None else RunRequest(), converse=converse)
-        await service.serve(host, port, grace, ready=ready)
 
     # pieces of a turn
 
@@ -1877,7 +1936,7 @@ class Actor:
             told.clear()
         return "\n".join(lines), folded
 
-    def _render(self, run: Run, subset: Operable) -> list[Message]:
+    def _render(self, run: Run, subset: Operable, view: list[ViewEntry] | None = None) -> list[Message]:
         outputs = tuple(spec_name(s) for s in run.request.emits)
         language = lndl.guidance if run.profile.language == "core" else program_guidance
         parts = [
@@ -1888,13 +1947,20 @@ class Actor:
         if run.request.emits:
             parts.append(_output_guidance(run.request.emits))
         messages = [Message("system", "\n\n".join(p for p in parts if p))]
-        view = self._fold(run)
+        if view is None:
+            view = self._fold(run)
         messages.extend(_messages(view))
         run.viewed = _shown(view)
         return [dataclasses.replace(m, run=run.id) for m in messages]
 
     def _fold(self, run: Run, consumed: tuple[Directive, ...] = ()) -> list[ViewEntry]:
         return fold(run.record, protect_input=not run.request.fold_inputs, consumed=consumed)
+
+
+def _model(backend: Any) -> str:
+    """What the call row names: the backend's model when it says, else the backend by its class."""
+    model = getattr(backend, "model", None)
+    return model if isinstance(model, str) and model else type(backend).__name__
 
 
 def _consumed(run: Run) -> tuple[Directive, ...]:
@@ -1922,7 +1988,7 @@ def _clock(seconds: float) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
-def _spent(run: Run) -> str | None:
+def _spent(run: Run) -> Spent | None:
     """The bound spent at a turn's start, in the order the record names them (ADR-0003/C2): time,
     cost, turns, idle turns, and the context figure the last notification told; a deadline that
     falls on the last turn reads time."""
@@ -1935,7 +2001,7 @@ def _spent(run: Run) -> str | None:
     return "context" if run.context_figure > run.bounds["context_budget"] else None
 
 
-def _over(run: Run) -> str | None:
+def _over(run: Run) -> Spent | None:
     """Time or cost spent: read at a turn's start and again before each handler starts."""
     if run.bounds["time_budget"] is not None and run.elapsed >= run.bounds["time_budget"]:
         return "time"

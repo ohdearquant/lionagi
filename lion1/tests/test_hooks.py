@@ -18,6 +18,7 @@ from hub.hooks import install, load, run_hook
 from hub.hooks.shell import HERE
 from lion1 import Actor, Kind, Profile, RunRequest
 from lion1.actor import DEFAULT_HANDLERS
+from tests.lionfake import store as fresh_store
 from tests.test_actor import scripted
 
 GATE = """
@@ -49,7 +50,7 @@ def setup(tmp_path: Path, extra: str = "") -> tuple[Actor, Profile]:
         f'[[after]]\nname = "audit"\nrun = "{py} audit.py"\n\n'
         '[[turn]]\nname = "clock"\nrun = "echo clock: tick"\n' + extra
     )
-    actor = Actor("h", notes_dir=tmp_path / "notes")
+    actor = Actor("h", store=fresh_store())
     hooks = load(tmp_path / "hooks.toml")
     assert install(actor, hooks, tmp_path) == len(hooks)
     specs = files(actor, tmp_path) | {h.name for h in DEFAULT_HANDLERS}
@@ -98,7 +99,7 @@ def test_a_slow_before_hook_refuses_at_its_timeout_and_a_bad_file_says_which_tab
         load(tmp_path / "old.toml")
 
 
-def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_does_too(tmp_path):
+def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_does_too(tmp_path, store):
     from hub.hooks import no_secrets
 
     hooks = load(HERE / "hooks.toml")  # the file sits beside the loader, wherever pytest runs from
@@ -186,7 +187,7 @@ def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_d
             [sys.executable, "-m", "hub.hooks.scripts.guard_bash"], input=line, capture_output=True, text=True
         ).returncode
     assert verdicts == {**{c: 2 for c in refused}, **{c: 0 for c in allowed}}
-    actor = Actor("g")
+    actor = Actor("g", store=store)
     no_secrets(actor)
     specs = files(actor, tmp_path) | {h.name for h in DEFAULT_HANDLERS}
     profile = Profile(name="g", specs=frozenset(specs), system="x")
@@ -203,7 +204,7 @@ def test_the_reference_file_loads_and_its_script_refuses_a_secret_and_the_gate_d
     from hub import LocalTree, code
 
     (tmp_path / ".env").write_text("TOKEN=x\n")
-    actor = Actor("g2")
+    actor = Actor("g2", store=store)
     install(actor, load(HERE / "hooks.toml"), tmp_path)
     specs = files(actor, tmp_path) | code(actor, LocalTree(tmp_path)) | {h.name for h in DEFAULT_HANDLERS}
     run = asyncio.run(
@@ -402,7 +403,7 @@ def test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_res
     class Loop(BaseModel):
         n: int
 
-    actor = Actor("loop")
+    actor = Actor("loop", store=fresh_store())
 
     @actor.handler(Loop)
     async def loop(req: Loop, ctx) -> list:
@@ -528,11 +529,11 @@ def test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved(tmp_
     ]
 
 
-def test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run(tmp_path):
+def test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run(tmp_path, store):
     # exit 0 with a log line raised JSONDecodeError and the command never ran
     from hub.hooks.shell import Hook, install
 
-    actor = Actor("h")
+    actor = Actor("h", store=store)
     say = tmp_path / "say.py"
     say.write_text("import sys; sys.stdin.read(); print('seen'); sys.exit(0)\n")
     install(
@@ -554,7 +555,7 @@ def test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run(
 
 
 @pytest.mark.parametrize("default", [False, True], ids=["required", "with-default"])
-def test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field(tmp_path, default):
+def test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field(tmp_path, default, store):
     from pydantic import BaseModel, Field
 
     from hub.hooks.shell import Hook, install
@@ -562,7 +563,7 @@ def test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field(tmp_pat
     class Wire(BaseModel):
         text: str = Field("unchanged", alias="wire_text") if default else Field(alias="wire_text")
 
-    actor = Actor("h")
+    actor = Actor("h", store=store)
 
     @actor.handler(Wire)
     def wire(req: Wire, ctx) -> str:
@@ -891,7 +892,7 @@ def plant_hub(proj: Path, escaped: Path) -> None:
         )
 
 
-def test_builtin_hook_origin_ignores_cwd_and_pythonpath(tmp_path, monkeypatch):
+def test_builtin_hook_origin_ignores_cwd_and_pythonpath(tmp_path, monkeypatch, store):
     # sandbox-04: `python -m` put the directory first on sys.path, and PYTHONPATH reached it as well, so
     # a module the model wrote there ran on the host at the next command of the same chat
     from tests.test_shell import FakeSandbox
@@ -902,7 +903,7 @@ def test_builtin_hook_origin_ignores_cwd_and_pythonpath(tmp_path, monkeypatch):
     (proj / ".env").write_text("TOKEN=x\n")
     plant_hub(proj, escaped)
     monkeypatch.setenv("PYTHONPATH", str(proj))
-    actor = Actor("o")
+    actor = Actor("o", store=store)
     install(actor, load(proj / ".lion" / "hooks.toml"), proj)
     specs = files(actor, proj) | shell(actor, FakeSandbox()) | {h.name for h in DEFAULT_HANDLERS}
     run = asyncio.run(
@@ -919,7 +920,7 @@ def test_builtin_hook_origin_ignores_cwd_and_pythonpath(tmp_path, monkeypatch):
     assert "pushing is the person's act" in r["b"].error and "looks like a secret" in r["r"].error
 
 
-def test_writable_editable_hook_origin_is_refused(tmp_path, monkeypatch):
+def test_writable_editable_hook_origin_is_refused(tmp_path, monkeypatch, store):
     # sandbox-04: `-I` keeps the cwd and PYTHONPATH out, but an editable install of the directory itself
     # still imports hub from where the model writes; refused at install, before any model work
     def venv(at: Path) -> tuple[Path, Path]:
@@ -940,23 +941,25 @@ def test_writable_editable_hook_origin_is_refused(tmp_path, monkeypatch):
     )
     assert imported.stdout.strip() == str(proj / "hub" / "__init__.py")
     with pytest.raises(ValueError, match="which the model can write") as refused:
-        install(Actor("e"), hooks, proj)
+        install(Actor("e", store=store), hooks, proj)
     assert str(proj / "hub" / "__init__.py") in str(refused.value)
     (site / "_hub.pth").write_text(f"{checkout}\n")  # an editable checkout outside the directory is trusted
-    assert install(Actor("e"), hooks, proj) == len(hooks)
+    assert install(Actor("e", store=store), hooks, proj) == len(hooks)
     (site / "_hub.pth").unlink()
     shutil.copytree(checkout / "hub", site / "hub")  # and so is an installed package
-    assert install(Actor("e"), hooks, proj) == len(hooks)
+    assert install(Actor("e", store=store), hooks, proj) == len(hooks)
     inner, inner_site = venv(proj / ".venv")  # an interpreter inside the directory is refused before it runs
     ran = tmp_path / "ran.txt"
     (inner_site / "_planted.pth").write_text(f"import pathlib; pathlib.Path({str(ran)!r}).write_text('x')\n")
     monkeypatch.setattr(sys, "executable", str(inner))
     with pytest.raises(ValueError, match="which the model can write") as refused:
-        install(Actor("e"), load(HERE / "hooks.toml"), proj)
+        install(Actor("e", store=store), load(HERE / "hooks.toml"), proj)
     assert f"the interpreter is {inner}," in str(refused.value) and not ran.exists()
     subprocess.run([inner, "-I", "-c", "pass"], check=True)
     assert ran.exists()  # control: had it run, even under -I, the planted line would have
-    assert install(Actor("e"), [h for h in hooks if not h.module], proj) == 2  # its own shell lines stay
+    assert (
+        install(Actor("e", store=store), [h for h in hooks if not h.module], proj) == 2
+    )  # its own shell lines stay
 
 
 def test_git_global_options_cannot_hide_push_or_destructive_subcommand(monkeypatch):
@@ -994,7 +997,7 @@ def test_git_global_options_cannot_hide_push_or_destructive_subcommand(monkeypat
     assert verdicts == {**{c: 2 for c in hidden}, **{c: 0 for c in allowed}}
 
 
-def test_builtin_hook_still_checks_project_paths(tmp_path):
+def test_builtin_hook_still_checks_project_paths(tmp_path, store):
     # the bundled rows still run from the directory: a tracked file is source whatever its name, an
     # untracked secret is refused, and the tree hook names what changed there
     from hub import LocalTree, code
@@ -1005,7 +1008,7 @@ def test_builtin_hook_still_checks_project_paths(tmp_path):
     git(tmp_path, "add", "secret_rules.md", "a.txt")
     git(tmp_path, "commit", "-qm", "one")
     (tmp_path / "secret.txt").write_text("x\n")
-    actor = Actor("p")
+    actor = Actor("p", store=store)
     install(actor, load(HERE / "hooks.toml"), tmp_path)
     specs = files(actor, tmp_path) | code(actor, LocalTree(tmp_path)) | {h.name for h in DEFAULT_HANDLERS}
     run = asyncio.run(
@@ -1056,7 +1059,7 @@ sys.exit(1)
 """
 
 
-def test_hook_failure_reasons_reach_the_record_whole(tmp_path):
+def test_hook_failure_reasons_reach_the_record_whole(tmp_path, store):
     # a failed hook's reason was cut at 300 characters in all three phases, and the
     # tail is where a guard names the fix; the view budget is the only size control
     from hub.hooks.shell import Hook
@@ -1064,7 +1067,7 @@ def test_hook_failure_reasons_reach_the_record_whole(tmp_path):
     (tmp_path / "failing.py").write_text(FAILING)
     (tmp_path / "a.txt").write_text("alpha\n")
     run_line = f"{sys.executable} failing.py"
-    actor = Actor("f")
+    actor = Actor("f", store=store)
     hooks = [
         Hook("before", f"{run_line} before", "gate", "read", 5),
         Hook("after", f"{run_line} after", "audit", "list_dir", 5),
@@ -1088,14 +1091,14 @@ def test_hook_failure_reasons_reach_the_record_whole(tmp_path):
     assert {phase: f"END-OF-{phase}" in text for phase, text in seen.items()} == dict.fromkeys(seen, True)
 
 
-def test_shell_and_file_output_reaches_the_record_whole(tmp_path):
+def test_shell_and_file_output_reaches_the_record_whole(tmp_path, store):
     # control: a command's own output was never cut; long results are the view budget's to fold
     class LongBox:
         async def exec(self, argv, *, stdin=None, timeout=120):
             return {"rc": 0, "stdout": "y" * 5000 + "END-OF-STDOUT", "stderr": "", "elapsed": 0.01}
 
     (tmp_path / "long.txt").write_text("z" * 5000 + "END-OF-FILE")
-    actor = Actor("w")
+    actor = Actor("w", store=store)
     specs = files(actor, tmp_path) | shell(actor, LongBox()) | {h.name for h in DEFAULT_HANDLERS}
     run = asyncio.run(
         actor.run(

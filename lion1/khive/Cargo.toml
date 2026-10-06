@@ -1,0 +1,25 @@
+# The store's CLI with this runtime's pack in it (ADR-0025 D4). The pack owns its tables and its
+# verbs; the store's own crates are taken at one pinned revision and never changed here.
+[workspace]
+resolver = "2"
+members = ["pack-lion", "lion1-khive"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+
+[workspace.dependencies]
+khive-types = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
+khive-storage = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
+khive-runtime = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
+kkernel = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
+
+inventory = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.10", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sha2 = "0.10"
+anyhow = "1.0"

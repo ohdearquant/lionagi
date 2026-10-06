@@ -1,7 +1,11 @@
 """A whole SWE-bench set through the LNDL loop, one box per instance, graded in that box.
 
     uv run --with swebench --with daytona python bench/swe/run_set.py --set mini50 --where daytona \\
-        --backend openrouter --model deepseek/deepseek-v4.1-flash --parallel 4 --run-id ds-mini50
+        --backend openrouter --model deepseek/deepseek-v4.1-flash --parallel 4 --run-id ds-mini50 \\
+        --khive-dir DIR
+
+`--khive-dir` names the directory whose `.khive/config.toml` names the actor and routes the lion
+pack's tables to their own file (ADR-0026 C8).
 
 `--where local` runs the eval image under docker on this machine (amd64 emulation: one at a time is
 what it can bear) and streams images: pull, solve, grade, remove. `--where daytona` creates one
@@ -44,7 +48,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_cli import solve as solve_codex_cli  # noqa: E402
-from run_swe import HERE, RESULTS, solve  # noqa: E402
+from run_swe import HERE, RESULTS, solve, store_of  # noqa: E402
 from run_swe import cost_known as _cost_known  # noqa: E402
 from sandbox import close_code_hosts, grade, open_code_hosts, runta_image, testbed  # noqa: E402
 
@@ -161,6 +165,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                     criteria=args.criteria,
                     tdd=args.tdd,
                     unaided=args.unaided,
+                    store=store_of(args.khive_dir),
                 )
                 if closed is not None:
                     rec["unaided"] = closed
@@ -500,5 +505,8 @@ if __name__ == "__main__":
     ap.add_argument("--cpu", type=int, default=2, help="vCPU per Daytona sandbox or Runta runtime")
     ap.add_argument("--memory", type=int, default=2, help="GiB per remote box; Daytona's org pool is shared")
     ap.add_argument("--run-id", required=True)
+    ap.add_argument(
+        "--khive-dir", required=True, help="the directory whose .khive/config.toml names the actor"
+    )
     ap.add_argument("--keep-images", action="store_true")
     asyncio.run(main(ap.parse_args()))

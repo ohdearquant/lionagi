@@ -1,19 +1,23 @@
-"""The served actor's HTTP transport (ADR-0021/D8): loopback only, one request per connection in one
-strict form, answered in D9's shapes, streams as server-sent events, and an end that leaves nothing
-running. Every test here speaks to a real socket on loopback."""
+"""The served actor's HTTP transport (ADR-0021/D8): loopback only, D9's shapes and codes over FastAPI on
+uvicorn, streams as server-sent events, and an end that leaves nothing running. Every test here but the
+peer's speaks to a real socket on loopback."""
 
 import asyncio
 import contextlib
 import gc
 import json
+import signal
 import socket
 from types import SimpleNamespace
 
 import pytest
 
-import lion1.serve as serve
+import hub.serve.service as serve
+import hub.serve.transport as transport
+from hub.serve import Lion, Service
+from hub.serve import serve as serving_forever
 from lion1 import Actor, Profile, RunRequest
-from lion1.serve import Service
+from tests.lionfake import unflushed_store
 from tests.test_serve import FINISH, Answer, Held, actor, bounded, log_lines, turns
 
 
@@ -21,7 +25,8 @@ from tests.test_serve import FINISH, Answer, Held, actor, bounded, log_lines, tu
 async def serving(service: Service, host: str = "127.0.0.1", grace: float = 2.0):
     """`service` served on a free port for the block; cancelled, and seen to return, after it."""
     bound = asyncio.get_running_loop().create_future()
-    task = asyncio.ensure_future(service.serve(host, 0, grace, ready=lambda h, p: bound.set_result(p)))
+    served = serving_forever(service, host, 0, grace, ready=lambda h, p: bound.set_result(p))
+    task = asyncio.ensure_future(served)
     await asyncio.wait({bound, task}, return_when=asyncio.FIRST_COMPLETED)
     if task.done():
         task.result()
@@ -34,7 +39,9 @@ async def serving(service: Service, host: str = "127.0.0.1", grace: float = 2.0)
 
 
 def http(method: str, path: str, port: int, body=None, *, headers=(), host: str | None = None) -> bytes:
+    """One request that asks the server to close after its answer, so a read to the close is the answer."""
     lines = [f"{method} {path} HTTP/1.1", f"Host: {host if host is not None else f'127.0.0.1:{port}'}"]
+    lines.append("Connection: close")
     data = b""
     if body is not None:
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -77,10 +84,6 @@ async def call(port: int, method: str, path: str, body=None, **kw) -> tuple[int,
     return status, json.loads(data)
 
 
-def pieces(data: bytes, size: int = 7) -> list[bytes]:
-    return [data[i : i + size] for i in range(0, len(data), size)]
-
-
 def frames(body: bytes) -> list[tuple[str | None, dict | None]]:
     """A server-sent event stream as (event, data); a comment line as (None, None)."""
     out = []
@@ -94,7 +97,7 @@ def frames(body: bytes) -> list[tuple[str | None, dict | None]]:
     return out
 
 
-SAFE = {"x-content-type-options": "nosniff", "cache-control": "no-store", "connection": "close"}
+SAFE = {"x-content-type-options": "nosniff", "cache-control": "no-store"}
 
 
 def assert_safe(fields: dict) -> None:
@@ -102,26 +105,47 @@ def assert_safe(fields: dict) -> None:
     assert not [k for k in fields if k.startswith("access-control-")]
 
 
+class Stream:
+    """A stream read off its socket: the head, then its frames, each a chunk as uvicorn sends them."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, fields: dict):
+        self.reader, self.writer, self.fields = reader, writer, fields
+        self.buf = b""
+
+    async def frame(self) -> bytes:
+        while b"\n\n" not in self.buf:
+            line = await self.reader.readline()
+            size = int(line.strip() or b"0", 16)
+            if size == 0:
+                raise EOFError
+            self.buf += (await self.reader.readexactly(size + 2))[:-2]
+        frame, _, self.buf = self.buf.partition(b"\n\n")
+        return frame + b"\n\n"
+
+    async def drained(self) -> list:
+        """What the stream sent to its close, cut or whole."""
+        got = []
+        with contextlib.suppress(EOFError, ValueError, asyncio.IncompleteReadError, ConnectionError):
+            while True:
+                got.append(await self.frame())
+        self.writer.close()
+        with contextlib.suppress(OSError):
+            await self.writer.wait_closed()
+        return frames(b"".join(got))
+
+
 # --- D8: the routes ---------------------------------------------------------------------------------
 
 
-async def stream_open(port: int, path: str) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict]:
+async def stream_open(port: int, path: str) -> Stream:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(http("GET", path, port))
     head = await reader.readuntil(b"\r\n\r\n")
     status, fields, _ = parsed(head)
-    assert status == 200 and fields["content-type"] == "text/event-stream" and "content-length" not in fields
+    assert status == 200 and fields["content-type"] == "text/event-stream"  # D8's value, no parameter
+    assert "content-length" not in fields and fields["transfer-encoding"] == "chunked"
     assert_safe(fields)
-    return reader, writer, fields
-
-
-async def drained(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> list:
-    """What a stream sent to its close."""
-    body = await reader.read()
-    writer.close()
-    with contextlib.suppress(OSError):
-        await writer.wait_closed()
-    return frames(body)
+    return Stream(reader, writer, fields)
 
 
 def test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives():
@@ -142,7 +166,7 @@ def test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives():
             got["start"] = await call(port, "POST", "/runs", start)
             got["again"] = await call(port, "POST", "/runs", start)
             sid = got["start"][1]["id"]
-            got["events"] = await drained(*(await stream_open(port, f"/runs/{sid}/events"))[:2])
+            got["events"] = await (await stream_open(port, f"/runs/{sid}/events")).drained()
             got["runs"] = await call(port, "GET", "/runs")
             got["state"] = await call(port, "GET", f"/runs/{sid}")
             got["record"] = await call(port, "GET", f"/runs/{sid}/record")
@@ -158,14 +182,14 @@ def test_each_route_answers_as_the_table_says_in_the_shapes_d9_gives():
             second = await backend.next()  # the cut turn made no message; the next took the input
             got["end"] = await call(port, "POST", f"/runs/{talk}/end", {})
             second.set_result("Fine.")
-            got["talk"] = await drained(*(await stream_open(port, f"/runs/{talk}/events"))[:2])
+            got["talk"] = await (await stream_open(port, f"/runs/{talk}/events")).drained()
             ids = [talk]
             for control in ("stop", "cancel"):
                 ids.append((await call(port, "POST", "/runs", {"offer": "talk", "inputs": ["hi"]}))[1]["id"])
                 await backend.next()
                 got[control] = await call(port, "POST", f"/runs/{ids[-1]}/{control}", {})
-                await drained(*(await stream_open(port, f"/runs/{ids[-1]}/events"))[:2])
-        got["every"] = await drained(*every[:2])  # open until the server ended
+                await (await stream_open(port, f"/runs/{ids[-1]}/events")).drained()
+        got["every"] = await every.drained()  # open until the server ended
         return sid, ids, got
 
     sid, ids, got = bounded(main)
@@ -202,7 +226,7 @@ class _Planless:
         raise AssertionError("never called")
 
 
-D9_STATUS = {  # D9's table, written out here so a change to the service's own table cannot pass
+D9_STATUS = {  # D9's table, written out here so a change to the transport's own table cannot pass
     "bad_request": 400,
     "forbidden": 403,
     "unknown_offer": 404,
@@ -241,7 +265,7 @@ def test_each_code_is_answered_with_its_status_and_a_reason(tmp_path, monkeypatc
         got = {}
         async with serving(service) as port:
             ended = (await call(port, "POST", "/runs", {"offer": "task", "once": "k"}))[1]["id"]
-            await drained(*(await stream_open(port, f"/runs/{ended}/events"))[:2])
+            await (await stream_open(port, f"/runs/{ended}/events")).drained()
             talk = (await call(port, "POST", "/runs", {"offer": "talk", "inputs": ["hi"]}))[1]["id"]
             await backend.next()
             await call(port, "POST", f"/runs/{talk}/input", {"text": "one"})
@@ -279,7 +303,7 @@ def test_each_code_is_answered_with_its_status_and_a_reason(tmp_path, monkeypatc
             # dropped with no log to read: keep=1 and two runs that ended since, its log removed
             for _ in range(2):
                 sid = (await call(port, "POST", "/runs", {"offer": "task"}))[1]["id"]
-                await drained(*(await stream_open(port, f"/runs/{sid}/events"))[:2])
+                await (await stream_open(port, f"/runs/{sid}/events")).drained()
             (tmp_path / f"{ended}.jsonl").unlink()
             got["gone"] = await call(port, "GET", f"/runs/{ended}")
             monkeypatch.setattr(
@@ -293,11 +317,11 @@ def test_each_code_is_answered_with_its_status_and_a_reason(tmp_path, monkeypatc
         return got
 
     got = bounded(main)
-    assert serve._STATUS == D9_STATUS
+    assert transport._STATUS == D9_STATUS
     for code, (status, doc) in got.items():
         assert status == D9_STATUS[code] and doc["error"] == code and doc["reason"], (code, doc)
         assert list(doc) == ["error", "reason"]
-    assert set(got) == set(serve._STATUS) - {"timeout", "starting"}  # those two have tests of their own
+    assert set(got) == set(transport._STATUS) - {"timeout", "starting"}  # those two have tests of their own
     assert got["refused"][1]["reason"] == "RuntimeError: no plan today"
 
 
@@ -305,9 +329,9 @@ def serve_row(sid: str) -> dict:
     return {"kind": "SERVE", "version": 1, "id": sid, "offer": "task", "resumed": None, "replayed": 0}
 
 
-# --- C10, D8: the raw request -----------------------------------------------------------------------
+# --- C10, D9: the body ------------------------------------------------------------------------------
 
-HOST = b"Host: 127.0.0.1:{p}\r\n"
+HOST = b"Host: 127.0.0.1:{p}\r\nConnection: close\r\n"
 JSON = b"Content-Type: application/json\r\n"
 
 
@@ -316,71 +340,28 @@ def post(body: bytes, *, path: bytes = b"/runs", length: bytes | None = None, ki
     return b"POST " + path + b" HTTP/1.1\r\n" + HOST + kind + b"Content-Length: " + size + b"\r\n\r\n" + body
 
 
+def chunked(body: bytes, kind: bytes = JSON) -> bytes:
+    """`body` sent in chunks of 64 KiB, with no length given."""
+    pieces = [body[i : i + 65536] for i in range(0, len(body), 65536)]
+    data = b"".join(f"{len(p):x}\r\n".encode() + p + b"\r\n" for p in pieces) + b"0\r\n\r\n"
+    return b"POST /runs HTTP/1.1\r\n" + HOST + kind + b"Transfer-Encoding: chunked\r\n\r\n" + data
+
+
 START = b'{"offer": "p"}'
-LONG = "start=" + "9" * 5000  # past the digits `int` reads from a string
 REFUSED = [
-    ("HTTP/1.0", b"GET / HTTP/1.0\r\n" + HOST + b"\r\n", "bad_request"),
-    ("another method", b"PUT / HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("a preflight", b"OPTIONS / HTTP/1.1\r\n" + HOST + b"Origin: http://evil.example\r\n\r\n", "bad_request"),
-    ("a method in lower case", b"get / HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("the absolute form", b"GET http://127.0.0.1:{p}/ HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("the asterisk form", b"GET * HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("a space in the target", b"GET /a b HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("two spaces", b"GET  / HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("a broken escape", b"GET /%zz HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("a fragment", b"GET /#top HTTP/1.1\r\n" + HOST + b"\r\n", "bad_request"),
-    ("no version", b"GET /\r\n" + HOST + b"\r\n", "bad_request"),
-    ("bare line feeds", b"GET / HTTP/1.1\nHost: 127.0.0.1:{p}\n\n", "bad_request"),
-    ("one bare line feed", b"GET / HTTP/1.1\r\nHost: 127.0.0.1:{p}\nX-A: b\r\n\r\n", "bad_request"),
-    ("a bare carriage return", b"GET / HTTP/1.1\r\nHost: 127.0.0.1:{p}\rX-A: b\r\n\r\n", "bad_request"),
-    ("a space before the colon", b"GET / HTTP/1.1\r\nHost : 127.0.0.1:{p}\r\n\r\n", "bad_request"),
-    ("a folded line", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: one\r\n two\r\n\r\n", "bad_request"),
-    ("a line folded by a tab", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: one\r\n\ttwo\r\n\r\n", "bad_request"),
-    ("a control character", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: a\x01b\r\n\r\n", "bad_request"),
-    ("a tab in a value", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: a\tb\r\n\r\n", "bad_request"),
-    ("a space in a name", b"GET / HTTP/1.1\r\n" + HOST + b"X A: b\r\n\r\n", "bad_request"),
-    ("no colon", b"GET / HTTP/1.1\r\n" + HOST + b"Garbage\r\n\r\n", "bad_request"),
-    ("an empty name", b"GET / HTTP/1.1\r\n" + HOST + b": b\r\n\r\n", "bad_request"),
-    ("a byte past ASCII", b"GET / HTTP/1.1\r\n" + HOST + "X-A: é\r\n\r\n".encode(), "bad_request"),
-    ("no Host", b"GET / HTTP/1.1\r\nX-A: b\r\n\r\n", "bad_request"),
-    ("no header at all", b"GET / HTTP/1.1\r\n\r\n", "bad_request"),
-    ("two Hosts", b"GET / HTTP/1.1\r\n" + HOST + HOST + b"\r\n", "bad_request"),
-    (
-        "two Origins",
-        b"GET / HTTP/1.1\r\n" + HOST + b"Origin: http://127.0.0.1:{p}\r\n" * 2 + b"\r\n",
-        "bad_request",
-    ),
-    ("two Content-Types", post(START).replace(JSON, JSON + JSON), "bad_request"),
-    (
-        "two lengths",
-        post(START).replace(b"Content-Length", b"Content-Length: 14\r\ncontent-length"),
-        "bad_request",
-    ),
-    ("Transfer-Encoding", post(START).replace(JSON, JSON + b"Transfer-Encoding: chunked\r\n"), "bad_request"),
-    (
-        "transfer-encoding",
-        post(START).replace(JSON, JSON + b"transfer-encoding: identity\r\n"),
-        "bad_request",
-    ),
-    ("Expect", post(START).replace(JSON, JSON + b"Expect: 100-continue\r\n"), "bad_request"),
-    ("a GET with a length", b"GET /runs HTTP/1.1\r\n" + HOST + b"Content-Length: 2\r\n\r\n{}", "bad_request"),
-    (
-        "a GET with a bad length",
-        b"GET /runs HTTP/1.1\r\n" + HOST + b"Content-Length: x\r\n\r\n",
-        "bad_request",
-    ),
-    ("a POST with no length", post(START).replace(b"Content-Length: 14\r\n", b""), "bad_request"),
-    ("a signed length", post(START, length=b"+14"), "bad_request"),
-    ("a hex length", post(START, length=b"0xe"), "bad_request"),
-    ("an empty length", post(START, length=b""), "bad_request"),
-    ("a length past 1 MiB", post(b"", length=b"1048577"), "too_large"),
     ("bytes that are not UTF-8", post(b'{"offer": "\xff"}'), "bad_request"),
     ("bytes that are not JSON", post(b"offer=p"), "bad_request"),
     ("an empty body", post(b""), "bad_request"),
+    ("no body and no length", post(START).replace(b"Content-Length: 14\r\n", b"")[:-14], "bad_request"),
     ("a JSON array", post(b"[]"), "bad_request"),
     ("a key twice", post(b'{"offer": "p", "offer": "p"}'), "bad_request"),
     ("NaN", post(b'{"offer": "p", "bounds": {"time_budget": NaN}}'), "bad_request"),
     ("Infinity", post(b'{"offer": "p", "bounds": {"cost_budget": -Infinity}}'), "bad_request"),
+    (
+        "a number of 5,000 digits in the body",
+        post(b'{"offer": "p", "bounds": {"max_turns": ' + b"9" * 5000 + b"}}"),
+        "bad_request",
+    ),
     (
         "a parameter on the type",
         post(START, kind=b"Content-Type: application/json; charset=utf-8\r\n"),
@@ -388,165 +369,134 @@ REFUSED = [
     ),
     ("no type", post(START, kind=b""), "unsupported_type"),
     ("another type", post(START, kind=b"Content-Type: text/plain\r\n"), "unsupported_type"),
-    ("a head past 16 KiB", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: " + b"a" * 16384, "too_large"),
-    ("a head one byte past 16 KiB", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: {pad1}\r\n\r\n", "too_large"),
-    ("65 header fields", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n" * 64 + b"\r\n", "too_large"),
-    ("a length of 5,000 digits", post(START, length=b"9" * 5000), "too_large"),
-    (
-        "a GET with a length of 5,000 digits",
-        b"GET / HTTP/1.1\r\n" + HOST + b"Content-Length: " + b"9" * 5000 + b"\r\n\r\n",
-        "bad_request",
-    ),
-    (
-        "a number of 5,000 digits in the body",
-        post(b'{"offer": "p", "bounds": {"max_turns": ' + b"9" * 5000 + b"}}"),
-        "bad_request",
-    ),
+    ("two types", post(START, kind=JSON + JSON), "bad_request"),
+    ("a length past 1 MiB", post(b"", length=b"1048577"), "too_large"),
+    ("a chunked body past 1 MiB", chunked(b" " * (1 << 20) + START), "too_large"),
 ]
-# the refusals that only the body decides; every other one is decided by the head
-BY_BODY = {
-    "bytes that are not UTF-8",
-    "bytes that are not JSON",
-    "a JSON array",
-    "a key twice",
-    "NaN",
-    "Infinity",
-    "a number of 5,000 digits in the body",
-}
-assert BY_BODY <= {name for name, *_ in REFUSED}
-# only the bytes that arrive with the head show a body where none may be: sent in pieces, what follows
-# the head is never read, as a second request never is
-WHOLE_ONLY = [
-    ("a GET with a body", b"GET /runs HTTP/1.1\r\n" + HOST + b"\r\n{}", "bad_request"),
-    ("bytes past the length", post(START + b"x", length=b"14"), "bad_request"),
+ACCEPTED = [
+    ("the type in capitals", post(START, kind=b"Content-Type: APPLICATION/JSON\r\n"), 201),
+    ("a chunked body", chunked(START), 201),
+    ("a chunked body of exactly 1 MiB", chunked(START + b" " * ((1 << 20) - len(START))), 201),
 ]
-
-
-def with_port(raw: bytes, port: int) -> bytes:
-    """`raw` for this port; `{pad}` filled so the head is exactly 16 KiB, `{pad1}` so it is a byte past."""
-    data = raw.replace(b"{p}", str(port).encode())
-    for mark, size in ((b"{pad}", serve._HEAD), (b"{pad1}", serve._HEAD + 1)):
-        if mark in data:
-            data = data.replace(mark, b"a" * (size - len(data) + len(mark)))
-            assert len(data) == size
-    return data
-
-
-def until_refused(data: bytes, by_body: bool) -> list[bytes]:
-    """`data` in pieces up to the byte at which the server can refuse it, and nothing past it: bytes that
-    reach a connection the server has closed reset it, and a reset can take the answer with it."""
-    end, lf = data.find(b"\r\n\r\n"), serve._BARE_LF.search(data)
-    if lf and (end < 0 or lf.start() < end):
-        data = data[: lf.end()]
-    elif end < 0:
-        data = data[: serve._HEAD]
-    elif not by_body:
-        data = data[: end + 4]
-    return pieces(data, max(7, len(data) // 40))
 
 
 async def finish(messages):
     return FINISH
 
 
-@pytest.mark.parametrize("split", ["whole", "in pieces"])
 @pytest.mark.parametrize("name, raw, code", REFUSED, ids=[c[0] for c in REFUSED])
-def test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(name, raw, code, split):
-    a = Actor("http-raw")
+def test_a_body_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(name, raw, code, store):
+    a = Actor("http-body", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
     async def main():
         async with serving(service) as port:
-            data = with_port(raw, port)
-            return await ask(
-                port, data if split == "whole" else until_refused(data, name in BY_BODY), pause=0.002
-            )
+            return await ask(port, raw.replace(b"{p}", str(port).encode()))
 
     status, fields, body = bounded(main)
     assert (status, json.loads(body)["error"]) == (D9_STATUS[code], code) and service.runs == {}
     assert_safe(fields)
 
 
-def test_a_head_the_standard_librarys_parser_refuses_is_a_bad_request(monkeypatch):
-    """D8's own field cap sits under the parser's, so the parser's refusal is reached here by lowering
-    the parser's: whatever it refuses is answered, never left to end the connection's task."""
-    monkeypatch.setattr(serve.http.client, "_MAXHEADERS", 1)
-    a = Actor("http-parser-refuses")
-    service = Service(a)
-    service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
-
-    async def main():
-        async with serving(service) as port:
-            return await ask(port, with_port(b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n\r\n", port))
-
-    status, fields, body = bounded(main)
-    doc = json.loads(body)
-    assert (status, doc["error"]) == (400, "bad_request") and doc["reason"].startswith(
-        "the headers do not parse"
-    )
-    assert_safe(fields)
-
-
-@pytest.mark.parametrize("name, raw, code", WHOLE_ONLY, ids=[c[0] for c in WHOLE_ONLY])
-def test_a_body_that_arrives_with_the_head_where_none_may_be_is_refused(name, raw, code):
-    test_a_request_outside_d8s_form_is_answered_with_its_error_and_never_dispatched(name, raw, code, "whole")
-
-
-ACCEPTED = [
-    ("a GET with a length of 0", b"GET / HTTP/1.1\r\n" + HOST + b"Content-Length: 0\r\n\r\n", 200),
-    ("the type in capitals", post(START, kind=b"Content-Type: APPLICATION/JSON\r\n"), 201),
-    ("spaces around a value", post(START).replace(b"Content-Length: 14", b"Content-Length:   14  "), 201),
-    ("a head of exactly 16 KiB", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: {pad}\r\n\r\n", 200),
-    ("64 header fields", b"GET / HTTP/1.1\r\n" + HOST + b"X-A: b\r\n" * 63 + b"\r\n", 200),
-    ("a length under 5,000 zeros", post(START, length=b"0" * 5000 + b"14"), 201),
-    (
-        "a GET with a length of 5,000 zeros",
-        b"GET / HTTP/1.1\r\n" + HOST + b"Content-Length: " + b"0" * 5000 + b"\r\n\r\n",
-        200,
-    ),
-]
-
-
-@pytest.mark.parametrize("split", ["whole", "in pieces"])
 @pytest.mark.parametrize("name, raw, status", ACCEPTED, ids=[c[0] for c in ACCEPTED])
-def test_a_request_in_d8s_form_is_dispatched_however_its_bytes_arrive(name, raw, status, split):
-    a = Actor("http-raw-ok")
+def test_a_body_in_d8s_form_is_dispatched_however_it_is_framed(name, raw, status, store):
+    a = Actor("http-body-ok", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
     async def main():
         async with serving(service) as port:
-            data = with_port(raw, port)
-            return await ask(port, data if split == "whole" else pieces(data, 1000), pause=0.002)
+            return await ask(port, raw.replace(b"{p}", str(port).encode()))
 
     got, fields, body = bounded(main)
     assert got == status, body
     assert_safe(fields)
 
 
-def test_a_body_nested_past_the_recursion_limit_is_a_bad_request(no_collection):
-    a = Actor("http-deep")
+def get(path: bytes, framing: bytes, body: bytes = b"") -> bytes:
+    return b"GET " + path + b" HTTP/1.1\r\n" + HOST + framing + b"\r\n" + body
+
+
+GETS = [
+    ("a length and a body on the card", get(b"/", b"Content-Length: 2\r\n", b"{}"), 400),
+    (
+        "a chunked body on the runs",
+        get(b"/runs", b"Transfer-Encoding: chunked\r\n", b"2\r\n{}\r\n0\r\n\r\n"),
+        400,
+    ),
+    ("a length on every run's stream", get(b"/events", b"Content-Length: 1\r\n", b" "), 400),
+    ("a length of zero", get(b"/", b"Content-Length: 0\r\n"), 200),
+    ("a length of zeros", get(b"/", b"Content-Length: 000\r\n"), 200),
+]
+
+
+@pytest.mark.parametrize("name, raw, status", GETS, ids=[c[0] for c in GETS])
+def test_a_get_carrying_a_body_is_a_bad_request_and_a_zero_length_is_none(name, raw, status, store):
+    service = Service(Actor("http-get-body", store=store))
+
+    async def main():
+        async with serving(service) as port:
+            return await ask(port, raw.replace(b"{p}", str(port).encode()))
+
+    got, fields, body = bounded(main)
+    assert got == status, body
+    if status == 400:
+        assert json.loads(body) == {"error": "bad_request", "reason": "a GET carries no body"}
+    assert_safe(fields)
+
+
+# S23: a request h11 cannot read gets uvicorn's own answer, and no run starts. A chunk's footer is read after
+# the head and the chunk, so the app may be reading the body already when h11 refuses it.
+BAD_FOOTER = chunked(START).replace(START + b"\r\n", START + b"XX")  # 0.16 refuses it; 0.15 took it
+LATE = [BAD_FOOTER[: BAD_FOOTER.index(b"XX")], BAD_FOOTER[BAD_FOOTER.index(b"XX") :]]
+UNREAD = [
+    ("a length of 21 digits", [post(START, length=b"0" * 19 + b"14")], 400),
+    ("a length of 5,002 digits", [post(START, length=b"0" * 5000 + b"14")], 400),
+    ("a chunk not ended by CRLF", [BAD_FOOTER], 400),
+    ("a chunk not ended by CRLF, its footer sent late", LATE, 400),
+    ("a length of 20 digits", [post(START, length=b"0" * 18 + b"14")], 201),
+]
+
+
+@pytest.mark.parametrize("name, raw, status", UNREAD, ids=[c[0] for c in UNREAD])
+def test_a_request_h11_cannot_read_is_answered_by_uvicorn_alone(name, raw, status, store):
+    service = Service(Actor("http-unread", store=store))
+    service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
+
+    async def main():
+        async with serving(service) as port:
+            return await ask(port, [piece.replace(b"{p}", str(port).encode()) for piece in raw], pause=0.1)
+
+    got, fields, body = bounded(main)
+    assert got == status, body
+    # uvicorn frames its answer to a refused chunk as chunks and its answer to a refused head not at all
+    # (read to the close), so the text is looked for in the body
+    if status == 400:
+        assert b"Invalid HTTP request received." in body and service.runs == {}
+        assert fields["content-type"].startswith("text/plain")
+
+
+def test_a_body_nested_past_the_recursion_limit_is_a_bad_request(no_collection, store):
+    a = Actor("http-deep", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish)
 
     async def main():
         async with serving(service) as port:
-            return await ask(port, with_port(post(b"[" * 100_000), port))
+            return await ask(port, post(b"[" * 100_000).replace(b"{p}", str(port).encode()))
 
     status, fields, body = bounded(main)
     assert status == 400 and json.loads(body)["error"] == "bad_request" and service.runs == {}
 
 
 async def phase_reached(service: Service, sid: str, phase: str) -> None:
-    sub = service.events(sid)
-    try:
-        async for name, data in sub:
-            if name == "state" and data["phase"] == phase:
-                return
-    finally:
-        sub.close()
-    raise AssertionError(f"the stream of {sid} closed before {phase}")
+    """Read off the state, never a stream of its own: a stream here would count against the caps."""
+    while service.state(sid)["phase"] != phase:
+        await asyncio.sleep(0.01)
+
+
+LONG = "start=" + "9" * 5000  # past the digits `int` reads from a string
 
 
 def test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused():
@@ -558,8 +508,8 @@ def test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused():
         got = {}
         async with serving(service) as port:
             sid = (await call(port, "POST", "/runs", {"offer": "p"}))[1]["id"]
-            await drained(*(await stream_open(port, f"/runs/{sid}/events"))[:2])
-            for path in ("/?a=1", "/runs?start=1", "/runs?", f"/runs/{sid}?x", f"/runs/{sid}/events?x"):
+            await (await stream_open(port, f"/runs/{sid}/events")).drained()
+            for path in ("/?a=1", "/runs?start=1", f"/runs/{sid}?x", f"/runs/{sid}/events?x", "/events?x"):
                 got[path] = await call(port, "GET", path)
             for query in (
                 "start=x",
@@ -572,11 +522,12 @@ def test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused():
                 "start=" + "1" * 19,
             ):
                 got[query] = await call(port, "GET", f"/runs/{sid}/record?{query}")
-            for path in ("/runs/", f"/runs/{sid}/nope", "//", "/runs/x/y/z", "/events/", "/run"):
+            for path in ("/runs/", f"/runs/{sid}/nope", "//", "/runs/x/y/z", "/events/", "/run", "/docs"):
                 got[path] = await call(port, "GET", path)
             got["POST /"] = await call(port, "POST", "/", {})
             got["POST record"] = await call(port, "POST", f"/runs/{sid}/record", {})
             got["GET input"] = await call(port, "GET", f"/runs/{sid}/input")
+            got["GET stop"] = await call(port, "GET", f"/runs/{sid}/stop")
             got["stop with a body"] = await call(port, "POST", f"/runs/{sid}/stop", {"now": True})
             for body in ({}, {"text": "x", "extra": 1}, {"text": "x", "once": None}):
                 got[f"input {json.dumps(body)}"] = await call(port, "POST", f"/runs/{sid}/input", body)
@@ -586,26 +537,28 @@ def test_a_route_outside_the_table_or_a_query_where_none_is_taken_is_refused():
     sid, got = bounded(main)
     rows = len(service.record(sid)["rows"])
     assert rows == 3, "the end of the record is the last start a read takes"
+    queried = ["/?a=1", "/runs?start=1", f"/runs/{sid}?x", f"/runs/{sid}/events?x", "/events?x"]
+    unrouted = ["/runs/", f"/runs/{sid}/nope", "//", "/runs/x/y/z", "/events/", "/run", "/docs"]
     want = {
-        **dict.fromkeys(["/?a=1", "/runs?start=1", "/runs?", f"/runs/{sid}?x", f"/runs/{sid}/events?x"], 400),
+        **dict.fromkeys(queried, 400),
         **dict.fromkeys(["start=x", "foo=1", "start=", "start=1&start=2", "start=-1", "start=4"], 400),
         **dict.fromkeys([LONG, "start=" + "1" * 19], 400),  # a start `int` would refuse to read is no start
-        "/runs/": 404,
-        f"/runs/{sid}/nope": 404,
-        "//": 404,
-        "/runs/x/y/z": 404,
-        "/events/": 404,
-        "/run": 404,
+        **dict.fromkeys(unrouted, 404),
         "POST /": 405,
         "POST record": 405,
         "GET input": 405,
+        "GET stop": 405,
         "stop with a body": 400,
         "input {}": 400,
         'input {"text": "x", "extra": 1}': 400,
         'input {"text": "x", "once": null}': 400,
     }
     assert {k: v[0] for k, v in got.items() if k != "record 3"} == want
-    assert got["/runs/"][1]["error"] == "unknown_run" and got["//"][1]["error"] == "not_found"
+    assert {got[p][1]["error"] for p in ("/runs/", "//", "/docs")} == {"not_found"}
+    assert got["POST record"][1] == {
+        "error": "method_not_allowed",
+        "reason": f"/runs/{sid}/record answers GET",
+    }
     assert got["record 3"] == (200, {"id": sid, "start": 3, "rows": [], "more": False})
 
 
@@ -654,10 +607,12 @@ def loopback_v6() -> bool:
 
 
 @pytest.mark.parametrize("bind, cases", [("127.0.0.1", V4), ("::1", V6)])
-def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route(bind, cases):
+def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on_every_route(
+    bind, cases, store
+):
     if bind == "::1" and not loopback_v6():
         pytest.skip("no IPv6 loopback on this machine")
-    a = Actor("http-hosts")
+    a = Actor("http-hosts", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -670,14 +625,18 @@ def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on
                     ("GET", "/", None),
                     ("GET", "/runs", None),
                     ("POST", "/runs", {"offer": "p"}),
+                    ("GET", "/nowhere", None),
                 ):
                     raw = http(method, path, port, body, headers=headers, host=host.replace("{p}", str(port)))
                     status, fields, data = await ask(port, raw, host=bind)
                     assert_safe(fields)
                     got.append((host, origin, path, method, status, json.loads(data).get("error")))
-        return got
+            origin = f"Origin: http://localhost:{port}"
+            raw = http("GET", "/", port, host=f"localhost:{port}", headers=[origin] * 2)
+            status, _, data = await ask(port, raw, host=bind)
+        return got, (status, json.loads(data)["error"])
 
-    got = bounded(main)
+    got, twice = bounded(main)
     for host, origin, admitted in cases:
         answers = {(m, p): (s, e) for h, o, p, m, s, e in got if (h, o) == (host, origin)}
         if admitted:
@@ -685,33 +644,64 @@ def test_a_host_or_origin_d8_does_not_list_for_the_bound_address_is_forbidden_on
                 ("GET", "/"): (200, None),
                 ("GET", "/runs"): (200, None),
                 ("POST", "/runs"): (201, None),
+                ("GET", "/nowhere"): (404, "not_found"),
             }
         else:
             assert set(answers.values()) == {(403, "forbidden")}, (host, origin, answers)
+    assert twice == (403, "forbidden")  # an Origin each allowed, but two of them
     assert len(service.runs) == sum(admitted for *_, admitted in cases)
 
 
-@pytest.mark.parametrize("peer", ["192.0.2.7", "10.0.0.1", "::ffff:192.0.2.7", "", "not an address"])
-def test_a_peer_off_loopback_is_forbidden_before_any_byte_of_its_request_is_read(peer, monkeypatch):
-    a = Actor("http-peer")
-    service = Service(a)
+@pytest.mark.parametrize(
+    "peer, admitted",
+    [
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("192.0.2.7", False),
+        ("10.0.0.1", False),
+        ("::ffff:192.0.2.7", False),
+        ("", False),
+        ("not an address", False),
+        (None, False),
+    ],
+)
+def test_a_peer_off_loopback_is_forbidden_before_any_route(peer, admitted, store):
+    """The peer as the server read it off the connection, handed to the app: only a loopback address is
+    answered, before any route or any byte of the body is read."""
+    service = Service(Actor("http-peer", store=store))
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
-    seen = []
-    monkeypatch.setattr(serve, "_peer", lambda writer: seen.append(writer) or peer)
+    asgi = transport.app(service, frozenset({"127.0.0.1:1"}))
+    read, sent = [], []
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"127.0.0.1:1")],
+        "client": None if peer is None else (peer, 5),
+        "server": ("127.0.0.1", 1),
+    }
 
-    async def main():
-        async with serving(service) as port:
-            status, _, body = await ask(port, [])  # it sends nothing: the answer needs none of it
-            return status, json.loads(body)
+    async def receive():
+        read.append(True)
+        return {"type": "http.request", "body": b"", "more_body": False}
 
-    assert bounded(main) == (403, {"error": "forbidden", "reason": "the peer is not loopback"})
-    assert service.runs == {} and len(seen) == 1
+    async def send(message):
+        sent.append(message)
 
-
-def test_the_peer_is_read_from_the_connection_and_only_a_loopback_address_passes():
-    assert serve._peer(SimpleNamespace(get_extra_info={"peername": ("127.0.0.1", 5)}.get)) == "127.0.0.1"
-    assert serve._peer(SimpleNamespace(get_extra_info={}.get)) == ""
-    assert [serve._loopback(h) for h in ("127.0.0.1", "127.9.9.9", "::1", "192.0.2.7", "", "x")] == [
+    asyncio.run(asgi(scope, receive, send))
+    status, body = sent[0]["status"], json.loads(sent[1]["body"])
+    if admitted:
+        assert (status, body) == (200, service.card())
+    else:
+        assert (status, body) == (403, {"error": "forbidden", "reason": "the peer is not loopback"})
+        assert read == [] and (b"x-content-type-options", b"nosniff") in sent[0]["headers"]
+    assert [transport._loopback(h) for h in ("127.0.0.1", "127.9.9.9", "::1", "192.0.2.7", "", "x")] == [
         True,
         True,
         True,
@@ -722,118 +712,151 @@ def test_the_peer_is_read_from_the_connection_and_only_a_loopback_address_passes
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "localhost", "127.0.0.2", "192.0.2.7", ""])
-def test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind(host, monkeypatch):
-    service = Service(Actor("http-bind"))
-    binds = []
-
-    async def recorder(*args, **kwargs):
-        binds.append(args)
-
-    monkeypatch.setattr(serve.asyncio, "start_server", recorder)
+def test_a_host_off_loopback_is_refused_with_valueerror_before_any_bind(host, monkeypatch, store):
+    service = Service(Actor("http-bind", store=store))
+    made = []
+    monkeypatch.setattr(transport, "socket", SimpleNamespace(socket=lambda *a: made.append(a)))
     with pytest.raises(ValueError, match="binds 127.0.0.1 or ::1, nothing else"):
-        bounded(lambda: service.serve(host, 0))
-    assert binds == [] and service.port is None
+        bounded(lambda: serving_forever(service, host, 0))
+    assert made == [] and not service.closing
 
 
-# --- C10: the deadline ------------------------------------------------------------------------------
+def test_a_port_in_use_raises_the_bind_error_and_leaves_no_socket_open(store):
+    service = Service(Actor("http-in-use", store=store))
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        with pytest.raises(OSError):
+            bounded(lambda: serving_forever(service, "127.0.0.1", held.getsockname()[1]))
+    gc.collect()  # a socket left open would warn as it is collected, and a warning fails the test
+    assert not service.closing
+
+
+def test_lion_serves_its_offers_on_the_port_it_is_given_until_cancelled(store):
+    """`Lion` as a program uses it: offers, then `serve(actor)` with no callback, cancelled to end."""
+    actor_ = Actor("http-lion", store=store)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    lion = Lion(port=port, grace=1.0).offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
+
+    async def main():
+        served = asyncio.ensure_future(lion.serve(actor_))
+        while True:
+            try:
+                card = await call(port, "GET", "/")
+                break
+            except ConnectionRefusedError:
+                await asyncio.sleep(0.01)
+        sid = (await call(port, "POST", "/runs", {"offer": "p"}))[1]["id"]
+        served.cancel()
+        await asyncio.wait({served})
+        return card, sid, served.cancelled()
+
+    card, sid, cancelled = bounded(main)
+    assert card[0] == 200 and [o["name"] for o in card[1]["offers"]] == ["p"]
+    assert cancelled and len(sid) == 16
+
+
+def test_a_scope_that_is_not_http_is_left_unanswered(store):
+    asgi = transport.app(Service(Actor("http-scopes", store=store)), frozenset({"127.0.0.1:1"}))
+    touched = []
+
+    async def touch(*args):
+        touched.append(args)
+
+    for kind in ("lifespan", "websocket"):
+        asyncio.run(asgi({"type": kind}, touch, touch))
+    assert touched == []
+
+
+@pytest.mark.parametrize("sent", [b"", b"GET / HTTP/1.1\r\nHo", post(b'{"of', length=b"14")])
+def test_a_peer_that_closes_before_its_request_is_whole_is_never_answered(sent, caplog, store):
+    service = Service(Actor("http-gone", store=store))
+    service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
+
+    async def main():
+        async with serving(service) as port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(sent.replace(b"{p}", str(port).encode()))
+            await writer.drain()
+            await asyncio.sleep(0.05)
+            writer.transport.abort()
+        return await reader.read()  # the serve ended only once every request had
+
+    assert bounded(main) == b"" and service.runs == {}
+    assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+# --- C10: the body's deadline -----------------------------------------------------------------------
 
 
 DEADLINE = [  # what is sent, and in how many pieces 0.05 seconds apart: all of it well before the deadline
-    ("a half head", b"GET / HTTP/1.1\r\nHo", 1),
-    ("a head sent slowly", b"GET / HTTP/1.1\r\nHost: 127.0.0.1:{p}\r\nX-A: b", 6),
     ("a short body", post(b'{"offer"', length=b"14"), 1),
     ("a body sent slowly", post(b'{"offer": "p"', length=b"14"), 6),
 ]
 
 
+def pieces(data: bytes, count: int) -> list[bytes]:
+    size = -(-len(data) // count)
+    return [data[i : i + size] for i in range(0, len(data), size)]
+
+
 @pytest.mark.parametrize("name, raw, count", DEADLINE, ids=[c[0] for c in DEADLINE])
-def test_a_request_not_whole_by_the_deadline_is_answered_timeout_however_its_bytes_arrive(
-    name, raw, count, monkeypatch
+def test_a_body_not_whole_by_the_deadline_is_answered_timeout_however_its_bytes_arrive(
+    name, raw, count, monkeypatch, store
 ):
-    monkeypatch.setattr(serve, "_DEADLINE", 0.6)
-    a = Actor("http-deadline")
+    monkeypatch.setattr(transport, "_DEADLINE", 0.6)
+    a = Actor("http-deadline", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
     async def main():
         async with serving(service) as port:
-            data = with_port(raw, port)
+            data = raw.replace(b"{p}", str(port).encode())
             loop = asyncio.get_running_loop()
             began = loop.time()
-            got = await ask(port, pieces(data, -(-len(data) // count)), pause=0.05)
+            got = await ask(port, pieces(data, count), pause=0.05)
             return got, loop.time() - began
 
     (status, fields, body), took = bounded(main)
     assert (status, json.loads(body)["error"]) == (408, "timeout") and service.runs == {}
     assert_safe(fields)
-    # one deadline from the first byte: a deadline per read would answer 0.6 seconds after the last
-    assert 0.6 <= took < 0.85
-
-
-@pytest.mark.parametrize("sent", [b"", b"GET / HTTP/1.1\r\nHo", post(b'{"of', length=b"14")])
-def test_a_peer_that_closes_before_its_request_is_whole_is_never_answered(sent):
-    a = Actor("http-eof")
-    service = Service(a)
-    service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
-
-    async def main():
-        async with serving(service) as port:
-            reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            writer.write(with_port(sent, port))
-            writer.write_eof()
-            got = await reader.read()
-            writer.close()
-            await writer.wait_closed()
-            await asyncio.sleep(0)
-            return got, set(service._conns)
-
-    assert bounded(main) == (b"", set()) and service.runs == {}
-
-
-def test_a_head_that_parses_with_a_defect_is_refused(monkeypatch):
-    defect = SimpleNamespace(defects=["a defect the parser found"])
-    monkeypatch.setattr(serve.http.client, "parse_headers", lambda fp: defect)
-    with pytest.raises(serve.ServeError, match="parse with a defect") as e:
-        serve._head(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:1")
-    assert e.value.code == "bad_request"
+    # one deadline over the whole body: a deadline per read would answer 0.6 seconds after the last
+    assert 0.6 <= took < 1.2
 
 
 # --- C10, D10: the caps -----------------------------------------------------------------------------
 
 
-def test_a_connection_past_the_cap_is_refused_busy_and_the_next_after_one_closes_is_not(monkeypatch):
-    monkeypatch.setattr(serve, "_CONNECTIONS", 1)
-    a = Actor("http-conns")
+def test_a_request_past_the_cap_is_refused_busy_and_the_next_after_one_ends_is_not(monkeypatch, store):
+    monkeypatch.setattr(transport, "_REQUESTS", 1)
+    a = Actor("http-requests", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
     async def main():
         async with serving(service) as port:
-            reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            head = http("GET", "/", port)
-            writer.write(head[:10])  # held open, its request half sent
-            await writer.drain()
-            while not service._conns:
-                await asyncio.sleep(0)
-            past = await ask(port, [])  # the peer sends nothing, so its close carries no reset
-            writer.write(head[10:])
-            first = parsed(await reader.read())
-            writer.close()
-            await writer.wait_closed()
-            while service._conns:
-                await asyncio.sleep(0)
+            held = await stream_open(port, "/events")  # a stream is a request in flight until it ends
+            past = await ask(port, http("GET", "/", port))
+            held.writer.transport.abort()
+            await asyncio.sleep(0.2)
             after = await call(port, "GET", "/")
-        return past, first, after
+            left = set(service._subs)  # read while the service still serves: its end would close it too
+        return past, after, left
 
-    past, first, after = bounded(main)
-    assert (past[0], json.loads(past[2])) == (503, {"error": "busy", "reason": "1 connections are open"})
+    past, after, left = bounded(main)
+    assert (past[0], json.loads(past[2])) == (
+        503,
+        {"error": "busy", "reason": "1 requests are in flight, the most this service takes"},
+    )
     assert_safe(past[1])
-    assert first[0] == 200 and after == (200, service.card())
+    assert after == (200, service.card()) and left == set()
 
 
-def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch):
+def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch, store):
     monkeypatch.setattr(serve, "_SUBSCRIBERS", 1)
-    a = Actor("http-subs")
+    a = Actor("http-subs", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
@@ -841,36 +864,26 @@ def test_a_stream_past_the_subscriber_cap_is_refused_busy(monkeypatch):
         async with serving(service) as port:
             first = await stream_open(port, "/events")
             past = await call(port, "GET", "/events")
-        return past, await drained(*first[:2])
+        return past, await first.drained()
 
     past, frames_ = bounded(main)
     assert past == (503, {"error": "busy", "reason": "1 streams are open, the most this service holds"})
     assert frames_ == [("runs", {"runs": []})] and service._subs == set()
 
 
-def test_a_request_read_whole_after_the_end_began_is_refused_busy():
-    a = Actor("http-closing")
+def test_a_request_after_the_end_began_is_refused_busy(store):
+    a = Actor("http-closing", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
 
     async def main():
         async with serving(service) as port:
-            reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            raw = with_port(post(START), port)
-            writer.write(raw[:20])
-            await writer.drain()
-            while not service._conns:
-                await asyncio.sleep(0)
-            service._closing = True  # the end began between the read and the dispatch
-            writer.write(raw[20:])
-            got = parsed(await reader.read())
-            writer.close()
-            await writer.wait_closed()
-            return got
+            service.halt()  # the end began; the listener is not yet closed
+            return await ask(port, http("GET", "/", port))  # a route the service itself would answer
 
     status, fields, body = bounded(main)
     assert (status, json.loads(body)) == (503, {"error": "busy", "reason": "the service is ending"})
-    assert service.runs == {}
+    assert_safe(fields)
 
 
 def test_a_start_while_the_service_ends_is_refused_busy():
@@ -879,14 +892,16 @@ def test_a_start_while_the_service_ends_is_refused_busy():
     service.offer(Profile("work"), turns('<lact a1>wait(key="g")</lact>', FINISH))
 
     async def main():
-        served = asyncio.ensure_future(service.serve("127.0.0.1", 0, grace=5.0))
-        while service.port is None:
-            await asyncio.sleep(0)
+        bound = asyncio.get_running_loop().create_future()
+        served = asyncio.ensure_future(
+            serving_forever(service, "127.0.0.1", 0, grace=5.0, ready=lambda h, p: bound.set_result(p))
+        )
+        await bound
         await service.start({"offer": "work"})
         while "g" not in gates:  # the command is in flight
             await asyncio.sleep(0)
         served.cancel()
-        while not service._closing:
+        while not service.closing:
             await asyncio.sleep(0)
         with pytest.raises(serve.ServeError) as refused:
             await service.start({"offer": "work"})
@@ -899,19 +914,11 @@ def test_a_start_while_the_service_ends_is_refused_busy():
     assert [s["outcome"] for s in service.runs_state()["runs"]] == [{"kind": "Stopped", "turn": 2}]
 
 
-def test_a_connection_that_arrives_while_the_service_ends_is_cut_and_never_held():
-    service = Service(Actor("http-late"))
-    service._closing = True
-    cut = []
-    service._accept(None, SimpleNamespace(transport=SimpleNamespace(abort=lambda: cut.append(True))))
-    assert cut == [True] and service._conns == set()
-
-
 # --- D12: the stream --------------------------------------------------------------------------------
 
 
-def test_a_stream_sends_a_comment_line_each_time_its_clock_steps_and_frames_in_between():
-    a = Actor("http-ping")
+def test_a_stream_sends_a_comment_line_each_time_its_clock_steps_and_frames_in_between(monkeypatch, store):
+    a = Actor("http-ping", store=store)
     service = Service(a)
     service.offer(Profile("p"), finish, RunRequest(emits=(Answer,)))
     ticks: asyncio.Queue = asyncio.Queue()
@@ -921,28 +928,29 @@ def test_a_stream_sends_a_comment_line_each_time_its_clock_steps_and_frames_in_b
         asked.append(seconds)
         await ticks.get()
 
-    service._sleep = clock
+    monkeypatch.setattr(transport, "_sleep", clock)
 
     async def main():
         async with serving(service) as port:
-            reader, writer, _ = await stream_open(port, "/events")
-            first = await reader.readuntil(b"\n\n")
+            stream = await stream_open(port, "/events")
+            first = await stream.frame()
             ticks.put_nowait(None)
-            ping = await reader.readuntil(b"\n\n")
+            ping = await stream.frame()
             sid = (await call(port, "POST", "/runs", {"offer": "p"}))[1]["id"]
             await phase_reached(service, sid, "ended")
             ticks.put_nowait(None)
-        rest = await drained(reader, writer)
+            await asyncio.sleep(0.05)
+        rest = await stream.drained()
         return first, ping, sid, rest
 
     first, ping, sid, rest = bounded(main)
     assert frames(first) == [("runs", {"runs": []})] and ping == b": ping\n\n"
-    assert set(asked) == {serve._PING} and len(asked) >= 2
+    assert set(asked) == {transport._PING} and len(asked) >= 2
     assert (None, None) in rest and [d["phase"] for n, d in rest if n == "state"] == ["working", "ended"]
     assert rest[[n for n, _ in rest].index("state")][1]["id"] == sid
 
 
-# --- C10, C11, D10: writes are bounded, and the end ---------------------------------------------------
+# --- C3, C11, D10: a stalled reader, and the end ----------------------------------------------------
 
 
 def small_window() -> socket.socket:
@@ -966,40 +974,58 @@ async def stalled(port: int, path: str) -> tuple[asyncio.StreamReader, asyncio.S
 BIG = "x" * 8_000_000
 
 
-def test_a_stream_whose_reader_stalls_is_cut_at_the_write_bound_and_the_run_never_waits(monkeypatch):
-    monkeypatch.setattr(serve, "_WRITE", 0.2)
-    a = Actor("http-stall")
+@pytest.mark.parametrize("reads", [True, False], ids=["a reader that reads", "a reader that stalls"])
+def test_a_stream_whose_reader_stalls_is_closed_at_its_frame_cap_and_the_run_never_waits(reads, monkeypatch):
+    """The large row fills what a stalled client takes, so the frames after it queue on the stream; one
+    past the cap closes it, and the run goes on as if no one watched (C3). A client that reads takes every
+    frame under the same cap."""
+    monkeypatch.setattr(serve, "_FRAMES", 4)
+    a = Actor("http-stall", store=unflushed_store())  # BIG is 8 MB: see `unflushed_store`
     service = Service(a)
     backend = Held()
-    service.offer(Profile("talk"), backend, converse=True)
+    service.offer(Profile("talk"), backend, RunRequest(context_budget=10**8), converse=True)
 
     async def main():
         async with serving(service) as port:
             sid = (await call(port, "POST", "/runs", {"offer": "talk", "inputs": ["hi"]}))[1]["id"]
-            reader, writer = await stalled(port, f"/runs/{sid}/events")
-            loop = asyncio.get_running_loop()
+            if reads:
+                stream = await stream_open(port, f"/runs/{sid}/events")
+                seen = asyncio.ensure_future(stream.drained())
+            else:
+                _, writer = await stalled(port, f"/runs/{sid}/events")
             await backend.answer(BIG)
             await phase_reached(service, sid, "waiting")
-            waited = loop.time()
-            while service._subs:
-                await asyncio.sleep(0.01)
-            cut = loop.time() - waited
+            for text in ("one", "two", "three"):  # each turn queues frames on the stream
+                while reads and any(sub._frames for sub in service._subs):  # the reader keeps up
+                    await asyncio.sleep(0.01)
+                await call(port, "POST", f"/runs/{sid}/input", {"text": text})
+                await backend.answer("Noted.")
+                await phase_reached(service, sid, "waiting")
+            open_ = len(service._subs)
             state = service.end(sid)
             await phase_reached(service, sid, "ended")
+            if reads:
+                return open_, state, await seen
             writer.transport.abort()
-            return cut, state
+            return open_, state, None
 
-    cut, state = bounded(main)
-    assert cut < 2.0 and state["closed"] is True
-    assert service.state(state["id"])["outcome"] == {"kind": "Stopped", "turn": 2}
-    assert service._conns == set()
+    open_, state, seen = bounded(main)
+    assert state["closed"] is True
+    assert service.state(state["id"])["outcome"] == {"kind": "Stopped", "turn": 5}
+    if reads:
+        assert open_ == 1 and seen[-1] == ("state", service.state(state["id"]))
+    else:
+        assert open_ == 0
 
 
 def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each_run(tmp_path, monkeypatch):
-    """An idle stream, a stalled writer, a half-read request and a run mid-command: the end cuts the
-    connections first, so no stream takes a final state, then ends the runs and writes their END rows."""
-    monkeypatch.setattr(serve, "_WRITE", 1.0)
+    """An idle stream, a stalled writer, a half-read request, a conversation waiting and a run
+    mid-command: the end closes the streams first, so no stream takes a final state, then stops the runs
+    while the connections close, so a run ends without waiting on the stalled write; each run's END row is
+    written."""
+    monkeypatch.setattr(transport, "_GRACE", 2.0)
     a, gates = actor("http-end")
+    a.store = unflushed_store()  # BIG is 8 MB: see `unflushed_store`
     subscriptions = list(a.bus._subs)
     service = Service(a, dir=tmp_path)
     backend = Held()
@@ -1008,11 +1034,11 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
 
     async def main():
         loop = asyncio.get_running_loop()
-        # no `ready`: the port is read off the service
-        served = asyncio.ensure_future(service.serve("127.0.0.1", 0, grace=0.2))
-        while service.port is None:
-            await asyncio.sleep(0)
-        port = service.port
+        bound = loop.create_future()
+        served = asyncio.ensure_future(
+            serving_forever(service, "127.0.0.1", 0, grace=0.2, ready=lambda h, p: bound.set_result(p))
+        )
+        port = await bound
         stall = await stalled(port, "/events")  # the large row below fills what this client takes
         talk = (await call(port, "POST", "/runs", {"offer": "talk", "inputs": ["hi"]}))[1]["id"]
         await backend.answer(BIG)
@@ -1024,10 +1050,15 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
         half = await asyncio.open_connection("127.0.0.1", port)
         half[1].write(b"GET / HTTP/1.1\r\nHo")
         await half[1].drain()
-        while len(service._conns) < 3:
-            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
+
+        async def ended(sid):
+            await phase_reached(service, sid, "ended")
+            return loop.time() - began
+
         began = loop.time()
         served.cancel()
+        stopped = asyncio.ensure_future(ended(talk))
         await asyncio.sleep(0.05)
         served.cancel()  # a second cancel while it ends: the end still runs to its close
         await asyncio.wait({served})
@@ -1035,24 +1066,42 @@ def test_ending_the_service_refuses_admission_cuts_each_connection_and_ends_each
         unanswered = await half[0].read()
         half[1].close()
         stall[1].transport.abort()
-        seen = await drained(*idle[:2])
+        seen = await idle.drained()
         try:
             await asyncio.open_connection("127.0.0.1", port)
         except ConnectionRefusedError:
             refused = True
-        return served.cancelled(), took, unanswered, seen, refused, talk, work
+        return served.cancelled(), took, await stopped, unanswered, seen, refused, talk, work
 
-    cancelled, took, unanswered, seen, refused, talk, work = bounded(main)
+    cancelled, took, talk_took, unanswered, seen, refused, talk, work = bounded(main)
     assert cancelled and refused and unanswered == b""
-    assert 1.0 <= took < 4.0  # the stalled write held the end for its bound, and no longer
-    assert service._conns == set() and service._subs == set() and service._all == set()
+    assert 2.0 <= took < 5.0  # the stalled write held the end for uvicorn's grace, and no longer
+    assert talk_took < 1.0  # the conversation ended long before that grace was out
+    assert service._subs == set() and service._all == set()
     assert a.bus._subs == subscriptions and service._by_run == {}
     assert {sid: service.state(sid)["phase"] for sid in (talk, work)} == {talk: "ended", work: "aborted"}
     assert service.state(talk)["outcome"] == {"kind": "Stopped", "turn": 2}
     for sid in (talk, work):
         assert log_lines(tmp_path / f"{sid}.jsonl")[-1] == {"kind": "END", "state": service.state(sid)}
-    # the idle stream was cut before its run ended: its one frame is the state it opened with
+    # the idle stream was closed before its run ended: its one frame is the state it opened with
     assert [(n, d["phase"]) for n, d in seen] == [("state", "working")]
+
+
+def test_serving_leaves_the_signals_to_its_caller(store):
+    """uvicorn would take SIGINT and SIGTERM for itself; served here, a Ctrl-C stays the caller's, and so
+    reaches the serve as a cancel that stops the runs (C11)."""
+    service = Service(Actor("http-signals", store=store))
+
+    def handlers():
+        return signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
+
+    async def main():
+        before = handlers()
+        async with serving(service):
+            return before, handlers()
+
+    before, served = bounded(main)
+    assert served == before
 
 
 def test_an_ending_seen_through_a_cancel_that_then_fails_reaches_its_caller_and_no_one_else(monkeypatch):
@@ -1077,7 +1126,7 @@ def test_an_ending_seen_through_a_cancel_that_then_fails_reaches_its_caller_and_
             await release.wait()
             raise RuntimeError("the step failed")
 
-        waiter = asyncio.ensure_future(serve._through(step()))
+        waiter = asyncio.ensure_future(transport._through(step()))
         await started.wait()
         waiter.cancel()
         await asyncio.sleep(0)  # the cancel lands on the wait, which waits again
@@ -1090,66 +1139,3 @@ def test_an_ending_seen_through_a_cancel_that_then_fails_reaches_its_caller_and_
 
     still, raised, told = bounded(main, seconds=5.0)
     assert still and isinstance(raised, RuntimeError) and told == []
-
-
-@pytest.mark.parametrize("step", ["write", "close"])
-def test_a_write_or_a_close_a_peer_never_takes_ends_at_its_bound(step, monkeypatch):
-    """A peer that takes nothing holds no connection past the bound: the write raises, the close cuts."""
-    monkeypatch.setattr(serve, "_WRITE", 0.05)
-
-    async def main():
-        never = asyncio.get_running_loop().create_future()
-        cut = []
-
-        async def held():
-            await never
-
-        writer = SimpleNamespace(
-            write=lambda data: None,
-            drain=held,
-            close=lambda: None,
-            wait_closed=held,
-            transport=SimpleNamespace(abort=lambda: cut.append(True)),
-        )
-        begun = asyncio.get_running_loop().time()
-        try:
-            await (serve._write(writer, b"x") if step == "write" else serve._close(writer))
-            raised = None
-        except TimeoutError as e:
-            raised = type(e)
-        took = asyncio.get_running_loop().time() - begun
-        never.cancel()
-        return raised, cut, took
-
-    raised, cut, took = bounded(main, seconds=2.0)
-    assert (raised, cut) == ((TimeoutError, []) if step == "write" else (None, [True]))
-    assert 0.05 <= took < 1.0
-
-
-@pytest.mark.parametrize("step", ["write", "close"])
-def test_a_cancel_that_lands_as_a_bounded_write_finishes_is_never_lost(step):
-    """The step a write's drain, or a close, finishes in is the step a shutdown's cancel may land in:
-    the cancel still ends the connection, or the end would wait on it forever."""
-
-    async def main():
-        gate = asyncio.get_running_loop().create_future()
-        cut = []
-
-        async def held():
-            await gate
-
-        writer = SimpleNamespace(
-            write=lambda data: None,
-            drain=held,
-            close=lambda: None,
-            wait_closed=held,
-            transport=SimpleNamespace(abort=lambda: cut.append(True)),
-        )
-        task = asyncio.ensure_future(serve._write(writer, b"x") if step == "write" else serve._close(writer))
-        await asyncio.sleep(0)  # the step is awaiting its peer
-        gate.set_result(None)
-        task.cancel()
-        await asyncio.wait({task})
-        return task.cancelled(), cut
-
-    assert bounded(main) == (True, [True] if step == "close" else [])

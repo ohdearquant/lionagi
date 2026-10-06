@@ -18,14 +18,14 @@ def test_same_tag_text_inside_closed_body_remains_verbatim():
     assert [turn[a:b] for a, b in lndl.spans(turn)] == [turn]
 
 
-def test_call_shaped_body_text_does_not_invoke_a_handler():
+def test_call_shaped_body_text_does_not_invoke_a_handler(store):
     class Edit(BaseModel):
         new: str
 
     class Run(BaseModel):
         cmd: str
 
-    actor = Actor("opaque-body")
+    actor = Actor("opaque-body", store=store)
     written = []
     executed = []
 
@@ -100,8 +100,8 @@ def test_a_quote_left_open_in_a_value_that_is_not_a_call_ends_it_at_the_first_cl
     assert len(p.problems) == 1 and p.problems[0].startswith("<lact e> held a value"), p.problems
 
 
-def test_console_still_surfaces_failure_when_result_cannot_land():
-    actor = Actor("console-no-landing")
+def test_console_still_surfaces_failure_when_result_cannot_land(store):
+    actor = Actor("console-no-landing", store=store)
 
     @actor.handler(Mark)
     async def squat(req, ctx):

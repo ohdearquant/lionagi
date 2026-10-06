@@ -39,7 +39,7 @@ def copied(monkeypatch) -> list[str]:
 
 
 def test_copy_takes_the_last_response_or_the_numbered_one_and_a_missing_number_copies_nothing(
-    tmp_path, capsys, copied
+    tmp_path, capsys, copied, console_khive
 ):
     actor, profile = console(tmp_path, model="m")
     say = Console("m", None, color=False, width=200)
@@ -64,7 +64,7 @@ def test_copy_takes_the_last_response_or_the_numbered_one_and_a_missing_number_c
 
 
 def test_a_copied_response_is_its_prose_without_the_lndl_and_a_command_only_turn_is_not_one(
-    tmp_path, capsys, copied
+    tmp_path, capsys, copied, console_khive
 ):
     (tmp_path / "a.txt").write_text("alpha\n")
     actor, profile = console(tmp_path, model="m")
@@ -82,7 +82,7 @@ def test_a_copied_response_is_its_prose_without_the_lndl_and_a_command_only_turn
 
 
 def test_copy_all_is_the_whole_chat_unwrapped_messages_responses_calls_and_results_in_order(
-    tmp_path, capsys, copied
+    tmp_path, capsys, copied, console_khive
 ):
     (tmp_path / "a.txt").write_text("alpha\n")
     actor, profile = console(tmp_path, model="m")
@@ -109,7 +109,7 @@ def test_copy_all_is_the_whole_chat_unwrapped_messages_responses_calls_and_resul
     assert say.command("/copy") and copied[1] == long  # the last response alone, as before
 
 
-def test_a_continued_chat_counts_its_replayed_responses_first(tmp_path, capsys, copied):
+def test_a_continued_chat_counts_its_replayed_responses_first(tmp_path, capsys, copied, console_khive):
     log1, log2 = tmp_path / "one.jsonl", tmp_path / "two.jsonl"
     asyncio.run(
         chat(*console(tmp_path, name="c1"), scripted("Old reply."), asks("hi", None), say=Console("m", log1))
@@ -138,7 +138,7 @@ def test_nothing_to_copy_before_the_first_response(capsys, copied):
 
 
 def test_a_copy_typed_at_the_chat_prompt_is_the_consoles_and_never_reaches_the_record(
-    tmp_path, monkeypatch, capsys, copied
+    tmp_path, monkeypatch, capsys, copied, console_khive
 ):
     import lion_cli.chat as cli
 

@@ -34,11 +34,11 @@ supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Sour
 
 ## Definitions
 
-- **spend row**: the `spend` note in the agent's own store, `notes/agent.json` in the agent
-  directory: one row per local day of model calls, tokens, cost, wakes that ran, mail handled and
-  idle polls.
+- **spend row**: the `spend` note of the agent's `agent` profile in the store
+  ([[ADR-0025-the-graph|ADR-0025]] D6): one row per local day of model calls, tokens, cost, wakes
+  that ran, mail handled and idle polls.
 - **one-shot form**: a `lion agent` form that acts once and exits: `--check`, `--ticks`, `--arm`,
-  `--once` and `--rerun`.
+  `--once`, `--rerun` and `--forget`.
 - **landing file**: `landing/<date>-<name>.txt` in the agent directory, written by `--check` and
   `--arm` and overwritten by the day's latest run of that name.
 - **idle poll**: a poll of the agent's inbox that found nothing to run and made no model call.
@@ -55,22 +55,26 @@ supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Sour
 ### C1: One command, `lion`, holds every entry _(enforced: process)_ ^c1
 
 The workspace member `apps/cli`, package `lion_cli`, declares the one console script, `lion =
-"lion_cli.main:main"`; the root package declares none. `parser()` requires one of six subcommands.
+"lion_cli.main:main"`; the root package declares none. `parser()` requires one of nine subcommands.
 The package composes the runtime and `hub` and talks to a terminal; the runtime package imports
 neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 
 | form | what it runs | what it writes |
 | ---- | ------------ | -------------- |
-| `lion agent --dir D` | the agent built from `D`, serving until interrupted | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
+| `lion agent --dir D` | the agent built from `D`, serving until interrupted; refused after the claim and before any other act while `D` routes the lion tables and no fold point bounds the chain [[ADR-0026-the-submission|ADR-0026]] C6 has its wakes continue | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
 | `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | the missing reminders first, none for a chair, and a failed agenda read raises there, before the wake (`test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for`); what a wake writes; the record printed |
+| `lion agent --dir D --forget RUN` | the owner's act after a refused wake ([[ADR-0026-the-submission|ADR-0026]] C6, C9): the cursor lets go of `RUN` when it names that run and the store cannot replay it, and it runs where the serving form is refused; given beside another action, the parser refuses it | a `forgotten` row naming the run, why and when, then the cursor without it; no mail read, no reminder, no model call |
 | `lion agent --dir D --check NAME` | one instrument, outside its chore | a landing file; no ledger row, nothing sent |
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
-| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--khive-config` names the file its khive calls sign with; the instruction files close its guidance | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; notes under `.lion/notes`; a box's patch, applied only under `--apply`; the clipboard under `/copy` and `/copy all` |
+| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--khive-config` names the file its khive calls sign with, and a file that names no actor or leaves the lion tables unrouted refuses the chat before it starts ([[ADR-0026-the-submission|ADR-0026]] C7, C8); the instruction files close its guidance | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; its record and notes as rows of the lion database ([[ADR-0025-the-graph|ADR-0025]]); a box's patch, applied only under `--apply`; the clipboard under `/copy` and `/copy all` |
+| `lion run --dir D --profile P --say TEXT` | one job of `[profile.P]` in `D`'s `profiles.toml`, on its model or `--model`'s; `--file` adds an input, `--var` makes `--say` a template, `--thread` and `--notify` place the result mail ([[ADR-0026-the-submission|ADR-0026]] C1, C3, C4) | the run's rows in `D`'s lion database, its id first on standard output and its output at the end; one result mail; a Daytona box's patch as `.lion/runs/<id>.patch`, never applied |
+| `lion flow --dir D --name N` | `[flow.N]` of `D`'s `flows.toml`, each step a run of its own under its profile ([[ADR-0026-the-submission|ADR-0026]] C2, C3); `--var`, `--thread`, `--notify` | the flow's run row, a step row per step or item, each step's own run rows; the flow's id, then `step <name> <id>` as each opens, the output at the end; one result mail |
+| `lion result ID --dir D [--history]` | a read of a run's or a flow's row by the id the command printed ([[ADR-0026-the-submission|ADR-0026]] C4) | nothing |
 | `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from, then the instruction files it composes | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
-| `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code or Codex session's checkpoint and restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]]); `checkpoint --codex` and `status --codex` read a Codex rollout, and `checkpoint` takes a rollout given as `--transcript` as one | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
+| `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code or Codex session's checkpoint in the store and its restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]], [[ADR-0025-the-graph#^c4|ADR-0025/C4]]); `checkpoint --codex` and `status --codex` read a Codex rollout, and `checkpoint` takes a rollout given as `--transcript` as one | the store's `sessions` and `messages` rows for the session, and the actor's `context.<name>` notes for declared vars |
 | `lion account` `add`, `list`, `remove` | the pool of Claude Code and Codex accounts ([[ADR-0024-accounts-and-the-pick|ADR-0024]]); `add` reads a token without echo; `list` shows each account's readings and mark, and of its credential only `keychain`, `default` or `home`; no model call | `accounts.toml`, where `add` keeps every other byte; a Claude Code account's keychain item; `list` writes nothing |
 
 The gate is code review of any second console script beside `lion`.
@@ -135,26 +139,29 @@ envelopes say, never a price table ([[ADR-0009-backends|ADR-0009]] S7). The gate
 
 ## Decisions
 
-### D1: `apps/cli/lion_cli/main.py`: one parser, six subcommands ^d1
+### D1: `apps/cli/lion_cli/main.py`: one parser, nine subcommands ^d1
 
-Serves C1. `parser(chat=None)` builds `agent`, `chat`, `areas`, `context`, `config` and `account`,
-each with its own flags. `main()` parses `chat` twice, the second time with the config file's values
-as the chat parser's defaults; it runs `agent` and `chat` under `asyncio.run`, the rest directly,
-and ends a chat quietly on an interrupt. `context` and `account` take their verbs as second-level
-subcommands, and `context checkpoint` `--codex` or `--hook`, never both. At the chat's prompt a line
-the console owns (`/copy [N]`, `/copy all`, `/quit`) runs there and never reaches the model.
+Serves C1. `parser(chat=None)` builds `agent`, `chat`, `run`, `flow`, `result`, `areas`, `context`,
+`config` and `account`. `main()` parses `chat` twice, the second time with the config file's values
+as the chat parser's defaults; it runs `agent`, `chat`, `run`, `flow` and `result` under
+`asyncio.run`, the rest directly, and ends a chat quietly on an interrupt. `context` and `account`
+take their verbs as subcommands, and `context checkpoint` `--codex` or `--hook`, never both. At the
+chat's prompt a line the console owns (`/copy [N]`, `/copy all`, `/quit`) runs there and never
+reaches the model.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags through `parser()`;
   `apps/cli/tests/test_config.py`: the two files, the flag over them, the refusals, `lion config`;
-  `apps/cli/tests/test_copy.py`: `/copy` never sent; `tests/test_areas.py`: the table from a given
-  registry; `tests/test_context.py`: `lion context`, its five verbs;
-  `tests/test_codex_checkpoint.py`: `--codex`; `tests/test_accounts.py`: `lion account`.
+  `apps/cli/tests/test_copy.py`: `/copy` never sent; `tests/test_areas.py`: a registry's table;
+  `tests/test_context.py`: `lion context`; `tests/test_codex_checkpoint.py`: `--codex`;
+  `apps/cli/tests/test_submit.py`: `run`, `flow`, `result`; `tests/test_accounts.py`: `lion
+  account`.
 
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
 
 Serves C1 and C2. `build()` makes the agent from `chores.toml`: the trusted senders, the bounded
-khive client, the gate, the chores, and the desk when configured. `agent_main` claims before any
-branch. `land()` writes a landing file. `arm()` reads the actor's own inbox and requires rows
+khive client, the gate, the chores, and the desk when configured. `agent_main` claims first,
+`--stats` aside. `Agent.unservable`'s reason refuses the serving form, and `Agent.serve` before its
+claim. `land()` writes a landing file. `arm()` reads the actor's own inbox and requires rows
 addressed to it, tries five operations and a send to an outsider that the client must each refuse,
 quotes each refusal, and fails when `ANTHROPIC_API_KEY` is set in the environment the CLI child
 inherits.
@@ -165,7 +172,14 @@ inherits.
   `test_the_rerun_flag_takes_read_mail_through_one_wake_by_id`,
   `test_the_identity_is_a_lock_the_process_keeps_not_a_pid_it_wrote`,
   `test_serve_keeps_the_lock_its_process_already_claimed`,
-  `test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key`.
+  `test_serve_refuses_a_directory_that_routes_the_lion_tables_while_nothing_folds_the_chain`,
+  `test_serve_runs_a_store_that_routes_nothing`,
+  `test_the_serve_form_is_refused_before_the_start_makes_its_ticks`,
+  `test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key`,
+  `test_the_forget_flag_lets_go_of_the_run_and_makes_no_tick` (the lock is released after),
+  `test_the_forget_flag_runs_in_a_directory_whose_serving_form_is_refused`;
+  `test_once_refuses_served_identity` holds `--forget` among the forms a held lock refuses;
+  `test_forget_beside_another_action_is_refused_before_anything_is_claimed`.
 
 ### D3: `backend_for` maps a model name to a backend that keeps envelopes ^d3
 
@@ -199,13 +213,12 @@ session restarts when present.
 
 ### D5: The readers `stats`, `resident`, `wakes` and the chat's `spent` ^d5
 
-Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `resident` takes a
-resident's row from its `chores.toml`, notes and lock, drops another day's row, and names what it
-could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log with
-the page's pattern. `spent` sums each call's `total_cost_usd`, its `usage.cost` only when the total
-is null, and counts the calls with neither or with `cost_complete` false. Chat-log rows state
-`cost_complete`; a reader of them (`load_log(..., usage=rows)`, `spent(rows)`) counts an older one
-without it.
+Serves C4. `stats` reads the `agent` notes through `hub.areas.agent_notes`, one call of the binary
+as the actor `chores.toml` names, and the directory's ledgers. `resident` reads the same notes, the
+`chores.toml` and the lock, drops another day's row, and names what it could not read; serving is
+the lock, never the pid in the file. `wakes` parses the serve log with the page's pattern. `spent`
+sums each call's `total_cost_usd`, else its `usage.cost`, and counts the calls with neither or with
+`cost_complete` false; a chat-log row without `cost_complete` is counted.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
   as the lock, the serve log's wake lines,
@@ -278,11 +291,11 @@ there).
   by the tests of D4.
 - **S8**: The serve log is standard output; `lion areas` reads it as `serve.log` in the agent
   directory, so a served agent's output has to land there. `lion agent` does not redirect it.
-- **S9**: An agent directory is whatever `--dir` names, and only a checkpoint written there checks
-  where it sits: inside a git work tree whose ignore rules miss `.khive/context/`, the write refuses
-  ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]). The lock, notes, ledgers and landing files are written
-  wherever the directory is, so it belongs where no checkout tracks it. The implementation's own
-  repository ignores `.khive/`, where the bench example keeps its directory.
+- **S9**: An agent directory is whatever `--dir` names; the checkpoint no longer writes a file
+  there, being the store's rows ([[ADR-0025-the-graph#^c4|ADR-0025/C4]]). The lock, ledgers and
+  landing files are written wherever the directory is, so it belongs where no checkout tracks it.
+  The implementation's own repository ignores `.khive/`, where the bench example keeps its
+  directory.
 - **S10**: A day's row written before the count carries no `unknown`; its calls cannot be counted
   later. Every reader takes the missing key as `None`, and the first wake after it writes `None`
   there for the rest of the day. So the readers print `(partial: calls of unknown cost before this

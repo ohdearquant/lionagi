@@ -23,10 +23,11 @@ from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, CodexSes
 from hub.backend.claude_code import _prompt_tokens
 from hub.chat import chat, load_log
 from hub.hooks import install, load
-from hub.khive import Khive, KhiveError
+from hub.tools import send
 from hub.tools.code import Tree
-from lion1 import Actor, Kind, Profile, lndl
+from lion1 import Actor, Kind, Profile, Store, lndl
 from lion1.actor import DEFAULT_HANDLERS, Run, _text
+from lion1.khive import Khive, KhiveError
 from lion1.record import Entry
 
 from .agent import backend_for
@@ -38,8 +39,10 @@ __all__ = (
     "console",
     "prepare_box",
     "take_patch",
+    "end_box",
     "spent",
     "signer",
+    "NoSigner",
     "status_line",
     "resolve_chat",
     "fresh_log",
@@ -62,29 +65,64 @@ def console(
     turns: int = 200,
     sandbox: Box | None = None,
     coding: bool = False,
-    notify: Callable[[str], None] | None = None,
     tree: Tree | None = None,
     about_box: str | None = None,
     khive_config: Path | None = None,
+    tools: frozenset[str] | None = None,
+    role: str = "",
+    guide: str = "console",
+    defaults: dict[str, float] | None = None,
+    submitter: str | None = None,
+    thread: str | None = None,
 ) -> tuple[Actor, Profile]:
-    """The actor a person talks to: the file and directory readers, khive when the directory is an
-    actor's own (its `.khive/config.toml` names the actor the reads sign as) or `khive_config` names
-    the file to sign with instead (explicit: the directory's own is not read), a shell when a sandbox
-    is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit).
+    """The actor a person talks to: the file and directory readers, khive signing as the actor the
+    directory's `.khive/config.toml` names or `khive_config` names instead (explicit: the directory's
+    own is not read; a console with neither refuses to start, `NoSigner`, for its record is rows of
+    that actor's store), a shell when a sandbox is given, and with `coding` the tools a fix is found
+    and written with (read_lines, search, edit).
     The person's instruction files (`instructions`) close the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
-    with `about_box` saying so (the VM's own guidance otherwise)."""
+    with `about_box` saying so (the VM's own guidance otherwise).
+
+    The keyword form builds a profile of the profile file the same way (ADR-0026 D2): `tools` names
+    exactly which of `files`, `khive` and `send` it gets (the shell comes with `sandbox`, the coding
+    tools with `coding`), `send` mailing `submitter` alone on `thread`; `role` is its own prose ahead
+    of the `guide` guidance; `defaults` its bounds."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
-    actor = Actor(name, notes_dir=directory / ".lion" / "notes")
+    config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
+    actor_id = signer(directory, khive_config)
+    try:
+        if not config.is_file():
+            raise KhiveError("no such khive config file")
+        if actor_id is None:
+            raise KhiveError("no [actor].id")
+        store = Store(Khive(directory, actor_id, config=khive_config))
+    except KhiveError as e:
+        raise NoSigner(
+            f"{config}: {e}; a chat's record is rows of khive, so the directory's .khive/config.toml "
+            "or --khive-config must name the actor (ADR-0025 D3)"
+        ) from None
+    given = tools if tools is not None else frozenset({"files", "khive"})  # the chat's own
+    unknown = sorted(given - {"files", "khive", "send"})
+    if unknown:
+        raise ValueError(f"tools {unknown}: files, khive and send are named here; shell and code are flags")
+    mailing = "send" in given
+    if mailing and not submitter:
+        raise ValueError("the send tool mails the submitter, and none is named")
+    privileges = frozenset({"comm.send"}) if mailing else frozenset()
+    actor = Actor(name, privileges=privileges, store=store)
     if (hooks := directory / ".lion" / "hooks.toml").exists():
         install(actor, load(hooks), directory)
-    specs = files(actor, tree)
-    tools = "read(path), list_dir(path)"
+    specs: set[str] = set()
+    said: list[str] = []
+    if "files" in given:
+        specs |= files(actor, tree)
+        said.append("read(path), list_dir(path)")
     about_sandbox = ""
     if sandbox is not None:
         specs |= shell(actor, sandbox)
-        tools += ", bash(command), python(code)"
+        said.append("bash(command), python(code)")
         if about_box is not None:
             about_sandbox = about_box
         else:
@@ -92,35 +130,35 @@ def console(
             about_sandbox = guidance("sandbox", network=network)
     if coding:
         specs |= code(actor, tree)
-        tools += ", read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)"
+        said.append("read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)")
         about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory))
-    config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
-    if khive_config is not None and not config.is_file():  # explicit: said, never the directory's instead
-        if notify is not None:
-            notify(f"{config}: no such khive config file; khive tool unavailable")
-    elif config.exists():
-        actor_id = signer(directory, khive_config)
-        if actor_id is None:
-            if notify is not None:
-                notify(f"{config}: no [actor].id; khive tool unavailable")
-        else:
-            try:
-                khive = Bounded(Khive(directory, actor_id, config=khive_config), recipients=frozenset())
-            except KhiveError as e:
-                if notify is not None:
-                    notify(f"khive unavailable: {e}")
-            else:
-                specs |= khive_ops(actor, khive)
-                tools += (
-                    f", khive_ops(ops) signing as {actor_id} (these verbs and no other: "
-                    f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
-                    f"{SPAWN_SALIENCE})"
-                )
+    if "khive" in given:
+        khive = Bounded(actor.store.khive, recipients=frozenset())
+        specs |= khive_ops(actor, khive)
+        said.append(
+            f"khive_ops(ops) signing as {actor_id} (these verbs and no other: "
+            f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
+            f"{SPAWN_SALIENCE})"
+        )
+    if mailing:
+        specs |= send(actor, actor.store.khive, submitter, thread=thread)
+        said.append(f"send(text), to {submitter} alone")
+    listed = ", ".join(said) or "none"
     if not system:
-        system = guidance("console", model=model, tools=tools, turns=turns, sandbox=about_sandbox)
+        system = guidance(
+            guide, model=model, tools=listed, turns=turns, sandbox=about_sandbox, submitter=submitter
+        )
+        if role:
+            system = f"{role}\n\n{system}"
         for path, text in instructions(directory):
             system += f"\n\n{_shown(path, directory)} says:\n{text}"
-    profile = Profile(name=name, specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS}, system=system)
+    profile = Profile(
+        name=name,
+        specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS},
+        privileges=privileges,
+        system=system,
+        defaults=dict(defaults or {}),
+    )
     return actor, profile
 
 
@@ -167,14 +205,15 @@ async def take_patch(
     baseline: str,
     apply: bool,
     say: Callable[[str], None],
+    show: bool = True,
 ) -> Path | None:
-    """The diff of the copy in `box` since `baseline` (prepare_box's commit), printed and saved beside
-    the chat log as `<chat_id>.patch`; with `apply` it is also applied to `directory` by `git apply`,
-    from the top of the repository `directory` sits in (a patch from a subdirectory gets its prefix),
-    which lands whole or not at all. None when nothing changed; a diff that fails raises. A patch that
-    will not apply is still saved, the failure is said, and the directory is left as it was. Each git
-    call on this machine has `GIT_TIMEOUT`; an apply stopped at it is said to leave the directory
-    unknown. The diff is the box's own git, each call under the box's `exec` timeout (120 s)."""
+    """The diff of the copy in `box` since `baseline` (prepare_box's commit), saved beside the chat log
+    as `<chat_id>.patch` and, with `show`, printed; with `apply` it is also applied to `directory` by
+    `git apply`, from the top of the repository `directory` sits in (a patch from a subdirectory gets
+    its prefix), which lands whole or not at all. None when nothing changed; a diff that fails raises.
+    A patch that will not apply is still saved, the failure is said, and the directory is left as it
+    was. Each git call on this machine has `GIT_TIMEOUT`; an apply stopped at it is said to leave the
+    directory unknown. The diff is the box's own git, each call under the box's `exec` timeout (120 s)."""
     patch = await box.diff(baseline)
     if not patch.strip():
         say("box: no change in the copy")
@@ -183,7 +222,8 @@ async def take_patch(
     path = chats / f"{chat_id}.patch"
     path.write_text(patch)
     say(f"box: the copy's diff, {patch.count(chr(10))} line(s), saved as {path}")
-    print(patch, end="" if patch.endswith("\n") else "\n")
+    if show:
+        print(patch, end="" if patch.endswith("\n") else "\n")
     try:
         argv = _git_apply(directory, str(path), timeout=GIT_TIMEOUT)
     except subprocess.TimeoutExpired:  # nothing ran on the directory
@@ -205,6 +245,46 @@ async def take_patch(
     else:
         say(f"box: not applied; `{shlex.join(argv)}` does, or --apply next time")
     return path
+
+
+async def end_box(
+    box: Box,
+    directory: Path,
+    saved: Path,
+    name: str,
+    *,
+    baseline: str,
+    apply: bool,
+    say: Callable[[str], None],
+    show: bool = True,
+) -> None:
+    """The end of a Daytona box: its patch taken (`take_patch`, saved under `saved` as `<name>.patch`),
+    then the box stopped, which deletes it. A box that ended first is said to have no recovery. A patch
+    not taken whole leaves the box running and named, for it may hold the only copy of the work, and
+    raises."""
+    if box.dead is not None:
+        say(f"box: it ended before its patch was read ({box.dead}); recovery unavailable")
+    else:
+        try:
+            await asyncio.shield(
+                take_patch(box, directory, saved, name, baseline=baseline, apply=apply, say=say, show=show)
+            )
+        except BaseException as e:  # not taken whole, a cancellation included: the box may hold the only copy
+            ident = getattr(box, "box_id", None)
+            if isinstance(e, asyncio.CancelledError | KeyboardInterrupt):
+                why = "interrupted while its patch was taken"
+            else:
+                why = f"taking its patch failed ({type(e).__name__}: {e})"
+            if box.dead is None and ident:
+                say(
+                    f"box {ident}: kept, not stopped: {why}; the work is there, at "
+                    f"{box.workdir}, until the box's idle stop deletes it"
+                )
+            else:
+                reason = box.dead or "the provider named no box"
+                say(f"box {ident or '?'}: {why}; recovery unavailable: {reason}")
+            raise
+    await asyncio.shield(box.stop())
 
 
 def _git_apply(directory: Path, *args: str, timeout: float) -> list[str]:
@@ -238,6 +318,10 @@ def spent(calls: list[dict]) -> tuple[float, int]:
         1 for c in calls if not cost_whole(c) or (c.get("kind") == "USAGE" and "cost_complete" not in c)
     )
     return cost, unknown
+
+
+class NoSigner(ValueError):
+    """A chat with no khive actor to sign as: it refuses to start."""
 
 
 def signer(directory: Path, config: Path | None = None) -> str | None:
@@ -458,7 +542,6 @@ async def _chat_main(
         about_box = guidance("box", kind="Daytona", image=image, root=directory)
     elif a.shell or a.code:
         sandbox = Sandbox(directory, f"lion-{chat_id}", offline=a.offline)
-    degraded: list[str] = []
     khive_config = None
     if getattr(a, "khive_config", None):  # explicit: refused outright rather than falling back
         khive_config = Path(a.khive_config).expanduser().resolve()
@@ -466,17 +549,19 @@ async def _chat_main(
             raise SystemExit(f"--khive-config {a.khive_config}: no such file")  # as typed, not resolved
         if signer(directory, khive_config) is None:
             raise SystemExit(f"--khive-config {a.khive_config}: no [actor].id in it")
-    actor, profile = console(
-        directory,
-        model=a.model,
-        turns=a.turns,
-        sandbox=sandbox,
-        coding=a.code,
-        notify=degraded.append,
-        tree=tree,
-        about_box=about_box,
-        khive_config=khive_config,
-    )
+    try:
+        actor, profile = console(
+            directory,
+            model=a.model,
+            turns=a.turns,
+            sandbox=sandbox,
+            coding=a.code,
+            tree=tree,
+            about_box=about_box,
+            khive_config=khive_config,
+        )
+    except NoSigner as e:
+        raise SystemExit(str(e)) from None
     # a claude_code or codex model gets no tools of its own: one turn per call, resumed, and everything
     # it does is a command in its text that this console runs, gates and records
     backend = backend_for(a.model)
@@ -505,8 +590,6 @@ async def _chat_main(
     )
     say.quiet_until = len(history) - 1
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
-    for msg in degraded:
-        say.notice(msg)
     if composed := instructions(directory):
         say.notice(
             "instructions: " + ", ".join(f"{_shown(p, directory)} ({len(t)} chars)" for p, t in composed)
@@ -565,36 +648,12 @@ async def _chat_main(
         off_turn()
         if sandbox is not None:
             try:
-                if boxed and sandbox.dead is not None:
-                    say.notice(
-                        f"box: it ended before its patch was read ({sandbox.dead}); recovery unavailable"
+                if boxed:  # the patch first: stop deletes the box
+                    await end_box(
+                        sandbox, directory, chats, chat_id, baseline=baseline, apply=a.apply, say=say.notice
                     )
-                elif boxed:  # the patch first: stop deletes the box
-                    try:
-                        await asyncio.shield(
-                            take_patch(
-                                sandbox,
-                                directory,
-                                chats,
-                                chat_id,
-                                baseline=baseline,
-                                apply=a.apply,
-                                say=say.notice,
-                            )
-                        )
-                    except Exception as e:  # the patch was not taken whole: the box may hold the only copy
-                        ident = getattr(sandbox, "box_id", None)
-                        why = f"taking its patch failed ({type(e).__name__}: {e})"
-                        if sandbox.dead is None and ident:
-                            say.notice(
-                                f"box {ident}: kept, not stopped: {why}; the work is there, at "
-                                f"{sandbox.workdir}, until the box's idle stop deletes it"
-                            )
-                        else:
-                            reason = sandbox.dead or "the provider named no box"
-                            say.notice(f"box {ident or '?'}: {why}; recovery unavailable: {reason}")
-                        raise
-                await asyncio.shield(sandbox.stop())
+                else:
+                    await asyncio.shield(sandbox.stop())
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])

@@ -13,7 +13,19 @@ from pydantic import BaseModel
 
 import lion1.actor as actor_module
 from hub.chat import entry_row
-from lion1 import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, lndl
+from lion1 import (
+    Actor,
+    Entry,
+    Exhausted,
+    KhiveNoteStore,
+    Kind,
+    Message,
+    Profile,
+    RunRequest,
+    Stopped,
+    Success,
+    lndl,
+)
 from lion1.actor import ProfileError, Result, _Reader
 from lion1.checkpoint import entry_of
 from lion1.lndl import (
@@ -28,7 +40,8 @@ from lion1.lndl import (
     program_guidance,
     read,
 )
-from lion1.notes import FileNoteStore, MemoryNoteStore
+from tests.lionfake import LionKhive
+from tests.lionfake import store as fresh_store
 
 PROGRAM = Profile("p", language="program")
 
@@ -67,7 +80,7 @@ class Fetch(BaseModel):
 
 
 def _actor(name: str, calls: list) -> Actor:
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
 
     @actor.handler(SearchSimilar)
     async def search_similar(req: SearchSimilar, ctx) -> list[dict]:
@@ -124,10 +137,10 @@ class Hold(BaseModel):
     pass
 
 
-def test_a_command_cancelled_before_it_started_leaves_no_arguments_held_for_the_run():
+def test_a_command_cancelled_before_it_started_leaves_no_arguments_held_for_the_run(store):
     # its arguments are computed when its handler is about to run; one that never got there kept
     # them, and the walk they close over, until the run ended
-    actor = Actor("never-started")
+    actor = Actor("never-started", store=store)
     seen: list[dict] = []
 
     @actor.handler(Cut)
@@ -604,9 +617,9 @@ def test_a_value_whose_input_failed_fails_every_reader():
     assert b.reason == "invalid" and b.error.startswith("*v: *a did not settle ok") and calls == []
 
 
-class CountingStore(MemoryNoteStore):
+class CountingStore(KhiveNoteStore):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(LionKhive(), "p")
         self.gets = 0
 
     def get(self, key):
@@ -653,7 +666,7 @@ def test_a_failed_producer_writes_nothing_and_the_assignment_is_told_not_written
 
 def test_a_store_that_refuses_keeps_the_result_and_claims_no_write(tmp_path):
     actor = _actor("store-refuses", [])
-    profile = Profile("p", language="program", notes=FileNoteStore(tmp_path / "p.json"))
+    profile = Profile("p", language="program", notes=fresh_store().notes("p"))
     profile.notes.put("k", "a string", run="earlier", seq=0)
     run = _run(actor, fenced('note.k.part = echo(text="x")'), "idle", profile=profile)
     assert profile.notes.get("k").value == "a string"
@@ -665,7 +678,7 @@ class StoreDefect(BaseException):
     """A failure of the store no write turns into a notice."""
 
 
-class DefectStore(MemoryNoteStore):
+class DefectStore(KhiveNoteStore):
     def put(self, key, value, **meta):
         raise StoreDefect(key)
 
@@ -683,29 +696,11 @@ def test_a_write_that_fails_on_a_defect_is_raised_by_the_settle_and_no_one_else_
     caller. The write queued behind it and the command that reads the note wait on that task; the loop
     hears of the failure from neither."""
     actor = _actor("write-defect", [])
-    profile = Profile("p", language="program", notes=DefectStore())
+    profile = Profile("p", language="program", notes=DefectStore(LionKhive(), "p"))
     with pytest.raises(StoreDefect):
         _run(actor, fenced(*lines), profile=profile)
     gc.collect()
     assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
-
-
-def test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on(tmp_path):
-    notes = tmp_path / "notes"
-    notes.mkdir()
-    path = notes / "p.json"
-    row = '{"key": "k", "value": "Crème Brûlée", "run": "r", "seq": 1, "version": 1}'
-    encoded = f'{{"version": 1, "notes": {{"k": {row}}}}}'.encode("latin-1")
-    path.write_bytes(encoded)
-    offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
-    run = _run(Actor("loader-refuses", notes_dir=notes), fenced('note.k = "new"'), "idle")
-    # the tag form ends the run on this file (ADR-0007/D7); a program's write is caught at settle
-    assert run.outcome is not None and run.turn == 2 and run.notes_written == []
-    assert (
-        f"note.k: not written: ValueError: {path}: the file is not UTF-8 "
-        f"(the byte at offset {offset} cannot be decoded); re-encode it as UTF-8 by hand"
-    ) in _notices(run)
-    assert path.read_bytes() == encoded and not list(notes.glob("*.tmp"))
 
 
 def test_a_dotted_path_writes_into_a_json_note_and_creates_what_is_missing():
@@ -1701,7 +1696,7 @@ class Poke(BaseModel):
 
 
 def _growing_actor(name: str) -> Actor:
-    actor = Actor(name)
+    actor = Actor(name, store=fresh_store())
 
     @actor.handler(Rows)
     async def rows(req: Rows, ctx) -> list[str]:
@@ -2112,11 +2107,11 @@ def test_a_write_queued_with_time_left_is_refused_as_spent_whatever_its_evaluati
     assert run.refused == [SPENT]
 
 
-class Faulty(MemoryNoteStore):
+class Faulty(KhiveNoteStore):
     """A store whose reads raise `error`."""
 
     def __init__(self, error: Exception) -> None:
-        super().__init__()
+        super().__init__(LionKhive(), "p")
         self.error = error
 
     def get(self, key):
@@ -2470,7 +2465,6 @@ class Take(BaseModel):
     [
         ("g = grid(n=2)", "OUT{x: (x for x in *g)}"),
         ("g = grid(n=2)", "if [*g[0]]:", '    OUT{x: "taken"}'),
-        ("g = grid(n=2)", 'note["k"] = [*g[0]]', 'OUT{x: *note["k"]}'),
         ("g = grid(n=2)", "a = take(rows=*g)", "OUT{x: *a}"),
     ],
 )
