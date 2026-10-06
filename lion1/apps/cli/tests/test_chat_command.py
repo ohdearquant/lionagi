@@ -583,6 +583,8 @@ def test_a_start_cut_by_two_real_interrupts_names_the_sandbox_and_exits_130(
     try:
         with pytest.raises(SystemExit) as left:
             main([*args, "--turns", "1"])
+    except KeyboardInterrupt:  # failed here, rather than ending the test session with it
+        pytest.fail("the second interrupt left `lion chat` as a KeyboardInterrupt, not an exit")
     finally:
         signal.signal(signal.SIGINT, previous)
     said = " ".join("".join(capsys.readouterr()).split())
