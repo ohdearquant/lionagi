@@ -473,9 +473,9 @@ def test_a_cancelled_flow_closes_stopped_at_its_step_mails_its_end_and_exits_130
     assert mail["content"].startswith("error: CancelledError\n")
 
 
-def interrupted_at(monkeypatch, prefix: str, armed=lambda: True) -> list[str]:
-    """The first op starting with `prefix`, once `armed()`, cancels the command's own task, as an interrupt
-    landing there would, then goes on and is answered. The ops it cut into."""
+def interrupted_at(monkeypatch, prefix: str, armed=lambda: True, times: int = 1) -> list[str]:
+    """The first op starting with `prefix`, once `armed()`, cancels the command's own task `times` times,
+    as interrupts landing there would, then goes on and is answered. The ops it cut into."""
     exec_ = Khive.exec
     cut: list[str] = []
 
@@ -485,9 +485,10 @@ def interrupted_at(monkeypatch, prefix: str, armed=lambda: True) -> list[str]:
             (command,) = [
                 t for t in asyncio.all_tasks() if t.get_coro().__name__ in ("run_main", "flow_main")
             ]
-            command.cancel()
-            for _ in range(3):
-                await asyncio.sleep(0)
+            for _ in range(times):
+                command.cancel()
+                for _ in range(3):
+                    await asyncio.sleep(0)
         return await exec_(self, ops)
 
     monkeypatch.setattr(Khive, "exec", exec)
@@ -538,6 +539,75 @@ def test_a_flow_interrupted_while_its_mail_is_sent_sends_it_once_then_exits_130(
     assert cut and console_khive.runs[flow_id]["outcome"] == "success"
     (mail,) = console_khive.sent
     assert mail["subject"] == f"flow two {flow_id} success"
+
+
+def test_a_run_interrupted_twice_while_its_mail_is_sent_stops_at_once_and_says_how_to_read_it(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    backends(monkeypatch, **{"fake/writer": lambda m: out("done")})
+    cut = interrupted_at(monkeypatch, "comm.send(", times=2)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 130
+    (run_id,) = console_khive.runs
+    assert cut and console_khive.runs[run_id]["outcome"] == "success"  # its row closed before its end
+    assert console_khive.sent == []
+    printed = capsys.readouterr()
+    assert printed.out.splitlines() == [run_id]  # no end line
+    assert (
+        f"run {run_id} stopped before its end: its result mail may not have gone; "
+        f"lion result --dir {shlex.quote(str(actor_dir.resolve()))} {run_id}"
+    ) in printed.err.splitlines()
+
+
+def test_a_flow_interrupted_twice_while_its_mail_is_sent_stops_at_once_and_says_how_to_read_it(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+    backends(monkeypatch, **{"fake/writer": lambda m: out(said(m).split()[0])})
+    cut = interrupted_at(monkeypatch, "comm.send(", times=2)
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert cut and console_khive.runs[flow_id]["outcome"] == "success"
+    assert console_khive.sent == []
+    printed = capsys.readouterr()
+    assert f"flow two {flow_id} success" not in printed.out
+    assert (
+        f"flow two {flow_id} stopped before its end: its result mail may not have gone; "
+        f"lion result --dir {shlex.quote(str(actor_dir.resolve()))} {flow_id}"
+    ) in printed.err.splitlines()
+
+
+def test_a_run_interrupted_in_its_run_then_while_its_mail_is_sent_stops_at_once(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    async def cancelled(messages):
+        raise asyncio.CancelledError
+
+    backends(monkeypatch, **{"fake/writer": cancelled})
+    cut = interrupted_at(monkeypatch, "comm.send(")  # the command's second interrupt: its first was the run's
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 130
+    (run_id,) = console_khive.runs
+    assert cut and console_khive.runs[run_id]["outcome"] == "stopped"
+    assert console_khive.sent == []
+    assert f"run {run_id} stopped before its end: " in capsys.readouterr().err
+
+
+def test_a_flow_interrupted_at_a_step_then_while_its_mail_is_sent_stops_at_once(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+
+    async def answer(messages):
+        if said(messages).startswith("write"):
+            raise asyncio.CancelledError
+        return out(said(messages).split()[0])
+
+    backends(monkeypatch, **{"fake/writer": answer})
+    cut = interrupted_at(monkeypatch, "comm.send(")
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert cut and console_khive.runs[flow_id]["outcome"] == "stopped"
+    assert console_khive.sent == []
+    assert f"flow two {flow_id} stopped before its end: " in capsys.readouterr().err
 
 
 def test_a_run_whose_row_was_never_written_says_so_in_its_end_and_its_mail(
