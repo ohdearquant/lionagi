@@ -172,24 +172,29 @@ def test_every_real_box_test_is_opt_in():
 
 
 def test_the_tool_descriptions_every_box_shares_claim_nothing_only_the_vm_has():
-    # `lion chat --box daytona` registers the same Bash and Python models as the VM, so what only the VM
-    # supplies (the mount, the /opt volume, its tools) is said in the VM's own guidance
+    # `lion chat --box daytona` registers the same Bash and Python models as the VM and appends the same
+    # coding guidance, so what only the VM supplies (the mount, the /opt volume, each of its tools) is said
+    # in the VM's own guidance; the Daytona guidance names the tools that work on the copy, not every tool
     import inspect
     from pathlib import Path
 
     from hub.tools.shell import Bash, Python
 
+    guidance = Path(inspect.getfile(Bash)).parent.parent / "guidance"
     said = " ".join(
         [
             Bash.__doc__,
             Python.__doc__,
             *(f.description or "" for m in (Bash, Python) for f in m.model_fields.values()),
+            (guidance / "code.md").read_text(),
         ]
     )
-    vm = (Path(inspect.getfile(Bash)).parent.parent / "guidance" / "sandbox.md").read_text()
-    for vm_only in ("VM", "mounted", "volume", "kept from one conversation", "no other host path", "`rg`"):
+    vm = (guidance / "sandbox.md").read_text()
+    only = ("VM", "mounted", "volume", "kept from one conversation", "no other host path")
+    for vm_only in (*only, "`uv`", "`git`", "`rg`", "`jq`"):
         assert vm_only not in said, vm_only
         assert vm_only in vm, vm_only
+    assert "every tool" not in (guidance / "box.md").read_text()
 
 
 @pytest.mark.parametrize(("cut_at", "stops"), [("volume", False), ("run", True)])
