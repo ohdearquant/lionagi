@@ -18,6 +18,7 @@ import asyncio
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -167,17 +168,21 @@ async def baseline(box: Any) -> str:
 def _harvest(rec: dict, backend: Any) -> None:
     """What the backend spent, per turn, so the cache curve over a long run can be read back. A call
     whose cost nobody reported is unknown, never $0: `cost_usd` is the known subtotal (None when no
-    call's cost is known) and `cost_complete` says whether every call is in it. A failed call's
-    envelope is spend like any other."""
+    call's cost is known) and `cost_complete` says whether every call is in it. A figure the run would
+    not sum (ADR-0003/S7) is unknown too, and a sum past a float's range is kept as the largest float.
+    A failed call's envelope is spend like any other."""
     calls = getattr(backend, "calls", [])
-    known = [float(c["total_cost_usd"]) for c in calls if c.get("total_cost_usd") is not None]
-    rec["cost_usd"] = sum(known, 0.0) if known or not calls else None
+    figures = [
+        math.nan if c.get("total_cost_usd") is None else reported_cost(c["total_cost_usd"]) for c in calls
+    ]
+    known = [f for f in figures if not math.isnan(f)]
+    rec["cost_usd"] = min(sum(known, 0.0), sys.float_info.max) if known or not calls else None
     rec["cost_complete"] = all(
-        c.get("total_cost_usd") is not None and c.get("cost_complete") is not False for c in calls
+        not math.isnan(f) and c.get("cost_complete") is not False for c, f in zip(calls, figures, strict=True)
     )
     u = [c.get("usage", {}) for c in calls]
     rec["calls"] = []
-    for c, x in zip(calls, u, strict=True):
+    for c, x, f in zip(calls, u, figures, strict=True):
         entry = {
             "api_ms": c.get("duration_api_ms"),
             "provider": c.get("provider"),  # who served the call; OpenRouter routes by availability
@@ -188,7 +193,7 @@ def _harvest(rec: dict, backend: Any) -> None:
             "output": x.get("output_tokens", 0),
             "reasoning": x.get("reasoning_output_tokens"),
             "finish": c.get("finish_reason"),
-            "cost_usd": c.get("total_cost_usd"),
+            "cost_usd": None if math.isnan(f) else f,
             "notes": c.get("notes") or None,
         }
         if c.get("message") is not None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -332,6 +333,42 @@ def test_a_malformed_cost_figure_stops_a_capped_run_as_spent(tmp_path: Path, fig
     assert good["stopped_by"] == "cost" and good["turns"] == 2
     bad = run(figure, figure, figure)
     assert bad["stopped_by"] == "cost" and bad["turns"] == 1
+
+
+@pytest.mark.parametrize(
+    "costs, total, complete, each",
+    [
+        ((1.7e308, 1.7e308), sys.float_info.max, True, [1.7e308, 1.7e308]),
+        ((-0.3, 0.1), 0.1, False, [None, 0.1]),
+        ((float("nan"), 0.1), 0.1, False, [None, 0.1]),
+        (("0.3", 0.1), 0.1, False, [None, 0.1]),
+    ],
+    ids=["past-range", "negative", "nan", "str"],
+)
+def test_a_record_keeps_only_figures_the_run_would_sum(tmp_path: Path, costs, total, complete, each):
+    # a figure the run would not sum (ADR-0003/S7) is unknown in the record too, never a negative or a
+    # non-finite cost, and a sum past a float's range is the largest float: the record stays JSON
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    rec = asyncio.run(
+        run_swe.solve(
+            row,
+            "m",
+            len(costs),
+            tmp_path,
+            "openrouter",
+            box=ToolBox(),
+            backend=Costs(*costs),
+            store=fresh_store(),
+        )
+    )
+    assert (rec["cost_usd"], rec["cost_complete"]) == (pytest.approx(total), complete)
+    assert [c["cost_usd"] for c in rec["calls"]] == each
+
+    def bare(name):
+        raise ValueError(name)
+
+    written = json.loads((tmp_path / "pkg__pkg-1.json").read_text(), parse_constant=bare)
+    assert written["cost_usd"] == pytest.approx(total)
 
 
 class FailedEnvelopeThenRaise(Costs):

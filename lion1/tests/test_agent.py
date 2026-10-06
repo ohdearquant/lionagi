@@ -935,6 +935,46 @@ def test_a_days_spend_past_a_floats_range_is_kept_as_the_largest_float(store):
     assert agent.state.get("spend").value["cost"] == sys.float_info.max
 
 
+def test_one_wakes_calls_summing_past_a_floats_range_still_write_its_cursor(store):
+    # the wake's own sum is read for the cursor as well as the day: past a float's range it is the
+    # largest float there too, where an infinite one would fail the cursor's write after the calls
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    backend = Scripted(REPLY, DONE, cost=1.7e308, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    budget = Budget(cost_per_day=1.75e308)
+    agent = Agent(actor, khive, backend, profile_for, budget=budget, clock=lambda: 1_000_000.0)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    assert len(backend.calls) == 2
+    assert agent.state.get("cursor").value["tokens"]["cost"] == sys.float_info.max
+    assert agent.state.get("spend").value["cost"] == sys.float_info.max
+    assert agent.hold() is not None
+
+
+@pytest.mark.parametrize("figure", [-0.6, "0.6", True], ids=["negative", "str", "bool"])
+def test_a_same_day_row_whose_dollars_the_run_would_not_sum_reads_as_none_spent_and_partial(store, figure):
+    # an earlier version summed the envelopes as they came, so a day's row can hold a negative sum; it
+    # is never room against a wake that serves: none spent, and the day partial to its end
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    state.put("spend", {"day": _day(now), "cost": figure, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(
+        actor, khive, backend, profile_for, state=state, budget=Budget(cost_per_day=0.5), clock=lambda: now
+    )
+    assert agent.hold() is None  # none spent: the day's row lends no room and takes none
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.6), None)
+    assert agent.hold() == (
+        "$0.6000 spent today (partial: calls of unknown cost before this count went uncounted)"
+        " (cap $0.5); next day"
+    )
+
+
 def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end(
     tmp_path, store
 ):

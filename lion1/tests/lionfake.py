@@ -7,6 +7,7 @@ client and a test through a patched `exec` see one behaviour."""
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -386,8 +387,9 @@ class _Unflushed(Store):
 
     async def close(self, run) -> None:
         outcome = type(run.outcome).__name__.lower() if run.outcome is not None else "stopped"
+        cost = run.cost if math.isfinite(run.cost) else None  # as `Store.close`: the store takes no NaN
         await self.khive.exec(
-            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(run.cost)}, "
+            f"lion.run_close(id={lit(run.id)}, outcome={lit(outcome)}, cost={lit(cost)}, "
             f"turns={run.turn}, output=null) | lion.session_close(id={lit(run.id)})"
         )
 

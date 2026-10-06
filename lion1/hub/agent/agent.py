@@ -519,9 +519,7 @@ class Agent:
                 return f"wakes_per_hour is {self.budget.wakes_per_hour}: no wakes until it is raised"
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
-        today = spend.get("day") == _day(now)
-        # a same-day row with no count is from before the count: uncounted, never complete
-        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown")) if today else (0.0, 0)
+        cost, unknown = _day_spend(spend, _day(now))
         if cost >= self.budget.cost_per_day:
             return (
                 f"${cost:.4f} spent today"
@@ -677,7 +675,7 @@ class Agent:
             take = list(mail)
         else:
             spend = _value(self.state, "spend", {})
-            cost = spend.get("cost", 0.0) if spend.get("day") == _day(now) else 0.0
+            cost, _ = _day_spend(spend, _day(now))
             spent = cost / self.budget.cost_per_day if self.budget.cost_per_day > 0 else 0.0
             for m in mail:
                 verdict = self.wake_rules.decide(m, spent)
@@ -1053,7 +1051,7 @@ class Agent:
         continues it."""
         b = self._burst
         spend = _value(self.state, "spend", {})
-        today = spend.get("cost", 0.0) if spend.get("day") == _day(self.clock()) else 0.0
+        today, _ = _day_spend(spend, _day(self.clock()))
         return run.turn - b["turn0"] > self.max_turns or (
             today + self._usage(b["before"])["cost"] >= self.budget.cost_per_day
         )
@@ -1309,7 +1307,7 @@ class Agent:
             # a malformed figure is no figure: never room against the day's cap (ADR-0013/C5)
             figure = math.nan if c.get("total_cost_usd") is None else reported_cost(c["total_cost_usd"])
             if not math.isnan(figure):
-                cost += figure
+                cost = min(cost + figure, sys.float_info.max)  # past any cap, and a note takes no infinity
             if math.isnan(figure) or c.get("cost_complete") is False:
                 unknown += 1
         # the context the last call's last turn stood in: what the next turn will pay for, and what
@@ -1349,13 +1347,11 @@ class Agent:
             self._last_wake = now
         day = _day(now)
         same_day = spend.get("day") == day
-        # a same-day row with no count is from before the count: its calls went uncounted, and no
-        # later wake can count them, so the day reads as partial to its end (None, never 0)
-        counted = spend.get("unknown") if same_day else 0
+        before, counted = _day_spend(spend, day)
         row = {
             "day": day,
             # a sum past a float's range is past any cap, and the note takes no infinity: the largest float
-            "cost": min((spend.get("cost", 0.0) if same_day else 0.0) + cost, sys.float_info.max),
+            "cost": min(before + cost, sys.float_info.max),
             "unknown": None if counted is None else counted + unknown,
             "wakes": wakes,
             "calls": (spend.get("calls", 0) if same_day else 0) + calls,
@@ -1481,3 +1477,17 @@ def _value(store: NoteStore, key: str, default: Any) -> Any:
 
 def _day(now: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _day_spend(spend: dict, day: str) -> tuple[float, int | None]:
+    """The day's row as the cap reads it: dollars spent and calls of unknown cost, (0, 0) on another
+    day's row. A same-day row with no count is from before the count: its calls went uncounted, and
+    no later wake can count them, so the day reads as partial to its end (None, never 0). A row's
+    dollars the run would not sum (ADR-0003/S7), a negative sum an earlier version kept among them,
+    read as none spent and the day as partial: never room below zero."""
+    if spend.get("day") != day:
+        return 0.0, 0
+    cost = reported_cost(spend.get("cost", 0.0))
+    if math.isnan(cost):
+        return 0.0, None
+    return cost, spend.get("unknown")
