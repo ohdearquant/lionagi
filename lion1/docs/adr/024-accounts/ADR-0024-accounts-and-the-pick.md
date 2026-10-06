@@ -84,11 +84,11 @@ keys and the app's screen are later records (S3, S4). Source: `hub/backend/claud
   the pool keeps a label shaped as a credential (A5); or the runtime opens a Codex home's login
   file.
 
-No form of `lion account` takes a token as an argument, and the runtime reads one back only for a
-child's environment (C2). A keychain tool's failure gives its exit code, never its words. A label
-the pool shows is shown as written, so one past 64 characters or holding `sk-ant` in any case is
-refused, and a refusal names the key, never the value. A made-up token put through every command,
-route, log and error, and `lion account add` as its own process, is nowhere (S1).
+No `lion account` form takes a token argument, and the runtime reads one back only for a child's
+environment (C2) and to check a write (D9). A keychain tool's failure gives its exit code, never its
+words. A label is shown as written, so one past 64 characters or holding `sk-ant` in any case is
+refused; a refusal names the key, never the value. A made-up token put through every command, route,
+log and error, and `lion account add` as its own process, is nowhere (S1).
 
 ### C2: A child's environment holds the chosen account's credential and no competing one _(enforced: mechanical; owed, S1)_ ^c2
 
