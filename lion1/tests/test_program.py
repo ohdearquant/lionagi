@@ -129,9 +129,12 @@ def _run(actor: Actor, *turns: str, profile: Profile = PROGRAM, seen: list | Non
 @pytest.fixture
 def limits(monkeypatch) -> list:
     """Every time limit the runtime makes in the test, each with the loop's time just before and just after
-    it was made. Its deadline is computed in between from what the budget has left: where the run's budget
-    ends, or the making itself once the budget is spent, and no further past that than the making took."""
+    it was made, when its own timer fired, and when its run was made, read here before and after the run's
+    making and never from the run. Its deadline is computed in between from what the budget has left: where
+    the run's budget ends, or the making itself once the budget is spent, and no further past that than the
+    making took."""
     made: list = []
+    runs: dict[int, tuple[float, float]] = {}  # id of a live run -> the clock around its making
 
     class Kept(actor_module._Limit):
         def __init__(self, run):
@@ -139,22 +142,39 @@ def limits(monkeypatch) -> list:
             self.entered = loop.time()
             super().__init__(run)
             self.made_at = loop.time()
+            self.run_made = runs[id(run)]
+            self.fired = None
             made.append(self)
 
+        def _on_timeout(self) -> None:
+            self.fired = asyncio.get_running_loop().time()
+            super()._on_timeout()
+
+    making = actor_module.Run.__init__
+
+    def timed(run, *args, **kwargs) -> None:
+        before = time.monotonic()
+        making(run, *args, **kwargs)
+        runs[id(run)] = (before, time.monotonic())
+
+    monkeypatch.setattr(actor_module.Run, "__init__", timed)
     monkeypatch.setattr(actor_module, "_Limit", Kept)
     return made
 
 
 def _cut_at_the_deadline(cuts: list) -> None:
-    """The one wait the deadline cut was cut by its run's own limit, which had expired, whose deadline is
-    where the run's time budget ends, and not before that deadline. How long after it the loop got to the
-    cut is the loop's: a machine that stalls the loop delays every timer alike."""
-    ((at, expired),) = cuts
-    assert expired, "the wait was cut while no limit of its run had expired"
-    for limit in expired:
-        end, span = limit.run.started + limit.budget, limit.made_at - limit.entered
-        assert end <= limit.when() <= max(end, limit.entered) + span, (end, limit.when(), span)
-        assert at >= limit.when() - time.get_clock_info("monotonic").resolution, (at, limit.when())
+    """The one wait the deadline cut was cut once its run's latest limit, the settlement's, had fired on
+    its timer; that limit's deadline is where the run's time budget ends, counted from when the run was
+    made, and the cut is not before it. How long after it the loop got to the cut is the loop's: a machine
+    that stalls the loop delays every timer alike."""
+    ((at, limit),) = cuts
+    assert limit is not None and limit.fired is not None, (
+        "the wait was cut before its run's latest limit fired"
+    )
+    (before, after), span = limit.run_made, limit.made_at - limit.entered
+    end = (before + limit.budget, after + limit.budget)
+    assert end[0] <= limit.when() <= max(end[1], limit.entered) + span, (end, limit.when(), span)
+    assert at >= limit.fired >= limit.when() - time.get_clock_info("monotonic").resolution, (at, limit.fired)
 
 
 def _notices(run) -> str:
@@ -427,7 +447,7 @@ class Drop(BaseModel):
 
 def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list | None = None) -> Actor:
     """An actor whose `wait` records how it ended in `ends`, and, given the `limits` the runtime made, the
-    loop's time a cut wait was cut at and which of its run's limits had expired then, in `cuts`."""
+    loop's time a cut wait was cut at and its run's latest limit then, in `cuts`."""
     actor = _actor(name, ends)
 
     @actor.handler(Wait)
@@ -437,8 +457,8 @@ def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list
         except asyncio.CancelledError:
             ends.append(("wait", req.seconds, "cut"))
             if cuts is not None:
-                expired = [limit for limit in limits if limit.run is ctx.run and limit.expired()]
-                cuts.append((asyncio.get_running_loop().time(), expired))
+                latest = [limit for limit in limits if limit.run is ctx.run][-1:]
+                cuts.append((asyncio.get_running_loop().time(), *(latest or [None])))
             raise
         ends.append(("wait", req.seconds, "ran"))
         return "rested"
