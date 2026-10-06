@@ -80,10 +80,10 @@ _SERVICE = "lion.account.claude_code"  # the keychain item's service; its accoun
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
 _MODEL = re.compile(r"[A-Za-z0-9._:/@-]+")
 # a label the pool keeps and shows (a name, a plan group, a probe model) never holds a Claude Code
-# credential's start, and a token is taken only in A5's form, `sk-ant-` and past 64 characters, so no
-# token, nor its start anywhere in a label, is kept as one
+# credential's stem `sk-ant` in any case, and a token is taken only in A5's form, `sk-ant-` and past 64
+# characters, so no token, nor its start anywhere in a label, is kept as one
 _LABEL_MAX = 64
-_LABEL = "letters, digits, '.', '_' and '-', at most 64 of them, never holding 'sk-ant-'"
+_LABEL = "letters, digits, '.', '_' and '-', at most 64 of them, never holding 'sk-ant'"
 _TOKEN = re.compile(r"sk-ant-[A-Za-z0-9._-]{58,2041}")
 _TOKEN_FORM = "'sk-ant-' then letters, digits, '-', '_' and '.', 65 to 2048 characters in all"
 _ACCOUNT_HEADER = re.compile(r"\s*\[\[\s*account\s*\]\]\s*(#.*)?$")  # one `[[account]]` line
@@ -161,7 +161,7 @@ def _label(value: Any, form: re.Pattern[str] = _NAME) -> bool:
         isinstance(value, str)
         and len(value) <= _LABEL_MAX
         and bool(form.fullmatch(value))
-        and "sk-ant-" not in value.lower()
+        and "sk-ant" not in value.lower()
     )
 
 
@@ -187,7 +187,7 @@ def _settings(path: Path, t: Any) -> Settings:
                 raise AccountsError(
                     f"{path}: [pick] probe_model is a table of a model name per provider, "
                     f"{' and '.join(PROVIDERS)}; a model name is letters, digits and '.', '_', ':', '/', "
-                    "'@' and '-', at most 64 of them, never holding 'sk-ant-'"
+                    "'@' and '-', at most 64 of them, never holding 'sk-ant'"
                 )
         else:
             raise AccountsError(
@@ -262,7 +262,8 @@ def parse_pool(text: str, path: Path) -> Pool:
         ]
     except tomllib.TOMLDecodeError:
         pieces = None
-    if pieces is None or pieces != [[], *([row] for row in rows)]:
+    # `account = []` cuts nowhere and loads as no account, so it passes the comparison: refused by name
+    if pieces is None or pieces != [[], *([row] for row in rows)] or ("account" in doc and not rows):
         raise AccountsError(
             f"{path}: each account is its own [[account]] table, its header on a line of its own"
         )

@@ -80,12 +80,13 @@ keys and the app's screen are later records (S3, S4). Source: `hub/backend/claud
 - **Subject**: the Claude Code token `lion account add` reads on standard input and the runtime
   reads back, wherever the runtime writes: output, route answers, logs, errors, envelopes, state
   files, screens and every child's arguments.
-- **Violated when**: any of them holds that token, any part of it, its length or its prefix; the
-  pool keeps a label shaped as a credential (A5); or the runtime opens a Codex home's login file.
+- **Violated when**: any of them holds that token, eight of its characters in a row, or its length;
+  the pool keeps a label shaped as a credential (A5); or the runtime opens a Codex home's login
+  file.
 
 No form of `lion account` takes a token as an argument, and the runtime reads one back only for a
 child's environment (C2). A keychain tool's failure gives its exit code, never its words. A label
-the pool shows is shown as written, so one past 64 characters or holding `sk-ant-` in any case is
+the pool shows is shown as written, so one past 64 characters or holding `sk-ant` in any case is
 refused, and a refusal names the key, never the value. A made-up token put through every command,
 route, log and error, and `lion account add` as its own process, is nowhere (S1).
 
@@ -202,7 +203,7 @@ plan group draw on one limit. Declaring a Codex account in the pool changes none
 ### D1: `accounts.toml` beside the areas registry, and the agent's `accounts` key ^d1
 
 Serves C1, C4, C5 and C9. The file sits beside `areas.toml` ([[ADR-0017-the-desk|ADR-0017]]). Each
-account is a table of the `account` array under a header line of its own; an inline array, or a
+account is a table of the `account` array under a header line of its own; any inline array, or a
 header inside a value, is refused, since D8 edits by those lines. A `[pick]` table holds the
 settings. A repeated name, unknown key or value outside its rule refuses the file, naming the key
 and rule. An agent's definition takes `accounts`, names of its model's provider. With no file, each
@@ -210,7 +211,7 @@ provider's pool is one account on `default`.
 
 | key | rule |
 | --- | ---- |
-| `name` | unique; a label: letters, digits, `.`, `_` and `-`, at most 64, never holding `sk-ant-` (C1) |
+| `name` | unique; a label: letters, digits, `.`, `_` and `-`, at most 64, never holding `sk-ant` (C1) |
 | `provider` | `claude_code` or `codex` |
 | `credential` | the credential reference: `keychain` for Claude Code, a home directory for Codex, or `default` |
 | `group` | optional; the plan group's name, a label as `name` is |

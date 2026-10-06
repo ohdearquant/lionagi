@@ -282,8 +282,11 @@ ACCOUNT = '[[account]]\nname = "a"\nprovider = "claude_code"\ncredential = "defa
         ('[pick]\nprobe_model = { claude_code = " " }\n', "[pick] probe_model is a table"),
         ('[pick]\nprobe_model = { claude_code = "haiku 4" }\n', "a model name is letters"),
         (f'[pick]\nprobe_model = {{ codex = "{"m" * 65}" }}\n', "a model name is letters"),
-        ('[pick]\nprobe_model = { codex = "sk-ant-api03-x" }\n', "never holding 'sk-ant-'"),
-        ('[pick]\nprobe_model = { codex = "m-sk-ant-api03-x" }\n', "never holding 'sk-ant-'"),
+        ('[pick]\nprobe_model = { codex = "sk-ant-api03-x" }\n', "never holding 'sk-ant'"),
+        ('[pick]\nprobe_model = { codex = "m-sk-ant-api03-x" }\n', "never holding 'sk-ant'"),
+        ('[pick]\nprobe_model = { codex = "sk-ant" }\n', "never holding 'sk-ant'"),  # the stem alone
+        (ACCOUNT.replace('"a"', '"SK-Ant"'), "never holding 'sk-ant'"),
+        ("account = []\n", "each account is its own [[account]] table"),  # inline, and empty
     ],
 )
 def test_every_refusal_of_the_pool_file_names_the_entry_and_the_rule(tmp_path, text, said):
@@ -371,12 +374,13 @@ def test_a_token_outside_its_form_is_refused_before_the_tool_runs_and_never_repe
 
 
 @pytest.mark.parametrize(
-    "value", [CANARY, SECOND, "x" + CANARY[:63], CANARY[:64], "made-up-token-0001", "a" * 64]
+    "value",
+    [CANARY, SECOND, "x" + CANARY[:63], CANARY[:64], CANARY[:6], "SK-ANT", "made-up-token-0001", "a" * 64],
 )
 def test_no_value_is_both_a_token_and_a_label(value):
     # a token is taken only in A5's form and a label never holds its start, so no token is kept as a label
     assert not (accounts._shaped(value) and accounts._label(value))
-    assert not accounts._label(value) or "sk-ant-" not in value
+    assert not accounts._label(value) or "sk-ant" not in value.lower()
 
 
 def test_a_name_that_could_split_the_tools_line_is_refused(keychain):
@@ -1141,13 +1145,22 @@ def test_add_refuses_a_name_already_present_and_a_file_it_cannot_add_to_in_place
     inline = 'account = [{ name = "a", provider = "codex", credential = "default" }]\n'
     # the same, with a header line inside a string so the lines count one header for one account
     hidden = 'account = [{ name = "a", provider = "codex", credential = """/srv/a\n[[account]]\n""" }]\n'
-    for text in (inline, hidden):
+    for text in (inline, hidden, "account = []\n"):
         path.write_text(text)
         code, _, err = run(add, capsys, stdin=CANARY)
         assert code == 1 and "each account is its own [[account]] table" in err
         assert path.read_text() == text and logged(argv) == [] and items(store) == {}
     shifted = "x" + SHAPED[:63]  # its start, one character in
-    for name, group in ((SHAPED, None), ("x", SHAPED), ("n" * 65, None), (shifted, None), ("x", shifted)):
+    stem = SHAPED[:6]  # the stem every credential starts with, alone
+    for name, group in (
+        (SHAPED, None),
+        ("x", SHAPED),
+        ("n" * 65, None),
+        (shifted, None),
+        ("x", shifted),
+        (stem, None),
+        ("x", stem.upper()),
+    ):
         argv_ = [*add[:2], name, *add[3:], *([] if group is None else ["--group", group])]
         path.write_text(POOL_TEXT)
         code, out, err = run(argv_, capsys, stdin=CANARY)
