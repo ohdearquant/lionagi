@@ -636,12 +636,14 @@ last.
   console prints a result as one line. The closing line sums the cost on every call's envelope,
   failed attempts included; a call whose envelope carries no cost adds nothing and is not flagged.
 - **S5**: `--offline` reaches the local VM only, and with a remote box the chat refuses it before
-  the box is built; nothing in the chat restricts a remote box's network.
+  the box is built, as it refuses `--image` without one; nothing in the chat restricts a remote
+  box's network.
 - **S6**: The copy's baseline needs git in the image; an image without it fails the preparation, and
   the box stops before the model works. The remote box needs the `daytona` extra; without it the
   start fails on import before any box exists.
-- **S7**: The code guidance names the branch of the person's tree and calls the box a VM; in a boxed
-  chat the copy's repository starts from the baseline commit alone.
+- **S7**: The code guidance names the branch of the person's tree and says bash runs at the same
+  path, naming no kind of box; in a boxed chat the copy's repository starts from the baseline commit
+  alone.
 - **S8**: With `--code` the root's `AGENTS.md` and `CLAUDE.md` enter the guidance whole, and the
   guidance goes out with every turn's call, so a long rules file adds its length to every turn's
   input.

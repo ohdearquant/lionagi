@@ -578,6 +578,8 @@ async def _chat_main(
     box = getattr(a, "box", None) or ran.get("box", "vm")
     image = getattr(a, "image", None) or ran.get("image", "python:3.12")
     boxed = box == "daytona"
+    if getattr(a, "image", None) and not boxed:  # as a run profile is refused: the VM's image is its own
+        raise SystemExit("--image is the Daytona box's, and the box is not daytona")
     sandbox: Box | None = None
     tree = about_box = None
     if boxed:

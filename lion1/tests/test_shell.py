@@ -199,6 +199,70 @@ def test_the_tool_descriptions_every_box_shares_claim_nothing_only_the_vm_has():
     assert "every tool" not in (guidance / "box.md").read_text()
 
 
+HOST_ONLY = json.dumps(
+    [{"id": "lion-offline", "configuration": {"mode": "hostOnly", "name": "lion-offline"}}]
+)
+NAT = json.dumps([{"id": "lion-offline", "configuration": {"mode": "nat"}}])
+
+
+@pytest.mark.parametrize(
+    ("inspected", "creates", "starts"),
+    [
+        ([(0, HOST_ONLY)], False, True),  # there and host-only: attached as it is
+        ([(1, ""), (0, HOST_ONLY)], True, True),  # missing: made with --internal, then read back
+        ([(0, "[]"), (0, HOST_ONLY)], True, True),
+        ([(0, NAT)], False, False),  # one of that name with egress: never attached
+        ([(1, ""), (0, NAT)], True, False),  # nor one the create did not make host-only
+        ([(1, ""), (1, "")], True, False),  # nor one that cannot be read back
+        (
+            [(0, json.dumps([{"id": "lion-offline-2", "configuration": {"mode": "hostOnly"}}]))] * 2,
+            True,
+            False,
+        ),
+        ([(0, json.dumps([{"id": "lion-offline", "configuration": "hostOnly"}]))], False, False),
+        ([(0, json.dumps([{"id": "lion-offline"}]))], False, False),
+        ([(0, "7"), (0, '{"id": "lion-offline"}')], True, False),  # JSON that lists no network
+    ],
+)
+def test_an_offline_sandbox_attaches_only_a_network_the_cli_says_is_host_only(
+    tmp_path, inspected, creates, starts
+):
+    calls, answers = [], list(inspected)
+
+    class Fake(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv)
+            if argv[:2] == ("network", "inspect"):
+                rc, out = answers.pop(0)
+                return rc, out, ""
+            return 0, "", ""
+
+    box = Fake(tmp_path, "lion-test-net", offline=True)
+    if starts:
+        asyncio.run(box.start())
+        (run,) = [c for c in calls if c[0] == "run"]
+        assert run[run.index("--network") + 1] == "lion-offline"
+    else:
+        with pytest.raises(RuntimeError, match="the network lion-offline is not host-only"):
+            asyncio.run(box.start())
+        assert not [c for c in calls if c[0] == "run"] and not box.launched
+    made = [c for c in calls if c[:2] == ("network", "create")]
+    assert made == ([("network", "create", "--internal", "lion-offline")] if creates else [])
+    assert all(c == ("network", "inspect", "lion-offline") for c in calls if c[:2] == ("network", "inspect"))
+
+
+def test_a_sandbox_that_is_not_offline_asks_nothing_of_the_network(tmp_path):
+    calls = []
+
+    class Fake(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv)
+            return 0, "", ""
+
+    asyncio.run(Fake(tmp_path, "lion-test-net").start())
+    assert not [c for c in calls if c[0] == "network"] and "--network" not in calls[-1]
+
+
 @pytest.mark.parametrize(("cut_at", "stops"), [("volume", False), ("run", True)])
 def test_a_sandbox_whose_start_was_cut_stops_a_container_once_its_run_was_sent(tmp_path, cut_at, stops):
     calls = []

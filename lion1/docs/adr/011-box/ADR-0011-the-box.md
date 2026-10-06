@@ -334,3 +334,6 @@ to `start`. `exec` keeps the remote box's timeout seam, files use the runtime's 
   host-only one, a service bound to loopback did not. C2 bounds the host paths a command touches,
   not the host's services, so `--offline` cuts the VM's own way to the internet, not its way to what
   the host serves.
+- **S21**: The host-only network is one named `lion-offline`, made with `--internal` when missing.
+  The start reads its mode back from the CLI and refuses one that is not host-only, attaching none:
+  a network of that name made another way would give the VM its egress.
