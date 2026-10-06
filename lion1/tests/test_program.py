@@ -506,6 +506,12 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     )
     assert run.outcome == Refused("the time_budget of 1 is spent", 2) and run.output is None
     assert ends == [("wait", 60.0, "cut")]
+    # and in a later turn with none refused before it, its field read from what an earlier turn settled
+    ends.clear()
+    settled, late = fenced("a = wait(seconds=0.3)"), fenced("side = wait(seconds=60)", "OUT{done: *a}")
+    run = _run(_waiting_actor("settled-earlier", ends), settled, late, time_budget=1, max_refusals=1)
+    assert run.outcome == Refused("the time_budget of 1 is spent", 1) and run.output is None
+    assert ends == [("wait", 0.3, "ran"), ("wait", 60.0, "cut")]
     # an OUT{} whose own field still computes at the deadline never assembles: it is cut with its turn and
     # is no refusal, so even with one allowed the run ends out of time
     ends.clear()
