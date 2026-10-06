@@ -384,10 +384,11 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   box holding a copy of the directory. Its diff is saved as `.lion/runs/<run id>.patch` and never
   applied; a patch not taken whole, a cancellation included, keeps the box and names it, through
   `end_box`, which `lion chat` shares, and the mail carries the name.
-- **S12**: `lion mcp` starts a child with no standard input, for the server's own is the protocol,
-  and joins each value to its flag, so a value that starts with a dash stays a value. A child that
-  ends before an id fails the call with what it wrote on standard error. The `mcp` package is the
-  `mcp` extra of lion-cli.
+- **S12**: `lion mcp` starts a child in a session of its own, so the caller's end or signal does not
+  reach it. The child has no standard input, for the server's own is the protocol, and each value is
+  joined to its flag, so a value that starts with a dash stays a value. A child that ends before an
+  id fails the call with what it wrote on standard error. The `mcp` package is the `mcp` extra of
+  lion-cli.
 - **S13**: A command carries one interrupt, wherever it lands after the id: a run or flow still
   going stops, its box's patch is taken whole and the box stopped, and its one mail goes with every
   notice; then it exits 130. The next interrupt stops what it lands in at once: a patch keeps its
