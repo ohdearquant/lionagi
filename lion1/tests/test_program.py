@@ -126,35 +126,35 @@ def _run(actor: Actor, *turns: str, profile: Profile = PROGRAM, seen: list | Non
     return asyncio.run(actor.run(profile, RunRequest(**request), scripted(*turns, seen=seen)))
 
 
-def _timed_run(actor: Actor, *turns: str, **request) -> tuple[Any, float]:
-    """`_run`, and the most the run's loop woke late meanwhile: a task beside the run sleeps 10 ms at a
-    time and keeps its latest wake, so a stall the machine puts on the loop is measured, and is told from
-    a deadline the run set or kept late."""
-    request.setdefault("inputs", ("go",))
-    request.setdefault("max_turns", len(turns))
+@pytest.fixture
+def limits(monkeypatch) -> list:
+    """Every time limit the runtime makes in the test, each with the loop's time just before and just after
+    it was made. Its deadline is computed in between from what the budget has left: where the run's budget
+    ends, or the making itself once the budget is spent, and no further past that than the making took."""
+    made: list = []
 
-    async def main() -> tuple[Any, float]:
-        loop, lag = asyncio.get_running_loop(), [0.0]
+    class Kept(actor_module._Limit):
+        def __init__(self, run):
+            loop = asyncio.get_running_loop()
+            self.entered = loop.time()
+            super().__init__(run)
+            self.made_at = loop.time()
+            made.append(self)
 
-        async def beat() -> None:
-            while True:
-                due = loop.time() + 0.01
-                await asyncio.sleep(0.01)
-                lag[0] = max(lag[0], loop.time() - due)
-
-        beating = asyncio.create_task(beat())
-        try:
-            return await actor.run(PROGRAM, RunRequest(**request), scripted(*turns)), lag[0]
-        finally:
-            beating.cancel()
-
-    return asyncio.run(main())
+    monkeypatch.setattr(actor_module, "_Limit", Kept)
+    return made
 
 
-def _cut_at_the_deadline(late: list, lag: float) -> None:
-    """The one wait the deadline cut was cut at it: no later than the loop itself woke late, and a quarter
-    second for the loop's turns between the deadline and the cut."""
-    assert len(late) == 1 and -0.05 <= late[0] <= lag + 0.25, (late, lag)
+def _cut_at_the_deadline(cuts: list) -> None:
+    """The one wait the deadline cut was cut by its run's own limit, which had expired, whose deadline is
+    where the run's time budget ends, and not before that deadline. How long after it the loop got to the
+    cut is the loop's: a machine that stalls the loop delays every timer alike."""
+    ((at, expired),) = cuts
+    assert expired, "the wait was cut while no limit of its run had expired"
+    for limit in expired:
+        end, span = limit.run.started + limit.budget, limit.made_at - limit.entered
+        assert end <= limit.when() <= max(end, limit.entered) + span, (end, limit.when(), span)
+        assert at >= limit.when() - time.get_clock_info("monotonic").resolution, (at, limit.when())
 
 
 def _notices(run) -> str:
@@ -425,9 +425,9 @@ class Drop(BaseModel):
     after: float
 
 
-def _waiting_actor(name: str, ends: list, late: list | None = None) -> Actor:
-    """An actor whose `wait` records how it ended in `ends`, and, given `late`, how long past the run's
-    deadline a cut wait was cut."""
+def _waiting_actor(name: str, ends: list, limits: list | None = None, cuts: list | None = None) -> Actor:
+    """An actor whose `wait` records how it ended in `ends`, and, given the `limits` the runtime made, the
+    loop's time a cut wait was cut at and which of its run's limits had expired then, in `cuts`."""
     actor = _actor(name, ends)
 
     @actor.handler(Wait)
@@ -436,8 +436,9 @@ def _waiting_actor(name: str, ends: list, late: list | None = None) -> Actor:
             await asyncio.sleep(req.seconds)
         except asyncio.CancelledError:
             ends.append(("wait", req.seconds, "cut"))
-            if late is not None:
-                late.append(time.monotonic() - ctx.run.started - ctx.run.bounds["time_budget"])
+            if cuts is not None:
+                expired = [limit for limit in limits if limit.run is ctx.run and limit.expired()]
+                cuts.append((asyncio.get_running_loop().time(), expired))
             raise
         ends.append(("wait", req.seconds, "ran"))
         return "rested"
@@ -506,7 +507,7 @@ def test_a_late_launch_outliving_every_command_the_settle_began_with_is_cut_at_t
     assert run.pending == {} and run.tasks == set()
 
 
-def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_bounds_the_wait():
+def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_bounds_the_wait(limits):
     # ADR-0002 C1 and S4: a program's walk settles every command it launched before its OUT{} assembles,
     # one the output does not name included; only the tag form's OUT{} waits for what it names alone
     ends: list = []
@@ -517,12 +518,12 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     # so one that outlives the time budget holds the output to the deadline, where it is cut and the run
     # is out of time with no output: the budget bounds `Success`
     ends.clear()
-    overdue: list = []
+    cuts: list = []
     turn = fenced("side = wait(seconds=60)", 'OUT{done: "yes"}')
-    run, lag = _timed_run(_waiting_actor("unnamed-long", ends, overdue), turn, time_budget=1)
+    run = _run(_waiting_actor("unnamed-long", ends, limits, cuts), turn, time_budget=1)
     assert run.outcome == Exhausted(turns=1, reason="time") and run.output is None and run.refusals == 1
     assert ends == [("wait", 60.0, "cut")] and run.elapsed >= 1
-    _cut_at_the_deadline(overdue, lag)
+    _cut_at_the_deadline(cuts)
     assert _results(run) == {"side": (False, "cancelled before it finished", "completion unknown")}
     assert run.pending == {} and run.tasks == set()
     # its OUT{}, refused for the spent budget, counts as any refusal does: with one allowed, it is refused
@@ -552,35 +553,33 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     # an OUT{} whose own field still computes at the deadline never assembles: it is cut with its turn and
     # is no refusal, so even with one allowed the run ends out of time
     ends.clear()
-    overdue.clear()
+    cuts.clear()
     lazy, out = fenced("lazy = [DO wait(seconds=60)][0]"), fenced("OUT{done: *lazy}")
-    run, lag = _timed_run(
-        _waiting_actor("unassembled", ends, overdue), lazy, out, time_budget=1, max_refusals=1
-    )
+    run = _run(_waiting_actor("unassembled", ends, limits, cuts), lazy, out, time_budget=1, max_refusals=1)
     assert run.outcome == Exhausted(turns=2, reason="time") and run.output is None and run.refusals == 0
     assert ends == [("wait", 60.0, "cut")] and run.elapsed >= 1
-    _cut_at_the_deadline(overdue, lag)
+    _cut_at_the_deadline(cuts)
     # the deadline is the run's, not each turn's, the retries of refused OUT{}s included: an earlier
     # turn's time is spent from it. Two refusals in a row stand as the last turn's walk starts; its cut
     # field adds none, and a turn that reached no OUT{} breaks the row. The first second is spent before
-    # the last turn's wait starts, so a turn given the whole budget again would be cut a second late; the
-    # other two are room for a loaded machine to finish the first wait inside the budget
+    # the last turn's wait starts, so a limit given the whole budget again would end a second or more past
+    # the run's; the other four are room for a loaded machine to finish the first wait inside the budget
     ends.clear()
-    overdue.clear()
+    cuts.clear()
     spent = fenced("first = wait(seconds=1)", 'OUT{done: "first"}')
     held = fenced("lazy = [DO wait(seconds=60)][0]", 'OUT{done: "second"}')
-    run, lag = _timed_run(
-        _waiting_actor("spent-before", ends, overdue),
+    run = _run(
+        _waiting_actor("spent-before", ends, limits, cuts),
         spent,
         held,
         out,
-        time_budget=3,
+        time_budget=5,
         max_refusals=3,
         accept=lambda r, o: "not yet" if o["done"] in ("first", "second") else None,
     )
     assert run.outcome == Exhausted(turns=3, reason="time") and run.refusals == 0
-    assert ends == [("wait", 1.0, "ran"), ("wait", 60.0, "cut")] and run.elapsed >= 3
-    _cut_at_the_deadline(overdue, lag)
+    assert ends == [("wait", 1.0, "ran"), ("wait", 60.0, "cut")] and run.elapsed >= 5
+    _cut_at_the_deadline(cuts)
 
 
 # every OUT{} the deadline can find (ADR-0002 S6), by the turn it is in, the refusals in a row before it,
@@ -597,9 +596,11 @@ _S6_CELLS = [
 
 
 @pytest.mark.parametrize(("at", "prior", "cap", "field"), _S6_CELLS)
-def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_turn(at, prior, cap, field):
+def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_turn(
+    limits, at, prior, cap, field
+):
     ends: list = []
-    overdue: list = []
+    cuts: list = []
     turns = []
     if at == "later":
         refused = [f'OUT{{done: "refused-{n}"}}' for n in range(1, prior + 1)]
@@ -622,8 +623,8 @@ def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_tur
     # loaded machine that stalls every turn's call for up to a second still settles them and starts the
     # last turn's wait inside the budget
     budget = len(turns) + 1
-    run, lag = _timed_run(
-        _waiting_actor(f"s6-{at}-{prior}-{cap}-{field}", ends, overdue),
+    run = _run(
+        _waiting_actor(f"s6-{at}-{prior}-{cap}-{field}", ends, limits, cuts),
         *turns,
         time_budget=budget,
         accept=lambda r, o: "refused in time" if o["done"].startswith("refused-") else None,
@@ -639,7 +640,7 @@ def test_an_output_the_deadline_finds_is_refused_and_counted_or_cut_with_its_tur
             else Exhausted(turns=len(turns), reason="time")
         )
     assert run.output is None and ends[-1:] == [("wait", 60.0, "cut")] and run.elapsed >= budget
-    _cut_at_the_deadline(overdue, lag)
+    _cut_at_the_deadline(cuts)
     assert all(end == "ran" for _, _, end in ends[:-1])
 
 
