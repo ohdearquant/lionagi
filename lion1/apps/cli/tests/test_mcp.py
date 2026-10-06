@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -27,7 +28,8 @@ from test_submit import PROFILES, TWO, backends, lion, out
 # job says more than the server keeps, then a last line, and exits 3. A `--say=bare` job prints its id
 # with no newline; a `--say=forks` job starts a process that holds both its pipes, then exits; a
 # `--say=handsoff` job prints no id and exits, and the process it started prints a line on the pipe once
-# it has ended, then writes a `wrote` file.
+# it has ended, then writes a `wrote` file; a `--say=late` job prints its id with no newline and exits,
+# and the process it started prints a line once a `go` file appears.
 CHILD = """
 import json, os, sys, time
 from pathlib import Path
@@ -64,6 +66,17 @@ if "--say=handsoff" in argv:  # no id of its own; what comes on the pipe after i
     )
     held = subprocess.Popen([sys.executable, "-c", code])
     (here / "held").write_text(str(held.pid))
+    sys.exit(0)
+if "--say=late" in argv:  # its id, then a line on the pipe from the process it started, once told to
+    import subprocess
+    code = (
+        f"import os, time\\ngo = {str(here / 'go')!r}\\nfor _ in range(3000):\\n"
+        "    if os.path.exists(go):\\n        break\\n    time.sleep(0.01)\\n"
+        "print('forged-id', flush=True)\\ntime.sleep(60)\\n"
+    )
+    held = subprocess.Popen([sys.executable, "-c", code])
+    (here / "held").write_text(str(held.pid))
+    sys.stdout.write(f"{argv[0]}-id")
     sys.exit(0)
 print(f"{argv[0]}-id", flush=True)
 if "--say=forks" in argv:  # the process it starts inherits both pipes and outlives it
@@ -192,8 +205,23 @@ def test_the_mcp_run_tool_returns_the_id_once_printed_and_the_child_runs_on(acto
     assert console_khive.sent == [] and sorted(p.name for p in actor_dir.iterdir()) == before
 
 
-def test_a_child_that_ends_before_its_id_fails_the_call_with_what_it_said(actor_dir, child):
-    _, command = child
+@pytest.mark.parametrize("late", [False, True])
+def test_a_child_that_ends_before_its_id_fails_the_call_with_what_it_said(
+    actor_dir, child, monkeypatch, late
+):
+    # late: its reader starts once it has said it and ended, both pipes waiting with its end
+    here, command = child
+    if late:
+        watch = mcp_server._watch
+
+        def after_its_end(child, first, ended):
+            assert waited(here / "run.json")
+            while not mcp_server._unread(child.stderr):
+                time.sleep(0.01)
+            time.sleep(0.3)  # it exits as it has said it
+            watch(child, first, ended)
+
+        monkeypatch.setattr(mcp_server, "_watch", after_its_end)
     mcp = mcp_server.server(actor_dir, lion=command)
     with pytest.raises(ToolError, match=r"lion run: profiles.toml has no \[profile.refused\]"):
         asyncio.run(mcp.call_tool("run", {"profile": "refused", "say": "go"}))
@@ -435,15 +463,54 @@ def test_an_id_the_child_wrote_with_no_newline_before_it_ended_is_its_id(actor_d
 
 
 def test_a_line_a_process_the_child_started_prints_after_the_child_ended_is_not_its_id(actor_dir, child):
-    # what the pipe holds is measured just after the reap, so a line the process wrote in the moment
-    # between them would still count as the id, and so would one it wrote before the child ended: a
-    # pipe does not say which process wrote to it. This one writes 0.3 s after the child has ended
+    # what the pipe holds is measured once the child has ended, before its reap, so a line the process
+    # wrote in the moment between its end and that measure would still count as the id, and so would one
+    # it wrote before the child ended: a pipe does not say which process wrote to it. This one writes
+    # 0.3 s after the child has ended
     here, command = child
     mcp = mcp_server.server(actor_dir, lion=command)
     try:
         with pytest.raises(ToolError, match="lion run ended with 0 before printing an id"):
             asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "handsoff"}))
         assert waited(here / "wrote")  # its line went on the pipe while the server still read it
+    finally:
+        if waited(here / "held"):
+            os.kill(int((here / "held").read_text()), signal.SIGKILL)
+
+
+def test_a_line_on_the_pipe_before_the_reader_reads_it_is_not_the_id_once_measured_after_the_child_ended(
+    actor_dir, child, monkeypatch
+):
+    # the process the child started writes its line once the child's end has been measured, while the
+    # reader, woken by it, waits for the measure: only the bytes the child left are read as its id. The
+    # measure is taken with the child ended and not yet reaped: a zombie
+    here, command = child
+    unread, measured = mcp_server._unread, []
+
+    def then_a_line(pipe):
+        n = unread(pipe)
+        if not measured:  # the measure of its standard output as it ended
+            try:
+                pid = json.loads((here / "run.json").read_text())["pid"]
+            except (OSError, ValueError):  # it has not started yet
+                measured.append("")
+            else:
+                stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+                measured.append(stat.stdout.strip())
+            (here / "go").touch()
+            end = time.monotonic() + 30
+            while unread(pipe) == n and time.monotonic() < end:
+                time.sleep(0.01)
+            time.sleep(0.3)  # the reader is woken by the line
+        return n
+
+    monkeypatch.setattr(mcp_server, "_unread", then_a_line)
+    mcp = mcp_server.server(actor_dir, lion=command)
+    try:
+        assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "late"})).structured_content == {
+            "id": "run-id"
+        }
+        assert measured[0].startswith("Z")
     finally:
         if waited(here / "held"):
             os.kill(int((here / "held").read_text()), signal.SIGKILL)

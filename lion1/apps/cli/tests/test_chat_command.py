@@ -519,6 +519,43 @@ def test_an_interrupt_as_the_sandbox_starts_stops_the_container_its_run_made(
         assert "it may still run" in said
 
 
+@pytest.mark.parametrize("ending", [False, True])
+def test_a_sandbox_whose_stop_is_cut_by_another_interrupt_is_named_as_it_may_still_run(
+    tmp_path, monkeypatch, console_khive, capsys, ending
+):
+    """Ctrl-C again while the local sandbox stops, at a start that was cut or as the conversation ends:
+    the stop is cut, and the sandbox is named, for it may still run; the interrupt goes on."""
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if (argv[0] == "run" and not ending) or argv[0] == "stop":
+            (chatting,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "chat_main"]
+            chatting.cancel()  # an interrupt, as `asyncio.run`'s handler or the console's own gives it
+            await asyncio.sleep(30 if argv[0] == "stop" else 0.01)
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    def leave(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli.os, "_exit", leave)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
+    args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
+    with pytest.raises(SystemExit if ending else asyncio.CancelledError) as left:
+        asyncio.run(chat_main(parser().parse_args([*args, "--turns", "1"])))
+    said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
+    assert calls == ["image", "volume", "run", "stop"]
+    assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
+    if ending:
+        assert left.value.code == 130 and "interrupted ·" in said
+
+
 def test_a_sandbox_whose_stop_fails_as_the_conversation_ends_is_named_and_the_conversation_closes(
     tmp_path, monkeypatch, console_khive, capsys
 ):

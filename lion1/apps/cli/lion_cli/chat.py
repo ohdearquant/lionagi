@@ -655,6 +655,9 @@ async def _chat_main(
         except BaseException:  # a container its `run` made is stopped: no conversation has begun in it
             try:
                 await asyncio.shield(sandbox.stop())
+            except (asyncio.CancelledError, KeyboardInterrupt):  # the next interrupt cuts the stop: named
+                say.notice(f"sandbox {sandbox.name}: interrupted while it was stopped; it may still run")
+                raise
             except Exception as e:  # named, and the start's own end goes on
                 say.notice(
                     f"sandbox {sandbox.name}: its stop failed ({type(e).__name__}: {e}); it may still run"
@@ -705,6 +708,11 @@ async def _chat_main(
                 else:
                     try:
                         await asyncio.shield(sandbox.stop())
+                    except asyncio.CancelledError:  # cut, and left to run on as the process exits: named
+                        say.notice(
+                            f"sandbox {sandbox.name}: interrupted while it was stopped; it may still run"
+                        )
+                        raise
                     except Exception as e:  # named; the conversation still closes
                         say.notice(
                             f"sandbox {sandbox.name}: its stop failed ({type(e).__name__}: {e}); "
