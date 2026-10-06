@@ -263,11 +263,11 @@ async def _through(aw: Awaitable[_T]) -> tuple[_T, BaseException | None]:
 
 
 def _stopped_before_its_end(what: str, directory: Path, run_id: str) -> None:
-    """A second interrupt, through `_through`, stops the end at once: the rows have closed, the mail may
-    not have gone, and standard error says so with the command that reads the row."""
+    """A second interrupt, through `_through`, stops the end at once, so the mail may not have gone:
+    standard error says so, with the `lion result` command for the id, as the mail's body ends."""
     _emit(
         f"{what} stopped before its end: its result mail may not have gone; "
-        f"lion result --dir {shlex.quote(str(directory))} {run_id} reads its row",
+        f"lion result --dir {shlex.quote(str(directory))} {run_id}",
         sys.stderr,
     )
 

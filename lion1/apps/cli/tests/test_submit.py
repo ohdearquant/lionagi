@@ -554,7 +554,7 @@ def test_a_run_interrupted_twice_while_its_mail_is_sent_stops_at_once_and_says_h
     assert printed.out.splitlines() == [run_id]  # no end line
     assert (
         f"run {run_id} stopped before its end: its result mail may not have gone; "
-        f"lion result --dir {shlex.quote(str(actor_dir.resolve()))} {run_id} reads its row"
+        f"lion result --dir {shlex.quote(str(actor_dir.resolve()))} {run_id}"
     ) in printed.err.splitlines()
 
 
@@ -572,7 +572,7 @@ def test_a_flow_interrupted_twice_while_its_mail_is_sent_stops_at_once_and_says_
     assert f"flow two {flow_id} success" not in printed.out
     assert (
         f"flow two {flow_id} stopped before its end: its result mail may not have gone; "
-        f"lion result --dir {shlex.quote(str(actor_dir.resolve()))} {flow_id} reads its row"
+        f"lion result --dir {shlex.quote(str(actor_dir.resolve()))} {flow_id}"
     ) in printed.err.splitlines()
 
 
