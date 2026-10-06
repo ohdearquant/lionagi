@@ -479,6 +479,33 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
 
 
+def test_an_interrupt_as_the_sandbox_starts_stops_the_container_its_run_made(
+    tmp_path, monkeypatch, console_khive
+):
+    """Ctrl-C while the local sandbox starts, before the console takes Ctrl-C itself: the container's
+    `run` answers, then the sandbox is stopped and deleted, and the interrupt goes on."""
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if argv[0] == "run":
+            (chatting,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "chat_main"]
+            chatting.cancel()  # the first interrupt, as `asyncio.run`'s own SIGINT handler gives it
+            await asyncio.sleep(0.01)
+        return 0, {"image": self.image, "volume": self.volume}.get(argv[0], ""), ""
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("never asked"))
+    args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(chat_main(parser().parse_args(args)))
+    assert calls == ["image", "volume", "run", "stop", "delete"]
+
+
 def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(
     tmp_path, monkeypatch, capsys, console_khive
 ):

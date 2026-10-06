@@ -520,10 +520,10 @@ async def flow_main(a: argparse.Namespace) -> int:
             say(note)
         error = _why(e)
     except BaseException as e:  # a cancellation: the same, and then it goes on up
-        if not flows:
-            raise
-        for note in getattr(e, "__notes__", ()):  # what the flow's close left, when it was cut or failed
+        for note in getattr(e, "__notes__", ()):  # what the flow's open or close left, cut or failed
             say(note)
+        if not flows:  # before its id: no mail, and the notes have said what its row may be
+            raise
         if _second(e):  # in a step's box's end or the flow's close: nothing after it, the mail included
             _stopped_before_its_end(f"flow {flow.name} {flows[0]}", directory, flows[0])
             raise

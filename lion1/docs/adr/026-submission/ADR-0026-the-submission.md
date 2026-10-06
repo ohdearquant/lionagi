@@ -418,7 +418,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   server's loop reaps it when it ends. One whose reaping no thread can take is read until its pipes
   end, past the second S15 gives, and is reaped then. The server exits as its loop ends, and a child
   still running then runs on (S12).
-- **S21**: A flow's driver closes its row at every end. The command's first interrupt, landing in
-  that close, lets it finish and goes on after it; a second cuts it, and standard error says the row
-  may stay open. A patch, a stop or the flow's close that fails after either interrupt is named as a
-  cut one is, and the interrupt goes on in place of its error.
+- **S21**: A flow's driver closes its row at every end once the store has said it opened it. The
+  command's first interrupt, landing in that open or that close, lets it finish and goes on after
+  it; a second cuts it, and standard error says the row may stay open. A patch, a stop, or the
+  flow's open or close that fails after either interrupt is named as a cut one is, and the interrupt
+  goes on in place of its error.

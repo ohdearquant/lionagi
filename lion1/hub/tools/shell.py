@@ -105,8 +105,12 @@ class Sandbox(BoxBase):
             argv += ["-e", f"TZ={zone}"]  # the sandbox's clock reads like the notice's
         if self.offline:
             argv += ["--network", OFFLINE_NETWORK]
-        self.launched = True
-        run = asyncio.ensure_future(self._cli(*argv, self.image, "sleep", "infinity", timeout=120))
+
+        async def launch() -> tuple[int, str, str]:
+            self.launched = True  # in the step that sends it: a task cut before that step sent nothing
+            return await self._cli(*argv, self.image, "sleep", "infinity", timeout=120)
+
+        run = asyncio.ensure_future(launch())
         try:
             rc, out, err = await asyncio.shield(run)
         except (

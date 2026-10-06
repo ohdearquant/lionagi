@@ -246,14 +246,15 @@ async def run_flow(
     ends other than in success stops the flow, and no later step opens."""
     reads = read(flow, variables)
     flow_id = uuid.uuid4().hex[:8]
-    await store.open_flow(flow_id, flow.name, "flow", trigger=trigger)
-    opened(f"flow {flow.name}", flow_id)
     done: dict[str, tuple[Any, Any]] = {}
     outcome, output, failed = "stopped", None, None
     pending: BaseException | None = None
     idx = 0
-    step = flow.steps[0]
+    step: Step | None = None
+    opening = asyncio.ensure_future(store.open_flow(flow_id, flow.name, "flow", trigger=trigger))
     try:
+        await _carried(opening, flow_id, "open", None)
+        opened(f"flow {flow.name}", flow_id)
         for step, read_from in zip(flow.steps, reads, strict=True):
 
             def row(name: str, k: int, read_from: tuple[str, ...] = read_from) -> dict[str, Any]:
@@ -296,39 +297,49 @@ async def run_flow(
         else:
             outcome, output = "success", done[flow.output][1]
     except BaseException as e:  # a cancel or an interrupt: the flow closes stopped at the step it was on
-        failed = failed or step.name
+        if not _answered(opening):  # no row the store said it opened: the open's own end goes on as it is
+            raise
+        failed = failed or (step.name if step is not None else None)
         output = {"failed": failed, "error": type(e).__name__}
         pending = e
         raise
     finally:
-        await _close(store, flow_id, outcome, output, pending)
+        if _answered(opening):
+            close = asyncio.ensure_future(store.close_flow(flow_id, outcome, output))
+            await _carried(close, flow_id, "close", pending)
     return Ended(flow_id, outcome, output, failed)
 
 
-async def _close(
-    store: Store, flow_id: str, outcome: str, output: Any, pending: BaseException | None
-) -> None:
-    """The flow's row closed at its end (ADR-0026 S21). An interrupt that lands in the close, the task's
-    first, lets it finish and goes on after it; a second, or a `KeyboardInterrupt`, cuts it and says the
-    row may stay open. A close that fails as the flow ends on an error or an interrupt is noted on that,
-    which goes on in its place."""
-    close = asyncio.ensure_future(store.close_flow(flow_id, outcome, output))
+def _answered(op: asyncio.Future[None]) -> bool:
+    return op.done() and not op.cancelled() and op.exception() is None
+
+
+async def _carried(op: asyncio.Future[None], flow_id: str, what: str, pending: BaseException | None) -> None:
+    """The flow's open or close (ADR-0026 S21). An interrupt that lands in it, the command's first, lets
+    it finish and goes on after it; a second cuts it, and says the row may stay open: a cancel that comes
+    after a `KeyboardInterrupt`, which only a second SIGINT raises, is one. One that fails as the flow
+    ends on an error or an interrupt is noted on that, which goes on in its place."""
     try:
         try:
-            await asyncio.shield(close)
+            await asyncio.shield(op)
         except asyncio.CancelledError as e:
             task = asyncio.current_task()
-            if task is not None and task.cancelling() > 1:
+            if isinstance(pending, KeyboardInterrupt) or (task is not None and task.cancelling() > 1):
                 raise
             pending = e
-            await asyncio.shield(close)
+            await asyncio.shield(op)
             raise
     except (asyncio.CancelledError, KeyboardInterrupt) as e:
-        if not close.done():
-            e.add_note(f"flow {flow_id}: its close was cut, so its row may stay open")
-        raise
+        cut = pending if isinstance(pending, KeyboardInterrupt) else e  # the second goes on, not the first
+        if not op.done():
+            cut.add_note(f"flow {flow_id}: its {what} was cut, so its row may stay open")
+        if cut is e:
+            raise
+        raise cut from None  # the first's late cancellation did not cause the second
     except Exception as e:
         if pending is None:
             raise
-        pending.add_note(f"flow {flow_id}: its close failed ({type(e).__name__}: {e}); its row may stay open")
+        pending.add_note(
+            f"flow {flow_id}: its {what} failed ({type(e).__name__}: {e}); its row may stay open"
+        )
         raise pending from e

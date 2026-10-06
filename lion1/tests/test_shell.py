@@ -126,6 +126,34 @@ def test_a_sandbox_whose_start_was_cut_stops_a_container_once_its_run_was_sent(t
     assert not box.launched and not box.started
 
 
+def test_a_sandbox_whose_run_was_cut_before_it_was_sent_has_nothing_to_stop(tmp_path, monkeypatch):
+    calls = []
+
+    class Quiet(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv[0])
+            return 0, "", ""
+
+    made = asyncio.ensure_future
+
+    def cut_before_it_starts(aw):  # as the loop's end does at a second interrupt: every task cancelled
+        task = made(aw)
+        task.cancel()
+        return task
+
+    box = Quiet(tmp_path, "lion-test-unsent")
+    monkeypatch.setattr(asyncio, "ensure_future", cut_before_it_starts)
+
+    async def go():
+        with pytest.raises(asyncio.CancelledError):
+            await box.start()
+        assert not box.launched and not box.started  # its `run` was never sent
+        await box.stop()
+
+    asyncio.run(go())
+    assert "run" not in calls and "stop" not in calls and "delete" not in calls
+
+
 def test_a_first_interrupt_in_the_containers_run_lets_it_answer_before_the_stop(tmp_path):
     calls = []
 

@@ -650,7 +650,11 @@ async def _chat_main(
         if (build := await sandbox.ensure_image()) is not None:
             raise SystemExit(f"the sandbox image {sandbox.image} did not build:\n{build}")
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
-        await sandbox.start()
+        try:
+            await sandbox.start()
+        except BaseException:  # a container its `run` made is stopped: no conversation has begun in it
+            await asyncio.shield(sandbox.stop())
+            raise
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
     off_turn = actor.bus.subscribe("turn.started", lambda ev: say.working("thinking"))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
