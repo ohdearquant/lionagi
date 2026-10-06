@@ -1,7 +1,7 @@
 ---
 adr: ADR-0002
 status: draft
-liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the opt-in wait for the whole turn is not built, S4)
+liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the tag form's opt-in wait for the whole turn is not built, S4)
 date: "2026-09-23"
 area: run
 kind: new
@@ -184,12 +184,12 @@ value.
   the `turn.*` events, `Stopped(turn)`, an entry's `turn`. The earlier spelling, round, is gone with
   no alias and no reader: `max_rounds` is refused as no bound, and a log written before the rename
   reads with no turn on its entries. A retry is no outcome: the run has no `Retry` class.
-- **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
-  for what it references, and an assembly that fails or an output refused settles the rest of the
-  turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before
-  `run` returns;
+- **S4**: In the tag form the gather of every command of the turn before `OUT{}` assembled is gone:
+  `OUT{}` waits for what it references, and an assembly that fails or an output refused settles the
+  rest of the turn. What is pending when the run ends, by an outcome or an abort, is cancelled and
+  reaped before `run` returns;
   `test_a_run_cancelled_while_out_waits_reaps_every_pending_command_and_appends_no_closure` pins the
-  abort. A wait for the whole turn is at most an opt-in, later, and not built.
+  abort. A wait for the whole turn is at most an opt-in there, later, and not built.
 - **S5**: A command task that ends in neither its RESULT
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]) nor a cancel is the runtime's own defect: the
   turn's settle raises it and the run aborts (C4):
@@ -200,3 +200,10 @@ value.
   cancel during a defect's reap ends the run cancelled with the defect as its cause:
   `test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters`,
   `test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause`.
+- **S6**: A program's walk settles every command it launched before its `OUT{}` assembles, one the
+  output does not name included, for its notes are written as their commands settle
+  ([[ADR-0008-the-program#^d3|ADR-0008/D3]]). Such a command holds `Success` to the time budget.
+  Past it the run has no output: an `OUT{}` assembled then is refused for the spent budget and
+  counts as any refusal, so the run ends out of time or `Refused` at `max_refusals`. One whose field
+  still computes at the deadline is cut with its turn, no refusal
+  (`test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_bounds_the_wait`).
