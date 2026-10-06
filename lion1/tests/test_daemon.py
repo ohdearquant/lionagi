@@ -117,6 +117,16 @@ def _stub(kkernel_stub):
 
 
 @pytest.fixture(autouse=True)
+def _local_day(monkeypatch):
+    """The local day the daemon reads, per request, is `DAY`, the one the residents here are written for
+    at import: a run that crosses local midnight would otherwise read them as yesterday's. A mail's own
+    day, which the resident page reads off its stamp, does not move: no test here requests that page, and
+    one that does stamps its mail at `DAY`, never at the time it runs."""
+    strftime = time.strftime
+    monkeypatch.setattr(time, "strftime", lambda f, *t: DAY if f == "%Y-%m-%d" and not t else strftime(f, *t))
+
+
+@pytest.fixture(autouse=True)
 def keychain(tmp_path, monkeypatch):
     """`security` as a script over a file, and OpenRouter as recorded answers; (items, argv log, asked)."""
     store, argv = tmp_path / "keychain.json", tmp_path / "security.argv"
