@@ -21,6 +21,7 @@ from lion1 import (
     Kind,
     Message,
     Profile,
+    Refused,
     RunRequest,
     Stopped,
     Success,
@@ -483,10 +484,15 @@ def test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_b
     ends.clear()
     turn = fenced("side = wait(seconds=8)", 'OUT{done: "yes"}')
     run = _run(_waiting_actor("unnamed-long", ends), turn, time_budget=1)
-    assert run.outcome == Exhausted(turns=1, reason="time") and run.output is None
-    assert ends == [("wait", 8.0, "cut")] and 1 <= run.elapsed < 5
+    assert run.outcome == Exhausted(turns=1, reason="time") and run.output is None and run.refusals == 1
+    assert ends == [("wait", 8.0, "cut")] and 1 <= run.elapsed < 8  # short of the wait's own 8 s
     assert _results(run) == {"side": (False, "cancelled before it finished", "completion unknown")}
     assert run.pending == {} and run.tasks == set()
+    # its OUT{}, refused for the spent budget, counts as any refusal does: with one allowed, it is refused
+    ends.clear()
+    run = _run(_waiting_actor("unnamed-one-refusal", ends), turn, time_budget=1, max_refusals=1)
+    assert run.outcome == Refused("the time_budget of 1 is spent", 1) and run.output is None
+    assert ends == [("wait", 8.0, "cut")]
 
 
 def test_a_command_launched_after_the_deadline_cut_the_turn_never_runs_and_is_seen_through(caplog):

@@ -202,6 +202,7 @@ value.
   `test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause`.
 - **S6**: A program's walk settles every command it launched before its `OUT{}` assembles, one the
   output does not name included, for its notes are written as their commands settle
-  ([[ADR-0008-the-program#^d3|ADR-0008/D3]]). Such a command holds `Success` to the time budget;
-  past it the run is out of time with no output
+  ([[ADR-0008-the-program#^d3|ADR-0008/D3]]). Such a command holds `Success` to the time budget.
+  Past it the run has no output, and its `OUT{}`, refused for the spent budget, counts as any
+  refusal does: the run ends out of time, or `Refused` when that refusal reaches `max_refusals`
   (`test_a_programs_output_waits_for_a_command_it_does_not_name_and_the_budget_bounds_the_wait`).
