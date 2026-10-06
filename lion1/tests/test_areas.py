@@ -1197,6 +1197,7 @@ def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch,
         stream.join(10)
         assert not stream.is_alive(), f"{path} served on past the server's {end}"
         assert len(reads) == made  # no read of the residents after the wait the end came during
+        assert server.streams == set()  # a stream that ended is no longer tracked
     finally:  # the server ends on a failure too, so no stream of it outlives the test
         gate.release(5)
         if end == "shutdown":
@@ -1259,6 +1260,7 @@ def test_a_stream_reading_the_residents_as_its_server_ends_ends_as_the_read_retu
         stream.join(5)
         assert not stream.is_alive(), f"{path} served on past the server's {end}"
         assert len(reads) == 2 and [t for t in tails if t >= released] == []
+        assert server.streams == set()  # a stream that ended is no longer tracked
     finally:
         release.set()
         if end == "shutdown":
@@ -1276,9 +1278,11 @@ def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
     # the stream's write of it blocks, for up to `_WRITE_S` (30 s): the server's end breaks it at once
     monkeypatch.setattr(areas_cli, "_POLL_S", 0.02)
     monkeypatch.setattr(areas_cli, "_PING_S", 0.3)
+    # a write timeout far past every wait here, so a write that ends in time was ended by the server's end
+    monkeypatch.setattr(areas_cli, "_WRITE_S", 600.0)
     d = app_dir(tmp_path)
     server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
-    # the stream's write of the long line, marked as it begins and as it returns, with what it returned
+    # the stream's write of the long line, marked as it is called and as it returns, with what it returned
     real_emit = server.RequestHandlerClass.emit
     began, returned, gave = threading.Event(), threading.Event(), []
 
@@ -1312,14 +1316,142 @@ def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
         with open(d / "serve.log", "a") as f:
             f.write(long + "\n")
         assert began.wait(10), f"{path} never began writing the long line"
-        assert not returned.wait(0.5), "the long line's write did not block"
+
+        def in_send() -> bool:  # the stream's thread inside the socket's send, not on its way to it
+            frame = sys._current_frames().get(stream.ident)
+            code = frame.f_code if frame is not None else None
+            return (
+                code is not None and code.co_name == "write" and code.co_filename.endswith("socketserver.py")
+            )
+
+        deadline = time.monotonic() + 10
+        while not in_send() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert in_send(), f"{path} never entered the long line's send"
+        assert not returned.wait(0.5) and in_send(), "the long line's send did not block"
         getattr(server, end)()
-        stream.join(5)
+        stream.join(60)  # a tenth of the write timeout: room for a slow scheduler, none for the timeout
         assert not stream.is_alive(), f"{path} stayed blocked in a write past the server's {end}"
         assert gave == [False]  # it ended in that write, which the end broke
+        assert server.streams == set()  # a stream that ended is no longer tracked
     finally:
         if end == "shutdown":
             server.shutdown()
+        server.server_close()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "path, at",
+    [
+        ("/events", "first-pass"),
+        ("/v2/events", "first-pass"),
+        ("/events", "second-log"),
+        ("/v2/events", "second-log"),
+        ("/v2/events", "today"),
+        ("/v2/events", "foryou"),
+    ],
+)
+def test_a_stream_starts_no_read_once_its_server_has_ended(tmp_path, monkeypatch, path, at):
+    # the server ends while the stream is between two reads: before its first pass, between the two
+    # desks' logs, before `/v2`'s `today`, or before its read of the person's mail. The stream ends
+    # there, and makes no read after the end. The first desk has no log, so nothing is written between
+    monkeypatch.setattr(areas_cli, "_POLL_S", 0.0)
+    monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
+    monkeypatch.setattr(areas_cli, "_FORYOU_S", 0.0)
+    made: list[str] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def hold() -> None:  # once, while the test ends the server
+        if not entered.is_set():
+            entered.set()
+            release.wait(10)
+
+    real_status, real_tail, real_ids, real_mtime = (
+        areas_cli.status,
+        areas_cli._tail,
+        areas_cli.agent_ids,
+        areas_cli._mtime,
+    )
+    stats: list[int] = []
+
+    def status(found):
+        made.append("status")
+        return real_status(found)
+
+    def tail(log, state):
+        made.append(f"log {log.parent}")
+        got = real_tail(log, state)
+        if at == "second-log" and log.parent == d1:
+            hold()
+        return got
+
+    def agent_ids(areas):
+        got = real_ids(areas)
+        if at == "today":
+            hold()
+        return got
+
+    def mtime(path_):
+        stats.append(1)
+        got = real_mtime(path_)
+        if at == "foryou" and len(stats) == 2:  # the pass's own, after the stream's opening one
+            hold()
+        return got
+
+    def today(self, run):
+        made.append("today")
+        return {"date": "2026-09-24", "totals": {}, "for_you": {"open": 0}}
+
+    def foryou(self, run):
+        made.append("foryou")
+        return 200, {"items": []}
+
+    monkeypatch.setattr(areas_cli, "status", status)
+    monkeypatch.setattr(areas_cli, "_tail", tail)
+    monkeypatch.setattr(areas_cli, "agent_ids", agent_ids)
+    monkeypatch.setattr(areas_cli, "_mtime", mtime)
+    monkeypatch.setattr(areas_cli.Daemon, "today", today)
+    monkeypatch.setattr(areas_cli.Daemon, "foryou", foryou)
+    d1, d2 = app_dir(tmp_path / "a"), app_dir(tmp_path / "b")
+    (d1 / "serve.log").unlink(missing_ok=True)
+    server = make_server(
+        registry(tmp_path, d1, d2), "127.0.0.1", 0, 2, ("person:me", types.SimpleNamespace())
+    )
+    real_opened = server.RequestHandlerClass.opened
+
+    def opened(self):
+        got = real_opened(self)
+        if at == "first-pass":
+            hold()
+        return got
+
+    monkeypatch.setattr(server.RequestHandlerClass, "opened", opened)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    before = set(handlers())
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        (stream,) = [t for t in handlers() if t not in before]
+        assert resp.status == 200
+        assert entered.wait(10), f"{path} never reached {at}"
+        server.shutdown()
+        release.set()
+        stream.join(10)
+        assert not stream.is_alive(), f"{path} served on past the server's end"
+        v2 = path == "/v2/events"
+        expected = {
+            "first-pass": [],
+            "second-log": ["status", *(["today"] if v2 else []), f"log {d1}"],
+            "today": ["status"],
+            "foryou": ["status", "today", f"log {d1}", f"log {d2}"],
+        }[at]
+        assert made == expected
+        assert server.streams == set()  # a stream that ended is no longer tracked
+    finally:
+        release.set()
+        server.shutdown()
         server.server_close()
         conn.close()
 

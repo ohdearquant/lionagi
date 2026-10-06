@@ -462,7 +462,7 @@ def make_server(
             tails: dict[str, tuple[int, bytes, int]] = {}
             sent = 0  # the revision of the last `areas` event
             next_ping = time.monotonic() + _PING_S
-            while True:
+            while not stopping.is_set():  # no pass starts after the server's end, the first included
                 areas, rows, revision = poll_rows()
                 if stopping.is_set():  # the server ended during the read
                     return
@@ -472,6 +472,8 @@ def make_server(
                     sent = revision
                 for a in areas:
                     for listed in a.desks:
+                        if stopping.is_set():  # nor is a log read after it
+                            return
                         d = str(Path(listed))  # as the row's `dir` prints it, so the app can join them
                         lines, tails[d] = _tail(Path(d) / "serve.log", tails.get(d))
                         for line, history in lines:
@@ -482,8 +484,6 @@ def make_server(
                         return
                     next_ping = time.monotonic() + _PING_S
                 time.sleep(_POLL_S)
-                if stopping.is_set():
-                    return
 
         def opened(self) -> bool:
             # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone, or the
@@ -628,7 +628,7 @@ def make_server(
             models_at = _mtime(v2.models_path)
             next_ping = time.monotonic() + _PING_S
             next_mail = time.monotonic()
-            while True:
+            while not stopping.is_set():  # no pass starts after the server's end, the first included
                 areas, rows, revision = poll_rows()
                 if stopping.is_set():  # the server ended during the read
                     return
@@ -640,6 +640,8 @@ def make_server(
                         seen, states[i] = states.get(i), (row["state"], row["now"])
                         if seen is not None and seen != states[i] and not self.emit("agent", row):
                             return
+                    if stopping.is_set():  # nor is any read after it
+                        return
                     try:
                         today = v2.today(self.run)
                     except (OSError, ValueError):  # a registry mid-write: the next change reads it whole
@@ -650,6 +652,8 @@ def make_server(
                             return
                         last_today = now
                 for i, _, d in found:
+                    if stopping.is_set():
+                        return
                     lines, tails[d] = _tail(Path(d) / "serve.log", tails.get(d))
                     for line, history in lines:
                         w = None if history else wake_row(line)
@@ -664,6 +668,8 @@ def make_server(
                     if not self.emit("library", {"what": "models"}):
                         return
                 if khive is not None and time.monotonic() >= next_mail:
+                    if stopping.is_set():
+                        return
                     next_mail = time.monotonic() + _FORYOU_S
                     code, doc = v2.foryou(self.run)
                     items = {x["id"]: x for x in doc.get("items", [])} if code == 200 else None
@@ -680,8 +686,6 @@ def make_server(
                         return
                     next_ping = time.monotonic() + _PING_S
                 time.sleep(_POLL_S)
-                if stopping.is_set():
-                    return
 
         def _send(self) -> None:
             wants_json = self.wants_json()
@@ -899,6 +903,7 @@ def make_server(
     v2_hosts.update({f"127.0.0.1:{bound}", f"localhost:{bound}"})
     v2_origins.update(f"http://{h}" for h in v2_hosts)
     server.hosts = frozenset(hosts)  # type: ignore[attr-defined]
+    server.streams = streams  # type: ignore[attr-defined]  # the event streams open now, each until it ends
     return server
 
 
