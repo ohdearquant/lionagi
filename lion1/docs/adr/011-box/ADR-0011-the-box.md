@@ -79,7 +79,7 @@ combined output, rc 124 at the timeout.
 of its own overrides the two file verbs. `read` refuses a file that is not UTF-8, since an edit
 through a lossy decode would rewrite every bad byte.
 
-### C2: A command touches the box and nothing else of the host, and ends at its timeout whole _(enforced: mechanical)_ ^c2
+### C2: A command touches the box and no other host path, and ends at its timeout whole _(enforced: mechanical)_ ^c2
 
 - **Subject**: every `bash` and `python` call.
 - **Violated when**: a command reads or writes a host path outside the mounted directory, a hung
@@ -203,8 +203,8 @@ classifier calls a path a test under a `tests` directory, as a `conftest.py`, or
 
 ### D4: Network on by default, `--offline` for host-only ^d4
 
-Serves C2, on A4. A VM with no egress cannot install anything, and a console over a project needs
-to; the person picks `--offline` when the directory holds what the internet must not see.
+Serves C2, on A4. A VM with no egress cannot install from the internet, and a console over a project
+needs to; the person picks `--offline` when the directory holds what the internet must not see.
 
 - **Landing evidence**: measured 2026-10-06 on container 1.4.1, whose `--internal` is host-only: no
   DNS, no egress and no answer from the LAN's router, while the host itself answered (S20). Opt-in:

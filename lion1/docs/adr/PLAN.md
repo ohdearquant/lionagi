@@ -136,7 +136,7 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
 - Who may ask whom, the lineage of an ask, ending a peer with its asker, authority that narrows downward
   and delivery across processes are below the boundary; no budget is shared across peers (0010 S4, S5).
 - One box shape whatever runs the command: `exec` with the streams apart and rc 137 at the timeout, `run`
-  under pipefail with 124; a command touches the box and nothing else of the host; the network is on by
+  under pipefail with 124; a command touches the box and no other host path; the network is on by
   default and `--offline` is host-only (0011 C1, C2, D4, S20).
 - Three coding tools over a tree that may be anywhere; an edit lands once, verbatim, keeping each line's
   ending; the watch reports the change as the tree shows it and a finish is accepted only after a command

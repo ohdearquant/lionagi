@@ -59,8 +59,8 @@ def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and
 
     async def go():
         assert await box.ensure_image() is None
-        await box.start()
-        try:
+        try:  # a start that fails after its `run` was sent still has a VM to stop
+            await box.start()
             probe = "cat a.txt; echo made > b.txt; pwd; id -u; ls ~/.ssh 2>&1 | head -1; "
             probe += "date +%Z; exit 3"
             backend = scripted(
@@ -135,8 +135,8 @@ def test_an_offline_sandbox_has_no_dns_and_no_egress_and_still_reaches_the_host(
     async def seen(offline: bool) -> dict:
         box = Sandbox(tmp_path, f"lion-test-net-{int(offline)}-{int(time.time())}", offline=offline)
         assert await box.ensure_image() is None
-        await box.start()
         try:
+            await box.start()
             got = await box.exec(["python3", "-"], stdin=probe, timeout=60)
         finally:
             await box.stop()
