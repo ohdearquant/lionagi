@@ -950,27 +950,72 @@ def test_one_wakes_calls_summing_past_a_floats_range_still_write_its_cursor(stor
     assert agent.hold() is not None
 
 
-@pytest.mark.parametrize("figure", [-0.6, "0.6", True], ids=["negative", "str", "bool"])
-def test_a_same_day_row_whose_dollars_the_run_would_not_sum_reads_as_none_spent_and_partial(store, figure):
-    # an earlier version summed the envelopes as they came, so a day's row can hold a negative sum; it
-    # is never room against a wake that serves: none spent, and the day partial to its end
+ROWS = {
+    "negative": {"cost": -0.6, "unknown": 0},  # an earlier version summed the envelopes as they came
+    "str": {"cost": "0.6", "unknown": 0},
+    "bool": {"cost": True, "unknown": 0},
+    "no-cost": {"unknown": 0},
+    "no-day": {"cost": 0.6, "unknown": 0, "day": None},
+    "day-not-str": {"cost": 0.6, "unknown": 0, "day": 20261006},
+    "not-a-row": None,
+}
+
+
+@pytest.mark.parametrize("kind", list(ROWS))
+def test_a_day_row_the_agent_would_not_have_written_reads_as_none_spent_and_partial(tmp_path, store, kind):
+    # never room against a wake that serves: none spent, and the day partial to its end, in `stats` too
     from hub.agent.agent import _day
 
     now = 1_000_000.0
     khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
     state = store.notes("agent")
-    state.put("spend", {"day": _day(now), "cost": figure, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=0)
+    if ROWS[kind] is None:
+        state.put("spend", [_day(now), 0.6, 0], run="-", seq=0)
+    else:
+        row = {"day": _day(now), "calls": 2, "wakes": [], "runs": 1, **ROWS[kind]}
+        state.put("spend", {k: v for k, v in row.items() if v is not None}, run="-", seq=0)
     backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
     actor = Actor("echo", privileges={"comm.send"}, store=store)
     agent = Agent(
         actor, khive, backend, profile_for, state=state, budget=Budget(cost_per_day=0.5), clock=lambda: now
     )
     assert agent.hold() is None  # none spent: the day's row lends no room and takes none
+    uncounted = "(partial: calls of unknown cost before this count went uncounted)"
+    assert f" out, $0.0000 {uncounted}; " in stats(tmp_path, noted(state)).splitlines()[0]
     assert asyncio.run(agent.wake(wait_ms=0)) is not None
     row = agent.state.get("spend").value
     assert (row["cost"], row["unknown"]) == (pytest.approx(0.6), None)
     assert agent.hold() == (
         "$0.6000 spent today (partial: calls of unknown cost before this count went uncounted)"
+        " (cap $0.5); next day"
+    )
+
+
+@pytest.mark.parametrize("count", ["2", True, -1, 1.0], ids=["str", "bool", "negative", "float"])
+def test_a_day_row_whose_count_is_no_number_of_calls_keeps_its_dollars_and_reads_as_partial(
+    tmp_path, store, count
+):
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": count, "calls": 2, "wakes": [], "runs": 1}
+    state.put("spend", row, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(
+        actor, khive, backend, profile_for, state=state, budget=Budget(cost_per_day=0.5), clock=lambda: now
+    )
+    assert agent.hold() is None
+    uncounted = "(partial: calls of unknown cost before this count went uncounted)"
+    assert f" out, $0.1000 {uncounted}; " in stats(tmp_path, noted(state)).splitlines()[0]
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None  # the booking takes the count as unknown
+    assert len(backend.calls) == 2
+    row = agent.state.get("spend").value
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.7), None)
+    assert agent.hold() == (
+        "$0.7000 spent today (partial: calls of unknown cost before this count went uncounted)"
         " (cap $0.5); next day"
     )
 

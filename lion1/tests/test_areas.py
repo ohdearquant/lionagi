@@ -640,6 +640,32 @@ def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number
     assert f"today 2 run(s), 2 mail, {mark}</p>" in html
 
 
+@pytest.mark.parametrize(
+    ("spend", "read"),
+    [
+        ({"day": TODAY, "runs": 2, "mail": 2, "cost": -0.6, "unknown": 0}, (0.0, None)),
+        ({"day": TODAY, "runs": 2, "mail": 2, "unknown": 0}, (0.0, None)),
+        ({"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": "2"}, (0.3, None)),
+        ({"runs": 2, "mail": 2, "cost": 0.3, "unknown": 0}, (0.0, None)),
+        ([TODAY, 0.3, 0], (0.0, None)),
+        ({"day": "2000-01-01", "runs": 2, "mail": 2, "cost": -0.6, "unknown": "2"}, (0.0, 0)),
+    ],
+    ids=["negative", "no-cost", "str-count", "no-day", "not-a-row", "another-day"],
+)
+def test_a_days_row_the_agent_would_not_have_written_reads_in_the_views_as_the_cap_reads_it(
+    tmp_path, spend, read
+):
+    cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
+    d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=spend)
+    area = Area("x", "lambda:x", [str(d)])
+    r = resident(area, str(d), TODAY)
+    assert (r.cost_today, r.unknown_today) == read
+    mark = f"${read[0]:.4f}" + (
+        "" if read[1] == 0 else " (partial: calls of unknown cost before this count went uncounted)"
+    )
+    assert table([area], [r]).endswith(mark)
+
+
 def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_the_controls(tmp_path):
     deferred = [
         {

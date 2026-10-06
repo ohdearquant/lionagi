@@ -59,7 +59,7 @@ from lion1.lndl import plain
 from lion1.notes import NoteStore
 from lion1.record import Kind
 
-from ..areas import partial
+from ..areas import day_spend, partial
 from ..backend.claude_code import _prompt_tokens
 
 __all__ = (
@@ -519,7 +519,7 @@ class Agent:
                 return f"wakes_per_hour is {self.budget.wakes_per_hour}: no wakes until it is raised"
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
-        cost, unknown = _day_spend(spend, _day(now))
+        cost, unknown = _day_spend(self.state, _day(now))
         if cost >= self.budget.cost_per_day:
             return (
                 f"${cost:.4f} spent today"
@@ -674,8 +674,7 @@ class Agent:
         if self.wake_rules is None:
             take = list(mail)
         else:
-            spend = _value(self.state, "spend", {})
-            cost, _ = _day_spend(spend, _day(now))
+            cost, _ = _day_spend(self.state, _day(now))
             spent = cost / self.budget.cost_per_day if self.budget.cost_per_day > 0 else 0.0
             for m in mail:
                 verdict = self.wake_rules.decide(m, spent)
@@ -1050,8 +1049,7 @@ class Agent:
         this burst's calls counted, ends the run; serve() starts a new one on the next mail, which
         continues it."""
         b = self._burst
-        spend = _value(self.state, "spend", {})
-        today, _ = _day_spend(spend, _day(self.clock()))
+        today, _ = _day_spend(self.state, _day(self.clock()))
         return run.turn - b["turn0"] > self.max_turns or (
             today + self._usage(b["before"])["cost"] >= self.budget.cost_per_day
         )
@@ -1347,7 +1345,7 @@ class Agent:
             self._last_wake = now
         day = _day(now)
         same_day = spend.get("day") == day
-        before, counted = _day_spend(spend, day)
+        before, counted = _day_spend(self.state, day)
         row = {
             "day": day,
             # a sum past a float's range is past any cap, and the note takes no infinity: the largest float
@@ -1479,15 +1477,7 @@ def _day(now: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(now))
 
 
-def _day_spend(spend: dict, day: str) -> tuple[float, int | None]:
-    """The day's row as the cap reads it: dollars spent and calls of unknown cost, (0, 0) on another
-    day's row. A same-day row with no count is from before the count: its calls went uncounted, and
-    no later wake can count them, so the day reads as partial to its end (None, never 0). A row's
-    dollars the run would not sum (ADR-0003/S7), a negative sum an earlier version kept among them,
-    read as none spent and the day as partial: never room below zero."""
-    if spend.get("day") != day:
-        return 0.0, 0
-    cost = reported_cost(spend.get("cost", 0.0))
-    if math.isnan(cost):
-        return 0.0, None
-    return cost, spend.get("unknown")
+def _day_spend(store: NoteStore, day: str) -> tuple[float, int | None]:
+    """The day's row as the cap reads it (`day_spend`): the note as stored, whatever it holds."""
+    note = store.get("spend")
+    return day_spend(None if note is None else note.value, day)

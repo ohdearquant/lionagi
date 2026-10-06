@@ -752,6 +752,36 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
     assert "0 idle poll(s) at 0 tokens" in text
 
 
+@pytest.mark.parametrize(
+    ("cost", "unknown", "said"),
+    [(-0.6, 0, "$0.0000"), (0.3, "2", "$0.3000")],
+    ids=["negative-sum", "str-count"],
+)
+def test_the_digests_tokens_line_reads_a_row_the_agent_would_not_have_written_as_the_cap_does(
+    tmp_path, cost, unknown, said
+):
+    khive = FakeKhive(mail(SELF, "tick: digest"))
+    turns = per_wake(["<lact d1>digest()</lact>", DONE], 1)
+    chores, agent = build(tmp_path, khive, turns, disk=Probe("disk", full()))
+    day = time.strftime("%Y-%m-%d")
+    spend = {
+        "day": day,
+        "calls": 3,
+        "in": 900,
+        "out": 40,
+        "cost": cost,
+        "unknown": unknown,
+        "runs": 1,
+        "mail": 1,
+    }
+    agent.state.put("spend", spend, run="-", seq=0)
+    asyncio.run(agent.wake())
+    assert (
+        f"{said} (partial: calls of unknown cost before this count went uncounted), over"
+        in khive.sent[-1]["content"]
+    )
+
+
 def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost(tmp_path):
     khive = FakeKhive(mail(SELF, "tick: digest"))
     turns = per_wake(["<lact d1>digest()</lact>", DONE], 2)

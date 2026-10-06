@@ -335,6 +335,27 @@ def test_a_malformed_cost_figure_stops_a_capped_run_as_spent(tmp_path: Path, fig
     assert bad["stopped_by"] == "cost" and bad["turns"] == 1
 
 
+@pytest.mark.parametrize("cap, turns", [(float("inf"), 3), (1.75e308, 2)], ids=["infinite", "finite"])
+def test_a_sum_past_a_floats_range_stops_a_finite_cap_and_never_an_infinite_one(tmp_path: Path, cap, turns):
+    # the stop reads the sum as the record keeps it, the largest float: past any finite cap, under infinity
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    rec = asyncio.run(
+        run_swe.solve(
+            row,
+            "m",
+            3,
+            tmp_path,
+            "openrouter",
+            box=ToolBox(),
+            backend=Costs(1.7e308, 1.7e308, 1.7e308),
+            cost_budget=cap,
+            store=fresh_store(),
+        )
+    )
+    assert (rec.get("stopped_by"), rec["turns"]) == ("cost" if turns == 2 else None, turns)
+    assert (rec["cost_usd"], rec["cost_complete"]) == (sys.float_info.max, True)
+
+
 @pytest.mark.parametrize(
     "costs, total, complete, each",
     [

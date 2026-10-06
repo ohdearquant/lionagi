@@ -356,7 +356,8 @@ async def solve(
                 stopped_by.append("criteria" if watch.passed else "settle")
                 return True
             said = [c["total_cost_usd"] for c in backend.calls if c.get("total_cost_usd") is not None]
-            spent = sum(reported_cost(figure) for figure in said)
+            # past a float's range the sum is the largest float, as the record keeps it: past any finite cap
+            spent = min(sum(reported_cost(figure) for figure in said), sys.float_info.max)
             # "not under", as the run's own check: a malformed figure (NaN) stops the run as spent
             if cost_budget is not None and not spent < cost_budget:
                 stopped_by.append("cost")

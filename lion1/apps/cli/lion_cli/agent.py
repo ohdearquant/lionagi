@@ -16,7 +16,7 @@ from hub.agent.chores import SPAWN_SALIENCE, Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
-from hub.areas import agent_notes, partial
+from hub.areas import agent_notes, day_spend, partial
 from hub.backend import ClaudeCodeSession, Codex, CodexSession, OpenRouter
 from hub.guidance import guidance
 from hub.hooks import install, load
@@ -260,13 +260,14 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
     if not notes:
         return f"no notes at {directory}: the agent has not run from this directory"
     spend = notes.get("spend") if isinstance(notes.get("spend"), dict) else {}
+    cost, unknown = day_spend(notes.get("spend"), spend.get("day"))  # the row's own day, as the cap read it
     cursor = notes.get("cursor") if isinstance(notes.get("cursor"), dict) else {}
     tokens = cursor.get("tokens") or {}
     mail = spend.get("mail", 0)
     lines = [
         f"day {spend.get('day')}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
-        f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}"
-        + partial(spend.get("unknown") if spend else 0)  # a row with no count is from before the count
+        f"{spend.get('out', 0)} out, ${cost:.4f}"
+        + partial(unknown)
         + f"; {spend.get('runs', 0)} wake(s) with {mail} mail; "
         f"{spend.get('idle', 0)} idle poll(s) at 0 tokens",
         (

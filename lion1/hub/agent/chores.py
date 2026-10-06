@@ -54,7 +54,7 @@ from hub import guidance
 from lion1.actor import Context, Profile, Run
 from lion1.khive import KhiveError, lit
 
-from ..areas import partial
+from ..areas import day_spend, partial
 from .agent import Agent, AgentError, LoopLock
 
 __all__ = (
@@ -666,10 +666,11 @@ class Chores:
             lines.append(f"{actor} {name} {last['at'][11:16]} {state} {clause}")
         spend = _val(self.agent.state, "spend", {})
         if spend.get("day") == day:  # the cost of the day, the number the actor's question is about
+            cost, unknown = day_spend(spend, day)
             lines.append(
                 f"tokens {day}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
-                f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}"
-                + partial(spend.get("unknown"))  # a row with no count is from before the count
+                f"{spend.get('out', 0)} out, ${cost:.4f}"
+                + partial(unknown)  # a row with no count is from before the count
                 + f", over {spend.get('runs', 0)} wake(s) with {spend.get('mail', 0)} mail; "
                 f"{spend.get('idle', 0)} idle poll(s) at 0 tokens"
             )
