@@ -1383,7 +1383,7 @@ def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
                 code is not None and code.co_name == "write" and code.co_filename.endswith("socketserver.py")
             )
 
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 60  # as the join below: room for a slow scheduler
         while not in_send() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert in_send(), f"{path} never entered the long line's send"
@@ -1414,7 +1414,9 @@ def test_a_stream_blocked_on_a_client_that_does_not_read_ends_with_its_server(
 def test_a_stream_starts_no_read_once_its_server_has_ended(tmp_path, monkeypatch, path, at):
     # the server ends while the stream is between two reads: before its first pass, between the two
     # desks' logs, before `/v2`'s `today`, or before its read of the person's mail. The stream ends
-    # there, and makes no read after the end. The first desk has no log, so nothing is written between
+    # there, and makes no read of the residents, today, a log or the mail after the end (the models
+    # file's time is looked at as a stream opens, and once a pass before the mail; `foryou` ends the
+    # server at that look). The first desk has no log, so nothing is written between
     monkeypatch.setattr(areas_cli, "_POLL_S", 0.0)
     monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
     monkeypatch.setattr(areas_cli, "_FORYOU_S", 0.0)
