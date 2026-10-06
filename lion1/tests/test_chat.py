@@ -637,6 +637,40 @@ def test_capture_failure_retains_box_and_reports_identity(tmp_path, monkeypatch,
     assert f"box {box.box_id}: kept, not stopped" in out  # and named, so it can be reached
 
 
+def test_a_patch_cut_short_by_a_cancellation_keeps_the_box_and_names_it(tmp_path, monkeypatch):
+    # an interrupt while the copy is read: the box may hold the only copy, so it is kept and named
+    from lion_cli.chat import end_box
+
+    from tests.test_daytona import ChatBox
+
+    async def ending():
+        reading = asyncio.Event()
+
+        async def stuck(self, base="HEAD"):
+            reading.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(ChatBox, "diff", stuck)
+        box = ChatBox("img", "/w")
+        said: list[str] = []
+        task = asyncio.create_task(
+            end_box(box, tmp_path, tmp_path / "saved", "c1", baseline="b", apply=False, say=said.append)
+        )
+        await reading.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return box, said
+
+    ChatBox.made.clear()
+    box, said = asyncio.run(ending())
+    assert not box.stopped
+    assert said[-1] == (
+        f"box {box.box_id}: kept, not stopped: interrupted while its patch was taken; the work is there, "
+        "at /w, until the box's idle stop deletes it"
+    )
+
+
 def test_a_save_failure_or_a_dead_box_keeps_the_error_and_says_whether_the_box_can_be_reached(
     tmp_path, monkeypatch, capsys
 ):

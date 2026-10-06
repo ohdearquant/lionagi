@@ -91,6 +91,8 @@ class LionFake:
     steps: dict = field(default_factory=dict)  # flow run id -> {idx: row}
     notes: dict = field(default_factory=dict)  # profile -> {key: row}
     ops: list = field(default_factory=list)
+    sent: list = field(default_factory=list)  # each comm.send's arguments: a result mail is read here
+    refuse_send: str | None = None  # set: every comm.send raises it, a transport that failed
     clock: int = 1_000_000
 
     def answer(self, ops: str) -> list:
@@ -102,6 +104,11 @@ class LionFake:
         return self.clock
 
     def one(self, verb: str, p: dict) -> Any:
+        if verb == "comm.send":  # the one other verb a run's actor calls: its result mail (ADR-0026 C4)
+            if self.refuse_send is not None:
+                raise KhiveError(self.refuse_send)
+            self.sent.append(dict(p))
+            return {"id": f"m{len(self.sent)}", "thread_id": p.get("thread_id") or f"t{len(self.sent)}"}
         if not verb.startswith("lion."):
             raise KhiveError(f"{verb}: the lion fake serves lion.* only")
         name = verb[len("lion.") :]

@@ -114,9 +114,18 @@ class Store:
             config = self.khive.config or self.khive.cwd / ".khive" / "config.toml"
             self.database = lion_database(config, self.khive.cwd)
 
-    async def open(self, run: Run, *, trigger: list[str] | None = None, continues: str | None = None) -> None:
+    async def open(
+        self,
+        run: Run,
+        *,
+        trigger: list[str] | None = None,
+        continues: str | None = None,
+        step: dict[str, Any] | None = None,
+    ) -> None:
         """The session and the run, both under the run's id; the run row names what started it. A run that
-        continues another writes none of the history it replays: those entries are rows of the chain."""
+        continues another writes none of the history it replays: those entries are rows of the chain. A
+        run that is a step of a flow writes its step row in the same op (ADR-0026 D4), and `close` closes
+        it, so no step row stands without its run."""
         run.store_flushed = len(run.request.history) if continues is not None else 0
         await self.khive.exec(
             f"lion.session_open(id={lit(run.id)}, source={lit(SOURCE)}, actor={lit(run.actor.name)}, "
@@ -124,8 +133,44 @@ class Store:
             f"lion.run_open(id={lit(run.id)}, profile={lit(run.profile.name)}, session_id={lit(run.id)}, "
             f"actor={lit(run.actor.name)}, bounds={lit(json.dumps(run.bounds))}, "
             f"trigger={lit(json.dumps(trigger) if trigger is not None else None)}, "
-            f"continues={lit(continues)})"
+            f"continues={lit(continues)}" + (f", step={lit(step)})" if step is not None else ")")
         )
+
+    async def open_flow(
+        self, flow_id: str, name: str, actor: str, *, trigger: list[str] | None = None
+    ) -> None:
+        """A flow's own run row (ADR-0026 D3), under the profile `flow:<name>`, and its session, which holds
+        no message: the flow makes no call of its own, and its steps' runs name it as their trigger."""
+        profile = f"flow:{name}"
+        await self.khive.exec(
+            f"lion.session_open(id={lit(flow_id)}, source={lit(SOURCE)}, actor={lit(actor)}, "
+            f"profile={lit(profile)}) | "
+            f"lion.run_open(id={lit(flow_id)}, profile={lit(profile)}, session_id={lit(flow_id)}, "
+            f"actor={lit(actor)}, trigger={lit(json.dumps(trigger) if trigger is not None else None)})"
+        )
+
+    async def close_flow(self, flow_id: str, outcome: str, output: Any) -> None:
+        """The flow's outcome and output, no cost and no turn of its own: those are its steps' rows."""
+        await self.khive.exec(
+            f"lion.run_close(id={lit(flow_id)}, outcome={lit(outcome)}, turns=0, "
+            f"output={lit(row_json(output) if output is not None else None)}) | "
+            f"lion.session_close(id={lit(flow_id)})"
+        )
+
+    async def steps(self, flow_run_id: str) -> list[dict]:
+        """A flow run's step rows, in order."""
+        (got,) = await self.khive.exec(f'lion.get(table="steps", id={lit(flow_run_id)})')
+        return list(got["rows"])
+
+    async def messages(self, session_id: str) -> list[dict]:
+        """A session's message rows, in order."""
+        (got,) = await self.khive.exec(f'lion.get(table="messages", id={lit(session_id)})')
+        return list(got["rows"])
+
+    async def result(self, run_id: str) -> dict:
+        """A run's row with its output; one the store does not hold raises its `not_found`."""
+        (row,) = await self.khive.exec(f'lion.get(table="runs", id={lit(run_id)})')
+        return row
 
     async def flush(self, run: Run) -> int:
         """Every entry appended since the last flush, as message rows; how many went."""

@@ -209,9 +209,11 @@ class Khive:
         subject: str | None = None,
         thread_id: str | None = None,
         idempotency_key: str | None = None,
+        self_send: bool = False,
     ) -> dict:
         """With a key, the same request again replays the message that landed (`replayed: true`, the
-        same ids) instead of sending a second; another request under the key is `key_conflict`."""
+        same ids) instead of sending a second; another request under the key is `key_conflict`. comm
+        refuses a message to the sender's own actor unless `self_send` says it is meant."""
         args = [f"to={lit(to)}", f"content={lit(content)}"]
         if subject:
             args.append(f"subject={lit(subject)}")
@@ -219,5 +221,7 @@ class Khive:
             args.append(f"thread_id={lit(thread_id)}")
         if idempotency_key:
             args.append(f"idempotency_key={lit(idempotency_key)}")
+        if self_send:
+            args.append("self_send=true")
         (sent,) = await self.exec(f"comm.send({', '.join(args)})")
         return sent
