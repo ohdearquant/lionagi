@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import lion_cli.account as account_cli
 import pytest
@@ -26,6 +27,7 @@ from hub.accounts import (
     Account,
     AccountsError,
     Kept,
+    KeychainUnknown,
     Mark,
     Probe,
     Settings,
@@ -48,7 +50,10 @@ from hub.accounts import (
 from hub.areas import DEFAULT_REGISTRY
 
 REPO = Path(__file__).resolve().parents[1]
-CANARY = "made-up-canary-0001-Zq7xW"  # the one token every output is searched for
+# the one token every output is searched for, made up in the form a token takes (ADR-0024/A5)
+CANARY = "sk-ant-oat01-made-up-canary-" + "Zq7xW" * 8
+SECOND = "sk-ant-oat01-made-up-second-" + "Zq7xW" * 8
+FORM = "a token is 'sk-ant-' then letters, digits, '-', '_' and '.', 65 to 2048 characters in all"
 # a made-up value shaped as a Claude Code credential, for the places a label belongs: a label is shown as
 # written, so one of this shape is refused before it is kept (ADR-0024/C1)
 SHAPED = "sk-ant-oat01-made-up-" + "Zq7xW" * 18
@@ -85,6 +90,9 @@ def run(args):
         print(f"prefix={value[:8]} length={len(value)}", file=sys.stderr)
         return 1
     if args[0] == "add-generic-password":
+        if mode == "part written":  # it stores the token's start, then fails
+            items[key] = opt(args, "-w")[:9]
+            return 1
         if mode != "drop":
             items[key] = opt(args, "-w")
         if opt(args, "-a") == "slow":  # held between its start and its write
@@ -99,6 +107,8 @@ def run(args):
             print("refused to delete " + items[key], file=sys.stderr)
             return 1
         del items[key]
+        if mode == "deleted then failed":
+            return 1
     elif mode == "leak":
         print(items[key])
         print("failed reading " + items[key], file=sys.stderr)
@@ -272,7 +282,8 @@ ACCOUNT = '[[account]]\nname = "a"\nprovider = "claude_code"\ncredential = "defa
         ('[pick]\nprobe_model = { claude_code = " " }\n', "[pick] probe_model is a table"),
         ('[pick]\nprobe_model = { claude_code = "haiku 4" }\n', "a model name is letters"),
         (f'[pick]\nprobe_model = {{ codex = "{"m" * 65}" }}\n', "a model name is letters"),
-        ('[pick]\nprobe_model = { codex = "sk-ant-api03-x" }\n', "not beginning 'sk-ant-'"),
+        ('[pick]\nprobe_model = { codex = "sk-ant-api03-x" }\n', "never holding 'sk-ant-'"),
+        ('[pick]\nprobe_model = { codex = "m-sk-ant-api03-x" }\n', "never holding 'sk-ant-'"),
     ],
 )
 def test_every_refusal_of_the_pool_file_names_the_entry_and_the_rule(tmp_path, text, said):
@@ -297,6 +308,9 @@ def test_every_refusal_of_the_pool_file_names_the_entry_and_the_rule(tmp_path, t
         *(f'[pick]\n{key} = "{SHAPED}"\n' for key in ("max_age", "keep", "seven_day", "five_hour")),
         f'[pick]\nprobe_model = {{ codex = "{SHAPED}" }}\n',
         f'[pick]\nprobe_model = {{ claude_code = "{SHAPED[:40]}" }}\n',  # short, and still its prefix
+        ACCOUNT.replace('"a"', f'"x{SHAPED[:63]}"'),  # its start, one character in
+        ACCOUNT + f'group = "team-{SHAPED[:40]}"\n',
+        f'[pick]\nprobe_model = {{ codex = "m/{SHAPED[:40]}" }}\n',
     ],
 )
 def test_no_refusal_of_the_pool_file_repeats_a_value_shaped_as_a_credential(tmp_path, text):
@@ -323,8 +337,8 @@ def test_a_token_goes_to_the_keychain_tool_on_standard_input_and_reads_back(keyc
     store_token("work", CANARY)
     assert items(store) == {"work/lion.account.claude_code": CANARY}
     assert token("work") == CANARY
-    store_token("work", "made-up-token-0002")  # -U: the item is replaced
-    assert token("work") == "made-up-token-0002"
+    store_token("work", SECOND)  # -U: the item is replaced
+    assert token("work") == SECOND
     calls = logged(argv)
     assert calls[0] == ["-i"]  # the value was on standard input only
     assert calls[1] == ["find-generic-password", "-a", "work", "-s", "lion.account.claude_code", "-w"]
@@ -338,10 +352,12 @@ def test_a_token_goes_to_the_keychain_tool_on_standard_input_and_reads_back(keyc
     ("value", "said"),
     [
         ("", "no token was given"),
-        (CANARY * 90, "the token is longer than 2048 characters"),
-        (CANARY + "!", "a token is letters, digits, '-', '_' and '.' only"),
-        (CANARY + " -w other", "a token is letters, digits"),
-        (CANARY + "\nadd-generic-password", "a token is letters, digits"),
+        (CANARY * 31, FORM),
+        (CANARY + "!", FORM),
+        (CANARY + " -w other", FORM),
+        (CANARY + "\nadd-generic-password", FORM),
+        ("made-up-token-0001", FORM),  # no credential's start, so it could be a label
+        (CANARY[:60], FORM),  # its start, short enough to be a label
     ],
 )
 def test_a_token_outside_its_form_is_refused_before_the_tool_runs_and_never_repeated(keychain, value, said):
@@ -352,6 +368,15 @@ def test_a_token_outside_its_form_is_refused_before_the_tool_runs_and_never_repe
     assert said in text and "nothing was written" in text
     assert "made-up" not in text and "Zq7x" not in text and str(len(value)) not in text
     assert logged(argv) == [] and items(store) == {}
+
+
+@pytest.mark.parametrize(
+    "value", [CANARY, SECOND, "x" + CANARY[:63], CANARY[:64], "made-up-token-0001", "a" * 64]
+)
+def test_no_value_is_both_a_token_and_a_label(value):
+    # a token is taken only in A5's form and a label never holds its start, so no token is kept as a label
+    assert not (accounts._shaped(value) and accounts._label(value))
+    assert not accounts._label(value) or "sk-ant-" not in value
 
 
 def test_a_name_that_could_split_the_tools_line_is_refused(keychain):
@@ -399,9 +424,13 @@ def test_the_keychain_tools_words_never_reach_an_error_only_its_exit_code(keycha
     with pytest.raises(AccountsError) as got:
         token("work")
     assert str(got.value) == "account 'work': the keychain tool exited 1"
-    fail.write_text("refuse")
-    with pytest.raises(AccountsError, match="exited 1, so its keychain item was not deleted$"):
+    fail.write_text("refuse")  # its delete fails and its read back too: whether the item is gone is unknown
+    with pytest.raises(KeychainUnknown, match="exited 1, and whether its keychain item is gone is unknown$"):
         remove_token("work")
+    fail.write_text("sticky")  # its delete fails, and the item reads back still there
+    with pytest.raises(AccountsError, match="exited 1, so its keychain item was not deleted$") as got:
+        remove_token("work")
+    assert not isinstance(got.value, KeychainUnknown)
     fail.write_text("")
     with pytest.raises(AccountsError, match="has no keychain item; `lion account add` writes it"):
         token("other")
@@ -427,6 +456,26 @@ def test_a_write_the_tool_failed_after_storing_deletes_the_item_or_names_the_com
         "`security delete-generic-password -a work -s lion.account.claude_code` deletes it"
     )
     assert CANARY not in str(got.value)
+
+
+def test_a_write_that_left_another_value_names_the_command_that_deletes_the_item(keychain):
+    store, _, fail = keychain
+    fail.write_text("part written")  # the item holds the token's start, and the tool exits 1
+    with pytest.raises(AccountsError) as got:
+        store_token("work", CANARY)
+    assert str(got.value) == (
+        "account 'work': the keychain tool exited 1; the item holds another value, which may be a part of "
+        "the token; `security delete-generic-password -a work -s lion.account.claude_code` deletes it"
+    )
+    assert parts(str(got.value)) == [] and items(store) == {"work/lion.account.claude_code": CANARY[:9]}
+
+
+def test_a_delete_the_tool_failed_after_deleting_reads_back_gone(keychain):
+    store, argv, fail = keychain
+    store_token("work", CANARY)
+    fail.write_text("deleted then failed")
+    assert remove_token("work") is True and items(store) == {}
+    assert logged(argv)[-1] == ["find-generic-password", "-a", "work", "-s", "lion.account.claude_code"]
 
 
 def test_a_write_whose_read_back_cannot_be_read_names_the_command_that_deletes_the_item(
@@ -561,6 +610,11 @@ def test_a_codex_child_whose_private_home_is_not_its_accounts_login_is_refused(t
         (Account("work", "claude_code", "default"), {"token": CANARY}, "keeps no token; one was given"),
         (Account("cx", "codex", "default"), {"token": CANARY}, "is a Codex account and takes no token"),
         (Account("cx", "codex", "/srv/codex-a"), {}, "needs the agent's private home"),
+        (
+            Account("cx", "codex", "/srv/codex-a"),
+            {"home": "private"},
+            "the private home is not an absolute path",
+        ),
     ],
 )
 def test_a_child_environment_that_cannot_be_built_as_chosen_is_refused(account, kwargs, said):
@@ -1059,11 +1113,15 @@ def test_add_refuses_a_name_already_present_and_a_file_it_cannot_add_to_in_place
     assert code == 1 and out == ""
     assert err == f"lion account add: account 'own' is already in {path}; nothing was written\n"
     inline = 'account = [{ name = "a", provider = "codex", credential = "default" }]\n'
-    path.write_text(inline)
-    code, _, err = run(add, capsys, stdin=CANARY)
-    assert code == 1 and "each account is its own [[account]] table" in err
-    assert path.read_text() == inline and logged(argv) == [] and items(store) == {}
-    for name, group in ((SHAPED, None), ("x", SHAPED), ("n" * 65, None)):  # labels of a credential's shape
+    # the same, with a header line inside a string so the lines count one header for one account
+    hidden = 'account = [{ name = "a", provider = "codex", credential = """/srv/a\n[[account]]\n""" }]\n'
+    for text in (inline, hidden):
+        path.write_text(text)
+        code, _, err = run(add, capsys, stdin=CANARY)
+        assert code == 1 and "each account is its own [[account]] table" in err
+        assert path.read_text() == text and logged(argv) == [] and items(store) == {}
+    shifted = "x" + SHAPED[:63]  # its start, one character in
+    for name, group in ((SHAPED, None), ("x", SHAPED), ("n" * 65, None), (shifted, None), ("x", shifted)):
         argv_ = [*add[:2], name, *add[3:], *([] if group is None else ["--group", group])]
         path.write_text(POOL_TEXT)
         code, out, err = run(argv_, capsys, stdin=CANARY)
@@ -1156,7 +1214,7 @@ def test_a_file_write_that_fails_with_an_item_that_cannot_be_taken_back_names_th
         "`security delete-generic-password -a work -s lion.account.claude_code` deletes it"
     ]
     assert path.read_text() == POOL_TEXT and items(store) == {"work/lion.account.claude_code": CANARY}
-    assert logged(argv)[-1][0] == "delete-generic-password"
+    assert [c[0] for c in logged(argv)][-2:] == ["delete-generic-password", "find-generic-password"]
 
 
 REMOVE_TEXT = (
@@ -1251,6 +1309,32 @@ def test_a_remove_whose_item_is_not_deleted_puts_its_table_back(tmp_path, keycha
     code, _, err = run(["account", "remove", "b", "--file", str(path)], capsys)
     assert code == 1 and "could not be put back (OSError), so the item is left with no entry" in err
     assert "`security delete-generic-password -a b -s lion.account.claude_code` deletes it" in err
+    assert "b" not in [a.name for a in load_pool(path).accounts] and CANARY not in err
+
+
+def test_a_remove_whose_delete_failed_after_deleting_or_cannot_be_read_back_keeps_the_table_out(
+    tmp_path, keychain, capsys
+):
+    store, _, fail = keychain
+    path = tmp_path / "accounts.toml"
+    text = REMOVE_TEXT.replace("HOME", str(tmp_path))
+    path.write_text(text)
+    store_token("b", CANARY)
+    fail.write_text("deleted then failed")  # the item is gone though the tool says it failed
+    code, out, err = run(["account", "remove", "b", "--file", str(path)], capsys)
+    assert (code, err) == (0, "") and out == f"removed b from {path}, and its keychain item\n"
+    assert items(store) == {} and "b" not in [a.name for a in load_pool(path).accounts]
+    path.write_text(text)
+    fail.write_text("")
+    store_token("b", CANARY)
+    fail.write_text("refuse")  # its delete fails and cannot be read back: the item may or may not be there
+    code, out, err = run(["account", "remove", "b", "--file", str(path)], capsys)
+    assert (code, out) == (1, "")
+    assert err == (
+        "lion account remove: account 'b': the keychain tool exited 1, and whether its keychain item is gone "
+        "is unknown; its table is removed, and if the item is still there `security delete-generic-password "
+        "-a b -s lion.account.claude_code` deletes it\n"
+    )
     assert "b" not in [a.name for a in load_pool(path).accounts] and CANARY not in err
 
 
@@ -1400,6 +1484,65 @@ def test_a_command_that_waits_past_its_bound_for_the_pools_lock_is_refused_befor
         assert read == []
     finally:
         os.close(fd)
+
+
+@pytest.mark.parametrize("which", ["pool", "evidence"])
+def test_a_lock_taken_only_after_its_bound_is_refused_before_anything_is_read(tmp_path, monkeypatch, which):
+    import fcntl
+
+    clock = [0.0]
+    tries = []
+
+    def flock(fd, op):  # held by another for the first two tries, free from the third
+        tries.append(clock[0])
+        if len(tries) < 3:
+            raise BlockingIOError
+        return fcntl.flock(fd, op)
+
+    def sleep(seconds):  # a waiter descheduled well past its bound
+        clock[0] += 0.6
+
+    module = account_cli if which == "pool" else accounts
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(
+        module, "fcntl", SimpleNamespace(flock=flock, LOCK_EX=fcntl.LOCK_EX, LOCK_NB=fcntl.LOCK_NB)
+    )
+    lock = (
+        account_cli._locked(tmp_path / "accounts.toml", wait=1.0)
+        if which == "pool"
+        else held(tmp_path / "evidence.json", wait=1.0)
+    )
+    read = []
+    with pytest.raises(AccountsError, match="past 1 seconds"):
+        with lock:
+            read.append(1)
+    assert read == [] and tries == [0.0, 0.6, 1.2]  # the third took it, at 1.2, and let it go
+
+
+def test_a_holder_whose_file_was_replaced_past_its_bound_is_refused_on_the_new_one(tmp_path, monkeypatch):
+    import fcntl
+
+    path = tmp_path / "evidence.json"
+    clock = [0.0]
+    tries = []
+
+    def flock(fd, op):  # the first take lands on a file a writer then replaces, and the holder wakes late
+        tries.append(clock[0])
+        fcntl.flock(fd, op)
+        if len(tries) == 1:
+            (tmp_path / "new").write_text("{}")
+            os.replace(tmp_path / "new", path)
+            clock[0] += 1.5
+
+    monkeypatch.setattr(accounts, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: None))
+    monkeypatch.setattr(
+        accounts, "fcntl", SimpleNamespace(flock=flock, LOCK_EX=fcntl.LOCK_EX, LOCK_NB=fcntl.LOCK_NB)
+    )
+    read = []
+    with pytest.raises(AccountsError, match="past 1 seconds"):
+        with held(path, wait=1.0):
+            read.append(1)
+    assert read == [] and tries == [0.0, 1.5]  # the new file's lock was taken late, so not taken
 
 
 def test_list_shows_each_window_with_its_age_and_source_and_each_mark(tmp_path, keychain, capsys):
@@ -1569,6 +1712,7 @@ def test_a_made_up_token_is_in_nothing_any_command_or_refusal_wrote(tmp_path, ke
     refused(lambda: token("odd"))
     fail.write_text("refuse")
     refused(lambda: store_token("odd", CANARY))
+    fail.write_text("sticky")  # the item stays and reads back there: the table is put back
     assert lion(["account", "remove", "work", "--file", str(path)]) == 1
     fail.write_text("")
     for account, kwargs in (

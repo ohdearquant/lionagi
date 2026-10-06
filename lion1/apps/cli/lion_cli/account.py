@@ -29,6 +29,7 @@ from hub.accounts import (
     Account,
     AccountsError,
     Kept,
+    KeychainUnknown,
     _deletes,
     _label,
     fresh,
@@ -76,17 +77,22 @@ def _locked(path: Path, wait: float = LOCK_WAIT) -> Iterator[None]:
     fd = os.open(path.with_name(f".{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         deadline = time.monotonic() + wait
+        first = True
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
             except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise AccountsError(
-                        f"{path} is being changed by another command past {wait:g} seconds; "
-                        "nothing was written"
-                    ) from None
-                time.sleep(0.01)
+                pass
+            else:
+                if first or time.monotonic() <= deadline:
+                    break
+            first = False
+            # taken late counts as not taken: the command reads nothing past its bound
+            if time.monotonic() > deadline:
+                raise AccountsError(
+                    f"{path} is being changed by another command past {wait:g} seconds; nothing was written"
+                ) from None
+            time.sleep(0.01)
         yield
     finally:
         os.close(fd)
@@ -181,6 +187,10 @@ def _remove(path: Path, name: str) -> tuple[Account, bool]:
         return target, False
     try:
         return target, remove_token(name)
+    except KeychainUnknown as e:  # it may be gone: putting the table back could leave an entry with no item
+        raise AccountsError(
+            f"{e}; its table is removed, and if the item is still there {_deletes(name)}"
+        ) from None
     except AccountsError as e:
         try:
             _write(path, text)

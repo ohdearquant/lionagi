@@ -33,6 +33,7 @@ __all__ = (
     "DEFAULT_POOL",
     "LOCK_WAIT",
     "AccountsError",
+    "KeychainUnknown",
     "Unknown",
     "UNKNOWN",
     "Account",
@@ -78,18 +79,24 @@ _SECURITY = "/usr/bin/security"
 _SERVICE = "lion.account.claude_code"  # the keychain item's service; its account is the pool's name
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
 _MODEL = re.compile(r"[A-Za-z0-9._:/@-]+")
-# a label the pool keeps and shows (a name, a plan group, a probe model) is never shaped as a Claude Code
-# credential, which begins `sk-ant-` and runs past 64 characters, so a token pasted there is refused
+# a label the pool keeps and shows (a name, a plan group, a probe model) never holds a Claude Code
+# credential's start, and a token is taken only in A5's form, `sk-ant-` and past 64 characters, so no
+# token, nor its start anywhere in a label, is kept as one
 _LABEL_MAX = 64
-_LABEL = "letters, digits, '.', '_' and '-', at most 64 of them, not beginning 'sk-ant-'"
+_LABEL = "letters, digits, '.', '_' and '-', at most 64 of them, never holding 'sk-ant-'"
+_TOKEN = re.compile(r"sk-ant-[A-Za-z0-9._-]{58,2041}")
+_TOKEN_FORM = "'sk-ant-' then letters, digits, '-', '_' and '.', 65 to 2048 characters in all"
 _ACCOUNT_HEADER = re.compile(r"\s*\[\[\s*account\s*\]\]\s*(#.*)?$")  # one `[[account]]` line
-_TOKEN_MAX = 2048
 _ACCOUNT_KEYS = ("name", "provider", "credential", "group")
 _MINUTES = {300: "five_hour", 10080: "seven_day"}  # a Codex window is told by its length
 
 
 class AccountsError(Exception):
     pass
+
+
+class KeychainUnknown(AccountsError):
+    """A keychain item whose delete failed and could not be read back: it may or may not be there."""
 
 
 class Unknown:
@@ -148,13 +155,13 @@ def _number(v: Any) -> bool:
 
 
 def _label(value: Any, form: re.Pattern[str] = _NAME) -> bool:
-    """A value the pool keeps and shows as written: `form`'s characters, at most 64, and not beginning as
-    a Claude Code credential does (ADR-0024/C1)."""
+    """A value the pool keeps and shows as written: `form`'s characters, at most 64, and nowhere holding
+    the start of a Claude Code credential (ADR-0024/C1)."""
     return (
         isinstance(value, str)
         and len(value) <= _LABEL_MAX
         and bool(form.fullmatch(value))
-        and not value.lower().startswith("sk-ant-")
+        and "sk-ant-" not in value.lower()
     )
 
 
@@ -180,7 +187,7 @@ def _settings(path: Path, t: Any) -> Settings:
                 raise AccountsError(
                     f"{path}: [pick] probe_model is a table of a model name per provider, "
                     f"{' and '.join(PROVIDERS)}; a model name is letters, digits and '.', '_', ':', '/', "
-                    "'@' and '-', at most 64 of them, not beginning 'sk-ant-'"
+                    "'@' and '-', at most 64 of them, never holding 'sk-ant-'"
                 )
         else:
             raise AccountsError(
@@ -243,9 +250,19 @@ def parse_pool(text: str, path: Path) -> Pool:
         raise AccountsError(f"{path}: account is an array of tables, [[account]]")
     seen: set[str] = set()
     accounts = tuple(_account(f"{path}: account {i}", row, seen) for i, row in enumerate(rows, 1))
-    # `lion account` edits the file by its `[[account]]` lines (D8): an array written inline, or a table
-    # named any other way, would load here and then be refused by every edit, so it is refused here
-    if sum(1 for line in text.splitlines() if _ACCOUNT_HEADER.match(line)) != len(rows):
+    # `lion account` edits the file by its `[[account]]` lines (D8): an array written inline, a table named
+    # any other way, or such a line inside a string would load here and then be refused by every edit, so
+    # the file is read again cut at those lines, and each piece after a cut must be its one account
+    lines = text.splitlines(keepends=True)
+    cuts = [0, *(i for i, line in enumerate(lines) if _ACCOUNT_HEADER.match(line)), len(lines)]
+    try:
+        pieces = [
+            tomllib.loads("".join(lines[a:b])).get("account", [])
+            for a, b in zip(cuts, cuts[1:], strict=False)
+        ]
+    except tomllib.TOMLDecodeError:
+        pieces = None
+    if pieces is None or pieces != [[], *([row] for row in rows)]:
         raise AccountsError(
             f"{path}: each account is its own [[account]] table, its header on a line of its own"
         )
@@ -271,7 +288,7 @@ def _check_name(name: str) -> None:
 
 
 def _shaped(value: Any) -> bool:
-    return isinstance(value, str) and 0 < len(value) <= _TOKEN_MAX and bool(_NAME.fullmatch(value))
+    return isinstance(value, str) and bool(_TOKEN.fullmatch(value))
 
 
 def _exited(out: subprocess.CompletedProcess) -> str:
@@ -321,14 +338,8 @@ def store_token(name: str, value: str) -> None:
     _check_name(name)
     if not isinstance(value, str) or not value:
         raise AccountsError(f"account {name!r}: no token was given; nothing was written")
-    if len(value) > _TOKEN_MAX:
-        raise AccountsError(
-            f"account {name!r}: the token is longer than {_TOKEN_MAX} characters; nothing was written"
-        )
-    if not _NAME.fullmatch(value):
-        raise AccountsError(
-            f"account {name!r}: a token is letters, digits, '-', '_' and '.' only; nothing was written"
-        )
+    if not _shaped(value):  # A5's form only: no label can be one, and nothing else rides the tool's line
+        raise AccountsError(f"account {name!r}: a token is {_TOKEN_FORM}; nothing was written")
     try:
         out = _security(["-i"], f"add-generic-password -U -a {name} -s {_SERVICE} -w {value}\n")
         failed = _exited(out) if out.returncode else None
@@ -337,12 +348,10 @@ def store_token(name: str, value: str) -> None:
     # what `-i` exits with when a command it read fails is not measured, so the item is read back
     try:
         back = _security(["find-generic-password", "-a", name, "-s", _SERVICE, "-w"])
-        written, unread = (
-            back.returncode == 0 and back.stdout.strip() == value,
-            back.returncode not in (0, 44),
-        )
+        held = None if back.returncode not in (0, 44) else back.returncode == 0
+        written = held is True and back.stdout.strip() == value
     except AccountsError:
-        written, unread = False, True
+        held, written = None, False
     if failed is None and written:
         return
     why = failed or "the keychain item did not read back as written"
@@ -352,18 +361,34 @@ def store_token(name: str, value: str) -> None:
             why += "; the item it wrote was deleted"
         except AccountsError:
             why += f"; {_left(name)}"
-    elif unread:
+    elif held is None:
         why += f"; it could not be read back, so {_left(name)}"
+    elif held:  # a part of this token, or an earlier value: which is not known, so it is not deleted
+        why += f"; the item holds another value, which may be a part of the token; {_deletes(name)}"
     raise AccountsError(f"account {name!r}: {why}")
 
 
 def remove_token(name: str) -> bool:
-    """Delete a Claude Code account's keychain item; whether there was one."""
+    """Delete a Claude Code account's keychain item; whether there was one. A delete the tool failed, or
+    that did not answer, is read back, without the secret, since the tool may fail after deleting: an
+    item still there was not deleted, one gone was, and one that cannot be read is `KeychainUnknown`."""
     _check_name(name)
-    out = _security(["delete-generic-password", "-a", name, "-s", _SERVICE])
-    if out.returncode not in (0, 44):
-        raise AccountsError(f"account {name!r}: {_exited(out)}, so its keychain item was not deleted")
-    return out.returncode == 0
+    try:
+        out = _security(["delete-generic-password", "-a", name, "-s", _SERVICE])
+        if out.returncode in (0, 44):
+            return out.returncode == 0
+        failed = _exited(out)
+    except AccountsError as e:
+        failed = str(e)
+    try:
+        back = _security(["find-generic-password", "-a", name, "-s", _SERVICE])  # no -w: no secret
+    except AccountsError:
+        back = None
+    if back is not None and back.returncode == 44:
+        return True
+    if back is not None and back.returncode == 0:
+        raise AccountsError(f"account {name!r}: {failed}, so its keychain item was not deleted")
+    raise KeychainUnknown(f"account {name!r}: {failed}, and whether its keychain item is gone is unknown")
 
 
 def child_env(
@@ -387,6 +412,8 @@ def child_env(
     if token is not None:
         raise AccountsError(f"account {account.name!r} is a Codex account and takes no token")
     if home is not None:
+        if not os.path.isabs(home):  # a relative one names another home once the child's cwd moves
+            raise AccountsError(f"account {account.name!r}: the private home is not an absolute path")
         own = account.credential
         if own == "default":
             own = environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
@@ -526,19 +553,24 @@ def held(path: Path | str, wait: float = LOCK_WAIT) -> Iterator[Book]:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + wait
+    first = True  # once per holder: a file opened anew after a replace gets no fresh pass on its bound
     while True:
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             while True:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise AccountsError(
-                            f"{path} is held by another process past {wait:g} seconds"
-                        ) from None
-                    time.sleep(0.01)
+                    pass
+                else:
+                    if first or time.monotonic() <= deadline:
+                        break
+                finally:
+                    first = False
+                # taken late counts as not taken: the holder reads nothing past its bound
+                if time.monotonic() > deadline:
+                    raise AccountsError(f"{path} is held by another process past {wait:g} seconds") from None
+                time.sleep(0.01)
             # locked on a file a writer has since replaced or removed: the path names another, locked anew
             try:
                 same = os.path.samestat(os.stat(path), os.fstat(fd))
