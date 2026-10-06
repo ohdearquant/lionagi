@@ -294,9 +294,9 @@ commands. `run` and `flow` spawn D1's command with `--notify` set to the server'
 reads `Store.result`, a flow's steps and, with `history`, the messages; for a child it started,
 `child` is `running`, or its exit and the last of its standard error, where a failed mail is named.
 
-- **Landing evidence**: `apps/cli/tests/test_mcp.py`: C5's tests, a child that ends before its id, a
-  call cancelled before it, `result`'s `child` (running, ended, a failed mail, the last of what it
-  said), `result`, and `lion mcp` through `main()`.
+- **Landing evidence**: `apps/cli/tests/test_mcp.py`: C5's tests; a child that ends before its id,
+  or whose pipes a process it started holds; a call cancelled before the id; an id with no newline;
+  `result` with its `child`; `lion mcp` through `main()`.
 
 ### D6: The agent's run continues the last ^d6
 
@@ -392,9 +392,11 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 - **S13**: A command carries one interrupt, wherever it lands after the id: a run or flow still
   going stops, its box's patch is taken whole and the box stopped, and its one mail goes with every
   notice; then it exits 130. The next interrupt stops what it lands in at once: a patch keeps its
-  box and names it, and a mail it stops is said on standard error with `lion result --dir D <id>`.
+  box and names it, a stop names the box, which may run on, and a mail it stops is said on standard
+  error with `lion result --dir D <id>`.
 - **S14**: A reader that has gone costs a run nothing: its lines go to the null device, for the rows
   and the mail carry them.
-- **S15**: A thread started with `lion mcp`'s child reads both its pipes to their end and reaps it,
-  a call cancelled before the id included, and keeps its exit and the last 8 KiB of its standard
-  error for `result`.
+- **S15**: A thread started with `lion mcp`'s child reads both its pipes to their end, or for a
+  second past the child's own end while a process it started holds one, and reaps it, a call
+  cancelled before the id included. It keeps the child's exit and the last 8 KiB of its standard
+  error for `result`; a child that ends with no newline printed has all it printed for its id.

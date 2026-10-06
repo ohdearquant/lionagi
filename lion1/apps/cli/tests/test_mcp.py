@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import sys
 import time
 
@@ -20,7 +21,8 @@ from test_submit import PROFILES, TWO, backends, lion, out
 # profile named `refused` on standard error as the command does, and otherwise prints an id: a `--say=slow`
 # job only once a `print` file appears. A `--say=wait` job then waits for a `go` file before it writes
 # `done`; a `--say=mailfail` job says on standard error that its mail failed, and exits 1; a `--say=chatty`
-# job says more than the server keeps, then a last line, and exits 3.
+# job says more than the server keeps, then a last line, and exits 3. A `--say=bare` job prints its id
+# with no newline; a `--say=forks` job starts a process that holds both its pipes, then exits.
 CHILD = """
 import json, os, sys, time
 from pathlib import Path
@@ -38,7 +40,15 @@ if "--say=slow" in argv:  # the id only once a `print` file appears
         if (here / "print").exists():
             break
         time.sleep(0.05)
+if "--say=bare" in argv:
+    sys.stdout.write(f"{argv[0]}-id")
+    sys.exit(0)
 print(f"{argv[0]}-id", flush=True)
+if "--say=forks" in argv:  # the process it starts inherits both pipes and outlives it
+    import subprocess
+    held = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    (here / "held").write_text(str(held.pid))
+    sys.exit(0)
 if "--say=mailfail" in argv:
     print("the result mail was not sent: KhiveError: comm down", file=sys.stderr, flush=True)
     sys.exit(1)
@@ -244,6 +254,37 @@ def test_the_result_tool_keeps_the_last_of_what_a_child_said(actor_dir, console_
     got = ended(mcp, "run-id")
     assert got["exit"] == 3 and got["said"].endswith("x\nthe last of it\n")
     assert len(got["said"]) == mcp_server._SAID
+
+
+def test_a_child_that_ends_while_a_process_it_started_holds_its_pipes_is_reaped_and_told_ended(
+    actor_dir, console_khive, child
+):
+    here, command = child
+    console_khive.answer(
+        'lion.session_open(id="run-id", source="lion1", actor="console", profile="writer") | '
+        'lion.run_open(id="run-id", profile="writer", session_id="run-id", actor="console")'
+    )
+    mcp = mcp_server.server(actor_dir, lion=command)
+    assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "forks"})).structured_content == {
+        "id": "run-id"
+    }
+    assert waited(here / "held")
+    held = int((here / "held").read_text())
+    try:
+        started = time.monotonic()
+        assert ended(mcp, "run-id") == {"exit": 0, "said": ""}
+        assert time.monotonic() - started < 10  # not when the held pipes end, a minute on
+        assert gone(json.loads((here / "run.json").read_text())["pid"])
+    finally:
+        os.kill(held, signal.SIGKILL)
+
+
+def test_an_id_the_child_wrote_with_no_newline_before_it_ended_is_its_id(actor_dir, child):
+    _, command = child
+    mcp = mcp_server.server(actor_dir, lion=command)
+    assert asyncio.run(mcp.call_tool("run", {"profile": "writer", "say": "bare"})).structured_content == {
+        "id": "run-id"
+    }
 
 
 def test_a_value_that_starts_with_a_dash_reaches_the_command_as_a_value(actor_dir):

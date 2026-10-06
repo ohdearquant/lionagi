@@ -12,6 +12,7 @@ import selectors
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -30,23 +31,32 @@ LION = (sys.executable, "-m", "lion_cli.main")  # the command a child runs: this
 
 
 _SAID = 8192  # bytes of a child's standard error the server keeps: its last
+_LOOK_S = 0.2  # how often a child that writes nothing is looked at, to see whether it has ended
+_LEFT_S = 1.0  # how long what an ended child left in its pipes is read: a process it started may hold one
 
 
 def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], ended: dict[str, Any]) -> None:
     """A child read to its end, in a thread of its own started with it: `first` gets the first line of its
-    standard output and what it wrote on standard error meanwhile, or an empty line when its standard
-    output ended without one; the rest is drained, so the child never waits on a full pipe. Then the
-    pipes close, the child is reaped, and its exit and the last of its standard error are kept in `ended`
-    under its id. A call cancelled while it waited for the id changes none of this."""
+    standard output, or all of it when it ended without a newline, and what it wrote on standard error
+    meanwhile, or an empty line when it printed nothing; the rest is drained, so the child never waits on
+    a full pipe. Its pipes are read until they end, or, once the child has ended, for `_LEFT_S` more,
+    for a process it started may hold them open. Then they close, the child is reaped, and its exit and
+    the last of its standard error are kept in `ended` under its id. A call cancelled while it waited for
+    the id changes none of this."""
     assert child.stdout is not None and child.stderr is not None
     out = err = b""
     line: str | None = None
+    left: float | None = None  # once the child has ended: when reading what it left stops
     try:
         with selectors.DefaultSelector() as ends:
             ends.register(child.stdout, selectors.EVENT_READ)
             ends.register(child.stderr, selectors.EVENT_READ)
             while ends.get_map():
-                for key, _ in ends.select():
+                if left is None and child.poll() is not None:
+                    left = time.monotonic() + _LEFT_S
+                if left is not None and time.monotonic() >= left:
+                    break
+                for key, _ in ends.select(_LOOK_S if left is None else left - time.monotonic()):
                     chunk = os.read(key.fd, 65536)
                     if not chunk:
                         ends.unregister(key.fileobj)
@@ -60,7 +70,10 @@ def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], en
         child.stdout.close()
         child.stderr.close()
         if line is None:
-            first("", err.decode(errors="replace"))
+            line = out.decode() or None  # an id the child wrote without a newline before it ended
+            if line is not None:
+                ended[line] = None
+            first(line or "", err.decode(errors="replace"))
         code = child.wait()
         if line is not None:
             ended[line] = {"exit": code, "said": err.decode(errors="replace")}

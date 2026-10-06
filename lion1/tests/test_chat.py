@@ -748,6 +748,87 @@ def test_a_second_interrupt_stops_a_carried_patch_keeps_the_box_and_names_it(tmp
     assert said[-1].startswith(f"box {box.box_id}: kept, not stopped: interrupted while its patch was taken")
 
 
+def _stopped_while(tmp_path, monkeypatch, *, carry: bool, cancels: int):
+    """`end_box` whose patch is taken at once and whose box's stop waits, cancelled while the box stops,
+    and with `carry` a second time or the stop let go. The box, what was said, and whether the stop was
+    cut by the time `end_box` ended, before the loop's own end cancels what is left."""
+    from lion_cli.chat import end_box
+
+    from tests.test_daytona import ChatBox
+
+    async def ending():
+        stopping, go, cut = asyncio.Event(), asyncio.Event(), []
+
+        async def diff(self, base="HEAD"):
+            return PATCH
+
+        async def stop(self):
+            stopping.set()
+            try:
+                await go.wait()
+            except asyncio.CancelledError:
+                cut.append(True)
+                raise
+            self.stopped = True
+
+        monkeypatch.setattr(ChatBox, "diff", diff)
+        monkeypatch.setattr(ChatBox, "stop", stop)
+        box = ChatBox("img", "/w")
+        said: list[str] = []
+        task = asyncio.create_task(
+            end_box(
+                box,
+                tmp_path,
+                tmp_path / "saved",
+                "c1",
+                baseline="b",
+                apply=False,
+                say=said.append,
+                show=False,
+                carry=carry,
+            )
+        )
+        await stopping.wait()
+        task.cancel()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        if carry:
+            assert not task.done()  # the first is carried: the stop goes on
+            if cancels == 2:
+                task.cancel()
+            else:
+                go.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return box, said, list(cut)
+
+    ChatBox.made.clear()
+    return asyncio.run(ending())
+
+
+STOP_CUT = (
+    "box {}: interrupted while it was stopped; it may still be running, at /w, until the box's idle stop "
+    "deletes it"
+)
+
+
+def test_a_carried_interrupt_while_the_box_stops_waits_for_the_stop_then_is_raised(tmp_path, monkeypatch):
+    box, said, cut = _stopped_while(tmp_path, monkeypatch, carry=True, cancels=1)
+    assert box.stopped and not cut and not any("while it was stopped" in line for line in said)
+    assert (tmp_path / "saved" / "c1.patch").read_text() == PATCH
+
+
+def test_a_second_interrupt_cuts_a_carried_stop_and_names_the_box(tmp_path, monkeypatch):
+    box, said, cut = _stopped_while(tmp_path, monkeypatch, carry=True, cancels=2)
+    assert cut == [True] and not box.stopped and said[-1] == STOP_CUT.format(box.box_id)
+    assert (tmp_path / "saved" / "c1.patch").read_text() == PATCH  # the work was saved before the stop
+
+
+def test_an_interrupt_cuts_a_stop_without_carry_at_once_and_names_the_box(tmp_path, monkeypatch):
+    box, said, cut = _stopped_while(tmp_path, monkeypatch, carry=False, cancels=1)
+    assert cut == [True] and not box.stopped and said[-1] == STOP_CUT.format(box.box_id)
+
+
 def test_a_save_failure_or_a_dead_box_keeps_the_error_and_says_whether_the_box_can_be_reached(
     tmp_path, monkeypatch, capsys
 ):
