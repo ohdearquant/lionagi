@@ -18,7 +18,7 @@ from lion_cli.main import main
 from lion_cli.submit import SubmitError, cast, profile_from
 
 from lion1.actor import DEFAULT_HANDLERS
-from lion1.khive import KhiveError
+from lion1.khive import Khive, KhiveError
 
 PROFILES = """
 [profile.writer]
@@ -471,6 +471,73 @@ def test_a_cancelled_flow_closes_stopped_at_its_step_mails_its_end_and_exits_130
     (mail,) = console_khive.sent
     assert mail["subject"] == f"flow two {flow_id} stopped"
     assert mail["content"].startswith("error: CancelledError\n")
+
+
+def interrupted_at(monkeypatch, prefix: str, armed=lambda: True) -> list[str]:
+    """The first op starting with `prefix`, once `armed()`, cancels the command's own task, as an interrupt
+    landing there would, then goes on and is answered. The ops it cut into."""
+    exec_ = Khive.exec
+    cut: list[str] = []
+
+    async def exec(self, ops: str) -> list:
+        if ops.startswith(prefix) and armed() and not cut:
+            cut.append(ops)
+            (command,) = [
+                t for t in asyncio.all_tasks() if t.get_coro().__name__ in ("run_main", "flow_main")
+            ]
+            command.cancel()
+            for _ in range(3):
+                await asyncio.sleep(0)
+        return await exec_(self, ops)
+
+    monkeypatch.setattr(Khive, "exec", exec)
+    return cut
+
+
+def test_a_run_interrupted_while_its_mail_is_sent_sends_it_once_then_exits_130(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    backends(monkeypatch, **{"fake/writer": lambda m: out("done")})
+    cut = interrupted_at(monkeypatch, "comm.send(")
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 130
+    (run_id,) = console_khive.runs
+    assert cut and console_khive.runs[run_id]["outcome"] == "success"
+    (mail,) = console_khive.sent
+    assert mail["subject"] == f"run {run_id} success"
+    assert capsys.readouterr().out.splitlines()[1] == f"run {run_id} success"  # its end is said
+
+
+def test_a_run_interrupted_while_its_row_is_read_back_still_mails_its_end_then_exits_130(
+    actor_dir, console_khive, monkeypatch
+):
+    failed: list[bool] = []
+
+    async def broken(messages):
+        failed.append(True)
+        raise RuntimeError("the backend broke")
+
+    backends(monkeypatch, **{"fake/writer": broken})
+    cut = interrupted_at(monkeypatch, 'lion.get(table="runs"', armed=lambda: bool(failed))
+    assert lion("run", "--dir", str(actor_dir), "--profile", "writer", "--say", "go") == 130
+    (run_id,) = console_khive.runs
+    assert cut and console_khive.runs[run_id]["outcome"] == "stopped"
+    (mail,) = console_khive.sent
+    assert mail["subject"] == f"run {run_id} stopped"
+    assert mail["content"].startswith("error: RuntimeError: the backend broke\n")
+    assert "could not be read back" not in mail["content"]  # the read-back finished
+
+
+def test_a_flow_interrupted_while_its_mail_is_sent_sends_it_once_then_exits_130(
+    actor_dir, console_khive, monkeypatch
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+    backends(monkeypatch, **{"fake/writer": lambda m: out(said(m).split()[0])})
+    cut = interrupted_at(monkeypatch, "comm.send(")
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert cut and console_khive.runs[flow_id]["outcome"] == "success"
+    (mail,) = console_khive.sent
+    assert mail["subject"] == f"flow two {flow_id} success"
 
 
 def test_a_run_whose_row_was_never_written_says_so_in_its_end_and_its_mail(
