@@ -36,7 +36,7 @@ from lion1 import Actor
 from lion1.checkpoint import LAZY, CheckpointError, Var
 from lion1.khive import KhiveError
 from tests.lionfake import LionFake, routed_config
-from tests.test_areas import call, registry, serve_on
+from tests.test_areas import call, registry, serve_on, servers_end  # noqa: F401 (a fixture)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session_transcript.jsonl"
 AT_TAKE = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)  # the fixture's timed Monitor has not timed out yet

@@ -488,13 +488,25 @@ def registry(root: Path, *desks: Path) -> Path:
 _servers: list = []  # every server a test started, ended by `servers_end` so no thread outlives its test
 
 
+def handlers() -> list[threading.Thread]:
+    """The threads serving a request, a stream's included, of every server in this process."""
+    return [t for t in threading.enumerate() if "process_request_thread" in t.name]
+
+
 @pytest.fixture(autouse=True)
-def servers_end():
+def servers_end(monkeypatch):
+    # ended while the test's patches hold (`monkeypatch` is set up first, so undone last), and every
+    # request's thread joined: a stream left polling would read the next test's world, or the real
+    # programs on PATH, through the khive binary
     yield
     while _servers:
         server = _servers.pop()
         server.shutdown()
         server.server_close()
+    end = time.monotonic() + 30
+    for t in handlers():
+        t.join(max(0.0, end - time.monotonic()))
+    assert not handlers(), f"a request's thread outlived its server: {[t.name for t in handlers()]}"
 
 
 def serve_on(reg: Path, ident=None, allow: list[str] | None = None) -> int:
@@ -1098,9 +1110,6 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     (d / "serve.log").write_text("\n".join(old) + "\na partial")  # the last line is being written
     port = serve_on(registry(tmp_path, d))
 
-    def handlers() -> list[threading.Thread]:
-        return [t for t in threading.enumerate() if "process_request_thread" in t.name]
-
     # a handler of an earlier request can still be ending, so the stream's thread is the one new here
     before = set(handlers())
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -1132,6 +1141,31 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     conn.close()
     stream.join(5)
     assert not stream.is_alive(), "the /events thread outlived its client"
+
+
+@pytest.mark.parametrize("path", ["/events", "/v2/events"])
+@pytest.mark.parametrize("end", ["shutdown", "server_close"])
+def test_a_stream_whose_client_stays_ends_with_its_server(tmp_path, monkeypatch, path, end):
+    # it polls on, no ping falls due, and the client never goes: only the server's end stops it.
+    # `serve` ends with `server_close` alone, after a Ctrl-C, so that ends it too
+    monkeypatch.setattr(areas_cli, "_POLL_S", 0.2)
+    monkeypatch.setattr(areas_cli, "_PING_S", 3600.0)
+    d = app_dir(tmp_path)
+    server = make_server(registry(tmp_path, d), "127.0.0.1", 0, 2)
+    # `shutdown` waits for `serve_forever`; one request served is enough for `server_close`
+    serving = server.serve_forever if end == "shutdown" else server.handle_request
+    threading.Thread(target=serving, daemon=True).start()
+    before = set(handlers())
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    conn.request("GET", path)
+    resp = conn.getresponse()
+    (stream,) = [t for t in handlers() if t not in before]
+    assert resp.status == 200 and stream.is_alive()
+    getattr(server, end)()
+    stream.join(10)
+    assert not stream.is_alive(), f"{path} served on past the server's {end}"
+    server.server_close()
+    conn.close()
 
 
 def open_stream(port: int):

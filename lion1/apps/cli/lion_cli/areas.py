@@ -219,7 +219,7 @@ def make_server(
     `identity`. `/events` streams the rows and the logs live, `POST /control` is the write path back
     onto a resident. A dir the registry does not name is 404 everywhere, so nothing is read,
     written or mailed outside it. Bound, not yet serving: `serve_forever` runs it, `shutdown` then
-    `server_close` end it; `hosts` on it are the names it answers to."""
+    `server_close` end it, its streams included; `hosts` on it are the names it answers to."""
     me, khive = identity or (None, None)
     v2 = Daemon(registry, me, khive)
     # `/v2`'s writes by (method, path, once): a replay is answered the first answer, nothing done twice
@@ -240,6 +240,9 @@ def make_server(
     # one with the higher revision is the later change
     snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None, "rev": 0}
     snapshot_lock = threading.Lock()
+    # set when the server ends: a stream stops after its current wait, never polling on for a client
+    # that may not read again (a handler thread outlives `shutdown`, which only ends `serve_forever`)
+    stopping = threading.Event()
 
     def read_rows() -> None:  # with `snapshot_lock` held
         areas = load_areas(registry)
@@ -437,7 +440,7 @@ def make_server(
             included, has a revision above the last sent, its rows changed or not, its `id` that
             revision; per desk the last `_HISTORY` serve.log lines as history on first sight, then
             each new line; `ping` every `_PING_S`. A write the client is gone for, or stalled on,
-            ends the thread."""
+            ends the thread, and so does the server's end."""
             if not self.opened():
                 return
             emit = self.emit
@@ -462,6 +465,8 @@ def make_server(
                         return
                     next_ping = time.monotonic() + _PING_S
                 time.sleep(_POLL_S)
+                if stopping.is_set():
+                    return
 
         def opened(self) -> bool:
             # an event stream's head, `/events`' and `/v2/events`'; False when the client is gone
@@ -651,6 +656,8 @@ def make_server(
                         return
                     next_ping = time.monotonic() + _PING_S
                 time.sleep(_POLL_S)
+                if stopping.is_set():
+                    return
 
         def _send(self) -> None:
             wants_json = self.wants_json()
@@ -844,7 +851,16 @@ def make_server(
         def log_message(self, fmt: str, *args) -> None:  # one line per request is noise here
             pass
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    class Server(ThreadingHTTPServer):
+        def shutdown(self) -> None:
+            stopping.set()
+            super().shutdown()
+
+        def server_close(self) -> None:  # `serve` ends with this alone, after a Ctrl-C
+            stopping.set()
+            super().server_close()
+
+    server = Server((host, port), Handler)
     bound = server.server_address[1]
     hosts.update({f"{host}:{bound}", f"127.0.0.1:{bound}", f"localhost:{bound}"})
     for a in allow or []:
