@@ -154,6 +154,42 @@ def test_a_sandbox_whose_run_was_cut_before_it_was_sent_has_nothing_to_stop(tmp_
     assert "run" not in calls and "stop" not in calls and "delete" not in calls
 
 
+@pytest.mark.parametrize(
+    ("listed", "raises"),
+    [
+        ((0, '[{"configuration": {"id": "NAME"}}]'), True),  # still there: the stop failed
+        ((0, "[]"), False),  # never made: a `run` cut before it made one leaves nothing to delete
+        ((0, '[{"configuration": {"id": "NAME-2"}}]'), False),  # another, whose name begins with this one
+        ((1, ""), True),  # the list cannot be read: whether it runs is not known
+    ],
+)
+def test_a_stop_whose_delete_fails_raises_while_its_container_may_still_be_there(tmp_path, listed, raises):
+    calls = []
+
+    class Stuck(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv[0])
+            if argv[0] == "delete":
+                return 1, "", "made-up: container is busy"
+            if argv[0] == "list":
+                return listed[0], listed[1].replace("NAME", self.name), ""
+            return 1 if argv[0] == "stop" else 0, "", ""
+
+    box = Stuck(tmp_path, "lion-test-stuck", launched=True)
+
+    async def go():
+        if raises:
+            with pytest.raises(RuntimeError, match="sandbox lion-test-stuck: its delete exited 1: made-up"):
+                await box.stop()
+            assert box.launched  # a later stop tries again
+        else:
+            await box.stop()
+            assert not box.launched and not box.started
+
+    asyncio.run(go())
+    assert calls == ["stop", "delete", "list"]
+
+
 def test_a_first_interrupt_in_the_containers_run_lets_it_answer_before_the_stop(tmp_path):
     calls = []
 

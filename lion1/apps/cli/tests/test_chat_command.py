@@ -479,11 +479,13 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
 
 
+@pytest.mark.parametrize("deleted", [True, False])
 def test_an_interrupt_as_the_sandbox_starts_stops_the_container_its_run_made(
-    tmp_path, monkeypatch, console_khive
+    tmp_path, monkeypatch, console_khive, capsys, deleted
 ):
     """Ctrl-C while the local sandbox starts, before the console takes Ctrl-C itself: the container's
-    `run` answers, then the sandbox is stopped and deleted, and the interrupt goes on."""
+    `run` answers, then the sandbox is stopped and deleted, and the interrupt goes on. A delete that
+    fails with the container still listed is named, and the interrupt still goes on."""
     import lion_cli.chat as cli
 
     from hub.tools.shell import Sandbox
@@ -496,14 +498,52 @@ def test_an_interrupt_as_the_sandbox_starts_stops_the_container_its_run_made(
             (chatting,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "chat_main"]
             chatting.cancel()  # the first interrupt, as `asyncio.run`'s own SIGINT handler gives it
             await asyncio.sleep(0.01)
-        return 0, {"image": self.image, "volume": self.volume}.get(argv[0], ""), ""
+        if argv[0] == "delete" and not deleted:
+            return 1, "", "made-up: container is busy"
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
 
     monkeypatch.setattr(Sandbox, "_cli", container)
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("never asked"))
     args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(chat_main(parser().parse_args(args)))
-    assert calls == ["image", "volume", "run", "stop", "delete"]
+    said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
+    if deleted:
+        assert calls == ["image", "volume", "run", "stop", "delete"] and "its stop failed" not in said
+    else:
+        assert calls == ["image", "volume", "run", "stop", "delete", "list"]
+        assert re.search(
+            r"sandbox \S+: its stop failed \(RuntimeError: sandbox \S+: its delete exited 1: ", said
+        )
+        assert "it may still run" in said
+
+
+def test_a_sandbox_whose_stop_fails_as_the_conversation_ends_is_named_and_the_conversation_closes(
+    tmp_path, monkeypatch, console_khive, capsys
+):
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if argv[0] == "delete":
+            return 1, "", "made-up: container is busy"
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
+    log = tmp_path / "chat.jsonl"
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--shell", "--say", "hi", "--turns", "1"]
+    asyncio.run(chat_main(parser().parse_args(args)))
+    said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
+    assert calls == ["image", "volume", "run", "stop", "delete", "list"]
+    assert re.search(r"sandbox \S+: its stop failed \(RuntimeError: sandbox \S+: its delete exited 1: ", said)
+    assert "it may still run" in said and said.index("it may still run") < said.index("ended ")
 
 
 def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(

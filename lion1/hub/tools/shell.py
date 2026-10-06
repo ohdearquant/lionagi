@@ -145,9 +145,19 @@ class Sandbox(BoxBase):
         return {"rc": rc, "stdout": out, "stderr": err, "elapsed": elapsed, "timed_out": timed_out}
 
     async def stop(self) -> None:
+        """Stop and delete the container once its `run` was sent, even when that `run` never answered.
+        Such a `run` may have made nothing, so a delete that fails counts only while the container is
+        still listed after it, or the list cannot be read: then this raises, and a later stop tries
+        again."""
         if self.started or self.launched:  # a `run` whose answer never came may have made it
             await self._cli("stop", self.name, timeout=60)
-            await self._cli("delete", self.name, timeout=60)
+            rc, out, err = await self._cli("delete", self.name, timeout=60)
+            if rc != 0:
+                listed, names, _ = await self._cli("list", "--all", "--format", "json", timeout=60)
+                if listed != 0 or f'"{self.name}"' in names:  # the name as a whole value
+                    raise RuntimeError(
+                        f"sandbox {self.name}: its delete exited {rc}: {(err or out).strip()[-200:]}"
+                    )
             self.started = self.launched = False
 
 

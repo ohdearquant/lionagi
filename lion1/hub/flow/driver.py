@@ -251,9 +251,11 @@ async def run_flow(
     pending: BaseException | None = None
     idx = 0
     step: Step | None = None
+    told = False  # the flow's id was given to `opened`
     opening = asyncio.ensure_future(store.open_flow(flow_id, flow.name, "flow", trigger=trigger))
     try:
         await _carried(opening, flow_id, "open", None)
+        told = True
         opened(f"flow {flow.name}", flow_id)
         for step, read_from in zip(flow.steps, reads, strict=True):
 
@@ -302,6 +304,9 @@ async def run_flow(
         failed = failed or (step.name if step is not None else None)
         output = {"failed": failed, "error": type(e).__name__}
         pending = e
+        if not told:  # an interrupt the open carried: the row it opened is given, as it closes stopped
+            told = True
+            opened(f"flow {flow.name}", flow_id)
         raise
     finally:
         if _answered(opening):
@@ -317,8 +322,9 @@ def _answered(op: asyncio.Future[None]) -> bool:
 async def _carried(op: asyncio.Future[None], flow_id: str, what: str, pending: BaseException | None) -> None:
     """The flow's open or close (ADR-0026 S21). An interrupt that lands in it, the command's first, lets
     it finish and goes on after it; a second cuts it, and says the row may stay open: a cancel that comes
-    after a `KeyboardInterrupt`, which only a second SIGINT raises, is one. One that fails as the flow
-    ends on an error or an interrupt is noted on that, which goes on in its place."""
+    after a `KeyboardInterrupt`, which only a second SIGINT raises, is one. So does one whose own task the
+    loop's end cancelled first, whatever the store had done by then. One that fails as the flow ends on
+    an error or an interrupt is noted on that, which goes on in its place."""
     try:
         try:
             await asyncio.shield(op)
@@ -331,7 +337,7 @@ async def _carried(op: asyncio.Future[None], flow_id: str, what: str, pending: B
             raise
     except (asyncio.CancelledError, KeyboardInterrupt) as e:
         cut = pending if isinstance(pending, KeyboardInterrupt) else e  # the second goes on, not the first
-        if not op.done():
+        if not op.done() or op.cancelled():
             cut.add_note(f"flow {flow_id}: its {what} was cut, so its row may stay open")
         if cut is e:
             raise

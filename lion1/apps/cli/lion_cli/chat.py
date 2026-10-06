@@ -653,7 +653,12 @@ async def _chat_main(
         try:
             await sandbox.start()
         except BaseException:  # a container its `run` made is stopped: no conversation has begun in it
-            await asyncio.shield(sandbox.stop())
+            try:
+                await asyncio.shield(sandbox.stop())
+            except Exception as e:  # named, and the start's own end goes on
+                say.notice(
+                    f"sandbox {sandbox.name}: its stop failed ({type(e).__name__}: {e}); it may still run"
+                )
             raise
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
     off_turn = actor.bus.subscribe("turn.started", lambda ev: say.working("thinking"))
@@ -698,7 +703,13 @@ async def _chat_main(
                         sandbox, directory, chats, chat_id, baseline=baseline, apply=a.apply, say=say.notice
                     )
                 else:
-                    await asyncio.shield(sandbox.stop())
+                    try:
+                        await asyncio.shield(sandbox.stop())
+                    except Exception as e:  # named; the conversation still closes
+                        say.notice(
+                            f"sandbox {sandbox.name}: its stop failed ({type(e).__name__}: {e}); "
+                            "it may still run"
+                        )
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
