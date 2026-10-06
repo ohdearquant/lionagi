@@ -283,8 +283,8 @@ def main(argv: list[str] | None = None) -> None:
     elif a.command == "chat":
         try:
             asyncio.run(chat_main(a))
-        except KeyboardInterrupt:
-            pass
+        except (KeyboardInterrupt, asyncio.CancelledError):  # one that ends it before its close: 130 too
+            raise SystemExit(130) from None
     elif a.command in ("run", "flow", "result"):
         act = {"run": run_main, "flow": flow_main, "result": result_main}[a.command]
         try:

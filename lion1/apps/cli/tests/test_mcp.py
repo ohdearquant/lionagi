@@ -22,7 +22,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from test_submit import PROFILES, TWO, backends, lion, out
 
 # A stand-in for `lion run` and `lion flow`: it keeps its argv and what it was started with, refuses a
-# profile named `refused` on standard error as the command does, and otherwise prints an id: a `--say=slow`
+# profile named `refused` on standard error as the command does, and one named `blank` too, then prints a
+# blank line, which is no id; otherwise it prints an id: a `--say=slow`
 # job only once a `print` file appears. A `--say=wait` job then waits for a `go` file before it writes
 # `done`; a `--say=mailfail` job says on standard error that its mail failed, and exits 1; a `--say=chatty`
 # job says more than the server keeps, then a last line, and exits 3. A `--say=bare` job prints its id
@@ -39,8 +40,11 @@ null = os.stat(os.devnull)
     "argv": argv, "pid": os.getpid(), "own_session": os.getsid(0) == os.getpid(),
     "stdin_null": os.path.samestat(os.fstat(0), null),
 }))
-if "--profile=refused" in argv:
-    print("lion run: profiles.toml has no [profile.refused]", file=sys.stderr, flush=True)
+if "--profile=refused" in argv or "--profile=blank" in argv:
+    name = "blank" if "--profile=blank" in argv else "refused"
+    print(f"lion run: profiles.toml has no [profile.{name}]", file=sys.stderr, flush=True)
+    if name == "blank":
+        print(flush=True)
     sys.exit(1)
 if "--say=slow" in argv:  # the id only once a `print` file appears
     for _ in range(600):
@@ -205,11 +209,13 @@ def test_the_mcp_run_tool_returns_the_id_once_printed_and_the_child_runs_on(acto
     assert console_khive.sent == [] and sorted(p.name for p in actor_dir.iterdir()) == before
 
 
+@pytest.mark.parametrize("profile", ["refused", "blank"])
 @pytest.mark.parametrize("late", [False, True])
 def test_a_child_that_ends_before_its_id_fails_the_call_with_what_it_said(
-    actor_dir, child, monkeypatch, late
+    actor_dir, child, monkeypatch, late, profile
 ):
-    # late: its reader starts once it has said it and ended, both pipes waiting with its end
+    # late: its reader starts once it has said it and ended, both pipes waiting with its end; blank: its
+    # first line on standard output is empty, which is no id either
     here, command = child
     if late:
         watch = mcp_server._watch
@@ -223,8 +229,8 @@ def test_a_child_that_ends_before_its_id_fails_the_call_with_what_it_said(
 
         monkeypatch.setattr(mcp_server, "_watch", after_its_end)
     mcp = mcp_server.server(actor_dir, lion=command)
-    with pytest.raises(ToolError, match=r"lion run: profiles.toml has no \[profile.refused\]"):
-        asyncio.run(mcp.call_tool("run", {"profile": "refused", "say": "go"}))
+    with pytest.raises(ToolError, match=rf"lion run: profiles.toml has no \[profile.{profile}\]"):
+        asyncio.run(mcp.call_tool("run", {"profile": profile, "say": "go"}))
 
 
 def test_a_child_that_closes_its_output_with_no_id_fails_the_call_at_once_and_is_still_reaped(

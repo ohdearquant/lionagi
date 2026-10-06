@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
-from lion_cli.main import parser
+from lion_cli.main import main, parser
 from lion_cli.view import RESULT_LINES, Console
 from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, model_serializer
 
@@ -524,7 +524,7 @@ def test_a_sandbox_whose_stop_is_cut_by_another_interrupt_is_named_as_it_may_sti
     tmp_path, monkeypatch, console_khive, capsys, ending
 ):
     """Ctrl-C again while the local sandbox stops, at a start that was cut or as the conversation ends:
-    the stop is cut, and the sandbox is named, for it may still run; the interrupt goes on."""
+    the stop is cut, and the sandbox is named, for it may still run; the command exits 130 either way."""
     import lion_cli.chat as cli
 
     from hub.tools.shell import Sandbox
@@ -547,13 +547,47 @@ def test_a_sandbox_whose_stop_is_cut_by_another_interrupt_is_named_as_it_may_sti
     monkeypatch.setattr(cli.os, "_exit", leave)
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
     args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
-    with pytest.raises(SystemExit if ending else asyncio.CancelledError) as left:
-        asyncio.run(chat_main(parser().parse_args([*args, "--turns", "1"])))
+    with pytest.raises(SystemExit) as left:  # through the command's own entry, which gives its exit status
+        main([*args, "--turns", "1"])
     said = " ".join("".join(capsys.readouterr()).split())  # the console wraps at its width
-    assert calls == ["image", "volume", "run", "stop"]
+    assert calls == ["image", "volume", "run", "stop"] and left.value.code == 130
     assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
-    if ending:
-        assert left.value.code == 130 and "interrupted ·" in said
+    assert ("interrupted ·" in said) is ending  # a cut start never opened the conversation's close
+
+
+def test_a_start_cut_by_two_real_interrupts_names_the_sandbox_and_exits_130(
+    tmp_path, monkeypatch, console_khive, capsys
+):
+    """The interrupts as a terminal sends them: the first, as the container's `run` is sent, cancels the
+    command, and the second, as its sandbox stops, is the `KeyboardInterrupt` `asyncio.run` raises."""
+    import signal
+
+    import lion_cli.chat as cli
+
+    from hub.tools.shell import Sandbox
+
+    calls = []
+
+    async def container(self, *argv, stdin=None, timeout=None):
+        calls.append(argv[0])
+        if argv[0] in ("run", "stop"):
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.sleep(30)
+        listing = {"image": self.image, "volume": self.volume, "list": f'[{{"id": "{self.name}"}}]'}
+        return 0, listing.get(argv[0], ""), ""
+
+    monkeypatch.setattr(Sandbox, "_cli", container)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("never asked"))
+    args = ["chat", "--dir", str(tmp_path), "--log", str(tmp_path / "chat.jsonl"), "--shell", "--say", "hi"]
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)  # `asyncio.run` takes it only then
+    try:
+        with pytest.raises(SystemExit) as left:
+            main([*args, "--turns", "1"])
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    said = " ".join("".join(capsys.readouterr()).split())
+    assert calls == ["image", "volume", "run", "stop"] and left.value.code == 130
+    assert re.search(r"sandbox \S+: interrupted while it was stopped; it may still run", said)
 
 
 def test_a_sandbox_whose_stop_fails_as_the_conversation_ends_is_named_and_the_conversation_closes(

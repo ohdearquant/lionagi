@@ -98,6 +98,7 @@ def _watch(child: subprocess.Popen[bytes], first: Callable[[str, str], None], en
 
     def tell(said: str | None) -> None:
         nonlocal line, told, err
+        said = said or None  # a blank first line is no id either
         if said is None and not child.stderr.closed:  # what it said first is read: it may say why
             n = _unread(child.stderr)
             while n > 0 and (chunk := os.read(child.stderr.fileno(), n)):
