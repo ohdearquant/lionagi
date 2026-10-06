@@ -30,6 +30,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 import tomllib
 import uuid
@@ -1353,7 +1354,8 @@ class Agent:
         counted = spend.get("unknown") if same_day else 0
         row = {
             "day": day,
-            "cost": (spend.get("cost", 0.0) if same_day else 0.0) + cost,
+            # a sum past a float's range is past any cap, and the note takes no infinity: the largest float
+            "cost": min((spend.get("cost", 0.0) if same_day else 0.0) + cost, sys.float_info.max),
             "unknown": None if counted is None else counted + unknown,
             "wakes": wakes,
             "calls": (spend.get("calls", 0) if same_day else 0) + calls,

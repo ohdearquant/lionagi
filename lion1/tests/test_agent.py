@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import itertools
 import json
+import math
 import os
 import re
 import subprocess
@@ -909,6 +910,29 @@ def test_a_malformed_cost_figure_adds_nothing_and_counts_as_a_call_of_unknown_co
     khive.mail.append(mail("lambda:a", "go", mid="m3"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == "$0.6000 spent today (partial: 1 call(s) of unknown cost) (cap $0.5); next day"
+
+
+def test_a_days_spend_past_a_floats_range_is_kept_as_the_largest_float(store):
+    # two figures that each serve can sum past what a float holds: the row keeps the largest float, past
+    # any cap, where an infinite sum could not be written at all
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [{"total_cost_usd": 1.7e308}, {"total_cost_usd": 1.7e308}]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    backend = Billed(DONE, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    budget = Budget(cost_per_day=math.inf)
+    agent = Agent(actor, khive, backend, profile_for, budget=budget, clock=lambda: now[0])
+    for n in range(2):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    assert agent.state.get("spend").value["cost"] == sys.float_info.max
 
 
 def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end(
