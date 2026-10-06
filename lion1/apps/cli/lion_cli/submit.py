@@ -262,6 +262,16 @@ async def _through(aw: Awaitable[_T]) -> tuple[_T, BaseException | None]:
         return await task, e
 
 
+def _stopped_before_its_end(what: str, directory: Path, run_id: str) -> None:
+    """A second interrupt, through `_through`, stops the end at once: the rows have closed, the mail may
+    not have gone, and standard error says so with the command that reads the row."""
+    _emit(
+        f"{what} stopped before its end: its result mail may not have gone; "
+        f"lion result --dir {shlex.quote(str(directory))} {run_id} reads its row",
+        sys.stderr,
+    )
+
+
 def _why(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
 
@@ -383,7 +393,11 @@ async def run_main(a: argparse.Namespace) -> int:
         )
         return unread, mailed
 
-    (unread, mailed), late = await _through(end())
+    try:
+        (unread, mailed), late = await _through(end())
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        _stopped_before_its_end(f"run {run_id}", directory, run_id)
+        raise
     interrupted = interrupted or late
     code = _ended("run", run_id, outcome, output, None, mailed, error)
     if unread is not None:
@@ -430,18 +444,22 @@ async def flow_main(a: argparse.Namespace) -> int:
         error, interrupted = _why(e), e
     if ended is None:
         ended = Ended(flows[0], "stopped", None, None)
-    mailed, late = await _through(
-        result_mail(
-            store.khive,
-            to,
-            f"flow {flow.name} {ended.id} {ended.outcome}",
-            ended.output,
-            directory,
-            ended.id,
-            thread=a.thread,
-            error=error,
+    try:
+        mailed, late = await _through(
+            result_mail(
+                store.khive,
+                to,
+                f"flow {flow.name} {ended.id} {ended.outcome}",
+                ended.output,
+                directory,
+                ended.id,
+                thread=a.thread,
+                error=error,
+            )
         )
-    )
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        _stopped_before_its_end(f"flow {flow.name} {ended.id}", directory, ended.id)
+        raise
     interrupted = interrupted or late
     code = _ended(f"flow {flow.name}", ended.id, ended.outcome, ended.output, ended.failed, mailed, error)
     if interrupted is not None:
