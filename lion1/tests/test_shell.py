@@ -222,6 +222,10 @@ NAT = json.dumps([{"id": "lion-offline", "configuration": {"mode": "nat"}}])
         ([(0, json.dumps([{"id": "lion-offline", "configuration": "hostOnly"}]))], False, False),
         ([(0, json.dumps([{"id": "lion-offline"}]))], False, False),
         ([(0, "7"), (0, '{"id": "lion-offline"}')], True, False),  # JSON that lists no network
+        ([(1, HOST_ONLY), (1, HOST_ONLY)], True, False),  # an inspect that failed found nothing
+        ([(0, json.dumps(json.loads(HOST_ONLY) + json.loads(NAT)))], False, False),  # two of the name
+        ([(0, json.dumps(json.loads(NAT) + json.loads(HOST_ONLY)))], False, False),
+        ([(0, HOST_ONLY[1:-1]), (0, HOST_ONLY[1:-1])], True, False),  # the network alone, in no list
     ],
 )
 def test_an_offline_sandbox_attaches_only_a_network_the_cli_says_is_host_only(

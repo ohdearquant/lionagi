@@ -96,13 +96,14 @@ class Sandbox(BoxBase):
         host-only: one of that name made without `--internal` would hand the VM its egress back."""
         mode = None
         for made in (False, True):
-            _, out, _ = await self._cli("network", "inspect", OFFLINE_NETWORK)
-            try:
-                found = [n for n in json.loads(out) if isinstance(n, dict) and n.get("id") == OFFLINE_NETWORK]
+            rc, out, _ = await self._cli("network", "inspect", OFFLINE_NETWORK)
+            try:  # an inspect that failed found nothing, whatever it printed
+                found = [n for n in json.loads(out if rc == 0 else "[]") if isinstance(n, dict)]
+                found = [n for n in found if n.get("id") == OFFLINE_NETWORK]
             except (ValueError, TypeError):  # no JSON, or none that lists networks
                 found = []
-            if found:
-                config = found[0].get("configuration")
+            if found:  # two of the name are not one network whose mode can be read
+                config = found[0].get("configuration") if len(found) == 1 else None
                 mode = config.get("mode") if isinstance(config, dict) else None
                 break
             if not made:
