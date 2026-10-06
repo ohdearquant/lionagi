@@ -66,7 +66,11 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         action="store_true",
         help="give the model bash and python in a Linux VM over this directory",
     )
-    ch.add_argument("--offline", action="store_true", help="the VM gets no network (with --shell)")
+    ch.add_argument(
+        "--offline",
+        action="store_true",
+        help="the VM gets a host-only network: no DNS, no internet (with --shell)",
+    )
     ch.add_argument(
         "--box",
         choices=("vm", "daytona"),

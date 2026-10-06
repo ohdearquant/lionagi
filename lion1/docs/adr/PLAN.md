@@ -137,7 +137,7 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   and delivery across processes are below the boundary; no budget is shared across peers (0010 S4, S5).
 - One box shape whatever runs the command: `exec` with the streams apart and rc 137 at the timeout, `run`
   under pipefail with 124; a command touches the box and nothing else of the host; the network is on by
-  default and `--offline` is none (0011 C1, C2, D4).
+  default and `--offline` is host-only (0011 C1, C2, D4, S20).
 - Three coding tools over a tree that may be anywhere; an edit lands once, verbatim, keeping each line's
   ending; the watch reports the change as the tree shows it and a finish is accepted only after a command
   ran against it; the patch is printed and saved and lands only on `--apply` (0011 C3, C4, C5, C6).
@@ -227,7 +227,7 @@ area) · steward (who hears instrument failures).
 - Backends and the turn (0004, 0009, done): a native tool call is read back as the LNDL tag the model
   wrote, or as an `auto_` lact, and is then dispatched like any command; "never depends on native tool
   calling" means no schema is forwarded, not that a rewritten call is inert.
-- The sandbox (0011, done): network on by default, `--offline` for none; the VM has egress.
+- The sandbox (0011, done): network on by default, with egress; `--offline` host-only, without it.
 - The watch (0011, done): an edited test still counts as a command run (0011 S5).
 - Delegation vs the agent (0010, 0013, done): in-process peers (one process, several actors, the bench) and
   the long-running agent (one identity per process) are two layers; 0010 says which applies where, 0013

@@ -23,7 +23,7 @@ from .box import Box, BoxBase
 __all__ = ("IMAGE", "OFFLINE_NETWORK", "SANDBOX_DIR", "Bash", "Python", "Sandbox", "shell", "host_zone")
 
 IMAGE = "lion-sandbox"
-OFFLINE_NETWORK = "lion-offline"  # `container network create --internal`: no DNS, no egress, no host
+OFFLINE_NETWORK = "lion-offline"  # `container network create --internal`: host-only, no DNS, no egress
 SANDBOX_DIR = Path(__file__).resolve().parent / "sandbox"  # the Dockerfile the image is built from
 
 
@@ -52,7 +52,7 @@ class Sandbox(BoxBase):
     name: str  # the container's name; one per conversation
     prelude: str = ""
     image: str = IMAGE
-    offline: bool = False  # the internal network: no DNS, no egress; else the default network
+    offline: bool = False  # the host-only network: no DNS, no egress; else the default network
     cpus: int = 2
     memory: str = "4G"
     volume: str = "lion-sandbox-opt"  # /opt across conversations: uv's environment and cache

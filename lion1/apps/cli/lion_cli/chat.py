@@ -126,7 +126,7 @@ def console(
         if about_box is not None:
             about_sandbox = about_box
         else:
-            network = " The VM has no network." if getattr(sandbox, "offline", False) else ""
+            network = " The VM has no internet and no DNS." if getattr(sandbox, "offline", False) else ""
             about_sandbox = guidance("sandbox", network=network)
     if coding:
         specs |= code(actor, tree)
@@ -649,7 +649,9 @@ async def _chat_main(
     elif sandbox is not None:
         if (build := await sandbox.ensure_image()) is not None:
             raise SystemExit(f"the sandbox image {sandbox.image} did not build:\n{build}")
-        say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
+        say.notice(
+            f"sandbox {sandbox.name}: a VM over {directory}" + (", host-only network" if a.offline else "")
+        )
         try:
             await sandbox.start()
         except BaseException:  # a container its `run` made is stopped: no conversation has begun in it

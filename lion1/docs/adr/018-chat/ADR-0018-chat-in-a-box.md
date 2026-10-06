@@ -115,9 +115,9 @@ or one at an empty prompt, ends the chat.
 Every chat gets `read` and `list_dir` over its tree, and the context and note commands. `khive_ops`
 comes when the directory's khive config names an actor, bounded to an allow list, sending to no one.
 `--shell` adds `bash` and `python` in a local VM mounting the directory at its own path; `--offline`
-cuts that VM's network. `--code` adds `read_lines`, `search` and `edit`, and the VM when there is no
-box. In a boxed chat `bash` and `python` run in the remote box, and the file and code tools work its
-copy.
+cuts that VM's internet. `--code` adds `read_lines`, `search` and `edit`, and the VM when there is
+no box. In a boxed chat `bash` and `python` run in the remote box, and the file and code tools work
+its copy.
 
 The guidance is `hub/guidance/console.md` holding `sandbox.md` for the VM or `box.md` for the box,
 then with `--code` `code.md`: the root, the branch and the root's `AGENTS.md` and `CLAUDE.md`.
