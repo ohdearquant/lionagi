@@ -250,6 +250,7 @@ async def run_flow(
     opened(f"flow {flow.name}", flow_id)
     done: dict[str, tuple[Any, Any]] = {}
     outcome, output, failed = "stopped", None, None
+    pending: BaseException | None = None
     idx = 0
     step = flow.steps[0]
     try:
@@ -297,7 +298,37 @@ async def run_flow(
     except BaseException as e:  # a cancel or an interrupt: the flow closes stopped at the step it was on
         failed = failed or step.name
         output = {"failed": failed, "error": type(e).__name__}
+        pending = e
         raise
     finally:
-        await asyncio.shield(store.close_flow(flow_id, outcome, output))
+        await _close(store, flow_id, outcome, output, pending)
     return Ended(flow_id, outcome, output, failed)
+
+
+async def _close(
+    store: Store, flow_id: str, outcome: str, output: Any, pending: BaseException | None
+) -> None:
+    """The flow's row closed at its end (ADR-0026 S21). An interrupt that lands in the close, the task's
+    first, lets it finish and goes on after it; a second, or a `KeyboardInterrupt`, cuts it and says the
+    row may stay open. A close that fails as the flow ends on an error or an interrupt is noted on that,
+    which goes on in its place."""
+    close = asyncio.ensure_future(store.close_flow(flow_id, outcome, output))
+    try:
+        try:
+            await asyncio.shield(close)
+        except asyncio.CancelledError as e:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 1:
+                raise
+            pending = e
+            await asyncio.shield(close)
+            raise
+    except (asyncio.CancelledError, KeyboardInterrupt) as e:
+        if not close.done():
+            e.add_note(f"flow {flow_id}: its close was cut, so its row may stay open")
+        raise
+    except Exception as e:
+        if pending is None:
+            raise
+        pending.add_note(f"flow {flow_id}: its close failed ({type(e).__name__}: {e}); its row may stay open")
+        raise pending from e

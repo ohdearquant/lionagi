@@ -200,8 +200,10 @@ async def cast(
                     f"box {ident or '?'}: kept, not stopped: interrupted twice before its patch was taken; "
                     f"the work is there, at {sandbox.workdir}, until the box's idle stop deletes it"
                 )
-            else:
+            elif getattr(sandbox, "launched", True):  # its container's `run` was sent
                 say(f"sandbox {sandbox.name}: interrupted twice before it was stopped; it may be running")
+            else:
+                say(f"sandbox {sandbox.name}: interrupted twice before its container was started; none runs")
         elif started:
             try:
                 if boxed and runs:  # the patch first, named by the run: stop deletes the box
@@ -514,11 +516,15 @@ async def flow_main(a: argparse.Namespace) -> int:
     except Exception as e:  # the driver closed the flow stopped; the mail says why
         if not flows:
             raise
+        for note in getattr(e, "__notes__", ()):
+            say(note)
         error = _why(e)
     except BaseException as e:  # a cancellation: the same, and then it goes on up
         if not flows:
             raise
-        if _second(e):  # in a step's box's end: nothing after it, the mail included
+        for note in getattr(e, "__notes__", ()):  # what the flow's close left, when it was cut or failed
+            say(note)
+        if _second(e):  # in a step's box's end or the flow's close: nothing after it, the mail included
             _stopped_before_its_end(f"flow {flow.name} {flows[0]}", directory, flows[0])
             raise
         error, interrupted = _why(e), e

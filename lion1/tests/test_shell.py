@@ -99,3 +99,54 @@ def test_every_real_box_test_is_opt_in():
     ):
         (mark,) = [m for m in fn.pytestmark if m.name == "skipif"]
         assert os.environ.get(var) == "1" or mark.args[0], f"{fn.__name__} runs without {var}=1"
+
+
+@pytest.mark.parametrize(("cut_at", "stops"), [("volume", False), ("run", True)])
+def test_a_sandbox_whose_start_was_cut_stops_a_container_once_its_run_was_sent(tmp_path, cut_at, stops):
+    calls = []
+
+    class Cut(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv[0])
+            if argv[0] == cut_at:
+                raise asyncio.CancelledError  # an interrupt landing in this command
+            return 0, "", ""
+
+    box = Cut(tmp_path, "lion-test-cut")
+
+    async def go():
+        with pytest.raises(asyncio.CancelledError):
+            await box.start()
+        assert not box.started and box.launched is stops
+        calls.clear()
+        await box.stop()
+
+    asyncio.run(go())
+    assert calls == (["stop", "delete"] if stops else [])
+    assert not box.launched and not box.started
+
+
+def test_a_first_interrupt_in_the_containers_run_lets_it_answer_before_the_stop(tmp_path):
+    calls = []
+
+    class Slow(Sandbox):
+        async def _cli(self, *argv, stdin=None, timeout=None):
+            calls.append(argv[0])
+            if argv[0] == "run":
+                await asyncio.sleep(0.1)
+                calls.append("run answered")
+            return 0, "", ""
+
+    box = Slow(tmp_path, "lion-test-slow")
+
+    async def go():
+        start = asyncio.ensure_future(box.start())
+        while "run" not in calls:
+            await asyncio.sleep(0.005)
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+        await box.stop()
+
+    asyncio.run(go())
+    assert calls[-4:] == ["run", "run answered", "stop", "delete"]

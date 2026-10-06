@@ -58,6 +58,7 @@ class Sandbox(BoxBase):
     volume: str = "lion-sandbox-opt"  # /opt across conversations: uv's environment and cache
     cli: str = field(default_factory=lambda: shutil.which("container") or "container")
     started: bool = False
+    launched: bool = False  # its container's `run` was sent: from then one may exist
 
     @property
     def workdir(self) -> str:  # the directory is mounted at its own path: the same string inside
@@ -104,7 +105,15 @@ class Sandbox(BoxBase):
             argv += ["-e", f"TZ={zone}"]  # the sandbox's clock reads like the notice's
         if self.offline:
             argv += ["--network", OFFLINE_NETWORK]
-        rc, out, err = await self._cli(*argv, self.image, "sleep", "infinity", timeout=120)
+        self.launched = True
+        run = asyncio.ensure_future(self._cli(*argv, self.image, "sleep", "infinity", timeout=120))
+        try:
+            rc, out, err = await asyncio.shield(run)
+        except (
+            asyncio.CancelledError
+        ):  # the `run` reaches its answer first, so a stop then finds what it made
+            await asyncio.wait([run])
+            raise
         if rc != 0:
             raise RuntimeError(f"sandbox {self.name} did not start: {(err or out).strip()[-400:]}")
         self.started = True
@@ -132,10 +141,10 @@ class Sandbox(BoxBase):
         return {"rc": rc, "stdout": out, "stderr": err, "elapsed": elapsed, "timed_out": timed_out}
 
     async def stop(self) -> None:
-        if self.started:
+        if self.started or self.launched:  # a `run` whose answer never came may have made it
             await self._cli("stop", self.name, timeout=60)
             await self._cli("delete", self.name, timeout=60)
-            self.started = False
+            self.started = self.launched = False
 
 
 def shell(actor: Actor, sandbox: Box) -> set[str]:

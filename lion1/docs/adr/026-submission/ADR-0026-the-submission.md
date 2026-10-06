@@ -409,8 +409,8 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
 - **S17**: A `lion mcp` child that closes its standard output with no id and runs on fails the call
   within a second, however many calls wait at once, naming its pid, and is reaped when it ends.
 - **S18**: A second interrupt that lands before the box's end takes no patch and stops nothing, and
-  standard error names what it left: the box, kept with its work, or the local sandbox, which may
-  still run.
+  standard error names what it left: the box, kept with its work, or the local sandbox. The sandbox
+  may still run once its container's `run` was sent, and none of it runs before that.
 - **S19**: A local sandbox's stop takes the command's interrupts as a box's stop does (S13): the
   first waits for the stop, and the next cuts it and names the sandbox, which may still run.
 - **S20**: With no thread to spare, `lion mcp` still reaps each child while it runs. One no thread
@@ -418,6 +418,7 @@ the default. `console` in `apps/cli/lion_cli/chat.py` builds the store before th
   server's loop reaps it when it ends. One whose reaping no thread can take is read until its pipes
   end, past the second S15 gives, and is reaped then. The server exits as its loop ends, and a child
   still running then runs on (S12).
-- **S21**: A flow closes its own row before a second interrupt ends the command, as its driver does
-  at every end, within the store's bound on a call. A patch or a stop that fails after either
-  interrupt is named as a cut one is, and the interrupt goes on in place of its error.
+- **S21**: A flow's driver closes its row at every end. The command's first interrupt, landing in
+  that close, lets it finish and goes on after it; a second cuts it, and standard error says the row
+  may stay open. A patch, a stop or the flow's close that fails after either interrupt is named as a
+  cut one is, and the interrupt goes on in place of its error.

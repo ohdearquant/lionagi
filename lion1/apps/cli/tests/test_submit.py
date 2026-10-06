@@ -1218,3 +1218,112 @@ def test_a_box_whose_patch_fails_after_the_runs_interrupt_is_kept_and_the_interr
         "notice: box sbx-1: kept, not stopped: taking its patch failed (RuntimeError: patch EIO)"
         in mail["content"]
     )
+
+
+def closing(monkeypatch, cancels: int, fails: bool = False) -> list[str]:
+    """`Store.close_flow` cancels the command's own task `cancels` times as it starts, as interrupts
+    landing in the flow's close would, then closes the row, or is refused when `fails`. What it did,
+    `mail` as the result mail goes, in order."""
+    from lion1 import Store
+
+    real, exec_, seen = Store.close_flow, Khive.exec, []
+
+    async def exec(self, ops: str) -> list:
+        if ops.startswith("comm.send("):
+            seen.append("mail")
+        return await exec_(self, ops)
+
+    async def close_flow(self, *args):
+        seen.append("close")
+        try:
+            for _ in range(cancels):
+                command_task().cancel()
+                for _ in range(3):
+                    await asyncio.sleep(0)
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            seen.append("cut")
+            raise
+        if fails:
+            raise KhiveError("lion.run_close: made-up refusal")
+        await real(self, *args)
+        seen.append("closed")
+
+    monkeypatch.setattr(Store, "close_flow", close_flow)
+    monkeypatch.setattr(Khive, "exec", exec)
+    return seen
+
+
+@pytest.mark.parametrize("first", ["in a step", "in the close"])
+def test_a_second_interrupt_in_the_flows_close_cuts_it_and_says_its_row_may_stay_open(
+    actor_dir, console_khive, monkeypatch, capsys, first
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+    stepping = first == "in a step"
+    backends(monkeypatch, **{"fake/writer": interrupting if stepping else (lambda m: out("x"))})
+    seen = closing(monkeypatch, cancels=1 if stepping else 2)
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert seen == ["close", "cut"] and console_khive.sent == []
+    assert console_khive.runs[flow_id].get("outcome") is None  # the row stays open, as said
+    err = capsys.readouterr().err
+    assert f"flow {flow_id}: its close was cut, so its row may stay open" in err
+    assert f"flow two {flow_id} stopped before its end: " in err
+
+
+def test_the_first_interrupt_in_the_flows_close_lets_it_finish_and_goes_on_after_it(
+    actor_dir, console_khive, monkeypatch, capsys
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+    backends(monkeypatch, **{"fake/writer": lambda m: out("x")})
+    seen = closing(monkeypatch, cancels=1)
+    assert lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea") == 130
+    (flow_id,) = console_khive.steps
+    assert seen == ["close", "closed", "mail"]  # the row closes before the mail, which goes once
+    assert console_khive.runs[flow_id]["outcome"] == "success"
+    assert "may stay open" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("interrupt", [None, "in a step", "in the close"])
+def test_a_flows_close_that_fails_is_named_and_an_interrupt_goes_on_in_its_place(
+    actor_dir, console_khive, monkeypatch, capsys, interrupt
+):
+    (actor_dir / "flows.toml").write_text(TWO)
+    stepping = interrupt == "in a step"
+    backends(monkeypatch, **{"fake/writer": interrupting if stepping else (lambda m: out("x"))})
+    seen = closing(monkeypatch, cancels=int(interrupt == "in the close"), fails=True)
+    code = lion("flow", "--dir", str(actor_dir), "--name", "two", "--var", "topic=tea")
+    (flow_id,) = console_khive.steps
+    (mail,) = console_khive.sent
+    assert seen == ["close", "mail"]
+    err = capsys.readouterr().err
+    if interrupt is None:  # the close's own error, the flow's end as before
+        assert code != 130 and "KhiveError: lion.run_close: made-up refusal" in mail["content"]
+        assert "its close failed" not in err
+    else:  # named as a cut close is, and the interrupt goes on: the mail, then 130
+        assert code == 130 and mail["content"].startswith("error: CancelledError\n")
+        named = (
+            f"flow {flow_id}: its close failed (KhiveError: lion.run_close: made-up refusal); "
+            "its row may stay open"
+        )
+        assert named in err and named in mail["content"]
+
+
+@pytest.mark.parametrize("launched", [False, True])
+def test_a_second_interrupt_as_the_sandbox_starts_names_it_running_only_once_its_container_was_sent(
+    actor_dir, console_khive, local, monkeypatch, capsys, launched
+):
+    async def start(self):
+        self.launched = launched
+        command_task().cancel()  # two interrupts land here before it
+        command_task().cancel()  # goes on: the second ends the command
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Local, "start", start)
+    assert lion("run", "--dir", str(actor_dir), "--profile", "local", "--say", "list") == 130
+    (sandbox,) = local
+    err = capsys.readouterr().err
+    running = f"sandbox {sandbox.name}: interrupted twice before it was stopped; it may be running"
+    none = f"sandbox {sandbox.name}: interrupted twice before its container was started; none runs"
+    assert (running in err, none in err) == (launched, not launched)
+    assert not sandbox.stopped and console_khive.sent == []
