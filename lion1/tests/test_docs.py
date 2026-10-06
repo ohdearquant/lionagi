@@ -57,19 +57,28 @@ def literals_in(source: str) -> list[tuple[str, ...]]:
     return found
 
 
+def sources() -> list[Path]:
+    """Every module of src/lion1 and hub/serve, a package's nested ones included."""
+    return sorted([*SRC.rglob("*.py"), *SERVE.rglob("*.py")])
+
+
+def module_name(path: Path) -> str:
+    """The dotted name a file of src/lion1 or hub/serve is imported by."""
+    root, package = (SRC, "lion1") if path.is_relative_to(SRC) else (SERVE, "hub.serve")
+    parts = path.relative_to(root).with_suffix("").parts
+    return ".".join((package, *(parts[:-1] if parts[-1] == "__init__" else parts)))
+
+
 def literals() -> list[tuple[str, ...]]:
     """Every `Literal[...]` written in src/lion1 and hub/serve, as its values in order."""
-    return [
-        v for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]) for v in literals_in(path.read_text())
-    ]
+    return [v for path in sources() for v in literals_in(path.read_text())]
 
 
 def enums() -> list[tuple[str, ...]]:
     """Every enum a module of src/lion1 or hub/serve defines, as its members in order."""
     found = []
-    for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]):
-        package = "lion1" if path.parent == SRC else "hub.serve"
-        name = package if path.stem == "__init__" else f"{package}.{path.stem}"
+    for path in sources():
+        name = module_name(path)
         module = importlib.import_module(name)
         found += [
             tuple(values_of(c))
@@ -82,7 +91,7 @@ def enums() -> list[tuple[str, ...]]:
 def emitted() -> set[str]:
     """Every event kind the runtime and the served actor pass to an `emit` call as a literal."""
     kinds = set()
-    for path in sorted([*SRC.glob("*.py"), *SERVE.glob("*.py")]):
+    for path in sources():
         for node in ast.walk(ast.parse(path.read_text())):
             if (
                 isinstance(node, ast.Call)
@@ -97,7 +106,7 @@ def emitted() -> set[str]:
 
 def test_every_module_of_the_runtime_is_in_the_modules_table():
     table = section("The modules of `src/lion1`")
-    modules = sorted(p.name for p in SRC.glob("*.py"))
+    modules = sorted(p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py"))
     assert "actor.py" in modules and "__init__.py" in modules
     assert [m for m in modules if f"](../src/lion1/{m})" not in table] == []
 
