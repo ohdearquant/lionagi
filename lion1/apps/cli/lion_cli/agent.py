@@ -298,17 +298,18 @@ def stats(directory: Path, notes: dict[str, Any] | None = None) -> str:
         lines.append(f"desk: not counted, the spend row's day {day!r} is not a date")
     elif desk.exists() and day:
         rows = [json.loads(ln) for ln in desk.read_text().splitlines() if ln.strip()]
-        dated = []  # a row that is no object, or whose `at` is no timestamp, is on no day
+        dated, mine = 0, []  # a row that is no object, or whose `at` is no timestamp, is on no day
         for r in rows:
             try:
-                datetime.fromisoformat(r["at"])
+                on = datetime.fromisoformat(r["at"]).date().isoformat()
             except (KeyError, TypeError, ValueError):
                 continue
-            dated.append(r)
-        mine = [r for r in dated if r["at"][:10] == day]
+            dated += 1
+            if on == day:  # the date the timestamp reads as, however it is written
+                mine.append(r)
         answered = sum(1 for r in mine if r.get("class") == "answered")
         left = len(mine) - answered
-        undated = len(rows) - len(dated)
+        undated = len(rows) - dated
         lines.append(
             f"desk: {len(mine)} of the owner's message(s) read today, {answered} answered, {left} left"
             + (f", {undated} row(s) with no date not counted" if undated else "")

@@ -1165,9 +1165,12 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
     # nor is a row that is no object, or an `at` that only starts with the day; a timestamp with a zone is
     junk = [[], None, "x", 7, {"at": "2026-09-22junk"}, {"at": "2026-09-220 12:00:00"}]
     zoned = {"at": "2026-09-22T12:00:00.5Z", "class": "answered"}
-    (tmp_path / "desk.jsonl").write_text("\n".join(json.dumps(r) for r in (*desk, *junk, zoned)) + "\n")
+    basic = {"at": "20260922T120000", "class": "routed"}  # the same day, written without its dashes
+    (tmp_path / "desk.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in (*desk, *junk, zoned, basic)) + "\n"
+    )
     assert stats(tmp_path).splitlines()[-1] == (
-        "desk: 3 of the owner's message(s) read today, 2 answered, 1 left, 6 row(s) with no date not counted"
+        "desk: 4 of the owner's message(s) read today, 2 answered, 2 left, 6 row(s) with no date not counted"
     )
     (tmp_path / "ledger.jsonl").write_text('{"answered": true}\n[]\nnull\n"x"\n7\n')
     assert stats(tmp_path).splitlines()[-2] == "ledger: 5 check(s), 1 answered, 4 not"
