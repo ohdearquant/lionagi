@@ -34,6 +34,7 @@ from hub.areas import (
     agent_store,
     controls_info,
     identity,
+    is_count,
     load_areas,
     log_tail,
     page,
@@ -598,15 +599,33 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
     assert "context" not in rows[3] and rows[3]["restarts"] == 1
 
 
+# the counts and wakes the agent writes beside `runs`, `mail`, `cost` and `unknown`: a row expected to read
+# whole carries them all (`day_spend` reads a counted row with one missing or malformed as partial)
+_WHOLE = {"calls": 2, "in": 0, "out": 0, "idle": 0, "idle_last": 0, "wakes": []}
+
+
 def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_every_view(tmp_path):
     cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
-    partial = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 1}
+    partial = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 1, **_WHOLE}
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=partial)
-    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}  # counted: none missed
+    whole_day = {
+        "day": TODAY,
+        "runs": 1,
+        "mail": 1,
+        "cost": 0.3,
+        "unknown": 0,
+        **_WHOLE,
+    }  # counted: none missed
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=whole_day)
-    area = Area("x", "lambda:x", [str(d), str(done)])
+    past_cap = {**whole_day, "unknown": 2**53}  # a count no agent wrote (its writer holds below 2**53)
+    over = agent_dir(tmp_path, "over", role="desk", cursor=cursor, spend=past_cap)
+    area = Area("x", "lambda:x", [str(d), str(done), str(over)])
     r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
     assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, 1, 0)
+    assert (resident(area, str(over), TODAY).cost_today, resident(area, str(over), TODAY).unknown_today) == (
+        0.3,
+        None,
+    )
     mark = "$0.3000 (partial: 1 call(s) of unknown cost)"
     text = table([area], [r, whole])
     assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
@@ -639,7 +658,7 @@ def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number
     # the row as the version before the count left it (no key), and as the first wake after it writes it
     cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=before)
-    counted = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}
+    counted = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0, **_WHOLE}
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=counted)
     area = Area("x", "lambda:x", [str(d), str(done)])
     r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
@@ -662,8 +681,32 @@ def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number
         ({"runs": 2, "mail": 2, "cost": 0.3, "unknown": 0}, (0.0, None)),
         ([TODAY, 0.3, 0], (0.0, None)),
         ({"day": "2000-01-01", "runs": 2, "mail": 2, "cost": -0.6, "unknown": "2"}, (0.0, 0)),
+        # a counted row whose other counts or wakes are not as the agent writes them: its dollars, partial
+        ({"day": TODAY, "runs": True, "mail": 2, "cost": 0.3, "unknown": 0, **_WHOLE}, (0.3, None)),
+        ({"day": TODAY, "runs": "bad", "mail": 2, "cost": 0.3, "unknown": 0, **_WHOLE}, (0.3, None)),
+        (
+            {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 0, **_WHOLE, "calls": True},
+            (0.3, None),
+        ),
+        (
+            {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 0, **_WHOLE, "wakes": ["x"]},
+            (0.3, None),
+        ),
+        ({"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 0}, (0.3, None)),
     ],
-    ids=["negative", "no-cost", "str-count", "no-day", "not-a-row", "another-day"],
+    ids=[
+        "negative",
+        "no-cost",
+        "str-count",
+        "no-day",
+        "not-a-row",
+        "another-day",
+        "bool-runs",
+        "str-runs",
+        "bool-calls",
+        "str-wake",
+        "no-counts",
+    ],
 )
 def test_a_days_row_the_agent_would_not_have_written_reads_in_the_views_as_the_cap_reads_it(
     tmp_path, spend, read
@@ -673,6 +716,10 @@ def test_a_days_row_the_agent_would_not_have_written_reads_in_the_views_as_the_c
     area = Area("x", "lambda:x", [str(d)])
     r = resident(area, str(d), TODAY)
     assert (r.cost_today, r.unknown_today) == read
+    # a count that is not one the agent wrote reads as 0 in the row, never coerced or raised on
+    same_day = isinstance(spend, dict) and spend.get("day") == TODAY
+    runs = spend["runs"] if same_day and is_count(spend["runs"]) else 0
+    assert (r.runs_today, r.mail_today) == (runs, 2 if same_day else 0)
     mark = f"${read[0]:.4f}" + (
         "" if read[1] == 0 else " (partial: calls of unknown cost before this count went uncounted)"
     )

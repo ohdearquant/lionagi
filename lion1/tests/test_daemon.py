@@ -24,6 +24,7 @@ from hub.areas import Area, load_areas
 from hub.backend.openrouter import OpenRouterError
 from tests.lionfake import resident_store, unread
 from tests.test_areas import (  # noqa: F401 (a fixture)
+    _WHOLE,
     FailingKhive,
     call,
     read_events,
@@ -220,7 +221,7 @@ def resident(
     d.mkdir(parents=True)
     (d / "chores.toml").write_text(chores.replace('actor = "agent:x:desk"', f'actor = "agent:x:{name}"'))
     cursor = {"wake": 2, "at": f"{DAY} 09:00:00", "outcome": "Success"}
-    spend = {"day": DAY, "runs": 2, "mail": 2, "cost": 0.25, "calls": 3}
+    spend = {"day": DAY, "runs": 2, "mail": 2, "cost": 0.25, **_WHOLE, "calls": 3}  # as the agent writes it
     if unknown is not None:
         spend["unknown"] = unknown
     store = resident_store(d)

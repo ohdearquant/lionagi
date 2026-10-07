@@ -3356,3 +3356,244 @@ def test_a_pull_during_the_continuous_chairs_wait_is_one_wake_on_that_path(tmp_p
     assert "due now] cost report" in inputs[2] and "a person asked" not in inputs[2]
     assert "wake-now: no mail waiting; the queue's top runs" in lines
     assert "wake-now: taking 0 waiting and 0 new" in lines
+
+
+@pytest.mark.parametrize(
+    "wakes",
+    # the store takes no infinity; an int past a float's range and a float past any clock both round-trip
+    [["x"], ["2990"], [True], [None], [[1.0]], [10**400], [1e308], [-5.0], 5, "none", {"at": 1.0}],
+    ids="str digits bool none list huge-int huge-float negative int text dict".split(),
+)
+def test_a_day_row_whose_wakes_are_not_times_still_starts_the_agent_and_counts_the_real_ones(store, wakes):
+    # a stored row's `wakes` is read raw at construction and by the hourly cap; a value the agent would not
+    # have written is dropped there, the agent starts, the real wakes still count, and the day is partial
+    from hub.agent.agent import _day
+
+    now = 3000.0  # inside the first hour, so a bool read as a time would count as recent
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    stored = [now - 10, *wakes] if isinstance(wakes, list) else wakes
+    # every count the agent writes is in the row, so only the wakes can make the day partial
+    row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": stored, **_WHOLE}
+    state.put("spend", row, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(
+        actor, khive, backend, profile_for, state=state, budget=Budget(wakes_per_hour=1), clock=lambda: now
+    )
+    if isinstance(wakes, list):  # the one real wake of the hour holds the agent under a cap of one
+        assert agent.hold() == "1 wakes in the last hour (cap 1); next at " + time.strftime(
+            "%H:%M:%S", time.localtime(now - 10 + 3600)
+        )
+        agent.budget = Budget(wakes_per_hour=2)
+    assert agent.hold() is None
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert row["wakes"] == ([now - 10, now] if isinstance(wakes, list) else [now])
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.7), None)
+
+
+@pytest.mark.parametrize(
+    "count",
+    ["2", True, -1, 1.0, None, 2**53, 10**4300 - 1],
+    ids=["str", "bool", "negative", "float", "none", "past-json", "past-str"],
+)
+@pytest.mark.parametrize("field", ["calls", "in", "out", "mail", "runs", "idle", "idle_last"])
+def test_a_day_row_whose_count_the_agent_would_not_have_written_is_dropped_and_the_day_partial(
+    store, field, count
+):
+    from hub.agent.agent import _day
+    from hub.areas import day_spend
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [], "calls": 2, "mail": 1, field: count}
+    state.put("spend", row, run="-", seq=0)
+    assert day_spend(row, _day(now)) == (0.1, None)  # the cap and the views read it partial before the write
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, state=state, clock=lambda: now)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    expected = {"calls": 2 + 2, "mail": 1 + 1, "runs": 1, "in": 0, "out": 0, "idle": 0, "idle_last": 0}
+    expected[field] = {"calls": 2, "mail": 1, "runs": 1}.get(field, 0)  # this wake's own count alone
+    assert {k: row[k] for k in expected} == expected
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.7), None)
+
+
+def test_a_day_row_as_the_agent_wrote_it_is_not_partial_for_its_counts(store):
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [now - 10], **_WHOLE, "idle": 3}
+    state.put("spend", row, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, state=state, clock=lambda: now)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert (row["cost"], row["unknown"], row["calls"], row["mail"], row["idle"]) == (
+        pytest.approx(0.7),
+        0,
+        4,
+        2,
+        3,
+    )
+
+
+@pytest.mark.parametrize("count", ["bad", 2**53], ids=["str", "past-json"])
+def test_an_idle_last_the_agent_would_not_have_written_is_0_to_the_facts_and_to_a_write_with_no_wake(
+    store, count
+):
+    # a wake overwrites `idle_last` before it is read back, so this reads it the two other ways: as the
+    # `idle_polls` fact (`_counts`) and through a write that is no wake, where the stored value is kept
+    from hub.agent.agent import _counts, _day
+
+    now = 1_000_000.0
+    khive = FakeKhive()
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [now - 10], **_WHOLE, "idle_last": count}
+    state.put("spend", row, run="-", seq=0)
+    assert _counts(state.get("spend").value)[0]["idle_last"] == 0
+    agent = Agent(Actor("echo", store=store), khive, Scripted(DONE, khive=khive), profile_for, state=state)
+    agent.clock = lambda: now
+    agent._spend(calls=1)
+    row = agent.state.get("spend").value
+    assert (row["idle_last"], row["calls"], row["unknown"]) == (0, 3, None)
+
+
+def test_the_largest_count_reads_as_written_and_a_write_past_it_holds_there(store):
+    # 2**53 - 1 is a count the agent could have written; adding to it holds the row below the cap, so
+    # the row the agent writes is one it reads back as written (the day whole, not partial)
+    from hub.agent.agent import _counts, _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    top = 9007199254740991  # 2**53 - 1, the literal so a cap moved by one is caught
+    row = {
+        "day": _day(now),
+        "cost": 0.1,
+        "unknown": 0,
+        "wakes": [now - 10],
+        **_WHOLE,
+        "in": top,
+        "calls": top,
+    }
+    row["unknown"] = top  # the calls the day's cost misses, counted past the cap too
+    state.put("spend", row, run="-", seq=0)
+    assert _counts(row) == ({**_WHOLE, "in": top, "calls": top}, True)
+
+    class Unbilled(Scripted):  # a call with no cost figure: the day's unknown count adds one
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = {"total_cost_usd": None}
+            return text
+
+    backend = Unbilled(REPLY, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, state=state, clock=lambda: now)
+    agent.idle = top + 1  # polls counted past the cap: written held at it, as idle and as idle_last
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert (row["calls"], row["in"], row["unknown"], row["mail"]) == (top, top, top, 2)
+    assert (row["idle"], row["idle_last"]) == (top, top)
+    assert _counts(row)[1] is True
+
+
+def test_a_day_row_whose_unknown_count_is_past_the_cap_is_partial_not_lowered(store):
+    # the writer holds its counts below 2**53, so a stored count past it is not one the agent wrote: the
+    # day reads partial before the next write (`day_spend`, the cap and the digests) and is written so
+    from hub.agent.agent import _counts, _day
+    from hub.areas import day_spend
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": 2**53, "wakes": [now - 10], **_WHOLE}
+    state.put("spend", row, run="-", seq=0)
+    assert _counts(row)[1] is True  # the seven counts and the wakes are as written; `unknown` is not
+    assert day_spend(row, _day(now)) == (0.1, None)  # and the cap's reader says so before any write
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, state=state, clock=lambda: now)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert (row["unknown"], row["calls"], row["mail"]) == (None, 4, 2)
+
+
+_WHOLE = {"calls": 2, "in": 0, "out": 0, "mail": 1, "runs": 1, "idle": 0, "idle_last": 0}
+
+
+@pytest.mark.parametrize("field", [*_WHOLE, "wakes"])
+def test_a_day_row_missing_a_field_the_agent_always_writes_is_dropped_and_the_day_partial(store, field):
+    # the agent writes every count and the wakes list; a row without one is not a row it wrote: the
+    # missing count reads as 0 (this wake's own stands alone) and the day is partial to its end
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+    row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [now - 10], **_WHOLE}
+    del row[field]
+    state.put("spend", row, run="-", seq=0)
+    backend = Scripted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, state=state, clock=lambda: now)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    expected = {"calls": 2 + 2, "mail": 1 + 1, "runs": 1 + 1, "in": 0, "out": 0, "idle": 0, "idle_last": 0}
+    expected[field] = {"calls": 2, "mail": 1, "runs": 1}.get(field, 0)  # this wake's own count alone
+    assert {k: row[k] for k in _WHOLE} == {k: expected[k] for k in _WHOLE}
+    assert (row["cost"], row["unknown"]) == (pytest.approx(0.7), None)
+    assert row["wakes"] == ([now] if field == "wakes" else [now - 10, now])
+
+
+def test_a_wake_exactly_an_hour_old_has_aged_out_of_the_cap(store):
+    from hub.agent.agent import _wakes
+
+    now = 1_000_000.0
+    assert _wakes({"wakes": [now - 3600, now - 3599.5]}, now) == [now - 3599.5]
+
+
+def test_a_time_at_the_cap_is_no_time_the_agent_wrote_and_one_below_it_is(store):
+    from hub.agent.agent import _wakes
+    from hub.areas import TIME_CAP, is_time
+
+    assert (is_time(TIME_CAP - 1), is_time(TIME_CAP), is_time(-1), is_time(0)) == (
+        True,
+        False,
+        False,
+        True,
+    )
+    now = float(TIME_CAP - 10)
+    assert _wakes({"wakes": [TIME_CAP, TIME_CAP - 1, now]}, now) == [TIME_CAP - 1, now]
+
+
+@pytest.mark.parametrize(
+    "figure", [-7, "7", 7.0, True, None], ids=["negative", "str", "float", "bool", "none"]
+)
+def test_a_token_figure_the_backend_would_not_report_is_none_and_the_row_stays_whole(store, figure):
+    # a backend's envelope says tokens as whole numbers of zero or more; anything else is no figure, so the
+    # row the agent writes is one it would write (no negative count read back as a dropped field)
+    from hub.agent.agent import _day
+
+    now = 1_000_000.0
+    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    state = store.notes("agent")
+
+    class Counted(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1]["usage"] = {"prompt_tokens": figure, "completion_tokens": figure}
+            return text
+
+    backend = Counted(REPLY, DONE, cost=0.3, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"}, store=store)
+    agent = Agent(actor, khive, backend, profile_for, state=state, clock=lambda: now)
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    row = agent.state.get("spend").value
+    assert (row["in"], row["out"], row["unknown"], row["day"]) == (0, 0, 0, _day(now))

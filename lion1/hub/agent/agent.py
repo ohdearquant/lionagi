@@ -59,7 +59,7 @@ from lion1.lndl import plain
 from lion1.notes import NoteStore
 from lion1.record import Kind
 
-from ..areas import day_spend, partial
+from ..areas import COUNT_CAP, COUNTS, day_spend, is_count, is_time, partial, row_as_written
 from ..backend.claude_code import _prompt_tokens
 
 __all__ = (
@@ -436,7 +436,7 @@ class Agent:
         if self.config is not None and self.config.exists():
             self._config_mtime = self.config.stat().st_mtime  # what this process was built with
         # a quiet chair counts from its start, or its last wake booked, whichever is later
-        self._last_wake = max([self.clock(), *_value(self.state, "spend", {}).get("wakes", [])])
+        self._last_wake = max([self.clock(), *_wakes(_value(self.state, "spend", {}), self.clock())])
         self.actor.section(self._queue_line)  # the queue in every notification, when [gtd] is on
 
         @self.actor.handler(Send, requires={"comm.send"})
@@ -513,7 +513,7 @@ class Agent:
             return "held by file: " + (first[0] if first else str(held))
         spend = _value(self.state, "spend", {})
         now = self.clock()
-        recent = [t for t in spend.get("wakes", []) if now - t < 3600]
+        recent = _wakes(spend, now)
         if len(recent) >= self.budget.wakes_per_hour:
             if self.budget.wakes_per_hour < 1:  # no wake ages out to lift a cap below one: say so
                 return f"wakes_per_hour is {self.budget.wakes_per_hour}: no wakes until it is raised"
@@ -1291,15 +1291,13 @@ class Agent:
         tokens_in = tokens_out = 0
         for c in calls:
             u = c.get("usage") or {}
-            tokens_in += int(
-                u.get("prompt_tokens")
-                or (
-                    int(u.get("input_tokens") or 0)
-                    + int(u.get("cache_read_input_tokens") or 0)
-                    + int(u.get("cache_creation_input_tokens") or 0)
-                )
+            # a token figure is a whole number of zero or more; anything else the envelope says is none
+            tokens_in += _tokens(u.get("prompt_tokens")) or (
+                _tokens(u.get("input_tokens"))
+                + _tokens(u.get("cache_read_input_tokens"))
+                + _tokens(u.get("cache_creation_input_tokens"))
             )
-            tokens_out += int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+            tokens_out += _tokens(u.get("completion_tokens")) or _tokens(u.get("output_tokens"))
         cost, unknown = 0.0, 0
         for c in calls:
             # a malformed figure is no figure: never room against the day's cap (ADR-0013/C5)
@@ -1339,26 +1337,33 @@ class Agent:
         tokens per handled message beside idle polls at zero."""
         spend = dict(_value(self.state, "spend", {}))
         now = self.clock()
-        wakes = [t for t in spend.get("wakes", []) if now - t < 3600]
+        wakes = _wakes(spend, now)
         if wake:
             wakes.append(now)
             self._last_wake = now
         day = _day(now)
         same_day = spend.get("day") == day
         before, counted = _day_spend(self.state, day)
+        was, as_written = _counts(spend)
+        if not same_day:
+            was = dict.fromkeys(was, 0)
         row = {
             "day": day,
             # a sum past a float's range is past any cap, and the note takes no infinity: the largest float
             "cost": min(before + cost, sys.float_info.max),
-            "unknown": None if counted is None else counted + unknown,
+            # a same-day row holding a field the agent would not have written is partial to its end; a
+            # count past the cap is one it would not have written either, whatever `day_spend` carries
+            "unknown": None
+            if counted is None or not is_count(counted) or (same_day and not as_written)
+            else _added(counted, unknown),
             "wakes": wakes,
-            "calls": (spend.get("calls", 0) if same_day else 0) + calls,
-            "in": (spend.get("in", 0) if same_day else 0) + tokens_in,
-            "out": (spend.get("out", 0) if same_day else 0) + tokens_out,
-            "mail": (spend.get("mail", 0) if same_day else 0) + mail,
-            "runs": (spend.get("runs", 0) if same_day else 0) + (1 if wake else 0),
-            "idle": (spend.get("idle", 0) if same_day else 0) + (self.idle if wake else 0),
-            "idle_last": self.idle if wake else spend.get("idle_last", 0),  # polls before this wake
+            "calls": _added(was["calls"], calls),
+            "in": _added(was["in"], tokens_in),
+            "out": _added(was["out"], tokens_out),
+            "mail": _added(was["mail"], mail),
+            "runs": _added(was["runs"], 1 if wake else 0),
+            "idle": _added(was["idle"], self.idle if wake else 0),
+            "idle_last": _added(0, self.idle) if wake else was["idle_last"],  # polls before this wake
         }
         if wake:
             self.idle = 0
@@ -1398,7 +1403,7 @@ class Agent:
                 "unknown": u["unknown"],
                 "context": u["context"],
             }
-            facts["idle_polls"] = int(_value(self.state, "spend", {}).get("idle_last", 0))
+            facts["idle_polls"] = _counts(_value(self.state, "spend", {}))[0]["idle_last"]
         if self._dropped:
             facts["dropped"] = list(self._dropped)
         return facts
@@ -1475,6 +1480,33 @@ def _value(store: NoteStore, key: str, default: Any) -> Any:
 
 def _day(now: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _tokens(value: Any) -> int:
+    return value if type(value) is int and value >= 0 else 0
+
+
+def _added(count: int, more: int) -> int:
+    """A count plus this wake's, held below the cap so the row stays one the agent reads as written."""
+    return min(count + more, COUNT_CAP - 1)
+
+
+def _wakes(row: dict, now: float) -> list[float]:
+    """The row's wakes of the last hour, as the agent wrote them. Anything else in the list, or no list,
+    is not a wake and is dropped: the hour's history then reads as empty once, the agent starts, and the
+    next write replaces the row (the day marked partial, `_counts`)."""
+    times = row.get("wakes", [])
+    if not isinstance(times, list):
+        return []
+    return [t for t in times if is_time(t) and now - t < 3600]
+
+
+def _counts(row: dict) -> tuple[dict[str, int], bool]:
+    """The row's counts as the agent wrote them (a whole number from 0 below 2**53 each), and whether
+    the row reads as written: the agent writes every count and the wakes list, so a count absent or of
+    another shape reads as 0 and the row as not written, a `wakes` absent or holding anything but a
+    time is not as written either, and the day the row describes is then partial."""
+    return {k: row[k] if is_count(row.get(k)) else 0 for k in COUNTS}, row_as_written(row)
 
 
 def _day_spend(store: NoteStore, day: str) -> tuple[float, int | None]:

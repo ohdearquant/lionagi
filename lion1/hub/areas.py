@@ -102,6 +102,29 @@ def partial(unknown: int | None) -> str:
     return f" (partial: {unknown} call(s) of unknown cost)" if unknown else ""
 
 
+COUNTS = ("calls", "in", "out", "mail", "runs", "idle", "idle_last")  # the counts the agent writes
+COUNT_CAP = 2**53  # past any count the agent writes, inside what every JSON reader carries whole
+TIME_CAP = 2**40  # past any clock the agent reads, inside what `time.localtime` formats
+
+
+def is_count(v: Any) -> bool:
+    """A count the agent could have written: a whole number from 0 below 2**53."""
+    return type(v) is int and 0 <= v < COUNT_CAP
+
+
+def is_time(t: Any) -> bool:
+    """A time the agent could have written: a number from the epoch on, finite, inside the range the
+    hold line can format (an int past a float's range cannot even be compared with the clock)."""
+    return type(t) in (int, float) and 0 <= t < TIME_CAP
+
+
+def row_as_written(row: dict) -> bool:
+    """Whether a day row reads as the agent wrote it: every count a count, and `wakes` a list of times.
+    A row that does not is one the agent could not have written whole, and its day is partial."""
+    times = row.get("wakes")
+    return all(is_count(row.get(k)) for k in COUNTS) and isinstance(times, list) and all(map(is_time, times))
+
+
 def day_spend(row: Any, day: str | None) -> tuple[float, int | None]:
     """A resident's stored day row as the cap and every report read it: dollars spent and calls of
     unknown cost, (0, 0) with no row or another day's. A same-day row with no count is from before the
@@ -110,7 +133,10 @@ def day_spend(row: Any, day: str | None) -> tuple[float, int | None]:
     partial, never as room below zero: dollars the run would not sum (ADR-0003/S7), as a negative sum
     an earlier version kept; no dollars; dollars or a count with no day to place them; a note that is
     not a row. Such a row's dollars are lost to the cap, as a sum is never split back into the figures
-    it summed. A count that is not a whole number of calls keeps the row's dollars and reads as None."""
+    it summed. A count that is not a whole number of calls below 2**53 (what the agent writes, and
+    what every JSON reader carries whole) keeps the row's dollars and reads as None; so does a counted
+    row whose other counts or wakes are not as the agent writes them (`row_as_written`): the agent's
+    next write marks that day partial, and the cap and the views read it so before the write."""
     if row is None:
         return 0.0, 0
     if not isinstance(row, dict) or not isinstance(row.get("day", ""), str):
@@ -123,7 +149,7 @@ def day_spend(row: Any, day: str | None) -> tuple[float, int | None]:
     if math.isnan(cost):
         return 0.0, None
     unknown = row.get("unknown")
-    return cost, unknown if unknown is None or (type(unknown) is int and unknown >= 0) else None
+    return cost, unknown if unknown is None or (is_count(unknown) and row_as_written(row)) else None
 
 
 @dataclass
@@ -257,8 +283,8 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         wake=int(cursor.get("wake") or 0),
         last_at=str(cursor.get("at") or ""),
         last_outcome=str(cursor.get("outcome") or ""),
-        runs_today=int(spend.get("runs") or 0),
-        mail_today=int(spend.get("mail") or 0),
+        runs_today=spend["runs"] if is_count(spend.get("runs")) else 0,  # a count the agent wrote, else 0
+        mail_today=spend["mail"] if is_count(spend.get("mail")) else 0,  # (`day_spend` reads the day partial)
         cost_today=cost,
         unknown_today=unknown,
         problem="; ".join(problem),

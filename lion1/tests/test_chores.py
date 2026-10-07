@@ -787,7 +787,19 @@ def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_
     turns = per_wake(["<lact d1>digest()</lact>", DONE], 2)
     chores, agent = build(tmp_path, khive, turns, disk=Probe("disk", full()))
     day = time.strftime("%Y-%m-%d")
-    spend = {"day": day, "calls": 3, "in": 900, "out": 40, "cost": 0.3, "unknown": 2, "runs": 1, "mail": 1}
+    spend = {
+        "day": day,
+        "calls": 3,
+        "in": 900,
+        "out": 40,
+        "cost": 0.3,
+        "unknown": 2,
+        "runs": 1,
+        "mail": 1,
+        "idle": 0,
+        "idle_last": 0,
+        "wakes": [],
+    }
     agent.state.put("spend", spend, run="-", seq=0)
     asyncio.run(agent.wake())
     text = khive.sent[-1]["content"]
