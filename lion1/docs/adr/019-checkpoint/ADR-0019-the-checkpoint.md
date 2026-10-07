@@ -306,9 +306,10 @@ it points at changed after it, or its rollout fails (S17).
 
 ### D4: The resident's arm, retired ^d4
 
-The resident took a checkpoint at its fold and when its run stopped, wrote its record beside it, and
-replayed both in its next process. Since [[ADR-0026-the-submission|ADR-0026]] C6 its wake continues
-its last run from the store and takes none: `hub/agent/agent.py` holds no take and no restore.
+Serves C6, with one caller of `save` fewer. The resident took a checkpoint at its fold and when its
+run stopped, wrote its record beside it, and replayed both in its next process. Since
+[[ADR-0026-the-submission|ADR-0026]] C6 its wake continues its last run from the store and takes
+none: `hub/agent/agent.py` holds no take and no restore.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`.

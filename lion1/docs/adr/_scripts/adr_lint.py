@@ -3,13 +3,16 @@
 Checks, per file: the frontmatter fields and their vocabularies; the file lives in a topic folder and its
 `area` equals the folder's suffix; the record number matches the file name; the section order; every
 claim and decision heading carries its id anchor; a mechanical claim carries Subject and Violated-when;
-every decision carries Landing evidence; an optional Definitions section after Context holds only
-`- **term**: ...` bullets; every wikilink resolves to a file and, when it names an anchor, to an item; no
-em dash; and the prose limits of the register (Context 200 words, definition 50, assumption 50, claim
-160, decision 90 plus 40 of evidence, paragraph 90, sentence 45, table cell 45). Trigger is legacy, merged
-into Context, and flagged. Format: prose lines wrap at 100 columns; a definition ends with a period, is
-used in its own record outside the Definitions section, and no term is defined by two records; Context
-ends with a `Source:` sentence; a consequence bullet is `- **S1**: ...`.
+every decision carries Landing evidence and serves a claim of its own record (another record's claim,
+linked or written `ADR-NNNN C<n>`, `ADR-NNNN's C<n>` or `ADR-NNNN/C<n>`, the `C<n>` on the same line
+or the next, is a citation, not a served claim); an optional Definitions section
+after Context holds only `- **term**: ...` bullets; every wikilink resolves to a file and, when it
+names an anchor, to an item; no em dash; and the prose limits of the register (Context 200 words,
+definition 50, assumption 50, claim 160, decision 90 plus 40 of evidence, paragraph 90, sentence 45,
+table cell 45). Trigger is legacy, merged into Context, and flagged. Format: prose lines wrap at 100
+columns; a definition ends with a period, is used in its own record outside the Definitions section,
+and no term is defined by two records; Context ends with a `Source:` sentence; a consequence bullet
+is `- **S1**: ...`.
 
     uv run python scripts/adr_lint.py [files...]      # no files: the whole corpus
 """
@@ -73,6 +76,13 @@ PARA, SENT, CELL = 90, 45, 45
 
 # a link inside a table cell escapes its pipe as `\|`; the backslash is not part of the stem or anchor
 _LINK = re.compile(r"\[\[([^\]|#\\]+)(?:#([^\]|\\]+))?\\?(?:\|([^\]]+))?\]\]")
+# a citation of another record's claim: a link to that record (its alias may carry the claim) or its
+# bare `ADR-NNNN` name, an optional `'s`, then a `/` or spaces and one line break, then the `C<n>`
+# (the `/` is tried first: the whitespace branch matches nothing and would leave `/C<n>` behind);
+# the same shape naming the record itself cites its own claim and stays
+_CITATION = re.compile(
+    r"(?:\[\[(ADR-\d{4})[^\]]*\]\]|\b(ADR-\d{4})\b)(?:'s)?(?:/|[ \t]*\n?[ \t]*)(?:C\d+\b)?"
+)
 _ITEM = re.compile(
     r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)(?:; owed, (S\d+))?\)_)? \^([cd]\d+)\s*$"
 )
@@ -243,7 +253,20 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                     out.append(f"D{num}: a decision carries no enforcement marker")
                 if "- **Landing evidence**:" not in block:
                     out.append(f"D{num}: lacks Landing evidence")
-                if not re.search(r"\bC\d+\b", block):
+
+                # a served claim is this record's own: a `C<n>` that cites another record (`_CITATION`)
+                # does not serve a decision here; any other link is text, and a `C<n>` after it is own;
+                # a citation of this record stays, a self-link's alias as the text it shows
+                def other(m: re.Match[str]) -> str:
+                    if (m.group(1) or m.group(2)) != adr:
+                        return ""
+                    return _LINK.sub(lambda link: link.group(3) or "", m.group(0))
+
+                own = _LINK.sub("", _CITATION.sub(other, block))
+                served = {int(n) for n in re.findall(r"\bC(\d+)\b", own)}
+                for n in sorted(served - set(ids["C"])):
+                    out.append(f"D{num}: serves C{n}, a claim this record does not have")
+                if not served:
                     out.append(f"D{num}: names no served claim")
     for letter, nums in ids.items():
         if nums != list(range(1, len(nums) + 1)):

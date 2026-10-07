@@ -130,6 +130,90 @@ def split_value(sep: str) -> str:
 
 LINT = {
     "a valid record": (record(901), record(902), 0, ""),
+    "a decision serving no claim": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves the run.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    "a decision serving a claim its record does not have": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves C99.")),
+        record(902),
+        1,
+        "D1: serves C99, a claim this record does not have",
+    ),
+    "a decision serving another record's claim only": (
+        record(901, decision=DECISION.replace("Serves C1.", f"Serves {GOOD_LINK}.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    "a decision citing another record's claim after a link, beside its own": (
+        record(901, decision=DECISION.replace("Serves C1.", f"Serves C1, closing {GOOD_LINK} C7.")),
+        record(902),
+        0,
+        "",
+    ),
+    "a decision citing another record's claim in the ADR-NNNN form, beside its own": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves C1 (ADR-0902 C7).")),
+        record(902),
+        0,
+        "",
+    ),
+    # a citation's `C<n>` is still one two spaces after the link, on the line after it, or possessive
+    "a decision citing another record's claim two spaces after a link, only": (
+        record(901, decision=DECISION.replace("Serves C1.", f"Serves {GOOD_LINK}  C7.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    "a decision citing another record's claim on the line after a link, only": (
+        record(901, decision=DECISION.replace("Serves C1.", f"Serves {GOOD_LINK}\nC7.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    "a decision citing another record's claim in the possessive ADR-NNNN form, only": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves ADR-0902's C7.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    "a decision citing another record's claim in the ADR-NNNN/C<n> form, only": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves ADR-0902/C7.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    "a decision whose only C<n> is in a path under another record's name": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves the run; see archive/ADR-0902/C1.md.")),
+        record(902),
+        1,
+        "D1: names no served claim",
+    ),
+    # the citation shape naming the record itself is its own claim
+    "a decision naming its own claim in the ADR-NNNN/C<n> form": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves ADR-0901/C1.")),
+        record(902),
+        0,
+        "",
+    ),
+    "a decision whose only C<n> is in a path under its own record's name": (
+        record(901, decision=DECISION.replace("Serves C1.", "Serves the run; see archive/ADR-0901/C1.md.")),
+        record(902),
+        0,
+        "",
+    ),
+    "a decision naming its own claim in a self-link's alias": (
+        record(
+            901,
+            extra_claim=ITEM_C2,
+            decision=DECISION.replace("Serves C1.", "Serves [[ADR-0901-the-control#^c2|ADR-0901/C2]]."),
+        ),
+        record(902),
+        0,
+        "",
+    ),
     "a claim under Decisions": (
         record(901, claim="", decision=CLAIM + DECISION),
         record(902),
