@@ -516,7 +516,9 @@ class RuntaSandbox(BoxBase):
     """One runtime from `image` (a Runta image id, None for the account's default) or from
     `from_checkpoint`. `egress`, `secrets` and `capture` are set when the runtime is made; `set_egress`
     changes the policy of a running one. `start` refuses a runtime that reports another policy than
-    `egress`, so a restored box that needs a stricter one starts under the checkpoint's own, calls
+    `egress`. A restore names its policy: the service restores a checkpoint with none as open (an
+    empty denylist), not under the checkpoint's own, so `from_checkpoint` with `egress` None is refused
+    before anything is created. A restored box that needs a stricter policy than it names calls
     `set_egress` and proves the closure from inside."""
 
     image: str | None = None
@@ -560,6 +562,11 @@ class RuntaSandbox(BoxBase):
         return body
 
     async def start(self) -> RuntaSandbox:
+        if self.from_checkpoint and self.egress is None:  # restored with none, the service opens it
+            raise SandboxDead(
+                f"a restore from checkpoint {self.from_checkpoint} names its egress policy: restored with "
+                "none, the runtime starts open (an empty denylist), not under the checkpoint's own"
+            )
         from runta import AsyncRunta
 
         tok, base = token(), endpoint()

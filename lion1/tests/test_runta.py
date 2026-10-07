@@ -1009,6 +1009,27 @@ def test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_del
     assert calls[0]["json"]["egress_policy"] == WANTED.api()  # the box sent its own with the create
 
 
+def test_a_restore_with_no_policy_is_refused_before_anything_is_created(tmp_path, monkeypatch):
+    # the service restores a checkpoint with no policy in the body as open (an empty denylist), not under
+    # the checkpoint's own, measured against the live API; the box says so and creates nothing
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=None, from_checkpoint="ckpt-9")
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.start())
+    assert "ckpt-9" in str(e.value) and "names its egress policy" in str(e.value) and "open" in str(e.value)
+    assert calls == [] and clients == [] and mod.async_runta_instances == []  # no client, no create
+    assert box.started is False and box.box_id is None and box.runtime_id is None
+
+
+def test_a_fresh_box_with_no_policy_sends_none_and_checks_none(tmp_path, monkeypatch):
+    # the refusal is the restore's: an image box with no policy is as it was, and judges none
+    box, mod, calls, _ = _ready_box(monkeypatch, tmp_path, egress=None)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+    assert asyncio.run(box.start()) is box
+    assert "egress_policy" not in calls[0]["json"] and "checkpoint_id" not in calls[0]["json"]
+    assert mod.runtimes_store["rt-1"].set_policy_calls == 0
+    asyncio.run(box.stop())
+
+
 def test_a_deletion_that_fails_does_not_replace_the_refusal(tmp_path, monkeypatch):
     box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED, precreate_workdir=False)
     mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
@@ -1192,15 +1213,6 @@ def test_start_returns_a_box_whose_runtime_reports_its_own_policy(
     rt = mod.runtimes_store["rt-1"]
     assert rt.set_policy_calls == 0 and rt.deleted is False
     assert box.started is True and box.box_id == "rt-1"
-    asyncio.run(box.stop())
-
-
-def test_a_box_with_no_policy_sends_none_and_checks_none(tmp_path, monkeypatch):
-    box, mod, calls, _ = _ready_box(monkeypatch, tmp_path, from_checkpoint="ckpt-1")
-    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
-    assert asyncio.run(box.start()) is box  # the restored runtime's own policy is not this box's to judge
-    assert "egress_policy" not in calls[0]["json"]
-    assert mod.runtimes_store["rt-1"].set_policy_calls == 0
     asyncio.run(box.stop())
 
 
