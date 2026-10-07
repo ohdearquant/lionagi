@@ -84,36 +84,56 @@ final class NoTransport: Transport {
 @MainActor
 final class LiveTransport: Transport {
     let base: URL
-    private let session: URLSession
-    private let streamSession: URLSession
+    let session: URLSession
+    let streamSession: URLSession
 
-    /// nil unless `address` is an http(s) URL with a host.
+    /// The two spellings of the host's address the `/v2` routes answer (ADR-0022 C2); the app's
+    /// transport exception admits local networking alone, so no other host is reachable anyway.
+    static let hosts: Set<String> = ["127.0.0.1", "localhost"]
+
+    /// nil unless `address` is a plain http URL on one of `hosts`.
     convenience init?(address: String) {
         var text = address.trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") {
             text.removeLast()
         }
         guard let url = URL(string: text),
-              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = url.host, !host.isEmpty
+              url.scheme?.lowercased() == "http",
+              let host = url.host?.lowercased(), Self.hosts.contains(host)
         else {
             return nil
         }
         self.init(url: url)
     }
 
-    init(url: URL) {
+    /// `protocolClasses` lets a test answer the sessions in process; the app passes none.
+    init(url: URL, protocolClasses: [AnyClass] = []) {
         base = url
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        session = URLSession(configuration: config)
+        config.protocolClasses = protocolClasses + (config.protocolClasses ?? [])
+        // no proxy: the system's proxy settings would otherwise carry a loopback request to the
+        // proxy host when their bypass list does not name 127.0.0.1 and localhost
+        config.connectionProxyDictionary = [:]
+        session = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
         // the stream pings every 15 s; three missed pings end it
         let stream = URLSessionConfiguration.ephemeral
         stream.timeoutIntervalForRequest = 45
         stream.timeoutIntervalForResource = 7 * 24 * 3600
         stream.requestCachePolicy = .reloadIgnoringLocalCacheData
-        streamSession = URLSession(configuration: stream)
+        stream.protocolClasses = protocolClasses + (stream.protocolClasses ?? [])
+        stream.connectionProxyDictionary = [:]
+        streamSession = URLSession(configuration: stream, delegate: NoRedirect(), delegateQueue: nil)
+    }
+
+    /// No request follows a redirect: the address the person accepted is the only host reached, and a
+    /// write's once key reaches no second address. A 3xx answer is returned as the refusal it is.
+    private final class NoRedirect: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
     }
 
     func url(for request: Request) -> URL {

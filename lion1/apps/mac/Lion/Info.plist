@@ -24,12 +24,11 @@
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
-	<!-- The daemon listens on this Mac (127.0.0.1) as plain http; ATS would refuse it without this. -->
+	<!-- The host listens on this Mac (127.0.0.1) as plain http; ATS would refuse it without this.
+	     Local networking is the whole exception: a host off the local network takes https. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
-		<true/>
-		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>

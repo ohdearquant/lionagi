@@ -107,7 +107,7 @@ final class Store {
     /// Point the app at another daemon address and start over.
     func connect(to address: String) {
         guard !isDemo, let transport = LiveTransport(address: address) else {
-            notice = "\(address) is not an http address."
+            notice = "\(address) is not the host's address: http://127.0.0.1:<port> or http://localhost:<port>."
             return
         }
         self.address = address
