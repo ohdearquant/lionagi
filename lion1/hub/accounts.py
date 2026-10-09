@@ -1,27 +1,33 @@
 """The accounts agents on Claude Code and Codex run on (ADR-0024): the pool `accounts.toml` declares
 beside the areas registry, a Claude Code account's token in its keychain item, the environment a
-child of an account starts with, and `evidence.json` beside the pool, every account's limit
-readings, last probe, mark and last use, read and written under one lock."""
+child of an account starts with, `evidence.json` beside the pool, every account's limit readings,
+last probe, mark and last use, read and written under one lock, the probe that takes a reading, and
+the pick of one account for a wake."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fcntl
 import json
 import math
 import os
 import re
+import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .areas import DEFAULT_REGISTRY
+from .backend.codex import _TAIL, _THREAD, INSTRUCTIONS, SCRATCH_AGENTS_MD, CodexError, CodexSession
 
 __all__ = (
     "PROVIDERS",
@@ -32,7 +38,9 @@ __all__ = (
     "CREDENTIAL_VARIABLES",
     "DEFAULT_POOL",
     "LOCK_WAIT",
+    "PROBE_WAIT",
     "AccountsError",
+    "Hold",
     "KeychainUnknown",
     "Unknown",
     "UNKNOWN",
@@ -58,6 +66,9 @@ __all__ = (
     "usable",
     "claude_code_reading",
     "codex_reading",
+    "Probed",
+    "probe",
+    "pick",
 )
 
 PROVIDERS = ("claude_code", "codex")
@@ -73,6 +84,7 @@ CREDENTIAL_VARIABLES = {
 }
 DEFAULT_POOL = DEFAULT_REGISTRY.parent / "accounts.toml"
 LOCK_WAIT = 120.0  # seconds a pick waits for the evidence file's lock before it holds its wake
+PROBE_WAIT = 60.0  # seconds a probe runs before it and its children are killed (ADR-0024/D4)
 
 # absolute: under launchd PATH is /usr/bin:/bin:/usr/sbin:/sbin, and a test puts a script in its place
 _SECURITY = "/usr/bin/security"
@@ -90,10 +102,21 @@ _ACCOUNT_HEADER = re.compile(r"\s*\[\[\s*account\s*\]\]\s*(#.*)?$")  # one `[[ac
 _HEADER = re.compile(r"\s*\[")  # a table's header, `[t]` or `[[t]]`, as `lion account` cuts the file
 _ACCOUNT_KEYS = ("name", "provider", "credential", "group")
 _MINUTES = {300: "five_hour", 10080: "seven_day"}  # a Codex window is told by its length
+# a probe's prompt, as measured: the one row it is made for comes before the answer either way
+_PROBE_PROMPT = b"Reply with the single word: ok"
 
 
 class AccountsError(Exception):
     pass
+
+
+class Hold(AccountsError):
+    """A pick that chose no account, so the wake is held (ADR-0024/C5): `out` names each candidate and
+    why it is out. A lock not taken within its bound is one too, naming the lock and no candidate."""
+
+    def __init__(self, message: str, out: Mapping[str, str] | None = None) -> None:
+        super().__init__(message)
+        self.out = dict(out or {})
 
 
 class KeychainUnknown(AccountsError):
@@ -447,14 +470,19 @@ def _instant(v: Any) -> bool:
 class Window:
     """One window's limit reading (ADR-0024/C3)."""
 
-    used: float  # the fraction of the window's limit used
+    # the fraction of the window's limit used; None: the window is absent, its plan has none (C3), which
+    # is never a figure, and names no reset
+    used: float | None
     resets: float | None  # the instant it resets, epoch seconds; None when the source names none
     observed: float  # epoch seconds
     source: str  # a call or a probe
 
     def __post_init__(self) -> None:
-        resets_ok = self.resets is None or _instant(self.resets)
-        if not (_number(self.used) and self.used >= 0 and resets_ok and _instant(self.observed)):
+        if self.used is None:
+            ok = self.resets is None
+        else:
+            ok = _number(self.used) and self.used >= 0 and (self.resets is None or _instant(self.resets))
+        if not (ok and _instant(self.observed)):
             raise ValueError(f"not a limit reading: {self}")
         if self.source not in SOURCES:
             raise ValueError(f"a reading's source is {' or '.join(SOURCES)}, not {self.source!r}")
@@ -556,7 +584,7 @@ class Book:
 def held(path: Path | str, wait: float = LOCK_WAIT) -> Iterator[Book]:
     """The evidence file under an exclusive `flock` on the file itself, as the agent's pid file is held,
     from its read to the holder's last write: a read-decide-write inside one `with` meets no other.
-    A holder that waits past `wait` seconds is refused."""
+    A holder that waits past `wait` seconds is refused with a `Hold`."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + wait
@@ -575,8 +603,8 @@ def held(path: Path | str, wait: float = LOCK_WAIT) -> Iterator[Book]:
                 finally:
                     first = False
                 # taken late counts as not taken: the holder reads nothing past its bound
-                if time.monotonic() > deadline:
-                    raise AccountsError(f"{path} is held by another process past {wait:g} seconds") from None
+                if time.monotonic() > deadline:  # a pick that waits past its bound holds its wake
+                    raise Hold(f"{path} is held by another process past {wait:g} seconds") from None
                 time.sleep(0.01)
             # locked on a file a writer has since replaced or removed: the path names another, locked anew
             try:
@@ -610,11 +638,14 @@ def record(path: Path | str, account: Account, reading: Mapping[str, Window]) ->
     """A call's or a probe's reading into the evidence file under its lock: per window, the later
     observed of what is kept and what is given."""
     with held(path) as book:
-        kept = book.of(account)
-        for w, r in reading.items():
-            if w not in kept.readings or r.observed >= kept.readings[w].observed:
-                kept.readings[w] = r
+        _take(book.of(account), reading)
         book.save()
+
+
+def _take(kept: Kept, reading: Mapping[str, Window]) -> None:
+    for w, r in reading.items():
+        if w not in kept.readings or r.observed >= kept.readings[w].observed:
+            kept.readings[w] = r
 
 
 def readings(kept: Mapping[tuple[str, str], Kept], pool: Pool, account: Account) -> dict[str, Window]:
@@ -642,13 +673,14 @@ def fresh(reading: Window, now: float, max_age: float) -> bool:
 
 def usable(readings: Mapping[str, Window], settings: Settings, now: float) -> bool | Unknown:
     """Under `seven_day` of seven days and under `five_hour` of five hours. A window over its threshold
-    is false whatever the other says; otherwise a window with no fresh reading is UNKNOWN."""
+    is false whatever the other says; otherwise a window with no fresh reading is UNKNOWN. A fresh absent
+    window stands in nobody's way; a stale one is no reading, as a stale figure is."""
     known = True
     for w, limit in (("seven_day", settings.seven_day), ("five_hour", settings.five_hour)):
         r = readings.get(w)
         if r is None or not fresh(r, now, settings.max_age):
             known = False
-        elif r.used >= limit:
+        elif r.used is not None and r.used >= limit:
             return False
     return True if known else UNKNOWN
 
@@ -689,7 +721,10 @@ def codex_reading(row: Any, source: str) -> dict[str, Window]:
     `timestamp`, each entry's `used_percent` read as a fraction and its window told by
     `window_minutes`. Its reset is `resets_at` when that is an instant, else none, and then only
     `max_age` ends the reading. A row with no instant gives no reading; an entry with a field absent or
-    of the wrong type is left out, so its window reads as unknown."""
+    of the wrong type is left out, so its window reads as unknown. When one of `primary` and
+    `secondary` is an entry naming a known window and the other is there and empty, the plan has no
+    other window: that one is absent, observed with the row (C3). Both empty, a slot missing or of
+    another type, or an entry of an unknown length leave the other unknown."""
     payload = row.get("payload") if isinstance(row, dict) else None
     limits = (
         payload.get("rate_limits")
@@ -709,4 +744,380 @@ def codex_reading(row: Any, source: str) -> dict[str, Window]:
             continue
         resets = entry.get("resets_at")
         out[w] = Window(used / 100, float(resets) if _instant(resets) else None, observed, source)
+    filled = [e for e in (limits.get("primary"), limits.get("secondary")) if isinstance(e, dict)]
+    empty = [slot for slot in ("primary", "secondary") if slot in limits and limits[slot] is None]
+    if len(filled) == 1 and len(empty) == 1:
+        minutes = filled[0].get("window_minutes")
+        named = _MINUTES.get(minutes) if _number(minutes) else None
+        if named is not None:
+            other = next(w for w in WINDOWS if w != named)
+            out.setdefault(other, Window(None, None, observed, source))
     return out
+
+
+def _time(instant: float) -> str:
+    """An instant as a person reads it, in the local zone."""
+    return datetime.fromtimestamp(instant).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
+@dataclass(frozen=True)
+class Probed:
+    """What one probe took (ADR-0024/D4): when it started, how it ended, its readings, and for a failure
+    its exit code or cause, never the CLI's own words, which may hold a credential (C1)."""
+
+    at: float
+    ended: str  # figures, no figure, or failed
+    readings: dict[str, Window] = field(default_factory=dict)
+    why: str | None = None
+
+
+@dataclass
+class _Probing(CodexSession):
+    """The Codex backend as a probe runs it: its argv and its catalogue as every call's, and every child
+    it starts on the probe's environment, where the backend's own `_env` takes this process's (C2)."""
+
+    environment: dict[str, str] = field(default_factory=dict)
+
+    def _env(self) -> dict[str, str]:
+        return dict(self.environment)
+
+
+def _call(
+    name: str, argv: list[str], env: dict[str, str], deadline: float, bound: float, cwd: str | None = None
+) -> tuple[bytes, str | None]:
+    """A probe's child, the prompt on its stdin: (what it printed, None), or (nothing, why it failed).
+    Its stderr is never read and its stdout never relayed, since either may hold a credential (C1). Its
+    whole process group is killed when it ends or at `deadline`, as the backends kill theirs on a
+    timeout, so nothing left in its group outlives it when the host permits the kill; a kill the host
+    refuses makes the probe a failure and leaves the leader to the host. A descendant that leaves the
+    group for a session of its own is beyond that kill, and a pipe it holds open does not hold the
+    probe past `deadline`. Every refusal of the host on the way (a start, a read, a kill, a close, a
+    reap) is a failure value, never raised (C6)."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd=cwd,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return b"", f"{name} could not start: {e.strerror or type(e).__name__}"
+    why = None
+    try:
+        out, _ = proc.communicate(_PROBE_PROMPT, timeout=deadline - time.monotonic())
+    except subprocess.TimeoutExpired:
+        out, why = None, f"{name} did not end within {bound:g} seconds"
+    except OSError as e:  # a pipe the host refused mid-read: a failure is a value, never raised (C6)
+        out, why = None, f"{name} could not be read: {e.strerror or type(e).__name__}"
+    finally:
+        # the group may be gone already (ESRCH); refused for any other reason, its members may be alive
+        # past the probe, which D4 promises never happens, so the probe is a failure, whatever it printed
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as e:
+            out, why = None, f"{name}'s process group could not be killed: {e.strerror or type(e).__name__}"
+        for pipe in (proc.stdin, proc.stdout):  # nothing more is read from it (C1)
+            if pipe is not None:
+                with contextlib.suppress(OSError):  # a close the host refuses leaks a handle, not a reading
+                    pipe.close()
+        # reaped within the bound; a leader a refused kill left running is left to the host, not waited on
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()) + 0.05)
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError as e:  # reaped by another hand, or refused: how it ended is unknown, so it failed
+            out, why = None, f"{name}'s exit could not be read: {e.strerror or type(e).__name__}"
+    if why is not None:
+        return b"", why
+    if proc.returncode:
+        return b"", f"{name} exited {proc.returncode}"
+    return out, None
+
+
+def _rows(out: bytes) -> Iterator[Any]:
+    for line in out.decode(errors="replace").split("\n"):
+        try:
+            yield json.loads(line)
+        except ValueError:
+            continue
+
+
+def _claude_code_probe(cli: str, model: str | None, env: dict[str, str], bound: float) -> Probed:
+    at = time.time()
+    # `_exec`'s headless flags (hub/backend/claude_code), in the stream form, which carries the limit row
+    # its one-envelope form lacks; `_exec` writes its argv inline, so the flags are named again here
+    argv = [cli, "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence"]
+    argv += ["--setting-sources", "", "--strict-mcp-config", *(["--model", model] if model else [])]
+    argv += ["--tools", "", "--max-turns", "1"]
+    out, failed = _call("claude", argv, env, time.monotonic() + bound, bound)
+    if failed:
+        return Probed(at, "failed", why=failed)
+    got: dict[str, Window] = {}
+    for row in _rows(out):  # each `rate_limit_event` row as it is read, the last of each window kept
+        got.update(claude_code_reading(row, time.time(), "probe"))
+    return Probed(at, "figures" if got else "no figure", got)
+
+
+def _rollout(env: Mapping[str, str], thread: Any) -> dict[str, Window]:
+    """The readings in the last `token_count` row of the thread's rollout, found as the Codex backend's
+    `_meter` finds it, under the home the child ran with. `_meter` keeps the row's `rate_limits` alone,
+    without the instant a reading is observed at, so the row is read here. Nothing when none is found."""
+    if not isinstance(thread, str) or not _THREAD.fullmatch(thread):
+        return {}
+    home = Path(env.get("CODEX_HOME") or Path(env.get("HOME") or Path.home()) / ".codex")
+    try:
+        (path,) = (home / "sessions").glob(f"*/*/*/rollout-*-{thread}.jsonl")
+        with path.open("rb") as f:
+            f.seek(max(0, path.stat().st_size - _TAIL))
+            tail = f.read()
+    except (OSError, ValueError):
+        return {}
+    for row in reversed(list(_rows(tail))):
+        payload = row.get("payload") if isinstance(row, dict) else None
+        if isinstance(payload, dict) and payload.get("type") == "token_count":
+            return codex_reading(row, "probe")
+    return {}
+
+
+def _codex_probe(cli: str, model: str | None, env: dict[str, str], bound: float) -> Probed:
+    at = time.time()
+    deadline = time.monotonic() + bound
+    backend = _Probing(model=model, cli=cli, environment=env)
+    try:
+        # the catalogue every call hands the CLI, asked of it as the backend asks, which refuses a release
+        # its tools-off claim was not measured on
+        catalog = asyncio.run(asyncio.wait_for(backend._catalog(), bound))
+    except TimeoutError:
+        return Probed(at, "failed", why=f"codex did not end within {bound:g} seconds")
+    except OSError as e:
+        return Probed(at, "failed", why=f"codex could not start: {e.strerror or type(e).__name__}")
+    except CodexError:  # its message may carry what the CLI printed (C1)
+        return Probed(at, "failed", why="codex gave no release or model catalogue the backend calls with")
+    try:
+        scratch = tempfile.mkdtemp(prefix="lion-probe-")
+    except OSError as e:
+        why = f"codex's scratch could not be made: {e.strerror or type(e).__name__}"
+        return Probed(at, "failed", why=why)
+    try:
+        try:
+            for file, text in (("AGENTS.md", SCRATCH_AGENTS_MD), ("instructions.md", INSTRUCTIONS)):
+                Path(scratch, file).write_text(text)
+            Path(scratch, "models.json").write_text(catalog)
+        except OSError as e:  # a full or refused disk: a failure is a value (C6)
+            why = f"codex's scratch could not be written: {e.strerror or type(e).__name__}"
+            return Probed(at, "failed", why=why)
+        # the backend's persisted `exec`: its one-shot form is ephemeral and leaves no rollout to read
+        argv = backend._thread_argv(Path(scratch), None)
+        out, failed = _call("codex", argv, env, deadline, bound, scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    if failed:
+        return Probed(at, "failed", why=failed)
+    thread = None
+    for event in _rows(out):
+        if isinstance(event, dict) and event.get("type") == "thread.started":
+            thread = event.get("thread_id")
+    got = _rollout(env, thread)
+    return Probed(at, "figures" if got else "no figure", got)
+
+
+def probe(
+    account: Account,
+    settings: Settings,
+    environ: Mapping[str, str] | None = None,
+    claude: str | None = None,
+    codex: str | None = None,
+    timeout: float = PROBE_WAIT,
+) -> Probed:
+    """One small call on the provider's probe model, made only to take a limit reading (ADR-0024/D4),
+    within `timeout` seconds, on the environment `child_env` builds for the account from `environ` (C2):
+    a Claude Code token read from its keychain item, a Codex home as the private home. It ends `figures`,
+    `no figure` (the call ran and gave none) or `failed` (it could not start, exited non-zero, timed out,
+    or its token could not be read), a failure being a value, never raised. `claude` and `codex` are the
+    CLIs; absent, the ones the backends find on PATH. No Codex login file is opened."""
+    environ = os.environ if environ is None else environ
+    model = settings.probe_model.get(account.provider)
+    if account.provider == "codex":
+        home = None if account.credential == "default" else account.credential
+        env = child_env(account, environ, home=home)
+        cli = codex or shutil.which("codex")
+        if not cli:
+            return Probed(time.time(), "failed", why="no codex on PATH")
+        return _codex_probe(cli, model, env, timeout)
+    try:
+        secret = token(account.name) if account.credential == "keychain" else None
+    except AccountsError as e:
+        return Probed(time.time(), "failed", why=f"its token could not be read: {e}")
+    env = child_env(account, environ, token=secret)
+    cli = claude or shutil.which("claude")
+    if not cli:
+        return Probed(time.time(), "failed", why="no claude on PATH")
+    return _claude_code_probe(cli, model, env, timeout)
+
+
+def _together(
+    accounts: Sequence[Account], settings: Settings, probe: Callable[[Account, Settings], Probed]
+) -> list[Probed]:
+    """One probe per account, all at once, each on its own thread. A probe that raises, which `probe`
+    never does, raises here once every thread has ended, so nothing is written for a probe that never
+    returned."""
+    got: list[Probed | BaseException | None] = [None] * len(accounts)
+
+    def one(i: int, account: Account) -> None:
+        try:
+            got[i] = probe(account, settings)
+        except BaseException as e:
+            got[i] = e
+
+    threads = [threading.Thread(target=one, args=(i, a)) for i, a in enumerate(accounts)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    for g in got:
+        if isinstance(g, BaseException):
+            raise g
+    return [g for g in got if isinstance(g, Probed)]
+
+
+@contextlib.contextmanager
+def _ctrl_c_held() -> Iterator[None]:
+    """A Ctrl-C inside the block is held and delivered as the block ends, to whatever handler was there, so
+    every probe started inside is written before it acts: one made and not written would be made again
+    within `max_age` (C6). Only the main thread receives a signal, so only there is one held."""
+    if threading.current_thread() is not threading.main_thread() or signal.getsignal(signal.SIGINT) is None:
+        yield
+        return
+    got: list[int] = []
+    before = signal.signal(signal.SIGINT, lambda signum, frame: got.append(signum))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, before)
+        if got:
+            signal.raise_signal(signal.SIGINT)
+
+
+def _took(kept: Kept, got: Probed) -> None:
+    _take(kept, got.readings)
+    kept.probe = Probe(got.at, got.ended)
+
+
+def _marked(mark: Mark) -> str:
+    if mark.kind == "person":
+        return "marked: needs its person"
+    return "marked: out of quota until " + ("a probe succeeds" if mark.until is None else _time(mark.until))
+
+
+def _place(r: Window) -> tuple[int, float]:
+    return (0, 0.0) if r.used is None else (1, r.used)  # an absent window before every figure of it
+
+
+def pick(
+    pool: Pool,
+    provider: str,
+    accounts: Sequence[str] | None,
+    last: tuple[str, float] | None,
+    now: float,
+    probe: Callable[[Account, Settings], Probed],
+    wait: float = LOCK_WAIT,
+) -> Account:
+    """The account a wake on `provider`'s model runs on (ADR-0024/D5, C4, C5, C6), its last use written.
+    The candidates are the pool's accounts of that provider, narrowed by the agent's `accounts`, less
+    those whose mark has not ended. The agent's `last` use, (name, instant), stays within `keep` while its
+    readings say usable. Every other candidate whose usable is unknown is probed, all at once, unless its
+    last probe is within `max_age`. The usable rank by seven days, five hours and name, an absent window
+    before a figure; the unknown follow, least recently used first. It all runs under the evidence file's
+    lock, so a second pick waits and then reads what this one learned. No account raises `Hold`, naming
+    each candidate and why it is out; a name in `accounts` that is not the pool's on `provider` is a
+    configuration error, `AccountsError`."""
+    s = pool.settings
+    own = [a for a in pool.accounts if a.provider == provider]
+    for name in accounts or ():
+        if not any(a.name == name for a in own):
+            other = next((a.provider for a in pool.accounts if a.name == name), None)
+            where = f"a {other} account" if other else f"not in {pool.path}"
+            raise AccountsError(
+                f"the agent's accounts name {_key(name)}, which is {where}, not one on {provider}"
+            )
+    if accounts is not None:
+        own = [a for a in own if a.name in accounts]
+    if not own:
+        raise Hold(f"no {provider} account to pick from in {pool.path}")
+    with held(pool.evidence, wait) as book:
+        out: dict[str, str] = {}
+
+        def verdict(a: Account) -> bool | Unknown:
+            return usable(readings(book.kept, pool, a), s, now)
+
+        candidates = []
+        for a in own:
+            mark = book.kept.get((a.provider, a.name), Kept()).mark
+            if mark is not None and (mark.until is None or mark.until > now):
+                out[a.name] = _marked(mark)
+            else:
+                candidates.append(a)
+        stay = None
+        if last is not None and now - last[1] <= s.keep:
+            stay = next((a for a in candidates if a.name == last[0]), None)
+        choice = stay if stay is not None and verdict(stay) is True else None
+        if choice is None:
+            due = []
+            for a in candidates:
+                if verdict(a) is not UNKNOWN:
+                    continue
+                before = book.kept.get((a.provider, a.name), Kept()).probe
+                if before is None or now - before.at > s.max_age:
+                    if a is not stay:  # keep decides on the readings it has: no probe for it
+                        due.append(a)
+                elif before.ended == "failed":  # not probed again within max_age (C6), and still unknown
+                    out[a.name] = (
+                        f"its last probe failed at {_time(before.at)}; the next may run at "
+                        f"{_time(before.at + s.max_age)}"
+                    )
+            if due:
+                with _ctrl_c_held():
+                    for a, took in zip(due, _together(due, s, probe), strict=True):
+                        _took(book.of(a), took)
+                        if took.ended == "failed":
+                            out[a.name] = f"its probe failed: {took.why}"
+                    book.save()
+            # the account used within keep stays while a fresh reading says it is usable (C4), its plan
+            # group's included, which a probe of another member may just have taken
+            choice = stay if stay is not None and verdict(stay) is True else None
+        if choice is None:
+            ranked, unknown = [], []
+            for a in candidates:
+                if a.name in out:
+                    continue
+                got = readings(book.kept, pool, a)
+                v = usable(got, s, now)
+                if v is UNKNOWN:
+                    used = book.kept.get((a.provider, a.name), Kept()).used
+                    unknown.append(((used is not None, used or 0.0, a.name), a))
+                elif v:
+                    ranked.append(((_place(got["seven_day"]), _place(got["five_hour"]), a.name), a))
+                else:
+                    out[a.name] = "; ".join(  # the windows that made it false: fresh figures at a threshold
+                        f"{w} {r.used:g} is at or over {limit:g}"
+                        for w, limit in (("seven_day", s.seven_day), ("five_hour", s.five_hour))
+                        if (r := got.get(w)) is not None
+                        and r.used is not None
+                        and fresh(r, now, s.max_age)
+                        and r.used >= limit
+                    )
+            best = min(ranked or unknown, key=lambda item: item[0], default=None)
+            choice = None if best is None else best[1]
+        if choice is not None:
+            book.of(choice).used = now
+        book.save()
+    if choice is None:
+        out = {a.name: out[a.name] for a in own}
+        said = "; ".join(f"{name}: {why}" for name, why in out.items())
+        raise Hold(f"no {provider} account can run the wake: {said}", out)
+    return choice

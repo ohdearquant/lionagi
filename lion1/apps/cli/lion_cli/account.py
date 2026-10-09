@@ -1,9 +1,9 @@
-"""`lion account {add,list,remove}` (ADR-0024/D8): the pool in `accounts.toml`, a Claude Code account's
-token in its keychain item, and what `evidence.json` says of each account. The file is rewritten in
-place, every other byte kept, and read back before it is written. A refusal exits non-zero with the
-reason on stderr; no output names a credential, or where one is kept beyond the word `keychain`,
-`default` or `home`. `add` and `remove` hold a lock file beside the pool from their read to their
-write, so two of them on one pool run one after the other."""
+"""`lion account {add,list,probe,remove}` (ADR-0024/D8): the pool in `accounts.toml`, a Claude Code
+account's token in its keychain item, and what `evidence.json` says of each account. The file is
+rewritten in place, every other byte kept, and read back before it is written. A refusal exits
+non-zero with the reason on stderr; no output names a credential, or where one is kept beyond the word
+`keychain`, `default` or `home`. `add` and `remove` hold a lock file beside the pool from their read to
+their write, so two of them on one pool run one after the other; `probe` holds the evidence file's."""
 
 from __future__ import annotations
 
@@ -15,9 +15,8 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 
 from hub.accounts import (
@@ -30,9 +29,15 @@ from hub.accounts import (
     AccountsError,
     Kept,
     KeychainUnknown,
+    Pool,
+    _ctrl_c_held,
     _deletes,
     _label,
+    _time,
+    _together,
+    _took,
     fresh,
+    held,
     load_pool,
     parse_pool,
     read_evidence,
@@ -40,8 +45,9 @@ from hub.accounts import (
     remove_token,
     store_token,
 )
+from hub.accounts import probe as probe_account
 
-__all__ = ("add", "remove", "rows", "account_main")
+__all__ = ("add", "remove", "rows", "probe", "account_main")
 
 
 def _read(path: Path) -> str:
@@ -203,28 +209,30 @@ def _remove(path: Path, name: str) -> tuple[Account, bool]:
 def rows(path: Path, now: float | None = None) -> list[dict]:
     """Each account as `list` shows it: name, provider, the word for where its credential is kept, plan
     group, each window's reading as its group holds it with its age and source, and its mark. A window
-    with no reading, or one past its reset, is None: unknown, never a number (ADR-0024/C3)."""
-    now = time.time() if now is None else now
+    with no reading, or one past its reset, is None: unknown, never a number (ADR-0024/C3). An absent
+    window says so, and has no figure."""
     pool = load_pool(path)
-    kept = read_evidence(pool.evidence)
+    return _listed(pool, read_evidence(pool.evidence), pool.accounts, time.time() if now is None else now)
+
+
+def _listed(
+    pool: Pool, kept: Mapping[tuple[str, str], Kept], accounts: Iterable[Account], now: float
+) -> list[dict]:
     out = []
-    for a in pool.accounts:
+    for a in accounts:
         got = readings(kept, pool, a)
-        windows = {}
+        windows: dict[str, dict | None] = {}
         for w in WINDOWS:
             r = got.get(w)
-            past = r is not None and r.resets is not None and now >= r.resets
-            windows[w] = (
-                None
-                if r is None or past
-                else {
-                    "used": r.used,
-                    "age": round(now - r.observed),
-                    "source": r.source,
-                    "resets": r.resets,
-                    "fresh": fresh(r, now, pool.settings.max_age),
-                }
-            )
+            if r is None or (r.resets is not None and now >= r.resets):
+                windows[w] = None
+                continue
+            seen = {"age": round(now - r.observed), "source": r.source}
+            is_fresh = fresh(r, now, pool.settings.max_age)
+            if r.used is None:
+                windows[w] = {"absent": True, **seen, "fresh": is_fresh}
+            else:
+                windows[w] = {"used": r.used, **seen, "resets": r.resets, "fresh": is_fresh}
         mark = kept.get((a.provider, a.name), Kept()).mark
         out.append(
             {
@@ -239,6 +247,49 @@ def rows(path: Path, now: float | None = None) -> list[dict]:
     return out
 
 
+def probe(path: Path, name: str | None = None) -> tuple[list[dict], bool]:
+    """`lion account probe` (ADR-0024/D8): under the evidence file's lock, probe the named account, or
+    every account in the pool, all at once, each unless one was probed within `max_age` (C6), which is
+    said with when the next may run. A marked account is probed too, since that is how a mark ends: a
+    probe that did not fail ends a mark needing its person and one out of quota with no end; one out of
+    quota until an instant still ahead stays. The readings and the probe are written. (each account as
+    `list` shows it, with what was done under `probe`; whether a probe made failed)."""
+    if name is not None and not _label(name):  # never shown: a token pasted as the name must not come back
+        raise AccountsError(f"an account's name is {_LABEL}; nothing was probed")
+    pool = load_pool(path)
+    chosen = [a for a in pool.accounts if name is None or a.name == name]
+    if name is not None and not chosen:
+        raise AccountsError(f"no account {name!r} in {path}")
+    max_age = pool.settings.max_age
+    with held(pool.evidence) as book:
+        now = time.time()
+        did: dict[Account, dict] = {}
+        due = []
+        for a in chosen:
+            last = book.kept.get((a.provider, a.name), Kept()).probe
+            if last is not None and now - last.at <= max_age:
+                did[a] = {"probed": False, "at": last.at, "next": last.at + max_age}
+            else:
+                due.append(a)
+        with _ctrl_c_held():
+            for a, took in zip(due, _together(due, pool.settings, probe_account), strict=True):
+                kept = book.of(a)
+                _took(kept, took)
+                did[a] = {"probed": True, "ended": took.ended, "why": took.why, "mark_ended": None}
+                mark = kept.mark
+                if (
+                    took.ended != "failed"
+                    and mark is not None
+                    and (mark.kind == "person" or mark.until is None)
+                ):
+                    did[a]["mark_ended"], kept.mark = asdict(mark), None
+            book.save()
+        listed = _listed(pool, book.kept, chosen, time.time())
+    for row, a in zip(listed, chosen, strict=True):
+        row["probe"] = did[a]
+    return listed, any(d.get("ended") == "failed" for d in did.values())
+
+
 def _age(seconds: float) -> str:
     s = max(0, int(seconds))
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
@@ -251,12 +302,15 @@ def _line(row: dict) -> str:
     parts = [f"{row['name']}: {row['provider']}, {row['credential']}"]
     if row["group"]:
         parts[0] += f", group {row['group']}"
+    if "probe" in row:
+        parts.append(_did(row["probe"]))
     for w, r in row["windows"].items():
         if r is None:
             parts.append(f"{w} unknown")
         else:
             stale = "" if r["fresh"] else ", older than max_age"
-            parts.append(f"{w} {r['used']:.2f} ({_age(r['age'])} old, from a {r['source']}{stale})")
+            figure = "absent" if r.get("absent") else f"{r['used']:.2f}"
+            parts.append(f"{w} {figure} ({_age(r['age'])} old, from a {r['source']}{stale})")
     mark = row["mark"]
     if mark is None:
         parts.append("no mark")
@@ -265,9 +319,21 @@ def _line(row: dict) -> str:
     elif mark["until"] is None:
         parts.append("marked: out of quota until a probe succeeds")
     else:
-        until = datetime.fromtimestamp(mark["until"]).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-        parts.append(f"marked: out of quota until {until}")
+        parts.append(f"marked: out of quota until {_time(mark['until'])}")
     return "; ".join(parts)
+
+
+def _did(done: dict) -> str:
+    """What `probe` did for one account, as its line says it."""
+    if not done["probed"]:
+        at, after = _time(done["at"]), _time(done["next"])
+        return f"not probed: its last probe was at {at}, the next may run at {after}"
+    said = f"probed: {done['ended']}" + (f", {done['why']}" if done["why"] else "")
+    mark = done["mark_ended"]
+    if mark is not None:
+        was = "needed its person" if mark["kind"] == "person" else "was out of quota until a probe succeeded"
+        said += f", and its mark ended (it {was})"
+    return said
 
 
 def _secret() -> str:
@@ -284,12 +350,14 @@ def account_main(a: argparse.Namespace) -> None:
             got = add(path, a.name, a.provider, a.credential, a.group, _secret)
             group = f", group {got.group}" if got.group else ""
             print(f"added {got.name} to {path}: {got.provider}, {got.kept}{group}")
-        elif a.verb == "list":
-            listed = rows(path)
+        elif a.verb in ("list", "probe"):
+            listed, failed = (rows(path), False) if a.verb == "list" else probe(path, a.name)
             if a.json:
                 print(json.dumps(listed, indent=1))
             else:
                 print("\n".join(_line(r) for r in listed) or f"no accounts: {path} declares none")
+            if failed:
+                raise SystemExit(1)
         else:
             gone, had = remove(path, a.name)
             if gone.kept == "keychain":

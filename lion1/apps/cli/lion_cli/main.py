@@ -284,6 +284,13 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     aa.add_argument("--group", default=None, help="the plan group: accounts that draw on one limit")
     al = forms.add_parser("list", parents=[pool], help="each account, its readings and its mark")
     al.add_argument("--json", action="store_true", help="print the rows as JSON instead of lines")
+    apr = forms.add_parser(
+        "probe",
+        parents=[pool],
+        help="one small model call per account for its limit reading, unless one was made within max_age",
+    )
+    apr.add_argument("name", nargs="?", default=None, help="the account; none: every account in the pool")
+    apr.add_argument("--json", action="store_true", help="print the rows as JSON instead of lines")
     ad = forms.add_parser(
         "remove", parents=[pool], help="delete an account and its keychain item; a Codex home stays"
     )

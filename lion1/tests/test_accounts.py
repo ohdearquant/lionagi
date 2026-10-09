@@ -1014,6 +1014,164 @@ def test_a_codex_row_of_another_shape_or_with_no_instant_gives_no_reading_and_no
     assert codex_reading(row, "call") == {}
 
 
+def codex_row(limits: dict) -> dict:
+    """A made-up row in the measured shape (ADR-0024/A4): the other keys a plan's row carries beside the
+    two slots, and one window's entry filled."""
+    return {
+        "timestamp": "2026-10-04T16:00:00.000Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {"model_context_window": 258400},
+            "rate_limits": {
+                "limit_id": "codex",
+                "limit_name": None,
+                **limits,
+                "credits": {"has_credits": True, "unlimited": False, "balance": "1.0"},
+                "individual_limit": None,
+                "plan_type": "unknown",
+                "rate_limit_reached_type": None,
+            },
+        },
+    }
+
+
+SEVEN = {"used_percent": 24.0, "window_minutes": 10080, "resets_at": 1791606382}
+FIVE = {"used_percent": 46.0, "window_minutes": 300, "resets_at": 1791143400}
+ABSENT = Window(None, None, CODEX_AT, "call")
+
+
+def test_a_codex_slot_left_empty_beside_a_known_window_is_absent_in_either_slot():
+    assert codex_reading(codex_row({"primary": SEVEN, "secondary": None}), "call") == {
+        "seven_day": Window(0.24, 1791606382.0, CODEX_AT, "call"),
+        "five_hour": ABSENT,
+    }
+    assert codex_reading(codex_row({"primary": None, "secondary": FIVE}), "probe") == {
+        "five_hour": Window(0.46, 1791143400.0, CODEX_AT, "probe"),
+        "seven_day": Window(None, None, CODEX_AT, "probe"),  # observed with the row, from its source
+    }
+    # the filled entry's figure unreadable: its window is unknown, and the plan still has no other
+    unread = {**SEVEN, "used_percent": "24"}
+    assert codex_reading(codex_row({"primary": unread, "secondary": None}), "call") == {"five_hour": ABSENT}
+
+
+@pytest.mark.parametrize(
+    ("limits", "left"),
+    [
+        ({"primary": None, "secondary": None}, set()),  # both empty
+        ({"primary": SEVEN}, {"seven_day"}),  # the other slot's key missing
+        ({"secondary": FIVE}, {"five_hour"}),
+        ({"primary": SEVEN, "secondary": [12.0]}, {"seven_day"}),  # a slot of the wrong type
+        ({"primary": SEVEN, "secondary": "none"}, {"seven_day"}),
+        ({"primary": SEVEN, "secondary": 0}, {"seven_day"}),
+        ({"primary": "full", "secondary": None}, set()),
+        ({"primary": {**SEVEN, "window_minutes": 60}, "secondary": None}, set()),  # an unknown length
+        ({"primary": {**SEVEN, "window_minutes": "10080"}, "secondary": None}, set()),
+        ({"primary": {"used_percent": 24.0}, "secondary": None}, set()),
+        ({"primary": SEVEN, "secondary": FIVE}, {"seven_day", "five_hour"}),  # both filled: two figures
+    ],
+)
+def test_no_window_is_absent_unless_one_slot_is_empty_beside_one_of_a_known_length(limits, left):
+    got = codex_reading(codex_row(limits), "call")
+    assert set(got) == left and all(r.used is not None for r in got.values())
+
+
+def test_an_absent_window_is_never_a_number_and_names_no_reset():
+    assert ABSENT.used is None and ABSENT.resets is None
+    with pytest.raises(ValueError, match="not a limit reading"):
+        Window(None, 1791606382.0, CODEX_AT, "call")
+    with pytest.raises(ValueError, match="not a limit reading"):
+        Window(None, None, 0, "call")
+    assert Window(0, None, CODEX_AT, "call") != ABSENT  # a figure of 0 is a figure, and not absent
+
+
+def test_usable_with_an_absent_window_fresh_stale_and_beside_a_figure_over_its_threshold():
+    s = Settings()
+    gone = reading(None, NOW)  # type: ignore[arg-type]
+    assert usable({"five_hour": gone, "seven_day": reading(0.5, NOW)}, s, NOW) is True
+    assert usable({"seven_day": gone, "five_hour": reading(0.5, NOW)}, s, NOW) is True
+    assert usable({"five_hour": gone, "seven_day": gone}, s, NOW) is True
+    stale = reading(None, NOW - 601)  # type: ignore[arg-type]
+    assert usable({"five_hour": stale, "seven_day": reading(0.5, NOW)}, s, NOW) is UNKNOWN
+    assert usable({"five_hour": stale, "seven_day": reading(0.5, NOW)}, Settings(max_age=700), NOW) is True
+    assert usable({"five_hour": gone, "seven_day": reading(0.97, NOW)}, s, NOW) is False
+    assert usable({"seven_day": gone, "five_hour": reading(0.96, NOW)}, s, NOW) is False
+    assert usable({"five_hour": gone}, s, NOW) is UNKNOWN  # the other window no row named
+    assert fresh(gone, NOW + 600, 600) is True and fresh(gone, NOW + 601, 600) is False
+
+
+def test_an_absent_window_is_its_plan_groups_as_a_figure_is(tmp_path):
+    pool = parse_pool(
+        '[[account]]\nname = "a"\nprovider = "codex"\ncredential = "default"\ngroup = "plan"\n'
+        '[[account]]\nname = "b"\nprovider = "codex"\ncredential = "/srv/codex-b"\ngroup = "plan"\n',
+        tmp_path / "accounts.toml",
+    )
+    a, b = pool.accounts
+    gone = reading(None, NOW)  # type: ignore[arg-type]
+    kept = {
+        ("codex", "a"): Kept({"five_hour": reading(0.3, NOW - 50), "seven_day": reading(0.2, NOW - 50)}),
+        ("codex", "b"): Kept({"five_hour": gone, "seven_day": reading(0.25, NOW)}),
+    }
+    assert readings(kept, pool, a) == {"five_hour": gone, "seven_day": reading(0.25, NOW)}
+    assert usable(readings(kept, pool, a), Settings(), NOW) is True
+
+
+BEFORE_ABSENT = """{
+ "claude_code": {
+  "work": {
+   "mark": {
+    "at": 1791140000.0,
+    "kind": "quota",
+    "until": 1791143400.0
+   },
+   "probe": {
+    "at": 1791139995.0,
+    "ended": "figures"
+   },
+   "readings": {
+    "five_hour": {
+     "observed": 1791140000.0,
+     "resets": 1791143400.0,
+     "source": "call",
+     "used": 0.46
+    }
+   },
+   "used": 1791140000.0
+  }
+ }
+}"""
+
+
+def test_the_evidence_file_keeps_an_absent_window_and_loads_a_file_written_before_them(tmp_path):
+    path = tmp_path / "evidence.json"
+    path.write_text(BEFORE_ABSENT)  # as `save` wrote it before a window could be absent
+    assert read_evidence(path) == {
+        ("claude_code", "work"): Kept(
+            {"five_hour": reading(0.46, NOW, 1791143400.0)},
+            Probe(NOW - 5, "figures"),
+            Mark("quota", NOW, 1791143400.0),
+            NOW,
+        )
+    }
+    cx = Account("cx", "codex", "default")
+    record(path, cx, {"five_hour": ABSENT, "seven_day": Window(0.24, 1791606382.0, CODEX_AT, "probe")})
+    assert json.loads(path.read_text())["codex"]["cx"]["readings"]["five_hour"] == {
+        "used": None,
+        "resets": None,
+        "observed": CODEX_AT,
+        "source": "call",
+    }
+    kept = read_evidence(path)
+    assert kept[("codex", "cx")].readings["five_hour"] == ABSENT
+    assert kept[("claude_code", "work")].readings == {"five_hour": reading(0.46, NOW, 1791143400.0)}
+    # an absent window that names a reset is not one the runtime wrote
+    doc = json.loads(path.read_text())
+    doc["codex"]["cx"]["readings"]["five_hour"]["resets"] = 1791606382.0
+    path.write_text(json.dumps(doc))
+    with pytest.raises(AccountsError, match="is not an evidence file"):
+        read_evidence(path)
+
+
 def run(argv: list[str], capsys, stdin: str = "") -> tuple[int, str, str]:
     """`lion` as a person runs it: (exit code, standard output, standard error)."""
     was, sys.stdin = sys.stdin, io.StringIO(stdin)
@@ -1649,6 +1807,41 @@ def test_list_shows_each_window_with_its_age_and_source_and_each_mark(tmp_path, 
         "mark": None,
     }
     assert str(tmp_path / "codex-c") not in out
+
+
+def test_list_shows_an_absent_window_as_absent_and_never_as_a_figure(tmp_path, capsys):
+    path = tmp_path / "accounts.toml"
+    path.write_text(
+        f'[[account]]\nname = "c"\nprovider = "codex"\ncredential = "{tmp_path}/codex-c"\n'
+        '[[account]]\nname = "d"\nprovider = "codex"\ncredential = "default"\n'
+    )
+    pool = load_pool(path)
+    c, d = pool.accounts
+    now = time.time()
+    record(
+        pool.evidence,
+        c,
+        {
+            "five_hour": Window(None, None, now - 90, "probe"),
+            "seven_day": reading(0.25, now - 90, now + 9000),
+        },
+    )
+    record(pool.evidence, d, {"seven_day": Window(None, None, now - 700, "call")})
+    code, out, err = run(["account", "list", "--file", str(path)], capsys)
+    assert (code, err) == (0, "")
+    assert out.splitlines() == [
+        "c: codex, home; five_hour absent (1m old, from a probe); seven_day 0.25 (1m old, from a call); "
+        "no mark",
+        "d: codex, default; five_hour unknown; seven_day absent (11m old, from a call, older than max_age); "
+        "no mark",
+    ]
+    code, out, _ = run(["account", "list", "--json", "--file", str(path)], capsys)
+    listed = json.loads(out)
+    five, seven = listed[0]["windows"]["five_hour"], listed[1]["windows"]["seven_day"]
+    assert five.pop("age") >= 90 and five == {"absent": True, "source": "probe", "fresh": True}
+    assert seven.pop("age") >= 700 and seven == {"absent": True, "source": "call", "fresh": False}
+    assert listed[0]["windows"]["seven_day"]["used"] == 0.25
+    assert all("used" not in w for r in listed for w in r["windows"].values() if w and w.get("absent"))
 
 
 def test_list_with_no_file_shows_the_two_defaults_and_an_empty_file_says_so(tmp_path, capsys):

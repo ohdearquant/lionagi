@@ -76,7 +76,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from, then the instruction files it composes | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
 | `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code or Codex session's checkpoint in the store and its restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]], [[ADR-0025-the-graph#^c4|ADR-0025/C4]]); `checkpoint --codex` and `status --codex` read a Codex rollout, and `checkpoint` takes a rollout given as `--transcript` as one | the store's `sessions` and `messages` rows for the session, and the actor's `context.<name>` notes for declared vars |
-| `lion account` `add`, `list`, `remove` | the pool of Claude Code and Codex accounts ([[ADR-0024-accounts-and-the-pick|ADR-0024]]); `add` reads a token without echo; `list` shows each account's readings and mark, and of its credential only `keychain`, `default` or `home`; no model call | `accounts.toml`, where `add` keeps every other byte; a Claude Code account's keychain item; `list` writes nothing |
+| `lion account` `add`, `list`, `probe`, `remove` | the pool of Claude Code and Codex accounts ([[ADR-0024-accounts-and-the-pick|ADR-0024]]); `add` reads a token without echo; `list` shows each account's readings and mark, and of its credential only `keychain`, `default` or `home`; `probe` makes one model call per account not probed within `max_age`, the others none | `accounts.toml`, where `add` keeps every other byte; a Claude Code account's keychain item; `evidence.json`, where `probe` writes each probe, its readings and the marks it ends; `list` writes nothing |
 
 The gate is code review of any second console script beside `lion`.
 
@@ -134,9 +134,10 @@ closing line.
 to whatever started it; `scripts/serve_agent.sh` execs the command, so the job's pid is the agent's.
 A restart from `lion areas` asks launchd (ADR-0017).
 
-Only a wake and a chat call a model; `--check`, `--ticks`, `--arm`, `--stats`, `lion areas` and
-`lion context` make no model call. The command estimates no tokens, and the row sums what the
-envelopes say, never a price table ([[ADR-0009-backends|ADR-0009]] S7). The gate is code review.
+Only a wake, a chat and `lion account probe` call a model; `--check`, `--ticks`, `--arm`, `--stats`,
+`lion areas`, `lion context` and the other `lion account` forms make no model call. The command
+estimates no tokens, and the row sums what the envelopes say, never a price table
+([[ADR-0009-backends|ADR-0009]] S7). The gate is code review.
 
 ## Decisions
 
@@ -146,16 +147,16 @@ Serves C1. `parser(chat=None)` builds `agent`, `chat`, `run`, `flow`, `result`, 
 `context`, `config` and `account`. `main()` parses `chat` twice, the second time with the config
 file's values as defaults; it runs `agent`, `chat`, `run`, `flow`, `result` and `mcp` under
 `asyncio.run`, the rest directly, and ends a chat quietly on an interrupt. `context` and `account`
-take their verbs as subcommands, and `context checkpoint` `--codex` or `--hook`, never both. At the
-chat's prompt a line the console owns (`/copy [N]`, `/copy all`, `/quit`) runs there and never
-reaches the model.
+take subcommands (`account`: `add`, `list`, `probe`, `remove`), and `context checkpoint` `--codex`
+or `--hook`, never both. At the chat's prompt a line the console owns (`/copy [N]`, `/copy all`,
+`/quit`) runs there and never reaches the model.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags through `parser()`;
   `apps/cli/tests/test_config.py`: the two files, the flag over them, the refusals, `lion config`;
   `apps/cli/tests/test_copy.py`: `/copy` never sent; `tests/test_areas.py`: a registry's table;
   `tests/test_context.py`: `lion context`; `tests/test_codex_checkpoint.py`: `--codex`;
   `apps/cli/tests/test_submit.py`: `run`, `flow`, `result`; `apps/cli/tests/test_mcp.py`: `mcp`;
-  `tests/test_accounts.py`: `lion account`.
+  `tests/test_accounts*.py`: `lion account`.
 
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
 

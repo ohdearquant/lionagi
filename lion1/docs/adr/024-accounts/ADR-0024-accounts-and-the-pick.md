@@ -1,7 +1,7 @@
 ---
 adr: ADR-0024
 status: proposed
-liveness: partial (the pool file, a Claude Code token's keychain item, the child's environment as a function that starts nothing, the evidence file under its lock with the two limit-row parsers, and `lion account` add, list and remove are under tests; the agent's `accounts` key, pointing the private home's link, the pick, the probe, the refusal classes, the launch record and every backend's use of these are owed, S1)
+liveness: partial (the pool file, a Claude Code token's keychain item, the child's environment as a function that starts nothing, the evidence file under its lock with the two limit-row parsers and absent windows, the probe, the pick, and `lion account` add, list, probe and remove are under tests; the agent's `accounts` key and the wake that picks, pointing the private home's link, the refusal classes, the launch record and every backend's use of these are owed, S1)
 date: "2026-10-04"
 area: accounts
 kind: new
@@ -70,7 +70,7 @@ keys and the app's screen are later records (S3, S4). Source: `hub/backend/claud
 | A1 | Claude Code's stream form carries its limit row under a token sign-in as it does under the CLI's stored login. | measured 2026-10-04: one stream call under a token sign-in carried the row with both windows, its seven-day figure equal to that account's own reading; two calls under the stored login carried it too | Claude Code accounts with a token are usable with figures unknown, and a refusal is their only signal |
 | A2 | A keychain item can be read by a job the operating system starts in the background, with the screen locked. | the router's key is read from a keychain item by name (`api_key` in `hub/backend/openrouter.py`); a locked screen was not measured | a served agent cannot set a token, so its Claude Code accounts other than `default` hold its wakes until custody is amended |
 | A3 | Two Codex homes keep separate sign-ins, and the CLI writes a refreshed credential back into the home it read it from. | the backend's private home reads one login through a link the CLI writes in place (`hub/backend/codex.py`); two real homes were not measured | Codex accounts cannot be told apart by home, and Codex runs on `default` alone |
-| A4 | A Codex `token_count` row names each window's length and the instant it resets. | the session tests' rows carry `used_percent` and `window_minutes` (`tests/test_codex_session.py`); no code here reads a reset | a Codex limit reading has no reset, and only `max_age` ends it |
+| A4 | A Codex `token_count` row names each window's length and the instant it resets. | measured 2026-10-09 on 31 rows the Codex backend's private home kept for one account: each fills `primary` with `used_percent`, `window_minutes` 10080 and `resets_at` in epoch seconds, and leaves `secondary` empty | a Codex limit reading has no reset, and only `max_age` ends it |
 | A5 | A Claude Code token is `sk-ant-` then letters, digits, `-`, `_` and `.`, 65 to 2048 characters in all. | gitleaks 8.30.1's rules for Anthropic keys: `sk-ant-api03-` and `sk-ant-admin01-`, each with 95 characters more; measured 2026-10-06 on one live token, the access token of Claude Code's stored login: prefix `sk-ant-oat01-`, 108 characters; the token `claude setup-token` prints was not measured | `lion account add` refuses a real token of another form, so its account cannot be added until the form is widened; one not holding `sk-ant-` would also pass as a label |
 
 ## Claims
@@ -113,14 +113,16 @@ account sets nothing. The list is completed before D3 lands (S9).
   reading lacks its instant observed or its source; or a reading whose reset has passed, or one
   older than `max_age`, counts as fresh.
 
-Claude Code's source is the `rate_limit_event` row of its stream form: each window's `utilization`
-and `resetsAt` under `unifiedWindows`, observed when the row is read. It carries a `status` too.
-Codex's is the `rate_limits` of the rollout's last `token_count` row, observed at that row's own
-`timestamp`, its percentage read as a fraction.
+Claude Code's source is its stream form's `rate_limit_event` row: each window's `utilization` and
+`resetsAt`, observed when read. Codex's is the `rate_limits` of the rollout's last `token_count`
+row, observed at its `timestamp`, a percentage read as a fraction.
 
-A reading past its reset is no reading. The earlier tool's 0 for an expired figure and its 50 for a
-missing seven-day one are rejected by name, and so is its 0 for a missing five-hour one. Accounts of
-one plan group share one limit: a reading of one is a reading of all.
+A Codex slot left empty beside one naming its `window_minutes` makes the other window absent: shown
+as absent, never as a figure, and while fresh no bar to usable. Both slots empty, or a slot of the
+wrong type, stays unknown.
+
+A reading past its reset is no reading. Accounts of one plan group share one limit: a reading of one
+is a reading of all.
 
 ### C4: The pick happens once at a wake's start and binds every child of that wake _(enforced: mechanical; owed, S1)_ ^c4
 
@@ -148,9 +150,10 @@ A change of account starts the session from the whole view, as the fold does
   candidate starts a child or marks its batch read; or the hold does not say why.
 
 An agent's `accounts` narrows the pool, and one name pins it. A pin that is not usable holds the
-wake and never falls back, and so does a pool with no usable candidate. The hold names each
-candidate and why it was passed over, as the caps' hold names its cap
-([[ADR-0013-the-agent#^c5|ADR-0013/C5]]), and the mail is there for the next wake.
+wake and never falls back, and so does a pool with no usable candidate. Not usable is a fresh figure
+at its threshold, a mark or a failed probe; a probe that gave no figure leaves its account a
+candidate (C4). The hold names each candidate and why it was passed over, as the caps' hold names
+its cap ([[ADR-0013-the-agent#^c5|ADR-0013/C5]]), and the mail is there for the next wake.
 
 ### C6: Probes are bounded across the machine _(enforced: mechanical; owed, S1)_ ^c6
 
@@ -273,8 +276,21 @@ backend writes its reading under the lock.
   `test_a_holder_whose_file_was_replaced_past_its_bound_is_refused_on_the_new_one`,
   `test_fresh_ends_at_the_reset_instant_and_holds_at_max_age_exactly`,
   `test_usable_at_each_threshold_exactly_and_unknown_with_a_window_unknown`,
-  `test_a_plan_groups_reading_is_every_members_and_stays_within_its_provider`, and each parser's
-  full, missing and wrong-type rows; the probes and the backend's write are owed (S1).
+  `test_a_plan_groups_reading_is_every_members_and_stays_within_its_provider`,
+  `test_the_evidence_file_keeps_an_absent_window_and_loads_a_file_written_before_them`, and each
+  parser's full, missing and wrong-type rows; `tests/test_accounts_pick.py`:
+  `test_a_claude_code_probe_reads_the_streams_limit_rows_on_the_probe_model`,
+  `test_a_claude_code_probe_whose_stream_has_no_limit_row_gives_no_figure`,
+  `test_a_codex_probe_reads_the_last_token_count_row_of_its_rollout_under_the_accounts_home`,
+  `test_a_codex_probe_whose_rollout_gives_no_reading_gives_no_figure`,
+  `test_a_probe_whose_cli_exits_non_zero_fails_with_its_exit_code_alone`,
+  `test_a_probe_past_its_bound_fails_and_leaves_no_process_of_its_own`,
+  `test_a_probe_that_ends_leaves_no_process_its_cli_started`,
+  `test_a_probes_child_holds_its_accounts_credential_and_none_competing`,
+  `test_a_probe_that_cannot_start_or_read_its_token_fails_with_a_cause`,
+  `test_a_pick_that_waits_past_its_bound_for_the_lock_holds_naming_the_lock`,
+  `test_the_probes_of_a_pick_run_at_once`,
+  `test_a_made_up_token_is_in_nothing_a_probe_or_a_pick_wrote`; the backend's write is owed (S1).
 
 ### D5: The pick, in order ^d5
 
@@ -287,10 +303,25 @@ account's last use before it returns.
 | keep | the account this agent used within `keep`, while a fresh reading says it is usable |
 | read | every other candidate with no fresh reading is probed once, within C6's bound; one whose probe failed is out |
 | usable | under `seven_day` of seven days and under `five_hour` of five hours |
-| order | lowest seven-day fraction, then five-hour, then name; after them, candidates whose probe gave no figure, least recently used first |
+| order | lowest seven-day fraction, then five-hour, then name, an absent window (C3) before every figure of it; after them, candidates whose probe gave no figure, least recently used first |
 | none | the wake is held, naming each candidate and why it is out |
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_accounts_pick.py`:
+  `test_the_pick_ranks_by_seven_days_then_five_hours_then_name_an_absent_window_before_a_figure`,
+  `test_the_unknown_follow_every_ranked_one_least_recently_used_first_then_name`,
+  `test_keep_stays_on_the_account_used_within_keep_while_its_readings_say_usable`,
+  `test_keep_makes_no_probe_for_its_account_and_holds_on_its_plan_groups_reading`,
+  `test_each_mark_puts_its_account_out_until_the_mark_ends`,
+  `test_a_candidate_probed_within_max_age_is_not_probed_again`,
+  `test_a_candidate_whose_probe_failed_is_out_and_its_probe_is_written`,
+  `test_a_probe_function_that_raises_raises_from_the_pick_after_every_probe_and_writes_nothing`,
+  `test_a_pin_that_is_not_usable_holds_and_never_falls_back`,
+  `test_a_pin_whose_probe_gave_no_figure_runs_and_one_whose_probe_failed_holds`,
+  `test_an_interrupted_pick_writes_the_probes_it_made_before_the_interruption_goes_on`,
+  `test_a_pick_with_no_usable_candidate_holds_naming_each_and_why`,
+  `test_a_name_in_accounts_that_is_not_the_pools_on_the_provider_is_refused`,
+  `test_the_pick_writes_the_chosen_accounts_last_use`,
+  `test_two_picks_in_two_processes_at_once_probe_once_in_total`.
 
 ### D6: Three classes of refusal, and their marks ^d6
 
@@ -331,9 +362,14 @@ Both hold `.accounts.toml.lock` from read to write, refusing it taken late.
   `test_a_lock_taken_only_after_its_bound_is_refused_before_anything_is_read`,
   `test_two_adds_at_once_on_one_pool_both_land`,
   `test_list_shows_each_window_with_its_age_and_source_and_each_mark`,
+  `test_list_shows_an_absent_window_as_absent_and_never_as_a_figure`,
   `test_a_made_up_token_is_in_nothing_any_command_or_refusal_wrote`,
-  `test_lion_account_add_as_its_own_process_has_the_token_in_no_processs_arguments`; `probe` is owed
-  (S1).
+  `test_lion_account_add_as_its_own_process_has_the_token_in_no_processs_arguments`;
+  `tests/test_accounts_pick.py`: `test_lion_account_probe_probes_every_account_and_one_by_name`,
+  `test_lion_account_probe_within_max_age_says_when_the_next_may_run`,
+  `test_a_probe_that_did_not_fail_ends_a_person_mark_and_a_quota_mark_with_no_end`,
+  `test_lion_account_probe_refuses_a_name_not_in_the_pool_and_says_an_empty_pool`,
+  `test_a_made_up_token_is_in_nothing_a_probe_or_a_pick_wrote`.
 
 ### D9: A keychain item is read back after a write and after a failed delete ^d9
 
@@ -361,6 +397,7 @@ command.
 | A pick per serving process | a served agent runs for days and would stay on an account long after its limit was reached |
 | Keeping the last account until it is no longer usable | one account is spent to its threshold before the next is touched, and the person's own sessions on it find it spent |
 | Ranking a missing reading in the middle of the table | an account never observed may be spent or empty, and a middle rank treats a guess as a figure (C3) |
+| The earlier tool's 0 for an expired figure or a missing five-hour one, and its 50 for a missing seven-day one | each ranks a figure no source reported, a spent account first under the 0 (C3) |
 | Probing every candidate at every pick | at 60 wakes an hour and five candidates it is 300 calls an hour for one agent, while the kept account's own calls already carry its reading (C6) |
 | Reading a run's account from the process table | another process's environment is not readable for every process, and the earlier tool's reads missed live ones; the runtime's own record answers (C8) |
 | Tokens in plain files | a file travels with every copy and backup of its directory, and its mode is its only guard (C1) |
@@ -369,9 +406,10 @@ command.
 
 ## Consequences
 
-- **S1**: Nothing is built. D1 to D9 land with tests named when they land, and each claim marked
-  owed names this row. Among them is the canary of C1: a made-up token put through every command,
-  route, log and error and asserted absent from all of them.
+- **S1**: What is built is named by the liveness line and each decision's landing evidence; the rest
+  of D1 to D9 lands with tests named when it lands, and each claim marked owed names this row. Among
+  them is the canary of C1: a made-up token put through every command, route, log and error and
+  asserted absent from all of them.
 - **S2**: Moving a person's interactive sessions between accounts is a later record, and so is the
   rest of what the earlier tool does. The earlier tool stays in use until the part that record fixes
   has run and moved a real session.
