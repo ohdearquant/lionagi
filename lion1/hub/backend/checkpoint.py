@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable, row_json
-from lion1.khive import ARGUMENT_BYTES, Khive, KhiveError, lit
+from lion1.khive import Khive, KhiveError, lit
 from lion1.lndl import plain
+from lion1.store import append_messages, read_messages
 
 from ..agent.instruments import GH, PR_PAGE, Runner, sh
 
@@ -193,9 +194,8 @@ async def latest_session(khive: Khive, actor: str) -> dict | None:
 
 async def exchanges_of(khive: Khive, session_id: str) -> list[dict]:
     """The session's exchanges as the store holds them, in order: each message row's `raw`, the exchange
-    as it was recorded (`{turn, at, input, text, kind, why}`)."""
-    (got,) = await khive.exec(f'lion.get(table="messages", id={lit(session_id)})')
-    return [json.loads(r["raw"]) for r in got["rows"]]
+    as it was recorded (`{turn, at, input, text, kind, why}`), read whole however it was carried."""
+    return [json.loads(r["raw"]) for r in await read_messages(khive, session_id)]
 
 
 async def record_exchanges(
@@ -208,40 +208,34 @@ async def record_exchanges(
     exchanges: Sequence[dict],
     why: str,
 ) -> tuple[int, int]:
-    """The session's exchanges past the count the store holds, appended as its message rows, each with
+    """The session's exchanges the store does not hold, by seq, appended as its message rows, each with
     the reason of the take that wrote it; the session row opened when absent. `(turns, appended)`: how
-    many the store holds now, and how many this call wrote. A take of a session the store holds to the
-    same count writes nothing. The rows go in calls of at most 50, each string within `ARGUMENT_BYTES`; a
-    row past that bound is a call of its own, so the rows before it are written even when it is refused."""
+    many the store holds now, and how many this call wrote. A take of a session the store holds whole
+    writes nothing, and one after a take that failed part way writes only the seqs that did not land.
+    The rows go through `append_messages`, in calls of at most 50; the seqs are read without fetching
+    a carried field."""
     if await session_of(khive, session_id) is None:
         await khive.exec(
             f"lion.session_open(id={lit(session_id)}, source={lit(SOURCES[source])}, "
             f"provider_session_id={lit(session_id)}, actor={lit(actor)}, transcript={lit(transcript)})"
         )
-        held = 0
+        held = set()
     else:
-        held = len(await exchanges_of(khive, session_id))
-    rows = []
-    for seq, t in enumerate(exchanges[held:], held):
-        row = {**t, "why": why}
-        rows.append(
-            f"lion.message_append(session_id={lit(session_id)}, seq={seq}, role={lit('user')}, "
-            f"kind={lit('exchange')}, text={lit(str(t.get('input') or ''))}, "
-            f"raw={lit(row_json(row, ensure_ascii=False))}, turn={seq})"
-        )
-    batches: list[list[str]] = []
-    size = 0  # the last batch's string as sent: its ops, ", " between them, and the brackets
-    for op in rows:
-        n = len(op.encode())
-        if batches and len(batches[-1]) < 50 and size + 2 + n <= ARGUMENT_BYTES:
-            batches[-1].append(op)
-            size += 2 + n
-        else:
-            batches.append([op])
-            size = 2 + n
-    for batch in batches:
-        await khive.exec(f"[{', '.join(batch)}]" if len(batch) > 1 else batch[0])
-    return held + len(rows), len(rows)
+        held = {r["seq"] for r in await read_messages(khive, session_id, carried=False)}
+    rows = [
+        {
+            "seq": seq,
+            "role": "user",
+            "kind": "exchange",
+            "text": str(t.get("input") or ""),
+            "raw": row_json({**t, "why": why}, ensure_ascii=False),
+            "turn": seq,
+        }
+        for seq, t in enumerate(exchanges)
+        if seq not in held
+    ]
+    await append_messages(khive, session_id, rows, per_call=50)
+    return len(held) + len(rows), len(rows)
 
 
 def declare(khive: Khive, actor: str, var: Var) -> Var:

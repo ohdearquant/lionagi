@@ -477,6 +477,7 @@ class Run:
         self.pause = False  # hand the conversation back at the next turn boundary (a person's interrupt)
         self.call: asyncio.Future | None = None  # the backend call in flight, what `interrupt` cuts
         self.store_flushed = 0  # entries of the record the store holds, by count (ADR-0025 C1)
+        self.store_unsure = False  # a flush failed part way: rows it sent may stand (ADR-0025 D10)
         self.store_call_started = 0.0  # when the open call row's request went out
         self.cut = False  # `interrupt` cancelled the call: the turn ends with no message, not the run
         self.same_turns = 0  # consecutive turns byte-identical to the one before

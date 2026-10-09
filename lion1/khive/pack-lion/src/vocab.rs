@@ -4,7 +4,10 @@
 //! table carries the namespace the row was written under, and every read filters by it. Times are
 //! microseconds since the epoch, as the store's own tables keep them.
 
-use khive_types::{EntityTypeDef, HandlerDef, IdResolutionMode, ParamDef, VerbCategory, Visibility};
+use khive_types::{
+    EntityTypeDef, HandlerDef, IdResolutionMode, PackColumnAddition, PackColumnAffinity, ParamDef, VerbCategory,
+    Visibility,
+};
 
 pub(crate) const PACK_NAME: &str = "lion";
 
@@ -22,6 +25,10 @@ pub(crate) static SCHEMA: [&str; 10] = [
     include_str!("../sql/10-notes.sql"),
 ];
 
+/// A column added to a table a store made before it existed: the pieces of a carried field (D8).
+pub(crate) static SCHEMA_COLUMN_ADDITIONS: [PackColumnAddition; 1] =
+    [PackColumnAddition { table: "lion_messages", column: "carried", affinity: PackColumnAffinity::Text }];
+
 /// No entity type yet: a profile and a flow belong on the graph as artifacts, and the record that
 /// writes them registers them (ADR-0025 D1, S4). The store's builtin vocabulary already holds
 /// `artifact:profile` (a model's), so theirs will carry the pack's name.
@@ -35,7 +42,7 @@ const fn verb(name: &'static str, description: &'static str, category: VerbCateg
     HandlerDef { name, description, visibility: Visibility::Verb, category, params }
 }
 
-pub(crate) static HANDLERS: [HandlerDef; 15] = [
+pub(crate) static HANDLERS: [HandlerDef; 17] = [
     verb("lion.session_open", "Start a session row: one history a model is shown. Returns its id.", VerbCategory::Commissive, &[
         p("source", "string", true, "Who keeps the history: lion1, claude_code or codex."),
         p("provider_session_id", "string", false, "The CLI's own session id, for a harness session."),
@@ -58,6 +65,19 @@ pub(crate) static HANDLERS: [HandlerDef; 15] = [
         p("alias", "string", false, "The model's own name for the entry."),
         p("parent_seq", "integer", false, "For a result, the seq of the command it answers."),
         p("directive", "string", false, "The view directive the entry carries, as JSON."),
+    ]),
+    verb("lion.message_append_carried", "A message row whose large fields are blob pieces, each read back and verified first.", VerbCategory::Commissive, &[
+        p("session_id", "string", true, "The session."),
+        p("seq", "integer", true, "The entry's sequence number in its record; unique per session."),
+        p("role", "string", true, "The provider's chat role: system, user, assistant or tool."),
+        p("kind", "string", true, "The runtime's kind (input, system, text, result) or the CLI's own row type."),
+        p("text", "string", true, "What the model was shown, or said; empty when carried."),
+        p("raw", "string", false, "The entry as stored, when it differs from text; absent when carried."),
+        p("turn", "integer", false, "The turn the entry belongs to; 0 when absent."),
+        p("alias", "string", false, "The model's own name for the entry."),
+        p("parent_seq", "integer", false, "For a result, the seq of the command it answers."),
+        p("directive", "string", false, "The view directive the entry carries, as JSON; absent when carried."),
+        p("carried", "object", true, "Of text, raw and directive, each carried one: {size, pieces} or {size, index}."),
     ]),
     verb("lion.call_open", "A call row at the moment a request goes to a model. Returns its id.", VerbCategory::Commissive, &[
         p("session_id", "string", true, "The session."),
@@ -97,6 +117,11 @@ pub(crate) static HANDLERS: [HandlerDef; 15] = [
     verb("lion.get", "One row by id, or a session's messages in seq order.", VerbCategory::Assertive, &[
         p("table", "string", true, "sessions, messages, calls, runs or steps."),
         p("id", "string", true, "The row's id; for messages and steps, the session's or the flow run's."),
+    ]),
+    verb("lion.messages", "A session's messages after a seq, in order, one page under 2 MiB.", VerbCategory::Assertive, &[
+        p("session_id", "string", true, "The session."),
+        p("after", "integer", false, "Rows after this seq; all from the first when absent."),
+        p("limit", "integer", false, "1 to 1000 rows; 200."),
     ]),
     verb("lion.runs", "Runs newest first, in the caller's namespace.", VerbCategory::Assertive, &[
         p("limit", "integer", false, "1 to 200; 20."),

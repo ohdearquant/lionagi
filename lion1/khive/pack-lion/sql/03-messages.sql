@@ -13,5 +13,6 @@ CREATE TABLE IF NOT EXISTS lion_messages (
     parent_seq   INTEGER,                  -- for a result, the command it answers
     directive    TEXT,                     -- the view directive the entry carries, as JSON
     created      INTEGER NOT NULL,
+    carried      TEXT,                     -- the pieces of a field too large for one argument, as JSON (D8)
     PRIMARY KEY (session_id, seq)
 )

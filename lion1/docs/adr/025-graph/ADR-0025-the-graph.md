@@ -1,7 +1,7 @@
 ---
 adr: ADR-0025
 status: proposed
-liveness: partial (the pack builds and serves fifteen verbs; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; the pack's own tests are owed, S1)
+liveness: partial (the pack builds and serves seventeen verbs; a field past one argument rides as blob pieces under a verb of its own, a session reads a page at a time and a write that failed part way is finished by seq; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; the pack's own tests are owed, S1)
 date: "2026-10-04"
 area: graph
 kind: new
@@ -105,10 +105,10 @@ session row names the CLI as its source and the CLI's own session id as its prov
 keeps the transcript's path. Each exchange is one `user` row of kind `exchange`, its `raw` the
 recorded exchange (`{turn, at, input, text, kind, why}`) and its `text` the prompt.
 
-A take appends only the exchanges past the count the store holds, so taking the same session twice
-writes nothing, and the restore folds them back. The functions `record_exchanges`, `latest_session`
-and `exchanges_of` (`hub/backend/checkpoint.py`) write and read them, pinned on the stub binary by
-the context tests and on the built one by
+A take appends only the exchanges whose seq the store does not hold (D10), so taking the same
+session twice writes nothing, and the restore folds them back. The functions `record_exchanges`,
+`latest_session` and `exchanges_of` (`hub/backend/checkpoint.py`) write and read them, pinned on the
+stub binary by the context tests and on the built one by
 `test_a_harness_session_rides_the_same_tables_against_the_built_binary` (`tests/test_store.py`).
 
 ### C5: A run names its trigger, its session and its outcome _(enforced: mechanical)_ ^c5
@@ -133,6 +133,21 @@ a substring match over key and value, folding ASCII case only ([[ADR-0007-the-re
 The file store is removed; the memory store stays for tests. A test writes a note in one run and
 reads it in a second run of the same profile through the store alone (S1).
 
+### C7: A message of any size is written whole and read back whole _(enforced: mechanical)_ ^c7
+- **Subject**: every message row a run or a harness take writes, and every read of those rows by
+  this runtime: `Store.messages`, `Store.history` and `exchanges_of`.
+- **Violated when**: a row's `text`, `raw` or `directive` is cut or stored without its content, a
+  write is refused for the size of one of them, or one of those reads cannot return a session for
+  its total size.
+
+The binary takes its ops as one argument, which Linux bounds at 128 KiB a string and the store's
+parser at 1 MiB. The store's daemon answers in frames of at most 8 MiB, and stops starting a call's
+ops once their answers pass 4 MiB.
+
+So a large field travels as pieces in the blob store (D8, D11), a session is read a page at a time
+(D9), and a write that failed part way is finished by seq (D10). A row's other arguments still
+travel inline (S16).
+
 ## Decisions
 
 ### D1: Five tables beside the graph, and no entity yet ^d1
@@ -145,7 +160,7 @@ namespace, no entity.
 | name | class | fields |
 | ---- | ----- | ------ |
 | `sessions` | table | id, source, provider_session_id, actor, profile, started, ended, message_count, transcript |
-| `messages` | table | session_id, seq, role, kind, turn, alias, text, raw, content_hash, parent_seq, directive |
+| `messages` | table | session_id, seq, role, kind, turn, alias, text, raw, content_hash, parent_seq, directive, carried |
 | `calls` | table | id, session_id, turn, model, seq_from, seq_to, folded, reply_seq, tokens_in, tokens_out, cost, duration_ms, status, error |
 | `runs` | table | id, actor, profile, session_id, bounds, trigger, outcome, cost, turns, started, ended, output |
 | `steps` | table | flow_run_id, index, name, profile, run_id, inputs_from, outcome |
@@ -194,10 +209,12 @@ file under the crate's `sql/`, pulled in at compile time.
 | verb | does |
 | ---- | ---- |
 | `lion.session_open`, `lion.session_close` | start a session row; end it with its count |
-| `lion.message_append` | one message row, refused when its `seq` is taken |
+| `lion.message_append` | one message row, its fields inline; refused when its `seq` is taken or it names an argument the pack does not know, `carried` included |
+| `lion.message_append_carried` | one message row whose large fields are pieces (D8); refused as above, or when a piece is missing or misshapen (D11) |
 | `lion.call_open`, `lion.call_close` | a call row at the request; its answer or refusal |
 | `lion.run_open`, `lion.run_close` | a run row before the first call, its step row with it; the outcome of both |
-| `lion.get` | one row of any table by id; a session's messages, a flow run's steps, in order |
+| `lion.get` | one row of any table by id; a session's messages, a flow run's steps, in order; refused for a session holding a carried row |
+| `lion.messages` | a session's messages after a seq, a page at a time (D9) |
 | `lion.runs` | runs newest first, by actor |
 | `lion.sessions` | sessions newest first, by source and by actor when either is named |
 
@@ -244,6 +261,53 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
   `tests/test_store.py::test_exec_sync_times_out_and_refuses_output_it_cannot_parse`; no module
   imports `FileNoteStore` or passes `notes_dir`.
 
+### D8: A field past one argument goes to the blob store as pieces ^d8
+
+Serves C7. A message's `text`, `raw` or `directive` whose DSL literal passes 40 KiB is written as
+pieces, one `blob.put` each, every piece but the last exactly 90 KiB; no upload stays open, so no
+daemon is needed. The row goes by `lion.message_append_carried`, each carried field empty, and
+`carried` holds one manifest per field: its size and its refs in order, or past 256 refs an index,
+the refs as hex text carried the same way. No size is refused.
+
+- **Landing evidence**: `tests/test_carried.py`, double and built binary: entries and exchanges past
+  one argument read back whole, an indexed field, a 128 KiB directive beside a 128 KiB text, a
+  character a join cuts.
+
+### D9: A session is read a page at a time ^d9
+
+Serves C7. `lion.messages` returns a session's rows after a seq, stopping before the rows' JSON
+passes 2 MiB, the first row always, with the last seq while rows remain. Every row this runtime
+writes fits one argument, so a page fits the daemon's frame. `Store.messages`, `Store.history` and
+`exchanges_of` read every page and refuse one that does not move, then fetch each distinct payload
+piece once, 30 to a call, and check each field's size (S20). A take reads seqs only. `lion.get` on
+`messages` refuses a session holding a carried row.
+
+- **Landing evidence**: `tests/test_carried.py`, double and built binary: a session past 2 MiB read
+  in pages, 70 pieces in three reads, `lion.get` refused for a carried session; on the double, a
+  counting take fetches no piece.
+
+### D10: A write that failed part way is finished by seq ^d10
+
+Serves C1, C4 and C7. A call's ops run concurrently, so after a failure or a lost answer, which rows
+stand is unknown. A take appends the seqs the store does not hold, never resuming from a count, and
+compares none it holds (S19). A run is marked unsure while a flush runs; the next flush reads back
+whole each held row it would send, refuses one that differs from that row as the pack keeps it, and
+sends the rest. Pieces of a row never stored stay behind (S12).
+
+- **Landing evidence**: `tests/test_carried.py`: a take after a gap writes only the missing seq; a
+  flush whose answer was lost is finished by the next, and one refuses a held row that differs.
+
+### D11: The pack verifies every piece, and neither verb takes the other's row ^d11
+
+Serves C7. The pack reads each piece back verified against its ref. A missing piece, a piece whose
+size is not its place's, refs that do not match the size, an index of the wrong size, or bytes that
+are not UTF-8 across the joins refuse the row. A carried text is hashed as it is read, and its
+column holds a marker naming its size (S18). `lion.message_append` refuses `carried` and any unknown
+argument; an older pack lacks the carried verb. No row is stored without its fields.
+
+- **Landing evidence**: `tests/test_carried.py`, double and built binary: each refusal by name, the
+  inline verb refusing `carried`, the marker; on the built binary, an unknown argument refused.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -257,6 +321,15 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
 | Notes as records on the graph | a note is read by key and found by substring, by one profile; a graph record would be embedded and ranked for a lookup that never ranks, and its body is replaced without a version |
 | The store's generic verbs over the tables | they reach notes and entities only; a table of the pack's own takes the pack's own verbs |
 | The CLI's transcript as the harness session's source of truth | it is one file on one machine that the CLI rewrites, and the runtime cannot search it |
+| A large field inline, through the binary's ops file | the binary writes it in its own process beside the daemon, and a row past 8 MiB cannot be read back through the daemon (measured) |
+| One staged upload per field, read back in ranges | the upload's id lives in the daemon's memory, so a process with no daemon cannot write, and each range reads the whole object on the store's side |
+| The pieces' refs in a table of their own | a second write per row and a join on every page, where a column the pack adds to its existing table carries the same list |
+| The client sends a carried text's hash | the hash is the pack's own statement of what it holds, and the pack reads the pieces to verify them anyway |
+| `lion.get` on messages paged by default | a reader that does not page would take part of a session for the whole |
+| A cap on a carried field's size | a row has no size bound, an exchange is recorded whole (C7); and a literal grows to six or twelve bytes a character, so a cap bites far below its stated size |
+| `carried` as an argument of `lion.message_append` | a pack that predates it ignores the argument and stores the row with its fields empty (measured at the pinned store revision) |
+| Carrying `text` and `raw` only | the directive travels as its own argument as well as inside `raw`, and a summary's directive alone can pass one argument |
+| A take resuming from the count of rows held | a call's ops run concurrently, so a later row can stand where an earlier one failed; the count then skips the missing row and collides with the standing one |
 
 ## Consequences
 - **S1**: Owed: the pack's own tests in Rust, landing with tests named here. The flow driver that
@@ -300,3 +373,41 @@ the agent takes its mail, as `comm.read(ids=...)`. The file note store and `note
   real binary from this repository's tests or scripts names its database and asserts, from the
   binary's own `database:` line and the rows it reads back, that the named file is the one written,
   for every kind the pack writes.
+- **S11**: Blob objects carry no namespace in the store: a piece is readable by any actor of the
+  same store that knows its ref, a BLAKE3 hash of its bytes. The row naming it is read under its
+  namespace, as every row is.
+- **S12**: Pieces written for a row whose append then fails stay in the blob store with no row
+  naming them; nothing in this runtime removes them.
+- **S13**: Owed: a run's `output` (`lion.run_close`), a note's value (`lion.note_put`) and a mail's
+  content still travel inline in one call and are refused past one argument.
+- **S14**: Only this repository's binary serves the pack's verbs; the store's own binary on this
+  machine lists no `lion` pack (measured 2026-10-09). Serving them beside the store's own daemon
+  needs a socket and a store of their own, which is the store owner's open decision.
+- **S15**: An actor whose config loads `lion` loads `blob` beside it. The store's default packs
+  include `blob` and leave out `lion`, so a config that names its packs names both; without `blob`
+  the binary refuses every carried write as an unknown verb, by name (measured on the built binary).
+- **S16**: A row's arguments other than its `text`, `raw` and `directive` travel inline. Each writer
+  weighs every row's call, by either verb, and closes a call before its string passes 131071 bytes.
+  A row whose own call passes it, which only an alias or a session id that long can cause, is
+  refused by name before any piece, after the rows before it are written. Neither is a message's
+  content.
+- **S17**: A row written by another client through the binary's ops file can pass one argument, and
+  one past 8 MiB cannot be read through the daemon. This runtime writes no such row (D9); reading
+  one is the store owner's open question, with S14. A run's own row is read whole for its chain, and
+  its `output` is bounded by one argument (S13).
+- **S18**: Rows this runtime writes carry `raw` whenever they carry `text`. Against this pack, a
+  client older than this change is refused at `lion.get` for a session holding carried rows. A
+  binary older than this pack serving such a store, as a rollback would, shows a carried text's
+  marker in a listing, and an older client's replay and checkpoint readers refuse the row's null
+  `raw`. No older code can be made to refuse more, so serving a store holding carried rows from an
+  older binary is unsupported (S7).
+- **S19**: Owed: a take places each exchange by its position in the transcript's scan and compares
+  nothing the store holds. A scan that changed before a held seq (a rewound session, or a scanner
+  that now admits or splits an earlier prompt) shifts the later exchanges, and the store keeps its
+  own at each held seq beside the new scan's past them. A shrunk scan writes nothing. Refusing any
+  difference would also refuse sessions a scanner change shifts, so what identifies an exchange
+  needs its own decision.
+- **S20**: A reader holds the session it returns in memory. While a field is assembled it holds its
+  pieces and its joined bytes, two copies of its size, and its decoded text at one to four bytes a
+  character: three to six times its size. An index is read once per field; the pack holds one
+  payload piece at a time, and an index whole.

@@ -11,9 +11,9 @@ use serde_json::Value;
 
 use khive_runtime::pack::PackRuntime;
 use khive_runtime::{KhiveRuntime, NamespaceToken, RuntimeError, SchemaPlan, VerbRegistry};
-use khive_types::{EdgeEndpointRule, EntityTypeDef, HandlerDef, Pack, PackSchemaPlan};
+use khive_types::{EdgeEndpointRule, EntityTypeDef, HandlerDef, Pack, PackColumnAddition, PackSchemaPlan};
 
-use crate::vocab::{ENTITY_TYPES, HANDLERS, PACK_NAME, SCHEMA};
+use crate::vocab::{ENTITY_TYPES, HANDLERS, PACK_NAME, SCHEMA, SCHEMA_COLUMN_ADDITIONS};
 
 pub struct LionPack {
     runtime: KhiveRuntime,
@@ -33,6 +33,7 @@ impl Pack for LionPack {
     const ENTITY_TYPES: &'static [EntityTypeDef] = &ENTITY_TYPES;
     const REQUIRES: &'static [&'static str] = &["kg"];
     const SCHEMA_PLAN: Option<PackSchemaPlan> = Some(PackSchemaPlan { pack: PACK_NAME, statements: &SCHEMA });
+    const SCHEMA_COLUMN_ADDITIONS: &'static [PackColumnAddition] = &SCHEMA_COLUMN_ADDITIONS;
 }
 
 struct LionPackFactory;
@@ -87,17 +88,23 @@ impl PackRuntime for LionPack {
         SchemaPlan { pack: PACK_NAME, statements: &SCHEMA }
     }
 
+    fn schema_column_additions(&self) -> &'static [PackColumnAddition] {
+        <LionPack as Pack>::SCHEMA_COLUMN_ADDITIONS
+    }
+
     async fn dispatch(&self, verb: &str, params: Value, _registry: &VerbRegistry, token: &NamespaceToken) -> Result<Value, RuntimeError> {
         let rt = &self.runtime;
         match verb {
             "lion.session_open" => handlers::session_open(rt, token, params).await,
             "lion.session_close" => handlers::session_close(rt, token, params).await,
             "lion.message_append" => handlers::message_append(rt, token, params).await,
+            "lion.message_append_carried" => handlers::message_append_carried(rt, token, params).await,
             "lion.call_open" => handlers::call_open(rt, token, params).await,
             "lion.call_close" => handlers::call_close(rt, token, params).await,
             "lion.run_open" => handlers::run_open(rt, token, params).await,
             "lion.run_close" => handlers::run_close(rt, token, params).await,
             "lion.get" => handlers::get(rt, token, params).await,
+            "lion.messages" => handlers::messages(rt, token, params).await,
             "lion.runs" => handlers::runs(rt, token, params).await,
             "lion.sessions" => handlers::sessions(rt, token, params).await,
             "lion.note_put" => handlers::note_put(rt, token, params).await,

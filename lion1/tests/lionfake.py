@@ -2,10 +2,13 @@
 `answer(ops)` takes the DSL the client sends (one call, a `[parallel]` batch, or an `a | b` chain)
 and returns the results in order, or raises `KhiveError` with the kind the pack would give. The
 stub `kkernel` of `conftest.py` runs the same class over a JSON file, so a test through the real
-client and a test through a patched `exec` see one behaviour."""
+client and a test through a patched `exec` see one behaviour. `blob.put` and `blob.get` are served
+too, for a message's carried fields (D8); a ref here is a SHA-256, where the store's is a BLAKE3."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import shutil
@@ -36,6 +39,10 @@ _SOURCES = ("lion1", "claude_code", "codex")
 _ROLES = ("system", "user", "assistant", "tool")
 _STATUSES = ("ok", "refused", "limit", "cut", "failed")
 _OUTCOMES = ("success", "continue", "exhausted", "refused", "stopped")
+_PIECE_BYTES = 90 * 1024  # as the pack's (D8): every piece of a carried field but the last
+_REFS_INLINE = 256  # as the pack's: past this many pieces, the refs are an index
+_PAGE_BYTES = 2 * 1024 * 1024  # as the pack's `lion.messages` page (D9)
+_MARKER = "[{} bytes of text carried in the blob store, read by lion.messages]"
 
 
 def _split(text: str, sep: str) -> list[str]:
@@ -96,6 +103,7 @@ class LionFake:
     runs: dict = field(default_factory=dict)
     steps: dict = field(default_factory=dict)  # flow run id -> {idx: row}
     notes: dict = field(default_factory=dict)  # profile -> {key: row}
+    blobs: dict = field(default_factory=dict)  # ref -> the piece's bytes, base64
     ops: list = field(default_factory=list)
     sent: list = field(default_factory=list)  # each comm.send's arguments: a result mail is read here
     refuse_send: str | None = None  # set: every comm.send raises it, a transport that failed
@@ -115,8 +123,20 @@ class LionFake:
                 raise KhiveError(self.refuse_send)
             self.sent.append(dict(p))
             return {"id": f"m{len(self.sent)}", "thread_id": p.get("thread_id") or f"t{len(self.sent)}"}
+        if verb == "blob.put":
+            data = base64.b64decode(p["bytes"], validate=True)
+            ref = hashlib.sha256(data).hexdigest()
+            self.blobs[ref] = p["bytes"]
+            return {"content_ref": ref, "size": len(data)}
+        if verb == "blob.get":
+            if p["content_ref"] not in self.blobs:
+                raise KhiveError(
+                    f"blob.get: no object stored under content_ref {p['content_ref']}", "not_found"
+                )
+            b64 = self.blobs[p["content_ref"]]
+            return {"content_ref": p["content_ref"], "bytes": b64, "size": len(base64.b64decode(b64))}
         if not verb.startswith("lion."):
-            raise KhiveError(f"{verb}: the lion fake serves lion.* only")
+            raise KhiveError(f"{verb}: the lion fake serves lion.* and blob.put/get only")
         name = verb[len("lion.") :]
         if name == "session_open":
             if p["source"] not in _SOURCES:
@@ -141,13 +161,37 @@ class LionFake:
             s["ended"] = self._now()
             s["message_count"] = len(self.messages.get(p["id"], {}))
             return dict(s)
-        if name == "message_append":
+        if name in ("message_append", "message_append_carried"):
+            if (name == "message_append_carried") != ("carried" in p):
+                raise KhiveError(
+                    "a row with carried fields goes through lion.message_append_carried"
+                    if name == "message_append"
+                    else "lion.message_append_carried takes carried"
+                )
             if p["role"] not in _ROLES:
                 raise KhiveError(f"role {p['role']!r}: system, user, assistant or tool")
             self._row(self.sessions, p["session_id"], "session")
             box = self.messages[p["session_id"]]
             if p["seq"] in box:
                 raise KhiveError(f"session {p['session_id']} already holds seq {p['seq']}")
+            text = p["text"]
+            carried = p.get("carried")
+            if carried is not None:
+                if not carried or set(carried) - {"text", "raw", "directive"}:
+                    raise KhiveError(
+                        f"carried: text, raw and directive only, at least one: {sorted(carried)}"
+                    )
+                for field, own in (
+                    ("text", text or None),
+                    ("raw", p.get("raw")),
+                    ("directive", p.get("directive")),
+                ):
+                    if field in carried:
+                        if own is not None:
+                            raise KhiveError(f"a carried {field} leaves the row's own {field} empty")
+                        whole = self._whole(field, carried[field])
+                        if field == "text":
+                            text = whole
             box[p["seq"]] = {
                 "session_id": p["session_id"],
                 "seq": p["seq"],
@@ -156,12 +200,16 @@ class LionFake:
                 "kind": p["kind"],
                 "turn": p.get("turn") or 0,
                 "alias": p.get("alias"),
-                "text": p["text"],
+                # as the pack: a carried text's column names it (D11)
+                "text": _MARKER.format(carried["text"]["size"])
+                if carried and "text" in carried
+                else p["text"],
                 "raw": p.get("raw"),
-                "content_hash": f"h{len(p['text'])}",
+                "content_hash": f"h{len(text)}",
                 "parent_seq": p.get("parent_seq"),
                 "directive": p.get("directive"),
                 "created": self._now(),
+                "carried": json.dumps(carried) if carried is not None else None,
             }
             r = box[p["seq"]]
             return {
@@ -263,6 +311,8 @@ class LionFake:
             table, key = p["table"], p["id"]
             if table == "messages":
                 rows = [self.messages.get(key, {})[k] for k in sorted(self.messages.get(key, {}))]
+                if any(r.get("carried") for r in rows):  # the pack's refusal: this form shows a blank (D9)
+                    raise KhiveError(f"session {key} holds carried rows: read it with lion.messages")
                 return {"count": len(rows), "rows": rows}
             if table == "steps":
                 rows = [self.steps.get(key, {})[k] for k in sorted(self.steps.get(key, {}))]
@@ -271,6 +321,22 @@ class LionFake:
             if store is None:
                 raise KhiveError(f"table {table!r}: sessions, messages, calls, runs or steps")
             return dict(self._row(store, key, table))
+        if name == "messages":
+            limit = p.get("limit", 200)
+            if not 1 <= limit <= 1000:
+                raise KhiveError(f"limit {limit}: 1 to 1000")
+            box = self.messages.get(p["session_id"], {})
+            after = p.get("after", -1)
+            rows = [dict(box[k]) for k in sorted(box) if k > after][: limit + 1]
+            page, size = [], 0
+            for r in rows[:limit]:
+                n = len(json.dumps(r))
+                if page and size + n > _PAGE_BYTES:
+                    break
+                size += n
+                page.append(r)
+            more = len(page) < len(rows)
+            return {"count": len(page), "rows": page, "next_after": page[-1]["seq"] if more else None}
         if name == "runs":
             limit = p.get("limit", 20)
             if not 1 <= limit <= 200:
@@ -293,6 +359,50 @@ class LionFake:
         if name.startswith("note_"):
             return self._note(name, p)
         raise KhiveError(f"unknown verb: lion does not serve {verb!r}")
+
+    def _refs(self, field: str, m: dict) -> list[str]:
+        if (
+            not isinstance(m.get("size"), int)
+            or m["size"] < 1
+            or set(m) not in ({"size", "pieces"}, {"size", "index"})
+        ):
+            raise KhiveError(
+                f"carried {field}: {m!r} is not {{size, pieces}} or {{size, index}} of at least one byte"
+            )
+        k = -(-m["size"] // _PIECE_BYTES)
+        if ("pieces" in m) != (k <= _REFS_INLINE):
+            raise KhiveError(
+                f"carried {field}: {k} pieces are listed when at most {_REFS_INLINE}, and indexed past that"
+            )
+        if "index" in m:
+            if m["index"].get("size") != 64 * k:
+                raise KhiveError(
+                    f"carried {field}: an index of {m['index'].get('size')} bytes for {k} pieces"
+                )
+            text = self._whole(field, m["index"])
+            refs = [text[i : i + 64] for i in range(0, len(text), 64)]
+        else:
+            refs = m["pieces"]
+        if len(refs) != k:
+            raise KhiveError(f"carried {field}: {m['size']} bytes are {k} pieces, not {len(refs)}")
+        return refs
+
+    def _whole(self, field: str, m: dict) -> str:
+        """A carried field's text from its pieces, refused as the pack refuses it."""
+        refs, pieces, left = self._refs(field, m), [], m["size"]
+        for i, ref in enumerate(refs):
+            if ref not in self.blobs:
+                raise KhiveError(f"carried {field} piece {i} ({ref}) is not in the blob store", "not_found")
+            piece, want = base64.b64decode(self.blobs[ref]), min(left, _PIECE_BYTES)
+            if len(piece) != want:
+                held = len(piece)
+                raise KhiveError(f"carried {field} piece {i} holds {held} bytes where its place takes {want}")
+            pieces.append(piece)
+            left -= len(piece)
+        try:
+            return b"".join(pieces).decode()
+        except UnicodeDecodeError:
+            raise KhiveError(f"carried {field}: its bytes are not UTF-8") from None
 
     def _row(self, store: dict, key: str, what: str) -> dict:
         if key not in store:
@@ -342,6 +452,7 @@ class LionFake:
                 "runs": self.runs,
                 "steps": {k: {str(i): r for i, r in v.items()} for k, v in self.steps.items()},
                 "notes": self.notes,
+                "blobs": self.blobs,
                 "clock": self.clock,
             }
         )
@@ -356,6 +467,7 @@ class LionFake:
             runs=d["runs"],
             steps={k: {int(i): r for i, r in v.items()} for k, v in d["steps"].items()},
             notes=d["notes"],
+            blobs=d.get("blobs", {}),
             clock=d["clock"],
         )
 

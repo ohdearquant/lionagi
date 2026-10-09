@@ -1,14 +1,27 @@
 //! The verbs (ADR-0025 D4), each one query from `sql/`. A write that touches no row is a
 //! `NotFound`; a message whose seq is taken is an `InvalidInput`, since the caller's record and the
-//! store's history must not disagree about what a seq names.
+//! store's history must not disagree about what a seq names. A message field too large for one
+//! argument arrives as pieces in the blob store (D8), and a session is read a page at a time (D9).
+
+use std::future::Future;
+use std::pin::Pin;
 
 use khive_runtime::{KhiveRuntime, NamespaceToken, RuntimeError};
 use khive_storage::types::{SqlRow, SqlStatement, SqlValue};
+use khive_storage::ContentRef;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 type Out = Result<Value, RuntimeError>;
+
+/// A carried field is cut into pieces of this many bytes, the last one holding the rest (D8).
+const PIECE_BYTES: u64 = 90 * 1024;
+/// The most refs a manifest lists; past it, the list is itself carried, as an index (D8).
+const REFS_INLINE: u64 = 256;
+/// A page of `lion.messages` stops before its rows serialize past this (D9): under the daemon's
+/// 8 MiB frame and its 4 MiB batch budget, beside a row a reader asks for in the same call.
+const PAGE_BYTES: usize = 2 * 1024 * 1024;
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp_micros()
@@ -134,6 +147,7 @@ pub(crate) async fn session_close(rt: &KhiveRuntime, token: &NamespaceToken, par
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MessageAppend {
     session_id: String,
     seq: i64,
@@ -145,13 +159,142 @@ struct MessageAppend {
     alias: Option<String>,
     parent_seq: Option<i64>,
     directive: Option<String>,
+    carried: Option<Value>,
+}
+
+/// One carried field: its size in bytes, and its pieces' refs in order, listed or read from an
+/// index, which is the refs as 64-hex text with no separator, carried the same way.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    size: u64,
+    pieces: Option<Vec<String>>,
+    index: Option<Box<Manifest>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CarriedFields {
+    text: Option<Manifest>,
+    raw: Option<Manifest>,
+    directive: Option<Manifest>,
+}
+
+fn invalid(message: String) -> RuntimeError {
+    RuntimeError::InvalidInput(message)
+}
+
+/// The refs a manifest names, in order, each checked as a ref: the listed ones, or those of its
+/// index. A field of N bytes has exactly ceil(N / PIECE_BYTES) pieces, listed when there are at most
+/// REFS_INLINE of them and indexed otherwise, so one field has one manifest.
+fn refs<'a>(
+    rt: &'a KhiveRuntime,
+    field: &'a str,
+    m: &'a Manifest,
+) -> Pin<Box<dyn Future<Output = Result<Vec<(String, ContentRef)>, RuntimeError>> + Send + 'a>> {
+    Box::pin(async move {
+        let k = m.size.div_ceil(PIECE_BYTES);
+        let listed: Vec<String> = match (&m.pieces, &m.index) {
+            _ if m.size == 0 => return Err(invalid(format!("carried {field}: a carried field has at least one byte"))),
+            (Some(pieces), None) if k <= REFS_INLINE => pieces.clone(),
+            (None, Some(index)) if k > REFS_INLINE => {
+                if index.size != 64 * k {
+                    return Err(invalid(format!("carried {field}: an index of {} bytes for {k} pieces", index.size)));
+                }
+                let text = walk(rt, field, index, None, true).await?.unwrap_or_default();
+                text.chunks(64).map(|c| String::from_utf8_lossy(c).into_owned()).collect()
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "carried {field}: {k} pieces are listed when at most {REFS_INLINE}, and indexed past that"
+                )))
+            }
+        };
+        if listed.len() as u64 != k {
+            return Err(invalid(format!("carried {field}: {} bytes are {k} pieces, not {}", m.size, listed.len())));
+        }
+        listed
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| match ContentRef::from_hex(s.clone()) {
+                Ok(r) => Ok((s, r)),
+                Err(e) => Err(invalid(format!("carried {field} piece {i}: {e}"))),
+            })
+            .collect()
+    })
+}
+
+/// A carried field read piece by piece, each verified against its ref and held only while it is
+/// read: every piece but the last holds PIECE_BYTES and the last the rest, the bytes are UTF-8 across
+/// the joins, and `hash` takes them in order. The whole field comes back only when `keep`, as an
+/// index does. A piece the blob store does not hold, a piece of the wrong size or bytes that are not
+/// UTF-8 refuse the row: a row never names what the store cannot give back whole.
+async fn walk(
+    rt: &KhiveRuntime,
+    field: &str,
+    m: &Manifest,
+    mut hash: Option<&mut Sha256>,
+    keep: bool,
+) -> Result<Option<Vec<u8>>, RuntimeError> {
+    let unconfigured = || RuntimeError::Unconfigured("carried fields need the store's blob store, and none is installed".into());
+    let store = rt.blob_store().ok_or_else(unconfigured)?;
+    let hydrator = rt.blob_hydrator().ok_or_else(unconfigured)?;
+    let mut kept = keep.then(Vec::new);
+    let mut tail: Vec<u8> = Vec::new(); // a character a join cut, carried to the next piece
+    let mut left = m.size;
+    for (i, (piece, r)) in refs(rt, field, m).await?.iter().enumerate() {
+        let want = left.min(PIECE_BYTES);
+        let size = store
+            .size(r)
+            .await?
+            .ok_or_else(|| RuntimeError::NotFound(format!("carried {field} piece {i} ({piece}) is not in the blob store")))?;
+        if size != want {
+            return Err(invalid(format!("carried {field} piece {i} holds {size} bytes where its place takes {want}")));
+        }
+        let verified = hydrator.hydrate_verified(r, size).await?;
+        let bytes = verified.bytes();
+        if let Some(h) = hash.as_deref_mut() {
+            h.update(bytes);
+        }
+        tail.extend_from_slice(bytes);
+        match std::str::from_utf8(&tail) {
+            Ok(_) => tail.clear(),
+            Err(e) if e.error_len().is_none() => {
+                tail.drain(..e.valid_up_to());
+            }
+            Err(_) => return Err(invalid(format!("carried {field}: its bytes are not UTF-8"))),
+        }
+        if let Some(k) = kept.as_mut() {
+            k.extend_from_slice(bytes);
+        }
+        left -= size;
+    }
+    if !tail.is_empty() {
+        return Err(invalid(format!("carried {field}: its bytes are not UTF-8")));
+    }
+    Ok(kept)
 }
 
 pub(crate) async fn message_append(rt: &KhiveRuntime, token: &NamespaceToken, params: Value) -> Out {
+    append(rt, token, params, false).await
+}
+
+/// A message whose large fields arrive as pieces (D8). A verb of its own, so a pack that predates
+/// the pieces refuses the row by name rather than storing it without them.
+pub(crate) async fn message_append_carried(rt: &KhiveRuntime, token: &NamespaceToken, params: Value) -> Out {
+    append(rt, token, params, true).await
+}
+
+async fn append(rt: &KhiveRuntime, token: &NamespaceToken, params: Value, carrying: bool) -> Out {
     let p: MessageAppend = deser(params)?;
     if !matches!(p.role.as_str(), "system" | "user" | "assistant" | "tool") {
         return Err(RuntimeError::InvalidInput(format!("role {:?}: system, user, assistant or tool", p.role)));
     }
+    let carried: Option<CarriedFields> = match (carrying, p.carried.clone()) {
+        (false, Some(_)) => return Err(invalid("a row with carried fields goes through lion.message_append_carried".into())),
+        (true, None) => return Err(invalid("lion.message_append_carried takes carried".into())),
+        (_, c) => c.map(serde_json::from_value).transpose().map_err(|e| invalid(format!("carried: {e}")))?,
+    };
     if rows(rt, include_str!("../sql/get_sessions.sql"), vec![SqlValue::Text(p.session_id.clone()), ns(token)]).await?.is_empty() {
         return Err(RuntimeError::NotFound(format!("session {} is not in this namespace", p.session_id)));
     }
@@ -164,7 +307,39 @@ pub(crate) async fn message_append(rt: &KhiveRuntime, token: &NamespaceToken, pa
     if !taken.is_empty() {
         return Err(RuntimeError::InvalidInput(format!("session {} already holds seq {}", p.session_id, p.seq)));
     }
-    let hash = format!("{:x}", Sha256::digest(p.text.as_bytes()));
+    let mut hash = format!("{:x}", Sha256::digest(p.text.as_bytes()));
+    if let Some(c) = &carried {
+        if c.text.is_none() && c.raw.is_none() && c.directive.is_none() {
+            return Err(invalid("carried names none of text, raw and directive".into()));
+        }
+        if let Some(t) = &c.text {
+            if !p.text.is_empty() {
+                return Err(invalid("a carried text leaves the row's own text empty".into()));
+            }
+            // the hash is of the text the row stands for, whichever way it travelled
+            let mut h = Sha256::new();
+            walk(rt, "text", t, Some(&mut h), false).await?;
+            hash = format!("{:x}", h.finalize());
+        }
+        if let Some(r) = &c.raw {
+            if p.raw.is_some() {
+                return Err(invalid("a carried raw leaves the row's own raw absent".into()));
+            }
+            walk(rt, "raw", r, None, false).await?;
+        }
+        if let Some(d) = &c.directive {
+            if p.directive.is_some() {
+                return Err(invalid("a carried directive leaves the row's own directive absent".into()));
+            }
+            walk(rt, "directive", d, None, false).await?;
+        }
+    }
+    // a carried text's column names it rather than standing empty, so a reader that predates the
+    // pieces shows that it is elsewhere, never a blank; a reader that fetches them replaces it (D11)
+    let stored = match carried.as_ref().and_then(|c| c.text.as_ref()) {
+        Some(t) => format!("[{} bytes of text carried in the blob store, read by lion.messages]", t.size),
+        None => p.text,
+    };
     let created = now();
     execute(
         rt,
@@ -177,12 +352,13 @@ pub(crate) async fn message_append(rt: &KhiveRuntime, token: &NamespaceToken, pa
             SqlValue::Text(p.kind),
             SqlValue::Integer(p.turn.unwrap_or(0)),
             text(p.alias),
-            SqlValue::Text(p.text),
+            SqlValue::Text(stored),
             text(p.raw),
             SqlValue::Text(hash.clone()),
             int(p.parent_seq),
             text(p.directive),
             SqlValue::Integer(created),
+            text(p.carried.map(|v| v.to_string())),
         ],
     )
     .await?;
@@ -389,9 +565,52 @@ pub(crate) async fn get(rt: &KhiveRuntime, token: &NamespaceToken, params: Value
     };
     let got = rows(rt, sql, vec![SqlValue::Text(p.id.clone()), ns(token)]).await?;
     if many {
-        return Ok(json!({"count": got.len(), "rows": got.iter().map(row).collect::<Vec<_>>()}));
+        let got: Vec<Value> = got.iter().map(row).collect();
+        // a reader of this form sees a carried row's empty text as its content: it reads with
+        // `lion.messages` and fetches the pieces, and is refused here rather than shown a blank (D9)
+        if p.table == "messages" && got.iter().any(|r| !r["carried"].is_null()) {
+            return Err(invalid(format!("session {} holds carried rows: read it with lion.messages", p.id)));
+        }
+        return Ok(json!({"count": got.len(), "rows": got}));
     }
     got.first().map(row).ok_or_else(|| RuntimeError::NotFound(format!("{} {} is not in this namespace", p.table, p.id)))
+}
+
+#[derive(Deserialize)]
+struct Messages {
+    session_id: String,
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// A session's rows after `after`, in seq order: at most `limit`, and none past the one that would
+/// take the page over `PAGE_BYTES`, the first row always. `next_after` is the seq to continue from,
+/// null once the session has no row past the page.
+pub(crate) async fn messages(rt: &KhiveRuntime, token: &NamespaceToken, params: Value) -> Out {
+    let p: Messages = deser(params)?;
+    let limit = p.limit.unwrap_or(200);
+    if !(1..=1000).contains(&limit) {
+        return Err(RuntimeError::InvalidInput(format!("limit {limit}: 1 to 1000")));
+    }
+    let got = rows(
+        rt,
+        include_str!("../sql/messages.sql"),
+        vec![SqlValue::Text(p.session_id), ns(token), SqlValue::Integer(p.after.unwrap_or(-1)), SqlValue::Integer(limit + 1)],
+    )
+    .await?;
+    let mut page = Vec::new();
+    let mut size = 0;
+    for r in got.iter().take(limit as usize) {
+        let v = row(r);
+        let n = v.to_string().len();
+        if !page.is_empty() && size + n > PAGE_BYTES {
+            break;
+        }
+        size += n;
+        page.push(v);
+    }
+    let next_after = if page.len() < got.len() { page.last().and_then(|v| v.get("seq").cloned()) } else { None };
+    Ok(json!({"count": page.len(), "rows": page, "next_after": next_after}))
 }
 
 #[derive(Deserialize)]
