@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+from sandbox import testbed
 
 from hub.backend import ClaudeCode, ClaudeCodeSession, Codex, OpenRouter
 from hub.tools import Box, BoxTree, SandboxDead, code, shell
@@ -38,9 +39,6 @@ from hub.tools.watch import Watch
 from lion1 import Actor, Exhausted, Kind, Profile, RunRequest, Store, Success
 from lion1.actor import reported_cost
 from lion1.khive import Khive
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox import testbed  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 # A private codex home (auth.json symlinked) keeps the shared home's AGENTS.md and plugin skills

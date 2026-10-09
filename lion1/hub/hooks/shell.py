@@ -56,7 +56,7 @@ EVENTS = ("before", "after", "turn")
 # a reference row, as hooks.toml writes it
 _BUNDLED = re.compile(r"python[0-9.]*\s+-m\s+(hub\.hooks\.scripts\.\w+)")
 _PROBE = """import importlib.util as u, json, sys
-found = [(n, s) for n in ("hub", "lion1") if (s := u.find_spec(n))]
+found = [(n, s) for n, s in (("hub", u.find_spec("hub")), ("lion1", u.find_spec("lion1"))) if s]
 where = [[n, p] for n, s in found for p in ([s.origin] if s.origin else s.submodule_search_locations)]
 print(json.dumps(where + [["an import path", p] for p in sys.path]))"""  # finds, never imports
 

@@ -16,20 +16,17 @@ import asyncio
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from run_swe import DATA, RESULTS, baseline, oracle, selected, write_predictions
+
 from hub.backend import ClaudeCodeAgentic
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_swe import DATA, RESULTS, baseline, oracle, selected, write_predictions  # noqa: E402
-
-from hub.tools import docker as _docker  # noqa: E402
-from hub.tools.box import BoxBase, git_diff  # noqa: E402
+from hub.tools import docker as _docker
+from hub.tools.box import BoxBase, git_diff
 
 TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "Bash")
 

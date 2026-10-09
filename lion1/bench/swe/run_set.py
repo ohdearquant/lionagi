@@ -42,15 +42,13 @@ import hashlib
 import json
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from codex_cli import solve as solve_codex_cli  # noqa: E402
-from run_swe import HERE, RESULTS, solve, store_of  # noqa: E402
-from run_swe import cost_known as _cost_known  # noqa: E402
-from sandbox import close_code_hosts, grade, open_code_hosts, runta_image, testbed  # noqa: E402
+from codex_cli import solve as solve_codex_cli
+from run_swe import HERE, RESULTS, solve, store_of
+from run_swe import cost_known as _cost_known
+from sandbox import close_code_hosts, grade, open_code_hosts, runta_image, testbed
 
 from hub.tools import docker  # noqa: E402
 

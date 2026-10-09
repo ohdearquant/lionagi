@@ -64,6 +64,9 @@ select = ["E", "F", "I", "UP", "B"]
 testpaths = ["tests", "apps/cli/tests"]
 pythonpath = [".", "src"]
 addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "launches_cli(*names): the test starts the named khive binary or provider CLI on purpose; without it the suite refuses the launch",
+]
 xfail_strict = true
 filterwarnings = ["error"]
 

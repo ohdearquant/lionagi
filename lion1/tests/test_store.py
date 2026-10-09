@@ -645,6 +645,7 @@ def test_daemons_reads_an_unread_directory_as_an_exit_only_when_the_table_agrees
 
 
 @pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
+@pytest.mark.launches_cli("lion1-khive")
 def test_the_same_run_against_the_built_binary(binary_dirs, monkeypatch):
     # the config routes the lion pack's tables to their own file beside a main store it also names
     # (ADR-0026 C8; the binary's default, with no backends declared, is the one under the home
@@ -690,6 +691,7 @@ def test_the_same_run_against_the_built_binary(binary_dirs, monkeypatch):
 
 
 @pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
+@pytest.mark.launches_cli("lion1-khive")
 def test_a_harness_session_rides_the_same_tables_against_the_built_binary(binary_dirs, monkeypatch):
     # ADR-0025 C4: a Claude Code or Codex session is a session in the store's own tables, each exchange
     # a message row. The checkpoint's own functions write and read them against the real binary, not the
@@ -727,6 +729,7 @@ def test_a_harness_session_rides_the_same_tables_against_the_built_binary(binary
 
 
 @pytest.mark.skipif(not os.environ.get("LION1_KHIVE"), reason="LION1_KHIVE names no built binary")
+@pytest.mark.launches_cli("lion1-khive")
 def test_a_flows_step_rows_against_the_built_binary(binary_dirs, monkeypatch):
     # ADR-0026 C2 on the real pack: each step's row written by `run_open` as the driver hands it, closed
     # with its run, and the rows read back by `steps`, `result` and `messages`

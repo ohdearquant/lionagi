@@ -28,6 +28,7 @@
 | [ADR-0024](024-accounts/ADR-0024-accounts-and-the-pick.md) | 024-accounts | proposed | partial (the pool file, a Claude Code token's keychain item, the child's environment as a function that starts nothing, the evidence file under its lock with the two limit-row parsers, and `lion account` add, list and remove are under tests; the agent's `accounts` key, pointing the private home's link, the pick, the probe, the refusal classes, the launch record and every backend's use of these are owed, S1) | ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 | [ADR-0025](025-graph/ADR-0025-the-graph.md) | 025-graph | proposed | partial (the pack builds and serves fifteen verbs; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; the pack's own tests are owed, S1) | ADR-0007, ADR-0013, ADR-0019 |
 | [ADR-0026](026-submission/ADR-0026-the-submission.md) | 026-submission | proposed | partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, an agent's wake continues its last run with no checkpoint, and `lion run`, `lion flow` and `lion result` run a profile or a flow, write its step rows and mail its result, and `lion mcp` serves them as three tools, each pinned by tests) | ADR-0002, ADR-0013, ADR-0016, ADR-0025 |
+| [ADR-0027](027-suite/ADR-0027-the-suites-launch-guard.md) | 027-suite | proposed | operating (the refusal by name, link, hard link and shell text, its failure of the test or the run, the stand-in rule, the single reading of each value of a call and the source census are pinned by tests) | ADR-0025, ADR-0026 |
 
 ## By topic
 
@@ -57,3 +58,4 @@
 - **024-accounts**, ADR-0024: Accounts and the pick
 - **025-graph**, ADR-0025: The graph
 - **026-submission**, ADR-0026: The submission
+- **027-suite**, ADR-0027: The suite's launch guard
