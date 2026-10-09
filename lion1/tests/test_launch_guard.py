@@ -1485,7 +1485,7 @@ def _launches_past_subprocess(
 _IMPORTED = frozenset(
     {"__future__", "argparse", "ast", "asyncio", "atexit", "base64", "calendar", "collections"}
     | {"contextlib", "contextvars", "copy", "dataclasses", "datetime", "decimal", "difflib", "enum"}
-    | {"errno", "fcntl", "fnmatch", "fractions", "functools", "getpass", "glob", "hashlib", "html"}
+    | {"email", "errno", "fcntl", "fnmatch", "fractions", "functools", "getpass", "glob", "hashlib", "html"}
     | {"http", "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "math"}
     | {"operator", "os", "pathlib", "plistlib", "posixpath", "re", "secrets", "select", "selectors"}
     | {"shlex", "shutil", "signal", "socket", "ssl", "stat", "string", "struct", "subprocess", "sys"}

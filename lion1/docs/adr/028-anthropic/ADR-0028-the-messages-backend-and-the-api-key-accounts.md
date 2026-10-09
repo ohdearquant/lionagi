@@ -1,7 +1,7 @@
 ---
 adr: ADR-0028
 status: proposed
-liveness: unimplemented (nothing built; the cache placement, the TTL order, the lookback miss and the six organizations are measured on one key and recorded in A1 to A4)
+liveness: partial (the backend and its price table run under tests with a stubbed endpoint and ran on one key for the measurements of S15 and S17; the accounts, the ledger, the ceremony and the bench are owed)
 date: "2026-10-09"
 area: anthropic
 kind: new
@@ -145,7 +145,22 @@ the three input counts summed.
 A 429 waits its `Retry-After` within a bound, else backs off, as a 5xx, a 529 and a transport
 failure do; a 401 or 403 is not retried.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_anthropic.py`:
+  `test_the_head_is_system_with_a_breakpoint_and_the_tail_is_marked`,
+  `test_the_previous_calls_tail_is_pinned_while_the_view_holds_it_and_never_more_than_three_marks`,
+  `test_an_empty_entry_is_sent_as_a_placeholder_block_and_a_view_without_a_message_is_refused`,
+  `test_a_429_waits_its_retry_after_and_a_5xx_backs_off_but_a_401_is_not_retried`,
+  `test_a_refusal_before_any_billed_attempt_lands_an_envelope_with_a_complete_zero`,
+  `test_a_view_refused_before_any_request_lands_an_envelope_with_zero_attempts`,
+  `test_a_call_that_fails_after_a_billed_attempt_keeps_the_bill_with_its_account`,
+  `test_a_tool_use_block_alone_is_the_turn_as_text_and_beside_text_refuses_the_turn`,
+  `test_a_turn_cut_at_the_output_cap_reads_length_and_thinking_blocks_are_not_kept`,
+  `test_a_blank_answer_is_sampled_again_then_handed_over_blank_with_its_content_kept`,
+  `test_a_body_cut_mid_read_keeps_its_own_headers_on_the_failed_envelope`,
+  `test_a_refusal_whose_body_is_cut_mid_read_is_still_that_refusal_with_its_headers`,
+  `test_the_limits_and_request_id_ride_the_envelope`,
+  `test_the_key_comes_from_the_environment_without_an_account_and_from_the_item_with_one`,
+  `test_the_key_rides_only_the_request_header_and_is_in_no_envelope_or_error`.
 
 ### D2: The price table ^d2
 
@@ -154,7 +169,12 @@ read and output per million tokens, and for Haiku 5.5 both tiers. Cost per reque
 counts at the request's tier. A model not in the table has no cost, flagged as the router flags a
 missing attempt; on a budgeted account the call is refused before it is sent.
 
-- **Landing evidence**: none yet; owed with the code (S1).
+- **Landing evidence**: `tests/test_anthropic.py`:
+  `test_the_count_is_the_answering_attempts_three_input_counts_and_usage_sums_every_attempt`,
+  `test_cost_is_the_dated_table_at_the_requests_tier_and_unknown_for_a_model_it_lacks`,
+  `test_a_response_without_usage_has_no_count_and_no_cost`,
+  `test_a_count_the_response_lacks_is_unknown_and_a_bill_with_one_is_incomplete`,
+  `test_a_write_the_response_does_not_split_is_priced_at_the_requests_ttl`.
 
 ### D3: API-key accounts in the pool and the evidence file ^d3
 
@@ -243,12 +263,12 @@ totals them. The row's tokens carry the cache split.
   the author's word (A5).
 - **S14**: The router lands no envelope on a first-attempt HTTP failure, `_bill_failure` with
   nothing spent; this backend does, and the amendment in S2 brings the router to it.
-- **S15**: A token is at least one byte of content, and a block's JSON framing is more bytes than
-  the provider's framing tokens for it, so the counted prompt never exceeds the body's bytes.
-  Measured through the backend on Haiku, Sonnet and Opus 5.5, six shapes each, thinking off: the
-  same counts on all three, at most 0.66 of the bytes. The provider's free `count_tokens` on the
-  same body equalled the billed prompt on every attempt measured; it is the exact instrument if
-  S16's flag ever fires.
+- **S15**: The counted prompt is bounded by the body's bytes as measured, not as proved: through the
+  backend on Haiku, Sonnet and Opus 5.5, six shapes each, thinking off, the same counts on all
+  three, at most 0.66 of the bytes. The expectation behind it: a token is at least one byte of
+  content, and a block's JSON framing is more bytes than the provider's framing tokens for it. The
+  provider's free `count_tokens` equalled the billed prompt on every attempt measured: the exact
+  instrument if S16's flag fires.
 - **S16**: An attempt whose settled prompt exceeds its ceiling's token figure is flagged on its row,
   and the pace column says so; the overshoot is bounded by the attempts in flight, since each
   settles to the provider's count at its response. The flag firing amends this record: the count

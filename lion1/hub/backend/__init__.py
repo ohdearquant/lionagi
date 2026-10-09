@@ -5,11 +5,14 @@ runtime does everything else. An agentic backend runs its own tools inside one c
 rides its hooks. `claude_code` has both for the Claude Code CLI.
 """
 
+from .anthropic import Anthropic, AnthropicError
 from .claude_code import ClaudeCode, ClaudeCodeAgentic, ClaudeCodeError, ClaudeCodeSession
 from .codex import Codex, CodexError, CodexSession
 from .openrouter import OpenRouter, OpenRouterError
 
 __all__ = (
+    "Anthropic",
+    "AnthropicError",
     "ClaudeCode",
     "ClaudeCodeAgentic",
     "ClaudeCodeError",
