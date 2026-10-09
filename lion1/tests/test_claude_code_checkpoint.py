@@ -3,6 +3,7 @@ the session's turns folded, a hook's frame refused, and the restore: the first p
 session, whose first line re-arms the watches. The transcript a take reads is one file state, its
 prompts as typed."""
 
+import asyncio
 import dataclasses
 import json
 import os
@@ -30,6 +31,7 @@ from hub.backend.claude_code.checkpoint import (
     transcript_turns,
 )
 from lion1.checkpoint import KINDS, LAZY, WHYS, CheckpointError, Var
+from tests.lionfake import LionKhive
 from tests.test_checkpoint import ACTOR, AT, ID, Book, Mark, Tags, turn, var
 from tests.test_codex_checkpoint import at, write
 from tests.test_context import actor_dir, gh_says, held, load, store_khive
@@ -580,3 +582,84 @@ def test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_
     main(["context", "checkpoint", "--dir", str(d)])
     done = json.loads(capsys.readouterr().out)
     assert held(k) == {two.stem: 1} and done["id"] == f"{two.stem}@1"
+
+
+class _Sent(LionKhive):
+    """The store's double, keeping each ops string a take sends it."""
+
+    def __init__(self) -> None:
+        super().__init__(ACTOR)
+        self.sent: list[str] = []
+
+    async def exec(self, ops: str) -> list:
+        self.sent.append(ops)
+        return await super().exec(ops)
+
+
+def _record(k: _Sent, exchanges: list[dict]) -> tuple[int, int]:
+    from hub.backend.checkpoint import record_exchanges
+
+    kw = {"source": "claude-code", "actor": ACTOR, "transcript": "/t/cc.jsonl", "why": "manual"}
+    return asyncio.run(record_exchanges(k, session_id="s-take", exchanges=exchanges, **kw))
+
+
+def _appends(k: _Sent) -> list[str]:
+    return [s for s in k.sent if "lion.message_append(" in s]
+
+
+def _written(k: _Sent) -> list[dict]:
+    from hub.backend.checkpoint import exchanges_of
+
+    return asyncio.run(exchanges_of(k, "s-take"))
+
+
+def test_a_takes_rows_go_in_calls_each_within_one_arguments_bound(monkeypatch):
+    # an ops string is one argument of kkernel's launch, which Linux refuses past ARGUMENT_BYTES even
+    # when every op in it is small: a long session's rows go in calls within the bound, each row once
+    from hub.backend import checkpoint as backend
+    from lion1.khive import ARGUMENT_BYTES
+
+    assert ARGUMENT_BYTES == 131_071
+    monkeypatch.setattr(backend, "ARGUMENT_BYTES", 3000)
+    k = _Sent()
+    exchanges = [turn(i, "x" * (53 * i % 700)) for i in range(40)]
+    assert _record(k, exchanges) == (40, 40)
+    sent = _appends(k)
+    assert len(sent) > 1 and all(len(s.encode()) <= 3000 for s in sent)
+    assert sum(s.count("lion.message_append(") for s in sent) == 40
+    assert _written(k) == [{**e, "why": "manual"} for e in exchanges]
+
+
+def test_a_batch_that_fills_the_bound_exactly_is_one_call_and_a_byte_less_splits_it(monkeypatch):
+    # the size a batch is sent at counts its brackets and each ", " between its ops; three rows, since
+    # a size that dropped the separators would still be right when the second row is weighed
+    from hub.backend import checkpoint as backend
+
+    three = [turn(0), turn(1), turn(2)]
+    k = _Sent()
+    _record(k, three)
+    (whole,) = _appends(k)
+    for bound, calls in ((len(whole.encode()), 1), (len(whole.encode()) - 1, 2)):
+        monkeypatch.setattr(backend, "ARGUMENT_BYTES", bound)
+        k = _Sent()
+        assert _record(k, three) == (3, 3)
+        assert len(_appends(k)) == calls, bound
+        assert _written(k) == [{**e, "why": "manual"} for e in three]
+
+
+def test_a_row_past_the_bound_is_a_call_of_its_own_and_a_call_holds_at_most_fifty_rows(monkeypatch):
+    from hub.backend import checkpoint as backend
+
+    monkeypatch.setattr(backend, "ARGUMENT_BYTES", 2000)
+    k = _Sent()
+    exchanges = [turn(0), turn(1, "y" * 3000), turn(2), turn(3)]
+    assert _record(k, exchanges) == (4, 4)
+    sent = _appends(k)
+    assert [s.count("lion.message_append(") for s in sent] == [1, 1, 2]
+    assert "y" * 3000 in sent[1]
+    assert _written(k) == [{**e, "why": "manual"} for e in exchanges]
+    # rows the bound holds together are still split by the count
+    monkeypatch.setattr(backend, "ARGUMENT_BYTES", 10**9)
+    k = _Sent()
+    assert _record(k, [turn(i) for i in range(120)]) == (120, 120)
+    assert [s.count("lion.message_append(") for s in _appends(k)] == [50, 50, 20]

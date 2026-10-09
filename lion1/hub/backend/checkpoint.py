@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from lion1.checkpoint import Checkpoint, CheckpointError, Var, jsonable, row_json
-from lion1.khive import Khive, KhiveError, lit
+from lion1.khive import ARGUMENT_BYTES, Khive, KhiveError, lit
 from lion1.lndl import plain
 
 from ..agent.instruments import GH, PR_PAGE, Runner, sh
@@ -211,7 +211,8 @@ async def record_exchanges(
     """The session's exchanges past the count the store holds, appended as its message rows, each with
     the reason of the take that wrote it; the session row opened when absent. `(turns, appended)`: how
     many the store holds now, and how many this call wrote. A take of a session the store holds to the
-    same count writes nothing."""
+    same count writes nothing. The rows go in calls of at most 50, each string within `ARGUMENT_BYTES`; a
+    row past that bound is a call of its own, so the rows before it are written even when it is refused."""
     if await session_of(khive, session_id) is None:
         await khive.exec(
             f"lion.session_open(id={lit(session_id)}, source={lit(SOURCES[source])}, "
@@ -228,8 +229,17 @@ async def record_exchanges(
             f"kind={lit('exchange')}, text={lit(str(t.get('input') or ''))}, "
             f"raw={lit(row_json(row, ensure_ascii=False))}, turn={seq})"
         )
-    for i in range(0, len(rows), 50):
-        batch = rows[i : i + 50]
+    batches: list[list[str]] = []
+    size = 0  # the last batch's string as sent: its ops, ", " between them, and the brackets
+    for op in rows:
+        n = len(op.encode())
+        if batches and len(batches[-1]) < 50 and size + 2 + n <= ARGUMENT_BYTES:
+            batches[-1].append(op)
+            size += 2 + n
+        else:
+            batches.append([op])
+            size = 2 + n
+    for batch in batches:
         await khive.exec(f"[{', '.join(batch)}]" if len(batch) > 1 else batch[0])
     return held + len(rows), len(rows)
 

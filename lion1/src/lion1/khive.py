@@ -30,6 +30,7 @@ __all__ = (
     "KhiveError",
     "LOST",
     "UNSTARTED",
+    "ARGUMENT_BYTES",
     "lit",
     "Khive",
 )
@@ -47,6 +48,11 @@ class KhiveError(Exception):
 
 LOST = "daemon response lost after request was sent"  # kkernel dropping a READ's answer; see inbox
 UNSTARTED = "kkernel could not start"  # the launch itself failed, so nothing ran
+
+# The most bytes one argument can hold on Linux: MAX_ARG_STRLEN, 32 pages of the smallest page size,
+# its closing NUL included. macOS bounds only the total of the arguments and the environment, which is
+# larger. An ops string is one argument, so a caller batching ops keeps each call's string within this.
+ARGUMENT_BYTES = 32 * 4096 - 1
 
 
 def _kind(bad: list[dict]) -> str | None:
