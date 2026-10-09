@@ -21,7 +21,7 @@ from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
 from hub.agent.verdicts import Verdicts
 from lion1 import Actor, Kind, RunRequest
-from lion1.khive import LOST, Khive, KhiveError
+from lion1.khive import LOST, UNSTARTED, Khive, KhiveError
 from tests.lionfake import LionFake, routed_config
 from tests.lionfake import store as fresh_store
 from tests.test_agent import own
@@ -679,6 +679,18 @@ def test_a_task_the_store_refuses_is_left_task_refused_and_never_retried(tmp_pat
     assert len(assigns(inner)) == 1 and inner.tasks == {}
     assert filed(desk) == [("m-t1", "left", None, None, None, f"task refused: {inner.gtd_refuse[:80]}")]
     assert pending(agent) == {}
+
+
+def test_a_task_kkernel_could_not_start_for_is_not_left_and_its_request_stays_for_replay(tmp_path):
+    """A failed start is no refusal: nothing ran, so the message is not left and the request stays
+    recorded for the next replay."""
+    desk, inner, agent = tasking(tmp_path, [SWEEP, TASK_CALL, DONE], TASK)
+    inner.gtd_refuse = f"{UNSTARTED}: PermissionError: [Errno 13] Permission denied"
+    run = asyncio.run(agent.wake())
+    assert inner.tasks == {}
+    assert [r for r in desk.rows() if r["class"] == "left"] == []
+    assert "m-t1" in pending(agent)
+    assert any("m-t1: task outcome unknown" in r for r in results(run))
 
 
 @pytest.mark.parametrize(

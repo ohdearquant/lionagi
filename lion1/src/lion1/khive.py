@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import os
 import shutil
@@ -28,6 +29,7 @@ from typing import Any
 __all__ = (
     "KhiveError",
     "LOST",
+    "UNSTARTED",
     "lit",
     "Khive",
 )
@@ -44,6 +46,7 @@ class KhiveError(Exception):
 
 
 LOST = "daemon response lost after request was sent"  # kkernel dropping a READ's answer; see inbox
+UNSTARTED = "kkernel could not start"  # the launch itself failed, so nothing ran
 
 
 def _kind(bad: list[dict]) -> str | None:
@@ -80,15 +83,18 @@ class Khive:
 
     async def exec(self, ops: str) -> list[Any]:
         """Run one DSL expression; each op's `result`, in order. An op that is not ok raises."""
-        proc = await asyncio.create_subprocess_exec(
-            *self._argv(ops),
-            cwd=str(self.cwd),
-            env=self._env(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # the CLI's whole process group: a kill ends its children too
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._argv(ops),
+                cwd=str(self.cwd),
+                env=self._env(),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # the CLI's whole process group: a kill ends its children too
+            )
+        except OSError as e:
+            raise self._unstarted(ops, e) from None
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except (TimeoutError, asyncio.CancelledError) as e:
@@ -109,19 +115,44 @@ class Khive:
         """`exec` for a caller that is not awaiting: the note store's five methods (ADR-0025 D6), each
         one call of the binary, blocking the loop for its length. An async store is a later change."""
         try:
-            done = subprocess.run(
+            proc = subprocess.Popen(
                 self._argv(ops),
                 cwd=str(self.cwd),
                 env=self._env(),
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=self.timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 start_new_session=True,
-                check=False,
             )
-        except subprocess.TimeoutExpired:
-            raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
-        return self._answer(ops, done.returncode, done.stdout, done.stderr)
+        except OSError as e:
+            raise self._unstarted(ops, e) from None
+        # Only the launch is a failed start: once kkernel runs it may have applied the ops, so a fault
+        # reading its answer propagates as it is. The rest is subprocess.run's own handling.
+        with proc:
+            try:
+                out, err = proc.communicate(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
+            except BaseException:
+                proc.kill()
+                raise
+        return self._answer(ops, proc.returncode, out, err)
+
+    def _unstarted(self, ops: str, e: OSError) -> KhiveError:
+        # kkernel never started, so nothing ran. The ops string travels as one argument, and the OS
+        # refuses a launch whose arguments and environment are too large (E2BIG) before the store's own
+        # cap is reached: by their total, and on Linux also by any one string past 128 KiB. The error
+        # does not say which bound, and either can be the large one, so both sizes are named.
+        if e.errno == errno.E2BIG:
+            env = sum(len(os.fsencode(k)) + len(os.fsencode(v)) + 2 for k, v in self._env().items())
+            return KhiveError(
+                f"{UNSTARTED}: the operating system refused its arguments and environment as too "
+                f"large (E2BIG; the ops string is {len(os.fsencode(ops))} bytes, the environment "
+                f"{env} bytes)"
+            )
+        return KhiveError(f"{UNSTARTED}: {type(e).__name__}: {e}")
 
     def _env(self) -> dict[str, str]:
         return {k: v for k, v in os.environ.items() if k not in ("KHIVE_CONFIG", "KHIVE_DB")}

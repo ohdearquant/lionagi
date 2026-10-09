@@ -77,7 +77,7 @@ def set_var(directory: str | Path, name: str, kind: str, value: Any, *, khive: K
     try:
         declare(_khive(d, actor, khive), actor, var)
     except KhiveError as e:
-        raise CheckpointError(f"the store refused the declaration: {e}") from None
+        raise CheckpointError(f"the declaration did not complete: {e}") from None
     return asdict(var)
 
 
@@ -180,7 +180,7 @@ def checkpoint(
             )
         )
     except KhiveError as e:
-        raise CheckpointError(f"the store refused the take: {e}") from None
+        raise CheckpointError(f"the take did not complete: {e}") from None
     done = {"id": f"{sid}@{turns}", "session": sid, "turns": turns, "appended": appended, "context": figure}
     return {**done, "skipped_unowned": skipped} if rollout else done
 

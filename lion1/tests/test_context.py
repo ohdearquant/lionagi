@@ -34,7 +34,7 @@ from hub.backend.claude_code.checkpoint import (
 )
 from lion1 import Actor
 from lion1.checkpoint import LAZY, CheckpointError, Var
-from lion1.khive import KhiveError
+from lion1.khive import UNSTARTED, KhiveError
 from tests.lionfake import LionFake, routed_config
 from tests.test_areas import call, registry, serve_on, servers_end  # noqa: F401 (a fixture)
 
@@ -959,6 +959,18 @@ def test_a_declared_value_holding_a_line_separator_is_read_back_whole(tmp_path):
     cli.set_var(d, "v0", "fact", "again", khive=k)
     assert [(v.name, v.value) for v in declared(k, ACTOR)][-1] == ("v0", "again")
     assert len(declared(k, ACTOR)) == 4 and k.lion.notes[ACTOR]["context.v0"]["version"] == 2
+
+
+def test_a_declaration_whose_kkernel_could_not_start_is_not_called_a_store_refusal(tmp_path):
+    import lion_cli.context as cli
+
+    class Unstarted:
+        def exec_sync(self, ops: str) -> list:
+            raise KhiveError(f"{UNSTARTED}: PermissionError: [Errno 13] Permission denied")
+
+    d = actor_dir(tmp_path)
+    with pytest.raises(CheckpointError, match=f"^the declaration did not complete: {UNSTARTED}"):
+        cli.set_var(d, "v", "fact", "x", khive=Unstarted())
 
 
 def test_the_context_routes_answer_for_a_registered_desk_only(tmp_path, monkeypatch):

@@ -3,15 +3,18 @@ other error, or a second drop, is raised. The ops string reaches kkernel as one 
 after `--`, so nothing in it reads as an option."""
 
 import asyncio
+import errno
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from lion1.khive import LOST, Khive, KhiveError
+from lion1.khive import LOST, UNSTARTED, Khive, KhiveError
 from tests.lionfake import routed_config
 
 
@@ -79,6 +82,105 @@ def test_ops_is_one_positional_argument(tmp_path):
     argvs = [json.loads(line) for line in log.read_text().splitlines()]
     assert [a[-2:] for a in argvs] == [["--", op] for op in ops], argvs
     assert all(a[:4] == ["exec", "--strict", "--expect-actor", "lambda:x"] for a in argvs)
+
+
+def _call(k: Khive, how: str, ops: str):
+    return asyncio.run(k.exec(ops)) if how == "exec" else k.exec_sync(ops)
+
+
+@pytest.mark.parametrize("how", ["exec", "exec_sync"])
+def test_an_ops_string_past_the_argument_bound_is_a_khive_error_and_kkernel_never_starts(tmp_path, how):
+    """The ops string travels as one argument, so past what the operating system takes for one
+    command the launch itself is refused (E2BIG) before kkernel starts. The caller
+    gets a KhiveError naming the string's size, as for every other refusal, with no kind: the store
+    never answered."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    started = tmp_path / "started"
+    stub = tmp_path / "kkernel"
+    stub.write_text(
+        f"#!{sys.executable}\nopen({str(started)!r}, 'w').close()\nprint('{{\"results\": []}}')\n"
+    )
+    stub.chmod(0o755)
+    k = Khive(tmp_path, "lambda:x", kkernel=str(stub))
+    assert _call(k, how, "gtd.tasks()") == []  # the stub starts for an ordinary call
+    started.unlink()
+
+    ops = f"gtd.tasks(query={json.dumps('x' * 4_000_000)})"
+    with pytest.raises(KhiveError) as raised:
+        _call(k, how, ops)
+    assert "refused its arguments and environment as too large (E2BIG" in str(raised.value)
+    assert f"the ops string is {len(ops.encode())} bytes" in str(raised.value)
+    assert raised.value.kind is None
+    assert not started.exists()
+
+
+@pytest.mark.parametrize("how", ["exec", "exec_sync"])
+def test_an_environment_past_the_bound_is_named_beside_a_small_ops_string(tmp_path, monkeypatch, how):
+    """When the environment is the large one, the message names both sizes and does not put the
+    excess on the ops string."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    started = tmp_path / "started"
+    stub = tmp_path / "kkernel"
+    stub.write_text(
+        f"#!{sys.executable}\nopen({str(started)!r}, 'w').close()\nprint('{{\"results\": []}}')\n"
+    )
+    stub.chmod(0o755)
+    k = Khive(tmp_path, "lambda:x", kkernel=str(stub))
+    bound = os.sysconf("SC_ARG_MAX")
+    monkeypatch.setenv("LION1_TEST_PAD", "x" * (bound + 65_536))
+
+    with pytest.raises(KhiveError) as raised:
+        _call(k, how, "gtd.tasks()")
+    said = str(raised.value)
+    assert said.startswith(f"{UNSTARTED}: the operating system refused its arguments"), said
+    assert f"the ops string is {len(b'gtd.tasks()')} bytes" in said
+    env = re.search(r"the environment (\d+) bytes", said)
+    assert env is not None and int(env.group(1)) > bound, said
+    assert not started.exists()
+
+
+@pytest.mark.parametrize("how", ["exec", "exec_sync"])
+def test_a_fault_after_kkernel_started_is_not_called_a_failed_start(tmp_path, monkeypatch, how):
+    """Only the launch is a failed start. Once kkernel runs it may have applied the ops, so a fault
+    reading its answer reaches the caller as it is, never as "could not start"."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    started = tmp_path / "started"
+    stub = tmp_path / "kkernel"
+    stub.write_text(
+        f"#!{sys.executable}\nopen({str(started)!r}, 'w').close()\nprint('{{\"results\": []}}')\n"
+    )
+    stub.chmod(0o755)
+    k = Khive(tmp_path, "lambda:x", kkernel=str(stub))
+
+    def lost_sync(self, *args, **kwargs):
+        self.wait()
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    async def lost(self, *args, **kwargs):
+        await self.wait()
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", lost_sync)
+    monkeypatch.setattr(asyncio.subprocess.Process, "communicate", lost)
+    with pytest.raises(OSError) as raised:
+        _call(k, how, "gtd.tasks()")
+    assert raised.value.errno == errno.EBADF
+    assert started.exists()
+
+
+@pytest.mark.parametrize("how", ["exec", "exec_sync"])
+def test_a_kkernel_that_cannot_be_started_is_a_khive_error(tmp_path, how):
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    stub = tmp_path / "kkernel"
+    stub.write_text("")  # present, so the client is built, but not executable
+    stub.chmod(0o644)
+    k = Khive(tmp_path, "lambda:x", kkernel=str(stub))
+    with pytest.raises(KhiveError, match="^kkernel could not start: PermissionError"):
+        _call(k, how, "gtd.tasks()")
 
 
 def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch):

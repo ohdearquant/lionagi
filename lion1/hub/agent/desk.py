@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from hub import guidance
 from lion1.actor import Context, Run
-from lion1.khive import LOST, Khive, KhiveError, lit
+from lion1.khive import LOST, UNSTARTED, Khive, KhiveError, lit
 
 from .agent import Agent, AgentError
 from .chores import Bounded, Chores, Outcome, sender_of
@@ -704,7 +704,9 @@ class Desk:
             try:
                 got = await self.agent.khive.assign(**fields)
             except KhiveError as e:
-                if any(s in str(e) for s in (LOST, "did not answer", "unparseable kkernel output")):
+                if any(
+                    s in str(e) for s in (LOST, UNSTARTED, "did not answer", "unparseable kkernel output")
+                ):
                     raise
                 self._row(mid, m, "left", why=f"task refused: {str(e)[:80]}", run=run, **extra)
                 return f"{mid}: left, khive refused the task: {str(e)[:80]}"
