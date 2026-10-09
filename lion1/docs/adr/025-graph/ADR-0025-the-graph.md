@@ -1,7 +1,7 @@
 ---
 adr: ADR-0025
 status: proposed
-liveness: partial (the pack builds and serves seventeen verbs; a field past one argument rides as blob pieces under a verb of its own, a session reads a page at a time and a write that failed part way is finished by seq; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; the pack's own tests are owed, S1)
+liveness: partial (the pack builds and serves seventeen verbs; a field past one argument rides as blob pieces under a verb of its own, a session reads a page at a time and a write that failed part way is finished by seq; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; a take's comparison of prompts and its branch are owed, D12; the pack's own tests are owed, S1)
 date: "2026-10-04"
 area: graph
 kind: new
@@ -50,6 +50,12 @@ restores by replaying its session. The pack that owns the tables is D4. Source:
   applied.
 - **harness session**: a session whose source is a CLI the runtime drives, read from that CLI's
   transcript.
+- **branch**: a harness session that continues another from the seq where the transcript's prompts
+  stopped agreeing with it, naming that session and that seq as its parent (D12).
+- **held view**: what the store holds of a harness session: for a branch, its parent's held view
+  before the branch's seq and then its own rows; for any other, its own rows.
+- **tip**: the harness session a CLI session's takes compare against and write, as its `takes` row
+  names it (D12).
 - **pack**: the crate that owns this record's tables and serves its verbs.
 
 ## Assumptions
@@ -98,15 +104,16 @@ wake over five ([[ADR-0026-the-submission|ADR-0026]] C6).
 
 ### C4: A harness session is a session in the same tables _(enforced: mechanical)_ ^c4
 - **Subject**: every Claude Code or Codex session the runtime drives.
-- **Violated when**: its turns are readable only from the CLI's transcript file.
+- **Violated when**: its turns are readable only from the CLI's transcript file; or a take
+  overwrites a held exchange or mixes two transcripts in one session.
 
 The scanners of [[ADR-0019-the-checkpoint|ADR-0019]] read the CLI's transcript into exchanges. The
 session row names the CLI as its source and the CLI's own session id as its provider session id, and
 keeps the transcript's path. Each exchange is one `user` row of kind `exchange`, its `raw` the
 recorded exchange (`{turn, at, input, text, kind, why}`) and its `text` the prompt.
 
-A take appends only the exchanges whose seq the store does not hold (D10), so taking the same
-session twice writes nothing, and the restore folds them back. The functions `record_exchanges`,
+A take appends what the store lacks while the held prompts agree with the transcript's, and branches
+where they part (D12): taking a session twice writes nothing. The functions `record_exchanges`,
 `latest_session` and `exchanges_of` (`hub/backend/checkpoint.py`) write and read them, pinned on the
 stub binary by the context tests and on the built one by
 `test_a_harness_session_rides_the_same_tables_against_the_built_binary` (`tests/test_store.py`).
@@ -150,20 +157,21 @@ travel inline (S16).
 
 ## Decisions
 
-### D1: Five tables beside the graph, and no entity yet ^d1
+### D1: Six tables beside the graph, and no entity yet ^d1
 
-Serves C1 to C5. The pack (D4) owns five tables and registers no entity type: a profile and a flow
+Serves C1 to C5. The pack (D4) owns six tables and registers no entity type: a profile and a flow
 are files read at submission ([[ADR-0026-the-submission|ADR-0026]] D2, D3), nothing of the graph. A
 row is not a note: it is read by its id, never embedded, indexed or linked. The actor is the
 namespace, no entity.
 
 | name | class | fields |
 | ---- | ----- | ------ |
-| `sessions` | table | id, source, provider_session_id, actor, profile, started, ended, message_count, transcript |
+| `sessions` | table | id, source, provider_session_id, actor, profile, started, ended, message_count, transcript, branch_of, branch_seq |
 | `messages` | table | session_id, seq, role, kind, turn, alias, text, raw, content_hash, parent_seq, directive, carried |
 | `calls` | table | id, session_id, turn, model, seq_from, seq_to, folded, reply_seq, tokens_in, tokens_out, cost, duration_ms, status, error |
 | `runs` | table | id, actor, profile, session_id, bounds, trigger, outcome, cost, turns, started, ended, output |
 | `steps` | table | flow_run_id, index, name, profile, run_id, inputs_from, outcome |
+| `takes` | table | provider_session_id, generation, tip |
 
 A call row holds no content: `seq_from`, `seq_to` and `folded` name its messages, a summarised one
 folded. `text` is the entry's content, a result's as JSON; `parent_seq` and `tokens_out` are null so
@@ -208,12 +216,13 @@ file under the crate's `sql/`, pulled in at compile time.
 
 | verb | does |
 | ---- | ---- |
-| `lion.session_open`, `lion.session_close` | start a session row; end it with its count |
+| `lion.session_open`, `lion.session_close` | start a session row, a branch with the session and seq it continues, moving its take's tip in the same transaction; end it with its count |
+| `lion.take_begin` | advance a CLI session's take generation and read its tip, in one transaction |
 | `lion.message_append` | one message row, its fields inline; refused when its `seq` is taken or it names an argument the pack does not know, `carried` included |
 | `lion.message_append_carried` | one message row whose large fields are pieces (D8); refused as above, or when a piece is missing or misshapen (D11) |
 | `lion.call_open`, `lion.call_close` | a call row at the request; its answer or refusal |
 | `lion.run_open`, `lion.run_close` | a run row before the first call, its step row with it; the outcome of both |
-| `lion.get` | one row of any table by id; a session's messages, a flow run's steps, in order; refused for a session holding a carried row |
+| `lion.get` | one row of any table by id, a `takes` row by provider session id; a session's messages, a flow run's steps, in order; refused for a session holding a carried row |
 | `lion.messages` | a session's messages after a seq, a page at a time (D9) |
 | `lion.runs` | runs newest first, by actor |
 | `lion.sessions` | sessions newest first, by source and by actor when either is named |
@@ -279,7 +288,7 @@ Serves C7. `lion.messages` returns a session's rows after a seq, stopping before
 passes 2 MiB, the first row always, with the last seq while rows remain. Every row this runtime
 writes fits one argument, so a page fits the daemon's frame. `Store.messages`, `Store.history` and
 `exchanges_of` read every page and refuse one that does not move, then fetch each distinct payload
-piece once, 30 to a call, and check each field's size (S20). A take reads seqs only. `lion.get` on
+piece once, 30 to a call, and check each field's size (S20). A take fetches no piece. `lion.get` on
 `messages` refuses a session holding a carried row.
 
 - **Landing evidence**: `tests/test_carried.py`, double and built binary: a session past 2 MiB read
@@ -289,8 +298,8 @@ piece once, 30 to a call, and check each field's size (S20). A take reads seqs o
 ### D10: A write that failed part way is finished by seq ^d10
 
 Serves C1, C4 and C7. A call's ops run concurrently, so after a failure or a lost answer, which rows
-stand is unknown. A take appends the seqs the store does not hold, never resuming from a count, and
-compares none it holds (S19). A run is marked unsure while a flush runs; the next flush reads back
+stand is unknown. A take appends the seqs the store does not hold, never resuming from a count,
+after comparing prompts (D12). A run is marked unsure while a flush runs; the next flush reads back
 whole each held row it would send, refuses one that differs from that row as the pack keeps it, and
 sends the rest. Pieces of a row never stored stay behind (S12).
 
@@ -307,6 +316,25 @@ argument; an older pack lacks the carried verb. No row is stored without its fie
 
 - **Landing evidence**: `tests/test_carried.py`, double and built binary: each refusal by name, the
   inline verb refusing `carried`, the marker; on the built binary, an unknown argument refused.
+
+### D12: A take identifies an exchange by its prompt, and branches where the prompts part ^d12
+
+Serves C4. A take begins with `lion.take_begin`, which advances its CLI session's generation and
+reads the tip in one store transaction. Every harness write carries the generation and is admitted
+only while it is current, checked in the write's own statement. A take refused for a newer
+generation begins again and retries its scan. It compares each held `content_hash` of the tip's view
+with the SHA-256 of the transcript's prompt (D11). No take overwrites a held row, appends past a
+differing prompt, or refuses a changed transcript.
+
+| case | the take |
+| ---- | -------- |
+| every compared prompt agrees | appends each transcript seq the view lacks to the tip, holes included; a held tail past a shorter transcript stays |
+| the prompts part first at seq d | opens a branch at b, the lesser of d and the view's first hole from seq 0: a fresh id; the tip's source, provider session id, actor and transcript; `branch_of` the tip, `branch_seq` b. The open moves the tip in its transaction; the appends follow |
+| the first take of a CLI session | opens a root with the provider session id as its id. A session already holding that id becomes the tip only when its namespace, source and provider session id match; else the root takes a fresh id |
+| a held view whose `branch_of` the store lacks, or that loops | is refused by name |
+| `lion context` restore, show or status | reads the tip from `takes`, then follows `branch_of` one session at a time, each to its cutoff, fetching pieces only for rows kept; a branch's own id names that branch; provider files are found by provider session id |
+
+- **Landing evidence**: none yet; owed with the code.
 
 ## Alternatives
 
@@ -330,6 +358,18 @@ argument; an older pack lacks the carried verb. No row is stored without its fie
 | `carried` as an argument of `lion.message_append` | a pack that predates it ignores the argument and stores the row with its fields empty (measured at the pinned store revision) |
 | Carrying `text` and `raw` only | the directive travels as its own argument as well as inside `raw`, and a summary's directive alone can pass one argument |
 | A take resuming from the count of rows held | a call's ops run concurrently, so a later row can stand where an earlier one failed; the count then skips the missing row and collides with the standing one |
+| An exchange identified by its position in the transcript | a prompt admitted or split before a held seq shifts every later one, and the store keeps its own row beside the transcript's past it: two histories mixed in one session |
+| Refusing a take whose prompts differ from the store's | every session a scanner change shifts would refuse its takes from then on |
+| Writing the transcript over the held rows from the divergence on | a run record is evidence, and the overwritten exchanges are lost |
+| A branch id made from the tip's id and the seq | a provider session id may hold the separator, and a session written before this change may hold the id |
+| The newest session by its start time as the tip | the pack stamps `started` from its clock before it takes the writer, and two sessions can tie |
+| The session nothing continues as the tip | a listing is capped, and a session of the same provider id opened outside takes would read as a second tip |
+| A lock held by the taking process | a store call outlives the process that a timeout kills, and a transcript copied or mounted elsewhere is taken from another machine |
+| Refusing a take that a newer one outran | which take began first says nothing of which transcript is newer, and the refused one may hold exchanges no later take recovers |
+| Adopting a session by its id alone | a session opened outside takes can hold that id with another provider session's history |
+| A fence in the pack on the row before each append | a call's appends run concurrently, so the fence would refuse rows of one batch |
+| Filling the tip's holes below a divergence before branching | the hole's prompt is unknown, so the tip would hold a prompt beside rows from another transcript |
+| An exchange identified by its whole `raw` | `raw` carries the take's `why`, which differs between takes of an unchanged prompt |
 
 ## Consequences
 - **S1**: Owed: the pack's own tests in Rust, landing with tests named here. The flow driver that
@@ -401,13 +441,16 @@ argument; an older pack lacks the carried verb. No row is stored without its fie
   marker in a listing, and an older client's replay and checkpoint readers refuse the row's null
   `raw`. No older code can be made to refuse more, so serving a store holding carried rows from an
   older binary is unsupported (S7).
-- **S19**: Owed: a take places each exchange by its position in the transcript's scan and compares
-  nothing the store holds. A scan that changed before a held seq (a rewound session, or a scanner
-  that now admits or splits an earlier prompt) shifts the later exchanges, and the store keeps its
-  own at each held seq beside the new scan's past them. A shrunk scan writes nothing. Refusing any
-  difference would also refuse sessions a scanner change shifts, so what identifies an exchange
-  needs its own decision.
+- **S19**: A rewound transcript, or a scanner admitting or splitting an earlier prompt, leaves a
+  branch that nothing removes; alternating takes of an old and a new copy add one per take. Restore
+  costs the chain's length and pages. A scanner change that only regroups equal prompts branches
+  nothing; a prompt asked again unchanged keeps its first answer. Of takes that overlap, the last to
+  finish names the tip, each beginning again without bound; a dead take's exchanges return only with
+  a later take of its transcript.
 - **S20**: A reader holds the session it returns in memory. While a field is assembled it holds its
   pieces and its joined bytes, two copies of its size, and its decoded text at one to four bytes a
   character: three to six times its size. An index is read once per field; the pack holds one
   payload piece at a time, and an index whole.
+- **S21**: Older stores gain `branch_of`, `branch_seq` (integer) and `takes` by the pack's column
+  additions and schema plan; null in both is no branch. A harness write without a generation, as an
+  older client sends, is refused.
