@@ -9,5 +9,7 @@ CREATE TABLE IF NOT EXISTS lion_sessions (
     transcript          TEXT,               -- the CLI's transcript path, for a harness session
     message_count       INTEGER NOT NULL DEFAULT 0,
     started             INTEGER NOT NULL,   -- microseconds since the epoch, as the store's tables
-    ended               INTEGER
+    ended               INTEGER,
+    branch_of           TEXT,               -- the session a branch continues; null for any other (D12)
+    branch_seq          INTEGER             -- the seq it continues from: the parent's view before it, its own rows after
 )

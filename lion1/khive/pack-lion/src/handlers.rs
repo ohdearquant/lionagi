@@ -2,13 +2,17 @@
 //! `NotFound`; a message whose seq is taken is an `InvalidInput`, since the caller's record and the
 //! store's history must not disagree about what a seq names. A message field too large for one
 //! argument arrives as pieces in the blob store (D8), and a session is read a page at a time (D9).
+//! A harness session is written by takes alone, each write admitted only while its take's generation
+//! is current; a write a newer take outran is a `Conflict` (D12).
 
+use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
 
 use khive_runtime::{KhiveRuntime, NamespaceToken, RuntimeError};
 use khive_storage::types::{SqlRow, SqlStatement, SqlValue};
-use khive_storage::ContentRef;
+use khive_storage::{AtomicUnitOp, ContentRef, StorageCapability, StorageError};
+use khive_types::KhiveError;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -91,6 +95,31 @@ fn ns(token: &NamespaceToken) -> SqlValue {
     SqlValue::Text(token.namespace().as_str().to_string())
 }
 
+/// A session a CLI the runtime drives keeps: written by takes alone (D12).
+fn harness(source: &str) -> bool {
+    matches!(source, "claude_code" | "codex")
+}
+
+/// A write of a take that a newer one outran: the take begins again (D12). A kind of its own, so a
+/// client tells it from a refusal that beginning again would not change.
+fn superseded(psid: &str, generation: i64, current: Option<i64>) -> RuntimeError {
+    let standing = current.map_or_else(|| "no take of it has begun".to_string(), |c| format!("the current take is {c}"));
+    RuntimeError::Khive(KhiveError::conflict(format!("take {generation} of {psid} is superseded: {standing}")))
+}
+
+/// A `takes` row's generation and tip; neither when there is no row.
+fn take_of(r: Option<&SqlRow>) -> (Option<i64>, Option<String>) {
+    let v = r.map(row).unwrap_or(Value::Null);
+    (v["generation"].as_i64(), v["tip"].as_str().map(str::to_string))
+}
+
+/// What a take's open came to inside its transaction.
+enum Opened {
+    Done { id: String, adopted: bool },
+    Superseded(Option<i64>),
+    TipMoved(Option<String>),
+}
+
 #[derive(Deserialize)]
 struct SessionOpen {
     source: String,
@@ -99,6 +128,9 @@ struct SessionOpen {
     profile: Option<String>,
     transcript: Option<String>,
     id: Option<String>,
+    generation: Option<i64>,
+    branch_of: Option<String>,
+    branch_seq: Option<i64>,
 }
 
 pub(crate) async fn session_open(rt: &KhiveRuntime, token: &NamespaceToken, params: Value) -> Out {
@@ -106,8 +138,17 @@ pub(crate) async fn session_open(rt: &KhiveRuntime, token: &NamespaceToken, para
     if !matches!(p.source.as_str(), "lion1" | "claude_code" | "codex") {
         return Err(RuntimeError::InvalidInput(format!("source {:?}: lion1, claude_code or codex", p.source)));
     }
-    let id = p.id.unwrap_or_else(fresh);
     let started = now();
+    if harness(&p.source) {
+        return take_open(rt, token, p, started).await;
+    }
+    if p.generation.is_some() || p.branch_of.is_some() || p.branch_seq.is_some() {
+        return Err(invalid(format!(
+            "a {} session is no take's: generation, branch_of and branch_seq are a harness session's",
+            p.source
+        )));
+    }
+    let id = p.id.unwrap_or_else(fresh);
     execute(
         rt,
         include_str!("../sql/session_open.sql"),
@@ -124,6 +165,135 @@ pub(crate) async fn session_open(rt: &KhiveRuntime, token: &NamespaceToken, para
     )
     .await?;
     Ok(json!({"id": id, "started": started}))
+}
+
+/// A harness session's open: a take's root, or its branch (D12), in one transaction that moves the
+/// take's tip from the one the take read, while its generation is current. The tip moves first, so an
+/// open that cannot move it writes nothing; a row that then cannot be written rolls the move back.
+async fn take_open(rt: &KhiveRuntime, token: &NamespaceToken, p: SessionOpen, started: i64) -> Out {
+    let source = p.source;
+    let Some(psid) = p.provider_session_id else {
+        return Err(invalid(format!("a {source} session names its provider_session_id")));
+    };
+    let Some(generation) = p.generation else {
+        return Err(invalid(format!(
+            "a {source} session is opened by a take, under the generation lion.take_begin gave it, and this \
+             open carries none (a client older than takes)"
+        )));
+    };
+    let (branch_of, branch_seq) = match (p.branch_of, p.branch_seq) {
+        (Some(of), Some(seq)) if seq >= 0 => (Some(of), Some(seq)),
+        (None, None) => (None, None),
+        _ => return Err(invalid("a branch names its branch_of and its branch_seq, the seq at least 0".into())),
+    };
+    let name = psid.clone();
+    let expected = branch_of.clone(); // a branch continues the tip; a root is the first, where none stands
+    let ns = token.namespace().as_str().to_string();
+    let (requested, actor, profile, transcript) = (p.id, p.actor, p.profile, p.transcript);
+    let op: AtomicUnitOp = Box::new(move |w| {
+        Box::pin(async move {
+            let mut id = requested.unwrap_or_else(fresh);
+            let mut adopted = false;
+            if branch_of.is_none() {
+                // a session holding the root's id becomes the tip only when it is this CLI session's;
+                // any other keeps it, and the root takes a fresh one
+                if let Some(held) = w.query_row(stmt(include_str!("../sql/session_held.sql"), vec![SqlValue::Text(id.clone())])).await? {
+                    let h = row(&held);
+                    adopted = h["namespace"] == ns.as_str() && h["source"] == source.as_str() && h["provider_session_id"] == psid.as_str();
+                    if !adopted {
+                        id = fresh();
+                    }
+                }
+            }
+            let moved = w
+                .execute(stmt(
+                    include_str!("../sql/take_tip.sql"),
+                    vec![
+                        SqlValue::Text(ns.clone()),
+                        SqlValue::Text(psid.clone()),
+                        SqlValue::Integer(generation),
+                        SqlValue::Text(id.clone()),
+                        text(branch_of.clone()),
+                    ],
+                ))
+                .await?;
+            if moved != 1 {
+                let held = w.query_row(stmt(include_str!("../sql/get_takes.sql"), vec![SqlValue::Text(psid), SqlValue::Text(ns)])).await?;
+                let (current, tip) = take_of(held.as_ref());
+                let outcome = if current == Some(generation) { Opened::TipMoved(tip) } else { Opened::Superseded(current) };
+                return Ok(Box::new(outcome) as Box<dyn Any + Send>);
+            }
+            if !adopted {
+                let opened = w
+                    .execute(stmt(
+                        include_str!("../sql/session_open_take.sql"),
+                        vec![
+                            SqlValue::Text(id.clone()),
+                            SqlValue::Text(ns),
+                            SqlValue::Text(source),
+                            SqlValue::Text(psid.clone()),
+                            text(actor),
+                            text(profile),
+                            text(transcript),
+                            SqlValue::Integer(started),
+                            text(branch_of),
+                            int(branch_seq),
+                            SqlValue::Integer(generation),
+                        ],
+                    ))
+                    .await?;
+                if opened != 1 {
+                    // the move above stood on this generation in this transaction; an error rolls it back
+                    return Err(StorageError::Conflict {
+                        capability: StorageCapability::Sql,
+                        operation: "lion.session_open".into(),
+                        message: format!("session {id} was not opened: take {generation} of {psid} is not current, or another session holds the id"),
+                    });
+                }
+            }
+            Ok(Box::new(Opened::Done { id, adopted }) as Box<dyn Any + Send>)
+        })
+    });
+    let got = rt.sql().atomic_unit(op).await?;
+    let got = got.downcast::<Opened>().map_err(|_| RuntimeError::Internal("lion.session_open: its unit gave no outcome".into()))?;
+    match *got {
+        Opened::Done { id, adopted: true } => Ok(json!({"id": id, "adopted": true})),
+        Opened::Done { id, adopted: false } => Ok(json!({"id": id, "started": started, "adopted": false})),
+        Opened::Superseded(current) => Err(superseded(&name, generation, current)),
+        Opened::TipMoved(tip) => Err(invalid(format!(
+            "the tip of {name} is {}, not {}: the take read another, and nothing was opened",
+            tip.as_deref().unwrap_or("none"),
+            expected.as_deref().unwrap_or("none"),
+        ))),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TakeBegin {
+    provider_session_id: String,
+}
+
+/// A take's start (D12): its CLI session's generation advanced and read back with the tip in one
+/// transaction, so two takes that begin together never hold one generation.
+pub(crate) async fn take_begin(rt: &KhiveRuntime, token: &NamespaceToken, params: Value) -> Out {
+    let p: TakeBegin = deser(params)?;
+    if p.provider_session_id.is_empty() {
+        return Err(invalid("a take names its provider_session_id".into()));
+    }
+    let (ns, psid) = (ns(token), SqlValue::Text(p.provider_session_id.clone()));
+    let op: AtomicUnitOp = Box::new(move |w| {
+        Box::pin(async move {
+            w.execute(stmt(include_str!("../sql/take_begin.sql"), vec![ns.clone(), psid.clone()])).await?;
+            let got = w.query_row(stmt(include_str!("../sql/get_takes.sql"), vec![psid, ns])).await?;
+            Ok(Box::new(got) as Box<dyn Any + Send>)
+        })
+    });
+    let got = rt.sql().atomic_unit(op).await?;
+    let got = *got.downcast::<Option<SqlRow>>().map_err(|_| RuntimeError::Internal("lion.take_begin: its unit gave no row".into()))?;
+    got.as_ref()
+        .map(row)
+        .ok_or_else(|| RuntimeError::Internal(format!("the take of {} just begun is not there", p.provider_session_id)))
 }
 
 #[derive(Deserialize)]
@@ -160,6 +330,7 @@ struct MessageAppend {
     parent_seq: Option<i64>,
     directive: Option<String>,
     carried: Option<Value>,
+    generation: Option<i64>,
 }
 
 /// One carried field: its size in bytes, and its pieces' refs in order, listed or read from an
@@ -295,9 +466,32 @@ async fn append(rt: &KhiveRuntime, token: &NamespaceToken, params: Value, carryi
         (true, None) => return Err(invalid("lion.message_append_carried takes carried".into())),
         (_, c) => c.map(serde_json::from_value).transpose().map_err(|e| invalid(format!("carried: {e}")))?,
     };
-    if rows(rt, include_str!("../sql/get_sessions.sql"), vec![SqlValue::Text(p.session_id.clone()), ns(token)]).await?.is_empty() {
+    let Some(session) = rows(rt, include_str!("../sql/get_sessions.sql"), vec![SqlValue::Text(p.session_id.clone()), ns(token)])
+        .await?
+        .first()
+        .map(row)
+    else {
         return Err(RuntimeError::NotFound(format!("session {} is not in this namespace", p.session_id)));
-    }
+    };
+    let source = session["source"].as_str().unwrap_or_default();
+    // a harness session's row is a take's, admitted under its generation (D12, S21)
+    let fence = match (harness(source), p.generation) {
+        (true, Some(g)) => Some((g, session["provider_session_id"].as_str().unwrap_or_default().to_string())),
+        (true, None) => {
+            return Err(invalid(format!(
+                "session {} is a {source} session, written by a take under the generation lion.take_begin gave \
+                 it, and this row carries none (a client older than takes)",
+                p.session_id
+            )))
+        }
+        (false, Some(_)) => {
+            return Err(invalid(format!(
+                "session {} is a {source} session, which no take writes: a generation fences a harness session's rows",
+                p.session_id
+            )))
+        }
+        (false, None) => None,
+    };
     let taken = rows(
         rt,
         include_str!("../sql/message_taken.sql"),
@@ -305,6 +499,14 @@ async fn append(rt: &KhiveRuntime, token: &NamespaceToken, params: Value, carryi
     )
     .await?;
     if !taken.is_empty() {
+        // a seq a newer take wrote refuses this take for its generation, so it begins again (D12)
+        if let Some((g, psid)) = &fence {
+            let held = rows(rt, include_str!("../sql/get_takes.sql"), vec![SqlValue::Text(psid.clone()), ns(token)]).await?;
+            let current = take_of(held.first()).0;
+            if current != Some(*g) {
+                return Err(superseded(psid, *g, current));
+            }
+        }
         return Err(RuntimeError::InvalidInput(format!("session {} already holds seq {}", p.session_id, p.seq)));
     }
     let mut hash = format!("{:x}", Sha256::digest(p.text.as_bytes()));
@@ -341,27 +543,35 @@ async fn append(rt: &KhiveRuntime, token: &NamespaceToken, params: Value, carryi
         None => p.text,
     };
     let created = now();
-    execute(
-        rt,
-        include_str!("../sql/message_append.sql"),
-        vec![
-            SqlValue::Text(p.session_id.clone()),
-            SqlValue::Integer(p.seq),
-            ns(token),
-            SqlValue::Text(p.role),
-            SqlValue::Text(p.kind),
-            SqlValue::Integer(p.turn.unwrap_or(0)),
-            text(p.alias),
-            SqlValue::Text(stored),
-            text(p.raw),
-            SqlValue::Text(hash.clone()),
-            int(p.parent_seq),
-            text(p.directive),
-            SqlValue::Integer(created),
-            text(p.carried.map(|v| v.to_string())),
-        ],
-    )
-    .await?;
+    let mut values = vec![
+        SqlValue::Text(p.session_id.clone()),
+        SqlValue::Integer(p.seq),
+        ns(token),
+        SqlValue::Text(p.role),
+        SqlValue::Text(p.kind),
+        SqlValue::Integer(p.turn.unwrap_or(0)),
+        text(p.alias),
+        SqlValue::Text(stored),
+        text(p.raw),
+        SqlValue::Text(hash.clone()),
+        int(p.parent_seq),
+        text(p.directive),
+        SqlValue::Integer(created),
+        text(p.carried.map(|v| v.to_string())),
+    ];
+    match fence {
+        None => {
+            execute(rt, include_str!("../sql/message_append.sql"), values).await?;
+        }
+        // the pieces are verified above; the row goes in only while its take is current
+        Some((g, psid)) => {
+            values.push(SqlValue::Integer(g));
+            if execute(rt, include_str!("../sql/message_append_take.sql"), values).await? != 1 {
+                let held = rows(rt, include_str!("../sql/get_takes.sql"), vec![SqlValue::Text(psid.clone()), ns(token)]).await?;
+                return Err(superseded(&psid, g, take_of(held.first()).0));
+            }
+        }
+    }
     Ok(json!({"session_id": p.session_id, "seq": p.seq, "content_hash": hash, "created": created}))
 }
 
@@ -561,7 +771,8 @@ pub(crate) async fn get(rt: &KhiveRuntime, token: &NamespaceToken, params: Value
         "runs" => (include_str!("../sql/get_runs.sql"), false),
         "messages" => (include_str!("../sql/get_messages.sql"), true),
         "steps" => (include_str!("../sql/get_steps.sql"), true),
-        other => return Err(RuntimeError::InvalidInput(format!("table {other:?}: sessions, messages, calls, runs or steps"))),
+        "takes" => (include_str!("../sql/get_takes.sql"), false),
+        other => return Err(RuntimeError::InvalidInput(format!("table {other:?}: sessions, messages, calls, runs, steps or takes"))),
     };
     let got = rows(rt, sql, vec![SqlValue::Text(p.id.clone()), ns(token)]).await?;
     if many {

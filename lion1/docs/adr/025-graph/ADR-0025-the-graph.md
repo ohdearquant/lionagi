@@ -1,7 +1,7 @@
 ---
 adr: ADR-0025
 status: proposed
-liveness: partial (the pack builds and serves seventeen verbs; a field past one argument rides as blob pieces under a verb of its own, a session reads a page at a time and a write that failed part way is finished by seq; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; a take's comparison of prompts and its branch are owed, D12; the pack's own tests are owed, S1)
+liveness: partial (the pack builds and serves eighteen verbs; a field past one argument rides as blob pieces under a verb of its own, a session reads a page at a time and a write that failed part way is finished by seq; the core writes every row of a run and replays one from them, and a harness session rides the same tables, each pinned on a stub binary and on the built one; the flow driver of ADR-0026 writes the steps rows, pinned the same way; a take compares prompts and branches where they part, its view read through the chain, pinned the same way; the pack's own tests are owed, S1)
 date: "2026-10-04"
 area: graph
 kind: new
@@ -334,7 +334,9 @@ differing prompt, or refuses a changed transcript.
 | a held view whose `branch_of` the store lacks, or that loops | is refused by name |
 | `lion context` restore, show or status | reads the tip from `takes`, then follows `branch_of` one session at a time, each to its cutoff, fetching pieces only for rows kept; a branch's own id names that branch; provider files are found by provider session id |
 
-- **Landing evidence**: none yet; owed with the code.
+- **Landing evidence**: `tests/test_takes.py`, double and built binary: each table row, a superseded
+  take begun again, begins sharing no generation, a failed tip move leaving no row; double alone:
+  both refusals, a take superseded at every try, `lion context` branching a rewritten transcript.
 
 ## Alternatives
 

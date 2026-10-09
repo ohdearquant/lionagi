@@ -209,12 +209,18 @@ async def append_messages(
     await send()
 
 
-async def read_messages(khive: Khive, session_id: str, *, carried: bool = True) -> list[dict]:
-    """The session's message rows in seq order, a page at a time (D9). With `carried`, each carried
-    field is fetched from its pieces and checked against its size, so a row reads as it was written;
+async def read_messages(
+    khive: Khive, session_id: str, *, carried: bool = True, start: int = 0, end: int | None = None
+) -> list[dict]:
+    """The session's message rows in seq order, a page at a time (D9), those from seq `start` and, when
+    `end` is given, before it: the paging stops at the first page reaching `end`, whose rows past it
+    are dropped unfetched, and an empty interval reads nothing. With `carried`, each carried field of a
+    row read is fetched from its pieces and checked against its size, so a row reads as it was written;
     without, a carried field stays empty and only the rows are read, as a count needs."""
+    if end is not None and end <= start:
+        return []
     rows: list[dict] = []
-    after: int | None = None
+    after: int | None = start - 1 if start > 0 else None
     while True:
         args = f"session_id={lit(session_id)}" + (f", after={after}" if after is not None else "")
         (page,) = await khive.exec(f"lion.messages({args})")
@@ -224,7 +230,11 @@ async def read_messages(khive: Khive, session_id: str, *, carried: bool = True) 
             break
         if after is not None and nxt <= after:
             raise KhiveError(f"lion.messages of {session_id} did not move past seq {after}", "invalid")
+        if end is not None and nxt >= end - 1:  # every row before `end` is read
+            break
         after = nxt
+    if end is not None:
+        rows = [r for r in rows if r["seq"] < end]
     if carried:
         await _fetch(khive, session_id, rows)
     return rows

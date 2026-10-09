@@ -12,7 +12,7 @@ use khive_types::{
 pub(crate) const PACK_NAME: &str = "lion";
 
 /// Applied idempotently at boot, in order: one statement per file under `sql/`.
-pub(crate) static SCHEMA: [&str; 10] = [
+pub(crate) static SCHEMA: [&str; 11] = [
     include_str!("../sql/01-sessions.sql"),
     include_str!("../sql/02-sessions-index.sql"),
     include_str!("../sql/03-messages.sql"),
@@ -23,11 +23,16 @@ pub(crate) static SCHEMA: [&str; 10] = [
     include_str!("../sql/08-steps.sql"),
     include_str!("../sql/09-steps-index.sql"),
     include_str!("../sql/10-notes.sql"),
+    include_str!("../sql/11-takes.sql"),
 ];
 
-/// A column added to a table a store made before it existed: the pieces of a carried field (D8).
-pub(crate) static SCHEMA_COLUMN_ADDITIONS: [PackColumnAddition; 1] =
-    [PackColumnAddition { table: "lion_messages", column: "carried", affinity: PackColumnAffinity::Text }];
+/// Columns added to a table a store made before they existed: the pieces of a carried field (D8),
+/// and the session a branch continues and its seq, null in both for no branch (D12, S21).
+pub(crate) static SCHEMA_COLUMN_ADDITIONS: [PackColumnAddition; 3] = [
+    PackColumnAddition { table: "lion_messages", column: "carried", affinity: PackColumnAffinity::Text },
+    PackColumnAddition { table: "lion_sessions", column: "branch_of", affinity: PackColumnAffinity::Text },
+    PackColumnAddition { table: "lion_sessions", column: "branch_seq", affinity: PackColumnAffinity::Integer },
+];
 
 /// No entity type yet: a profile and a flow belong on the graph as artifacts, and the record that
 /// writes them registers them (ADR-0025 D1, S4). The store's builtin vocabulary already holds
@@ -42,14 +47,20 @@ const fn verb(name: &'static str, description: &'static str, category: VerbCateg
     HandlerDef { name, description, visibility: Visibility::Verb, category, params }
 }
 
-pub(crate) static HANDLERS: [HandlerDef; 17] = [
-    verb("lion.session_open", "Start a session row: one history a model is shown. Returns its id.", VerbCategory::Commissive, &[
+pub(crate) static HANDLERS: [HandlerDef; 18] = [
+    verb("lion.session_open", "Start a session row: one history a model is shown. A harness session's is a take's root or branch, moving the take's tip in the same transaction. Returns its id.", VerbCategory::Commissive, &[
         p("source", "string", true, "Who keeps the history: lion1, claude_code or codex."),
         p("provider_session_id", "string", false, "The CLI's own session id, for a harness session."),
         p("actor", "string", false, "The actor the session belongs to."),
         p("profile", "string", false, "The profile the run wore."),
         p("transcript", "string", false, "The CLI's transcript path, for a harness session."),
-        p("id", "string", false, "The id to use; a fresh one when absent."),
+        p("id", "string", false, "The id to use; a fresh one when absent. A take's root adopts a session holding it only when its namespace, source and provider session id match, else takes a fresh one."),
+        p("generation", "integer", false, "The take's, from lion.take_begin; a harness session's open is refused without it, or once a newer take began."),
+        p("branch_of", "string", false, "For a branch, the tip it continues: the open moves the tip only from it."),
+        p("branch_seq", "integer", false, "For a branch, the seq it continues from."),
+    ]),
+    verb("lion.take_begin", "Advance a CLI session's take generation and read it back with the tip, in one transaction.", VerbCategory::Commissive, &[
+        p("provider_session_id", "string", true, "The CLI's own session id."),
     ]),
     verb("lion.session_close", "End a session row: its end time and its message count.", VerbCategory::Commissive, &[
         p("id", "string", true, "The session."),
@@ -65,6 +76,7 @@ pub(crate) static HANDLERS: [HandlerDef; 17] = [
         p("alias", "string", false, "The model's own name for the entry."),
         p("parent_seq", "integer", false, "For a result, the seq of the command it answers."),
         p("directive", "string", false, "The view directive the entry carries, as JSON."),
+        p("generation", "integer", false, "For a harness session, the take's; refused without it, or once a newer take began."),
     ]),
     verb("lion.message_append_carried", "A message row whose large fields are blob pieces, each read back and verified first.", VerbCategory::Commissive, &[
         p("session_id", "string", true, "The session."),
@@ -78,6 +90,7 @@ pub(crate) static HANDLERS: [HandlerDef; 17] = [
         p("parent_seq", "integer", false, "For a result, the seq of the command it answers."),
         p("directive", "string", false, "The view directive the entry carries, as JSON; absent when carried."),
         p("carried", "object", true, "Of text, raw and directive, each carried one: {size, pieces} or {size, index}."),
+        p("generation", "integer", false, "For a harness session, the take's; refused without it, or once a newer take began."),
     ]),
     verb("lion.call_open", "A call row at the moment a request goes to a model. Returns its id.", VerbCategory::Commissive, &[
         p("session_id", "string", true, "The session."),
@@ -115,8 +128,8 @@ pub(crate) static HANDLERS: [HandlerDef; 17] = [
         p("output", "string", false, "The run's output fields, as JSON."),
     ]),
     verb("lion.get", "One row by id, or a session's messages in seq order.", VerbCategory::Assertive, &[
-        p("table", "string", true, "sessions, messages, calls, runs or steps."),
-        p("id", "string", true, "The row's id; for messages and steps, the session's or the flow run's."),
+        p("table", "string", true, "sessions, messages, calls, runs, steps or takes."),
+        p("id", "string", true, "The row's id; for messages and steps, the session's or the flow run's; for takes, the provider session id."),
     ]),
     verb("lion.messages", "A session's messages after a seq, in order, one page under 2 MiB.", VerbCategory::Assertive, &[
         p("session_id", "string", true, "The session."),

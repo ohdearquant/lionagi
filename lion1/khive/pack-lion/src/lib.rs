@@ -97,6 +97,7 @@ impl PackRuntime for LionPack {
         match verb {
             "lion.session_open" => handlers::session_open(rt, token, params).await,
             "lion.session_close" => handlers::session_close(rt, token, params).await,
+            "lion.take_begin" => handlers::take_begin(rt, token, params).await,
             "lion.message_append" => handlers::message_append(rt, token, params).await,
             "lion.message_append_carried" => handlers::message_append_carried(rt, token, params).await,
             "lion.call_open" => handlers::call_open(rt, token, params).await,

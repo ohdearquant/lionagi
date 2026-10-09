@@ -110,7 +110,13 @@ def a_run(store: Store, inputs: tuple[str, ...]):
 
 def take(k, exchanges: list[dict], sid: str = "s-big") -> tuple[int, int]:
     kw = {"source": "claude-code", "actor": ACTOR, "transcript": "/t/cc.jsonl", "why": "manual"}
-    return asyncio.run(record_exchanges(k, session_id=sid, exchanges=exchanges, **kw))
+    return asyncio.run(record_exchanges(k, session_id=sid, exchanges=exchanges, **kw))[1:]
+
+
+def current(k, sid: str) -> int:
+    """The generation of the CLI session's newest take: a harness row written by hand names it (D12)."""
+    (got,) = asyncio.run(k.exec(f'lion.get(table="takes", id="{sid}")'))
+    return got["generation"]
 
 
 def opened(k, sid: str):
@@ -127,10 +133,11 @@ def put(k, data: bytes) -> str:
     return got["content_ref"]
 
 
-def carried_append(sid: str, seq: int, manifest: dict) -> str:
+def carried_append(sid: str, seq: int, manifest: dict, generation: int | None = None) -> str:
     return (
         f'lion.message_append_carried(session_id="{sid}", seq={seq}, role="user", kind="input", text="", '
-        f"turn=0, carried={lit({'text': manifest})})"
+        f"turn=0, carried={lit({'text': manifest})}"
+        + (f", generation={generation})" if generation is not None else ")")
     )
 
 
@@ -184,7 +191,8 @@ def test_a_300_kib_exchange_is_carried_and_read_back_whole():
     assert asyncio.run(exchanges_of(k, "s-big")) == [{**e, "why": "manual"} for e in BIG_EXCHANGES]
     held = k.lion.messages["s-big"]
     assert [m["carried"] is not None for m in held.values()] == [False, True, False]
-    assert held[1]["content_hash"] == f"h{len(BIG)}"  # the double hashes the whole text, as the pack does
+    # the double hashes the whole text, as the pack does: a take compares it with the prompt's (D12)
+    assert held[1]["content_hash"] == hashlib.sha256(BIG.encode()).hexdigest()
 
 
 def test_a_take_counting_a_carried_exchange_fetches_no_piece():
@@ -245,7 +253,7 @@ def test_a_missing_piece_is_refused_by_name_on_write_and_on_read():
     k = Sent()
     take(k, BIG_EXCHANGES)
     with pytest.raises(KhiveError, match="piece 0") as refused:
-        asyncio.run(k.exec(carried_append("s-big", 3, {"size": 5, "pieces": [NOWHERE]})))
+        asyncio.run(k.exec(carried_append("s-big", 3, {"size": 5, "pieces": [NOWHERE]}, current(k, "s-big"))))
     assert refused.value.kind == "not_found" and 3 not in k.lion.messages["s-big"]
     gone = json.loads(k.lion.messages["s-big"][1]["carried"])["text"]["pieces"][-1]
     del k.lion.blobs[gone]
@@ -351,6 +359,7 @@ def test_a_take_after_one_that_failed_part_way_writes_only_the_seqs_that_did_not
     take(k, three[:1], "s-gap")
     raw = row_json({**three[2], "why": "manual"}, ensure_ascii=False)
     landed = {"seq": 2, "role": "user", "kind": "exchange", "text": "prompt 2", "raw": raw, "turn": 2}
+    landed["generation"] = current(k, "s-gap")
     asyncio.run(append_messages(k, "s-gap", [landed]))  # seq 2 landed, seq 1 did not
     assert take(k, three, "s-gap") == (3, 1)
     assert asyncio.run(exchanges_of(k, "s-gap")) == [{**e, "why": "manual"} for e in three]
@@ -433,7 +442,7 @@ def test_carried_rows_against_the_built_binary(binary_dirs, monkeypatch):  # noq
     for ops, refusal in (
         (inline, "goes through lion.message_append_carried"),
         ('lion.get(table="messages", id="s-big")', "read it with lion.messages"),
-        (carried_append("s-big", 3, {"size": 5, "pieces": [NOWHERE]}), "piece 0"),
+        (carried_append("s-big", 3, {"size": 5, "pieces": [NOWHERE]}, current(k, "s-big")), "piece 0"),
         # an argument this pack does not know is refused, never dropped: the next field a client adds
         (inline.replace("carried=", "pieces_of="), "unknown field `pieces_of`"),
     ):

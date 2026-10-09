@@ -9,6 +9,7 @@ Codex one. A source that is absent is a value, never a failed take.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -38,6 +39,8 @@ __all__ = (
     "actor_id",
     "session_of",
     "latest_session",
+    "held_session",
+    "held_view",
     "exchanges_of",
     "record_exchanges",
     "declare",
@@ -61,6 +64,7 @@ DIRECTIVES = 8  # the person's words a restore carries, never more: a prompt hoo
 SPAWN_HOURS = 12  # a spawn older than this with nothing ending it is taken as dead
 MAIL_PAGE = 50  # unread messages one read returns; a full page is not every thread awaiting a reply
 RETAKES = 2  # a session's file that changed under its read is stat and read again this many times
+SUPERSEDED = 3  # a take superseded by a newer one begins again this many times, then is refused
 
 
 @dataclass(frozen=True)
@@ -192,10 +196,61 @@ async def latest_session(khive: Khive, actor: str) -> dict | None:
     return max(found, key=lambda r: r["started"], default=None)
 
 
+async def held_session(khive: Khive, actor: str, name: str | None = None) -> dict | None:
+    """The session a restore, a show or a status reads (ADR-0025 D12): the tip the `takes` row of the
+    CLI session `name` names, else the session `name` itself, so a branch's own id names that branch;
+    with no name, the tip of the CLI session of the actor's newest harness session. A session no take
+    has named a tip for is read as it is. None when the store holds no such session; a tip it lacks
+    is refused by name."""
+    row = None
+    if name is None:
+        row = await latest_session(khive, actor)
+        if row is None:
+            return None
+        name = str(row.get("provider_session_id") or row["id"])
+    try:
+        (take,) = await khive.exec(f'lion.get(table="takes", id={lit(name)})')
+    except KhiveError as e:
+        if e.kind != "not_found":
+            raise
+        return row if row is not None else await session_of(khive, name)
+    tip = await session_of(khive, take["tip"]) if take["tip"] is not None else None
+    if tip is None:
+        raise KhiveError(
+            f"the takes of {name} name the tip {take['tip']}, which the store does not hold", "not_found"
+        )
+    return tip
+
+
+async def held_view(khive: Khive, session_id: str, *, carried: bool = True) -> list[dict]:
+    """The session's held view (ADR-0025 D12), as message rows in seq order: a branch's parent's held
+    view before the branch's seq and then its own rows; any other session's own rows. The chain is
+    followed one session at a time, each read only to its cutoff, so pieces are fetched for the rows
+    kept alone. A `branch_of` the store does not hold, or a chain that comes back to a session, is
+    refused by name."""
+    rows: list[dict] = []
+    walked: list[str] = []
+    at, end = session_id, None
+    while at is not None:
+        if at in walked:
+            raise KhiveError(f"session {at} branches from itself through {' <- '.join(walked)}", "invalid")
+        row = await session_of(khive, at)
+        if row is None:
+            held = f"session {walked[-1]} branches from {at}" if walked else f"session {at}"
+            raise KhiveError(f"{held}, which the store does not hold", "not_found")
+        walked.append(at)
+        start = int(row.get("branch_seq") or 0) if row.get("branch_of") is not None else 0
+        rows[:0] = await read_messages(khive, at, carried=carried, start=start, end=end)
+        end = start if end is None else min(end, start)
+        at = row.get("branch_of")
+    return rows
+
+
 async def exchanges_of(khive: Khive, session_id: str) -> list[dict]:
-    """The session's exchanges as the store holds them, in order: each message row's `raw`, the exchange
-    as it was recorded (`{turn, at, input, text, kind, why}`), read whole however it was carried."""
-    return [json.loads(r["raw"]) for r in await read_messages(khive, session_id)]
+    """The session's exchanges as the store holds them, in order: each message row's `raw` in its held
+    view, the exchange as it was recorded (`{turn, at, input, text, kind, why}`), read whole however it
+    was carried."""
+    return [json.loads(r["raw"]) for r in await held_view(khive, session_id)]
 
 
 async def record_exchanges(
@@ -207,35 +262,65 @@ async def record_exchanges(
     transcript: str,
     exchanges: Sequence[dict],
     why: str,
-) -> tuple[int, int]:
-    """The session's exchanges the store does not hold, by seq, appended as its message rows, each with
-    the reason of the take that wrote it; the session row opened when absent. `(turns, appended)`: how
-    many the store holds now, and how many this call wrote. A take of a session the store holds whole
-    writes nothing, and one after a take that failed part way writes only the seqs that did not land.
-    The rows go through `append_messages`, in calls of at most 50; the seqs are read without fetching
-    a carried field."""
-    if await session_of(khive, session_id) is None:
-        await khive.exec(
-            f"lion.session_open(id={lit(session_id)}, source={lit(SOURCES[source])}, "
-            f"provider_session_id={lit(session_id)}, actor={lit(actor)}, transcript={lit(transcript)})"
-        )
-        held = set()
-    else:
-        held = {r["seq"] for r in await read_messages(khive, session_id, carried=False)}
-    rows = [
-        {
-            "seq": seq,
-            "role": "user",
-            "kind": "exchange",
-            "text": str(t.get("input") or ""),
-            "raw": row_json({**t, "why": why}, ensure_ascii=False),
-            "turn": seq,
-        }
-        for seq, t in enumerate(exchanges)
-        if seq not in held
-    ]
-    await append_messages(khive, session_id, rows, per_call=50)
-    return len(held) + len(rows), len(rows)
+) -> tuple[str, int, int]:
+    """A take of the CLI session `session_id` (ADR-0025 D12): it begins with `lion.take_begin`, which
+    names its generation and the tip, and compares each held `content_hash` of the tip's view with the
+    SHA-256 of the transcript's prompt at that seq. All agreeing, each seq the view lacks is appended to
+    the tip, holes included, and a held tail past a shorter transcript stays. The prompts parting first
+    at seq d, a branch of the tip opens at the lesser of d and the view's first hole, and the
+    transcript's exchanges from there are its rows. The first take opens a root under the provider
+    session id. Each row carries the take's reason. A write refused for a newer take begins the take
+    again, on the same exchanges, SUPERSEDED times at most; superseded at every try it is refused by
+    name, and the transcript is taken again later. `(session, turns, appended)`: the tip the take
+    left, how many its view holds, and how many this take wrote. The rows go through
+    `append_messages`, in calls of at most 50; the view is read without fetching a carried field."""
+    prompts = [hashlib.sha256(str(t.get("input") or "").encode()).hexdigest() for t in exchanges]
+    for _ in range(SUPERSEDED + 1):
+        (begun,) = await khive.exec(f"lion.take_begin(provider_session_id={lit(session_id)})")
+        generation, tip = begun["generation"], begun["tip"]
+        try:
+            if tip is None:
+                (opened,) = await khive.exec(
+                    f"lion.session_open(id={lit(session_id)}, source={lit(SOURCES[source])}, "
+                    f"provider_session_id={lit(session_id)}, actor={lit(actor)}, "
+                    f"transcript={lit(transcript)}, generation={generation})"
+                )
+                tip = opened["id"]
+            view = {r["seq"]: r for r in await held_view(khive, tip, carried=False)}
+            parted = [s for s in sorted(view) if s < len(prompts) and view[s]["content_hash"] != prompts[s]]
+            if parted:
+                hole = next((s for s in range(max(view)) if s not in view), parted[0])
+                at = min(parted[0], hole)
+                row = await session_of(khive, tip)  # the view's read found it
+                (opened,) = await khive.exec(
+                    f"lion.session_open(source={lit(row['source'])}, provider_session_id={lit(session_id)}, "
+                    f"actor={lit(row.get('actor'))}, transcript={lit(row.get('transcript'))}, "
+                    f"branch_of={lit(tip)}, branch_seq={at}, generation={generation})"
+                )
+                tip, missing, turns = opened["id"], range(at, len(exchanges)), len(exchanges)
+            else:
+                missing = [s for s in range(len(exchanges)) if s not in view]
+                turns = len(view) + len(missing)
+            rows = [
+                {
+                    "seq": seq,
+                    "role": "user",
+                    "kind": "exchange",
+                    "text": str(exchanges[seq].get("input") or ""),
+                    "raw": row_json({**exchanges[seq], "why": why}, ensure_ascii=False),
+                    "turn": seq,
+                    "generation": generation,
+                }
+                for seq in missing
+            ]
+            await append_messages(khive, tip, rows, per_call=50)
+            return tip, turns, len(rows)
+        except KhiveError as e:
+            if e.kind != "conflict" or "is superseded" not in str(e):
+                raise
+    raise KhiveError(
+        f"the take of {session_id} was superseded {SUPERSEDED + 1} times in a row by newer takes", "conflict"
+    )
 
 
 def declare(khive: Khive, actor: str, var: Var) -> Var:

@@ -600,7 +600,7 @@ def _record(k: _Sent, exchanges: list[dict]) -> tuple[int, int]:
     from hub.backend.checkpoint import record_exchanges
 
     kw = {"source": "claude-code", "actor": ACTOR, "transcript": "/t/cc.jsonl", "why": "manual"}
-    return asyncio.run(record_exchanges(k, session_id="s-take", exchanges=exchanges, **kw))
+    return asyncio.run(record_exchanges(k, session_id="s-take", exchanges=exchanges, **kw))[1:]
 
 
 def _appends(k: _Sent) -> list[str]:

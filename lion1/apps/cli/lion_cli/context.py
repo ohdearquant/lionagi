@@ -19,9 +19,8 @@ from hub.backend.checkpoint import (
     declare,
     declared,
     exchanges_of,
-    latest_session,
+    held_session,
     record_exchanges,
-    session_of,
 )
 from hub.backend.claude_code.checkpoint import (
     DIRECTIVES,
@@ -143,7 +142,8 @@ def checkpoint(
     codex: bool = False,
 ) -> dict:
     """Take a Claude Code or Codex session's checkpoint: its exchanges since the last take written into
-    the store as its session's rows: `{id, session, turns, appended, context}`, the id `<session>@<turns>`.
+    the store as its session's rows (ADR-0025 D12): `{id, session, turns, appended, context}`, the session
+    the tip the take left and the id `<session>@<turns>`.
     A Codex session is `codex`, its rollout `session`'s or the directory's newest person's thread, or a
     transcript whose first row says it is a rollout; its take adds `skipped_unowned`, the newer rollouts
     of the directory passed over because their first row names no owner, and refuses a rollout whose
@@ -168,7 +168,7 @@ def checkpoint(
         sid, kind = session or path.stem, "claude-code"
         exchanges, figure = transcript_exchanges(snap), context_figure(sid)
     try:
-        turns, appended = asyncio.run(
+        tip, turns, appended = asyncio.run(
             record_exchanges(
                 _khive(d, actor, khive),
                 source=kind,
@@ -181,13 +181,13 @@ def checkpoint(
         )
     except KhiveError as e:
         raise CheckpointError(f"the take did not complete: {e}") from None
-    done = {"id": f"{sid}@{turns}", "session": sid, "turns": turns, "appended": appended, "context": figure}
+    done = {"id": f"{tip}@{turns}", "session": tip, "turns": turns, "appended": appended, "context": figure}
     return {**done, "skipped_unowned": skipped} if rollout else done
 
 
 def _named(id: str | None) -> tuple[str | None, int | None]:
     """A checkpoint id as `restore` and `show` take it: a session id, or `<session>@<turns>`; None is
-    the latest session at its last turn."""
+    the latest session at its last turn. A CLI session's id names its tip (`held_session`)."""
     if id is None:
         return None, None
     sid, at, turns = id.partition("@")
@@ -198,7 +198,7 @@ def _named(id: str | None) -> tuple[str | None, int | None]:
 
 def _session(khive: Khive, actor: str, id: str | None) -> tuple[dict, int | None]:
     sid, turns = _named(id)
-    row = asyncio.run(session_of(khive, sid) if sid else latest_session(khive, actor))
+    row = asyncio.run(held_session(khive, actor, sid))
     if row is None:
         raise CheckpointError(
             f"no checkpoint: the store holds no session {sid}"
@@ -211,7 +211,9 @@ def _session(khive: Khive, actor: str, id: str | None) -> tuple[dict, int | None
 def _take(d: Path, khive: Khive, actor: str, row: dict, turns: int | None, budget: int, now: datetime | None):
     """The checkpoint of the store's session at `turns` (its last when None), computed now: its
     exchanges folded, the harness's live state read beside them."""
+    # a branch's own id names it; the CLI's own files are found by the provider session id
     sid, path = row["id"], Path(str(row.get("transcript")))
+    provider = str(row.get("provider_session_id") or sid)
     exchanges = asyncio.run(exchanges_of(khive, sid))
     if turns is not None:
         if turns > len(exchanges):
@@ -219,7 +221,13 @@ def _take(d: Path, khive: Khive, actor: str, row: dict, turns: int | None, budge
         exchanges = exchanges[:turns]
     now = now or datetime.now().astimezone()
     why = str(exchanges[-1].get("why") or "manual") if exchanges else "manual"
-    source: dict = {"session_id": sid, "transcript": str(path), "cwd": str(d), "turns": len(exchanges)}
+    source: dict = {
+        "session_id": sid,
+        "provider_session_id": provider,
+        "transcript": str(path),
+        "cwd": str(d),
+        "turns": len(exchanges),
+    }
     # the posture is the newest answered exchange's text, an unanswered re-queued prompt at the end aside
     last = next(((e["text"], e["at"]) for e in reversed(exchanges) if e.get("text")), None)
     lane_vars, lane_note = asyncio.run(lanes(khive))
@@ -240,7 +248,7 @@ def _take(d: Path, khive: Khive, actor: str, row: dict, turns: int | None, budge
             *(watches(path, actor, now) if path.is_file() else []),
             *(spawns(path, now) if path.is_file() else []),
         ]
-        source["context"] = context_figure(sid)
+        source["context"] = context_figure(provider)
         taker = take_session
     # the person's words are the stored exchanges, the newest eight, an event that woke the actor aside
     words = [t for t in exchanges if t.get("kind") != "event"][-DIRECTIVES:]
@@ -305,7 +313,7 @@ def status(
     actor = actor_id(d)
     k = _khive(d, actor, khive)
     try:
-        row = asyncio.run(session_of(k, session) if session else latest_session(k, actor))
+        row = asyncio.run(held_session(k, actor, session))
         held = asyncio.run(exchanges_of(k, row["id"])) if row is not None else []
         count = len(declared(k, actor))
     except KhiveError as e:

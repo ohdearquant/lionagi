@@ -719,9 +719,9 @@ def test_a_harness_session_rides_the_same_tables_against_the_built_binary(binary
         "why": "manual",
     }
     assert asyncio.run(session_of(k, sid)) is None
-    assert asyncio.run(record_exchanges(k, exchanges=exchanges, **kw)) == (2, 2)
+    assert asyncio.run(record_exchanges(k, exchanges=exchanges, **kw)) == (sid, 2, 2)
     # a second take of the session at the same count writes nothing
-    assert asyncio.run(record_exchanges(k, exchanges=exchanges, **kw)) == (2, 0)
+    assert asyncio.run(record_exchanges(k, exchanges=exchanges, **kw)) == (sid, 2, 0)
     row = asyncio.run(latest_session(k, ACTOR))
     assert (row["id"], row["source"], row["transcript"]) == (sid, "claude_code", "/t/cc.jsonl")
     assert asyncio.run(exchanges_of(k, sid)) == [{**e, "why": "manual"} for e in exchanges]

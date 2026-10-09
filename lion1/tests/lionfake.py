@@ -3,7 +3,8 @@
 and returns the results in order, or raises `KhiveError` with the kind the pack would give. The
 stub `kkernel` of `conftest.py` runs the same class over a JSON file, so a test through the real
 client and a test through a patched `exec` see one behaviour. `blob.put` and `blob.get` are served
-too, for a message's carried fields (D8); a ref here is a SHA-256, where the store's is a BLAKE3."""
+too, for a message's carried fields (D8); a ref here is a SHA-256, where the store's is a BLAKE3. A
+harness session is written by takes alone, under the generation `lion.take_begin` gives (D12)."""
 
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ __all__ = (
 )
 
 _SOURCES = ("lion1", "claude_code", "codex")
+_HARNESS = ("claude_code", "codex")  # a session a CLI keeps, written by takes alone (D12)
 _ROLES = ("system", "user", "assistant", "tool")
 _STATUSES = ("ok", "refused", "limit", "cut", "failed")
 _OUTCOMES = ("success", "continue", "exhausted", "refused", "stopped")
@@ -95,6 +97,12 @@ def _fresh() -> str:
     return uuid.uuid4().hex
 
 
+def _superseded(psid: str, generation: int, current: int | None) -> KhiveError:
+    # as the pack's: a kind of its own, so the client begins the take again (D12)
+    standing = "no take of it has begun" if current is None else f"the current take is {current}"
+    return KhiveError(f"take {generation} of {psid} is superseded: {standing}", "conflict")
+
+
 @dataclass
 class LionFake:
     sessions: dict = field(default_factory=dict)
@@ -104,6 +112,7 @@ class LionFake:
     steps: dict = field(default_factory=dict)  # flow run id -> {idx: row}
     notes: dict = field(default_factory=dict)  # profile -> {key: row}
     blobs: dict = field(default_factory=dict)  # ref -> the piece's bytes, base64
+    takes: dict = field(default_factory=dict)  # provider session id -> its takes row
     ops: list = field(default_factory=list)
     sent: list = field(default_factory=list)  # each comm.send's arguments: a result mail is read here
     refuse_send: str | None = None  # set: every comm.send raises it, a transport that failed
@@ -141,21 +150,25 @@ class LionFake:
         if name == "session_open":
             if p["source"] not in _SOURCES:
                 raise KhiveError(f"source {p['source']!r}: lion1, claude_code or codex")
+            if p["source"] in _HARNESS:
+                return self._take_open(p)
+            if any(p.get(k) is not None for k in ("generation", "branch_of", "branch_seq")):
+                raise KhiveError(
+                    f"a {p['source']} session is no take's: generation, branch_of and branch_seq are a "
+                    "harness session's"
+                )
             sid = p.get("id") or _fresh()
-            self.sessions[sid] = {
-                "id": sid,
-                "namespace": "local",
-                "source": p["source"],
-                "provider_session_id": p.get("provider_session_id"),
-                "actor": p.get("actor"),
-                "profile": p.get("profile"),
-                "transcript": p.get("transcript"),
-                "message_count": 0,
-                "started": self._now(),
-                "ended": None,
-            }
-            self.messages.setdefault(sid, {})
+            self._open(sid, p)
             return {"id": sid, "started": self.sessions[sid]["started"]}
+        if name == "take_begin":
+            psid = p["provider_session_id"]
+            if not psid:
+                raise KhiveError("a take names its provider_session_id")
+            t = self.takes.setdefault(
+                psid, {"namespace": "local", "provider_session_id": psid, "generation": 0, "tip": None}
+            )
+            t["generation"] += 1  # advanced and read back in one step, as the pack's transaction
+            return dict(t)
         if name == "session_close":
             s = self._row(self.sessions, p["id"], "session")
             s["ended"] = self._now()
@@ -170,9 +183,26 @@ class LionFake:
                 )
             if p["role"] not in _ROLES:
                 raise KhiveError(f"role {p['role']!r}: system, user, assistant or tool")
-            self._row(self.sessions, p["session_id"], "session")
+            session = self._row(self.sessions, p["session_id"], "session")
+            # a harness session's row is a take's, admitted under its generation (D12, S21)
+            harness, generation = session["source"] in _HARNESS, p.get("generation")
+            if harness and generation is None:
+                raise KhiveError(
+                    f"session {p['session_id']} is a {session['source']} session, written by a take under "
+                    "the generation lion.take_begin gave it, and this row carries none (a client older than "
+                    "takes)"
+                )
+            if not harness and generation is not None:
+                raise KhiveError(
+                    f"session {p['session_id']} is a {session['source']} session, which no take writes: a "
+                    "generation fences a harness session's rows"
+                )
             box = self.messages[p["session_id"]]
+            psid = session["provider_session_id"]
+            current = self.takes.get(psid, {}).get("generation") if harness else None
             if p["seq"] in box:
+                if harness and current != generation:  # a newer take wrote it: this one begins again
+                    raise _superseded(psid, generation, current)
                 raise KhiveError(f"session {p['session_id']} already holds seq {p['seq']}")
             text = p["text"]
             carried = p.get("carried")
@@ -192,6 +222,8 @@ class LionFake:
                         whole = self._whole(field, carried[field])
                         if field == "text":
                             text = whole
+            if harness and current != generation:  # the pieces verified, only while its take is current
+                raise _superseded(psid, generation, current)
             box[p["seq"]] = {
                 "session_id": p["session_id"],
                 "seq": p["seq"],
@@ -205,7 +237,7 @@ class LionFake:
                 if carried and "text" in carried
                 else p["text"],
                 "raw": p.get("raw"),
-                "content_hash": f"h{len(text)}",
+                "content_hash": hashlib.sha256(text.encode()).hexdigest(),  # the whole text's, as the pack's
                 "parent_seq": p.get("parent_seq"),
                 "directive": p.get("directive"),
                 "created": self._now(),
@@ -309,6 +341,8 @@ class LionFake:
             return {"id": p["id"], "ended": r["ended"]}
         if name == "get":
             table, key = p["table"], p["id"]
+            if table == "takes":
+                return dict(self._row(self.takes, key, "takes"))
             if table == "messages":
                 rows = [self.messages.get(key, {})[k] for k in sorted(self.messages.get(key, {}))]
                 if any(r.get("carried") for r in rows):  # the pack's refusal: this form shows a blank (D9)
@@ -319,7 +353,7 @@ class LionFake:
                 return {"count": len(rows), "rows": rows}
             store = {"sessions": self.sessions, "calls": self.calls, "runs": self.runs}.get(table)
             if store is None:
-                raise KhiveError(f"table {table!r}: sessions, messages, calls, runs or steps")
+                raise KhiveError(f"table {table!r}: sessions, messages, calls, runs, steps or takes")
             return dict(self._row(store, key, table))
         if name == "messages":
             limit = p.get("limit", 200)
@@ -359,6 +393,67 @@ class LionFake:
         if name.startswith("note_"):
             return self._note(name, p)
         raise KhiveError(f"unknown verb: lion does not serve {verb!r}")
+
+    def _open(self, sid: str, p: dict) -> None:
+        self.sessions[sid] = {
+            "id": sid,
+            "namespace": "local",
+            "source": p["source"],
+            "provider_session_id": p.get("provider_session_id"),
+            "actor": p.get("actor"),
+            "profile": p.get("profile"),
+            "transcript": p.get("transcript"),
+            "message_count": 0,
+            "started": self._now(),
+            "ended": None,
+            "branch_of": p.get("branch_of"),
+            "branch_seq": p.get("branch_seq"),
+        }
+        self.messages.setdefault(sid, {})
+
+    def _take_open(self, p: dict) -> dict:
+        """A harness session's open, as the pack's (D12): a take's root or branch, moving the take's tip
+        from the one the take read while its generation is current, or writing nothing."""
+        psid, generation = p.get("provider_session_id"), p.get("generation")
+        if psid is None:
+            raise KhiveError(f"a {p['source']} session names its provider_session_id")
+        if generation is None:
+            raise KhiveError(
+                f"a {p['source']} session is opened by a take, under the generation lion.take_begin gave it, "
+                "and this open carries none (a client older than takes)"
+            )
+        of, seq = p.get("branch_of"), p.get("branch_seq")
+        if (of is None) != (seq is None) or (seq is not None and seq < 0):
+            raise KhiveError("a branch names its branch_of and its branch_seq, the seq at least 0")
+        sid, adopted = p.get("id") or _fresh(), False
+        if of is None and sid in self.sessions:
+            # a session holding the root's id is the tip only when it is this CLI session's
+            held = self.sessions[sid]
+            adopted = (held["namespace"], held["source"], held["provider_session_id"]) == (
+                "local",
+                p["source"],
+                psid,
+            )
+            sid = sid if adopted else _fresh()
+        t = self.takes.get(psid)
+        if t is None or t["generation"] != generation:
+            raise _superseded(psid, generation, t and t["generation"])
+        if t["tip"] != of:
+            raise KhiveError(
+                f"the tip of {psid} is {t['tip'] or 'none'}, not {of or 'none'}: the take read another, and "
+                "nothing was opened"
+            )
+        if not adopted and sid in self.sessions:  # the pack's insert admits no row and its move rolls back
+            raise KhiveError(
+                f"session {sid} was not opened: take {generation} of {psid} is not current, or another "
+                "session holds the id",
+                "conflict",
+            )
+        t["tip"] = sid
+        if adopted:
+            return {"id": sid, "adopted": True}
+        self._open(sid, p)
+        return {"id": sid, "started": self.sessions[sid]["started"], "adopted": False}
 
     def _refs(self, field: str, m: dict) -> list[str]:
         if (
@@ -453,6 +548,7 @@ class LionFake:
                 "steps": {k: {str(i): r for i, r in v.items()} for k, v in self.steps.items()},
                 "notes": self.notes,
                 "blobs": self.blobs,
+                "takes": self.takes,
                 "clock": self.clock,
             }
         )
@@ -468,6 +564,7 @@ class LionFake:
             steps={k: {int(i): r for i, r in v.items()} for k, v in d["steps"].items()},
             notes=d["notes"],
             blobs=d.get("blobs", {}),
+            takes=d.get("takes", {}),
             clock=d["clock"],
         )
 

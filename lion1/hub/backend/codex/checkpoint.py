@@ -417,9 +417,9 @@ def render_prompt(checkpoint: Checkpoint) -> str:
     kept view, the posture and what to do first. A lazy var is its name, size and loader, never its body."""
     c = listed(checkpoint, "nothing was restored", kinds=CODEX_KINDS, whys=CODEX_WHYS)
     s = c.source
+    thread = s.get("provider_session_id") or s.get("session_id")  # a branch's own id is not the thread's
     head = opening(c) + (
-        f"It was taken from Codex thread {s.get('session_id')} (model {s.get('model')}, "
-        f"CLI {s.get('cli_version')})."
+        f"It was taken from Codex thread {thread} (model {s.get('model')}, CLI {s.get('cli_version')})."
     )
     first = "take up the newest of the person's words and the lanes from where the posture leaves them."
     return "\n".join([head, *restored(c, first)])
