@@ -253,16 +253,17 @@
     "esbuild": "^0.25.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.5.0",
-    "vitest": "^3.2.6"
+    "vite": "^7.3.5",
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "vite": {
       "esbuild": "0.27.2"
     },
-    "fast-uri": "^3.1.5",
+    "fast-uri": "^3.1.8",
     "linkify-it": "^5.0.2",
-    "undici": "^7.29.0",
+    "undici": "^7.29.1",
     "postcss": "^8.5.18",
-    "brace-expansion": "^5.0.9"
+    "brace-expansion": "^5.0.12"
   }
 }
