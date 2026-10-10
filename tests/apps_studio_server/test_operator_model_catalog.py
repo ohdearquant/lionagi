@@ -49,18 +49,69 @@ def test_catalog_entries_cover_claude_codex_and_gemini_with_a_fable_entry():
     assert "gemini_code" in {entry["provider"] for entry in entries}
     # Efforts are per model, not per provider: the catalog offers a level only
     # when the request path will send that level unchanged. Claude has no
-    # none/minimal/ultra tier at all, and xhigh survives on Opus alone.
-    assert set(by_id["sonnet"]["efforts"]) == {"low", "medium", "high", "max"}
+    # none/minimal/ultra tier; xhigh is limited to documented model support.
+    assert set(by_id["sonnet"]["efforts"]) == {"low", "medium", "high", "xhigh", "max"}
     assert set(by_id["opus"]["efforts"]) == {"low", "medium", "high", "xhigh", "max"}
-    # Codex additionally accepts none/minimal; max and ultra clamp to xhigh on
-    # every Codex model this catalog lists, so they are not offered.
+    # Codex additionally accepts none/minimal; max-only models omit ultra.
     codex_entry = next(e for e in entries if e["provider"] == "codex")
     assert {"none", "minimal"} <= set(codex_entry["efforts"])
     assert {"max", "ultra"}.isdisjoint(codex_entry["efforts"])
+    assert "max" in by_id["gpt-6-sol"]["efforts"]
+    assert "ultra" not in by_id["gpt-6-sol"]["efforts"]
     # gemini-code folds effort into the model name -- only 3 tiers are
     # meaningful, and Pro has no Medium tier.
+    assert set(by_id["gemini-3.8-flash"]["efforts"]) == {"low", "medium", "high"}
     assert set(by_id["gemini-3.5-flash"]["efforts"]) == {"low", "medium", "high"}
     assert set(by_id["gemini-3.1-pro"]["efforts"]) == {"low", "high"}
+
+
+@pytest.mark.parametrize(
+    ("model", "label", "provider", "efforts"),
+    [
+        (
+            "claude-fable-5-1",
+            "Claude Fable 5.1",
+            "claude_code",
+            {"low", "medium", "high", "xhigh", "max"},
+        ),
+        (
+            "claude-opus-5-5",
+            "Claude Opus 5.5",
+            "claude_code",
+            {"low", "medium", "high", "xhigh", "max"},
+        ),
+        (
+            "claude-sonnet-5-5",
+            "Claude Sonnet 5.5",
+            "claude_code",
+            {"low", "medium", "high", "xhigh", "max"},
+        ),
+        (
+            "claude-haiku-5-5",
+            "Claude Haiku 5.5",
+            "claude_code",
+            {"low", "medium", "high", "xhigh", "max"},
+        ),
+        (
+            "gpt-6-sol",
+            "GPT-6 Sol",
+            "codex",
+            {"none", "low", "medium", "high", "xhigh", "max"},
+        ),
+        (
+            "gpt-6-luna",
+            "GPT-6 Luna",
+            "codex",
+            {"none", "low", "medium", "high", "xhigh", "max"},
+        ),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash", "gemini_code", {"low", "medium", "high"}),
+    ],
+)
+def test_catalog_includes_current_model_rows(model, label, provider, efforts):
+    by_id = {entry["id"]: entry for entry in catalog_entries()}
+    assert by_id[model]["label"] == label
+    assert by_id[model]["provider"] == provider
+    assert set(by_id[model]["efforts"]) == efforts
 
 
 # ── resolve_selection() ─────────────────────────────────────────────────────
@@ -84,7 +135,7 @@ def test_resolve_selection_rejects_a_provider_model_mismatch():
 def test_resolve_selection_rejects_an_effort_the_providers_cannot_accept():
     # gemini-code only accepts low/medium/high (folded into the --model name).
     with pytest.raises(OperatorSelectionError, match="does not accept effort"):
-        resolve_selection(provider=None, model="gemini-3.6-flash", effort="xhigh")
+        resolve_selection(provider=None, model="gemini-3.8-flash", effort="xhigh")
     # codex has no "ultra-plus" tier at all.
     with pytest.raises(OperatorSelectionError, match="does not accept effort"):
         resolve_selection(provider="codex", model=None, effort="not-a-real-effort")
@@ -170,7 +221,7 @@ async def test_submit_rejects_an_effort_the_selected_provider_cannot_honor(tmp_p
             instruction="hello",
             context={"space": "mission", "route": "/", "filters": {}},
             expected_last_sequence=0,
-            model="gemini-3.5-flash",
+            model="gemini-3.8-flash",
             effort="xhigh",
         )
     await coordinator.shutdown()
@@ -310,14 +361,14 @@ def test_build_operator_branch_folds_gemini_effort_into_the_model_name(tmp_path)
             request_permission=request_permission,
             store_path=str(tmp_path / "state.db"),
             provider="gemini_code",
-            model="gemini-3.5-flash",
+            model="gemini-3.8-flash",
             effort="high",
         )
     )
     # gemini-code has no effort kwarg -- it is folded into the resolved model name.
     assert "reasoning_effort" not in branch.chat_model.endpoint.config.kwargs
     assert "effort" not in branch.chat_model.endpoint.config.kwargs
-    assert branch.chat_model.endpoint.config.kwargs["model"] == "Gemini 3.5 Flash (High)"
+    assert branch.chat_model.endpoint.config.kwargs["model"] == "Gemini 3.8 Flash (High)"
 
 
 # ── store: provider/model/effort persistence ────────────────────────────────
@@ -486,7 +537,11 @@ def test_the_catalog_never_offers_an_effort_the_request_path_would_change():
 def test_a_clamped_effort_is_rejected_rather_than_silently_downgraded():
     """The three measured cases where the provider used to receive a level the
     operator never chose."""
-    for model, effort in (("sonnet", "xhigh"), ("gpt-5.4", "ultra"), ("gemini-3.1-pro", "medium")):
+    for model, effort in (
+        ("gpt-5.4", "ultra"),
+        ("gemini-3.1-pro", "medium"),
+        ("gemini-3.8-flash", "xhigh"),
+    ):
         with pytest.raises(OperatorSelectionError, match="does not accept effort"):
             resolve_selection(provider=None, model=model, effort=effort)
 
@@ -504,9 +559,9 @@ def test_a_model_that_does_honor_the_level_still_accepts_it():
         "gpt-5.4",
         "xhigh",
     )
-    assert resolve_selection(provider=None, model="gemini-3.5-flash", effort="medium") == (
+    assert resolve_selection(provider=None, model="gemini-3.8-flash", effort="medium") == (
         "gemini_code",
-        "gemini-3.5-flash",
+        "gemini-3.8-flash",
         "medium",
     )
 
@@ -861,12 +916,12 @@ async def test_a_first_explicit_selection_drops_the_default_providers_session(tm
         context={},
         expected_last_sequence=0,
         select_provider="gemini_code",
-        select_model="gemini-3.5-flash",
+        select_model="gemini-3.8-flash",
     )
 
     conversation = await store.get_conversation(conversation_id)
     assert conversation["provider"] == "gemini_code"
-    assert conversation["providerModel"] == "gemini-3.5-flash"
+    assert conversation["providerModel"] == "gemini-3.8-flash"
     assert conversation["providerSessionId"] is None
 
 

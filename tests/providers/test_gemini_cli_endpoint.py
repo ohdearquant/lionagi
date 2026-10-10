@@ -4,7 +4,7 @@
 
 Covers argv construction (json output-format, model resolution, resume/yolo
 flags), nonzero-exit error surfacing, endpoint _call session mapping, default
-model gemini-3.5-flash, and the REST-vs-CLI helpful error.
+model gemini-3.8-flash, and the REST-vs-CLI helpful error.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class TestCmdArgs:
         assert args[:2] == ["-p", "hello"]
         assert "--output-format" in args and "json" in args
         i = args.index("--model")
-        assert args[i + 1] == "Gemini 3.5 Flash (Medium)"
+        assert args[i + 1] == "Gemini 3.8 Flash (Medium)"
 
     def test_pro_model_resolves_to_high(self):
         args = GeminiCodeRequest(prompt="hi", model="gemini-3-pro-preview").as_cmd_args()
@@ -209,9 +209,9 @@ class TestEndpointCall:
 class TestDefaultModel:
     """GeminiCodeRequest default model must be the latest flash family."""
 
-    def test_default_model_is_gemini_3_5_flash(self):
+    def test_default_model_is_gemini_3_8_flash(self):
         req = GeminiCodeRequest(prompt="hello")
-        assert req.model == "gemini-3.5-flash"
+        assert req.model == "gemini-3.8-flash"
 
     def test_explicit_model_is_preserved(self):
         req = GeminiCodeRequest(prompt="hello", model="gemini-2.5-pro")
@@ -221,13 +221,13 @@ class TestDefaultModel:
 class TestBackendsDefaultModel:
     """BACKENDS entries for gemini-cli must point to the latest flash family."""
 
-    def test_gemini_cli_backend_uses_3_5_flash(self):
+    def test_gemini_cli_backends_use_3_8_flash(self):
         from lionagi.service.providers import BACKENDS
 
-        assert "gemini-3.5-flash" in BACKENDS["gemini-cli"]
-        assert "gemini-3.5-flash" in BACKENDS["gemini_cli"]
-        assert "gemini-3.5-flash" in BACKENDS["gemini-code"]
-        assert "gemini-3.5-flash" in BACKENDS["gemini_code"]
+        assert BACKENDS["gemini-cli"] == "gemini_code/gemini-3.8-flash"
+        assert BACKENDS["gemini_cli"] == "gemini_code/gemini-3.8-flash"
+        assert BACKENDS["gemini-code"] == "gemini_code/gemini-3.8-flash"
+        assert BACKENDS["gemini_code"] == "gemini_code/gemini-3.8-flash"
 
 
 class TestCliProvidersSet:

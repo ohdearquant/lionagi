@@ -58,6 +58,10 @@ OPERATOR_MODEL_CATALOG: tuple[OperatorModelSpec, ...] = (
     OperatorModelSpec("opus", "Claude Opus", "claude_code"),
     OperatorModelSpec("haiku", "Claude Haiku", "claude_code"),
     OperatorModelSpec("claude-fable-5", "Claude Fable", "claude_code"),
+    OperatorModelSpec("claude-fable-5-1", "Claude Fable 5.1", "claude_code"),
+    OperatorModelSpec("claude-opus-5-5", "Claude Opus 5.5", "claude_code"),
+    OperatorModelSpec("claude-sonnet-5-5", "Claude Sonnet 5.5", "claude_code"),
+    OperatorModelSpec("claude-haiku-5-5", "Claude Haiku 5.5", "claude_code"),
     OperatorModelSpec("gpt-5.3-codex", "Codex (gpt-5.3)", "codex"),
     OperatorModelSpec("gpt-5.3-codex-spark", "Codex Spark (gpt-5.3)", "codex"),
     OperatorModelSpec("gpt-5.4", "Codex (gpt-5.4)", "codex"),
@@ -65,6 +69,9 @@ OPERATOR_MODEL_CATALOG: tuple[OperatorModelSpec, ...] = (
     OperatorModelSpec("gpt-5.6-sol", "Codex Sol (gpt-5.6)", "codex"),
     OperatorModelSpec("gpt-5.6-terra", "Codex Terra (gpt-5.6)", "codex"),
     OperatorModelSpec("gpt-5.6-luna", "Codex Luna (gpt-5.6)", "codex"),
+    OperatorModelSpec("gpt-6-sol", "GPT-6 Sol", "codex"),
+    OperatorModelSpec("gpt-6-luna", "GPT-6 Luna", "codex"),
+    OperatorModelSpec("gemini-3.8-flash", "Gemini 3.8 Flash", "gemini_code"),
     OperatorModelSpec("gemini-3.6-flash", "Gemini 3.6 Flash", "gemini_code"),
     OperatorModelSpec("gemini-3.5-flash", "Gemini 3.5 Flash", "gemini_code"),
     OperatorModelSpec("gemini-3.1-pro", "Gemini 3.1 Pro", "gemini_code"),
@@ -93,6 +100,7 @@ def model_effort_choices(model: str) -> tuple[OperatorEffort, ...]:
     if spec is None:
         return ()
     from lionagi.service.providers import (
+        _CODEX_NO_MINIMAL_MODELS,
         _GEMINI_EFFORT_CLAMP,
         _clamp_claude_effort,
         _clamp_codex_effort,
@@ -103,7 +111,12 @@ def model_effort_choices(model: str) -> tuple[OperatorEffort, ...]:
     if spec.provider == "claude_code":
         return tuple(e for e in offered if _clamp_claude_effort(e, spec.id) == e)
     if spec.provider == "codex":
-        return tuple(e for e in offered if _clamp_codex_effort(e, spec.id) == e)
+        return tuple(
+            e
+            for e in offered
+            if _clamp_codex_effort(e, spec.id) == e
+            and not (spec.id in _CODEX_NO_MINIMAL_MODELS and e == "minimal")
+        )
     if spec.provider == "gemini_code":
         # Gemini has no effort kwarg: the level becomes part of the model name,
         # so "honored" means the tier this effort names is the tier that gets

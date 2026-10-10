@@ -34,6 +34,15 @@ class OpenRouterRequest(OpenAIChatCompletionsRequest):
 
 
 CONTEXT_WINDOWS: dict[str, int] = {
+    "google/gemini-3.8-flash": 1_048_576,
+    "anthropic/claude-fable-5.1": 1_000_000,
+    "anthropic/claude-opus-5.5": 1_000_000,
+    "anthropic/claude-sonnet-5.5": 1_000_000,
+    "anthropic/claude-haiku-5.5": 1_000_000,
+    "openai/gpt-6.1-sol": 1_050_000,
+    "openai/gpt-6-astra": 1_050_000,
+    "openai/gpt-6-sol": 1_050_000,
+    "openai/gpt-6-luna": 1_050_000,
     "google/gemini-2.5-flash": 1_048_576,
     "google/gemini-2.5-pro": 1_048_576,
     "anthropic/claude-opus-4-5": 200_000,

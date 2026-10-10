@@ -48,9 +48,13 @@ def normalize_effort(effort: str | None) -> str | None:
 
 
 # Codex reasoning-effort ceilings are model-dependent (source: codex CLI's live model
-# list); unrecognized (future) models pass through unclamped. See docs/internals/runtime.md.
+# list for gpt-5.6, the provider's model pages for gpt-6); unrecognized (future) models
+# pass through unclamped. See docs/internals/runtime.md.
 _CODEX_ULTRA_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra"})
-_CODEX_MAX_ONLY_MODELS = frozenset({"gpt-5.6-luna"})
+_CODEX_MAX_ONLY_MODELS = frozenset(
+    {"gpt-5.6-luna", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}
+)
+_CODEX_NO_MINIMAL_MODELS = frozenset({"gpt-6-sol", "gpt-6-luna"})
 _CODEX_XHIGH_CEILING_MODELS = frozenset(
     {
         "gpt-5.5",
@@ -75,10 +79,10 @@ def _clamp_codex_effort(effort: str, model: str | None) -> str:
     return effort
 
 
-# Claude: only the Opus line (from 4.7 on) accepts xhigh; everything else clamps
-# to high, and there is no ultra tier (clamps to max). Allow-list of exact model
-# strings: a new Opus release silently loses xhigh until added here — both the
-# bare alias and the claude- prefixed form, since callers pass either.
+# Claude effort ceilings vary by model; the documented xhigh models are
+# allow-listed and other models clamp to high. Claude has no ultra tier, so
+# ultra clamps to max. Keep both bare aliases and prefixed ids because callers
+# pass either form.
 _CLAUDE_XHIGH_MODELS = frozenset(
     {
         "opus",
@@ -88,6 +92,21 @@ _CLAUDE_XHIGH_MODELS = frozenset(
         "claude-opus-4-8",
         "opus-5",
         "claude-opus-5",
+        "opus-5-5",
+        "claude-opus-5-5",
+        "sonnet",
+        "sonnet-5",
+        "claude-sonnet-5",
+        "sonnet-5-5",
+        "claude-sonnet-5-5",
+        "haiku",
+        "haiku-5-5",
+        "claude-haiku-5-5",
+        "fable",
+        "fable-5",
+        "claude-fable-5",
+        "fable-5-1",
+        "claude-fable-5-1",
     }
 )
 
@@ -262,10 +281,10 @@ BACKENDS: dict[str, str] = {
     "claude-code": "claude_code/sonnet",
     "claude_code": "claude_code/sonnet",
     "codex": "codex/gpt-5.3-codex-spark",
-    "gemini-code": "gemini_code/gemini-3.5-flash",
-    "gemini_code": "gemini_code/gemini-3.5-flash",
-    "gemini-cli": "gemini_code/gemini-3.5-flash",
-    "gemini_cli": "gemini_code/gemini-3.5-flash",
+    "gemini-code": "gemini_code/gemini-3.8-flash",
+    "gemini_code": "gemini_code/gemini-3.8-flash",
+    "gemini-cli": "gemini_code/gemini-3.8-flash",
+    "gemini_cli": "gemini_code/gemini-3.8-flash",
     "pi": "pi/gemini-2.5-flash",
     "pi-code": "pi/gemini-2.5-flash",
     "pi_code": "pi/gemini-2.5-flash",
