@@ -5,6 +5,8 @@
 
 import types
 
+import pytest
+
 from lionagi.service.token_budget import TokenBudget, get_context_window
 
 
@@ -130,6 +132,44 @@ class TestLookupContextWindow:
         result = lookup_context_window("gpt-4", provider="openai")
         # Any positive non-default value is acceptable; must be > 0
         assert result > 0
+
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            ("anthropic", "claude-fable-5-1", 1_000_000),
+            ("anthropic", "claude-opus-5-5", 1_000_000),
+            ("anthropic", "claude-sonnet-5-5", 1_000_000),
+            ("anthropic", "claude-haiku-5-5", 1_000_000),
+            ("claude_code", "claude-fable-5-1", 1_000_000),
+            ("claude_code", "claude-opus-5-5", 1_000_000),
+            ("claude_code", "claude-sonnet-5-5", 1_000_000),
+            ("claude_code", "claude-haiku-5-5", 1_000_000),
+            ("openai", "gpt-6.1-sol", 1_050_000),
+            ("openai", "gpt-6-astra", 1_050_000),
+            ("openai", "gpt-6-sol", 1_050_000),
+            ("openai", "gpt-6-luna", 1_050_000),
+            ("codex", "gpt-6.1-sol", 1_050_000),
+            ("codex", "gpt-6-astra", 1_050_000),
+            ("codex", "gpt-6-sol", 1_050_000),
+            ("codex", "gpt-6-luna", 1_050_000),
+            ("gemini", "gemini-3.8-flash", 1_048_576),
+            ("gemini_code", "gemini-3.8-flash", 1_048_576),
+            ("deepseek", "deepseek-v4-flash", 1_000_000),
+            ("openrouter", "google/gemini-3.8-flash", 1_048_576),
+            ("openrouter", "anthropic/claude-fable-5.1", 1_000_000),
+            ("openrouter", "anthropic/claude-opus-5.5", 1_000_000),
+            ("openrouter", "anthropic/claude-sonnet-5.5", 1_000_000),
+            ("openrouter", "anthropic/claude-haiku-5.5", 1_000_000),
+            ("openrouter", "openai/gpt-6.1-sol", 1_050_000),
+            ("openrouter", "openai/gpt-6-astra", 1_050_000),
+            ("openrouter", "openai/gpt-6-sol", 1_050_000),
+            ("openrouter", "openai/gpt-6-luna", 1_050_000),
+        ],
+    )
+    def test_current_model_context_windows(self, provider, model, expected):
+        from lionagi.service.token_budget import lookup_context_window
+
+        assert lookup_context_window(model, provider=provider) == expected
 
     def test_unknown_model_and_provider_returns_default(self):
         """Completely unknown model + provider returns 128_000."""

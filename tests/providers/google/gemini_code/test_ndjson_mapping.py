@@ -394,10 +394,15 @@ async def test_on_text_loop_closed_error_propagates():
     [
         ("gemini-3-flash-preview", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3-pro-preview", "Gemini 3.1 Pro (High)"),
-        ("flash", "Gemini 3.5 Flash (Medium)"),
+        ("flash", "Gemini 3.8 Flash (Medium)"),
         ("pro", "Gemini 3.1 Pro (High)"),
+        ("gemini-pro", "Gemini 3.1 Pro (High)"),
         ("Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (High)"),  # exact passthrough
-        (None, "Gemini 3.5 Flash (Medium)"),
+        (None, "Gemini 3.8 Flash (Medium)"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+        ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+        ("gemini-3.8-flash-preview", "Gemini 3.8 Flash (Medium)"),
         # gemini-3.6-flash defaults to High and must never silently resolve to a
         # 3.5 display name.
         ("gemini-3.6-flash", "Gemini 3.6 Flash (High)"),
@@ -479,6 +484,17 @@ def test_resolve_agy_model_36_flash_defaults_high_never_downgrades():
     # a number that merely contains "3.6" is NOT version 3.6 — no false upgrade
     for spec in ("gemini-13.6-flash", "gemini-3.60-flash"):
         assert not resolve_agy_model(spec).startswith("Gemini 3.6 Flash"), spec
+
+
+def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
+    assert resolve_agy_model(None) == "Gemini 3.8 Flash (Medium)"
+    assert resolve_agy_model("flash") == "Gemini 3.8 Flash (Medium)"
+    assert resolve_agy_model("gemini-3.8-flash") == "Gemini 3.8 Flash (Medium)"
+    assert resolve_agy_model("gemini-3.8-flash", effort="high") == "Gemini 3.8 Flash (High)"
+    for spec in ("gemini-3.8-flash", "gemini-3.8-flash-preview"):
+        assert resolve_agy_model(spec).startswith("Gemini 3.8 Flash"), spec
+    for spec in ("gemini-13.8-flash", "gemini-3.80-flash"):
+        assert not resolve_agy_model(spec).startswith("Gemini 3.8 Flash"), spec
 
 
 # Model resolution — reapply_effort (li agent -r --effort re-applying effort

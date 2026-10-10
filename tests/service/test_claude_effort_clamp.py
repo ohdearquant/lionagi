@@ -5,8 +5,8 @@
 tier becomes a supported one and the request succeeds, so a model missing
 from the xhigh allow-list runs a tier lower with nothing in the result
 saying so. That makes the membership itself the thing worth pinning --
-these tests fail when an Opus identifier is dropped, which is the only
-signal the downgrade produces."""
+these tests fail when a documented xhigh identifier is dropped, which is the
+only signal the downgrade produces."""
 
 from __future__ import annotations
 
@@ -14,10 +14,11 @@ import pytest
 
 from lionagi.service.providers import _clamp_claude_effort
 
-# Every spelling a caller can reach the Opus line by. Callers pass the bare
+# Every spelling callers pass for a Claude model with a documented xhigh tier.
+# Callers pass the bare
 # alias, the claude- prefixed id, or a provider-qualified spec, and the clamp
 # has to answer the same way for all three.
-OPUS_IDENTIFIERS = [
+XHIGH_IDENTIFIERS = [
     "opus",
     "opus-4-7",
     "claude-opus-4-7",
@@ -27,22 +28,37 @@ OPUS_IDENTIFIERS = [
     "claude-opus-5",
     "claude/claude-opus-5",
     "claude_code/opus",
-]
-
-# Claude models with no xhigh tier. Sonnet and Fable are current releases, so
-# they are not placeholders -- an implementation that granted xhigh to every
-# Claude model would pass the Opus cases above and fail here.
-NON_XHIGH_CLAUDE_MODELS = [
+    "opus-5-5",
+    "claude-opus-5-5",
+    "claude/claude-opus-5-5",
     "sonnet",
-    "haiku",
+    "sonnet-5",
     "claude-sonnet-5",
+    "sonnet-5-5",
+    "claude-sonnet-5-5",
+    "claude/claude-sonnet-5-5",
+    "haiku",
+    "haiku-5-5",
+    "claude-haiku-5-5",
+    "fable",
+    "fable-5",
     "claude-fable-5",
-    "claude/claude-sonnet-5",
+    "fable-5-1",
+    "claude-fable-5-1",
+    "claude/claude-fable-5-1",
+]
+
+# Older Claude models without a documented xhigh tier guard against granting
+# xhigh to every model in the provider family.
+NON_XHIGH_CLAUDE_MODELS = [
+    "claude-sonnet-4-6",
+    "claude/claude-sonnet-4-6",
+    "claude-haiku-4-5",
 ]
 
 
-@pytest.mark.parametrize("model", OPUS_IDENTIFIERS)
-def test_opus_line_keeps_xhigh(model):
+@pytest.mark.parametrize("model", XHIGH_IDENTIFIERS)
+def test_documented_models_keep_xhigh(model):
     assert _clamp_claude_effort("xhigh", model) == "xhigh"
 
 
@@ -51,7 +67,7 @@ def test_models_without_an_xhigh_tier_fall_back_to_high(model):
     assert _clamp_claude_effort("xhigh", model) == "high"
 
 
-@pytest.mark.parametrize("model", OPUS_IDENTIFIERS + NON_XHIGH_CLAUDE_MODELS)
+@pytest.mark.parametrize("model", XHIGH_IDENTIFIERS + NON_XHIGH_CLAUDE_MODELS)
 def test_max_is_a_real_claude_tier_and_is_never_clamped(model):
     """Claude has max on every model, so the clamp must leave it alone. It is
     the tier above xhigh, so a table that gates xhigh must not be read as
@@ -59,7 +75,7 @@ def test_max_is_a_real_claude_tier_and_is_never_clamped(model):
     assert _clamp_claude_effort("max", model) == "max"
 
 
-@pytest.mark.parametrize("model", OPUS_IDENTIFIERS + NON_XHIGH_CLAUDE_MODELS)
+@pytest.mark.parametrize("model", XHIGH_IDENTIFIERS + NON_XHIGH_CLAUDE_MODELS)
 def test_ultra_is_not_a_claude_tier_and_becomes_max(model):
     assert _clamp_claude_effort("ultra", model) == "max"
 

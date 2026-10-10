@@ -111,9 +111,9 @@ class ClaudeCodeRequest(BaseModel):
     )
 
     # ── model & runtime (order 20–29) ─────────────────────────────
-    # Bare "sonnet" is pinned to Sonnet 5 — see _pin_sonnet_alias.
+    # Bare "sonnet" is pinned to Sonnet 5.5 — see _pin_sonnet_alias.
     model: Literal["sonnet", "opus", "haiku"] | str | None = Field(
-        default="claude-sonnet-5",
+        default="claude-sonnet-5-5",
         json_schema_extra=_cli("--model", 20),
     )
     effort: ClaudeEffort | None = Field(
@@ -340,7 +340,7 @@ class ClaudeCodeRequest(BaseModel):
 
     @field_validator("model", mode="before")
     def _pin_sonnet_alias(cls, v):
-        return "claude-sonnet-5" if v == "sonnet" else v
+        return "claude-sonnet-5-5" if v == "sonnet" else v
 
     @field_validator("permission_mode", mode="before")
     def _norm_perm(cls, v):
@@ -535,7 +535,7 @@ class ClaudeCodeRequest(BaseModel):
 
         # model default – always emit
         if "--model" not in args:
-            args.extend(["--model", self.model or "claude-sonnet-5"])
+            args.extend(["--model", self.model or "claude-sonnet-5-5"])
 
         # always verbose for structured stream output
         args.append("--verbose")
@@ -890,6 +890,10 @@ cc_log = log
 
 
 CONTEXT_WINDOWS: dict[str, int] = {
+    "fable-5-1": 1_000_000,
+    "opus-5-5": 1_000_000,
+    "sonnet-5-5": 1_000_000,
+    "haiku-5-5": 1_000_000,
     "opus-4-7": 1_000_000,
     "opus-4-6": 1_000_000,
     "opus": 1_000_000,

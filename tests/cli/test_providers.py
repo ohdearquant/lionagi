@@ -315,23 +315,24 @@ def test_build_imodel_from_spec_mixed_case_max_clamps_codex_to_xhigh(monkeypatch
 def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypatch):
     """--effort XHigh on a Claude model with no xhigh tier must clamp to
     'high', matching the lowercase 'xhigh' behavior (case must not bypass the
-    clamp). Sonnet has no xhigh tier; the Opus line does."""
+    clamp). This older Sonnet release has no xhigh tier."""
     import lionagi.cli._providers as pmod
     from lionagi.testing import IModelKwargCaptor
 
     captor = IModelKwargCaptor.fresh()
     monkeypatch.setattr(pmod, "iModel", captor)
 
-    build_imodel_from_spec("claude/sonnet", effort_override="XHigh")
+    build_imodel_from_spec("claude/claude-sonnet-4-6", effort_override="XHigh")
 
     assert captor.captures[0].get("effort") == "high"
 
 
 # model-dependent codex effort ceilings
 # Codex effort support varies by model: the gpt-5.6 family accepts max
-# (sol/terra also ultra); every earlier model tops out at xhigh. The clamp
-# must key on the target model, and unrecognized (future) models must pass
-# through rather than silently degrade.
+# (sol/terra also ultra), the GPT-6 line (Astra, 6.1 Sol, Sol, Luna) tops out
+# at max, and every earlier model tops out at xhigh. The clamp must key on the
+# target model, and unrecognized (future) models must pass through rather
+# than silently degrade.
 
 
 @pytest.mark.parametrize(
@@ -341,6 +342,14 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
         ("gpt-5.6-sol", "ultra", "ultra"),
         ("gpt-5.6-terra", "max", "max"),
         ("gpt-5.6-terra", "ultra", "ultra"),
+        ("gpt-6.1-sol", "max", "max"),
+        ("gpt-6.1-sol", "ultra", "max"),
+        ("gpt-6-astra", "max", "max"),
+        ("gpt-6-astra", "ultra", "max"),
+        ("gpt-6-sol", "max", "max"),
+        ("gpt-6-sol", "ultra", "max"),
+        ("gpt-6-luna", "max", "max"),
+        ("gpt-6-luna", "ultra", "max"),
         ("gpt-5.6-luna", "max", "max"),
         ("gpt-5.6-luna", "ultra", "max"),
         ("gpt-5.5", "max", "xhigh"),

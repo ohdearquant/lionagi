@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Claude CLI model default: bare 'sonnet' pins to Sonnet 5."""
+"""Claude CLI model default: bare 'sonnet' pins to Sonnet 5.5."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ def _model_arg(req: ClaudeCodeRequest) -> str:
 
 
 class TestSonnetDefault:
-    def test_default_model_resolves_to_sonnet_5(self):
+    def test_default_model_resolves_to_sonnet_5_5(self):
         req = ClaudeCodeRequest(prompt="hi")
-        assert _model_arg(req) == "claude-sonnet-5"
+        assert _model_arg(req) == "claude-sonnet-5-5"
 
-    def test_explicit_sonnet_alias_resolves_to_sonnet_5(self):
+    def test_explicit_sonnet_alias_resolves_to_sonnet_5_5(self):
         req = ClaudeCodeRequest(prompt="hi", model="sonnet")
-        assert _model_arg(req) == "claude-sonnet-5"
+        assert _model_arg(req) == "claude-sonnet-5-5"
 
     def test_explicit_full_id_passes_through(self):
         req = ClaudeCodeRequest(prompt="hi", model="claude-sonnet-4-6")

@@ -160,6 +160,10 @@ StreamEvent = Union[
 
 
 CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-fable-5-1": 1_000_000,
+    "claude-opus-5-5": 1_000_000,
+    "claude-sonnet-5-5": 1_000_000,
+    "claude-haiku-5-5": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,

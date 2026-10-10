@@ -10,6 +10,7 @@ __all__ = ("OpenAIChatCompletionsRequest", "GeminiChatEndpoint")
 
 
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-3.8-flash": 1_048_576,
     "gemini-2.5-flash": 1_048_576,
     "gemini-2.5-pro": 1_048_576,
     "gemini-2.0-flash": 1_048_576,

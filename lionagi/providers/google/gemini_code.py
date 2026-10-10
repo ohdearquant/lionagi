@@ -70,6 +70,7 @@ __all__ = (
 
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-3.8-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
     "gemini-3.1-pro": 1_048_576,
@@ -86,6 +87,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
 # through so agy surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
+        "Gemini 3.8 Flash (Medium)",
+        "Gemini 3.8 Flash (High)",
+        "Gemini 3.8 Flash (Low)",
         "Gemini 3.6 Flash (Medium)",
         "Gemini 3.6 Flash (High)",
         "Gemini 3.6 Flash (Low)",
@@ -101,9 +105,15 @@ _AGY_MODELS: frozenset[str] = frozenset(
 )
 
 _MODEL_ALIASES: dict[str, str] = {
-    # 3.6 flash: newest flagship. Gemini carries effort as the model-id suffix
-    # (no separate --effort), so a bare id resolves to the strong tier by default
-    # (`gemini-3.6-flash` -> High). Suffixed forms map to their exact tier.
+    # Current default flash family. Google documents Low, Medium, and High
+    # thinking levels; the bare id resolves to Medium.
+    "gemini-3.8-flash": "Gemini 3.8 Flash (Medium)",
+    "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
+    "gemini-3.8-flash-medium": "Gemini 3.8 Flash (Medium)",
+    "gemini-3.8-flash-low": "Gemini 3.8 Flash (Low)",
+    # Legacy 3.6 spelling stays mapped for saved specs. Gemini carries effort
+    # as the model-id suffix (no separate --effort), so a bare id resolves to
+    # the strong tier by default. Suffixed forms map to their exact tier.
     "gemini-3.6-flash": "Gemini 3.6 Flash (High)",
     "gemini-3.6-flash-high": "Gemini 3.6 Flash (High)",
     "gemini-3.6-flash-medium": "Gemini 3.6 Flash (Medium)",
@@ -115,8 +125,8 @@ _MODEL_ALIASES: dict[str, str] = {
     "gemini-3.5-flash": "Gemini 3.5 Flash (Medium)",
     "gemini-2.5-flash": "Gemini 3.5 Flash (Medium)",
     "gemini-1.5-flash": "Gemini 3.5 Flash (Medium)",
-    "gemini-flash": "Gemini 3.5 Flash (Medium)",
-    "flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-flash": "Gemini 3.8 Flash (Medium)",
+    "flash": "Gemini 3.8 Flash (Medium)",
     # pro family -> strong (High): pro is chosen when the caller wants depth
     "gemini-3-pro-preview": "Gemini 3.1 Pro (High)",
     "gemini-3-pro": "Gemini 3.1 Pro (High)",
@@ -139,13 +149,17 @@ _MODEL_ALIASES: dict[str, str] = {
 # "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash" or
 # "gemini-3.60-flash", where a neighbouring digit means it is a different number.
 _GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
+_GEMINI_38_TOKEN = re.compile(r"(?<!\d)3\.8(?!\d)")
 
 
 def _gemini_flash_family(key: str) -> str:
-    """The flash-family display prefix for a free-form model key. Version-aware:
-    an explicit 3.6 id never silently downgrades to 3.5, and an unrelated number
-    that merely contains "3.6" (13.6, 3.60) never falsely upgrades to 3.6."""
-    return "Gemini 3.6 Flash" if _GEMINI_36_TOKEN.search(key) else "Gemini 3.5 Flash"
+    """The flash-family display prefix for a free-form model key, without
+    treating a version embedded in a different number as a family match."""
+    if _GEMINI_38_TOKEN.search(key):
+        return "Gemini 3.8 Flash"
+    if _GEMINI_36_TOKEN.search(key):
+        return "Gemini 3.6 Flash"
+    return "Gemini 3.5 Flash"
 
 
 def resolve_agy_model(
@@ -157,9 +171,11 @@ def resolve_agy_model(
     """Map a lionagi model spec + effort onto an exact `agy --model` display name (effort folds into
     the Low/Medium/High suffix; see docs/internals/runtime.md for the precedence rules)."""
     if not model:
-        model = "gemini-3.5-flash"
+        model = "gemini-3.8-flash"
     if model in _AGY_MODELS:
         if reapply_effort and effort is not None:
+            if model.startswith("Gemini 3.8 Flash"):
+                return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.6 Flash"):
                 return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.5 Flash"):
@@ -172,6 +188,8 @@ def resolve_agy_model(
         target = _MODEL_ALIASES[key]
         if effort is None:
             return target
+        if target.startswith("Gemini 3.8 Flash"):
+            return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.6 Flash"):
             return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.5 Flash"):
@@ -315,10 +333,11 @@ class GeminiCodeRequest(BaseModel):
 
     # -- runtime & safety ----------------------------------------------------
     model: str | None = Field(
-        default="gemini-3.5-flash",
+        default="gemini-3.8-flash",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
-            "Accepts gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
+            "Accepts gemini-3.8-flash (defaults to the Medium tier), "
+            "gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
             "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "
             "gemini-3-pro-preview), bare family names (flash/pro), or an exact agy "
             "display name."
