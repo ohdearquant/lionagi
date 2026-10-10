@@ -30,6 +30,7 @@
 | [ADR-0026](026-submission/ADR-0026-the-submission.md) | 026-submission | proposed | partial (an `Actor` is built with a store, the store refuses a config that would put the lion tables in the main store, a chat with no signer refuses to start, an agent's wake continues its last run with no checkpoint, and `lion run`, `lion flow` and `lion result` run a profile or a flow, write its step rows and mail its result, and `lion mcp` serves them as three tools, each pinned by tests) | ADR-0002, ADR-0013, ADR-0016, ADR-0025 |
 | [ADR-0027](027-suite/ADR-0027-the-suites-launch-guard.md) | 027-suite | proposed | operating (the refusal by name, link, hard link and shell text, its failure of the test or the run, the stand-in rule, the single reading of each value of a call and the source census are pinned by tests) | ADR-0025, ADR-0026 |
 | [ADR-0028](028-anthropic/ADR-0028-the-messages-backend-and-the-api-key-accounts.md) | 028-anthropic | proposed | partial (the backend and its price table run under tests with a stubbed endpoint and ran on one key for the measurements of S15 and S17; the accounts, the ledger, the ceremony and the bench are owed) | ADR-0009, ADR-0012, ADR-0016, ADR-0024 |
+| [ADR-0029](029-leg-isolation/ADR-0029-leg-isolation.md) | 029-leg-isolation | proposed | unimplemented | ADR-0011, ADR-0013, ADR-0016, ADR-0025, ADR-0026 |
 
 ## By topic
 
@@ -61,3 +62,4 @@
 - **026-submission**, ADR-0026: The submission
 - **027-suite**, ADR-0027: The suite's launch guard
 - **028-anthropic**, ADR-0028: The Messages backend and the API-key accounts
+- **029-leg-isolation**, ADR-0029: Leg isolation
