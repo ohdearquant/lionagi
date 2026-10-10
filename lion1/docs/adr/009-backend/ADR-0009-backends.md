@@ -1,7 +1,7 @@
 ---
 adr: ADR-0009
 status: draft
-liveness: partial (the router, both shapes of the session CLI and the subscription CLI operate and report the count; the mixed-response refusal and the session CLI's failed-call envelope are pinned by tests; the gate over an acting session is pinned by tests with a scripted CLI, its two hook contracts measured once against the installed CLI)
+liveness: partial (the router, both shapes of the session CLI, the subscription CLI and the Messages backend operate and report the count; the mixed-response refusal and the session CLI's failed-call envelope are pinned by tests; the gate over an acting session is pinned by tests with a scripted CLI, its two hook contracts measured once against the installed CLI)
 date: "2026-09-25"
 area: backend
 kind: new
@@ -73,9 +73,8 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `src/li
   call, or hands back anything but the model's text.
 
 The loop renders the view, calls the backend once per turn, awaits the result when it is awaitable,
-and reads the text; a `Reply` is text. Three shapes are built. The router sends the view as a real
-message array, the head as system and later notifications as user, so the provider's prefix cache
-holds.
+and reads the text; a `Reply` is text. The router sends the view as a real message array, the head
+as system and later notifications as user, so the provider's prefix cache holds.
 
 The subscription CLI takes the view as one transcript with its roles marked, every acting feature
 off by flag and a chat framing in place of its agent instructions. The session CLI keeps one
@@ -137,14 +136,14 @@ cache hour ends between them (S13).
 ### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical)_ ^c5
 
 - **Subject**: every backend call.
-- **Violated when**: a billed attempt's usage is lost, a failed call lands no envelope, a 401 or 403
-  is retried, or a subscription's cost is written as a number.
+- **Violated when**: a billed attempt's usage is lost, a failed call lands no envelope (bar S31's
+  exceptions), a 401 or 403 is retried, or a subscription's cost is written as a number.
 
 The router retries with backoff on a 429, a 5xx, a transport failure and an errored choice; a 200
 carrying the provider's error is retried only by that error's code. An empty finished answer is
 sampled again, then handed over blank. Usage sums every attempt; the cost is the known subtotal,
-flagged when an attempt is missing from it; a call that fails after a billed attempt lands a failed
-envelope carrying the bill.
+flagged when it misses an attempt; a failed call lands an envelope carrying the bill, a complete
+zero when nothing was billed (S31).
 
 The subscription CLI retries a transport failure or an empty answer, keeps every attempt's usage,
 and writes its cost as unknown, never zero. A refused CLI turn rides its cost on the error.
@@ -190,12 +189,13 @@ Serves C1, C2 and C5. `OpenRouter(model, ...)` posts the view with usage include
 32768: at 8192, 3 of 125 turns that wrote 40 to 52 actions were cut mid-tag. Temperature, provider
 routing, reasoning control and stop sequences are the caller's options; the thinking budget and the
 stop on the notification frame are ruled on in the bench record ([[ADR-0012-the-bench|ADR-0012]]).
-The key comes from the environment or the keychain, never logged. `tool_calls_text` rebuilds a
+The key comes from the environment or the keychain, never logged (S32). `tool_calls_text` rebuilds a
 native call when the content is empty; `calls` keeps the envelopes.
 
 - **Landing evidence**: `tests/test_openrouter.py`: the count of the attempt that answered, the
-  retried errored choice, the billed failure kept, the native call handed back as text, the mixed
-  response refused
+  retried errored choice, the billed failure kept, the refusal before any bill
+  (`test_a_refusal_before_any_billed_attempt_lands_an_envelope_with_a_complete_zero`), the transport
+  and unreadable failures, a cancel's requests, the native call as text, the mixed response refused
   (`test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`).
 
 ### D2: The two CLI shapes in `hub/backend/claude_code/__init__.py` ^d2
@@ -265,6 +265,24 @@ a first figure. A call's usage is the thread's totals less the call before's (S2
 - **Landing evidence**: `tests/test_codex_session.py`: resumed with only the new entries, a small
   hide waiting, a large one and the fold starting over, the cache life, the plan's figure, the
   unknown share, the retry's new thread, failed and cancelled calls, one thread per run.
+
+### D7: The Messages backend in `hub/backend/anthropic.py` ^d7
+
+Serves C1, C2 and C5. `Anthropic` posts as the router does, its key in `x-api-key`; cache placement,
+prices and accounts are [[ADR-0028-the-messages-backend-and-the-api-key-accounts#^d1|ADR-0028/D1]]
+and D2's. A tool-use block beside no or blank text is the turn as text; beside text it refuses the
+turn. It hands back the answering attempt's three input counts, none if one is unknown. It retries a
+429, a 5xx, a transport failure, an unreadable or empty finished answer, `Retry-After` capped at two
+minutes, never a 401 or 403; every call that starts lands an envelope (S31).
+
+- **Landing evidence**: `tests/test_anthropic.py`: the head as system and the tail marked
+  (`test_the_head_is_system_with_a_breakpoint_and_the_tail_is_marked`), the count
+  (`test_the_count_is_the_answering_attempts_three_input_counts_and_usage_sums_every_attempt`), the
+  retries (`test_a_429_waits_its_retry_after_and_a_5xx_backs_off_but_a_401_is_not_retried`), the
+  envelopes (`test_a_refusal_before_any_billed_attempt_lands_an_envelope_with_a_complete_zero`,
+  `test_a_call_that_fails_after_a_billed_attempt_keeps_the_bill_with_its_account`), the tool-use
+  block (`test_a_tool_use_block_alone_is_the_turn_as_text_and_beside_text_refuses_the_turn`,
+  `test_a_tool_use_block_beside_whitespace_only_text_is_still_the_turn_as_text`).
 
 ## Alternatives
 
@@ -425,3 +443,21 @@ a first figure. A call's usage is the thread's totals less the call before's (S2
   every shell type the model has `exec_command` and `write_stdin`; `write_stdin` reaches a running
   command with no hook call, and the hook sees the command alone. Not measured: MCP tools, the
   post-tool hook, the escalation parameters.
+- **S31**: The router's and the Messages backend's failed envelopes count the requests sent. The
+  router takes a refusal status, a 4xx or a 5xx, as unbilled, so its zero reads complete: nothing
+  measured here shows whether a provider bills one. On both, a call cancelled before its first step
+  lands no envelope, nor does one ended by an exit or interrupt that is no cancellation.
+- **S32**: The router reads its key once per call, before any request. Provider text echoing eight
+  of the key's characters in a row reaches no error or envelope, on every route: a refusal body,
+  redacted before its cut at 500 characters, the transport's text, an unreadable body, an answer
+  (`test_an_echo_of_the_key_on_any_route_reaches_neither_the_error_nor_the_envelope`). An error that
+  replaces the provider's keeps no context.
+- **S33**: On both backends, a missing key, one the header cannot take, a view it cannot build a
+  body from, or a body it cannot encode is refused before any request, with none counted
+  (`test_a_call_refused_before_any_request_lands_a_known_zero_with_no_attempt`,
+  `test_a_body_that_cannot_be_built_or_encoded_is_refused_before_any_request_with_none_counted`).
+- **S34**: Eight characters wholly inside the key's public start, `sk-or-v1-` or `sk-ant-api03-`,
+  are no match, so an answer naming the form comes back as written. A window is told from the
+  start's by its place in the key, never by its text, so eight characters holding one past the start
+  that spell the start's own still match
+  (`test_a_run_past_the_public_start_that_spells_the_starts_own_characters_is_still_redacted`).

@@ -132,7 +132,7 @@ def tool_calls_text(calls: list[dict]) -> str:
             continue
         try:
             args = json.loads(raw) if isinstance(raw, str) else dict(raw)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):  # nested past the parser's depth: kept as text
             args = {"value": raw}
         if not isinstance(args, dict):
             args = {"value": args}

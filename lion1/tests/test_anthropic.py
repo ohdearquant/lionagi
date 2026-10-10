@@ -56,9 +56,9 @@ def _ok(text, stop="end_turn", usage=None, blocks=None):
 def _answers(*replies, headers=None, bodies=None):
     it = iter(replies)
 
-    def post(body, timeout, account, heard=None):
+    def post(payload, timeout, account, heard=None):
         if bodies is not None:
-            bodies.append(body)
+            bodies.append(json.loads(payload))
         r = next(it)
         if isinstance(r, Exception):
             raise r
@@ -328,6 +328,29 @@ def test_a_view_refused_before_any_request_lands_an_envelope_with_zero_attempts(
     assert failed["attempts"] == 0 and sent == []
     assert failed["error"].startswith("the view has no message")
     assert failed["account"] == "anthropic_api_key_c"
+
+
+@pytest.mark.parametrize("refused", ["a body that cannot be encoded", "a malformed view"])
+def test_a_body_that_cannot_be_built_or_encoded_is_refused_before_any_request_with_none_counted(
+    monkeypatch, refused
+):
+    # the body was encoded inside the request, which counted it as sent, and only this backend's own
+    # error landed an envelope, so a view it could not read raised with none
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-made-up-key-0123456789")
+    sent = []
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout: sent.append(req))
+    if refused == "a body that cannot be encoded":
+        backend, view = Anthropic(model="claude-haiku-5-5", temperature=object()), [Message("user", "hi")]
+        said = "the request could not be built: TypeError"
+    else:
+        backend, view = Anthropic(model="claude-haiku-5-5"), [object()]
+        said = "the request could not be built: AttributeError"
+    with pytest.raises(AnthropicError) as e:
+        asyncio.run(backend(view))
+    assert str(e.value) == said and e.value.__context__ is None and sent == []
+    (failed,) = backend.calls
+    assert failed["attempts"] == 0 and failed["error"] == said
+    assert failed["total_cost_usd"] == 0.0 and failed["cost_complete"] is True
     assert failed["total_cost_usd"] == 0.0 and failed["cost_complete"] is True and failed["limits"] == {}
 
 
@@ -371,6 +394,17 @@ def test_a_tool_use_block_alone_is_the_turn_as_text_and_beside_text_refuses_the_
     assert backend.calls[-1]["finish_reason"] == "tool_calls"
     both = asyncio.run(backend([Message("user", "hi", name="j")]))
     assert both == "<lvar v1>kept</lvar>" and "two channels" in both.refused
+
+
+def test_a_tool_use_block_beside_whitespace_only_text_is_still_the_turn_as_text(monkeypatch):
+    # a blank text block is no turn: read as text, it handed back "\n" and dropped the call
+    monkeypatch.setattr(mod, "asyncio", _NoSleep)
+    use = {"type": "tool_use", "id": "tu_1", "name": "run", "input": {"cmd": "ls"}}
+    blank = _ok("", stop="tool_use", blocks=[{"type": "text", "text": "\n"}, use])
+    monkeypatch.setattr(mod, "_post", _answers(blank))
+    backend = Anthropic(model="claude-haiku-5-5", retries=3)
+    text = asyncio.run(backend([Message("user", "hi", name="j")]))
+    assert text.startswith("<lact auto_") and text.endswith(">run(cmd='ls')</lact>") and text.refused is None
 
 
 def test_a_turn_cut_at_the_output_cap_reads_length_and_thinking_blocks_are_not_kept(monkeypatch):
@@ -431,7 +465,7 @@ def test_a_body_cut_mid_read_keeps_its_own_headers_on_the_failed_envelope(monkey
     monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout: Cut())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "made-up-key-01")
     with pytest.raises(AnthropicError, match="IncompleteRead"):
-        mod._post({"model": "m"}, 1.0, "made-up-key-01")
+        mod._post(b'{"model": "m"}', 1.0, "made-up-key-01")
     monkeypatch.setattr(mod, "asyncio", _NoSleep)
     backend = Anthropic(model="claude-haiku-5-5", retries=0)
     with pytest.raises(AnthropicError, match="IncompleteRead"):
@@ -580,7 +614,7 @@ def test_the_key_rides_only_the_request_header_and_is_in_no_envelope_or_error(mo
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", refuse)
     with pytest.raises(AnthropicError, match="HTTP 401") as e:
-        mod._post({"model": "m"}, 5.0, "sk-ant-made-up-key-0123456789")
+        mod._post(b'{"model": "m"}', 5.0, "sk-ant-made-up-key-0123456789")
     assert e.value.status == 401 and e.value.retry_after == 3.0
     assert "sk-ant-made-up" not in str(e.value)
 
@@ -683,6 +717,7 @@ def test_an_account_name_holding_a_credential_stem_is_refused_before_the_tool_an
     with pytest.raises(ValueError, match="never holding 'sk-ant'") as e:
         Anthropic(model="claude-haiku-5-5", account="my-SK-ANT-account")
     assert "my-SK-ANT" not in str(e.value)
+    assert e.value.__context__ is None  # raised inside the handler, it kept the refusal it replaced
     tool = tmp_path / "security"
     tool.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$0.argv"\nprintf "sk-ant-item-0123456789\\n"\n')
     tool.chmod(0o755)
@@ -962,6 +997,57 @@ def test_every_field_a_success_carries_is_scrubbed_of_the_key_and_the_envelope_s
     assert "key_redacted" not in backend.calls[-1]
 
 
+def test_an_answer_naming_the_keys_public_start_is_not_rewritten_and_one_past_it_is(monkeypatch):
+    # every window of the key was matched, its first eight characters too, so an answer about the key
+    # form came back as `[key]` with the envelope marked
+    key = "sk-ant-api03-" + "AbCd0123" * 10
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    monkeypatch.setattr(mod, "asyncio", _NoSleep)
+    said = "Keys look like sk-ant-api03-...; the start alone is sk-ant-a"
+    _respond(monkeypatch, _Body(json.dumps(_ok(said))))
+    backend = Anthropic(model="claude-haiku-5-5", retries=0)
+    assert asyncio.run(backend([Message("user", "hi", name="j")])) == said
+    assert "key_redacted" not in backend.calls[-1]
+    _respond(monkeypatch, _Body(json.dumps(_ok(f"it was {key[6:24]}"))))  # from its sixth: '-api03-A' ...
+    assert asyncio.run(backend([Message("user", "hi", name="j")])) == "it was [key]"
+    assert backend.calls[-1]["key_redacted"] is True
+
+
+@pytest.mark.parametrize(
+    "public, echo",
+    [
+        ("sk-or-v1-", "k-or-v1-"),  # the secret part opens with eight characters the start also holds
+        ("sk-ant-api03-", "-ant-api"),  # eight straddling the boundary that the start also holds
+    ],
+)
+def test_a_run_past_the_public_start_that_spells_the_starts_own_characters_is_still_redacted(public, echo):
+    # the start's windows were taken off by their text, so a window of the secret spelling the same
+    # characters came back as written
+    key = public + ("k-or-v1-" if echo == "k-or-v1-" else "ant-api0") + "Qz8Wm2Lp" * 6
+    assert echo in public and echo in key[len(public) - 1 :]
+    assert mod._redact(f"it opens {echo} and ends", key) == "it opens [key] and ends"
+    # a key whose secret holds no such run still leaves the start's own characters alone
+    assert mod._redact(f"it opens {echo} and ends", public + "Qz8Wm2Lp" * 7) == f"it opens {echo} and ends"
+
+
+@pytest.mark.parametrize("echo", ["key", "suffix"])
+def test_an_echo_across_the_500th_character_is_redacted_before_the_cut_and_the_error_keeps_no_context(
+    monkeypatch, echo
+):
+    key = "sk-ant-api03-" + "AbCd0123" * 10
+    body = "x" * 493 + (key if echo == "key" else key[20:])
+    _respond(monkeypatch, _http_error(401, body))
+    with pytest.raises(AnthropicError) as e:
+        mod._post(b"{}", 5.0, key)
+    assert str(e.value) == "HTTP 401: " + "x" * 493 + "[key]"
+    assert e.value.__context__ is None  # the replaced exception held the body unredacted
+    _respond(monkeypatch, ConnectionResetError(104, f"reset after {key}"))
+    with pytest.raises(AnthropicError) as e:
+        mod._post(b"{}", 5.0, key)
+    assert str(e.value) == "request failed: ConnectionResetError: [Errno 104] reset after [key]"
+    assert e.value.__context__ is None
+
+
 def test_a_cancellation_closes_the_record_so_a_queued_request_never_leaves_and_an_overtaken_answer_is_billed(
     monkeypatch,
 ):
@@ -1037,8 +1123,9 @@ def test_any_other_error_past_the_preflight_lands_a_failed_envelope_naming_only_
     odd = {"id": "m", "model": "claude-haiku-5-5", "content": [], "stop_reason": "end_turn", "usage": [1]}
     monkeypatch.setattr(mod, "_post", _answers(odd))
     backend = Anthropic(model="claude-haiku-5-5")
-    with pytest.raises(AnthropicError, match=r"^the response could not be read: TypeError$"):
+    with pytest.raises(AnthropicError, match=r"^the response could not be read: TypeError$") as e:
         asyncio.run(backend([Message("user", "hi", name="j")]))
+    assert e.value.__context__ is None  # raised inside the handler, it kept the TypeError it replaced
     (failed,) = backend.calls
     assert failed["attempts"] == 1 and failed["error"] == "the response could not be read: TypeError"
     assert backend._tail == "j"

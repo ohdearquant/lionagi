@@ -123,3 +123,10 @@ def test_two_identical_native_calls_in_one_turn_are_two_calls():
     call = {"function": {"name": "echo", "arguments": '{"text": "again"}'}}
     p = parse(tool_calls_text([call, call]))  # the same for calls the provider parsed out
     assert len(p.lacts) == 2 and len({la.alias for la in p.lacts}) == 2
+
+
+def test_arguments_nested_past_the_parsers_depth_are_kept_as_text():
+    # only ValueError and TypeError were caught, so the RecursionError ended the call unread
+    deep = "[" * 100_000 + "]" * 100_000
+    (text,) = tool_calls_text([{"function": {"name": "run", "arguments": deep}}]).splitlines()
+    assert text.startswith("<lact ") and text.endswith(f">run(value={deep!r})</lact>")

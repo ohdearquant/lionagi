@@ -269,22 +269,27 @@ def test_the_two_actor_notebook_raises_a_peers_error_on_the_page(tmp_path, monke
 
 
 @pytest.mark.parametrize(
-    ("backend", "missing"),
+    ("backend", "missing", "row"),
     [
-        ("openrouter", "OPENROUTER_API_KEY: not in the environment and not in the keychain"),
-        ("claude", "claude CLI not found on PATH"),
-        ("session", "claude CLI not found on PATH"),
-        ("claude-oneshot", "claude CLI not found on PATH"),
-        ("codex", "codex CLI not found on PATH"),
+        # the router's refused call lands its envelope, a complete zero, so the table shows it (ADR-0009/C5)
+        ("openrouter", "OPENROUTER_API_KEY: not in the environment and not in the keychain", True),
+        ("claude", "claude CLI not found on PATH", False),
+        ("session", "claude CLI not found on PATH", False),
+        ("claude-oneshot", "claude CLI not found on PATH", False),
+        ("codex", "codex CLI not found on PATH", False),
     ],
 )
 def test_the_live_example_with_nothing_to_reach_a_model_says_what_is_missing(
-    backend, missing, tmp_path, kkernel_stub
+    backend, missing, row, tmp_path, kkernel_stub
 ):
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     (tmp_path / "kkernel").symlink_to(kkernel_stub)  # the store's binary, and nothing else on PATH:
     env["PATH"] = str(tmp_path)  # no model CLI, and no keychain tool to find a key
     done = run("backends", "--backend", backend, env=env)
     assert done.returncode == 1
-    assert done.stdout == ""
+    if row:
+        (line,) = [x for x in done.stdout.splitlines() if missing in x]
+        assert line.split()[0] == "1" and "0.00000" in line.split()  # one call, nothing spent
+    else:
+        assert done.stdout == ""
     assert done.stderr.splitlines() == [f"{backend}: {missing}"]

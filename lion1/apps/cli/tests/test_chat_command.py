@@ -644,6 +644,7 @@ def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_miss
     # comes back: its known subtotal misses that attempt, and the call fails
     cut = OpenRouterError("request failed: ConnectionResetError")
     monkeypatch.setattr(router, "asyncio", _NoSleep)
+    monkeypatch.setattr(router, "api_key", lambda: "sk-or-made-up")  # looked up before any request
     monkeypatch.setattr(router, "_post", _answers(answer, blank, cut))
     backend = OpenRouter(model="m", retries=1)
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: backend)

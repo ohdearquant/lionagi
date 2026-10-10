@@ -61,6 +61,9 @@ _LABEL = "the account's name is letters, digits, '.', '_' and '-', at most 64 of
 # a match and every encoding of the whole key holds a window
 _KEY = re.compile(r"[\x21-\x7e]{8,1024}")
 _KEY_FORM = "one line of printable ASCII, 8 to 1024 characters, which the request header takes"
+# the start every key of a provider's form shares, printed in its documentation: `sk-ant-api03-` here,
+# `sk-or-v1-` for the router. It names the form, never a key, so a window wholly inside it is no match
+_PUBLIC = re.compile(r"sk-(?:ant-[a-z]+[0-9]+|or-v[0-9]+)-")
 _EMPTY = "[empty]"  # a text block must hold text; an empty entry is sent as this
 _STOP = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length", "tool_use": "tool_calls"}
 _RETRY_AFTER_MAX = 120.0  # seconds; the longest one wait: a longer `Retry-After` or backoff waits this many
@@ -142,9 +145,29 @@ def _windows(key: str) -> dict[int, frozenset[str]]:
     unreserved characters is its own escaped form and only an escaper that escapes everything changes
     it; base64, standard and URL-safe, from each of the three byte alignments a longer encoded text
     can start it at, eight: two full groups, six of the key's bytes, which any eight of them in a row
-    hold whatever the alignment, and full groups only, so no neighbouring byte decides a character."""
-    raw = key.encode()
-    forms: dict[int, list[str]] = {8: [key, urllib.parse.quote(key, safe="")], 16: [], 24: []}
+    hold whatever the alignment, and full groups only, so no neighbouring byte decides a character.
+    A window wholly inside the key's public start (`_PUBLIC`) is left out, so an answer that names the
+    form is not rewritten; every window holding a character past it stays, told apart by its place in
+    the form and never by its text, so a run of the secret part spelling the same characters matches."""
+    whole = _forms(key)
+    public = _PUBLIC.match(key)
+    # each form of the public start begins the same form of the key, every form here encoding byte by
+    # byte and base64 in full groups, so a window ending past that form's length holds a character past
+    # the start
+    head = _forms(public.group()) if public else {w: [""] * len(fs) for w, fs in whole.items()}
+    return {
+        w: frozenset(
+            f[j : j + w]
+            for f, h in zip(fs, head[w], strict=True)
+            for j in range(max(len(h) - w + 1, 0), len(f) - w + 1)
+        )
+        for w, fs in whole.items()
+    }
+
+
+def _forms(text: str) -> dict[int, list[str]]:
+    raw = text.encode()
+    forms: dict[int, list[str]] = {8: [text, urllib.parse.quote(text, safe="")], 16: [], 24: []}
     forms[16] += [raw.hex(), raw.hex().upper()]
     escaped = "".join(f"%{b:02X}" for b in raw)
     forms[24] += [escaped, escaped.lower()]
@@ -152,7 +175,7 @@ def _windows(key: str) -> dict[int, frozenset[str]]:
         part = raw[i:]
         core = base64.b64encode(part[: len(part) // 3 * 3]).decode()
         forms[8] += [core, core.replace("+", "-").replace("/", "_")]
-    return {w: frozenset(f[j : j + w] for f in fs for j in range(len(f) - w + 1)) for w, fs in forms.items()}
+    return forms
 
 
 def _redact(text: str, key: str, windows: dict[int, frozenset[str]] | None = None) -> str:
@@ -229,7 +252,11 @@ class Anthropic:
             try:
                 _account(self.account)  # before any envelope could carry the name
             except AnthropicError as e:
-                raise ValueError(str(e)) from None
+                refused = str(e)
+            else:
+                refused = None
+            if refused is not None:
+                raise ValueError(refused)  # past the handler, with no context (ADR-0009 S32)
 
     def body(self, messages: list[Message]) -> dict:
         """The request for the view: the head as `system` with a breakpoint, the rest as text blocks, the
@@ -267,11 +294,20 @@ class Anthropic:
         try:
             body = self.body(messages)
             key = api_key(self.account)
-        except AnthropicError as e:
+            payload = json.dumps(body).encode()
+        except Exception as e:
             # refused here, nothing sent: the envelope says so, with a known zero (ADR-0028/C2), and the
             # tail stays where the last request left it
-            self._bill_failure([], str(e), 0, t0, {})
-            raise
+            unsent = (
+                str(e)
+                if isinstance(e, AnthropicError)
+                else f"the request could not be built: {type(e).__name__}"
+            )
+            self._bill_failure([], unsent, 0, t0, {})
+        else:
+            unsent = None
+        if unsent is not None:
+            raise AnthropicError(unsent)  # past the handler, with no context (ADR-0009 S32)
         tail = messages[-1].name
         # every response's usage with its served model, so a retried attempt's bill is not lost
         spent: list[dict] = []
@@ -301,7 +337,7 @@ class Anthropic:
                 heard = {}
                 sent += 1
             try:
-                answer = _post(body, self.timeout, key, heard=hear)
+                answer = _post(payload, self.timeout, key, heard=hear)
             except AnthropicError as e:
                 with lock:
                     landed = e
@@ -354,7 +390,7 @@ class Anthropic:
                 uses = [b for b in content if b.get("type") == "tool_use"]
                 text = "\n".join(texts)
                 stop = data.get("stop_reason")
-                if not text and uses:
+                if not text.strip() and uses:
                     # no tools were offered, so a tool_use block is the model's turn in its native shape:
                     # handed back as the text it wrote, as the router does (ADR-0004/C4)
                     text = tool_calls_text(
@@ -416,9 +452,10 @@ class Anthropic:
             # the class only, since its text may carry what the provider sent
             error = f"the response could not be read: {type(e).__name__}"
             self._bill_failure(spent, error, overtaken(), t0, headers)
-            raise AnthropicError(error) from None
-        self.calls.append(envelope)
-        return reply
+        else:
+            self.calls.append(envelope)
+            return reply
+        raise AnthropicError(error)  # past the handler, with no context (ADR-0009 S32)
 
     def _spend(self, data: dict) -> dict:
         # the request's TTL beside the usage: every breakpoint carried it, so a write the response does not
@@ -609,7 +646,7 @@ def _retry_after(headers: dict) -> float | None:
 
 
 def _post(
-    body: dict, timeout: float, key: str, heard: Callable[[dict], None] | None = None
+    payload: bytes, timeout: float, key: str, heard: Callable[[dict], None] | None = None
 ) -> tuple[dict, dict]:
     """One request under the key; the parsed body and the response headers, lowercased. Everything the
     provider sent back, the body, the headers and the text of any error, is redacted of the key before
@@ -618,7 +655,7 @@ def _post(
     windows = _windows(key)
     req = urllib.request.Request(
         URL,
-        data=json.dumps(body).encode(),
+        data=payload,
         headers={"x-api-key": key, "anthropic-version": VERSION, "content-type": "application/json"},
         method="POST",
     )
@@ -643,20 +680,27 @@ def _post(
         if heard is not None:
             heard(headers)
         try:
-            detail = _redact(e.read().decode(errors="replace")[:500], key, windows)
+            # redacted whole, then cut: cut first, an echo across the 500th character kept its start
+            detail = _redact(e.read().decode(errors="replace"), key, windows)[:500]
         except (http.client.HTTPException, OSError) as cut:
             detail = f"(the body could not be read: {type(cut).__name__})"
-        raise AnthropicError(
+        failed = AnthropicError(
             f"HTTP {e.code}: {detail}", status=e.code, retry_after=_retry_after(headers), headers=headers
-        ) from None
+        )
     except urllib.error.URLError as e:
         # the transport's text can carry a proxy's or a server's line: redacted like a body
-        raise AnthropicError(f"request failed: {_redact(str(e.reason), key, windows)}") from None
+        failed = AnthropicError(f"request failed: {_redact(str(e.reason), key, windows)}")
     except (http.client.HTTPException, OSError) as e:
         # a response cut mid-body or a socket that reset: transient, retried like a 503
-        raise AnthropicError(
+        failed = AnthropicError(
             f"request failed: {type(e).__name__}: {_redact(str(e), key, windows)}", headers=headers
-        ) from None
+        )
+    else:
+        failed = None
+    if failed is not None:
+        # raised past the handler, so the error keeps no context: the exception it replaces, whose text
+        # or body the provider wrote, is unredacted (ADR-0009 S32)
+        raise failed
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
@@ -673,14 +717,15 @@ def _post(
     # an answer nothing can read: transient like a cut body, and the billed attempts before it stay; its
     # headers are kept, so the failed envelope names this response, not an earlier one
     raise AnthropicError(
-        f"request failed: unreadable response body: {_redact(raw[:500], key, windows)}", headers=headers
+        f"request failed: unreadable response body: {_redact(raw, key, windows)[:500]}", headers=headers
     )
 
 
 def _readable(data: object) -> bool:
     """Whether the body is a message in the shape the backend reads: content a list of blocks, each text
-    block's text a string, usage a table, the stop reason text; a 200 in another shape, or without
-    content, is a failed attempt, not an exception and not a blank answer."""
+    block's text a string, usage, when present, a table (a usage of 0 is refused though the reader
+    would take it as none), the stop reason text; a 200 in another shape, or without content, is a
+    failed attempt, not an exception and not a blank answer."""
     if not isinstance(data, dict):
         return False
     content, usage = data.get("content"), data.get("usage")

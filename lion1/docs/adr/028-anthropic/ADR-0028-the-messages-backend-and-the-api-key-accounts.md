@@ -104,10 +104,10 @@ the provider's, is a complete zero ([[ADR-0009-backends#^c5|ADR-0009/C5]]); retr
 ### C3: An API-key account is one organization's key, read by the runtime only for the request header and imported by a ceremony that keeps no copy _(enforced: mechanical; owed, S1)_ ^c3
 
 - **Subject**: every API-key account, its import, and every run on one.
-- **Violated when**: the runtime reads the key for anything but the request header; the pool, any
-  output, an error or a template holds it or eight of its characters in a row; or a run's calls
-  cross accounts. An import that pre-fills a stored key, or two pool entries naming one item,
-  violate it too.
+- **Violated when**: the runtime reads the key outside the request header; the pool, any output, an
+  error or a template holds it or eight of its characters in a row past its public start
+  ([[ADR-0009-backends|ADR-0009]] S32, S34). So do a run's calls crossing accounts, an import
+  pre-filling a stored key, and two pool entries naming one item.
 
 The item's service is `ANTHROPIC_API_KEY` and its account the pool's name. `lion account add` takes
 one key on standard input, and `lion account keys` several through the person's editor (D4): a blank
@@ -261,8 +261,8 @@ totals them. The row's tokens carry the cache split.
 - **S13**: No response naming an exhausted credit has been measured. Until one is, kept as a fixture
   with its status, type and body, no refusal marks an account out of quota, and the month's reset is
   the author's word (A5).
-- **S14**: The router lands no envelope on a first-attempt HTTP failure, `_bill_failure` with
-  nothing spent; this backend does, and the amendment in S2 brings the router to it.
+- **S14**: The router landed no envelope on a call refused before any billed attempt; this backend
+  does, and [[ADR-0009-backends#^c5|ADR-0009/C5]] now holds the router to the same rule.
 - **S15**: The counted prompt is bounded by the body's bytes as measured, not as proved: through the
   backend on Haiku, Sonnet and Opus 5.5, six shapes each, thinking off, the same counts on all
   three, at most 0.66 of the bytes. The expectation behind it: a token is at least one byte of
