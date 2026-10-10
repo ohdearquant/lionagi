@@ -250,8 +250,8 @@ def test_stderr_baseline_comparison_accepts_real_choice_quoting_drift():
 
 def test_normalize_argparse_choice_quoting_handles_adversarial_repetition_quickly():
     # A quoted list with no closing parenthesis: a pattern that splits choices on
-    # quotes and commas backtracks exponentially here, into seconds by 24 entries.
-    adversarial = "(choose from " + "'a', " * 24
+    # quotes and commas backtracks exponentially here, past ten seconds by 26 entries.
+    adversarial = "(choose from " + "'a', " * 26
     started = time.perf_counter()
 
     assert _capture.normalize_argparse_choice_quoting(adversarial) == adversarial
