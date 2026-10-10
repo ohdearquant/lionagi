@@ -11,8 +11,9 @@ import os
 import re
 import sqlite3
 import uuid
+from bisect import bisect_left
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from lionagi._paths import LIONAGI_HOME
 
@@ -169,7 +170,8 @@ def _dumps_with_uuid(value):
 # an odd but valid name — so the colon before it is what separates a credential
 # from a filename, and this must not fire on the latter. Nothing beginning with
 # `./` or `/` can match, which is the way to spell a path that really does look
-# like this.
+# like this. A secret holding a `/`, a `:` or whitespace is not matched, so such
+# a value is still read as a path.
 _CREDENTIALED_USERINFO = re.compile(r"^[^\s:/@]+:[^\s:/@]+@([^\s/@]+)")
 
 
@@ -228,61 +230,136 @@ def normalize_state_db_url(value: str | Path | None) -> str:
     return s
 
 
-# A `user:secret@` credential, wherever it appears. The secret runs to the
-# first `@` and may not contain whitespace, a slash, a quote or a second colon,
-# which is what keeps this off `sqlite:///path` (no `@`) and off an ordinary
-# `scheme://host` (no colon before the host).
+# A URL's password as SQLAlchemy reads it runs from the user's `:` to the first
+# `@`; written unencoded it may hold a `/`, `?`, `#` or `:`, and the user name an
+# `@`, as SQLAlchemy reads them. A parser that splits the user from the host at a
+# later `@` reads it further, urlsplit to the last `@` before the first `/`, `?`
+# or `#`; the span to the last `@` before whitespace covers every such reading
+# in which neither the user name nor the password holds whitespace and is masked
+# too, and an `@` after the host, in a query value say, takes the host with it.
+# In prose whitespace ends the URL. A scheme is tried only where a run of scheme
+# characters begins, so no stretch of text is scanned once per position in it.
+_URL_USER = re.compile(r"(?<![\w+.-])[.-]*[\w+][\w+.-]*://[^\s:/]*:")
+
+# The same for a URL given alone, with no prose after it to end the password:
+# whitespace and line breaks are part of it. A dialect name may hold or start
+# with `_` (`oracle+cx_oracle`), as SQLAlchemy reads it. C0 control characters
+# and spaces before the scheme are passed over, as urlsplit strips them, and so is
+# a tab or line break inside the scheme or its `://`, which urlsplit removes
+# wherever it stands.
+_WHOLE_URL_USER = re.compile(r"[\x00-\x20]*[\w+][\w+.\t\r\n-]*:[\t\r\n]*/[\t\r\n]*/[^:/]*:")
+
+# A `user:secret@` credential outside a URL. The secret runs to the first `@`
+# and may not contain whitespace, a slash, a backslash, a quote or a second
+# colon, which is what keeps this off `sqlite:///path` (no `@`) and off an
+# ordinary `scheme://host` (no colon before the host).
 _CREDENTIAL_IN_TEXT = re.compile(r"(?<![\w.+~%-])([\w.+~%-]+):([^\s:@/\\'\"]+)@")
 
+# A query parameter's key, found at every `?` and `&`, so one standing inside
+# another's value is found too. libpq and asyncpg read a `password` parameter as
+# the password. The key is compared percent-decoded, as SQLAlchemy decodes it,
+# and in any case, which is wider than SQLAlchemy's exact match. SQLAlchemy reads
+# the value to the next `&`, a `#`, a space or a carriage return included, and
+# ends it at a newline; a URL given alone has it masked to the next `&` whatever
+# it holds, and prose to the next `&` or whitespace. A tab or line break in the
+# key is dropped before the compare, as urlsplit drops it wherever it stands, so
+# asyncpg reads `?\rpassword=` as the password. Only the key: in prose a value,
+# like a password, still ends at whitespace, a tab or line break included.
+_QUERY_KEY = re.compile(r"(?=[?&]((?:[^?&=\s]|[\t\r\n])*)=)")
+_KEY_BREAK = re.compile(r"[\t\r\n]")
+_VALUE_END = re.compile(r"[&\s]")
+_WHOLE_VALUE_END = re.compile(r"&")
+_SPACE = re.compile(r"\s")
 
-def _mask_secret(secret: str) -> str:
-    """The one mask token. Long secrets keep a 6-char prefix so an operator can
-    tell two of them apart; short ones show nothing but their length, because a
-    prefix of a short secret is most of it."""
-    prefix = secret[:6] if len(secret) >= 12 else ""
-    return f"{prefix}…[{len(secret)} chars]"
+# What a masked secret becomes. No part of it survives: a prefix of a password
+# is still part of the password.
+_MASK = "***"
 
 
 def mask_credentials(text: str) -> str:
-    """Return *text* with the secret in every ``user:secret@`` masked.
+    """Return *text* with every secret it finds replaced by ``***``.
 
-    For prose rather than a URL -- an error message that quotes the store it
-    failed to open carries the credential as plainly as the URL field beside
-    it. A backstop, not the only control: text is scanned, not parsed, so a
-    password containing a literal ``@`` is masked only up to that character,
-    and a secret passed as a bare argument (not inside a URL) isn't matched
-    at all. Masking is idempotent -- the token it writes contains a space,
-    which can't appear inside a secret this pattern matches.
+    For prose as well as a URL -- an error message that quotes the store it
+    failed to open carries the credential as plainly as the URL field
+    beside it. A span is masked when any reader would take it for a secret:
+    a URL's password to the first ``@`` and to the last ``@`` before
+    whitespace, the value of each ``password`` query parameter to the next
+    ``&`` or whitespace, and a ``user:secret@`` outside a URL. Spans that
+    overlap or touch are masked as one, so what stands between two of them
+    is masked too. A URL's password holding whitespace is not matched here.
+    Outside a URL, text is scanned, not parsed: a secret holding whitespace,
+    a slash, a backslash or a quote is not matched, one holding ``:`` keeps
+    the part before its last ``:``, one holding ``@`` keeps the part after
+    its first ``@``, and a secret passed as a bare argument isn't matched at
+    all.
     """
-    return _CREDENTIAL_IN_TEXT.sub(lambda m: f"{m.group(1)}:{_mask_secret(m.group(2))}@", text)
+    return _mask_spans(text, whole=False)
 
 
 def mask_db_url(url: str) -> str:
-    """Return *url* with any password replaced by the first-6-chars mask.
+    """Return *url* with every secret it finds replaced by ``***``.
 
-    Tries the structured `urlparse` pass first and falls back to text
-    scanning (``mask_credentials``) for URLs it can't decompose -- notably a
-    string with no scheme, which parses as a path rather than a URL, so
-    ``urlparse`` reports no password and would otherwise return the
-    credential verbatim. Such a value is refused as a store setting, but
-    what reaches this function includes whatever a caller was handed:
-    a driver's own quoted connection string, an older log line, a
-    ``./``-prefixed path.
+    *url* is normally a URL as the store holds it, scheme first. Beyond what
+    ``mask_credentials`` masks, a query password's value runs to the next
+    ``&``, and a URL that opens with its scheme has its password taken to
+    the first ``@`` and to the last one, whatever it holds, whitespace and
+    line breaks included; an ``@`` after the host moves that end and hides
+    the host too. C0 control characters and spaces before the scheme, and
+    a tab or line break inside it or its ``://``, are passed over as
+    urlsplit passes them.
     """
-    try:
-        parsed = urlparse(url)
-        if not parsed.password:
-            return mask_credentials(url)
-        masked = _mask_secret(parsed.password)
-        user_info = f"{parsed.username}:{masked}"
-        host_part = parsed.hostname or ""
-        if parsed.port:
-            host_part = f"{host_part}:{parsed.port}"
-        netloc = f"{user_info}@{host_part}"
-        replaced = parsed._replace(netloc=netloc)
-        return urlunparse(replaced)
-    except Exception:  # noqa: BLE001
-        return "<url-mask-error>"
+    return _mask_spans(url, whole=True)
+
+
+def _mask_spans(text: str, *, whole: bool) -> str:
+    """Mask each span these readings take for a secret, all found before any
+    is masked: each ``password`` query value, then each URL password and
+    ``user:secret@``, read on *text* and again on a view with those values
+    blanked, which takes out a delimiter such a value may hold that would
+    stop a reading short. *whole* reads *text* as one URL given alone. Each
+    reading is found by one scan of the string plus a binary search per
+    match, so the cost grows with the length of *text*."""
+    ends = [m.start() for m in (_WHOLE_VALUE_END if whole else _VALUE_END).finditer(text)]
+    values = []
+    for m in _QUERY_KEY.finditer(text):
+        if unquote(_KEY_BREAK.sub("", m.group(1))).lower() == "password":
+            start = m.end(1) + 1
+            i = bisect_left(ends, start)
+            values.append((start, ends[i] if i < len(ends) else len(text)))
+    values = _merged(values)
+    blanked = list(text)
+    for start, end in values:
+        blanked[start:end] = "x" * (end - start)
+    spans = list(values)
+    for s in (text, "".join(blanked)):
+        ats = [m.start() for m in re.finditer("@", s)]
+        gaps = [m.start() for m in _SPACE.finditer(s)]
+        for m in _URL_USER.finditer(s):
+            i = bisect_left(gaps, m.end())
+            first = bisect_left(ats, m.end())
+            last = bisect_left(ats, gaps[i] if i < len(gaps) else len(s)) - 1
+            if first <= last:  # an `@` before whitespace: to the first and to the last
+                spans += [(m.end(), ats[first]), (m.end(), ats[last])]
+        spans += [m.span(2) for m in _CREDENTIAL_IN_TEXT.finditer(s)]
+        if whole and (m := _WHOLE_URL_USER.match(s)) and (first := s.find("@", m.end())) >= 0:
+            spans += [(m.end(), first), (m.end(), s.rindex("@"))]
+    out, pos = [], 0
+    for start, end in _merged(spans):
+        out += [text[pos:start], _MASK]
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """*spans* sorted, with those that overlap or touch joined into one."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def dialect_of(url: str) -> str:

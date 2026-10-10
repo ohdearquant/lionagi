@@ -93,25 +93,13 @@ def test_mask_no_password():
 def test_mask_password_replaced():
     url = "postgresql+asyncpg://user:supersecretpassword@localhost/db"
     masked = mask_db_url(url)
-    assert "supersecretpassword" not in masked  # full secret never present
-    assert "supers" in masked  # first-6 prefix shown for long secrets
-    assert "[19 chars]" in masked
-
-
-def test_mask_medium_password():
-    # 10-char secret is below the reveal threshold → no prefix, length only.
-    url = "postgresql+asyncpg://u:0123456789@host/db"
-    masked = mask_db_url(url)
-    assert "0123456789" not in masked
-    assert "012345" not in masked  # no prefix revealed below threshold
-    assert "[10 chars]" in masked
+    assert masked == "postgresql+asyncpg://user:***@localhost/db"
 
 
 def test_mask_short_password():
     url = "postgresql+asyncpg://admin:abc@host/db"
     masked = mask_db_url(url)
-    assert "abc" not in masked  # short secret must not be exposed at all
-    assert "[3 chars]" in masked
+    assert masked == "postgresql+asyncpg://admin:***@host/db"
 
 
 # dialect_of

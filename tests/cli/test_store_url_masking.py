@@ -19,10 +19,13 @@ such command", and read as a pass.
 
 A store URL with no scheme is read as a filesystem path, so a credential in
 one puts a password in a real path — evading a masker that only parses URLs.
-That shape reaches a store setting only through the ``./`` spelling, since a
-bare ``user:secret@host/db`` is refused before it resolves; the masker is
-still tested against the bare form directly, since it is handed strings built
-by drivers and older logs, not only strings that passed our own validation.
+That shape reaches a store setting through the ``./`` spelling, or as a bare
+``user:secret@host/db`` whose secret holds a ``/``, a ``:`` or whitespace,
+since only one without them is refused before it resolves. The masker does
+not match such a secret either when it holds a ``/`` or whitespace, and keeps
+the part before its last ``:``. It is still tested against the bare form
+directly, since it is handed strings built by drivers and older logs, not only
+strings that passed our own validation.
 """
 
 from __future__ import annotations
@@ -31,13 +34,14 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
 import lionagi.state.db as db_mod
 
 PASSWORD = "hunter2-correct-horse"
-MASKED = "hunter…[21 chars]"
+MASKED = "dbuser:***@"
 
 SERVER_URL = f"postgresql://dbuser:{PASSWORD}@127.0.0.1:59999/lionagi"
 SCHEMELESS_URL = f"dbuser:{PASSWORD}@127.0.0.1/x"
@@ -57,6 +61,7 @@ def _set_url(monkeypatch, url: str) -> None:
 
 def _assert_masked(text: str, where: str) -> None:
     assert PASSWORD not in text, f"the password reached {where}: {text!r}"
+    assert PASSWORD[:6] not in text, f"part of the password reached {where}: {text!r}"
     assert MASKED in text, (
         f"{where} does not name the store at all, so it asserts nothing: {text!r}"
     )
@@ -65,12 +70,227 @@ def _assert_masked(text: str, where: str) -> None:
 # the masker itself
 
 
+@pytest.mark.parametrize(
+    ("url", "masked"),
+    [
+        (SERVER_URL, "postgresql://dbuser:***@127.0.0.1:59999/lionagi"),
+        # Unencoded `/`, `:`, `@`, `?` and `#` in a password: urlparse finds no
+        # password in the first or the last, and a scan that stops at any of them
+        # would keep part of it.
+        (
+            "postgresql+asyncpg://dbuser:pa/ss@db.example/lionagi",
+            "postgresql+asyncpg://dbuser:***@db.example/lionagi",
+        ),
+        ("postgresql://u:pa:ss@h/db", "postgresql://u:***@h/db"),
+        ("postgresql://u:pa@ss@h/db", "postgresql://u:***@h/db"),
+        ("postgresql://u:pa?ss#x@h/db", "postgresql://u:***@h/db"),
+        # a user name holding an `@`, which SQLAlchemy reads as the user's
+        ("postgresql://alice@corp:pa/ss@h/db", "postgresql://alice@corp:***@h/db"),
+        ("postgresql://u:pw123@h:notaport/db", "postgresql://u:***@h:notaport/db"),
+        (SCHEMELESS_URL, "dbuser:***@127.0.0.1/x"),
+    ],
+)
+def test_a_password_holding_url_delimiters_is_masked_whole(url, masked):
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    assert mask_db_url(url) == masked
+    assert mask_credentials(f"could not open {url}: refused") == f"could not open {masked}: refused"
+
+
+def test_a_url_given_alone_is_masked_to_its_last_at_whitespace_included():
+    # in prose a space ends the password, so only the store URL itself can take it whole
+    from lionagi.state.engine import mask_db_url
+
+    assert mask_db_url("postgresql://u:pa ss@h/db") == "postgresql://u:***@h/db"
+    assert mask_db_url("postgresql://alice@corp:pa ss/x@h/db") == "postgresql://alice@corp:***@h/db"
+    assert mask_db_url("postgresql://u:pa@ss ok@h/db") == "postgresql://u:***@h/db"
+    assert mask_db_url("postgresql://my user:pa ss@h/db") == "postgresql://my user:***@h/db"
+    assert mask_db_url("postgresql://u:pa\nss@h/db") == "postgresql://u:***@h/db"
+    assert mask_db_url("oracle+cx_oracle://u:pa ss@h/db") == "oracle+cx_oracle://u:***@h/db"
+    assert mask_db_url("_pg://u:pa ss@h/db") == "_pg://u:***@h/db"
+    assert mask_db_url("postgresql://u:***@h/db") == "postgresql://u:***@h/db"
+
+
+def test_a_password_given_as_a_query_parameter_is_masked():
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    url = "postgresql+asyncpg://u@h/db?sslmode=require&password=pa/ss@x&target=primary"
+    masked = "postgresql+asyncpg://u@h/db?sslmode=require&password=***&target=primary"
+    assert mask_db_url(url) == masked and mask_db_url(masked) == masked
+    assert mask_credentials(f"could not open {url}: refused") == f"could not open {masked}: refused"
+    assert mask_db_url("postgresql://u@h/db?password=pw123") == "postgresql://u@h/db?password=***"
+    assert mask_db_url("postgresql://u@h/db?PASSWORD=pw123") == "postgresql://u@h/db?PASSWORD=***"
+    assert mask_db_url("postgresql://u@h/db?PASSWORD=pa ss") == "postgresql://u@h/db?PASSWORD=***"
+    # SQLAlchemy decodes the key, so a percent-encoded one is the same parameter
+    for key in ("%70assword", "%50ASSWORD", "pass%77ord"):
+        assert mask_db_url(f"postgresql://u@h/db?{key}=pa/ss") == f"postgresql://u@h/db?{key}=***"
+    # a key standing inside another parameter's value is masked too
+    assert (
+        mask_db_url("postgresql://u@h/db?x=a?password=pw") == "postgresql://u@h/db?x=a?password=***"
+    )
+    # urlsplit drops a tab or line break wherever it stands, so asyncpg reads these keys as `password`
+    for key in ("\rpassword", "pass\nword", "password\t", "\tpass\r\nword"):
+        assert mask_db_url(f"postgresql://u@h/db?{key}=pw2") == f"postgresql://u@h/db?{key}=***"
+    assert (
+        mask_credentials("could not open postgresql://u@h/db?x=1&\rpassword=pw2 (refused)")
+        == "could not open postgresql://u@h/db?x=1&\rpassword=*** (refused)"
+    )
+    # a C0 control character or space before the scheme, which urlsplit strips, is passed over
+    for lead in (" ", "\t", "\n", "\r", "\x0b", "\x0c", "\x00", "\x01", "\x1f"):
+        assert mask_db_url(f"{lead}postgresql://u:pa ss@h/db") == f"{lead}postgresql://u:***@h/db"
+    # and so is a tab or line break inside the scheme or its `://`, which urlsplit removes
+    for url in (
+        "postg\nresql://u:pa ss@h/db",
+        "postgresql:\r//u:pa ss@h/db",
+        "postgresql:/\t/u:pa ss@h/db",
+    ):
+        assert mask_db_url(url) == url.replace("pa ss", "***")
+    assert (
+        mask_credentials("could not open postgresql://u@h/db?PASSWORD=pw123 (refused)")
+        == "could not open postgresql://u@h/db?PASSWORD=*** (refused)"
+    )
+    # any name SQLAlchemy reads as a dialect, `_` and digits included
+    for scheme in ("pg_1", "_1"):
+        assert (
+            mask_credentials(f"could not open {scheme}://u:pa/ss@h/db")
+            == f"could not open {scheme}://u:***@h/db"
+        )
+
+
+@pytest.mark.parametrize("dialect", ["postgresql", "postgresql+asyncpg"])
+def test_an_at_in_a_query_password_takes_the_host_with_the_users_password(dialect):
+    # SQLAlchemy ends the user's password at the host's `@`; a parser that splits the user
+    # from the host at the last `@` reads it on to the value's `@`, so the host goes too
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    url = f"{dialect}://u:pw@h/db?password=ab@cdefgh"
+    masked = f"{dialect}://u:***"
+    assert mask_db_url(url) == masked and mask_db_url(masked) == masked
+    assert (
+        mask_credentials(f"could not open {url} (refused)") == f"could not open {masked} (refused)"
+    )
+
+
+@pytest.mark.parametrize("marker", ["?password=", "&password=", "?PASSWORD="])
+def test_a_password_holding_a_query_password_key_is_masked_with_what_follows(marker):
+    # SQLAlchemy reads the key as part of the user's password, which ends at the first `@`;
+    # read as a query parameter its value runs on past that `@`, so both spans go
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    url = f"postgresql://u:SECRET{marker}b@h/db?password=c"
+    masked = "postgresql://u:***"
+    assert mask_db_url(url) == masked and mask_db_url(masked) == masked
+    assert (
+        mask_credentials(f"could not open {url} (refused)") == f"could not open {masked} (refused)"
+    )
+    # a `/` the text scan stops at, or a space in a URL given alone: the URL readings still
+    # reach the password
+    assert (
+        mask_credentials(f"could not open postgresql://u:SE/CRET{marker}b@h/db (refused)")
+        == "could not open postgresql://u:*** (refused)"
+    )
+    assert mask_db_url(f"postgresql://u:SE CRET{marker}b@h/db") == "postgresql://u:***"
+    # and where the string does not open with the scheme: quoted, bracketed, or no scheme at all
+    for lead, end in (('"', '"'), ("<", ">")):
+        quoted = f"{lead}postgresql://u:SE/CRET{marker}b@h/db{end}"  # a `/` the text scan stops at
+        assert mask_db_url(quoted) == f"{lead}postgresql://u:***"
+    bare = f"/tmp/x/dbuser:SECRET{marker}b@127.0.0.1/x"
+    assert mask_db_url(bare) == "/tmp/x/dbuser:***"
+    assert mask_credentials(f"open {bare} failed") == "open /tmp/x/dbuser:*** failed"
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        # the first value takes the credential's `u:`, and the credential holds the second key
+        ("open x?password=u:&password=SECRET@h failed", "open x?password=*** failed"),
+        (
+            "open postgresql://h/db?password=pa:ss&x=1&password=q@r failed",
+            "open postgresql://h/db?password=*** failed",
+        ),
+        # the text scan stops at the value's `/`; read with the value blanked it reaches the `@`
+        ("open a.b:SECRET?password=x/y&@h failed", "open a.b:***@h failed"),
+    ],
+)
+def test_a_query_password_overlapping_a_credential_is_masked_with_it(text, masked):
+    from lionagi.state.engine import mask_credentials
+
+    assert mask_credentials(text) == masked
+
+
+def test_a_password_key_between_the_users_password_and_the_host_is_masked_with_both():
+    # SQLAlchemy reads the password as `p` and the host as `ss&password=q@h`; urlparse, which
+    # ends the authority at the `/`, reads the password as `p@ss&password=q`
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    url = "postgresql://u:p@ss&password=q@h/db"
+    assert mask_db_url(url) == "postgresql://u:***"
+    assert (
+        mask_credentials(f"could not open {url} (refused)")
+        == "could not open postgresql://u:*** (refused)"
+    )
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "?password=",
+        "&password=",
+        "?x=",
+        "a",
+        "a.",
+        "-a://",
+        "a://u:",
+        "a://u:p@h ",
+        "x@",
+        "u:p@",
+        "a:b!",
+    ],
+)
+def test_masking_time_grows_with_the_length_of_the_text(unit):
+    # each reading scans the text once and looks positions up, so a long or repetitive
+    # message cannot stall a log call: 200,000 characters of these take milliseconds
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    text = "postgresql://u@h/db" + unit * (200_000 // len(unit))
+    for mask in (mask_credentials, mask_db_url):
+        start = time.perf_counter()
+        mask(text)
+        assert time.perf_counter() - start < 5, (mask.__name__, unit)
+
+
+def test_a_query_password_ending_where_the_users_password_begins_is_masked_with_it():
+    # SQLAlchemy reads the user as `x?password=u` and the password as `&pw`
+    from lionagi.state.engine import mask_db_url
+
+    assert mask_db_url("postgresql://x?password=u:&pw@h/db") == "postgresql://x?password=***@h/db"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["postgresql+asyncpg://u@h/db?password=pa#ss", "postgresql+asyncpg://u@h/db?password=pa ss"],
+)
+def test_a_query_password_is_masked_to_the_next_ampersand(url):
+    # SQLAlchemy reads the value to the next `&`, a `#` or a space included
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    masked = "postgresql+asyncpg://u@h/db?password=***"
+    assert mask_db_url(url) == masked
+    assert mask_db_url(f"{url}&x=1") == f"{masked}&x=1"
+    if " " not in url:
+        assert (
+            mask_credentials(f"could not open {url} (refused)")
+            == f"could not open {masked} (refused)"
+        )
+
+
 def test_a_url_with_no_scheme_is_masked_too():
     """The shape ``urlparse`` cannot decompose.
 
-    Refused as a store setting, and still reaching this function from every
-    other direction: a driver quoting what it was handed, an older log line,
-    a path spelled with the ``./`` that makes it acceptable.
+    Refused as a store setting, it still reaches ``mask_credentials`` from
+    every other direction: a driver quoting what it was handed, an older log
+    line, a path spelled with the ``./`` that makes it acceptable.
+    ``mask_db_url`` ends with the same passes.
     """
     from lionagi.state.engine import mask_db_url
 
@@ -82,10 +302,15 @@ def test_credentials_are_masked_inside_prose():
 
     message = f"state.db not found at /var/lib/{SCHEMELESS_URL} — nothing was created"
     _assert_masked(mask_credentials(message), "mask_credentials of a message")
+    # whitespace ends a URL in prose, so a later `@` is not where its password ends
+    assert (
+        mask_credentials("open postgresql://u:pw@h/db for alice@example.com")
+        == "open postgresql://u:***@h/db for alice@example.com"
+    )
 
 
 def test_masking_is_idempotent():
-    """The sinks compose these, so masking an already-masked string must not re-mask it."""
+    """The sinks compose these, so masking an already-masked store URL must leave it as it is."""
     from lionagi.state.engine import mask_credentials, mask_db_url
 
     once = mask_db_url(SERVER_URL)

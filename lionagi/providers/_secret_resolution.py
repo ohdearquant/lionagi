@@ -105,21 +105,21 @@ def resolve_secret_lookup_config(
 
     if not isinstance(source, Mapping):
         logger.warning(
-            "secrets.lookup must be a mapping with 'argv' and 'names', got %s: %r",
+            "secrets.lookup must be a mapping with 'argv' and 'names', got %s",
             type(source).__name__,
-            source,
         )
         return _rejected("lookup_not_a_mapping")
 
     if source.get("enabled") is False:
         return _NOT_CONFIGURED
 
-    unknown_keys = tuple(key for key in source if key not in _ALLOWED_KEYS)
-    if unknown_keys:
+    unknown = [str(i) for i, key in enumerate(source) if key not in _ALLOWED_KEYS]
+    if unknown:
+        # A value pasted where a key belongs is reported by its place, never echoed.
         logger.warning(
-            "secrets.lookup keys must be 'argv', 'names' and/or 'enabled', got "
-            "unknown keys %r; resolving to disabled.",
-            unknown_keys,
+            "secrets.lookup keys must be 'argv', 'names' and/or 'enabled'; unknown keys "
+            "at position %s; resolving to disabled.",
+            ", ".join(unknown),
         )
         return _rejected("lookup_has_unknown_keys")
 
@@ -129,9 +129,17 @@ def resolve_secret_lookup_config(
         or isinstance(argv, str)
         or not all(isinstance(arg, str) for arg in argv)
     ):
+        problem = (
+            " (a command string is not an argument list)"
+            if isinstance(argv, str)
+            else " (contains non-string entries)"
+            if isinstance(argv, Sequence)
+            else ""
+        )
         logger.warning(
-            "secrets.lookup argv must be a list of strings, got %r; resolving to disabled.",
-            argv,
+            "secrets.lookup argv must be a list of strings, got %s%s; resolving to disabled.",
+            type(argv).__name__,
+            problem,
         )
         return _rejected("lookup_argv_not_a_list_of_strings")
     if not argv:
@@ -157,20 +165,28 @@ def resolve_secret_lookup_config(
         or isinstance(names, str)
         or not all(isinstance(name, str) for name in names)
     ):
+        problem = (
+            " (a single string is not a list)"
+            if isinstance(names, str)
+            else " (contains non-string entries)"
+            if isinstance(names, Sequence)
+            else ""
+        )
         logger.warning(
-            "secrets.lookup names must be a list of strings, got %r; resolving to disabled.",
-            names,
+            "secrets.lookup names must be a list of strings, got %s%s; resolving to disabled.",
+            type(names).__name__,
+            problem,
         )
         return _rejected("lookup_names_not_a_list_of_strings")
     if not names:
         logger.warning("secrets.lookup names is empty; resolving to disabled.")
         return _rejected("lookup_names_is_empty")
-    invalid = tuple(name for name in names if not _ENV_NAME_RE.match(name))
+    invalid = [str(i) for i, name in enumerate(names) if not _ENV_NAME_RE.match(name)]
     if invalid:
         logger.warning(
-            "secrets.lookup names must be environment variable names, got %r; "
-            "resolving to disabled.",
-            invalid,
+            "secrets.lookup names must be environment variable names; invalid entries "
+            "at index %s; resolving to disabled.",
+            ", ".join(invalid),
         )
         return _rejected("lookup_names_has_an_invalid_environment_variable_name")
 
