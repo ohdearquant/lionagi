@@ -61,8 +61,8 @@ def test_unavailable_message_actionable(monkeypatch):
     assert resp.status == "unavailable"
     # Should tell user how to install: the cargo command and the project's site
     assert "cargo install ast-grep" in resp.summary
-    hosts = {urlsplit(word.rstrip(".,")).hostname for word in resp.summary.split()}
-    assert "ast-grep.github.io" in hosts
+    hosts = [urlsplit(word.rstrip(".,")).hostname for word in resp.summary.split()]
+    assert any(host == "ast-grep.github.io" for host in hosts)
 
 
 @sg_required
