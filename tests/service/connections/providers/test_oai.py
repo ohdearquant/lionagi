@@ -4,6 +4,7 @@
 import asyncio
 import os
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -324,7 +325,7 @@ class TestOpenAIIntegration:
         endpoint = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
         url = endpoint.config.full_url
-        assert "api.openai.com" in url
+        assert urlsplit(url).hostname == "api.openai.com"
 
     def test_openai_model_validation(self, openai_imodel):
         valid_models = [
@@ -510,7 +511,10 @@ class TestGeminiIntegration:
 
     def test_gemini_endpoint_configuration(self, gemini_imodel):
         assert gemini_imodel.endpoint.config.provider == "gemini"
-        assert "generativelanguage.googleapis.com" in gemini_imodel.endpoint.config.base_url
+        assert (
+            urlsplit(gemini_imodel.endpoint.config.base_url).hostname
+            == "generativelanguage.googleapis.com"
+        )
 
     def test_gemini_config_defaults(self):
         config = _get_gemini_config()
@@ -564,8 +568,9 @@ class TestGeminiIntegration:
     def test_gemini_url_construction(self):
         endpoint = match_endpoint(provider="gemini", endpoint="chat", model="gemini-2.5-flash")
         url = endpoint.config.full_url
-        assert "generativelanguage.googleapis.com" in url
-        assert "chat/completions" in url
+        parsed_url = urlsplit(url)
+        assert parsed_url.hostname == "generativelanguage.googleapis.com"
+        assert parsed_url.path == "/v1beta/openai/chat/completions"
 
     def test_gemini_imodel_construction_explicit(self):
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):

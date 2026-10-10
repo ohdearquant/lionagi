@@ -16,6 +16,7 @@ import json
 import re
 import socket
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -234,6 +235,25 @@ def test_normalize_argparse_choice_quoting_is_quoting_agnostic():
     assert _capture.normalize_argparse_choice_quoting(
         quoted
     ) == _capture.normalize_argparse_choice_quoting(bare)
+
+
+def test_stderr_baseline_comparison_accepts_real_choice_quoting_drift():
+    """The comparison used for captured CLI stderr accepts both frozen renderings."""
+    argv = ("bogus-unknown-command",)
+    quoted_cases = {tuple(c["argv"]): c for c in _load("specialized")}
+    bare_cases = {tuple(c["argv"]): c for c in _load("specialized_py312")}
+    quoted = quoted_cases[argv]["stderr"]
+    bare = bare_cases[argv]["stderr"]
+    with pytest.warns(UserWarning, match="choice-name quoting"):
+        _assert_stderr_matches_baseline(("bogus-unknown-command",), bare, quoted)
+
+
+def test_normalize_argparse_choice_quoting_handles_adversarial_repetition_quickly():
+    adversarial = "(choose from (" + "''', '" * 2_000
+    started = time.perf_counter()
+
+    assert _capture.normalize_argparse_choice_quoting(adversarial) == adversarial
+    assert time.perf_counter() - started < 1.0
 
 
 def test_normalize_argparse_choice_quoting_still_flags_a_renamed_choice():

@@ -3,6 +3,7 @@
 
 import os
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 from pydantic import Field, ValidationError
@@ -133,12 +134,12 @@ class TestServiceIntegration:
         # OpenAI endpoint
         openai_endpoint = Endpoint(config=openai_endpoint_config)
         openai_url = openai_endpoint.config.full_url
-        assert "api.openai.com" in openai_url
+        assert urlsplit(openai_url).hostname == "api.openai.com"
 
         # Anthropic endpoint
         anthropic_endpoint = Endpoint(config=anthropic_endpoint_config)
         anthropic_url = anthropic_endpoint.config.full_url
-        assert "api.anthropic.com" in anthropic_url
+        assert urlsplit(anthropic_url).hostname == "api.anthropic.com"
 
     def test_endpoint_config_update(self, openai_endpoint_config):
         config = openai_endpoint_config
