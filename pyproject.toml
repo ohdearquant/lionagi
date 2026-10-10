@@ -346,7 +346,19 @@ constraint-dependencies = [
                             # memory
     "multidict>=6.9.1",     # CVE: reference leak in items-view union and subtraction
     "tornado>=6.5.8",       # CVE: request parsing DoS and cookie attribute injection
-    "cairosvg>=2.9.0",      # CVE: recursive <use> exponential DoS
+    "cairosvg>=2.9.1",      # CVE: recursive <use> exponential DoS; then quadratic-time <path> parsing
+    # CVE: HTML browser rendering ignoring enable_local_fetch, plugin entry points imported before
+    # the allow check, unbounded table spans, METS-GBS member limit, local images embedded from
+    # DoclingDocument JSON, file read/write when rendering untrusted TikZ, SSRF guard bypass by DNS
+    # rebinding, configured headers sent to every remote image host
+    "docling>=2.132.0",
+    "docling-slim>=2.132.0",
+    "accelerate>=1.15.0",   # CVE: path traversal and DoS via sharded checkpoint weight_map entries
+    # CVE: pyvenv.cfg prompt injection, unverified seed wheels, batch and bash/fish activator
+    # command injection
+    "virtualenv>=21.7.13",
+    "fsspec>=2026.6.0",     # CVE: template injection in ReferenceFileSystem
+    "datamodel-code-generator>=0.81.0",  # CVE: protobuf weak-import path traversal
     # CVE: vulnerable OpenSSL bundled in wheels; then a Bleichenbacher oracle
     # in PKCS#7 EnvelopedData decryption via distinguishable errors and timing
     "cryptography>=50.0.0",
