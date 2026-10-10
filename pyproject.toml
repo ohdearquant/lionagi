@@ -338,7 +338,13 @@ constraint-dependencies = [
     "python-multipart>=0.0.31",  # CVE: DoS via unbounded multipart part headers; quadratic querystring parsing; param smuggling
     "pytest>=9.0.3",        # CVE: vulnerable tmpdir handling
     "pillow>=12.3.0",       # CVE: FITS GZIP decompression bomb + additional image-parsing advisories fixed in 12.3.0
-    "pyjwt>=2.13.0",        # CVE: PyJWK HMAC/alg-allowlist bypass, PyJWKClient SSRF + DoS
+    "pyjwt>=2.15.0",        # CVE: PyJWK HMAC/alg-allowlist bypass, PyJWKClient SSRF + DoS; then
+                            # pre-verification payload RecursionError DoS and OKP private
+                            # JWKs whose x and d do not correspond
+    "urllib3>=2.8.0",       # CVE: HTTPS proxy TLS settings ignored or overridden, chunked
+                            # deflate infinite loop, unbounded chunk-size line buffered in
+                            # memory
+    "multidict>=6.9.1",     # CVE: reference leak in items-view union and subtraction
     "tornado>=6.5.8",       # CVE: request parsing DoS and cookie attribute injection
     "cairosvg>=2.9.0",      # CVE: recursive <use> exponential DoS
     # CVE: vulnerable OpenSSL bundled in wheels; then a Bleichenbacher oracle
