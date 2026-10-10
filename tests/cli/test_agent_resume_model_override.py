@@ -325,7 +325,10 @@ async def test_exact_resume_id_does_not_emit_prefix_hint(monkeypatch, tmp_path, 
     ("provider", "model", "requested", "effort_kwarg", "expected"),
     [
         ("codex", "gpt-5.4", "max", "reasoning_effort", "xhigh"),
-        ("claude_code", "sonnet", "xhigh", "effort", "high"),
+        # a Claude model with no xhigh tier clamps to high
+        ("claude_code", "claude-sonnet-4-5", "xhigh", "effort", "high"),
+        # bare `sonnet` is on the xhigh list
+        ("claude_code", "sonnet", "xhigh", "effort", "xhigh"),
     ],
 )
 async def test_resume_effort_uses_provider_model_clamp(
