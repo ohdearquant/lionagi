@@ -87,7 +87,7 @@ class TestHostedCorsOrigin:
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
         import lionagi.studio.config as config_mod
 
-        assert "https://lion-studio.khive.ai" in config_mod.CORS_ORIGINS
+        assert any(origin == "https://lion-studio.khive.ai" for origin in config_mod.CORS_ORIGINS)
 
     def test_hosted_origin_gets_cors_headers(self, monkeypatch, tmp_path, make_client):
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
