@@ -3,6 +3,7 @@
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlsplit
 
 import aiohttp
 import pytest
@@ -253,8 +254,8 @@ class TestEndpoint:
         openai_url = openai_endpoint.config.full_url
         anthropic_url = anthropic_endpoint.config.full_url
 
-        assert "api.openai.com" in openai_url
-        assert "api.anthropic.com" in anthropic_url
+        assert urlsplit(openai_url).hostname == "api.openai.com"
+        assert urlsplit(anthropic_url).hostname == "api.anthropic.com"
 
     @pytest.mark.asyncio
     async def test_call_with_skip_payload_creation(self, openai_config):

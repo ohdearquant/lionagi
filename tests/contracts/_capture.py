@@ -483,11 +483,9 @@ def specialized_baseline_name() -> str:
         ) from None
 
 
-# Matches argparse's "(choose from ...)" fragment inside an invalid-choice
-# error, whether each choice name is quoted (e.g. "'a', 'b'") or bare (e.g.
-# "a, b") -- the one rendering detail this fixture's baseline comparison
-# tolerates. See ``normalize_argparse_choice_quoting`` below.
-_CHOOSE_FROM_RE = re.compile(r"\(choose from ((?:'[^']*'|[^,)]+)(?:, (?:'[^']*'|[^,)]+))*)\)")
+# Captured CLI choices are command names, so the closing parenthesis ends this
+# fragment. One disjoint scan avoids backtracking across quote and comma splits.
+_CHOOSE_FROM_RE = re.compile(r"\(choose from ([^)]*)\)")
 
 
 def normalize_argparse_choice_quoting(text: str) -> str:

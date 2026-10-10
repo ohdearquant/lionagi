@@ -140,7 +140,7 @@ class TestAdapterErrorDoesNotLeakCredentials:
         err = AdapterError("error", details={"url": url})
         err_str = str(err)
         # The domain and path should still appear so the error is useful
-        assert "api.example.com" in err_str
+        assert err_str == "error (url='https://api.example.com/v1/endpoint?api_key=***&page=2')"
         # The secret must not
         assert "secret123" not in err_str
 

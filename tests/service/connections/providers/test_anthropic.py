@@ -3,6 +3,7 @@
 
 import os
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -146,7 +147,7 @@ class TestAnthropicIntegration:
         )
 
         url = endpoint.config.full_url
-        assert "api.anthropic.com" in url
+        assert urlsplit(url).hostname == "api.anthropic.com"
 
     def test_anthropic_model_validation(self, anthropic_imodel):
         valid_models = [

@@ -124,7 +124,7 @@ def test_studio_bare_defaults_to_hosted_web_mode(capsys):
     assert result == 0
     mock_run.assert_called_once()
     out = capsys.readouterr().out
-    assert "https://lion-studio.khive.ai" in out
+    assert any(line == "Lion Studio: https://lion-studio.khive.ai" for line in out.splitlines())
     assert "127.0.0.1:8765" in out
 
 
@@ -137,7 +137,8 @@ def test_studio_web_flag_matches_default(capsys):
 
     assert result == 0
     mock_run.assert_called_once()
-    assert "https://lion-studio.khive.ai" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert any(line == "Lion Studio: https://lion-studio.khive.ai" for line in out.splitlines())
 
 
 def test_studio_web_does_not_build_local_frontend():

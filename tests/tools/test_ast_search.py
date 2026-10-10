@@ -4,6 +4,7 @@
 """Tests for AstSearchTool: ast-grep structural search with graceful degradation."""
 
 import shutil
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -58,8 +59,10 @@ def test_unavailable_message_actionable(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _: None)
     resp = _ast_search_sync("except: pass", ".", "python", 50)
     assert resp.status == "unavailable"
-    # Should tell user how to install
-    assert "cargo" in resp.summary or "ast-grep.github.io" in resp.summary
+    # Should tell user how to install: the cargo command and the project's site
+    assert "cargo install ast-grep" in resp.summary
+    hosts = [urlsplit(word.rstrip(".,")).hostname for word in resp.summary.split()]
+    assert any(host == "ast-grep.github.io" for host in hosts)
 
 
 @sg_required
