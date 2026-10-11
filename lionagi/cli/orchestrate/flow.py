@@ -2533,6 +2533,34 @@ def _finalize_flow(
     return output
 
 
+def _canonical_mcp_config(mcp_config: str | None) -> str | None:
+    """Freeze --mcp-config to the file this run actually resolved.
+
+    ``resolve_spawn_mcp_servers`` resolves a relative path against the launching
+    process's directory, deliberately ignoring --cwd. A checkpoint holding the
+    raw string therefore has it resolved a second time, against whatever
+    directory the resume is started from: the same run replayed elsewhere reads
+    a different MCP configuration, or a file someone else placed on that path,
+    and so can be handed command and URL transports the original never had.
+
+    Resolving here uses the same base the resolver will use moments later in
+    this process, so the first run's behaviour is unchanged and only the
+    persisted value becomes unambiguous. Existence is not asserted -- an
+    unreadable path is the resolver's error to raise, with its own message.
+    """
+    if mcp_config is None:
+        return None
+    path = Path(mcp_config).expanduser()
+    if path.is_absolute():
+        # Already unambiguous, and the resolver takes an absolute path as given
+        # rather than resolving it. Rewriting one here would round-trip a
+        # different string than the caller supplied -- on a platform where the
+        # temp directory is a symlink, a canonicalized path stops matching what
+        # the run was asked for -- without closing anything.
+        return str(path)
+    return str((Path(os.getcwd()) / path).resolve())
+
+
 # ── Public entry points ───────────────────────────────────────────────────────
 
 
@@ -2620,6 +2648,8 @@ async def _run_flow(
         "invocation_id": invocation_id,
         "project": project,
         "pack": pack,
+        "mcp_config": _canonical_mcp_config(mcp_config),
+        "no_mcp_config": no_mcp_config,
     }
 
     env = await setup_orchestration(
@@ -3202,6 +3232,19 @@ async def _resume_flow(
     overrides); every other _run_flow kwarg replays the persisted config."""
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})
+    if "no_mcp_config" not in config:
+        # A checkpoint written before MCP containment was tracked carries no
+        # record of the run's original --no-mcp-config decision. Replaying it
+        # with today's default (ambient discovery) would silently hand a
+        # resumed containment-refused run whatever `.mcp.json` this directory
+        # has now. Fail closed instead: no MCP is always a safe replay of an
+        # unknown decision, ambient discovery is not.
+        _warn(
+            "resuming a checkpoint written before MCP containment was tracked; "
+            "treating it as --no-mcp-config rather than re-discovering ambient MCP servers"
+        )
+        config["no_mcp_config"] = True
+        config.setdefault("mcp_config", None)
     config["dry_run"] = dry_run
     config["show_graph"] = show_graph
     if notify is not None:

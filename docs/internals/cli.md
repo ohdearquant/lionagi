@@ -343,6 +343,29 @@ spawned this generation — otherwise a resume that reconstructs every spawned
 node as already-terminal would report `n_spawned=0` and silently skip the
 `with_synthesis`-or-`n_spawned` gate in `_run_flow_inner`.
 
+**Resume replays the original MCP decision.** `_run_flow`'s
+`_checkpoint_config` persists `mcp_config`/`no_mcp_config` alongside the rest
+of the call's kwargs, and `_resume_flow` replays them unchanged: a run
+started with `--no-mcp-config` keeps no servers across `li o flow --resume`,
+rather than re-running `setup_orchestration` with today's defaults and
+re-discovering whatever `.mcp.json` happens to sit near the resuming
+directory. A checkpoint written before these fields existed (no `no_mcp_config`
+key in its persisted `config`) has no record of that original decision, so
+`_resume_flow` fails closed: it treats the checkpoint as `no_mcp_config=True`
+and logs a warning, rather than defaulting to ambient discovery for a run
+whose original choice is unknown.
+
+A relative `--mcp-config` is pinned before it is persisted. The resolver
+resolves such a path against the launching process's directory and
+deliberately not against `--cwd`, so a checkpoint holding the raw string would
+have it resolved a second time against whatever directory the resume was
+started from: the same run replayed elsewhere would read a different MCP
+configuration, or a file someone else placed on that path. `_run_flow` stores
+the path this run resolved instead, using the same base the resolver uses
+moments later, so first-run behaviour is unchanged and only the persisted
+value becomes unambiguous. An absolute value is kept verbatim, because the
+resolver already takes one as given.
+
 ### `_orchestration.py` — live-persist finalize and escalation-link teardown
 
 A DAG that already produced its result must not lose that result because a
