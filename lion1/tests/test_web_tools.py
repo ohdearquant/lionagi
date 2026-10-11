@@ -1105,6 +1105,16 @@ def test_a_body_that_ends_short_of_its_declared_length_is_a_cut_body_not_an_answ
         thread.join(5)
 
 
+def test_the_tls_floor_is_1_2_whatever_the_build_defaults_to(monkeypatch):
+    def lax():
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+        return ctx
+
+    monkeypatch.setattr(ssl, "create_default_context", lax)
+    assert w._tls.__wrapped__().minimum_version is ssl.TLSVersion.TLSv1_2
+
+
 def test_the_tls_connection_verifies_the_name_it_was_asked_for(monkeypatch):
     context = w._tls()
     assert context.verify_mode is ssl.CERT_REQUIRED and context.check_hostname

@@ -111,7 +111,9 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
 
 @functools.cache
 def _tls() -> ssl.SSLContext:
-    return ssl.create_default_context()
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # stated here, never left to the OpenSSL build
+    return ctx
 
 
 class _Clock:
