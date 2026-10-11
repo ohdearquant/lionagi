@@ -537,7 +537,7 @@ def _resp(function, output):
     return ActionResponseModel(function=function, arguments={}, output=output)
 
 
-def test_extract_writeback_pairs_matches_error_then_resolution():
+def test_extract_writeback_pairs_matches_error_then_next_success():
     responses = [
         _resp("bash", {"error": "permission denied"}),
         _resp("bash", {"stdout": "ok now"}),
@@ -548,8 +548,129 @@ def test_extract_writeback_pairs_matches_error_then_resolution():
     assert len(pairs) == 1
     assert pairs[0]["function"] == "bash"
     assert pairs[0]["error"] == "permission denied"
-    assert pairs[0]["resolved_by"] == "bash"
-    assert pairs[0]["resolution_output"] == {"stdout": "ok now"}
+    # Named for the ordering that was observed. Even here, where the two calls
+    # are the same tool and the pairing is probably right, the function checked
+    # nothing that makes it right.
+    assert pairs[0]["candidate_next_ok"] == "bash"
+    assert pairs[0]["candidate_output"] == {"stdout": "ok now"}
+    assert pairs[0]["pairing_rule"] == "fifo-next-successful-call"
+    assert "resolved_by" not in pairs[0]
+
+
+def test_a_suppressed_failure_is_not_named_as_the_call_that_succeeded():
+    """act() degrades an ordinary failed call to output=None when errors are
+    suppressed, which is the default at every public entry. Classifying that as
+    a success made the stored sentence say 'the next tool call to succeed was
+    X' about a call that failed -- the same false-claim-in-the-store class this
+    PR exists to fix, one layer down.
+
+    It must not close the pair either. The error stays pending for a response
+    that really did succeed."""
+    responses = [
+        _resp("edit", {"error": "file not found: a.py"}),
+        _resp("bash", None),
+        _resp("read", {"content": "contents of b.py"}),
+    ]
+
+    pairs = _extract_writeback_pairs(responses)
+
+    assert len(pairs) == 1
+    # The real success, not the suppressed failure that came between them.
+    assert pairs[0]["candidate_next_ok"] == "read"
+    assert pairs[0]["candidate_output"] == {"content": "contents of b.py"}
+    # Control: the error half is still the one that failed, so this arm cannot
+    # pass by the pairing having stopped working altogether.
+    assert pairs[0]["function"] == "edit"
+    assert pairs[0]["error"] == "file not found: a.py"
+
+
+def test_a_suppressed_failure_is_not_recorded_as_the_failure_either():
+    """The other direction, and the one easy to miss: output=None is not turned
+    into an error half. It is genuinely unknowable here -- a tool that simply
+    returned None produces the identical response -- so inventing a failure
+    would be the same defect with the sign flipped.
+
+    Stated as a property of the design rather than an oversight: suppressed
+    failures are invisible to writeback, and seeing them needs act() to carry a
+    failure marker.
+
+    Note what this arm is: it passes against the PRE-fix code too, because there
+    an output=None response was classified as a success and an empty `pending`
+    left nothing to pair with -- same empty result, different reason. It is not
+    a red-then-green arm. It bites against the TEMPTING WRONG FIX, reclassifying
+    output=None as an error: verified by mutation, that change makes this arm
+    fail with a pair carrying `error: None`."""
+    responses = [
+        _resp("bash", None),
+        _resp("read", {"content": "contents of b.py"}),
+    ]
+
+    assert _extract_writeback_pairs(responses) == []
+
+    # Control, same call shape with a real error, so the empty result above is
+    # the exclusion and not the helper failing to build anything at all.
+    assert (
+        len(
+            _extract_writeback_pairs(
+                [
+                    _resp("bash", {"error": "permission denied"}),
+                    _resp("read", {"content": "contents of b.py"}),
+                ]
+            )
+        )
+        == 1
+    )
+
+
+def test_an_unrelated_next_call_is_paired_as_a_candidate_not_a_resolution():
+    """The case the rule cannot see. A failed edit followed by a read of a
+    different file pairs exactly like a real fix does, and the record used to
+    say the read resolved the edit -- then went into the store as a lesson and
+    came back out of recall as one."""
+    responses = [
+        _resp("edit", {"error": "file not found: a.py"}),
+        _resp("read", {"content": "contents of b.py"}),
+    ]
+
+    pairs = _extract_writeback_pairs(responses)
+
+    assert len(pairs) == 1
+    assert pairs[0]["candidate_next_ok"] == "read"
+    assert "resolved_by" not in pairs[0]
+
+
+@pytest.mark.asyncio
+async def test_the_stored_record_does_not_claim_the_second_call_repaired_the_first(
+    patched_transport,
+):
+    """The store is where the claim would have escaped. Nothing downstream
+    re-derives a remembered sentence, so the sentence has to be true on its own."""
+    patched_transport.return_value = _mcp_result(_khive_remember_response())
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
+    )
+
+    written = await provider.writeback(
+        _FakeBranch(last_response=None),
+        [
+            _resp("edit", {"error": "file not found: a.py"}),
+            _resp("read", {"content": "contents of b.py"}),
+        ],
+    )
+
+    assert written == 1
+    ops = patched_transport.call_args_list[0].args[1]["ops"]
+    assert "resolved by" not in ops
+    assert "the next tool call to succeed" in ops
+    assert "fifo-next-successful-call" in ops
+    assert "not a claim that the second call repaired the first" in ops
+    # Control: the record still carries both calls and the error, so the arm
+    # above cannot pass by the writeback having stopped recording anything.
+    assert "file not found: a.py" in ops
+    assert "'read'" in ops
 
 
 def test_extract_writeback_pairs_ignores_unresolved_error():

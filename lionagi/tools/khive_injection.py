@@ -231,8 +231,35 @@ def _truncate(text: str, max_tokens: int | None) -> str:
 
 
 def _extract_writeback_pairs(action_responses: list) -> list[dict]:
-    """FIFO-pair each tool error with the next response that resolves it.
-    Deliberately rule-based: no LLM summarization on the writeback path."""
+    """FIFO-pair each tool error with the next response that SUCCEEDS after it.
+
+    Deliberately rule-based: no LLM summarization on the writeback path. The
+    price of that is that the pairing is positional and nothing more. The next
+    call to succeed may be the fix, or it may be a read of an unrelated file
+    that happened to come next, and this function cannot tell the two apart --
+    it compares no target, no argument and not even the tool name.
+
+    So the pair is named for what was actually observed. ``candidate_next_ok``
+    is a fact about ordering; ``resolved_by`` would have been a claim about
+    causation, and the record it produced was written into the store as a
+    lesson and recalled later as one.
+
+    A response carrying ``output=None`` is excluded from BOTH halves. ``act()``
+    degrades an ordinary failed call to ``ActionResponseModel(output=None)``
+    whenever errors are suppressed, which is the default at every public entry
+    and explicit in ``operate`` and ``ReAct`` -- and it returns the same shape
+    for a tool that simply returned ``None``. The two are indistinguishable from
+    the response, so calling it an error would invent a failure and calling it a
+    success would claim the neighbour succeeded when it may have failed. Either
+    way the store would carry something nobody checked, which is the defect this
+    function exists to stop.
+
+    The consequence is deliberate and worth stating plainly: **suppressed
+    failures are invisible to writeback.** They are not paired, and they do not
+    close a pending pair -- it stays open for a response that really did
+    succeed. Making them visible needs ``act()`` to carry a failure marker the
+    response can be read by; it cannot be recovered here.
+    """
     pairs: list[dict] = []
     pending: list[dict] = []
     for resp in action_responses:
@@ -242,14 +269,25 @@ def _extract_writeback_pairs(action_responses: list) -> list[dict]:
         if is_error:
             pending.append({"function": function, "error": output.get("error")})
             continue
+        if output is None:
+            # Neither half, and it does not consume the pending error either:
+            # a suppressed failure must not stand in for the success the pair
+            # is waiting for. See the docstring -- this is unknowable here, not
+            # merely unhandled.
+            continue
         if pending:
             err = pending.pop(0)
             pairs.append(
                 {
                     "function": err["function"],
                     "error": err["error"],
-                    "resolved_by": function,
-                    "resolution_output": output,
+                    "candidate_next_ok": function,
+                    "candidate_output": output,
+                    # Named on the record rather than implied by the field
+                    # names, so a reader of the STORE -- who never sees this
+                    # function -- knows which rule produced the pairing and
+                    # therefore how much it is worth.
+                    "pairing_rule": "fifo-next-successful-call",
                 }
             )
     return pairs
@@ -343,9 +381,16 @@ class KhiveInjectionProvider:
         ns = _ns_kwarg(self.policy.namespace)
         records_written = 0
         for pair in pairs:
+            # States the ordering that was observed and names the rule, rather
+            # than asserting a repair. A stored sentence saying X was "resolved
+            # by" Y is recalled later as a fact about what fixes X, and nothing
+            # on this path ever checked that Y addressed the failure at all.
             content = (
-                f"tool '{pair['function']}' failed ({pair['error']!r}); resolved by "
-                f"'{pair['resolved_by']}', output={pair['resolution_output']!r}"
+                f"tool '{pair['function']}' failed ({pair['error']!r}); the next tool call to "
+                f"succeed in the same turn was '{pair['candidate_next_ok']}', "
+                f"output={pair['candidate_output']!r}. Pairing rule "
+                f"'{pair['pairing_rule']}': positional only, unverified, and not a claim that "
+                f"the second call repaired the first."
             )
             ops = (
                 f"memory.remember(content={json.dumps(content)}, "
