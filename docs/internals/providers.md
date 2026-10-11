@@ -343,6 +343,15 @@ when given, fires with this observation once the child exists and is awaited
 before any output is consumed; its exceptions are not swallowed, since failed
 accounting must tear down the child.
 
+An engine run installs a separate context-local observer while creating its
+run task. That observer receives the live process handle and the same verified
+spawn identity, so `EngineRun.cancel_active()` can reap a child even when the
+worker task swallows cancellation and never unwinds this generator. Context
+propagation associates nested CLI spawns with the owning run without adding a
+runtime field to every provider request model; resetting the binding immediately
+after task creation prevents concurrent runs from sharing ownership. The public
+`on_spawn(SpawnedProcess)` contract remains identity-only.
+
 Group cleanup signals only through that positively marker-bound observation.
 The shielded spawn task captures `(pid, pgid, create_time)` before publishing
 its result, including to the abandoned-spawn callback. At teardown, that spawn

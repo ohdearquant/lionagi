@@ -12,6 +12,7 @@ import os
 import uuid
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from lionagi.session.signal import Signal
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
+    from lionagi.providers._cli_subprocess import SpawnedProcess
     from lionagi.session.branch import Branch
 
 logger = logging.getLogger("lionagi.engines")
@@ -42,6 +44,45 @@ _UNSET: Any = object()
 # Maximum wall-clock seconds allowed for the post-cancellation partial export.
 # Kept short so a hung synthesis LLM call cannot extend the run unboundedly.
 _PARTIAL_EXPORT_TIMEOUT_S: float = 120.0
+
+# Engine cancellation is a backstop for a worker that refuses to unwind its
+# provider generator. Ordinary provider teardown retains its longer graceful
+# window; once the owning task has ignored cancellation, the engine gives the
+# run-owned process group one short bounded TERM window before KILL.
+_RUN_PROCESS_TERM_GRACE_S: float = 1.0
+
+#: How many times ``cancel_active`` rescans for processes spawned during its own
+#: teardown. Small on purpose: each pass costs a group scan, and needing more
+#: than a couple means a task is spawning during cancellation, which is worth a
+#: warning rather than an unbounded retry.
+_CANCEL_RESCAN_PASSES: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class CancellationRecord:
+    """One bounded ``cancel_active`` pass, with task/process facts separated."""
+
+    tasks_cancelled: int
+    tasks_abandoned: int
+    processes_reaped: int
+    # A reap that raised leaves the child running, which is the condition this
+    # cleanup exists to eliminate. Counting it separately is what lets a reader
+    # tell "nothing needed reaping" from "every reap failed" -- both of which
+    # leave processes_reaped at 0.
+    processes_abandoned: int = 0
+
+
+@dataclass(slots=True)
+class _TrackedCLIProcess:
+    """Runtime-only run ownership for one CLI process."""
+
+    process: Any
+    spawned: SpawnedProcess
+    # Set once end_child_group has returned for this entry. That call is the
+    # authority on the group being finished, so it -- not the leader's exit --
+    # is what retires the entry. Without it a swept group whose members are
+    # still visible to a scan would be re-reaped on every pass.
+    reaped: bool = False
 
 
 class ChainEvent(BaseModel):
@@ -300,6 +341,15 @@ class EngineRun:
         self.agents_made: int = 0
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
+        # Populated at the shared CLI spawn boundary through a run-scoped
+        # context observer. The live Process handle is intentionally never
+        # serialized; SpawnedProcess carries the verified identity used by the
+        # existing witness-gated group teardown.
+        self._cli_processes: dict[int, _TrackedCLIProcess] = {}
+        # Set once the run has drained, so a spawn arriving afterwards is ended
+        # rather than filed against a run that will never sweep again.
+        self._cli_tracking_closed: bool = False
+        self.cancellation_records: list[CancellationRecord] = []
         # Failures of spawned tasks, recorded as each one settles. The drain
         # cannot be the only collector: a task that finishes before the drain
         # starts is already out of _active by then, and its failure would have
@@ -561,6 +611,143 @@ class EngineRun:
         if exc is not None:
             self._settled_errors.append(exc)
 
+    def _track_cli_process(self, process: Any, spawned: SpawnedProcess) -> None:
+        """Associate a shared-provider CLI spawn with this run.
+
+        A task that swallowed cancellation keeps this run's observer in its
+        context and can spawn after the run has already drained. Recording that
+        spawn would file it where nothing will ever look again, so a closed run
+        ends the group here instead. Refusing to record without ending it would
+        leak the same child more quietly.
+        """
+
+        if getattr(process, "pid", None) != spawned.pid:
+            raise RuntimeError("CLI spawn identity does not match its process handle")
+        if self._cli_tracking_closed:
+            logger.warning(
+                "CLI process pid=%s was spawned into run %s after it drained; "
+                "ending its group instead of tracking it",
+                spawned.pid,
+                self.run_id,
+            )
+            self._end_cli_group_now(process, spawned)
+            return
+        self._cli_processes[id(process)] = _TrackedCLIProcess(
+            process=process,
+            spawned=spawned,
+        )
+
+    @staticmethod
+    def _end_cli_group_now(process: Any, spawned: SpawnedProcess) -> None:
+        """Best-effort synchronous group teardown, for callers that cannot await.
+
+        With no witness the group is not signalled, since nothing proves it is
+        still ours, but the direct child is killed through its own handle.
+        """
+
+        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+            _end_group_with_evidence,
+            _witnesses_for_spawn,
+        )
+
+        try:
+            witnesses = _witnesses_for_spawn(process, spawned)
+            _end_group_with_evidence(process, witnesses, expected_marker=spawned._group_marker)
+        except Exception:
+            logger.exception("failed to end CLI group for pid=%s", spawned.pid)
+
+    def _live_cli_processes(self) -> list[_TrackedCLIProcess]:
+        """Tracked processes that still need a reap, dropping the finished ones.
+
+        Pruning here rather than in a per-process watcher keeps the sweep on a
+        path the run already walks. It also has to happen by removing the entry
+        outright: the key is ``id(process)``, an address that is only unique
+        while something holds the object, so a weakened reference under a
+        retained key could later collide with an unrelated process.
+
+        An exited leader is not by itself a finished group. A descendant that
+        ignores SIGTERM outlives the child that anchored the group, and
+        ``end_child_group`` handles exactly that case through frozen spawn-time
+        witnesses -- but only if it is still called, so pruning on the leader's
+        ``returncode`` alone would drop the entry before the one routine that
+        can end the survivors ever ran. The group's own membership is therefore
+        what decides: no surviving witness means there is nothing left to end.
+        """
+        from lionagi.providers._cli_subprocess import _witnesses_for_spawn  # noqa: PLC0415
+
+        live: list[_TrackedCLIProcess] = []
+        dead: list[int] = []
+        for key, tracked in self._cli_processes.items():
+            if tracked.reaped:
+                dead.append(key)
+                continue
+            if getattr(tracked.process, "returncode", None) is None:
+                live.append(tracked)
+                continue
+            try:
+                survivors = _witnesses_for_spawn(tracked.process, tracked.spawned)
+            except Exception:
+                # An unreadable group is not an empty one; keep it for the reap
+                # rather than pruning on a failed look.
+                logger.exception("could not read the process group for pid=%s", tracked.spawned.pid)
+                live.append(tracked)
+                continue
+            if survivors:
+                live.append(tracked)
+            else:
+                dead.append(key)
+        for key in dead:
+            del self._cli_processes[key]
+        return live
+
+    async def _reap_cli_processes(self, processes: list[_TrackedCLIProcess]) -> tuple[int, int]:
+        """End still-live, run-owned CLI groups.
+
+        Returns ``(reaped, abandoned)``. The two are separate because a reap
+        that raised leaves the child alive, and folding that into the reaped
+        count would report it as the same thing as a child that had already
+        exited on its own.
+        """
+
+        from lionagi.providers._cli_subprocess import end_child_group  # noqa: PLC0415
+
+        async def _reap_one(tracked: _TrackedCLIProcess) -> str:
+            # An exited leader is not a finished group, so this deliberately
+            # does not short-circuit on ``returncode``. end_child_group already
+            # distinguishes the two cases -- it signals the group while the
+            # child still anchors it, and falls back to frozen spawn-time
+            # witnesses once the leader is gone -- and skipping the call here
+            # is what let a descendant outlive the reap.
+            leader_exited = getattr(tracked.process, "returncode", None) is not None
+            try:
+                await end_child_group(
+                    tracked.process,
+                    grace=_RUN_PROCESS_TERM_GRACE_S,
+                    spawned=tracked.spawned,
+                )
+            except Exception:
+                logger.exception(
+                    "cancel_active: failed to reap run-owned CLI process pid=%s",
+                    tracked.spawned.pid,
+                )
+                return "abandoned"
+            # end_child_group returned, so the group is finished and the entry
+            # retires. A reap that raised deliberately does not set this: the
+            # child may still be alive and a later pass has to see it again.
+            tracked.reaped = True
+            # A leader that had already exited is reported separately: the
+            # sweep still ran, but counting it as a cancellation would overstate
+            # what this run actually had to stop.
+            return "already_exited" if leader_exited else "reaped"
+
+        if not processes:
+            return 0, 0
+        outcomes = await asyncio.gather(*(_reap_one(item) for item in processes))
+        return (
+            sum(outcome == "reaped" for outcome in outcomes),
+            sum(outcome == "abandoned" for outcome in outcomes),
+        )
+
     def drain_pending(self) -> None:
         while self._pending:
             coro = self._pending.popleft()
@@ -570,20 +757,121 @@ class EngineRun:
 
     async def cancel_active(self) -> None:
         """Cancel and await all in-flight spawned tasks; tasks that don't settle
-        within ``engine.cancel_timeout_s`` are abandoned with a logged warning."""
-        if not self._active:
-            return
+        within ``engine.cancel_timeout_s`` are abandoned. Run-owned CLI process
+        groups are reaped independently so a non-cooperative task cannot keep
+        its child alive."""
         tasks = list(self._active)
+        processes = self._live_cli_processes()
+        if not tasks and not processes:
+            return
         for t in tasks:
             t.cancel()
+
+        # Start process cleanup immediately after task cancellation rather than
+        # after the task timeout. A task that swallows CancelledError is exactly
+        # the case where waiting first would leave the child burning work.
+        process_reaper = (
+            asyncio.ensure_future(self._reap_cli_processes(processes)) if processes else None
+        )
         timeout = self.engine.cancel_timeout_s
-        done, pending = await asyncio.wait(tasks, timeout=timeout)
-        if pending:
-            count = len(pending)
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=timeout)
+        else:
+            pending = set()
+        processes_reaped, processes_abandoned = (
+            await process_reaper if process_reaper is not None else (0, 0)
+        )
+
+        # The snapshot above was taken before the tasks were cancelled, so it
+        # cannot contain a process a task spawned on its way down -- and a task
+        # that swallows CancelledError is free to spawn one. Rescan until a pass
+        # finds no NEW arrivals, so cancel_active does not return leaving a child
+        # it never saw.
+        #
+        # Strictly new arrivals: an entry this call already tried is not tried
+        # again here. A reap that raised has been counted as abandoned once and
+        # left tracked deliberately, so re-attempting it would report the same
+        # stuck child several times and spend the whole budget on it. Bounded
+        # because a task spawning on every sweep would otherwise loop forever,
+        # and reaching the cap is logged rather than swallowed.
+        attempted = {id(item.process) for item in processes}
+        for _ in range(_CANCEL_RESCAN_PASSES):
+            stragglers = [
+                item for item in self._live_cli_processes() if id(item.process) not in attempted
+            ]
+            if not stragglers:
+                break
+            attempted.update(id(item.process) for item in stragglers)
+            late_reaped, late_abandoned = await self._reap_cli_processes(stragglers)
+            processes_reaped += late_reaped
+            processes_abandoned += late_abandoned
+        else:
+            # The cap was reached, so a task is still spawning. Shut the
+            # tracking door FIRST, before the scan and before the reap awaits.
+            # From here ``_track_cli_process`` ends a new spawn's group on the
+            # spot instead of filing it in a map that nothing will sweep again,
+            # so the scan below is the complete and final set: that method is
+            # the map's only writer, and it cannot add while the door is shut.
+            #
+            # Closing after the reap does not work, and neither does leaving it
+            # to the run's own teardown, because closing tracking only governs
+            # FUTURE spawns -- it does nothing about an entry that is already in
+            # the map. That is how a child spawned during the final reap's await
+            # stayed both tracked and alive after cancellation returned.
+            #
+            # Restored afterwards rather than left closed. ``cancel_active`` is
+            # not always terminal: ``_degrade_export`` cancels and then runs the
+            # partial export under the same spawn observer, and those spawns are
+            # legitimate and must still be tracked.
+            tracking_was_closed = self._cli_tracking_closed
+            self._cli_tracking_closed = True
+            try:
+                late = [
+                    item for item in self._live_cli_processes() if id(item.process) not in attempted
+                ]
+                if late:
+                    logger.warning(
+                        "cancel_active: %d CLI process(es) were still arriving after %d rescan "
+                        "passes; a task is spawning faster than the reaper can clear",
+                        len(late),
+                        _CANCEL_RESCAN_PASSES,
+                    )
+                    # Reap them anyway. The cap is there to stop an endless
+                    # spawn-and-rescan loop, and one final pass over the entries
+                    # already in hand does not reopen that, because nothing is
+                    # rescanned after it. Logging alone left these tracked and
+                    # running, which is how cancel_active returned with live
+                    # run-owned children -- the outcome the rescan exists to avoid.
+                    late_reaped, late_abandoned = await self._reap_cli_processes(late)
+                    processes_reaped += late_reaped
+                    processes_abandoned += late_abandoned
+            finally:
+                self._cli_tracking_closed = tracking_was_closed
+
+        record = CancellationRecord(
+            tasks_cancelled=len(tasks),
+            tasks_abandoned=len(pending),
+            processes_reaped=processes_reaped,
+            processes_abandoned=processes_abandoned,
+        )
+        self.cancellation_records.append(record)
+        self.notify(
+            "active_cancelled",
+            tasks_cancelled=record.tasks_cancelled,
+            tasks_abandoned=record.tasks_abandoned,
+            processes_reaped=record.processes_reaped,
+            processes_abandoned=record.processes_abandoned,
+        )
+
+        if pending or processes_reaped or processes_abandoned:
             names = [t.get_name() if hasattr(t, "get_name") else repr(t) for t in pending]
             logger.warning(
-                "cancel_active: %d task(s) did not finish within %.1fs and were abandoned: %s",
-                count,
+                "cancel_active: tasks_cancelled=%d tasks_abandoned=%d "
+                "processes_reaped=%d processes_abandoned=%d after %.1fs; abandoned=%s",
+                len(tasks),
+                len(pending),
+                processes_reaped,
+                processes_abandoned,
                 timeout,
                 names,
             )
@@ -900,12 +1188,17 @@ class Engine:
         bounded. Returns _UNSET on failure/timeout; an external cancel still propagates."""
         # Cancel background tasks so synthesis sees a stable snapshot and no
         # work burns tokens past budget exhaustion (no-op if _active is empty).
-        if run._active:
+        if run._active or run._live_cli_processes():
             await run.cancel_active()
         # asyncio.shield keeps the export running outside the cancelled scope;
         # the hard timeout bounds it so a hung synthesis call can't extend the run.
         partial_coro = self._partial_export(run, *args, **kwargs)
-        partial_task = asyncio.ensure_future(partial_coro)
+        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+            _observe_run_cli_spawns,
+        )
+
+        with _observe_run_cli_spawns(run._track_cli_process):
+            partial_task = asyncio.ensure_future(partial_coro)
         try:
             return await asyncio.wait_for(
                 asyncio.shield(partial_task),
@@ -967,7 +1260,15 @@ class Engine:
             watchdog = asyncio.ensure_future(run._deadline_watchdog())
         # Wrapping _run() in a task lets the deadline bound *all* in-flight work —
         # sequential awaits inside _run(), not just spawned background tasks.
-        run_task = asyncio.ensure_future(self._run(run, *args, **kwargs))
+        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+            _observe_run_cli_spawns,
+        )
+
+        # Context is copied into the run task and every task it creates, then
+        # reset immediately in the caller. Other concurrent runs therefore
+        # cannot acquire this run's process ownership callback.
+        with _observe_run_cli_spawns(run._track_cli_process):
+            run_task = asyncio.ensure_future(self._run(run, *args, **kwargs))
         run._run_task = run_task
         result: Any = _UNSET
         partial_result: Any = _UNSET
@@ -1016,28 +1317,36 @@ class Engine:
                     await watchdog
             # Drain tasks still in _active regardless of how run() exited; shielded so
             # cleanup finishes even under a caller cancel (which still re-raises below).
-            if run._active:
-                drain = asyncio.ensure_future(run.cancel_active())
-                try:
-                    await asyncio.shield(drain)
-                except asyncio.CancelledError:
-                    if drain.cancelled():
+            # Tracking closes afterwards rather than before, and on every exit path
+            # including the re-raises: while the drain is still running there is a
+            # loop to await on, so a late spawn is better caught by the drain's own
+            # rescan and ended with a grace period. Only once nothing will sweep
+            # again does an arriving spawn have to be stopped where it stands.
+            try:
+                if run._active or run._live_cli_processes():
+                    drain = asyncio.ensure_future(run.cancel_active())
+                    try:
+                        await asyncio.shield(drain)
+                    except asyncio.CancelledError:
+                        if drain.cancelled():
+                            raise
+                        # External cancel: keep waiting the shielded drain (absorbing
+                        # repeat cancels) so no run-owned task outlives run().
+                        while not drain.done():
+                            try:
+                                await asyncio.shield(drain)
+                            except asyncio.CancelledError:
+                                continue
+                        if not drain.cancelled() and drain.exception() is not None:
+                            logger.exception(
+                                "engine active-task drain failed",
+                                exc_info=drain.exception(),
+                            )
                         raise
-                    # External cancel: keep waiting the shielded drain (absorbing
-                    # repeat cancels) so no run-owned task outlives run().
-                    while not drain.done():
-                        try:
-                            await asyncio.shield(drain)
-                        except asyncio.CancelledError:
-                            continue
-                    if not drain.cancelled() and drain.exception() is not None:
-                        logger.exception(
-                            "engine active-task drain failed",
-                            exc_info=drain.exception(),
-                        )
-                    raise
-                except Exception:
-                    logger.exception("engine active-task drain failed")
+                    except Exception:
+                        logger.exception("engine active-task drain failed")
+            finally:
+                run._cli_tracking_closed = True
         if partial_result is not _UNSET:
             result = partial_result
         if result is _UNSET:

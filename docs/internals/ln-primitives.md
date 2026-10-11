@@ -139,6 +139,15 @@ direct-child `kill()` cleanup is still attempted. This intentionally prefers
 leaving a straggler for higher-level cleanup over killing an unrelated process
 group.
 
+One case has no member witness to match: a spawn marker was supplied but the
+group scan finds no member carrying it, as happens where the platform will not
+list processes. While the leader is still running it holds the group id, so
+`capture_group_witnesses()` anchors the group to the leader instead, and a
+positive `killpg(pgid, 0)` probe stands in for the member match. The anchor is checked again when it is used, not only when it is
+captured: once the leader has been reaped the group id is free to be reissued,
+so the anchor authorizes nothing and no probe is sent. A leader already reaped
+at capture gets no anchor at all.
+
 That verification narrows but cannot close the final race. The identity read
 and `killpg()` remain separate system calls; the verified group can drain and
 its number can be reassigned in between them. POSIX process groups provide no

@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -1037,3 +1037,136 @@ def test_group_witness_revalidation_rejects_a_reused_pid():
 
     assert matched is False
     probe.assert_called_once_with(7777, 7777)
+
+
+def test_a_reaped_leader_anchors_nothing_when_the_group_scan_finds_no_member():
+    """A freed PGID must not be signalled on a bare liveness probe.
+
+    When the marker scan returns nothing, capture falls back to anchoring the
+    group by its number and revalidating with ``killpg(pgid, 0)`` before
+    signalling. That is sound only while the leader is alive, because a live
+    leader is what keeps the PGID from being reissued. Once the leader has been
+    reaped the group can be empty and the number handed to something else, and
+    the probe would then answer for whoever holds it now -- which is authority
+    to SIGKILL an unrelated process group.
+    """
+    import lionagi.ln._proc as proc_mod
+
+    with patch.object(proc_mod, "live_group_members", MagicMock(return_value=([], False))):
+        captured = capture_group_witnesses(
+            SimpleNamespace(pid=7777, returncode=0),
+            expected_leader_created=20.0,
+            expected_marker="marker-value",
+        )
+
+    assert captured == ()
+    assert not getattr(captured, "group_anchor", False)
+
+
+def test_a_live_leader_still_anchors_its_group_when_the_scan_is_unreadable():
+    """The must-match half: an unreadable scan must not disarm a live group.
+
+    Some environments deny a process listing even for this user's own
+    processes. While the leader is still running it holds the PGID, so nothing
+    else can be occupying it and the anchor remains real evidence.
+    """
+    import lionagi.ln._proc as proc_mod
+
+    with patch.object(proc_mod, "live_group_members", MagicMock(return_value=([], False))):
+        captured = capture_group_witnesses(
+            SimpleNamespace(pid=7777, returncode=None),
+            expected_leader_created=20.0,
+            expected_marker="marker-value",
+        )
+
+    assert tuple(captured) == ((7777, 20.0),)
+    assert getattr(captured, "group_anchor", False) is True
+
+
+def test_signalling_needs_a_matching_witness_and_not_only_a_live_pgid():
+    """Signalling authority comes from the witness set, never from liveness.
+
+    A witness set carrying the group id but no longer matching any live member
+    used to escalate through ``killpg(pgid, 0)``. That path could only be
+    reached once the real members were gone, which is exactly when the number
+    is free to be reused.
+    """
+    import lionagi.ln._proc as proc_mod
+
+    killpg = MagicMock()
+    with (
+        patch.object(proc_mod, "_group_has_witness", MagicMock(return_value=False)),
+        patch.object(proc_mod.os, "killpg", killpg),
+    ):
+        signalled = proc_mod.signal_group_if_witnessed(7777, ((7777, 20.0),), signal.SIGKILL)
+
+    assert signalled is False
+    killpg.assert_not_called()
+
+
+def test_an_anchor_stops_authorizing_a_kill_once_its_leader_exits():
+    """The anchor is re-checked where it is SPENT, not only where it is minted.
+
+    Capture refuses to mint an anchor for an already-reaped leader, and that
+    guard is real, but it cannot answer this question: an anchor exists in
+    order to be used later, and "later" is exactly when the leader gets
+    reaped. Between capture and signalling the leader can exit, the group can
+    empty out, and the kernel is then free to hand the number to something
+    else -- at which point ``killpg(pgid, 0)`` succeeds for a completely
+    unrelated group and reads as proof of ownership.
+    """
+    import lionagi.ln._proc as proc_mod
+
+    leader = SimpleNamespace(pid=7777, returncode=None)
+    with patch.object(proc_mod, "live_group_members", MagicMock(return_value=([], False))):
+        captured = capture_group_witnesses(
+            leader,
+            expected_leader_created=20.0,
+            expected_marker="marker-value",
+        )
+    assert getattr(captured, "group_anchor", False) is True
+
+    # The leader exits after the anchor was captured.
+    leader.returncode = 0
+
+    killpg = MagicMock()
+    with (
+        patch.object(proc_mod, "_group_has_witness", MagicMock(return_value=False)),
+        patch.object(proc_mod.os, "killpg", killpg),
+    ):
+        signalled = proc_mod.signal_group_if_witnessed(7777, captured, signal.SIGKILL)
+
+    assert signalled is False
+    # Not even the liveness probe: asking at all is what turns a recycled PGID
+    # into an answer.
+    killpg.assert_not_called()
+
+
+def test_an_anchor_still_authorizes_a_kill_while_its_leader_is_live():
+    """The must-match half, so the guard above cannot pass by refusing everything.
+
+    While the leader is running it holds the PGID and nothing else can be
+    occupying it, so the anchor is real evidence and the force-kill path has to
+    stay available -- that path is the only thing that ends a group whose
+    process listing this platform will not produce.
+    """
+    import lionagi.ln._proc as proc_mod
+
+    leader = SimpleNamespace(pid=7777, returncode=None)
+    with patch.object(proc_mod, "live_group_members", MagicMock(return_value=([], False))):
+        captured = capture_group_witnesses(
+            leader,
+            expected_leader_created=20.0,
+            expected_marker="marker-value",
+        )
+    assert getattr(captured, "group_anchor", False) is True
+
+    killpg = MagicMock()
+    with (
+        patch.object(proc_mod, "_group_has_witness", MagicMock(return_value=False)),
+        patch.object(proc_mod.os, "killpg", killpg),
+    ):
+        signalled = proc_mod.signal_group_if_witnessed(7777, captured, signal.SIGKILL)
+
+    assert signalled is True
+    assert killpg.call_args_list == [call(7777, 0), call(7777, signal.SIGKILL)]

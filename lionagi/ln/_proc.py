@@ -26,6 +26,13 @@ class _GroupWitnesses:
 
     members: tuple[tuple[int, float], ...]
     group_anchor: bool = False
+    # The handle whose liveness is the anchor's entire justification. Carried
+    # so the claim can be re-checked when the anchor is USED, which is a
+    # different moment from when it was captured: a leader that was live at
+    # capture can be gone by the time something asks to signal the group, and
+    # that is exactly when the PGID becomes free to reissue. Only set when
+    # ``group_anchor`` is true; nothing else consults it.
+    leader: Any = None
 
     def __iter__(self):
         return iter(self.members)
@@ -423,7 +430,23 @@ def capture_group_witnesses(
             # fallback witness and require a live group probe immediately
             # before signalling. A foreign or empty group therefore remains
             # outside this path.
-            return _GroupWitnesses(((pgid, expected_leader_created),), group_anchor=True)
+            #
+            # That argument holds only while the leader is still live, because
+            # a live leader is what keeps the PGID from being handed out again.
+            # Once it has been reaped the group can be empty and the number
+            # reused, and the liveness probe would then answer for whoever
+            # holds it now -- authorizing a SIGKILL against an unrelated group.
+            # Nothing is left to witness ownership here, so claim nothing.
+            # Checked again where the anchor is used, not only here. This test
+            # settles whether an anchor may be MINTED; it cannot settle whether
+            # one may be SPENT, because the leader can exit in between.
+            if _child_is_reaped(proc):
+                return ()
+            return _GroupWitnesses(
+                ((pgid, expected_leader_created),),
+                group_anchor=True,
+                leader=proc,
+            )
         # While the leader is still live, its start time must also match the
         # spawn observation. After it has exited, the inherited marker on a
         # surviving group member is the remaining proof that this PGID is ours.
@@ -443,33 +466,47 @@ def signal_group_if_witnessed(
     pgid: Any,
     witnesses: tuple[tuple[int, float], ...],
     sig: signal.Signals,
-    *,
-    expected_marker: str | None = None,
 ) -> bool:
-    """Signal *pgid* only when a frozen member identity still matches."""
+    """Signal *pgid* only when a frozen member identity still matches.
+
+    The marker is checked where the witnesses are captured, so it is not taken
+    again here: by this point the witness set either proves the group is ours,
+    or there is nothing left that can prove it and nothing is signalled.
+    """
     resolved = safe_pgid_value(pgid)
     if resolved is None or not witnesses:
         return False
     witnessed = _group_has_witness(resolved, witnesses)
     if not witnessed and getattr(witnesses, "group_anchor", False):
-        # The live leader identity anchored this group before the scan became
-        # unreadable. Keep the force-kill path available when the leader exits,
-        # but demand a positive liveness probe before using the numeric PGID.
+        # The live leader identity anchored this group when the scan turned out
+        # to be unreadable. That anchor is worth something only for as long as
+        # the leader is still live, because a live leader is the one thing
+        # keeping the kernel from handing this PGID to somebody else. Once it
+        # has been reaped the group can be empty and the number reissued, and a
+        # liveness probe would then answer for whoever holds it now.
+        #
+        # So the anchor is re-checked HERE, at the moment it is spent. The
+        # capture-time check cannot stand in for this one: an anchor exists
+        # precisely to be used later, and "later" is when the leader exits.
+        # Without this, killpg(pgid, 0) succeeding on a recycled PGID reads as
+        # ownership and the SIGKILL below lands on an unrelated group.
+        leader = getattr(witnesses, "leader", None)
+        if leader is None or _child_is_reaped(leader):
+            return False
+        # Still ours by identity; a positive liveness probe is the remaining
+        # requirement before using the numeric PGID.
         try:
             os.killpg(resolved, 0)
         except (ProcessLookupError, PermissionError, OSError):
             return False
         witnessed = True
-    if not witnessed and expected_marker and any(pid == resolved for pid, _ in witnesses):
-        # On platforms where process enumeration is unavailable, the marker
-        # verified at spawn is the proof of ownership and killpg(0) is the
-        # final liveness check. PGIDs cannot be reused while this group is
-        # populated; an empty/foreign group is never signalled here.
-        try:
-            os.killpg(resolved, 0)
-        except (ProcessLookupError, PermissionError, OSError):
-            return False
-        witnessed = True
+    # A second liveness-probe escalation used to sit here, justified by process
+    # enumeration being unavailable. It could not reach that case: witnesses
+    # carrying group_anchor are handled above, and every other witness set was
+    # built from an enumeration that succeeded. So it ran only when real,
+    # marker-verified members had all stopped matching -- the group gone, its
+    # PGID free to be reissued -- and turned a bare liveness probe on that
+    # number into authority to SIGKILL whoever now holds it.
     if not witnessed:
         return False
     try:
@@ -544,6 +581,11 @@ def terminate_process_group(
     a witness captured only at teardown cannot distinguish the original child
     from a process that has since reused its PID. ``grace=None`` sends SIGKILL
     immediately; see :func:`aterminate_process_group` for the escalate cycle.
+
+    ``expected_marker`` is accepted for call-site compatibility and is not
+    read. The marker is verified where the witnesses are captured, so by the
+    time it reaches here the witness set either proves the group is ours or
+    nothing does; re-checking a name at signal time would add no authority.
     """
     pgid = _safe_pgid(proc)
     witnesses = group_witnesses or ()
@@ -551,28 +593,12 @@ def terminate_process_group(
         # Signal group AND direct child: proc.kill() is normally a no-op (child is
         # in the killed group) but prevents orphaning it when killpg is unavailable.
         if pgid is not None:
-            if expected_marker is None:
-                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
-            else:
-                signal_group_if_witnessed(
-                    pgid,
-                    witnesses,
-                    signal.SIGKILL,
-                    expected_marker=expected_marker,
-                )
+            signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         return
     # sig_first only; caller drives the wait + SIGKILL escalation.
-    if expected_marker is None:
-        signal_group_if_witnessed(pgid, witnesses, sig_first)
-    else:
-        signal_group_if_witnessed(
-            pgid,
-            witnesses,
-            sig_first,
-            expected_marker=expected_marker,
-        )
+    signal_group_if_witnessed(pgid, witnesses, sig_first)
     with contextlib.suppress(ProcessLookupError):
         proc.terminate()
 
@@ -642,33 +668,22 @@ async def aterminate_process_group(
     Omitting ``group_witnesses`` is fail-closed for group signalling and still
     cleans up the direct child. With witnesses, wait up to ``grace`` after the
     first signal and then escalate to SIGKILL; ``grace=None`` skips that wait.
+
+    ``expected_marker`` is accepted for call-site compatibility and is not
+    read. The marker is verified where the witnesses are captured, so by the
+    time it reaches here the witness set either proves the group is ours or
+    nothing does; re-checking a name at signal time would add no authority.
     """
     pgid = _safe_pgid(proc)
     witnesses = group_witnesses or ()
     if grace is None:
         # No prior SIGTERM/wait: signal group AND direct child directly.
         if pgid is not None:
-            if expected_marker is None:
-                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
-            else:
-                signal_group_if_witnessed(
-                    pgid,
-                    witnesses,
-                    signal.SIGKILL,
-                    expected_marker=expected_marker,
-                )
+            signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         return
-    if expected_marker is None:
-        signal_group_if_witnessed(pgid, witnesses, sig_first)
-    else:
-        signal_group_if_witnessed(
-            pgid,
-            witnesses,
-            sig_first,
-            expected_marker=expected_marker,
-        )
+    signal_group_if_witnessed(pgid, witnesses, sig_first)
     with contextlib.suppress(ProcessLookupError):
         proc.terminate()
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
@@ -691,15 +706,7 @@ async def aterminate_process_group(
             # matches immediately before the signal. The final identity-read to
             # killpg gap cannot be closed with portable process-group APIs; see
             # docs/internals/ln-primitives.md#signalling-a-group.
-            if expected_marker is None:
-                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
-            else:
-                signal_group_if_witnessed(
-                    pgid,
-                    witnesses,
-                    signal.SIGKILL,
-                    expected_marker=expected_marker,
-                )
+            signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         # Bounded too: a caller that has already escalated to SIGKILL is done

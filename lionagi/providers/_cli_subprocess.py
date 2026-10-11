@@ -14,6 +14,7 @@ import shutil
 import signal
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -90,6 +91,28 @@ class SpawnedProcess:
     # Hidden from the callback's representation and equality so the public
     # identity remains pid/pgid/start-time.
     _group_marker: str | None = field(default=None, repr=False, compare=False)
+
+
+# Engine runs bind this observer only while creating their run task. Context
+# propagation then associates every descendant CLI spawn with that one run,
+# including providers whose public request model has no ``on_spawn`` field.
+# The process handle stays runtime-only and never crosses the public callback.
+_RUN_CLI_SPAWN_OBSERVER: ContextVar[
+    Callable[[Any, SpawnedProcess], None | Awaitable[None]] | None
+] = ContextVar("lionagi_run_cli_spawn_observer", default=None)
+
+
+@contextlib.contextmanager
+def _observe_run_cli_spawns(
+    observer: Callable[[Any, SpawnedProcess], None | Awaitable[None]],
+):
+    """Bind a run-local CLI spawn observer for tasks created in this context."""
+
+    token = _RUN_CLI_SPAWN_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _RUN_CLI_SPAWN_OBSERVER.reset(token)
 
 
 class Redacted:
@@ -236,20 +259,18 @@ def _end_group_with_evidence(
     have reaped the pid before the event loop publishes its return code. A
     matching start-time witness is the only group-wide authority here.
     See docs/internals/providers.md#cli-subprocess-lifecycle.
+
+    ``expected_marker`` is accepted for call-site compatibility and is not
+    read. The marker is verified where the witnesses are captured, so by the
+    time it reaches here the witness set either proves the group is ours or
+    nothing does; re-checking a name at signal time would add no authority.
     """
     pgid = getattr(proc, "pid", None)
     sigkill = getattr(signal, "SIGKILL", None)
     if sigkill is None:
         signalled = False
-    elif expected_marker is None:
-        signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
     else:
-        signalled = signal_group_if_witnessed(
-            pgid,
-            witnesses,
-            sigkill,
-            expected_marker=expected_marker,
-        )
+        signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
     with contextlib.suppress(ProcessLookupError, OSError):
         proc.kill()
     return "killed-witnessed" if signalled else "unproven"
@@ -272,6 +293,16 @@ async def end_child_group(
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     witnesses = _witnesses_for_spawn(proc, spawned) if spawned is not None else ()
+    # The paired branches below look like duplication -- every callee here
+    # IGNORES ``expected_marker``, since the marker is verified where the
+    # witnesses are captured -- but omitting the keyword and passing it as None
+    # are not the same call, and the difference is observable to anything that
+    # substitutes one of these functions. Collapsing them breaks
+    # test_graceful_teardown_does_not_repeat_a_numeric_sweep_after_reaping,
+    # whose double declares only ``(child, *, grace, group_witnesses)`` on
+    # purpose, so it pins the call shape as well as the behaviour. The
+    # branching stays, and the parameter is documented as compatibility-only at
+    # each definition rather than removed, which is the wider change.
     expected_marker = spawned._group_marker if spawned is not None else None
     swept = False
     try:
@@ -711,13 +742,20 @@ async def ndjson_from_cli(
         spawn.add_done_callback(_kill_abandoned_spawn)
         raise
 
-    if on_spawn is not None:
-        # Read the identity here, not at teardown: once the child is reaped its
-        # pid and group id are both recyclable, so either read then can resolve
-        # to a stranger's, and the start time that would have told them apart is
-        # readable only while the process is alive. See docs/internals/runtime.md.
+    # Read the identity here, not at teardown: once the child is reaped its pid
+    # and group id are both recyclable. The run observer receives the live
+    # handle privately; the caller callback keeps its existing identity-only
+    # contract. Both are awaited before output is consumed, and failed
+    # accounting tears down the child.
+    observers = (
+        (_RUN_CLI_SPAWN_OBSERVER.get(), (proc, spawned)),
+        (on_spawn, (spawned,)),
+    )
+    for observer, args in observers:
+        if observer is None:
+            continue
         try:
-            await maybe_await(on_spawn(spawned))
+            await maybe_await(observer(*args))
         except BaseException:
             await end_child_group(proc, spawned=spawned)
             raise

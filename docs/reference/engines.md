@@ -17,9 +17,11 @@ Stateless event-driven engine base.
 | `deadline_s` | `None` | Wall-clock cap in seconds; `None` = unbounded. |
 | `judge_model` | `None` | If set, a cheap gate agent runs at expansion points. `None` = no gate (fail-open). |
 | `judge_role` | `"critic"` | Casts role for the judge agent. |
-| `cancel_timeout_s` | `30.0` | Seconds to wait for spawned tasks to settle after cancellation. Tasks still pending at the deadline are warned about and abandoned after one final cancellation request. |
+| `cancel_timeout_s` | `30.0` | Seconds to wait for spawned tasks to settle after cancellation. Tasks still pending at the deadline are warned about and abandoned after one final cancellation request. CLI process-group cleanup starts immediately after task cancellation and has its own bounded TERM-to-KILL grace. |
 
 On budget exhaustion `Engine.run()` calls `_partial_export()` (override in subclasses to return a partial result) instead of raising. Caller-initiated cancellation still propagates as `CancelledError`.
+
+Every CLI process started under an engine run through the shared provider spawn helper, which every built-in CLI provider uses, is registered with that run. `EngineRun.cancel_active()` asks tasks to cancel, independently reaps any still-live registered process groups, and appends a `CancellationRecord` to `run.cancellation_records`. The record keeps four counts separate: `tasks_cancelled`, `tasks_abandoned`, `processes_reaped`, and `processes_abandoned` — a reap that raised, so the child is still running. Read `processes_abandoned` rather than inferring from `processes_reaped == 0`, which a run with nothing to reap also produces. A reap counts under `processes_reaped` once the direct child is ended; when nothing proves the child's process group is still the spawn's own, the rest of that group is not signalled. A normally completed CLI worker is not signalled, and a run with no CLI workers does no process cleanup. The tracked group is the child's initial process group, not a containment boundary: a descendant that deliberately creates another session is outside this guarantee.
 
 ---
 
