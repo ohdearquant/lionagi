@@ -6,6 +6,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.4] - 2026-10-11
+
+### Added
+
+- Model ids for Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5; GPT-6 Sol, GPT-6.1 Sol, GPT-6
+  Astra and GPT-6 Luna; and Gemini 3.8 Flash, with their context windows in each provider table that
+  lists them. The Claude `xhigh` effort allow-list adds Opus 5.5, Sonnet 5 and 5.5, Haiku 5.5, and
+  Fable 5 and 5.1. The Studio catalog adds the new rows and keeps every existing one, so a saved
+  conversation still resolves its model.
+
+### Changed
+
+- Bare `sonnet` now resolves to Claude Sonnet 5.5. Bare `flash`, `gemini-flash` and the Gemini CLI
+  default move to Gemini 3.8 Flash, which resolves to the Medium tier and takes `-low`, `-medium` and
+  `-high` suffixes; versioned ids keep their mapping and bare `pro` stays on Gemini 3.1 Pro. On the
+  GPT-6 line, codex effort `ultra` clamps to `max`.
+- `li agent`, `li o flow` and `li o fanout` hand the CLI they spawn exactly the MCP server set they
+  resolved. `--no-mcp-config`, or a named config that lists no servers, is a declared empty set and is
+  handed over as the whole set (`--strict-mcp-config` with an empty map for Claude, each server in
+  codex's own configuration disabled by name); a search that finds nothing still leaves the leg to
+  what its CLI discovers. Flow checkpoints and new `li agent` branches record the MCP choice, and a
+  resume that names no flag replays it, replacing the earlier run's servers rather than adding to
+  them. A resume whose recorded config is missing or unreadable is refused with a message naming it.
+- Workers spawned by an orchestration no longer receive lionagi's own job-control MCP server (`li
+  mcp`, `python -m lionagi.mcp`, `python -m lionagi.cli mcp`, including through `uv run`, `uvx` or
+  `env`), which let a worker start, inspect and kill runs out of band of agent limits, budget
+  accounting and the run DAG. The orchestrator keeps the full set; an explicit `--mcp-config` is
+  honoured as given.
+
+### Fixed
+
+- Cancelling an engine run reaps every CLI process the run owns, including ones spawned late, so a
+  worker that swallows cancellation can no longer keep its child running. Each pass appends a
+  `CancellationRecord` to `run.cancellation_records` counting tasks cancelled and abandoned and
+  processes reaped and abandoned.
+- Teardown signals a child's process group only while a member it can prove belongs to the spawn
+  still pins it (the leader matched by its start time, or a member carrying the spawn's marker);
+  otherwise only the direct child is ended. A late teardown can no longer signal a group that a
+  reused pid now belongs to. This covers the CLI provider stream, tool and shell hooks, notification
+  delivery, secret lookups, lifecycle notify handlers, the Studio scheduler and the shell and coding
+  tools' command runner.
+- On macOS, process start times are read without psutil's clock-slew adjustment, so a start time
+  recorded at launch keeps matching the one read later by the kill path, the Studio liveness check
+  and job reaping; a live run no longer reads as a recycled pid.
+- A background run submitted through the MCP server with a `notify_sender` the submitting directory
+  cannot sign for is refused at submit instead of failing at delivery.
+
+### Security
+
+- Log lines mask credentials: a URL's password (for any SQLAlchemy dialect), `password` query values
+  in any case, and `user:secret@` spans outside a URL are written as `***`, overlapping spans masked
+  as one. `mask_db_url` masks the text it is given instead of rebuilding the URL, `log_error` passes
+  its message through the masker, a malformed `secrets.lookup` block is reported by type and position
+  rather than by value, and the circuit breaker no longer logs its constructor arguments.
+- The repository's lock file now requires patched releases of urllib3 (2.8.0), multidict (6.9.1),
+  PyJWT (2.15.0), docling (2.132.0), virtualenv (21.7.13), fsspec (2026.6.0), cairosvg (2.9.1),
+  datamodel-code-generator (0.81.0) and accelerate (1.15.0). These apply to the repository's own
+  environment and do not change what installing lionagi requires.
+- CI checkouts no longer persist the job token in `.git/config`.
+
 ## [0.35.3] - 2026-10-02
 
 ### Fixed
