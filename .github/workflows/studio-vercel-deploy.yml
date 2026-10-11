@@ -20,6 +20,9 @@ concurrency:
 
 jobs:
   deploy:
+    # lion1 releases from this repository under lion1-v* tags; only a lionagi
+    # release (a v* tag) or a manual dispatch deploys the studio.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -35,7 +38,7 @@ jobs:
             exit 0
           fi
           current="${GITHUB_REF_NAME}"
-          previous="$(git tag --sort=-v:refname | grep -v "^${current}$" | head -n1 || true)"
+          previous="$(git tag --list 'v*' --sort=-v:refname | grep -v "^${current}$" | head -n1 || true)"
           if [ -z "$previous" ]; then
             echo "No previous release tag — deploying Lion Studio (first release-time deploy)."
             echo "deploy=true" >> "$GITHUB_OUTPUT"
