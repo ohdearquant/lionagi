@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from lionagi.state.engine import mask_credentials
+
 __all__ = (
     "configure_cli_logging",
     "progress",
@@ -112,4 +114,4 @@ def warn(msg: str) -> None:
 
 def log_error(msg: str) -> None:
     """Emit a user-facing error. Always visible, auto-prefixed with 'error:'."""
-    logging.getLogger(_ERROR_LOGGER_NAME).error(msg)
+    logging.getLogger(_ERROR_LOGGER_NAME).error(mask_credentials(msg))
