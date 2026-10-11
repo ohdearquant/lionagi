@@ -725,6 +725,27 @@ class ReviewEngine(Engine):
         emits = (VerifyResult,)
         ref = _clean_ref(dimensions)
         clean = run.by_type(DimensionClean)
+        # ARRIVAL IS "A VERIFY RESULT LANDED", NOT "THE MODEL ECHOED OUR TOKEN".
+        #
+        # `VerifyResult.ref` defaults to "", so an audit that emits everything
+        # else and drops the echo still validates and lands in the run. Keyed on
+        # the echo, such an audit was invisible to the arrival check: the repair
+        # pass re-prompted, the second emission dropped the echo the same way,
+        # and the stage recorded two missing emissions for a dimension that had
+        # reported twice, which then blocked the verdict.
+        #
+        # The token was never load-bearing for ARRIVAL. `_run` reaches this stage
+        # only when the run holds ZERO VerifyResult (see the gate above), so
+        # anything that lands during it is this audit and nothing else, which is
+        # exactly as specific as the ref and cannot be defeated by a dropped echo.
+        # The baseline is taken anyway rather than asserting the gate from in here:
+        # a future caller that relaxes the gate gets correct behaviour instead of a
+        # stale comment.
+        before = len(run.by_type(VerifyResult))
+
+        def _fresh() -> list:
+            return run.by_type(VerifyResult)[before:]
+
         async with run._sem:
             verifier = await run.make_agent(
                 self.verifier_role,
@@ -736,10 +757,32 @@ class ReviewEngine(Engine):
             await run.operate_with_repair(
                 verifier,
                 _verify_clean_instruction(artifact, clean, ref),
-                arrived=lambda: any(v.ref == ref for v in run.by_type(VerifyResult)),
+                arrived=lambda: bool(_fresh()),
                 emits=emits,
                 retries=self.repair_retries,
             )
+            # THE TOKEN IS STILL LOAD-BEARING DOWNSTREAM, so stamp it here rather
+            # than teaching every reader to live without it: `_verdict_instruction`
+            # partitions clean audits from issue verifications by `v.ref == clean
+            # ref` alone, so a ref-less audit would otherwise be presented to the
+            # synthesis agent as an adversarial verification OF AN ISSUE, and
+            # `_verify_execution_record` would read the clean audit as absent. The
+            # stamp is on the stored event (`by_type` returns the payload itself),
+            # so every later read agrees.
+            #
+            # The mismatch is recorded, not silently repaired: if the echo starts
+            # failing for a NEW reason -- a renamed field, a model that invents its
+            # own token -- the count of these lines is the signal, and without it
+            # the fix would hide the next defect as effectively as it fixes this one.
+            for v in _fresh():
+                if v.ref != ref:
+                    run.notify(
+                        "verify_clean_ref_stamped",
+                        agent="verify-clean",
+                        expected=ref,
+                        got=v.ref,
+                    )
+                    v.ref = ref
 
     async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
         # Base runs carry no attribution, so they cannot report the condition.
