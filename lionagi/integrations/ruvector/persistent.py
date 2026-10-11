@@ -67,6 +67,8 @@ class PersistentRuVectorStore(RuVectorStore):
             raise ValueError("embedding_id must not be empty")
         self.path = Path(path).absolute()
         self._closed = False
+        self._evaluation_active: bool = False
+        self._evaluation_time: float | None = None
         self._events: dict[str, tuple[str, str, float]] = {}
         self._aggregates: dict[str, dict[str, tuple[float, int]]] = {}
         self._validate_path(self.path, missing=True)
@@ -320,6 +322,11 @@ class PersistentRuVectorStore(RuVectorStore):
             raise RuntimeError("persistent store is closed")
         super()._check()
 
+    def _assert_writable(self) -> None:
+        self._check()
+        if getattr(self, "_evaluation_active", False):
+            raise RuntimeError("writes are disabled during ranker evaluation")
+
     def _commit(self) -> None:
         try:
             self._checkpoint()
@@ -329,14 +336,14 @@ class PersistentRuVectorStore(RuVectorStore):
 
     def add_nodes(self, nodes: list[Node]) -> list[str]:
         with self._lock:
-            self._check()
+            self._assert_writable()
             ids = super().add_nodes(nodes)
             self._commit()
             return ids
 
     def delete(self, ids: list[str]) -> int:
         with self._lock:
-            self._check()
+            self._assert_writable()
             removed = super().delete(ids)
             if removed:
                 self._events = {
@@ -370,7 +377,7 @@ class PersistentRuVectorStore(RuVectorStore):
     def record_feedback(self, context: str, node_id: str, reward: float, event_id: str) -> bool:
         """Commit one trusted reward; retries of identical evidence are idempotent."""
         with self._lock:
-            self._check()
+            self._assert_writable()
             self._validate_feedback(context, node_id, reward, event_id)
             previous = self._events.get(event_id)
             if previous is not None:
@@ -408,7 +415,7 @@ class PersistentRuVectorStore(RuVectorStore):
         """Forget a context's evidence and checkpoint the resulting state."""
         _text(context, 256, "context")
         with self._lock:
-            self._check()
+            self._assert_writable()
             previous = len(self._events)
             self._events = {
                 event: data for event, data in self._events.items() if data[0] != context

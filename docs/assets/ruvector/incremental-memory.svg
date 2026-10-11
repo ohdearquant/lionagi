@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480" viewBox="0 0 960 480" role="img" aria-labelledby="title desc">
+<title id="title">Incremental RVF memory with lifecycle and evaluation gates</title>
+<desc id="desc">A trusted host commits bounded RVF transactions through an atomic CURRENT pointer. Retrieval hides expired records. Explicit purge and compaction remove records and feedback from live artifacts. A separate evaluation gate approves a runtime feedback policy.</desc>
+<style>
+text{font-family:system-ui,Segoe UI,sans-serif;fill:#e5f4ff}.title{font-size:28px;font-weight:700}.label{font-size:17px;font-weight:650}.sub{font-size:13px;fill:#a8c6da}.box{fill:#13273b;stroke:#41667e;stroke-width:1.5}.line{stroke:#56d6b6;stroke-width:2;fill:none}.packet{fill:#56d6b6;animation:travel 4s linear infinite}.pulse{animation:pulse 4s ease-in-out infinite}.quiet{fill:#c0a4ff}
+@keyframes travel{0%{transform:translateX(0);opacity:0}10%{opacity:1}85%{opacity:1}100%{transform:translateX(232px);opacity:0}}
+@keyframes pulse{0%,100%{stroke:#41667e}50%{stroke:#56d6b6}}
+@media(prefers-reduced-motion:reduce){.packet,.pulse{animation:none}.packet{display:none}}
+</style>
+<rect width="960" height="480" rx="20" fill="#081421"/>
+<text x="40" y="54" class="title">Memory that survives. Learning that stays governed.</text>
+<text x="40" y="84" class="sub">Native RVF delta journal · explicit expiry · reversible retrieval preferences</text>
+<rect x="40" y="126" width="190" height="104" rx="14" class="box"/>
+<text x="60" y="158" class="label">Trusted application</text>
+<text x="60" y="183" class="sub">Nodes + authorized ratings</text>
+<text x="60" y="205" class="sub">Embedding model identity</text>
+<path d="M230 177H308" class="line"/>
+<circle cx="232" cy="177" r="5" class="packet"/>
+<rect x="310" y="126" width="264" height="104" rx="14" class="box pulse"/>
+<text x="330" y="158" class="label">Atomic CURRENT pointer</text>
+<text x="330" y="183" class="sub">Immutable RVF transactions</text>
+<text x="330" y="205" class="sub">Bounded replay + integrity checks</text>
+<path d="M574 177H650" class="line"/>
+<rect x="652" y="126" width="268" height="104" rx="14" class="box"/>
+<text x="672" y="158" class="label">Live memory retrieval</text>
+<text x="672" y="183" class="sub">Expired records hidden on reads</text>
+<text x="672" y="205" class="sub">Host scope filters stay enforced</text>
+<path d="M441 230V271" class="line"/>
+<rect x="310" y="273" width="264" height="108" rx="14" class="box"/>
+<text x="330" y="305" class="label">Purge + compaction</text>
+<text x="330" y="330" class="sub">Remove vectors and their ratings</text>
+<text x="330" y="352" class="sub">Reclaim obsolete managed artifacts</text>
+<rect x="652" y="273" width="268" height="108" rx="14" class="box"/>
+<text x="672" y="305" class="label quiet">Evaluation gate</text>
+<text x="672" y="330" class="sub">Quality + latency + regressions</text>
+<text x="672" y="352" class="sub">Approve policy or retain baseline</text>
+<path d="M786 273V230" stroke="#c0a4ff" stroke-width="2" fill="none" stroke-dasharray="5 5"/>
+<text x="40" y="423" class="sub">Feedback persists in RVF. Policy approvals are process local. Explicit ratings do not train the model.</text>
+<text x="40" y="450" class="sub">Private single owner storage. Application owns authorization, encryption and a trusted epoch clock.</text>
+</svg>
