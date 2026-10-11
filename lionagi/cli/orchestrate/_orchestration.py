@@ -1499,6 +1499,7 @@ def finalize_orchestration(
         "recall_turns": 0,
         "blocks_injected": 0,
         "failed": 0,
+        "degraded_turns": 0,
         "writeback_records": 0,
         "writeback_failed": 0,
     }

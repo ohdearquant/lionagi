@@ -1393,8 +1393,10 @@ emits `brain.auto_feedback` in the same round-trip with the policy's explicit `p
 mis-attributes the event). `writeback()` is a separate opt-in POST-turn hook — rule-based tool
 error/resolution pairs written to `memory.remember` at capped, low-provenance salience,
 invoked by the `operate()` Middle (not `provide()`), and it is NOT the nudge plane. Both
-`provide()` and `writeback()` fully swallow transport failures (logged only) so a turn always
-proceeds.
+`provide()` and `writeback()` fully swallow transport failures so a turn always proceeds.
+`provide()` also publishes a per-task `degradation_reason`; the registry copies it into the
+turn's `ProviderReport.degraded` list and increments the durable `degraded_turns` aggregate.
+Thus a transport failure remains distinct from a successful recall that found no context.
 
 `KhiveInjectionPolicy.namespace`, when set, is threaded onto every khive verb the provider
 emits (recall, compose, auto_feedback, remember) to isolate its writes to a named store.

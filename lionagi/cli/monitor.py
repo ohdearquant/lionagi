@@ -651,6 +651,7 @@ def _format_khive_injection_line(telemetry: dict[str, Any]) -> str | None:
         "recall_turns",
         "blocks_injected",
         "failed",
+        "degraded_turns",
         "writeback_records",
         "writeback_failed",
     )

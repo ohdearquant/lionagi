@@ -1303,6 +1303,8 @@ across its branches; bare `li agent -a <profile>` teardown records the same shap
 A top-level resume seeds its totals from the durable session; an in-process timeout resume carries
 the first leg's counters into the final teardown. Only counts are persisted — never the injected
 source text — and absent, zero, or malformed counter sets are omitted from the session drill-in.
+`degraded_turns` is incremented when a provider deliberately contains a transport failure; it is
+separate from both `failed` (an exception escaped the provider) and a successful empty recall.
 
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler

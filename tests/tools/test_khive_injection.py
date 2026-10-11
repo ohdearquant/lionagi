@@ -223,6 +223,27 @@ async def test_transport_failure_returns_none_turn_proceeds():
         text = await provider.provide(branch, _FakeInstruction("hello"))
 
     assert text is None
+    assert provider.degradation_reason == "transport_failure:RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_successful_empty_recall_clears_prior_transport_degradation(patched_transport):
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(last_response=None)
+
+    with patch(
+        "lionagi.service.connections.mcp_wrapper.MCPConnectionPool.get_client",
+        AsyncMock(side_effect=ConnectionError("offline")),
+    ):
+        await provider.provide(branch, _FakeInstruction("hello"))
+    assert provider.degradation_reason == "transport_failure:ConnectionError"
+
+    patched_transport.return_value = _mcp_result(
+        {"results": [{"ok": True, "tool": "memory.recall", "result": []}]}
+    )
+    assert await provider.provide(branch, _FakeInstruction("hello")) is None
+    assert provider.degradation_reason is None
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -251,8 +252,20 @@ class KhiveInjectionProvider:
         self.policy = policy
         self.name = f"khive_injection:{policy.profile_id}"
         self._mcp_config = dict(mcp_config or _DEFAULT_MCP_CONFIG)
+        # One provider may serve concurrent branch turns. ContextVar keeps the
+        # status paired with the gather task that observed it, so a successful
+        # empty recall cannot erase another turn's degradation signal.
+        self._degradation_reason: ContextVar[str | None] = ContextVar(
+            f"{self.name}:degradation_reason", default=None
+        )
+
+    @property
+    def degradation_reason(self) -> str | None:
+        """Machine-readable reason for this task's latest provider pass."""
+        return self._degradation_reason.get()
 
     async def provide(self, branch: Branch, instruction: Instruction) -> str | None:
+        self._degradation_reason.set(None)
         if not self.policy.enabled:
             return None
         if not self._should_fire(branch):
@@ -262,7 +275,8 @@ class KhiveInjectionProvider:
 
         try:
             blocks = [b for b in (await self._recall(query), await self._maybe_compose(query)) if b]
-        except Exception:
+        except Exception as exc:
+            self._degradation_reason.set(f"transport_failure:{type(exc).__name__}")
             logger.warning(
                 "KhiveInjectionProvider transport failure; degrading to no injection this turn",
                 exc_info=True,
