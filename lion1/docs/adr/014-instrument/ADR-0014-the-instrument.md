@@ -1,0 +1,465 @@
+---
+adr: ADR-0014
+status: draft
+liveness: operating (thirteen instruments build from one config and run under tests against scripted commands and stores, a lock holder and a scheduled job among them; the command-line check prints its measurement unvetted, says so, and is under test)
+date: "2026-09-25"
+area: instrument
+kind: new
+depends_on:
+  - "[[ADR-0005-command-handling|ADR-0005]]"
+  - "[[ADR-0007-the-record|ADR-0007]]"
+tags:
+  - adr
+  - agent
+  - instrument
+---
+
+# ADR-0014: The instrument contract
+
+## Context
+
+A long-running agent is asked the same questions about the world around it, on a cadence or on an
+ask: which pull requests are red, how much disk is free, whose inbox is past its bound. The model
+routes the question and never judges the answer, so the answer carries its own proof.
+
+Three wrong answers are designed out: an empty read from a broken instrument that renders as
+clearance, a count whose population nobody can check, and a value hovering under a threshold told as
+news every time. This record fixes what an instrument is, what its measurement carries, what it may
+do, and how a failure is told and to whom.
+
+The chore that schedules an instrument and delivers what it says is [[ADR-0015-chores|ADR-0015]]
+(chores); the desk answers mail with instruments ([[ADR-0017-the-desk|ADR-0017]], the desk); the
+bench has its own record ([[ADR-0012-the-bench|ADR-0012]], the bench). Source:
+`hub/agent/instruments.py`; `Instrument`, `Outcome`, `Chores._vet` and `Chores._dead` in
+`hub/agent/chores.py`; `Record` in `hub/agent/lookups.py`; `build`, `render` and `land` in
+`apps/cli/lion_cli/agent.py`.
+
+## Definitions
+
+- **instrument**: a read-only probe of something outside the run, on a cadence (`every`) or on an
+  ask; it declares its name, `about`, the question it `answers`, its error direction and
+  `empty_expected`, and `run(args)` returns its measurement.
+- **measurement**: what one run of an instrument hands back: findings, evidence, control, escalate,
+  population, predicate, count, known-positive, structured rows and an optional commit. The code
+  calls it `Outcome`; in this corpus an outcome is a run's terminal value only.
+- **control**: the check an instrument runs in the invocation that produces its answer; when it
+  fails, the answer is void.
+- **known-positive**: the text of what the control read, the thing that had to be there for the read
+  to count: the repository's own name coming back, the agent's own pid alive, any task at all in the
+  namespace.
+- **error direction**: which way an instrument's failures run, `over-report` or `under-report`, with
+  a `mechanism` sentence naming why.
+- **snapshot**: the state an instrument keeps between runs in the agent's note store, one key per
+  instrument and subject, from which it tells first sight and transitions.
+- **steward**: the actor that hears, beside the owner, every escalation, every dead instrument and
+  the reports the owner leaves unanswered past a bound; none means the owner alone.
+
+## Assumptions
+
+| #  | statement | source | if false |
+| -- | --------- | ------ | -------- |
+| A1 | Several channels an instrument reads answer a missing subject the way they answer an empty one. | commit statuses answer `[]` for a missing subject; an unshared task namespace answers empty; `comm.probe` answers 0 and an empty page alike; `ps -p` prints nothing for a missing pid (the instrument notes in `hub/agent/instruments.py`) | a return-code check would do, and the known-positive is ceremony |
+| A2 | `df -P` prints one row per volume, so roots on one device share one free-space figure. | `Disk.run` groups roots by the first column of `df -P -k`; the disk test reads two roots on one device | a floor is read per root and one device counts twice |
+| A3 | A capped list says nothing about the rows beyond its cap. | `gh pr list --limit` with `PR_PAGE` 100; the workflow-runs read with `_RUNS_PAGE` 50 beside its `total_count` | a full page is a complete list and the verify read is wasted |
+
+## Claims
+
+### C1: A measurement names its population, predicate and count, and what its known-positive read _(enforced: mechanical)_ ^c1
+
+- **Subject**: every measurement the chore handler or the desk receives.
+- **Violated when**: findings without evidence, or a passing control over a blank population, a
+  blank predicate, a count of `None` or a blank known-positive, pass unrefused.
+
+The population is a noun phrase, the predicate text with its match count, the count an integer.
+`Chores._vet` refuses each missing field before anything is sent: it appends the reason to the
+findings and fails the control, so the refusal escalates (C2).
+
+Each instrument builds its control into the read that answers: the repository resolving as itself
+before its pull requests are listed, the agent's own pid through the same `ps` read, any task at all
+in the batch that lists the task inbox. An instrument that raises is a measurement with a failed
+control and the exception as its evidence.
+
+### C2: A failed control voids the answer and escalates to the owner and the steward _(enforced: mechanical)_ ^c2
+
+- **Subject**: every measurement whose control failed, the refusals of C1 included.
+- **Violated when**: it is sent as quiet or as a plain report, the steward is never told, or the
+  desk replies with it.
+
+`_vet` appends "its answer is void" and sets `escalate`. On the chore path the report goes to the
+owner and to the steward, marked so, and an empty answer from a broken instrument escalates instead
+of reading clean. On the desk path the message is left for the owner and nothing is sent.
+
+An instrument sets `escalate` itself when a finding's remedy is destructive (C6). The remedy stays
+the owner's: an escalation names it and performs nothing.
+
+### C3: An empty population is a finding unless the instrument declared it expected _(enforced: mechanical)_ ^c3
+
+- **Subject**: every measurement whose control passed over a count of zero.
+- **Violated when**: it is quiet on an instrument that did not declare `empty_expected`, or its
+  ledger row says it answered.
+
+A subject that went away reads like one that never arrived, so an undeclared empty population is
+reported to the owner as "population empty and not declared expected", naming the population,
+without escalation. `answered` is the run's own verdict beside `control`: a control that passed over
+a counted population, empty only where declared. The task inbox, the mail bound and the bench jobs
+expect empty by default, the rest do not, and `expect_empty` in the config overrides.
+
+### C4: An instrument that never answers is a finding about the instrument _(enforced: mechanical)_ ^c4
+
+- **Subject**: every chore's unanswered ledger rows.
+- **Violated when**: `dead_after` consecutive unanswered runs pass untold, the crossing is told
+  again on every run after it, or an answered run leaves the mark.
+
+`Chores._dead` counts the chore's unanswered rows back from the newest. At `dead_after`, three by
+default, it tells the owner and the steward once that the instrument is dead. Each recipient is
+marked told once its send lands, and the chore once every copy has (S11). An answered run clears the
+mark, so the next crossing is told again. The desk writes no chore ledger row, so a measurement it
+received does not count here.
+
+### C5: First sight is the whole row, then transitions, and a crossing is told once _(enforced: mechanical)_ ^c5
+
+- **Subject**: the snapshot instruments: `pr-state`, `required-contexts`, `verdict-freshness`,
+  `ci-red`, `worktrees`.
+- **Violated when**: a subject born in a bad state is never reported, a standing state is reported
+  every run, or `pr-state` calls a pull request absent from a full page closed on any view but
+  `CLOSED` or `MERGED`.
+
+A subject first seen is reported whole, whatever state it was born in; after that only what changed:
+a head, its CI verdict, a review decision, mergeability, a branch, an open pull request. A crossing,
+stale or parked, is told once and again only after it cleared.
+
+A list is one page. A pull request absent from a full page is read on its own with `gh pr view`
+before `pr-state` calls it closed, and only `CLOSED` or `MERGED` closes it; a failed view or another
+state fails the control and keeps its row. `required-contexts`, `verdict-freshness` and `ci-red`
+keep its last row unread. A short page needs no verify.
+
+### C6: A floor is read by name, once per device, with its own budget, in GiB base-1024 _(enforced: mechanical)_ ^c6
+
+- **Subject**: the `disk` instrument.
+- **Violated when**: a floor is read per root, without its budget or with a negative or non-finite
+  figure, the value sits in the finding text, a crossing of a floor not marked `enforcing`
+  escalates, or a `find` or `du` failure passes the control.
+
+Roots are grouped by the device `df -P -k` names, and each floor is read once per device with its
+roots listed. Free space minus the floor's `budget_gib` is compared with `floor_gib` in GiB
+base-1024, the base-1000 figure printed beside it. An `enforcing` floor's crossing escalates, since
+its remedy is a deletion; any other crossing reports.
+
+The finding names the floor and the device and the value stays in the evidence, so a value hovering
+under a floor is the same finding each run, told once by the chore's repeat rule. No `floors` means
+one default floor of 300 GiB; an empty list declines every floor.
+
+### C7: An instrument reads and acts on nothing _(enforced: process)_ ^c7
+
+An instrument reads: `gh` reads, `git` reads, `ps`, `lsof`, `launchctl print`, `df`, `find` and
+`du`. It reads files directly: an agent's pid and note files, the bench's note file and result
+ledgers, verdict files, local CI logs, a scheduled job's artifact and the ADR files under the record
+instrument's `adr_dirs`. It reads the store through the agent's bounded client, which admits only
+the verbs on its list ([[ADR-0015-chores|ADR-0015]], chores).
+
+It writes only its snapshot or cursor to the agent's note store
+([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A remedy,
+a restart or a removal, is the owner's.
+
+The command runner has no read list of its own, and `verdict-freshness` may run an enumerator
+command from the config as given. The gate is review of each instrument's commands.
+
+### C8: The model sees one line; the owner gets the measurement _(enforced: mechanical)_ ^c8
+
+- **Subject**: every run of the `check` handler.
+- **Violated when**: a ledger row lacks one of the fields listed below, or evidence is cut without
+  saying so.
+
+The handler's result ([[ADR-0005-command-handling|ADR-0005]]) is one line: the chore, how it ended,
+the number of findings and who was told. The report and the ledger row carry the rest: findings,
+evidence, control, escalate, answered, error direction, population, predicate, count and
+known-positive, the evidence capped at `evidence_cap` characters with the cap stated. The structured
+rows are neither sent nor kept. The model's system text lists each instrument's `about`, error
+direction, cadence and question.
+
+### C9: A command is stopped within a bound of its timeout or its cancel _(enforced: mechanical)_ ^c9
+
+- **Subject**: every command `sh` runs.
+- **Violated when**: a call outlives its bounds, a command or its group survives it, a pipe stays
+  open past it, or a failure reads as a timeout.
+
+Each command starts in its own process group. Its deadline is taken at the call, before the start,
+so a fork or exec stall counts against the timeout, due once the loop resumes. Past the deadline or
+on a cancel, a landed command's group is killed, its pipes drained and closed within five seconds of
+the signal.
+
+An unlanded start gets three graces, cancelled after the first and the second; one landing in the
+last adds a drain grace, twenty seconds past the timeout or cancel in all. A failed start raises,
+unless a cancel is in flight. An unlanded start is killed by pid; asyncio closes its pipe ends when
+its connection task next runs, and an escaped descendant, unkilled, holds them until it exits.
+
+## Decisions
+
+### D1: One builder names the instruments from the config ^d1
+
+Serves C3 and C8. `instruments(cfg, khive, state)` builds only what the `[chores.<name>]` tables
+name, thirteen names in all, with their arguments and a cadence from `every` (none: on ask only).
+Constructors refuse a malformed declaration at build; `Chores` refuses an error direction outside
+the two and a blank `answers`. `every` is a store repeat such as `every:30m` or `daily`; `gh` and
+`git` resolve once to an absolute path where one is found.
+
+- **Landing evidence**:
+  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default`,
+  `test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs` and
+  `test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_build` in
+  `tests/test_instruments.py`;
+  `test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build` in
+  `tests/test_chores.py`.
+
+### D2: `Chores._vet` on both paths that run an instrument inside the agent ^d2
+
+Serves C1, C2 and C3. The `check` handler and the desk's `answer` handler turn a raised exception
+into a failed control, then call `_vet`, which appends each refusal as a finding, computes
+`answered` and escalates a failed control. The desk leaves a message whose measurement did not
+answer.
+
+- **Landing evidence**: in `tests/test_chores.py`,
+  `test_findings_without_the_instruments_own_output_are_refused_before_send`,
+  `test_an_outcome_without_population_predicate_count_or_known_positive_is_refused`,
+  `test_an_empty_population_is_a_finding_unless_the_chore_declared_it_expected`,
+  `test_an_instrument_that_raises_or_whose_control_fails_escalates_to_owner_and_steward`;
+  `test_a_void_answer_is_left_with_the_instruments_own_reason_and_nothing_is_sent` in
+  `tests/test_desk.py`.
+
+### D3: `Chores._dead` reads the ledger after each row ^d3
+
+Serves C4. The mark lives under `dead_told` in the agent's state; the crossing is told to each
+recipient on the chore's thread of the day.
+
+- **Landing evidence**:
+  `test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_an_answer_clears_it`
+  in `tests/test_chores.py`.
+
+### D4: A snapshot per instrument and subject; a cursor retired by `commit` ^d4
+
+Serves C5. `pr-state:<repo>`, `required-contexts:<repo>`, `ci-red:<repo>`, `worktrees:<repo>` and
+`verdict-freshness` are put once per run. An ask narrowed to named pull requests (`prs`) answers
+every named row and leaves the `required-contexts` and `ci-red` snapshots untouched.
+
+A pull request list that is not a JSON list (empty output, `null` included), or holds an integer
+past the conversion limit, is unread by every instrument: the control fails and the last rows stay.
+`worktrees` reads `git worktree list --porcelain -z`, keeping line breaks in paths; any branch,
+`detached` included, loses only a leading `refs/heads/`.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once`,
+  `test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed`,
+  `test_pr_state_a_pr_list_that_is_not_a_json_list_is_unread_and_keeps_the_last_rows`,
+  `test_pr_state_a_pr_beyond_a_full_page_is_retired_only_on_an_explicit_closure`,
+  `test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr`,
+  `test_worktrees_a_path_holding_a_line_break_is_read_whole`,
+  `test_worktrees_strips_only_the_leading_refs_heads_from_a_branch`,
+  `test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread`,
+  `test_worktrees_a_branch_named_detached_is_queried_and_parks_beside_a_detached_head`,
+  `test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_pr_alone`,
+  `test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unread` (S12),
+  `test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it`,
+  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`,
+  `test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until_a_short_page`,
+  `test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_pr_read_closed`,
+  `test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_unseen_pr`.
+
+### D5: The `disk` instrument ^d5
+
+Serves C6. `Disk.run` reads `/bin/df -P -k` per root, since GNU `df` wraps a long device name
+without `-P`, groups by device and reads every floor per device. It then finds `target` and
+`node_modules` directories to depth four with `/usr/bin/find`, sizes each once with `/usr/bin/du`,
+and reports those over `target_cap_gib`, 20 by default. The evidence names each device's mount point
+whole. `Disk.__init__` refuses a `floor_gib`, `budget_gib` or `target_cap_gib` that is `nan`,
+infinite, negative or not a number, naming the field: a `nan` floor compares false and reads as
+above.
+
+- **Landing evidence**: in `tests/test_instruments.py`, the disk tests (one device for two roots,
+  the enforcing crossing alone escalating, both units, failed `find`, `du` and `df`, the default and
+  declined floors),
+  `test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build`,
+  `test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it` and
+  `test_disk_names_the_device_and_the_mount_point_whole_when_either_holds_a_space`.
+
+### D6: `lion agent --check <name>` runs one instrument outside the handlers ^d6
+
+Serves C8, and stands outside C1 to C3. The command builds the agent from its directory, takes the
+identity's lock (refused while the agent serves there), calls `run({})`, prints `render()` and
+writes the text to a dated file in the agent directory, the day's latest run of that name kept.
+Nothing is sent, no ledger row is written, and `_vet` is not called; the text's second line says so.
+
+- **Landing evidence**: in `tests/test_agent.py`,
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing`,
+  `test_render_prints_the_measurement_unvetted_and_says_so`,
+  `test_land_writes_the_days_file_of_that_name_and_the_latest_run_wins` (S3).
+
+### D7: The `lock-holder` and `scheduled-job` instruments ^d7
+
+Serves C1 and C7. `LockHolder.run` lists the named lock files and the agent's own pid file in one
+`lsof` call and resolves every pid to its full command line with one `ps` read; its control is this
+process holding its own pid file. A name `lsof` prints that no configured path resolves to, one it
+escaped, fails the control. `ScheduledJob.run` reads each artifact's age against its bound, then
+`launchctl print` for a named label's last exit. A bound that is not a positive finite number is
+refused at build.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock`,
+  `test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_its_own`,
+  `test_lock_holder_a_name_lsof_escaped_fails_the_control_and_is_named_as_unmapped`,
+  `test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps`,
+  `test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit`,
+  `test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit`,
+  `test_scheduled_job_an_artifact_that_is_not_a_regular_file_is_a_finding_never_fresh`,
+  `test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloaded` (S9).
+
+### D8: `sh` starts a command as a task of its own and stops it by one path ^d8
+
+Serves C9. The start is a task whose `extra` dict holds the Popen from the fork, so an unlanded
+group is killed by its pid. Both kills read ESRCH as the group gone and retry an `EPERM` once the
+leader is reaped, `_stop` by its drain, in a `finally`, the other by `poll()`, leaving a running
+leader alone; a second `EPERM` and any other error raise. A drain whose grace expires is no error:
+`sh` returns its timeout answer or raises its cancel. An unlanded start's pipe ends stay asyncio's.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation`,
+  `test_sh_raises_when_a_live_group_cannot_be_signalled_and_still_closes_its_pipes`,
+  `test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes`,
+  `test_sh_returns_at_its_timeout_when_the_command_filled_its_pipe`,
+  `test_sh_ends_the_descendant_holding_its_pipe_at_the_timeout`,
+  `test_a_cancelled_sh_ends_the_descendant_holding_its_pipe_and_stays_cancelled`,
+  `test_sh_counts_the_start_of_its_command_inside_its_timeout`,
+  `test_a_cancel_after_the_timeout_while_the_start_connects_is_not_the_timeouts_answer`,
+  `test_a_cancel_that_lands_over_a_start_that_failed_is_still_the_cancel`,
+  `test_a_cancel_while_the_start_connects_its_pipes_leaves_no_child_running`,
+  `test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds_the_pipe`,
+  `test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts_answer`,
+  `test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel`,
+  `test_a_process_a_cancelled_start_had_begun_is_stopped_like_one_that_landed`,
+  `test_a_start_that_failed_is_raised_on_either_side_of_the_timeout`,
+  `test_sh_returns_once_a_start_has_taken_its_second_cancel_and_gives_up_on_one_that_takes_neither`,
+  `test_sh_kills_the_group_of_a_start_that_never_lands_by_the_pid_its_popen_holds`,
+  `test_a_cancel_in_the_wait_for_a_start_that_never_lands_still_ends_its_group`,
+  `test_sh_retries_a_refused_signal_when_a_cancel_ends_the_drain_and_then_raises_the_cancel`,
+  `test_a_refused_signal_to_a_start_that_never_lands_is_retried_once_its_leader_is_reaped`,
+  `test_sh_ends_the_group_of_a_command_whose_pipes_never_connect` and
+  `test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it`.
+
+## Alternatives
+
+| approach | rejected because |
+| -------- | ---------------- |
+| The model reads the raw output and judges it | the model routes; the refusals sit in code on the reporting path, where a misread count cannot reach the owner as clean |
+| A control run as its own call | it can pass while the read that answered failed; the known-positive comes from that read |
+| An empty population read as quiet | a subject that went away reads like one that never arrived (C3) |
+| The value in the finding text | a value hovering under a floor would be a new finding every run; the floor's name keys it (C6) |
+| Transitions only, no first sight | a subject born in a bad state is never reported (C5) |
+| A verify read for every pull request absent from any page | a short page is a complete list; the read is spent only where the page could have cut (A3) |
+| One floor list for every volume | each floor belongs to what enforces it and carries its budget |
+| The count inside the population text | a number inside a noun phrase is not a field the handler can refuse on |
+
+## Consequences
+
+- **S1**: A chore is an instrument with a cadence and a delivery path. The tick, the ledger row, the
+  three ends (quiet, report, escalate), the thread of the day, the repeat rule, the digest and the
+  aged pass are [[ADR-0015-chores|ADR-0015]]'s (chores); this record owns what the instrument hands
+  over and what is refused.
+- **S2**: A snapshot instrument writes its snapshot inside its run, before any report lands. A
+  transition is not reported to the owner again when its report was not delivered, or when a run off
+  the chore path measured it: `lion agent --check`, or a desk answer (one narrowed to named pull
+  requests spares only the `required-contexts` and `ci-red` snapshots).
+- **S3**: `lion agent --check` prints a measurement unvetted and its text says so: no refusal ran,
+  nothing was sent, no ledger row was written. A missing known-positive prints as "(none)" and
+  nothing refuses it; the tests in D6 drive the check, `render` and `land`.
+- **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
+  snapshot held and the page lacks, on every `pr-state` run. With `repos`, `verdict-freshness` reads
+  no view of a pull request beyond a full page, so one closed there keeps its last row until a page
+  is short. An enumerator whose lines repeat a pull request or disagree with its `TOTAL` fails the
+  control and retires a prior row only when that pull request's own read gives any state but `OPEN`.
+- **S5**: `mechanism` is declared by every instrument and read by no code; the structured rows (a
+  check inventory per pull request, red lines per run, verdict rows) are read by no code either.
+- **S6**: The model can narrow or replace the population through `args`: `pr-state` takes `repos`
+  and `inbox-sla` takes `actors` in place of the configured ones. The `check` handler sets
+  `source_event` over whatever the args name.
+- **S7**: The bench's scripts hand back no measurement of this shape. The instrument that touches
+  the bench is `bench-jobs`, which reads the jobs the bench actor noted; whether the bench meets
+  this contract is [[ADR-0012-the-bench|ADR-0012]]'s (the bench).
+- **S8**: The boundary: this record is product-side and names no kernel concern. An instrument reads
+  with the credentials and namespace its process was started with; a read they deny is a failed
+  control, or an empty answer the control must catch (A1).
+- **S9**: Two instrument shapes are built (D7). `lock-holder` reads a pid resolved to its full
+  command line beside a lock known to be held, the agent's own pid file, never by matching text or
+  by taking the lock. A waiter reads as a holder, a lock file `lsof` cannot stat reads unreadable, a
+  name `lsof` escaped voids the read, and a lock with no file is held by nobody. `scheduled-job`
+  reads the artifact's freshness first and the supervisor's exit second, as `served` reads a
+  last-wake note before a pid.
+- **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
+  1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
+  exact; its population is the rows on the probe pages.
+- **S11**: A dead-instrument notice marks its recipient told only once the send lands: a copy the
+  crossing refused is owed at the next run, and the chore's own mark waits for every copy. A notice
+  that reached nobody leaves the chore untold:
+  `test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands`.
+- **S12**: A worktree record with no `branch` attribute is a detached HEAD: `worktrees` keeps it as
+  no branch (`None`), shows it as `(detached HEAD)`, asks no pull request about it and never parks
+  it. A branch named `detached` is a branch and is asked like any other. An older row, `detached`
+  with PR `?`, stands for either and the current writer never stores that pair: only its PR is
+  compared, and a transition names its branch `detached or (detached HEAD)`.
+- **S13**: A `verdict-freshness` row is one per pull request, its repo case-blind and its number
+  unpadded, however any source spells it. A stored key keeps its prior spelling: the identity is
+  normalized, the key is not rewritten. Of an older snapshot's rows for one pull request, the one
+  recording the head it has now stays, else the one spelled as this run reads it, else the smaller
+  key; the others are retired silently. A full page keeps a row however it is spelled
+  (`test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_spells_it`,
+  `test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure`,
+  `test_verdict_freshness_of_two_conflicting_rows_for_one_pr_the_one_at_its_head_now_is_the_row`,
+  `test_verdict_freshness_two_rows_at_one_head_keep_the_spelling_read_now_then_the_smaller_key`,
+  `test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_another_case`,
+  `test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way`).
+- **S14**: A verdict file counts for a pull request by the repo and number its name spells,
+  case-blind and unpadded, when its content names that pull request. A file that cannot be read
+  stays a candidate; if it is the newest, it is reported unreadable and fails the control. Each
+  verdict is its own candidate, so two that differ only in the repo's case are both read; the newest
+  by mtime, then round, then the greatest path is the verdict, in any listing order
+  (`test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates`,
+  `test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order`,
+  `test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number`,
+  `test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest`).
+- **S15**: A candidate is a file stem: its JSON, or its Markdown header only when the stem has no
+  JSON; a JSON that does not parse is the candidate's error, never a fallback to the Markdown beside
+  it (`test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy`). The
+  case-blind, unpadded identity of S13 and S14 is this instrument's, and the desk's triage of a
+  verdict notice uses it too (S20).
+- **S16**: The runs of one `verdict-freshness` instrument on one event loop go one at a time, each
+  from the snapshot the one before it put, so a list taken before another run wrote never retires a
+  pull request that run listed. The guarantee is per event loop: the agent runs one loop, and its
+  pid lock leaves one process acting as its identity. It covers every path that reaches the put; the
+  early returns (unreadable directory, invalid newest verdict, failed or untrusted enumeration)
+  write nothing. Pinned by
+  `test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_listed`.
+- **S17**: `pr-state`, `worktrees`, `required-contexts` and `ci-red` read their snapshot after their
+  last awaited call and put it with no await between the two. A row kept for a failed read or for a
+  pull request a full page lacks is then the snapshot's as it stands, never one an overlapping run
+  retired. `pr-state` first views each pull request the snapshot holds and a full page lacks,
+  reading the snapshot again until none is left unviewed. Pinned by
+  `test_pr_state_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`,
+  `test_worktrees_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`,
+  `test_required_contexts_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote` and
+  `test_ci_red_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`.
+- **S18**: The runs of one object of any of S17's four instruments, on one event loop, go one at a
+  time, as S16 says of `verdict-freshness`, so a list taken before another run wrote never reports
+  gone what that run listed (`test_the_runs_of_one_snapshot_instrument_go_one_at_a_time`). An agent
+  builds one object per instrument, which its chores and its desk share. Two objects over one store
+  are not serialized: a list one took before the other's run wrote reports gone a row that run
+  added, and the next run reads it as first seen.
+- **S19**: A verdict candidate is a regular file, and a link counts as what it points to, as
+  `scheduled-job` reads its artifact. A link to a regular file is a candidate, and a directory or a
+  link to one is none, however it is named
+  (`test_verdict_freshness_a_candidate_is_a_regular_file_and_a_link_is_read_as_its_target`).
+- **S20**: The desk's triage of a verdict notice matches its artifact and its actor-map keys by the
+  identity of S13 (`test_the_actor_map_meets_the_notices_repo_by_the_case_blind_identity`). A notice
+  naming no artifact file has it looked up under its own spelling, then the identity's; the two are
+  compared by the identity, so another repo or number fails closed. The gh reads keep the notice's
+  spelling, and the triage's destination check takes gh's name case-blind: a notice in another case
+  resolves, a rename still fails closed, and each instrument's check stays exact
+  (`test_a_notice_meets_its_artifact_by_the_case_blind_unpadded_identity`,
+  `test_an_instruments_destination_check_stays_exact_on_a_case_only_difference`).

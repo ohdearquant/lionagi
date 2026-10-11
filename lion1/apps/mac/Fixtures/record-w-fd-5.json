@@ -1,0 +1,36 @@
+{
+  "rows": [
+    {
+      "at": "2026-10-04T11:02:00Z",
+      "kind": "wake",
+      "rule": "r1",
+      "source": "mail"
+    },
+    {
+      "at": "2026-10-04T11:02:00Z",
+      "kind": "tool",
+      "name": "read_mail",
+      "ok": true
+    },
+    {
+      "at": "2026-10-04T11:03:00Z",
+      "kind": "shell",
+      "line": "gh issue create -R example/app --title \"Export times out on large projects\"",
+      "verdict": "runs",
+      "rule": "programs: gh"
+    },
+    {
+      "at": "2026-10-04T11:03:00Z",
+      "kind": "tool",
+      "name": "send_mail",
+      "ok": true
+    },
+    {
+      "at": "2026-10-04T11:03:00Z",
+      "kind": "end",
+      "outcome": "acted",
+      "turns": 9,
+      "cost": 0.06
+    }
+  ]
+}

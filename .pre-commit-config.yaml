@@ -1,3 +1,6 @@
+# lion1/ runs its own checks: lion1/.pre-commit-config.yaml
+exclude: ^lion1/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0

@@ -1,0 +1,248 @@
+# docs/adr: the plan
+
+## What the records are
+
+`docs/adr/` is the design of the loop written once, in the present tense, from the package
+`src/lion1/` as it stands; the amended history it was distilled from is not in this repository. A
+record says what is, why,
+and what it costs, in the register the tooling in `docs/adr/_scripts/` enforces: Context, Definitions,
+Assumptions, Claims, Decisions, Alternatives, Consequences, with anchors on the C and D items. A fact the
+code does not show is not asserted; a claim marked mechanical has a landed decision behind it or says
+which consequence row carries the debt (`_(enforced: mechanical; owed, S8)_`); else it is marked process
+or dropped.
+
+The frame since 2026-09-23: the loop is the inside of one process, and every record here is the
+in-process form of a concern the larger system's kernel owns: identity and grants, admission and
+budgets, the process lifecycle, the tool protocol, context assembly, the durable record and its receipts.
+Each record states what is inside the process and names the boundary; nothing below the boundary is
+decided here. A decision in these records is an experiment: the candidate the kernel's port reads, never
+a commitment the kernel inherits. The public substrate's own records for the process table and the
+sandboxed executor are the published side of that boundary; the rest is named by role.
+
+## Records
+
+| record | title | state (2026-09-23) | kernel concern it is the in-process form of |
+|---|---|---|---|
+| ADR-0001 | The actor and its privileges: Spec, Operable, profile | operating; `defaults` owed | identity, grants, a gate that narrows and never widens |
+| ADR-0002 | The run: the turn table, repeats, stop, four outcomes, the closure | operating; reference-only wait and reap owed | process lifecycle: admission, turn as the unit, terminal states |
+| ADR-0003 | The bounds: the job, run.more, extend, `OUT{}` as a command | partial; the re-check between commands, extend, run.more, cost, context check owed | admission and budgets: minted at spawn, inherited, exhaustion refuses the next call |
+| ADR-0004 | The language: LNDL, commands, values, pointers, lenient reading | operating; mixed-response refusal and the markup move owed | the request program |
+| ADR-0005 | Command handling: order, the bus, hooks, effect classes | operating | the tool protocol: declared effects, denial as data, receipts |
+| ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
+| ADR-0007 | The record, the view, the fold, context commands, notes | operating; frozen captures, dated directives, the consumed mark on the closure, cross-profile note read owed | the durable record, visibility directives, the store families |
+| ADR-0008 | The program: compile then run, control results, curated view | operating; the closure's consumed marks, the normalised program on the TEXT entry, the tag form on the same nodes, the name repairs owed | the request program |
+| ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the acting session's gate pinned with a scripted CLI, its hook contracts measured once against the installed one | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
+| ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |
+| ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in; resolving a boxed path in the box owed | the sandboxed executor: content-addressed trees, declared write paths, receipts |
+| ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
+| ADR-0012 | The bench as the instrument: the grade in the box, the row, the run id, unaided by default, what compares with what, the cited figures | draft (2026-09-25); one carried figure not reproduced | the instrument contract |
+| ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and saying so; a dead mark on delivery owed | none |
+| ADR-0015 | Chores: three endings chosen by code, thirteen chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25) | the scheduled run of a process |
+| ADR-0016 | The lion command and the spend row: one entry, the shared lock, the row from the envelopes, the readers | draft (2026-09-25); the unknown-cost mark owed | none |
+| ADR-0017 | The desk: the read-only reader, the cursor that never marks, the gate, code escalations, every model-facing command with its gate, pending until its row, keyed replay, record answers, the brief, areas and chairs | draft (2026-09-25); no bench exercises the desk | mail settlement by keyed replay |
+| ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
+| ADR-0019 | The checkpoint and the restore: named values and a folded view with no model call, the transcript scan, a Codex session's rollout, half the budget and eight of the person's words, the re-arm first, the ignored directory, one `latest.json` for both arms | draft (2026-09-25); lanes from pull requests and threads owed; nothing in the code starts a Claude Code session's checkpoint | the durable record and a session's continuity across processes: which checkpoint a new process starts from, who starts it, how long a checkpoint is kept |
+| ADR-0020 | Withdrawn 2026-10-03 (the record, the stores and the lesson's Spec are in `hub/experience.py`, wired to nothing). Experience across runs: one recall before the first call, one persist after the reap, an immutable record of each, two receipts on the record and the bus, the offline gate as transport evidence only | proposed (2026-10-02); built and pinned by tests; the khive-backed store owed under its own record (D7) | the durable record of outcomes and the recall that reads it |
+| ADR-0021 | The served actor: one service over one actor, offers, the card, a run started, watched, spoken to and ended from outside, a log per run, one HTTP transport on loopback | proposed (2026-10-02); nothing built | the process's front door: who may start what, the durable store of runs and supervision across restarts |
+
+Every record is drafted. Each record is written
+from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
+amended 0004 D2, 0006 C4 and S3, and 0007 C2 to the code of 2026-09-24: the fold measures the
+estimate plus the reported context above the run's floor, `fold_inputs` folds earlier inputs, and a
+session-keeping backend starts over from the folded view. 0010 landed 2026-09-25 from the same code and
+amended nothing: it names the long-running agent's mail as the other layer and leaves the process
+boundary to 0013. 0011 landed 2026-09-25 and amended nothing: the box, the tools and the watch as the code
+holds them, with the executor over content-addressed trees named as the boundary. 0013 landed 2026-09-25 and amended
+0010 C4 (mail is the wake's input, or one inbound while a run continues) and 0007 S2 (the continuous run's
+checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; eleven
+instruments build from one config. 0018 landed 2026-09-25 and amended 0007 C4 (a changed renderer is not
+detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0016 landed 2026-09-25;
+0016 amended 0009 (S10: the session CLI landed no envelope on a failed call; it lands one since).
+0017 landed 2026-09-25 and corrected the desk fact below: the reader is bound to the owner's
+identity, as the code binds it.
+
+A comparison against the earlier records (2026-09-25) found sentences the code contradicts, now
+corrected to the code of 2026-09-24: `Stopped(n)` names the turn that did not run (0002 C3);
+`Exhausted` carries its turns and a reason of turns or time (0002 C4); the re-check between
+commands is owed (0003); `run.more` is not yet a default handler (0001 C2); `Context.get` never
+waits, a pending alias raises (0005 C3, S6); a repair's note rides `not executed:` (0004 C3); the
+notification's order and wording (0006 C2); the fold applies directives in record order today
+(0007 C3); a session CLI given its own tools acted outside every gate, and its gate has since landed
+(0009 C6, S11; 0001 C5); the serve wrapper decides whether to start (0013 S11); the owner-bound
+reader stands in until the store lets an actor read a namespace it can see (0017 D2).
+
+The same comparison found mechanisms the code enforces that no record stated, and items the earlier
+records owed that the new ones had dropped; both are now in their records (0001 to 0003, 0005 to
+0007, 0011 to 0017). One subject without a record got one: the checkpoint (0019, its definition
+moved from 0013).
+
+A second review against the same code corrected more: the turn table's row for an `OUT{}` that does
+not assemble (0002 C1); the VM box's timeout (0011 S13) and its path check by text (0011 C3, S14);
+the dead-instrument mark (0014 C4, S11); `note.delete` as a delete
+(0007 D3); the effect wait
+before pointers (0005 C1); `still running:` unreachable under every decided turn (0006 S5); and the
+hard-set pair as code-host-closed, not unaided (0012 C8).
+
+## Decided in the records (2026-09-23)
+
+- A validator is shape only and stable on canonical fields; a replacement, dict or instance, is rebuilt
+  from its fields, a class being no receipt (0001 S4, 0005 C4).
+- A command is admitted at alias reservation, entered when its handler is called, settled when its RESULT
+  lands; the loop records one cancelled before it entered; cancellation at the run's end is awaited before
+  `run` returns (0002 C1, C4, D1, S4).
+- `OUT{}` waits for its references and no effect; an accepted output ends the run and the rest is
+  cancelled and reaped; a refused output settles its turn before the next backend call (0002 C1).
+- A job over `context_budget` before the first call is a job error; extension grants are answered in
+  order against one total; `accept` sees the run, reads a prefix of the record, and is the last before
+  hook of `out`; an after hook on `out` observes (0003 C2, C3, C4, D3).
+- A mixed native-and-text response is refused before any effect (0004 C4).
+- Three captures around the hooks, each hook on a copy: the request as the handler entered, the return
+  before the first after hook, the result as the hooks left it; the first two ride the entry as
+  provenance (0005 C5, 0007 C1).
+- A handler's effect class, `write` (default), `read` or `pure`, orders the turn: a write waits for every
+  earlier non-pure command, a read for the nearest earlier write, a pure command for its pointers;
+  measured on the bench, three classes save 17% of the serial steps over two (0005 C6, S7). One run's
+  commands only; coordination across runs is the kernel's.
+- `Context.get` reaches settled entries and the command's own pointers; a wait that never returns reaches
+  no bound check, a deadline beside the wait is owed (0005 S6, 0003 S3).
+- A run that ends by an outcome appends one closure SYSTEM entry carrying the outcome, the cancelled
+  aliases and the directives no notification follows; directives are dated at their event and the fold
+  applies them by date, so a later `context.show` stands over a consumption's hide (0006 C1, 0007 C3,
+  D2, 0008 D3).
+- A note is read once per command with its version; every write is one put; in a program a note
+  assignment is a node, written when its block reaches it and never hoisted (0007 C5, D3, 0008 C4).
+- A block finishes with Continue, Return(value) or Failed; only Continue runs its suffix; a return
+  propagates through every enclosing block; a refused candidate is a retry, never fallthrough; the cycle
+  check covers reference, control and effect edges (0008 C1, C7, D1).
+- A run that reads a profile's notes and writes none is a read-only view of the same store, refusing at
+  the one put; not built (0007 S4).
+- A backend is a function from the view to the model's text and acts on nothing; it hands back the
+  prompt count of the attempt that answered, never a sum over attempts, and the record keeps plain
+  text; every call lands an envelope, failed ones too, only a transient failure is retried, and a
+  subscription's spend is unknown, never zero (0009 C1, C2, C5).
+- The fold measures the estimate plus what the last count stands above it beyond the run's floor; the
+  floor, the backend's fixed context, stays in the figure and out of the measure; a session-keeping
+  backend starts over from a point or the whole view when that repays itself, always on the fold
+  event, one session per run (0009 C3, C4).
+- Which model a name binds to, through which route and on whose key, and whether the served model is
+  the one named, are below the boundary; the envelope keeps the response's model and compares nothing
+  (0009 S5).
+- `queue` returns at once and lands on the peer's record as INPUT with handle and origin; a handler that
+  returns the handle is settled by the peer's plain output under the alias, or failed naming the peer's
+  outcome or error; an answer to a run that has ended is a reply on the origin's inbox (0010 C1, C2, C3).
+- No graph object: a group of actors is handlers that queue to each other; the handler starts the peer's
+  run, the runtime never does; the long-running agent's mail is the other layer, one inbound from "the
+  inbox" and every send through one gate (0010 C4, D2).
+- Who may ask whom, the lineage of an ask, ending a peer with its asker, authority that narrows downward
+  and delivery across processes are below the boundary; no budget is shared across peers (0010 S4, S5).
+- One box shape whatever runs the command: `exec` with the streams apart and rc 137 at the timeout, `run`
+  under pipefail with 124; a command touches the box and no other host path; the network is on by
+  default and `--offline` is host-only (0011 C1, C2, D4, S20).
+- Three coding tools over a tree that may be anywhere; an edit lands once, verbatim, keeping each line's
+  ending; the watch reports the change as the tree shows it and a finish is accepted only after a command
+  ran against it; the patch is printed and saved and lands only on `--apply` (0011 C3, C4, C5, C6).
+- An executor over content-addressed trees with declared write paths and receipts is below the boundary;
+  a box here is a process apart from this machine whose patch is the only thing that comes back (0011 S8).
+- One identity per process held by a kernel lock on the agent's directory; a wake takes its mail as one
+  batch, marked read before anything acts, and runs it once; the cursor is written running before the run
+  and a lost batch is told to the owner (0013 C1, C2, C3).
+- Every send a handler makes goes through one gate that charges the hop count first, under a lock, a key
+  charged once; the caps hold a wake and the mail waits unread; the agent writes the posture, never the
+  runtime; a continuous run carries many wakes and its checkpoint carries the record across a restart
+  (0013 C4, C5, C6, C7).
+- The identity and its grants, the lease by turn activity, the supervisor and the durable record are below
+  the boundary; the agent holds a lock and nothing more (0013 S9).
+- A measurement names its population, predicate and count and what its known-positive read, or is
+  refused before anything is sent; a failed control voids the answer and escalates to the owner and the
+  steward; an empty population is a finding unless declared expected; an instrument that never answers
+  is a finding about the instrument (0014 C1 to C4).
+- A snapshot instrument reports first sight whole, then transitions, a crossing once; a floor is read by
+  name once per device with its budget; an instrument reads and acts on nothing; the model sees one line
+  and the owner the measurement (0014 C5 to C8).
+- A chat is one run that waits for the person, logged entry by entry, its `OUT{}` always refused; the
+  flags choose the tools and the guidance; without a box the tools work the person's tree, with one a
+  copy; the copy's diff comes back printed and saved and `--apply` lands it whole or not at all; a copy
+  whose patch was not taken whole is kept and named; a resumed chat replays its log and nothing runs
+  again (0018 C1 to C6).
+- The bench number is the official grade of the tree's diff taken in the box it was written in; a row
+  says what the instance cost and an unmeasured spend is unknown, never zero; a run id is one bench run
+  and a disagreeing launch is refused; the bench runs unaided unless a launch says otherwise, and
+  unaided is the number; cited figures belong to named bench runs (0012 C1 to C5, C9).
+- A chore ends quiet, reported or escalated and code picks the ending; the chores are the thirteen the
+  file names; a chore runs on its tick, a trusted question or a missed tick, inside a wake, as the
+  agent's actor behind the gate, reaching the store only through the bounded client; a report names
+  its prior and the steward hears only what the owner left (0015 C1 to C5, C7).
+- One command holds every entry; every form but the read holds the directory's lock; the agent writes
+  its spend row from its backend's envelopes and every reader reads what it wrote; the command
+  supervises nothing and estimates no tokens (0016 C1 to C5).
+- The desk reads the owner's box through a read-only reader bound to the owner and never marks it;
+  the agent's gate drops untrusted senders before any model call; what cannot wait is escalated by
+  code; every command the model may call is one table with its gate and code composes every text; a
+  message stays pending until its row; an unknown send settles by keyed replay or a leave, never by
+  chronology; a record answer is code's words and a miss is no answer; the brief moves only once
+  delivered; an area is one chair and its residents (0017 C1 to C11).
+- A checkpoint is named values and a folded view taken with no model call; a restore starts from
+  the latest one, re-arms first, and a checkpoint lives in an ignored directory (0019 C1 to C7); a
+  Codex session's reads its rollout, never the CLI's text as the person's (C8, C9).
+
+## Open
+
+- Figures the early records cite whose bench run the bench record could not find in the ledgers: 1722
+  commands in 733 turns (0005 S7), 4,240 calls (0006 A3, 0009 A1), the 90.6% cache hit (0007 A1), 9 of 50
+  thinking-off runs (0004 C4), 109 `<lvar>` and 6 notes (0004 S3, 0007 S3), 3 of 125 turns cut (0009 D1).
+  They stand as the earlier records cited them; re-derive from the run dumps or drop.
+- The `lion areas --file` help text names `chair, home, agents`; the loader reads `chair` and `desks`
+  (0017 C10). The `--apply` help text says `git apply --3way`; the chat runs plain `git apply` (0018).
+- The model's `args.query` reaches a sender verbatim through a record answer's population line (0017
+  C5 names it); quoting only the terms would close it.
+
+- A hard ceiling above `extend`: the kernel's admission; the in-process `extend` stays as written (0003).
+- The before-hook `guard` flag: a guard may not replace; the loader refuses a replacing hook after a guard
+  on the same command, matches expanded over the run's admitted names, Python registrations and the
+  job's `accept` included, rechecked when the subset or the hooks change; a guard works on a copy. In a
+  record once the hub loader carries it (0005 C4).
+- A RESULT larger than the view budget: a sized preview with the value kept whole (0007 S5).
+- The runtime's name: the corpus says "the LION runtime" while the kernel already carries that name;
+  open.
+- The landing order for the owed tests: reference-only `OUT{}` beside an optional and a required sibling
+  held on an event (readiness, required evidence, no next call while the turn is unsettled); cancellation
+  at each boundary (before entry, after return, during the store write); the alias under refusal and
+  cancellation; the undeclared wait and the deadline; the hook chain and the captures; branch control and
+  the closure. A cross-run exclusion test is characterisation, not a gate.
+
+## Vocabulary, fixed in the Context of 0002 and used everywhere
+
+run (one `Actor.run`) · turn (one loop iteration: the notification, one message from the model, its commands settled) ·
+message (what the model wrote in a turn) · backend (messages
+to text; an agentic harness is a different shape and is named so) · outcome (the run's terminal value
+only; an instrument returns a measurement, a cursor holds a state) · message (a provider message; mail
+becomes one INPUT entry) · record (the run's append-only history; the desk's knowledge lookup is the
+`record` chore) · owner (the human or actor the agent works for) · chair (the actor accountable for an
+area) · steward (who hears instrument failures).
+
+## Facts to carry into the unwritten records
+
+- Notes (0007, done): the commands are `note.list`, `note.find`, `note.get`, `note.delete` and the
+  `note.` prefix write; a blank find matches nothing.
+- Backends and the turn (0004, 0009, done): a native tool call is read back as the LNDL tag the model
+  wrote, or as an `auto_` lact, and is then dispatched like any command; "never depends on native tool
+  calling" means no schema is forwarded, not that a rewritten call is inert.
+- The sandbox (0011, done): network on by default, with egress; `--offline` host-only, without it.
+- The watch (0011, done): an edited test still counts as a command run (0011 S5).
+- Delegation vs the agent (0010, 0013, done): in-process peers (one process, several actors, the bench) and
+  the long-running agent (one identity per process) are two layers; 0010 says which applies where, 0013
+  carries the agent's side: one inbound per wake, `send` under `comm.send`, the hop count at one gate.
+- The bench actor's report (0013, done): every send goes through `Agent.deliver`; the two bypasses are
+  named as a limit in 0013 S4.
+- Citations (0001 A1, 0009; 0012 C9 done): bench numbers belong with the run they came from (952 turns /
+  3 output errors; the 1976 calls were not reproduced from the record dumps, which hold 1,775 settled
+  results), never with the 50-instance table; thinking-budget rows are in the bench record (0012 C7).
+- The desk (0017, done): the reader is a second client inside the agent's process, bound to the owner's
+  identity, read-only; the agent's wake marks mail read, the desk's sweep reads by cursor and never
+  marks; `desk_pending` and the ledger row: a failed wake re-lists the message. Unknown-send settlement
+  is keyed replay or leave, never chronology. Every model-facing command is listed in one claim with its
+  gate; code-only escalations separately. `Agent.admit` drops untrusted senders before any model call.
+- Posture (0013, done): `OUT{posture}` is written to the notes by the agent's own code, not by the runtime
+  (0013 C6).
+- Serving prohibitions since lifted are not carried (0014, 0016, done).
+- The diff-landing fork is closed by "print and save, `--apply`" (0011 C6, 0015 C6, done).

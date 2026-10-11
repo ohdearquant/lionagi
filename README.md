@@ -12,6 +12,11 @@ the terminal with the `li` CLI: single agents, parallel fan-outs, and DAG
 flows where an orchestrator plans specialist workers. Built continuously
 since 2023.
 
+> **Maintenance.** lionagi now takes fixes only. New work happens in lion1,
+> in the [`lion1/`](lion1/) directory of this repository. lion1 is a new
+> runtime, not a new version of lionagi: code written for lionagi keeps
+> working on lionagi releases and does not run on lion1 unchanged.
+
 [Docs](https://ohdearquant.github.io/lionagi/) |
 [How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/) |
 [Discord](https://discord.gg/JDj9ENhUE8) |

@@ -1,0 +1,460 @@
+---
+adr: ADR-0019
+status: draft
+liveness: operating (the transcript and rollout scans, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook, and a Codex session's take and restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, and the agent no longer checkpoints, its wake continuing its last run by ADR-0026 C6; and now superseded for the harness session too: its checkpoint is computed from the store, each session's exchanges its message rows (ADR-0025 C4), the take appending only those past the count the store holds and the restore folding them back, so the file-written checkpoint of C1, C3, C6, D1 and D3 is gone, its `save`, `load`, `to_history` and `.khive/context/` files removed, the claims below standing as the record of that earlier file-based design)
+date: "2026-09-25"
+area: checkpoint
+kind: new
+depends_on:
+  - "[[ADR-0006-the-notification|ADR-0006]]"
+  - "[[ADR-0007-the-record|ADR-0007]]"
+  - "[[ADR-0009-backends|ADR-0009]]"
+  - "[[ADR-0013-the-agent|ADR-0013]]"
+  - "[[ADR-0016-the-lion-command|ADR-0016]]"
+  - "[[ADR-0017-the-desk|ADR-0017]]"
+tags:
+  - adr
+  - runtime
+  - checkpoint
+  - context
+---
+
+# ADR-0019: The checkpoint and the restore
+
+## Context
+
+The Codex half of this record serves the author's request of 2026-10-04 that a Codex session support
+the checkpoint feature too. The store's half serves his reply of 2026-10-05, which took roughly the
+first two options offered and added that the store already keeps the data, so a checkpoint is
+something computed from it, and every turn is a natural checkpoint.
+
+A Claude Code session's state is its transcript and the files around it: the Monitors it armed, the
+Agents it spawned, the words the person typed, the figure its statusline shows. A Codex session's is
+its rollout: the person's prompts, the sub-agents it spawned, the figure of its last request.
+
+Continuing the session reads the whole transcript again; a fresh one starts with none of it. This
+record fixes what a checkpoint of either holds, how it is taken with no model call, and what a
+restore gives.
+
+A resident takes none since [[ADR-0026-the-submission|ADR-0026]] C6 (D4); the fold a resident's view
+follows is [[ADR-0007-the-record|ADR-0007]]; the context figure is
+[[ADR-0006-the-notification|ADR-0006]]; `lion context` and the areas server that carry the verbs are
+[[ADR-0016-the-lion-command|ADR-0016]] and [[ADR-0017-the-desk|ADR-0017]]. Source:
+`src/lion1/checkpoint.py`, `hub/backend/checkpoint.py`, `hub/backend/claude_code/checkpoint.py`,
+`hub/backend/codex/checkpoint.py`, `apps/cli/lion_cli/context.py`, `context_api` in
+`apps/cli/lion_cli/areas.py`.
+
+## Definitions
+
+- **checkpoint**: the named values and the folded view of a Claude Code or Codex session or a
+  resident's run, taken with no model call and written under `.khive/context/`, from which a restore
+  starts the next session or process.
+- **take**: one checkpoint made: the named values read or declared, the view folded, one file
+  written.
+- **named value**: one `Var` of a checkpoint: a name, a kind, the value, where it was read from and
+  when.
+- **exchange**: one prompt of a Claude Code or Codex session, typed by the person or, in Claude
+  Code, opened by a task notification, with the session's last text before it ends. It ends at the
+  next prompt, the person's message without words, or a Codex one marking no item.
+- **injected text**: what a hook or the Claude Code harness writes into a user row: a slash command
+  with its caveat and output, a task notification, a system reminder, an interrupt mark. For Codex,
+  what its CLI writes into a user message: the environment, AGENTS.md, the plugin list.
+- **lazy value**: a named value over 400 characters, other than one of a kind its taker names eager
+  (a Claude Code session's `directive` and `watch`, a Codex session's `directive`), which a restore
+  shows by name, size and how to load it.
+- **restore**: what a checkpoint gives the next session or process: the first prompt of a fresh
+  Claude Code or Codex session, or a resident's record as its first run's `history`.
+- **rollout**: the file a Codex session writes under `$CODEX_HOME/sessions`, one JSON row per line,
+  the first its own `session_meta`.
+
+## Assumptions
+
+| # | statement | source | if false |
+| - | --------- | ------ | -------- |
+| A1 | The transcript stays on disk after the session ends; a checkpoint points into it and never copies a tool call or its result. | `source.transcript`; a folded exchange is named by its row's uuid and time, and the restore prints the path | the folded exchanges are lost with the file, and the checkpoint must carry them |
+| A2 | Every value a fresh session needs is declared, read from a file the session keeps, or read from a store. | each kind is read by a function in `hub/backend/checkpoint.py`, `hub/backend/claude_code/checkpoint.py` or `hub/backend/codex/checkpoint.py`, or declared through `lion context set` | the checkpoint needs a model call to write the rest, and is prose again |
+| A3 | A Monitor ends at its deadline, 30 minutes at most, whatever `persistent` says. | `MONITOR_CAP_MS` in `hub/backend/claude_code/checkpoint.py`; 65 Monitor calls read from 18 days of one session directory's transcript, all persistent, none still running (2026-09-24) | a Monitor still running is left out of the restore and never re-armed |
+| A4 | A spawned Agent with no ending task notification 12 hours after its start died with a session restart. | `SPAWN_HOURS` in `hub/backend/checkpoint.py`; without the bound a take read 29 spawns as running, the oldest two days old (2026-09-24) | a spawn running past 12 hours is left out of the restore |
+| A5 | A Codex rollout marks each item of a user message with what wrote it, and every item the CLI writes there carries a kind other than `user.text`. | `content_item_kinds`, read by `_typed` in `hub/backend/codex/checkpoint.py`; all 7,388 rollouts of September and October 2026, CLI 0.153.4 to 0.160.0: 14,470 user messages marked each item, no `user.text` item opened as the CLI's text does, and every other text item did (2026-10-04) | text the CLI wrote is read as the person's, or the take refuses it by its opening; a message marking no item is counted in `source.unmarked_messages`, never read |
+| A6 | A Codex sub-agent whose last activity row is its start or an `interacted` row still holds work. | `_RUNNING` in `hub/backend/codex/checkpoint.py`; in October's rollouts the row after an `interacted` one was `completed` 303 times, `interacted` 231, `interrupted` 6, and 7 of 834 sub-agents a thread started ended on neither; the 12 hours of A4 are not measured on Codex (2026-10-04) | a sub-agent that finished is restored as running, until 12 hours after its start |
+
+## Claims
+
+### C1: A take reads named values and a folded view, and calls no model _(enforced: mechanical)_ ^c1
+
+- **Subject**: `take` in `src/lion1/checkpoint.py`, `take_session` in
+  `hub/backend/claude_code/checkpoint.py`, and their callers: `lion context checkpoint`, the
+  `/api/context/checkpoint` route.
+
+- **Violated when**: a take reaches a backend, a value holds text a model wrote for the checkpoint,
+  a kind or reason outside the lists is kept, or a tool call or its result is held inline.
+
+A checkpoint is an id, the directory's actor, the time, the reason, the source, the named values and
+the view. Kinds and reasons are the taker's lists: a run's are `fact`, `posture` and `threshold`,
+`manual`, `end`; a Claude Code session adds `watch`, `lane`, `directive`, `topic`, `spawn` and
+`rotate`, `precompact`.
+
+A Claude Code session's view is its exchanges (C3). A resident's is its record after `fold`: entries
+by name, hidden names and summaries, the record staying where `source.record` points. A later value
+of a name replaces an earlier, so a declared value stands over one read from the session.
+
+### C2: An exchange is the person's prompt and the session's last text, with nothing injected _(enforced: mechanical)_ ^c2
+
+- **Subject**: the transcript scan in `hub/backend/claude_code/checkpoint.py` (`_read`, `_prompt`,
+  `_clean`), and `take_session`.
+- **Violated when**: a tool call or result, thinking, a compaction summary, a meta or system-sourced
+  row, or injected text is read as a prompt; another text stands as the exchange's; or a take keeps
+  an input or `directive` holding injected text.
+
+A prompt is a `user` row whose content is a string, or text blocks beside an image, that no hook or
+harness wrote, as typed. A row opening with a slash command's name is not a prompt; a system
+reminder inside a typed prompt is cut out and counted (S18). The session's last text block before
+the exchange ends is its text.
+
+A task notification opens an exchange of its own, labelled `[event]` in 200 characters at most,
+never a `directive`. The same words again with no answer between are one exchange. The take's
+refusal of injected text is pinned by
+`test_a_session_take_refuses_a_hooks_frame_in_a_directive_or_a_kept_input`.
+
+### C3: The kept view is half the budget, oldest folded first, and the person's words are eight at most _(enforced: mechanical)_ ^c3
+
+- **Subject**: `fold_turns` (`hub/backend/checkpoint.py`), `directives` and `render_prompt` in
+  `hub/backend/claude_code/checkpoint.py`.
+- **Violated when**: the kept exchanges estimate over half the budget while more than one is kept,
+  the latest exchange is folded, a folded one goes unnamed, or a restore carries more than eight
+  `directive` values.
+
+Each exchange is sized at four characters per token. The oldest fold first until the rest fits half
+the budget, the size the fold event aims at ([[ADR-0007-the-record#^c2|ADR-0007/C2]]); the latest
+always stays. A folded exchange is named by its row's uuid and time, and the transcript keeps it.
+`lion context checkpoint` takes a budget of 8,000 tokens unless given one.
+
+The `directive` values are the ring a prompt hook keeps for the session when it holds any, else the
+newest prompts the person typed; a prompt another program typed, as its typing log records, is left
+out. Either way they are eight at most, and a restore prints the newest eight it is handed.
+
+### C4: The restore's first line re-arms every `watch` verbatim before any other work _(enforced: mechanical)_ ^c4
+
+- **Subject**: `render_prompt` in `hub/backend/claude_code/checkpoint.py` and `lion context
+  restore`.
+- **Violated when**: a `watch` the checkpoint holds is missing from the prompt or altered, the
+  prompt asks for anything before the re-arm, or a lazy value's body is printed.
+
+The first line names the checkpoint, the actor, the time, the reason and the context figure at the
+take, and asks for each `watch` to be re-armed with the Monitor tool before any other work. Each
+command follows in a fence longer than any backtick run inside it, so it reads back byte for byte.
+
+Then come a declared `mcp` fact as the MCP servers expected, the person's words verbatim and oldest
+first, the lanes, the running spawns, the topic and the other facts. The kept exchanges and the
+`posture` values follow, and last what to do first: a declared `next` fact, else re-arm and resume.
+A lazy value shows its name, size and loader: its `ref` or `lion context show`.
+
+### C5: A `watch` is a Monitor still running, and a spawn an Agent still running _(enforced: mechanical)_ ^c5
+
+- **Subject**: `watches` and the spawn scan in `hub/backend/claude_code/checkpoint.py`.
+- **Violated when**: a Monitor that failed to arm, is past its deadline, or is named by a later
+  TaskStop or ending task notification is kept; one command yields two `watch` values; or a
+  completed, stopped or older spawn counts as running.
+
+A Monitor's deadline is its timeout, five minutes when none is given, capped at 30 minutes whatever
+`persistent` says (A3). Of one command armed twice the newest successful arm decides, running or
+not; an arm that failed is never kept and retires no older arm. An inbox Monitor for the directory's
+actor is added when no kept `watch` runs the inbox script. A spawn counts only when its result named
+an agent id and it started within 12 hours (A4). A timestamp with no zone is read as UTC.
+
+### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
+
+- **Subject**: `save` in `src/lion1/checkpoint.py`, `context_dir` and `assert_ignored` in
+  `hub/khive.py`, `set_var` and `checkpoint` in `apps/cli/lion_cli/context.py`.
+
+- **Violated when**: a file lands under a `.khive/context/` a git work tree does not ignore, a git
+  that cannot answer reads as ignored, a take replaces another, `latest.json` names no file, or a
+  declared value is lost.
+
+A checkpoint is `<dir>/.khive/context/<id>.json`, the id `ckpt-` with the date, the time and the
+actor. It is created only when absent and readable by its owner alone; an id already there gains
+`-02`, `-03`. `latest.json` is then replaced whole, naming it. Inside a work tree `git check-ignore`
+must say ignored; outside a repository the take proceeds; a refusal writes nothing. Core's `save`
+writes where it is told; each caller runs the hub's check first.
+
+Declared values wait in `pending.jsonl` under a lock. A checkpoint drains the text it read, and a
+value declared since stays; no test pins that second half.
+
+### C7: The figure at the take is the session's own, or not known _(enforced: mechanical)_ ^c7
+
+- **Subject**: `context_figure` in `hub/backend/claude_code/checkpoint.py`, `lion context status`,
+  and the restore's first line.
+- **Violated when**: another session's figure is taken, an absent or unreadable figure fails the
+  take or reads as a number, or another absent source fails it.
+
+A Claude Code session's figure is the statusline's per-session file named by the session id: the
+input tokens, the window and the percentage. Absent, unreadable or not an object, each field is null
+and the restore says "not known". A resident's is the measure its fold decides on, the view estimate
+plus the excess above the floor ([[ADR-0009-backends#^c3|ADR-0009/C3]]), over `context_budget`. A
+Codex session's is its rollout's (C9).
+
+An absent topic, loop file or hook ring gives no value; a khive or a gh that cannot answer leaves
+its reason in `source.lanes`. Of the places read, a missing transcript, a `.khive/config.toml`
+naming no actor and a `pending.jsonl` line that is not a declared value refuse the take.
+
+### C8: A Codex session's exchange is the person's prompt, never text its CLI wrote _(enforced: mechanical)_ ^c8
+
+- **Subject**: the rollout scan in `hub/backend/codex/checkpoint.py` (`_read`, `_typed`),
+  `directives` and `take_codex`.
+- **Violated when**: an item not marked `user.text`, or a forked thread's parent row, is read as a
+  prompt; a sub-agent's prompt is a `directive`; another text stands as the exchange's; or a take
+  keeps a `directive` or input opening with the CLI's text.
+
+A prompt is the `input_text` items of a user message its row marks `user.text` (A5), as typed. A
+turn's text is the last assistant text before the exchange ends; reasoning, tool calls and
+compactions are never read into one. The same words again with no answer between are one exchange.
+
+A `session_meta` in the first row is the thread's own, and one after it never is. A forked thread's
+rows before its own history starts are its parent's and are not read. The `directive` values are the
+newest eight prompts, none in a thread a sub-agent runs. Pinned by
+`test_a_rollout_reads_each_typed_prompt_with_its_turns_last_text_and_nothing_the_cli_wrote` and
+`test_a_forked_sub_agents_rollout_reads_its_own_rows_and_its_words_are_not_the_persons`.
+
+### C9: A Codex session's spawns and figure are its rollout's, and its restore re-arms nothing _(enforced: mechanical)_ ^c9
+
+- **Subject**: `spawns`, `context_figure`, `take_codex` and `render_prompt` in
+  `hub/backend/codex/checkpoint.py`, `lion context checkpoint --codex` and `status --codex`.
+- **Violated when**: a completed or interrupted sub-agent, another thread's, or one started 12 hours
+  before the take counts as running; another thread's figure is taken or an absent one reads as a
+  number; or a take or restore holds a `watch`, `precompact` or re-arm.
+
+A spawn is a sub-agent the thread started whose last activity row is its start or more work (A6),
+within 12 hours. The figure is the last `token_count` holding one: the last request's input tokens
+over the model's window, else not known.
+
+The kinds are a run's with `spawn`, `lane`, `directive` and `topic`, the reasons a run's with
+`rotate`: no Monitor is there to re-arm, and `precompact` names Claude Code's hook. The restore's
+first line names the thread, model and CLI; the rest is C4's without the watches. Pinned by
+`test_a_spawn_is_a_sub_agent_the_rollout_shows_holding_work_within_the_bound` and
+`test_the_codex_restore_names_the_thread_first_and_asks_for_no_re_arm`.
+
+## Decisions
+
+### D1: `src/lion1/checkpoint.py`: `Var`, `Checkpoint`, `take`, `listed`, `save`, `load`, `to_history` ^d1
+
+Serves C1 and C6. `take`, `save` and `load` check the caller's kinds and reasons, a run's by
+default. `save` and `load` work in the directory handed them, by id, the latest by default, refusing
+an id that is not a plain name. `to_history` is a run's restore: its record read back to the seq
+taken, each row through `entry_of`, refused unless it folds to the view taken. One holding no run's
+record is refused. The replay checks content: a row's text and a result's fields, its value aside.
+
+- **Landing evidence**: `tests/test_checkpoint.py`:
+  `test_concurrent_saves_each_land_and_latest_names_one_of_them`,
+  `test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view`,
+  `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`,
+  `test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`,
+  `test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named`, the
+  long-value test; `tests/test_chat.py`:
+  `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`;
+  `tests/test_khive_context.py`:
+  `test_assert_ignored_reads_gits_two_answers_and_refuses_when_git_cannot_answer`,
+  `test_the_guard_refuses_a_folder_git_would_commit_and_a_checkpoint_saved_past_it_stays_untracked`.
+
+### D2: `hub/backend/claude_code/checkpoint.py`: the session's take and restore, one function per place it keeps state ^d2
+
+Serves C2 to C5 and C7. `take_session` takes on the session's lists over `fold_turns` and refuses
+injected text; `render_prompt` is the restore. The transcript is the newest under Claude Code's
+project directory for its directory (S15), never a pre-compaction copy, read once per take (S13).
+Beside it: the hook ring, the typing log, `active_topic` in the project's sessions registry, the
+actor's lanes (S4), and the statusline's per-session file. The newest loop file's header is a `fact`
+and its `## Posture` a `posture`, as is the last text less its LNDL.
+
+- **Landing evidence**: `tests/test_context.py`:
+  `test_the_reader_keeps_each_prompt_with_its_final_text_and_no_dropped_kind_survives`,
+  `test_each_source_harvests_its_kind_and_an_absent_source_is_a_value`,
+  `test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once`,
+  `test_a_prompt_the_harness_requeued_is_one_turn`,
+  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`,
+  `test_legs_are_agents_the_transcript_shows_running`; `tests/test_claude_code_checkpoint.py`:
+  `test_the_first_line_re_arms_each_watch_verbatim_before_any_work`,
+  `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`,
+  `test_a_transcripts_prompt_is_kept_as_typed_and_trimming_says_only_whether_it_is_empty`,
+  `test_the_persons_row_with_no_words_an_image_alone_ends_the_exchange_before_it`,
+  `test_a_reminder_block_inside_a_typed_prompt_is_cut_and_the_source_counts_it`,
+  `test_a_row_appended_while_the_transcript_is_read_is_after_the_take`,
+  `test_a_same_size_rewrite_of_the_transcript_that_restores_the_mtime_is_read_anew`,
+  `test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest`;
+  `tests/test_context.py`:
+  `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
+  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`,
+  `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
+
+### D3: `lion context` and `/api/context/*`: one implementation, two transports ^d3
+
+Serves C1, C4, C6 and C7. `apps/cli/lion_cli/context.py` holds `set`, `checkpoint`, `restore`,
+`status` and `show`, run from the session's directory; a refusal prints its reason on standard error
+and exits 1. `checkpoint --hook` is the PreCompact hook's entry (S1). The areas server's
+`context_api` routes all but `show` to the same functions for a directory its registry names, 404
+for any other and 409 on a refusal, behind the server's guards
+([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). `status` says stale when no checkpoint exists, the file
+it points at changed after it, or its rollout fails (S17).
+
+- **Landing evidence**: `tests/test_context.py`:
+  `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
+  `test_the_context_routes_answer_for_a_registered_desk_only`,
+  `test_the_served_context_routes_sit_behind_the_same_gates`,
+  `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`; `tests/test_context.py`:
+  `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`,
+  `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`,
+  `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`,
+  `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`.
+
+### D4: The resident's arm, retired ^d4
+
+Serves C6, with one caller of `save` fewer. The resident took a checkpoint at its fold and when its
+run stopped, wrote its record beside it, and replayed both in its next process. Since
+[[ADR-0026-the-submission|ADR-0026]] C6 its wake continues its last run from the store and takes
+none: `hub/agent/agent.py` holds no take and no restore.
+
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`.
+
+### D5: `hub/backend/codex/checkpoint.py` in the backend's package, beside the sources both sessions share ^d5
+
+Serves C1, C3, C7, C8 and C9. A module of the package `hub/backend/codex/`, whose `__init__.py` is
+the backend [[ADR-0009-backends|ADR-0009]] names, every import unchanged; the module beside
+`codex.py` it replaced on 2026-10-05 is in Alternatives. The fold and the restore's body live in
+`hub/backend/checkpoint.py` (D2). `lion context checkpoint --codex` reads `--session`'s rollout,
+else the directory's newest whose first row says a person's, the later name first on a tie; a
+`--transcript` whose first row is a `session_meta` is a Codex session's (S16). `restore` renders by
+`source.kind`.
+
+- **Landing evidence**: `tests/test_codex_checkpoint.py`:
+  `test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_restores_it`,
+  `test_the_newest_rollout_is_the_directorys_own_thread_and_a_thread_id_names_one_file`,
+  `test_a_rollout_is_read_once_per_file_state`,
+  `test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing`,
+  `test_a_typed_prompt_is_kept_as_typed_and_trimming_says_only_whether_it_is_empty`,
+  `test_a_message_the_person_sent_or_nothing_marked_ends_the_exchange_before_it`,
+  `test_a_row_appended_while_the_take_reads_is_after_the_take`,
+  `test_a_same_size_rewrite_that_restores_the_mtime_is_read_anew`,
+  `test_a_rollout_whose_first_row_names_no_owner_is_skipped_and_refused_by_name`,
+  `test_a_scan_keeps_only_what_the_takes_readers_read`,
+  `test_a_snapshot_that_differs_from_its_file_in_one_field_is_never_read`,
+  `test_a_grown_file_is_the_snapshots_only_on_its_own_device_and_inode`,
+  `test_a_rollout_changed_after_the_directory_chose_it_is_taken_only_if_it_would_be_chosen`,
+  `test_a_rollout_replaced_or_cut_between_its_stat_and_its_read_is_taken_again`,
+  `test_a_rollout_rewritten_while_it_is_read_is_taken_again`,
+  `test_a_rollout_that_changes_under_every_read_is_refused_and_nothing_is_taken`,
+  `test_a_session_meta_after_the_first_row_is_never_the_threads_own`,
+  `test_rollouts_written_in_the_same_nanosecond_are_ordered_by_name_the_later_first`,
+  `test_a_file_whose_kind_changed_after_the_route_peeked_at_it_is_refused`,
+  `test_a_rollout_whose_first_row_names_no_thread_id_at_the_read_is_refused_on_every_route`,
+  `test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen`;
+  the Claude Code tests in `tests/test_context.py`, unchanged, and
+  `tests/test_claude_code_checkpoint.py`.
+
+## Alternatives
+
+| approach | rejected because |
+| -------- | ---------------- |
+| Continuing the old session with `claude -c` | the whole transcript is read again, and nothing chose what to keep |
+| A model's summary as the checkpoint | a model's opinion of the session, unverifiable and unfoldable; a summary is at most one declared value |
+| Copying tool calls and their results into the checkpoint | it grows with the session and the fold gains nothing; the transcript keeps them (A1) |
+| Re-arming every Monitor that says `persistent` | the tool ends every Monitor at its deadline, and none of 65 persistent ones read was still running (A3) |
+| The statusline's last-rendered file as the figure | it belongs to whichever session rendered last; the per-session file is named by the session id (C7) |
+| A package `hub/backend/codex/` in place of `codex.py` | rejected at first because the backend's record and its tests named `hub/backend/codex.py`; reversed on 2026-10-05, when the store's change made the package with `codex.py` as its `__init__.py`, every import of `hub.backend.codex` unchanged (D5) |
+| Every user message of a rollout read as a prompt | the CLI writes the environment, AGENTS.md and the plugin list as user messages, each item marked (A5) |
+| The newest rollout whatever wrote it | a sub-agent runs in its parent's directory and writes as often (D5) |
+| One file per directory, overwritten at each take | a take would erase the one before; each take is its own file and `latest.json` names the newest (C6) |
+
+## Consequences
+
+- **S1**: Claude Code's PreCompact hook, when an install sets it to `lion context checkpoint
+  --hook`, takes the session's checkpoint with the reason `precompact`. The session, transcript and
+  directory come from the hook's input alone; an event of another kind, or one missing a string
+  session, transcript or directory, is refused with nothing taken. Nothing else takes one or starts
+  the fresh session: a person or another program runs `lion context checkpoint`, starts a session
+  and gives it the restore's prompt; `threshold` and `rotate` name such callers.
+- **S2**: The statusline's per-session file and the hook ring are written outside the code, by the
+  statusline command and the prompt hook a Claude Code install configures; without them the figure
+  reads "not known" and the person's words come from the transcript.
+- **S3**: `save`, `load` and the restore refuse a reason or a kind outside their lists and name the
+  value: a file edited to hold another kind does not load, and a restore leaves no value out unsaid.
+  The kind checked is a named value's; `source.kind` is on no list: the restore renders a resident's
+  and a Codex session's by it, and `to_history` refuses any other. Pinned by
+  `test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value` and
+  `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`.
+- **S4**: The lanes are the actor's active khive tasks, the threads its unread mail awaits a reply
+  on, each named by its newest unread message, and the open pull requests the gh account authored in
+  the directory's repository. `source.lanes` names each read, or why it could not be done, and a
+  full page says it is one. A thread already read and left unanswered is not a lane. Pinned by
+  `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests` and
+  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`.
+- **S5**: One `latest.json` serves both arms, so the latest checkpoint that `lion context restore`
+  and `status` show is the directory's newest, whichever arm took it. A Claude Code checkpoint taken
+  in a resident's directory, the only kind of directory the `/api/context/` routes reach, becomes
+  the latest; the resident reads none since [[ADR-0026-the-submission|ADR-0026]] C6, so it costs the
+  resident nothing. Pinned by
+  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`, whose decoy
+  checkpoint replays and is never read.
+
+- **S6**: `hub/backend/claude_code/checkpoint.py` reads fixed places under the home directory:
+  Claude Code's project directory, the hook ring, the typing log and the statusline's files; where
+  no tool writes one, it reads as absent. The script the added inbox Monitor runs, and the actors it
+  names after the directory's own, come from the environment (`LION_INBOX_MONITOR`,
+  `LION_INBOX_PRIORITY`); unset, the Monitor names `inbox-monitor.sh` on the path of whoever runs
+  it.
+- **S7**: The code removes no checkpoint: every take adds a file under `.khive/context/`, and the
+  record files residents wrote before D4 was retired stay beside them.
+
+- **S8**: The boundary: the durable record and a session's continuity across processes are the
+  kernel's: which checkpoint a new process starts from, who starts it, how long a checkpoint is
+  kept, and where it lives once the directory is gone. Here a checkpoint is files in a directory git
+  ignores, and a restore is a prompt or a history.
+- **S9**: `taken_at` keeps the take's fraction of a second, so `status` calls a file written in the
+  take's second stale only when written after it, to the microsecond. A `taken_at` with no fraction
+  reads as its second's start. The stamp is read before the transcript is, so a prompt that lands
+  while the take reads is after it. Every take's read stops at the size one stat saw (S13), a last
+  line with no end left unread and counted; a Codex scan keeps only what its readers read.
+- **S10**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
+  given, is an object; a pull request's number is a positive int, never a bool. A row of another
+  shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
+  box that is not a list is a read that could not be done, and the khive client refuses such a page
+  itself. Pinned by `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
+- **S11**: `hub/backend/codex/checkpoint.py` reads the rollouts under `$CODEX_HOME`, `~/.codex` when
+  unset, at each call. Nothing here takes a Codex session's checkpoint on its own: a person or
+  another program runs `lion context checkpoint --codex`. A rollout handed to the PreCompact hook is
+  refused, `precompact` being no reason of a Codex session's, and nothing is written. Pinned by
+  `test_a_rollout_handed_to_the_precompact_hook_is_refused_and_writes_nothing`. A rollout whose
+  first row names no owner is refused when named, and the directory default skips it and counts it
+  in `skipped_unowned`.
+- **S12**: A Codex checkpoint is saved and loaded on a Claude Code session's lists, which hold a
+  Codex session's; its restore checks it on the Codex session's own. Like a Claude Code one (S5), it
+  becomes the latest in a resident's directory, which the resident never reads.
+
+- **S13**: A take's read, of a transcript or a rollout, is of the file its stat saw (`Snapshot` in
+  `hub/backend/checkpoint.py`). The file opened is compared with that state, its device and inode
+  included, before the first byte and after the last. One put in its place, cut, or rewritten at the
+  same size is stat and read again, twice at most, then refused with nothing taken. The same file
+  grown is taken as appended to, so a rewrite that also grows it is not told from an append.
+- **S14**: The owner, the thread and the directory of a Codex take are those of the first row its
+  one read saw. The directory's own choice rests on an earlier read of that row, so the take refuses
+  a chosen rollout whose row no longer says a person's thread in the directory. One that still says
+  so is taken, whatever thread it now names, and `source` names that thread. A row naming no thread
+  id is refused on every route, the file named. Pinned by
+  `test_a_rollout_whose_first_row_names_no_thread_id_at_the_read_is_refused_on_every_route`.
+- **S15**: Claude Code names a transcript by its session id, a random UUID, so no name orders two.
+  The directory's newest is the last written, to the nanosecond; a tie for it is refused, the tied
+  files named, and nothing is taken. Pinned by
+  `test_of_two_transcripts_written_in_the_same_nanosecond_neither_is_taken_for_the_newest`.
+- **S16**: `--transcript` chooses its reader on a peek at the file's first row, so the take's own
+  read must find the same kind. The Claude Code reader refuses a first row that is a `session_meta`,
+  and a Codex take one naming no owner, nothing taken. Pinned by
+  `test_a_file_whose_kind_changed_after_the_route_peeked_at_it_is_refused`.
+- **S17**: `status --codex` reads its figure from one read of the rollout it chose, that read's
+  first row checked as a take's (S14), so the figure is only ever of a rollout the status would
+  choose. One that fails gives a figure not known, and stale. Pinned by
+  `test_a_rollout_changed_after_the_status_chose_it_gives_its_figure_only_if_it_would_be_chosen`.
+- **S18**: One string holds no mark of who wrote a system reminder block inside it, so the reader
+  cannot tell quoted from placed. A restored prompt holds neither (C2): both are cut, the words
+  around them kept. A block runs from an opener, attributes or none, to the closer that balances it,
+  an unclosed opener to the end, a closer alone goes too; a row of blocks and nothing else is the
+  harness's. The cut is never silent: `source.reminders_cut` counts them. Pinned by
+  `test_a_reminder_block_inside_a_typed_prompt_is_cut_and_the_source_counts_it` and
+  `test_a_reminder_block_is_cut_whole_when_nested_unclosed_leading_or_a_closer_alone`.

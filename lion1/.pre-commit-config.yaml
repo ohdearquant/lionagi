@@ -1,0 +1,58 @@
+# lion1's own checks, separate from the repository root's config, which leaves lion1/ alone. Run
+# from anywhere in the repository: `uvx pre-commit run --config lion1/.pre-commit-config.yaml
+# --all-files` (from lion1/, `--config .pre-commit-config.yaml`). pre-commit runs hooks from the
+# repository root, so every path below is written from there, and `files` keeps them to lion1/.
+#
+# The ADR register (docs/adr/PLAN.md) is enforced here: the formatter rewraps prose at 100 columns
+# and fails the commit when it changed a file, the linter checks every record against the register
+# (limits, sections, anchors, links, definitions, one owner per term), and the index must match the
+# records' frontmatter. The three scripts live inside the corpus, under docs/adr/_scripts, and are
+# stdlib only, so the hooks need no dependencies.
+
+files: ^lion1/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: adr-fmt
+        name: adr-fmt (rewrap ADR prose at 100 columns)
+        language: python
+        entry: python lion1/docs/adr/_scripts/adr_fmt.py
+        files: ^lion1/docs/adr/\d{3}-[a-z0-9-]+/ADR-\d{4}-.*\.md$
+        pass_filenames: true
+      - id: adr-lint
+        name: adr-lint (the record register)
+        language: python
+        entry: python lion1/docs/adr/_scripts/adr_lint.py
+        files: ^lion1/docs/adr/
+        pass_filenames: false
+      - id: adr-index
+        name: adr-index (INDEX.md matches the records)
+        language: python
+        entry: python lion1/docs/adr/_scripts/gen_adr_index.py --check
+        files: ^lion1/docs/adr/
+        pass_filenames: false

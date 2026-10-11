@@ -1,0 +1,26 @@
+{
+  "name": "read only",
+  "programs": [
+    "cat",
+    "ls",
+    "grep",
+    "git"
+  ],
+  "never": [
+    "git push"
+  ],
+  "write_under": [],
+  "read": "anywhere",
+  "network": "off",
+  "seconds_per_command": 60,
+  "ask_first": [],
+  "otherwise": "refuse",
+  "used_by": [
+    "platform/chair",
+    "research/chair",
+    "research/front-desk",
+    "support/chair",
+    "support/front-desk",
+    "ops/chair"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "name": "ops",
+  "chair": {
+    "id": "ops/chair",
+    "name": "chair",
+    "area": "ops",
+    "kind": "chair",
+    "state": "idle",
+    "now": "last woke 06:00, nothing to do",
+    "woken_by": [
+      "every day at 06:00"
+    ],
+    "model": "claude-code/sonnet",
+    "runs_in": "local",
+    "today": {
+      "cost": 0.03,
+      "wakes": 1,
+      "acted": 0
+    }
+  },
+  "agents": [
+    {
+      "id": "ops/builder",
+      "name": "builder",
+      "area": "ops",
+      "kind": "agent",
+      "state": "stopped",
+      "now": "stopped at 09:47 after a failed run",
+      "woken_by": [],
+      "model": "claude-code/sonnet",
+      "runs_in": "local",
+      "today": {
+        "cost": 0.02,
+        "wakes": 1,
+        "acted": 0
+      }
+    }
+  ],
+  "today": {
+    "cost": 0.05,
+    "wakes": 2,
+    "acted": 0
+  },
+  "timeline": [
+    {
+      "at": "2026-10-04T09:47:00Z",
+      "agent": "ops/builder",
+      "text": "a preview deploy failed: the build step ran out of time",
+      "raised": true
+    },
+    {
+      "at": "2026-10-04T06:00:00Z",
+      "agent": "ops/chair",
+      "text": "read the night's alerts; nothing to do",
+      "raised": false
+    }
+  ]
+}

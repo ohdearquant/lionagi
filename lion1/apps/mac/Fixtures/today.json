@@ -1,0 +1,291 @@
+{
+  "date": "2026-10-04",
+  "totals": {
+    "running": 3,
+    "wakes": 95,
+    "acted": 41,
+    "cost": 4.58,
+    "cap": 20.0
+  },
+  "for_you": {
+    "open": 5
+  },
+  "areas": [
+    {
+      "name": "platform",
+      "chair": {
+        "id": "platform/chair",
+        "name": "chair",
+        "area": "platform",
+        "kind": "chair",
+        "state": "idle",
+        "now": "last woke 10:40, routed two reviews",
+        "woken_by": [
+          "an agent in platform escalates"
+        ],
+        "model": "claude-code/opus",
+        "runs_in": "local",
+        "today": {
+          "cost": 0.21,
+          "wakes": 2,
+          "acted": 2
+        }
+      },
+      "state": "running",
+      "today": {
+        "cost": 2.64,
+        "wakes": 57,
+        "acted": 25
+      },
+      "agents": [
+        {
+          "id": "platform/front-desk",
+          "name": "front desk",
+          "area": "platform",
+          "kind": "agent",
+          "state": "running",
+          "now": "reading a new issue on the sample app",
+          "woken_by": [
+            "mail arrives for help@example.com",
+            "an issue opens in example/app"
+          ],
+          "model": "claude-code/sonnet",
+          "runs_in": "local",
+          "today": {
+            "cost": 0.95,
+            "wakes": 45,
+            "acted": 13,
+            "calls": 61
+          }
+        },
+        {
+          "id": "platform/reviewer",
+          "name": "reviewer",
+          "area": "platform",
+          "kind": "agent",
+          "state": "running",
+          "now": "reviewing pull request 214",
+          "woken_by": [
+            "it is called",
+            "a pull request opens in example/app"
+          ],
+          "model": "codex/gpt-5",
+          "runs_in": "local",
+          "today": {
+            "cost": 1.29,
+            "wakes": 9,
+            "acted": 9,
+            "calls": 40
+          },
+          "endpoint": "/v2/agents/platform/reviewer/call"
+        },
+        {
+          "id": "platform/builder",
+          "name": "builder",
+          "area": "platform",
+          "kind": "agent",
+          "state": "idle",
+          "now": "last woke 09:12, opened a branch",
+          "woken_by": [
+            "the reviewer finishes with changes asked"
+          ],
+          "model": "claude-code/sonnet",
+          "runs_in": "daytona",
+          "today": {
+            "cost": 0.19,
+            "wakes": 1,
+            "acted": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "research",
+      "chair": {
+        "id": "research/chair",
+        "name": "chair",
+        "area": "research",
+        "kind": "chair",
+        "state": "idle",
+        "now": "last woke 08:00, set the week's reading",
+        "woken_by": [
+          "every day at 08:00"
+        ],
+        "model": "claude-code/opus",
+        "runs_in": "local",
+        "today": {
+          "cost": 0.12,
+          "wakes": 1,
+          "acted": 1
+        }
+      },
+      "state": "running",
+      "today": {
+        "cost": 0.45,
+        "wakes": 14,
+        "acted": 6
+      },
+      "agents": [
+        {
+          "id": "research/front-desk",
+          "name": "front desk",
+          "area": "research",
+          "kind": "agent",
+          "state": "running",
+          "now": "reading three new papers on retrieval",
+          "woken_by": [
+            "every hour",
+            "a file lands in ~/reading/inbox"
+          ],
+          "model": "openrouter/deepseek/deepseek-chat",
+          "runs_in": "local",
+          "today": {
+            "cost": 0.33,
+            "wakes": 13,
+            "acted": 5,
+            "calls": 120
+          }
+        }
+      ]
+    },
+    {
+      "name": "support",
+      "chair": {
+        "id": "support/chair",
+        "name": "chair",
+        "area": "support",
+        "kind": "chair",
+        "state": "idle",
+        "now": "last woke yesterday 17:20",
+        "woken_by": [
+          "an agent in support escalates"
+        ],
+        "model": "claude-code/sonnet",
+        "runs_in": "local",
+        "today": {
+          "cost": 0.0,
+          "wakes": 0,
+          "acted": 0
+        }
+      },
+      "state": "error",
+      "today": {
+        "cost": 1.44,
+        "wakes": 22,
+        "acted": 10
+      },
+      "agents": [
+        {
+          "id": "support/front-desk",
+          "name": "front desk",
+          "area": "support",
+          "kind": "agent",
+          "state": "error",
+          "now": "the mail source refused its sign-in at 10:58",
+          "woken_by": [
+            "mail arrives for support@example.com"
+          ],
+          "model": "claude-code/sonnet",
+          "runs_in": "local",
+          "today": {
+            "cost": 0.44,
+            "wakes": 18,
+            "acted": 7
+          }
+        },
+        {
+          "id": "support/builder",
+          "name": "builder",
+          "area": "support",
+          "kind": "agent",
+          "state": "held",
+          "now": "held at 10:31: the day's cost cap is reached",
+          "woken_by": [
+            "the front desk files a bug"
+          ],
+          "model": "openrouter/qwen/qwen-max",
+          "runs_in": "local",
+          "today": {
+            "cost": 1.0,
+            "wakes": 4,
+            "acted": 3
+          },
+          "held_reason": "cost cap of $1.00 reached"
+        }
+      ]
+    },
+    {
+      "name": "ops",
+      "chair": {
+        "id": "ops/chair",
+        "name": "chair",
+        "area": "ops",
+        "kind": "chair",
+        "state": "idle",
+        "now": "last woke 06:00, nothing to do",
+        "woken_by": [
+          "every day at 06:00"
+        ],
+        "model": "claude-code/sonnet",
+        "runs_in": "local",
+        "today": {
+          "cost": 0.03,
+          "wakes": 1,
+          "acted": 0
+        }
+      },
+      "state": "stopped",
+      "today": {
+        "cost": 0.05,
+        "wakes": 2,
+        "acted": 0
+      },
+      "agents": [
+        {
+          "id": "ops/builder",
+          "name": "builder",
+          "area": "ops",
+          "kind": "agent",
+          "state": "stopped",
+          "now": "stopped at 09:47 after a failed run",
+          "woken_by": [],
+          "model": "claude-code/sonnet",
+          "runs_in": "local",
+          "today": {
+            "cost": 0.02,
+            "wakes": 1,
+            "acted": 0
+          }
+        }
+      ]
+    }
+  ],
+  "daemon": {
+    "version": "0.1.0",
+    "host": "127.0.0.1:8877",
+    "can": [
+      "definition",
+      "add_agent",
+      "inspect",
+      "control",
+      "message",
+      "foryou",
+      "plugins",
+      "marketplaces",
+      "try_tool",
+      "shell_rules",
+      "test_model",
+      "models",
+      "providers",
+      "provider_key",
+      "check_provider",
+      "limits",
+      "give",
+      "open",
+      "stop",
+      "message_images",
+      "default_model",
+      "model_settings"
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "ops",
+  "programs": [
+    "systemctl",
+    "journalctl",
+    "df",
+    "uptime",
+    "make"
+  ],
+  "never": [
+    "systemctl stop"
+  ],
+  "write_under": [
+    "~/deploy"
+  ],
+  "read": "write_roots",
+  "network": "on",
+  "seconds_per_command": 900,
+  "ask_first": [
+    "systemctl restart"
+  ],
+  "otherwise": "ask",
+  "used_by": [
+    "ops/builder"
+  ]
+}

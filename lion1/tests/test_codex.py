@@ -1,0 +1,719 @@
+"""The Codex backend against a fake `codex` CLI that speaks the JSONL event stream."""
+
+import asyncio
+import json
+import os
+import re
+import stat
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from hub.backend import Codex, CodexError
+from hub.backend import codex as codex_mod
+from hub.backend.codex import CHAT, DISABLED, INSTRUCTIONS, KEPT, MEASURED
+from lion1 import Actor, Message, Profile, RunRequest
+
+# The fake keeps a per-scratch attempt counter beside `last.txt`, so a prompt can ask for a
+# failure on the first attempt and an answer on the second. With FAKE_CODEX_LOG set it also writes
+# what it saw while it ran (argv, its scratch, the framing files), since the scratch is gone after.
+FAKE = """\
+import json, os, sys
+argv = sys.argv[1:]
+here = os.path.dirname(os.path.abspath(__file__))
+if argv == ["--version"]:
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.156.1"))
+    sys.exit(int(os.environ.get("FAKE_CODEX_VERSION_EXIT", "0")))
+if argv[:2] == ["debug", "models"]:  # the CLI's catalogue: one model with tools of its own, one without
+    with open(os.path.join(here, "catalogue-asked"), "a") as f:
+        f.write("x")
+    if os.environ.get("FAKE_CODEX_MODELS"):
+        sys.stderr.write("no catalogue here")
+        print(os.environ["FAKE_CODEX_MODELS"])
+        sys.exit(int(os.environ.get("FAKE_CODEX_MODELS_EXIT", "0")))
+    acting = {"tool_mode": "code_mode_only", "multi_agent_version": "v2", "shell_type": "unified_exec",
+              "apply_patch_tool_type": "freeform", "experimental_supported_tools": ["clock"],
+              "base_instructions": "You are an agent with a shell.", "a_tool_a_later_release_adds": "on"}
+    plain = {"tool_mode": None, "multi_agent_version": None, "shell_type": "unified_exec",
+             "apply_patch_tool_type": "freeform", "experimental_supported_tools": []}
+    print(json.dumps({"models": [{"slug": "gpt-6-luna", "context_window": 272000, **acting},
+                                 {"slug": "gpt-5.5", "context_window": 272000, **plain}]}))
+    sys.exit(0)
+prompt = sys.stdin.read()
+out = argv[argv.index("-o") + 1]
+model = argv[argv.index("-m") + 1] if "-m" in argv else None
+effort = next((a for a in argv if a.startswith("model_reasoning_effort=")), None)
+counter = os.path.join(os.path.dirname(out), "attempts")
+n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
+open(counter, "w").write(str(n))
+if os.environ.get("FAKE_CODEX_LOG"):
+    scratch = os.path.dirname(out)
+    catalog = next(a.split("=", 1)[1].strip('"') for a in argv if a.startswith("model_catalog_json="))
+    seen = {"argv": argv, "cwd": os.getcwd(), "scratch": scratch, "attempt": n,
+            "catalog": json.load(open(catalog)), "catalog_path": catalog,
+            "agents_md": open(os.path.join(scratch, "AGENTS.md")).read(),
+            "instructions": open(os.path.join(scratch, "instructions.md")).read()}
+    with open(os.environ["FAKE_CODEX_LOG"], "a") as f:
+        f.write(json.dumps(seen) + "\\n")
+ev = lambda **e: print(json.dumps(e))
+ev(type="thread.started", thread_id="t1")
+usage = {"input_tokens": 120, "cached_input_tokens": 100, "cache_write_input_tokens": 0,
+         "output_tokens": 9, "reasoning_output_tokens": 4}
+if "FAIL401" in prompt:
+    ev(type="turn.started")
+    ev(type="error", message="Reconnecting... 1/5 (unexpected status 401 Unauthorized)")
+    ev(type="turn.failed", error={"message": "unexpected status 401 Unauthorized: Missing bearer"})
+    sys.exit(1)
+if "AUTHTIMEOUT" in prompt:  # an auth failure whose prose also says timeout
+    ev(type="turn.started")
+    ev(type="turn.failed", error={"message": "unexpected status 401 Unauthorized: request timeout"})
+    sys.exit(1)
+if "SEPTEXT" in prompt:  # the answer carries U+2028 unescaped and only the event stream has it
+    ev(type="turn.started")
+    sys.stdout.flush()
+    item = {"type": "item.completed", "item": {"type": "agent_message", "text": "left\u2028right"}}
+    sys.stdout.buffer.write((json.dumps(item, ensure_ascii=False) + "\\n").encode())
+    sys.stdout.buffer.flush()
+    ev(type="turn.completed", usage=usage)
+    open(out, "w").write("")
+    sys.exit(0)
+if "FLAKY429" in prompt and n == 1:
+    ev(type="turn.started")
+    ev(type="turn.failed", error={"message": "unexpected status 429 Too Many Requests"})
+    sys.exit(1)
+if "EMPTY" in prompt and n == 1:
+    ev(type="turn.started")
+    ev(type="turn.completed", usage={**usage, "output_tokens": 900, "reasoning_output_tokens": 900})
+    sys.exit(0)
+if "BLANKFINAL" in prompt:  # commentary carried the answer, the final message came back empty
+    ev(type="turn.started")
+    ev(type="item.completed", item={"type": "agent_message", "text": '<lact r1>run(cmd="ls")</lact>'})
+    ev(type="item.completed", item={"type": "agent_message", "text": ""})
+    ev(type="turn.completed", usage=usage)
+    open(out, "w").write("")
+    sys.exit(0)
+disabled = [argv[i + 1] for i, a in enumerate(argv) if a == "--disable"]
+text = (f"seen {len(prompt)} chars; model={model}; {effort}; disabled={disabled}; "
+        f"home={os.environ.get('CODEX_HOME')}; last-role-marker={'<ASSISTANT>' in prompt}")
+ev(type="item.completed", item={"type": "error", "message": "clamping hook timeout"})
+ev(type="turn.started")
+ev(type="item.completed", item={"type": "agent_message", "text": text})
+ev(type="turn.completed", usage=usage)
+open(out, "w").write(text)
+"""
+
+
+@pytest.fixture
+def fake_cli(tmp_path: Path) -> str:
+    script = tmp_path / "fake_codex.py"
+    script.write_text(FAKE)
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    return str(cli)
+
+
+@pytest.fixture
+def observed(tmp_path: Path, monkeypatch):
+    """What the fake saw while it ran, one dict per attempt, read after the call."""
+    log = tmp_path / "observed.jsonl"
+    monkeypatch.setenv("FAKE_CODEX_LOG", str(log))
+    return lambda: [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def _seeded(**kwargs) -> Codex:
+    """A backend with its catalogue already in hand, for a fake CLI that speaks only `exec`."""
+    backend = Codex(**kwargs)
+    backend._chat_catalog = '{"models": []}'
+    return backend
+
+
+def test_the_view_goes_in_as_one_transcript_and_usage_comes_back_shaped(fake_cli, observed):
+    backend = Codex(model="gpt-6-luna", effort="xhigh", cli=fake_cli)
+    text = asyncio.run(
+        backend([Message("system", "be brief"), Message("user", "hi"), Message("assistant", "yo")])
+    )
+    assert text.startswith("seen ") and "model=gpt-6-luna" in text
+    assert 'model_reasoning_effort="xhigh"' in text and "last-role-marker=True" in text
+    assert f"disabled={list(DISABLED)}" in text  # nothing that acts, nothing from the shared home
+    (seen,) = observed()
+    assert seen["agents_md"].startswith("This process is a text harness")
+    argv = seen["argv"]  # the CLI's agent framing replaced, its environment lines dropped
+    assert f'model_instructions_file="{Path(seen["scratch"]) / "instructions.md"}"' in argv
+    assert seen["instructions"] == INSTRUCTIONS
+    assert "include_environment_context=false" in argv
+    call = backend.calls[-1]
+    assert call["usage"]["input_tokens"] == 20 and call["usage"]["cache_read_input_tokens"] == 100
+    assert call["usage"]["output_tokens"] == 9 and call["usage"]["reasoning_output_tokens"] == 4
+    assert call["total_cost_usd"] is None and call["duration_api_ms"] >= 0
+    assert call["attempts"] == 1 and call["notes"] == ["clamping hook timeout"]
+
+
+def test_each_call_hands_the_cli_a_catalogue_holding_only_what_a_chat_needs(fake_cli, observed):
+    """The flags leave a model the tools its catalogue entry names (measured: a code-execution tool
+    and six sub-agent tools, one of which started a sub-agent). Each call's CLI reads a catalogue
+    whose entries hold the fields a chat needs and nothing else of the CLI's own: no tool mode, no
+    sub-agent version, no field a later release adds. The CLI is asked once the first answer is in."""
+    backend = Codex(model="gpt-6-luna", cli=fake_cli)
+    for _ in range(2):
+        asyncio.run(backend([Message("user", "hi")]))
+    first, second = observed()
+    for seen in (first, second):
+        assert Path(seen["catalog_path"]) == Path(seen["scratch"]) / "models.json"
+        assert seen["catalog"] == {
+            "models": [
+                {"slug": "gpt-6-luna", "context_window": 272000, **CHAT},
+                {"slug": "gpt-5.5", "context_window": 272000, **CHAT},
+            ]
+        }
+        argv = seen["argv"]
+        assert "skills.bundled.enabled=false" in argv
+        assert "tools.experimental_request_user_input.enabled=false" in argv
+        # refused as unrecognized by the CLI now, an error item on every call
+        assert not [a for a in argv if a.startswith(("include_skills_usage", "include_plugin_usage"))]
+    assert "goals" in DISABLED
+    assert CHAT == {
+        "shell_type": "disabled",
+        "experimental_supported_tools": [],
+        "base_instructions": INSTRUCTIONS,
+    }
+    acting = {
+        "tool_mode",
+        "multi_agent_version",
+        "apply_patch_tool_type",
+        "web_search_tool_type",
+        "supports_search_tool",
+    }
+    assert not acting & set(KEPT)
+    assert (Path(fake_cli).parent / "catalogue-asked").read_text() == "x"  # once for both calls
+    assert all(c["notes"] == ["clamping hook timeout"] for c in backend.calls)  # a measured release: no note
+
+
+@pytest.mark.parametrize(
+    ("said", "code", "named"),
+    [
+        ("codex-cli 0.157.0", "0", "codex-cli 0.157.0 is not a release"),
+        ("codex-cli 0.156.10", "0", "codex-cli 0.156.10 is not a release"),
+        ("codex-cli 0.156.1-beta.2", "0", "codex-cli 0.156.1-beta.2 is not a release"),
+        ("no number here", "0", "a CLI that printed no release ('no number here"),
+        ("codex-cli 0.156.1", "3", "a CLI that printed no release ('codex-cli 0.156.1"),
+    ],
+)
+def test_a_cli_release_the_claim_was_not_measured_on_is_refused_before_any_prompt_goes_out(
+    fake_cli, observed, monkeypatch, said, code, named
+):
+    """What the catalogue guards against fails silently, and it held on one release and not on the
+    next: a CLI of any release but those measured is refused, and nothing is asked of it."""
+    assert MEASURED == ("0.156.1",)
+    monkeypatch.setenv("FAKE_CODEX_VERSION", said)
+    monkeypatch.setenv("FAKE_CODEX_VERSION_EXIT", code)
+    backend = Codex(cli=fake_cli)
+    with pytest.raises(CodexError) as e:
+        asyncio.run(backend([Message("user", "hi")]))
+    assert named in str(e.value) and "measured on (0.156.1)" in str(e.value)
+    assert "unmeasured=True" in str(e.value)  # the way to ask the model again is named
+    assert observed() == [] and not (Path(fake_cli).parent / "catalogue-asked").exists()
+    (call,) = backend.calls
+    assert call["attempts"] == 0 and named in call["error"]
+
+
+def test_an_unmeasured_release_goes_only_when_asked_for_and_every_call_says_so(
+    fake_cli, observed, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CODEX_VERSION", "codex-cli 0.157.0")
+    backend = Codex(cli=fake_cli, unmeasured=True)
+    for _ in range(2):
+        assert asyncio.run(backend([Message("user", "hi")])).startswith("seen ")
+    assert len(observed()) == 2
+    for call in backend.calls:
+        assert call["notes"][0].startswith(
+            "codex-cli 0.157.0 is not a release this backend's tools-off claim"
+        )
+        assert call["notes"][1:] == ["clamping hook timeout"]
+
+
+@pytest.mark.parametrize(
+    ("printed", "code"),
+    [
+        ("not json", 0),
+        ('{"models": 3}', 0),
+        ('{"catalogue": []}', 0),
+        ('{"models": ["x"]}', 0),
+        ('{"models": [{"slug": "m"}, 7]}', 0),
+        ('{"models": [{"slug": "m"}]}', 1),  # a catalogue, from a command that failed: not taken
+    ],
+)
+def test_a_cli_that_prints_no_catalogue_fails_the_call_before_any_prompt_goes_out(
+    fake_cli, observed, monkeypatch, printed, code
+):
+    monkeypatch.setenv("FAKE_CODEX_MODELS", printed)
+    monkeypatch.setenv("FAKE_CODEX_MODELS_EXIT", str(code))
+    backend = Codex(cli=fake_cli)
+    with pytest.raises(CodexError, match=rf"printed no model catalogue \(exit {code}\): no catalogue here"):
+        asyncio.run(backend([Message("user", "hi")]))
+    assert observed() == []  # no `exec` ran: the model was sent nothing
+    (call,) = backend.calls  # and the call landed its envelope all the same
+    assert call["attempts"] == 0 and "printed no model catalogue" in call["error"]
+    assert call["total_cost_usd"] is None and call["usage"]["input_tokens"] == 0
+    monkeypatch.delenv("FAKE_CODEX_MODELS")  # nothing was kept of the failure: the next call asks again
+    assert asyncio.run(backend([Message("user", "hi")])).startswith("seen ")
+
+
+def test_a_cli_whose_catalogue_never_comes_is_stopped_at_the_bound(tmp_path: Path, monkeypatch):
+    cli = tmp_path / "codex"
+    cli.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'child'}\nwait\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(codex_mod, "_CATALOG_S", 0.5)
+    backend = Codex(cli=str(cli))
+    t0 = time.monotonic()
+    with pytest.raises(CodexError, match="codex --version did not answer within"):
+        asyncio.run(asyncio.wait_for(backend([Message("user", "hi")]), 15))
+    assert time.monotonic() - t0 < 10
+    assert backend.calls[-1]["attempts"] == 0
+    child = int((tmp_path / "child").read_text())
+    for _ in range(200):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"the CLI's child {child} outlived the catalogue's bound")
+
+
+def test_a_failed_turn_is_named_from_the_stream_and_is_not_retried(fake_cli, observed):
+    backend = Codex(cli=fake_cli)
+    with pytest.raises(CodexError, match="401 Unauthorized: Missing bearer"):
+        asyncio.run(backend([Message("user", "please FAIL401")]))
+    assert [s["attempt"] for s in observed()] == [1]  # 401 is not retried
+
+
+def test_codex_scratch_cleaned_on_terminal_paths(fake_cli, observed):
+    # every call's mkdtemp was left behind (1290 lionagi-codex-* dirs in TMPDIR)
+    backend = Codex(cli=fake_cli)
+    assert asyncio.run(backend([Message("user", "hi")])).startswith("seen ")
+    with pytest.raises(CodexError) as e:
+        asyncio.run(backend([Message("user", "please FAIL401")]))
+    ok, failed = (Path(s["scratch"]) for s in observed())
+    assert ok != failed and not ok.exists() and not failed.exists()
+    # the stream went with the scratch, so the failed envelope carries it and the error names no file
+    assert "last.jsonl" not in str(e.value)
+    call = backend.calls[-1]
+    assert call["error"] == str(e.value) and call["attempts"] == 1
+    assert '"turn.failed"' in call["stream"] and "stderr" in call
+
+
+def test_codex_calls_have_independent_scratch(fake_cli, observed, monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", _nosleep)
+    backend = Codex(cli=fake_cli)
+
+    async def both():
+        return await asyncio.gather(
+            backend([Message("user", "FLAKY429 a")]),
+            backend([Message("user", "FLAKY429 b")]),
+            return_exceptions=True,  # a shared scratch races the fake's counter; the paths say why
+        )
+
+    answers = asyncio.run(both())
+    per_scratch: dict[str, list[int]] = {}
+    for s in observed():
+        per_scratch.setdefault(s["scratch"], []).append(s["attempt"])
+    assert len(per_scratch) == 2, per_scratch  # one each, never shared
+    assert all(isinstance(t, str) and t.startswith("seen ") for t in answers), answers
+    assert sorted(per_scratch.values()) == [[1, 2], [1, 2]]  # each call's retry reused its own
+    assert not any(Path(p).exists() for p in per_scratch)
+    assert [c["attempts"] for c in backend.calls] == [2, 2]
+
+
+def test_codex_cancellation_joins_before_cleanup(tmp_path: Path, monkeypatch):
+    seen = tmp_path / "argv"
+    cli = tmp_path / "codex"
+    cli.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {seen}\nexec sleep 30\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    procs = []
+    real = asyncio.create_subprocess_exec
+
+    async def capturing(*args, **kwargs):
+        proc = await real(*args, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing)
+    at_cleanup = []
+    real_rmtree = codex_mod.shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        at_cleanup.append((Path(path), [p.returncode for p in procs]))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(codex_mod.shutil, "rmtree", rmtree)
+    backend = _seeded(model="m", cli=str(cli), timeout=30)
+
+    async def main():
+        task = asyncio.create_task(backend([Message("user", "hi")]))
+        while not (procs and seen.exists() and seen.read_text().endswith("-\n")):
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    argv = seen.read_text().splitlines()
+    scratch = Path(argv[argv.index("-C") + 1])
+    assert procs[0].returncode is not None  # reaped: the child did not outlive the cancelled call
+    assert at_cleanup == [(scratch, [procs[0].returncode])]  # removed once, after the child was joined
+    assert not scratch.exists()
+
+
+CODEX_BILLED_THEN_403 = """\
+import json, os, sys
+argv = sys.argv[1:]
+sys.stdin.read()
+out = argv[argv.index("-o") + 1]
+counter = os.path.join(os.path.dirname(out), "attempts")
+n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
+open(counter, "w").write(str(n))
+ev = lambda **e: print(json.dumps(e))
+ev(type="turn.started")
+if n == 1:  # billed: a reasoning-heavy turn that ran out of output, no message
+    ev(type="turn.completed", usage={"input_tokens": 5000, "cached_input_tokens": 0, "output_tokens": 900})
+    sys.exit(0)
+ev(type="turn.failed", error={"message": "unexpected status 403 Forbidden"})
+sys.exit(1)
+"""
+
+
+def test_failed_envelope_is_preserved(tmp_path: Path, monkeypatch):
+    # measured on the bench: the billed empty attempt's usage was on no envelope
+    script = tmp_path / "fake_codex.py"
+    script.write_text(CODEX_BILLED_THEN_403)
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(asyncio, "sleep", _nosleep)
+    backend = _seeded(cli=str(cli), retries=2)
+    with pytest.raises(CodexError, match="403 Forbidden"):
+        asyncio.run(backend([Message("user", "go")]))
+    assert backend.calls, "the 900 billed output tokens of attempt 1 are on no envelope"
+    call = backend.calls[-1]
+    assert call["usage"]["output_tokens"] == 900 and call["attempts"] == 2
+    assert "403 Forbidden" in call["error"] and call["total_cost_usd"] is None
+
+
+def test_a_failed_calls_stream_stderr_and_error_on_calls_keep_their_head_and_tail_within_the_cap(
+    tmp_path: Path,
+):
+    """A child that prints a megabyte on each stream, forty error items and no message: the error
+    raised is whole, the envelope keeps the head and tail of the error, the raw stream and stderr
+    around a mark counting the characters left out, and the attempt's usage whole."""
+    from hub.backend import claude_code
+
+    usage = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 120, "output_tokens": 9}})
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        f"print({usage!r})\n"
+        "for n in range(40):\n"
+        '    item = {"type": "error", "message": f"note {n} " + "n" * 400}\n'
+        '    print(json.dumps({"type": "item.completed", "item": item}))\n'
+        'sys.stdout.write("x" * 1_000_000 + " TAIL-OUT")\n'
+        'sys.stderr.write("HEAD-ERR " + "y" * 1_000_000 + " TAIL-ERR")\n'
+    )
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = _seeded(cli=str(cli), retries=0)
+    with pytest.raises(CodexError, match="^codex no message") as e:
+        asyncio.run(backend([Message("user", "go")]))
+    call = backend.calls[-1]
+    whole = {
+        "error": str(e.value),
+        "stream": usage
+        + "\n"
+        + "".join(
+            json.dumps(
+                {"type": "item.completed", "item": {"type": "error", "message": f"note {n} " + "n" * 400}}
+            )
+            + "\n"
+            for n in range(40)
+        )
+        + "x" * 1_000_000
+        + " TAIL-OUT",
+        "stderr": "HEAD-ERR " + "y" * 1_000_000 + " TAIL-ERR",
+    }
+    assert len(whole["error"]) > 10_000  # forty notes of 300 characters each
+    for key, text in whole.items():
+        kept = call[key]
+        m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+        assert m is not None, (key, kept[:200])
+        head, tail = kept[: m.start()], kept[m.end() :]
+        assert text.startswith(head) and text.endswith(tail) and head and tail
+        assert len(head) + int(m[1]) + len(tail) == len(text)
+        assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+    assert call["usage"]["input_tokens"] == 120 and call["usage"]["output_tokens"] == 9
+    assert call["total_cost_usd"] is None and call["attempts"] == 1
+    # the notes: the first of them, then one mark counting the forty items' and the failure's own
+    # note that were left out
+    cap = codex_mod._NOTES
+    assert call["notes"][:-1] == [(f"note {n} " + "n" * 400)[:300] for n in range(cap)]
+    assert call["notes"][-1] == f"[{41 - cap} more note(s) omitted]"
+
+
+def _noisy_cli(tmp_path: Path, name: str, errors: int, answer: bool) -> str:
+    """A fake `codex` that prints `errors` error items, then an answer or nothing."""
+    script = tmp_path / f"{name}.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        f"for n in range({errors}):\n"
+        '    item = {"type": "error", "message": f"note {n}"}\n'
+        '    print(json.dumps({"type": "item.completed", "item": item}))\n'
+        + (
+            'print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}))\n'
+            if answer
+            else ""
+        )
+    )
+    cli = tmp_path / name
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    return str(cli)
+
+
+def test_a_calls_notes_are_kept_to_the_cap_with_one_mark_counting_the_rest(tmp_path: Path):
+    """A failed call's envelope keeps the first notes and, past the cap, one mark counting the others;
+    the error raised still carries every note."""
+    kept = codex_mod._NOTES
+    # a failed call's own note joins the item notes: one fewer item fills the cap exactly
+    for errors in (kept - 1, kept):
+        backend = _seeded(cli=_noisy_cli(tmp_path, f"fail{errors}", errors, answer=False), retries=0)
+        with pytest.raises(CodexError) as e:
+            asyncio.run(backend([Message("user", "go")]))
+        notes = backend.calls[-1]["notes"]
+        assert all(f"note {n}" in str(e.value) for n in range(errors))
+        if errors < kept:
+            assert len(notes) == kept and notes[-1].startswith("attempt 1 failed: no message")
+        else:
+            assert notes == [f"note {n}" for n in range(kept)] + ["[1 more note(s) omitted]"]
+
+
+def test_the_notes_of_a_call_that_answered_are_kept_to_the_cap_too(tmp_path: Path):
+    kept = codex_mod._NOTES
+    backend = _seeded(cli=_noisy_cli(tmp_path, "answered", 40, answer=True), retries=0)
+    assert asyncio.run(backend([Message("user", "go")])) == "ok"
+    assert backend.calls[-1]["notes"] == [f"note {n}" for n in range(kept)] + [
+        f"[{40 - kept} more note(s) omitted]"
+    ]
+
+
+def test_one_oversized_note_on_a_failed_call_is_kept_by_its_head_and_tail_within_the_cap(tmp_path: Path):
+    """An event type of 200 000 characters and no message: the call's one note names the type, the
+    error raised carries all of it, and the envelope keeps the note's head and tail around a mark
+    counting the characters left out."""
+    from hub.backend import claude_code
+
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        'print(json.dumps({"type": "HEAD-KIND " + "k" * 200_000 + " TAIL-KIND"}))\n'
+    )
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = _seeded(cli=str(cli), retries=0)
+    with pytest.raises(CodexError, match="^codex no message") as e:
+        asyncio.run(backend([Message("user", "go")]))
+    assert len(str(e.value)) > 200_000 and str(e.value).endswith("TAIL-KIND': 1}; ")
+    whole = "attempt 1 failed: " + str(e.value).removeprefix("codex ")
+    (kept,) = backend.calls[-1]["notes"]
+    m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+    assert m is not None, kept[:200]
+    head, tail = kept[: m.start()], kept[m.end() :]
+    assert whole.startswith(head) and whole.endswith(tail) and head and tail
+    assert len(head) + int(m[1]) + len(tail) == len(whole)
+    assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+
+
+_real_sleep = asyncio.sleep
+
+
+async def _nosleep(_s, *a, **k):
+    await _real_sleep(0)
+
+
+def test_a_transient_failure_is_retried_and_the_attempts_are_recorded(fake_cli):
+    backend = Codex(cli=fake_cli)
+    text = asyncio.run(backend([Message("user", "FLAKY429 then answer")]))
+    assert text.startswith("seen ")
+    call = backend.calls[-1]
+    assert call["attempts"] == 2
+    assert any(n.startswith("attempt 1 failed: exited 1: ") and "429" in n for n in call["notes"])
+
+
+def test_an_empty_answer_is_retried_and_both_attempts_usage_is_counted(fake_cli):
+    backend = Codex(cli=fake_cli)
+    text = asyncio.run(backend([Message("user", "EMPTY first")]))
+    assert text.startswith("seen ")
+    call = backend.calls[-1]
+    assert call["attempts"] == 2
+    assert call["usage"]["output_tokens"] == 909 and call["usage"]["reasoning_output_tokens"] == 904
+    assert call["usage"]["cache_read_input_tokens"] == 200 and call["usage"]["input_tokens"] == 40
+    assert any(n.startswith("attempt 1 failed: no message: events") for n in call["notes"])
+
+
+def test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it(fake_cli, store):
+    # the answering attempt's count, cache read included; the envelope's sum over two attempts is the
+    # size of neither prompt (ADR-0009/C2)
+    backend = Codex(cli=fake_cli)
+    text = asyncio.run(backend([Message("user", "EMPTY first")]))
+    assert text.prompt_tokens == 120 and backend.calls[-1]["usage"]["cache_read_input_tokens"] == 200
+    seen: list[tuple[int, int]] = []
+
+    async def watched(messages: list[Message]) -> str:
+        figure = int(re.search(r"context: ~(\d+) /", messages[-1].content).group(1))
+        seen.append((figure, sum(len(m.content) for m in messages[1:-1]) // 4))
+        return await backend(messages)
+
+    run = asyncio.run(
+        Actor("codex-count", store=store).run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), watched)
+    )
+    (f1, v1), (f2, v2) = seen
+    assert f1 == v1 and v2 > v1  # nothing reported yet: the view estimate
+    assert f2 == 120 + (v2 - v1) and run.anchor[0] == 120  # then the CLI's own count, plus what was added
+
+
+def test_a_blank_final_message_yields_the_last_non_empty_one_without_a_retry(fake_cli):
+    backend = Codex(cli=fake_cli)
+    text = asyncio.run(backend([Message("user", "BLANKFINAL")]))
+    assert text == '<lact r1>run(cmd="ls")</lact>'
+    assert backend.calls[-1]["attempts"] == 1
+
+
+def test_a_private_home_rides_in_the_environment_and_must_hold_the_login(fake_cli, tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    with pytest.raises(CodexError, match="no auth.json; make it a symlink"):
+        Codex(cli=fake_cli, home=str(home))
+    (home / "auth.json").write_text("{}")
+    backend = Codex(cli=fake_cli, home=str(home))
+    text = asyncio.run(backend([Message("user", "hi")]))
+    assert f"home={home}" in text
+
+
+def test_a_missing_cli_is_named():
+    env = dict(os.environ)
+    try:
+        os.environ["PATH"] = ""
+        with pytest.raises(CodexError, match="not found"):
+            Codex()
+    finally:
+        os.environ.clear()
+        os.environ.update(env)
+
+
+def test_cancelling_an_attempt_stops_the_child_and_its_children(tmp_path: Path, monkeypatch):
+    # the CLI's grandchild holds the pipes: it goes with the group, and the pipes close with it
+    cli = tmp_path / "codex"
+    cli.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'grandchild'}\nwait\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    procs = []
+    real = asyncio.create_subprocess_exec
+
+    async def capturing(*args, **kwargs):
+        proc = await real(*args, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing)
+    backend = Codex(model="m", cli=str(cli), timeout=30)
+
+    async def main():
+        task = asyncio.create_task(backend._attempt(b"hi", tmp_path))
+        while not (procs and (tmp_path / "grandchild").exists()):
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return procs[0].returncode
+
+    assert asyncio.run(main()) is not None  # reaped: the child did not outlive the cancelled task
+    assert procs[0].stdout.at_eof() and procs[0].stderr.at_eof()  # the pipes were drained and closed
+    grandchild = int((tmp_path / "grandchild").read_text())
+    for _ in range(200):  # an orphan is reaped by init; give it a moment
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"the CLI's child {grandchild} outlived the cancelled attempt")
+
+
+def test_an_auth_failure_is_not_retried_whatever_else_its_message_says(fake_cli, observed):
+    # "timeout" in the message made a 401 transient, against the never-401/403 rule
+    backend = Codex(cli=fake_cli)
+    with pytest.raises(CodexError, match="401 Unauthorized: request timeout"):
+        asyncio.run(backend([Message("user", "please AUTHTIMEOUT")]))
+    assert [s["attempt"] for s in observed()] == [1]
+
+
+def test_an_answer_carrying_a_unicode_line_separator_is_read_from_the_event_stream(fake_cli):
+    # events were split with str.splitlines, so an agent message holding U+2028 broke in two and
+    # was skipped; with last.txt empty the answer was lost
+    assert asyncio.run(Codex(cli=fake_cli)([Message("user", "SEPTEXT")])) == "left\u2028right"
+
+
+def test_a_timeout_after_the_cli_exited_still_stops_what_it_left_holding_the_pipes(tmp_path):
+    # the group was killed only while the leader ran; a leader that had exited with its child still
+    # holding stdout skipped the kill, and the drain then waited on that child with no deadline
+    cli = tmp_path / "codex"
+    cli.write_text(f"#!/bin/sh\ncat > /dev/null\nsleep 30 &\necho $! > {tmp_path / 'child'}\nexit 0\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = _seeded(cli=str(cli), timeout=0.5, retries=0)
+    t0 = time.monotonic()
+    with pytest.raises(CodexError, match="timed out"):
+        asyncio.run(asyncio.wait_for(backend([Message("user", "hi")]), 15))
+    assert time.monotonic() - t0 < 10
+    child = int((tmp_path / "child").read_text())
+    for _ in range(200):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"the CLI's child {child} outlived the timed-out attempt")
+
+
+def test_a_call_cancelled_in_its_backoff_keeps_the_bill_of_the_attempt_that_came_back(fake_cli, monkeypatch):
+    # the envelope was built only on success or error: a cancel in the sleep after a billed empty
+    # answer dropped that attempt's usage from `calls`
+    backend = Codex(cli=fake_cli)
+    backing_off = asyncio.Event()
+
+    real_sleep = asyncio.sleep
+
+    async def sleep(seconds):
+        if not seconds:  # asyncio's own streams yield with sleep(0); only the backoff waits
+            return await real_sleep(0)
+        backing_off.set()
+        await asyncio.Event().wait()
+
+    async def main():
+        task = asyncio.create_task(backend([Message("user", "EMPTY")]))
+        await backing_off.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    monkeypatch.setattr(codex_mod.asyncio, "sleep", sleep)
+    asyncio.run(asyncio.wait_for(main(), 15))
+    (call,) = backend.calls
+    assert call["error"] == "cancelled" and call["attempts"] == 1
+    assert call["usage"]["output_tokens"] == 900 and call["notes"][-1].startswith(
+        "attempt 1 failed: no message"
+    )

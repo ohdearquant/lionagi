@@ -1,0 +1,24 @@
+{
+  "rows": [
+    {
+      "at": "2026-10-04T08:41:00Z",
+      "kind": "wake",
+      "rule": "r1",
+      "source": "mail"
+    },
+    {
+      "at": "2026-10-04T08:42:00Z",
+      "kind": "shell",
+      "line": "git push origin triage-notes",
+      "verdict": "asks",
+      "rule": "ask first: git push"
+    },
+    {
+      "at": "2026-10-04T08:42:00Z",
+      "kind": "end",
+      "outcome": "escalated",
+      "turns": 6,
+      "cost": 0.04
+    }
+  ]
+}

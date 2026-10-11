@@ -1,0 +1,85 @@
+{
+  "name": "support",
+  "chair": {
+    "id": "support/chair",
+    "name": "chair",
+    "area": "support",
+    "kind": "chair",
+    "state": "idle",
+    "now": "last woke yesterday 17:20",
+    "woken_by": [
+      "an agent in support escalates"
+    ],
+    "model": "claude-code/sonnet",
+    "runs_in": "local",
+    "today": {
+      "cost": 0.0,
+      "wakes": 0,
+      "acted": 0
+    }
+  },
+  "agents": [
+    {
+      "id": "support/front-desk",
+      "name": "front desk",
+      "area": "support",
+      "kind": "agent",
+      "state": "error",
+      "now": "the mail source refused its sign-in at 10:58",
+      "woken_by": [
+        "mail arrives for support@example.com"
+      ],
+      "model": "claude-code/sonnet",
+      "runs_in": "local",
+      "today": {
+        "cost": 0.44,
+        "wakes": 18,
+        "acted": 7
+      }
+    },
+    {
+      "id": "support/builder",
+      "name": "builder",
+      "area": "support",
+      "kind": "agent",
+      "state": "held",
+      "now": "held at 10:31: the day's cost cap is reached",
+      "woken_by": [
+        "the front desk files a bug"
+      ],
+      "model": "openrouter/qwen/qwen-max",
+      "runs_in": "local",
+      "today": {
+        "cost": 1.0,
+        "wakes": 4,
+        "acted": 3
+      },
+      "held_reason": "cost cap of $1.00 reached"
+    }
+  ],
+  "today": {
+    "cost": 1.44,
+    "wakes": 22,
+    "acted": 10
+  },
+  "timeline": [
+    {
+      "at": "2026-10-04T10:58:00Z",
+      "agent": "support/front-desk",
+      "text": "the mail source refused its sign-in",
+      "raised": true
+    },
+    {
+      "at": "2026-10-04T10:31:00Z",
+      "agent": "support/builder",
+      "text": "held: the day's cost cap is reached",
+      "raised": true
+    },
+    {
+      "at": "2026-10-04T09:40:00Z",
+      "agent": "support/front-desk",
+      "text": "answered six questions from the help pages",
+      "raised": false
+    }
+  ]
+}
