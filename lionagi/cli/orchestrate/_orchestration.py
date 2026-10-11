@@ -532,10 +532,15 @@ class OrchestrationEnv:
     # role configuration and AgentSpec prompt construction.
     pack: Pack | None = None
 
-    # The MCP servers every worker in this run is handed, resolved once when the
-    # run was set up. An empty dict is the caller having asked for no servers at
-    # all; None is there being no set to hand over, because none was found.
+    # The exact MCP servers every worker in this run is handed, resolved once
+    # when the run was set up and filtered through the leaf-worker policy
+    # (_worker_mcp_policy). An empty dict is the caller having asked for no
+    # servers at all; None is there being no set to hand over, because none
+    # was found.
     mcp_servers: dict | None = None
+    # Job-control servers removed from the worker set. Their names go into each
+    # worker's system prompt, so a missing tool is explained rather than found.
+    withheld_mcp_servers: tuple[str, ...] = ()
 
     # None = no budget configured; workers skip the BUDGET preamble.
     total_budget: int | None = None
@@ -591,7 +596,114 @@ class OrchestrationEnv:
         return list(self._all_names)
 
 
-def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
+_JOB_CONTROL_MODULES = frozenset({"lionagi.mcp", "lionagi.mcp.__main__", "lionagi.mcp.server"})
+_JOB_CONTROL_SCRIPTS = frozenset(
+    {("lionagi", "mcp", "__main__.py"), ("lionagi", "mcp", "server.py")}
+)
+_CLI_MODULES = frozenset({"lionagi.cli", "lionagi.cli.__main__", "lionagi.cli.main"})
+_CLI_SCRIPTS = frozenset({("lionagi", "cli", "__main__.py"), ("lionagi", "cli", "main.py")})
+
+
+def _is_job_control_server(config: object) -> bool:
+    """Recognise lionagi's own job-control MCP server by its command shape.
+
+    Server names are aliases the user chooses, so the policy cannot key on them.
+    docs/guides/mcp-setup.md documents ``li mcp`` and ``python -m lionagi.mcp``;
+    ``python -m lionagi.cli mcp`` runs the same subcommand, and so do the
+    modules and script files behind them. Each is found anywhere on the command
+    line, so a launcher in front of it (``uv run``, ``uvx --from lionagi``,
+    ``env``), interpreter flags clustered with ``-m`` (``-Im``) or an option
+    before the subcommand does not hide it. Any program named ``li`` run with
+    ``mcp`` is taken for it. A command handed to a shell as one string is not
+    split, and is not recognised.
+    """
+    if not isinstance(config, dict):
+        return False
+    command = config.get("command")
+    args = config.get("args", [])
+    if not isinstance(command, str) or not isinstance(args, list):
+        return False
+    if not all(isinstance(arg, str) for arg in args):
+        return False
+    words = [command, *args]
+    for index, word in enumerate(words):
+        module, after = None, index + 1
+        if word.startswith("-") and not word.startswith("--"):
+            # Python reads single-letter flags clustered, so ``-Im`` is ``-I -m``.
+            # ``-c``, ``-W`` and ``-X`` take the rest as their own argument.
+            cluster = word[1:]
+            for position, letter in enumerate(cluster):
+                if letter == "m":
+                    if position + 1 < len(cluster):
+                        module = cluster[position + 1 :]
+                    elif after < len(words):
+                        module, after = words[after], after + 1
+                    break
+                if letter in "cWX":
+                    break
+        script = Path(word).parts[-3:]
+        if module in _JOB_CONTROL_MODULES or script in _JOB_CONTROL_SCRIPTS:
+            return True
+        if (
+            module in _CLI_MODULES
+            or script in _CLI_SCRIPTS
+            or Path(word).name.lower() in {"li", "li.exe"}
+        ):
+            position = after
+            while position < len(words) and words[position].startswith("-"):
+                position += 1
+            if words[position : position + 1] == ["mcp"]:
+                return True
+    return False
+
+
+def _worker_mcp_policy(
+    servers: dict | None, *, explicit: bool
+) -> tuple[dict | None, tuple[str, ...]]:
+    """Return the exact set leaf workers get, and the names withheld from it.
+
+    A caller-named ``--mcp-config`` is an explicit grant of everything it lists.
+    A config found by discovery is not, so lionagi's own job-control server stays
+    with the coordinator and the rest of the found set reaches the workers. The
+    set returned is a worker's whole set: it is handed over exclusively, so the
+    servers a worker's CLI would load from its own configuration are not loaded.
+    """
+    if servers is None or explicit:
+        return servers, ()
+    withheld = tuple(name for name, config in servers.items() if _is_job_control_server(config))
+    if not withheld:
+        return servers, ()
+    return ({name: config for name, config in servers.items() if name not in withheld}, withheld)
+
+
+def _worker_mcp_policy_section(env: OrchestrationEnv, *, grant_spawn: bool) -> str | None:
+    withheld = getattr(env, "withheld_mcp_servers", ())
+    if not withheld:
+        return None
+    names = ", ".join(withheld)
+    # Only a worker granted spawn has an in-band way to grow the graph (a fanout
+    # worker never is), so no other worker is pointed at one.
+    growth = (
+        "Request graph growth through the orchestration's in-band spawn mechanism. "
+        if grant_spawn
+        else ""
+    )
+    return (
+        "MCP CAPABILITY POLICY: lionagi job-control server(s) "
+        f"{names} were withheld from this worker and are not available. "
+        f"{growth}"
+        "Only the caller can grant out-of-band job control, by launching the "
+        "orchestration with an explicit --mcp-config."
+    )
+
+
+def _hand_mcp_servers(
+    imodel,
+    servers: dict | None,
+    *,
+    label: str,
+    exclusive: bool | None = None,
+) -> None:
     """Give one worker's model the run's server set, or say it could not be given.
 
     ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep
@@ -607,7 +719,7 @@ def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
         imodel.endpoint.config.kwargs,
         servers,
         provider=provider,
-        exclusive=not servers,
+        exclusive=not servers if exclusive is None else exclusive,
     )
     if applied:
         return
@@ -662,6 +774,10 @@ async def setup_orchestration(
     # decision to hand over an empty set, the other is having nothing to hand
     # over. Keep the decision as an empty set so it survives the handoff.
     run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
+    worker_mcp_servers, withheld_mcp_servers = _worker_mcp_policy(
+        run_mcp_servers,
+        explicit=mcp_resolution.explicit,
+    )
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -787,7 +903,8 @@ async def setup_orchestration(
         cwd=cwd,
         total_budget=total_budget,
         pack=loaded_pack,
-        mcp_servers=run_mcp_servers,
+        mcp_servers=worker_mcp_servers,
+        withheld_mcp_servers=withheld_mcp_servers,
     )
 
 
@@ -918,7 +1035,17 @@ async def build_worker_branch(
         theme=env.theme,
         fast=w_fast,
     )
-    _hand_mcp_servers(w_imodel, getattr(env, "mcp_servers", None), label=agent_id)
+    worker_mcp_servers = getattr(env, "mcp_servers", None)
+    _hand_mcp_servers(
+        w_imodel,
+        worker_mcp_servers,
+        label=agent_id,
+        # Once the run resolved a worker set, that set is the whole grant.
+        # Otherwise the Claude CLI merges in the servers it discovers itself and
+        # codex loads every server its own config declares, a withheld one
+        # included; both are what this turns off for the worker.
+        exclusive=worker_mcp_servers is not None,
+    )
     is_cli = bool(getattr(w_imodel, "is_cli", False))
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -957,6 +1084,7 @@ async def build_worker_branch(
         messenger_bound=messenger_bound,
         messenger_names=getattr(env, "messenger_names", None),
     )
+    mcp_policy_section = _worker_mcp_policy_section(env, grant_spawn=grant_spawn)
 
     # Verbatim path applies only when the profile authored a body (one that
     # just sets a model/effort has no body and composes via Role as usual).
@@ -990,8 +1118,8 @@ async def build_worker_branch(
             artifact_dir,
             workspace_assigned=is_cli,
         )
-        composed_extra = (
-            f"{artifact_section}\n\n{team_section}" if team_section else artifact_section
+        composed_extra = "\n\n".join(
+            section for section in (artifact_section, team_section, mcp_policy_section) if section
         )
         spec = AgentSpec.compose(
             role,
@@ -1013,7 +1141,9 @@ async def build_worker_branch(
         )
         wb.name = wname
     else:
-        w_system = f"{verbatim_system}\n\n{team_section}" if team_section else verbatim_system
+        w_system = "\n\n".join(
+            section for section in (verbatim_system, team_section, mcp_policy_section) if section
+        )
         wb = Branch(
             chat_model=w_imodel,
             system=w_system,

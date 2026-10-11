@@ -512,6 +512,13 @@ there first, silently — downstream routing acts on that signature. Reading
 it from the record is what makes the two callers agree by construction
 rather than by coincidence.
 
+When a submission explicitly names `notify_sender`, `jobs.submit()` asks
+khive's directory-aware identity resolver which actor that same submitting
+directory can sign as. A mismatch is refused before a run directory is
+reserved, while the caller can still correct the sender. Omitting the sender
+does not require resolution and remains valid. The hook retains its mismatch
+classification for old records and for authority that changes after admission.
+
 Nothing in this path raises: the caller is either a terminal path that has
 already finished, or a read that has already published a durable end, and
 neither can be failed by a notifier. Every way a delivery does not happen

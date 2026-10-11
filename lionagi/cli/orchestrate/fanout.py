@@ -31,6 +31,7 @@ from ._common import (
 from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     OrchestrationEnv,
+    _hand_mcp_servers,
     attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
@@ -94,13 +95,23 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv):
         pack=env.pack if env.pack is not None else "default",
         grant_emissions=False,
     )
-    # The run's set, not the factory's own discovery: see setup_orchestration.
-    run_servers = getattr(env, "mcp_servers", None)
+    # The worker set, not the factory's own discovery: see setup_orchestration.
+    # The model is a copy of the orchestrator's, whose request carries the run's
+    # whole set, job control included, so the worker set is handed over the way
+    # build_worker_branch hands it to a worker: as the whole set.
+    worker_servers = getattr(env, "mcp_servers", None)
+    chat_model = env.orc_branch.chat_model.copy()
+    _hand_mcp_servers(
+        chat_model,
+        worker_servers,
+        label="synthesis",
+        exclusive=worker_servers is not None,
+    )
     branch = await create_agent(
         spec,
         load_settings=False,
-        chat_model=env.orc_branch.chat_model.copy(),
-        resolved_mcp_servers=Unset if run_servers is None else run_servers,
+        chat_model=chat_model,
+        resolved_mcp_servers=Unset if worker_servers is None else worker_servers,
     )
     branch.name = "synthesis"
     env.session.include_branches(branch)

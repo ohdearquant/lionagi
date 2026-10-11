@@ -281,3 +281,29 @@ def test_the_orchestration_cli_accepts_the_flags_the_surface_renders(sandbox):
 
         refused = build_parser_for(path).parse_args(["--no-mcp-config", "--", "hi"])
         assert refused.no_mcp_config is True
+
+
+@pytest.mark.parametrize("verb", ("flow.submit", "fanout.submit"))
+def test_a_found_config_reaches_the_run_as_found_and_a_named_one_as_named(
+    sandbox, submit_dir, monkeypatch, verb
+):
+    """The child is pointed at the snapshot with --mcp-config, the flag a caller
+    names a file with. The run still has to tell the two apart: a named file is
+    a grant of everything in it, a found one is not."""
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"s1": {"command": "one"}}}))
+    named = submit_dir / "named.json"
+    named.write_text(json.dumps({"mcpServers": {"s2": {"command": "two"}}}))
+
+    captured = _capture_popen(monkeypatch)
+    _spawn(verb, {"query": ["a-model"], "prompt": "hi", "cwd": str(submit_dir)})
+    found = resolve_spawn_mcp_servers(_child_config(captured["argv"]), launch_dir=submit_dir)
+
+    captured = _capture_popen(monkeypatch)
+    _spawn(
+        verb,
+        {"query": ["a-model"], "prompt": "hi", "mcp_config": str(named), "cwd": str(submit_dir)},
+    )
+    chosen = resolve_spawn_mcp_servers(_child_config(captured["argv"]), launch_dir=submit_dir)
+
+    assert (set(found.servers), found.explicit) == ({"s1"}, False)
+    assert (set(chosen.servers), chosen.explicit) == ({"s2"}, True)

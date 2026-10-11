@@ -523,3 +523,54 @@ async def test_run_flow_inner_resume_uses_persisted_plan_without_planning(
     assert graph.predecessor_ids(nodes[1]) == (nodes[0].id,)
     assert "resumed research" in output
     assert "resumed implementation" in output
+
+
+@pytest.mark.asyncio
+async def test_a_reactively_spawned_cli_leaf_gets_the_worker_set_not_the_orchestrators(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fake_runtime
+):
+    """A spawn request with no assignee is cloned from the orchestrator's branch,
+    so the clone starts with the run's whole set, job control included. It is a
+    leaf like any planned worker and is handed the worker set as its whole set."""
+    from types import SimpleNamespace
+
+    from lionagi.agent.factory import apply_forwarded_mcp_servers
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    control = {"command": "li", "args": ["mcp"]}
+    knowledge = {"command": "kkernel", "args": ["mcp"]}
+    monkeypatch.setattr(flow_module, "plan", _Planner([_assignments()]))
+    env = _env(tmp_path, ["research output", "implementation output"])
+    env.mcp_servers = {"knowledge": knowledge}
+
+    await _run_flow_inner(
+        "codex/gpt-5.5",
+        "characterize the flow",
+        env=env,
+        reactive_spec="all",
+    )
+    setup = env.session.run_dag_calls[0][1]["spawn_branch_setup"]
+    assert callable(setup)
+
+    orchestrator_model = build_imodel_from_spec("claude_code/sonnet")
+    apply_forwarded_mcp_servers(
+        orchestrator_model.endpoint.config.kwargs,
+        {"control": control, "knowledge": knowledge},
+        provider="claude_code",
+        exclusive=False,
+    )
+    clone = Branch(name="orchestrator", chat_model=orchestrator_model).clone()
+    setup(SimpleNamespace(metadata={"spawn_id": "spawn-1"}), clone)
+
+    request = (await clone.chat_model.create_event(prompt="hi")).payload["request"]
+    args = request.as_cmd_args()
+    handed = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
+    assert handed == {"knowledge": knowledge}
+    assert "--strict-mcp-config" in args
+    orchestrator_args = (
+        (await orchestrator_model.create_event(prompt="hi")).payload["request"].as_cmd_args()
+    )
+    assert (
+        "control"
+        in json.loads(orchestrator_args[orchestrator_args.index("--mcp-config") + 1])["mcpServers"]
+    )

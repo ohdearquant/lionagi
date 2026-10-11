@@ -753,9 +753,17 @@ notify:
 ```
 
 Or per submit: `notify` overrides the delivery command for one run (a JSON argv
-list), and `notify_seat` fills the `{target}` placeholder. The environment
-variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
-process-wide default. Delivery outcome is recorded on the job and surfaced in
+list), `notify_seat` fills the `{target}` placeholder, and `notify_sender` fills
+`{sender}`, naming the actor signing the notice. An explicit sender is accepted
+only when the submitting directory resolves to that actor. The environment
+variables `LIONAGI_MCP_NOTIFY_COMMAND`, `LIONAGI_MCP_NOTIFY_TARGET` and
+`LIONAGI_MCP_NOTIFY_SENDER` set a process-wide default, and
+`LIONAGI_MCP_NOTIFY_CWD` names the directory delivery runs in instead of the
+submitting one. These are the server operator's settings and are used as given:
+the sender check applies only to a `notify_sender` passed on the submit. With no
+sender from either, a delivery command that takes `{sender}` is not run, and one
+that does not reports whatever identity it resolves from the directory it runs
+in. Delivery outcome is recorded on the job and surfaced in
 `job.status` (`notify_delivery`), so a notice that failed to send is visible
 rather than silently lost. `job.list` carries the same outcome collapsed to one
 word in `notify_delivery_state` — `delivered`, `delivered_unverified` when it

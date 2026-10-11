@@ -765,18 +765,23 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_unknown_profile(args, cwd)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
-    result = jobs.submit(
-        verb.job_kind,
-        flags,
-        prompt=prompt,
-        cwd=cwd,
-        label=args.get("label") or args.get("playbook"),
-        notify_command=args.get("notify_command"),
-        notify_target=args.get("notify_seat"),
-        notify_sender=args.get("notify_sender"),
-        mcp_config=args.get("mcp_config"),
-        no_mcp_config=bool(args.get("no_mcp_config")),
-    )
+    try:
+        result = jobs.submit(
+            verb.job_kind,
+            flags,
+            prompt=prompt,
+            cwd=cwd,
+            label=args.get("label") or args.get("playbook"),
+            notify_command=args.get("notify_command"),
+            notify_target=args.get("notify_seat"),
+            notify_sender=args.get("notify_sender"),
+            mcp_config=args.get("mcp_config"),
+            no_mcp_config=bool(args.get("no_mcp_config")),
+        )
+    except jobs.NotifySenderMismatchError as exc:
+        raise OpError("invalid_input", str(exc)) from exc
+    except jobs.NotifySenderResolutionError as exc:
+        raise OpError("unavailable", str(exc)) from exc
     fingerprint = schema.get("x-playbook-fingerprint")
     if fingerprint is not None:
         result["playbook"] = schema.get("x-playbook")

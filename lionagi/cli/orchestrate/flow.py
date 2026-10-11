@@ -45,6 +45,7 @@ from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
+    _hand_mcp_servers,
     _resolve_worker_model_spec,
     attribute_worker_build_failure,
     available_roles,
@@ -1854,6 +1855,17 @@ async def _execute_dag(
 
         if not is_cli:
             return
+        # A request with no assignee is cloned from the orchestrator's branch,
+        # whose request carries the run's whole set, job control included. A
+        # spawned node is a leaf like a planned worker and gets the worker set
+        # the same way, as its whole set.
+        worker_mcp_servers = getattr(env, "mcp_servers", None)
+        _hand_mcp_servers(
+            chat_model,
+            worker_mcp_servers,
+            label=spawn_id,
+            exclusive=worker_mcp_servers is not None,
+        )
         kwargs = chat_model.endpoint.config.kwargs
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())

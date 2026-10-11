@@ -234,7 +234,7 @@ async def test_resumed_antigravity_leg_rejects_a_named_nonempty_mcp_set(
 @pytest.mark.parametrize("resumed", [False, True], ids=["direct", "resumed"])
 @pytest.mark.parametrize(
     "config_case",
-    ["discovered", "explicit-empty", "disabled"],
+    ["discovered", "submitted-snapshot", "explicit-empty", "disabled"],
 )
 async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
     spawn,
@@ -256,6 +256,17 @@ async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
 
     if config_case == "explicit-empty":
         kwargs["mcp_config"] = str(_write_mcp_config(tmp_path / "empty", {}))
+    elif config_case == "submitted-snapshot":
+        # What a leg submitted through the MCP server is pointed at: the set the
+        # submission found, which nobody named.
+        from lionagi.mcp.jobs import _write_mcp_server_snapshot
+
+        snapshot = tmp_path / "job" / "mcp.json"
+        snapshot.parent.mkdir()
+        _write_mcp_server_snapshot(
+            snapshot, {"found": {"command": "server"}}, source=tmp_path / ".mcp.json"
+        )
+        kwargs["mcp_config"] = str(snapshot)
     elif config_case == "disabled":
         kwargs["no_mcp_config"] = True
 
@@ -347,6 +358,32 @@ async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_p
         "no_mcp_config": False,
         "launch_dir": str(spawn.submit_dir.resolve()),
     }
+
+
+@pytest.mark.asyncio
+async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_path):
+    """A leg submitted through the MCP server is handed a snapshot of the config
+    the submission found. The snapshot is what a resume must read again, even
+    though it is not a file anyone named."""
+    from lionagi.cli.agent import _MCP_LAUNCH_KEY, _run_agent
+    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+
+    snapshot = tmp_path / "job" / "mcp.json"
+    snapshot.parent.mkdir()
+    _write_mcp_server_snapshot(
+        snapshot, {"found": {"command": "found-server"}}, source=tmp_path / ".mcp.json"
+    )
+
+    await _run_agent(
+        "claude_code/sonnet",
+        "go",
+        cwd=str(spawn.target_dir),
+        yolo=True,
+        mcp_config=str(snapshot),
+    )
+
+    assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]["mcp_config"] == str(snapshot.resolve())
+    assert _forwarded_servers(spawn.branches[-1]) == {"found": {"command": "found-server"}}
 
 
 @pytest.mark.asyncio
