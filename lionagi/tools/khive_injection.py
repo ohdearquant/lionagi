@@ -151,6 +151,42 @@ def _first_result_id(khive_response: Any) -> str | None:
     return None
 
 
+def _first_op_error(khive_response: Any) -> str:
+    """Why khive's first op did not answer, in one line fit to render.
+
+    Never empty. A refusal that names no reason is still a refusal, and the
+    whole point of rendering it is that a reader can tell it from silence.
+    khive states an op error as ``{"kind": ..., "message": ...}``; the message
+    is the part a reader can act on, and the rest is kept only when there is
+    no message to prefer.
+    """
+    if not isinstance(khive_response, dict):
+        return "khive returned no readable envelope"
+    results = khive_response.get("results") or []
+    if results and isinstance(results[0], dict):
+        error = results[0].get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if message:
+                return str(message)
+        if error:
+            return str(error)
+    return "khive refused without naming a reason"
+
+
+def _render_unavailable(surface: str, khive_response: Any) -> str:
+    """The block that says a retrieval FAILED, as distinct from finding nothing.
+
+    A refused op and an empty store both used to render as ``None``, and an
+    absent section is all the reader ever saw. So a store outage read to the
+    model as "there is nothing on record", which is the single most misleading
+    thing it could conclude from a failure: it is a positive claim about the
+    world, drawn from the absence of an answer about the world. The two are
+    different strings now, and the failure names itself.
+    """
+    return f"# khive {surface} unavailable\n- {_first_op_error(khive_response)}"
+
+
 def _render_recall(khive_response: Any) -> str | None:
     """Render recalled memories, each dated, under a header naming the serving
     profile.
@@ -165,6 +201,9 @@ def _render_recall(khive_response: Any) -> str | None:
     Fields are rendered when present rather than assumed: a store that does
     not stamp a record must still produce a bullet, not a ``[None]``.
     """
+    if not _first_op_ok(khive_response):
+        return _render_unavailable("recall", khive_response)
+
     op_result = _first_op_result(khive_response)
     if not op_result:
         return None
@@ -194,6 +233,8 @@ def _render_recall(khive_response: Any) -> str | None:
 
 
 def _render_compose(khive_response: Any) -> str | None:
+    if not _first_op_ok(khive_response):
+        return _render_unavailable("compose", khive_response)
     op_result = _first_op_result(khive_response)
     if not op_result:
         return None
@@ -449,6 +490,11 @@ class KhiveInjectionProvider:
             except Exception:
                 logger.warning("KhiveInjectionProvider auto_feedback failed", exc_info=True)
 
+        if not _first_op_ok(result):
+            # Paired with the rendered block on purpose: the block tells the
+            # model, this tells the caller's degradation report. A failure that
+            # only one of them can see is the degradation nobody notices.
+            self._degradation_reason.set("op_refused:memory.recall")
         return _render_recall(result)
 
     async def _maybe_compose(self, query: str) -> str | None:
@@ -458,4 +504,6 @@ class KhiveInjectionProvider:
         ns = _ns_kwarg(self.policy.namespace)
         ops = f"knowledge.compose(query={json.dumps(query)}, max_tokens={cp.max_tokens}{ns})"
         result = await _call_khive(ops, self._mcp_config)
+        if not _first_op_ok(result):
+            self._degradation_reason.set("op_refused:knowledge.compose")
         return _render_compose(result)

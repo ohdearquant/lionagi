@@ -238,6 +238,95 @@ async def test_no_auto_feedback_when_recall_empty(patched_transport):
     assert not any(op.startswith("brain.auto_feedback(") for op in ops_calls)
 
 
+def _khive_refused_response(tool="memory.recall", message="namespace is not readable"):
+    """What khive answers when the op itself refuses.
+
+    rc is 0 and the envelope is well formed: the refusal lives in the op, as
+    ``ok: False`` with an ``error`` beside it, and the envelope's own status
+    reads "partial". Nothing above the op can see it.
+    """
+    return json.dumps(
+        {
+            "results": [
+                {"ok": False, "tool": tool, "error": {"kind": "runtime_error", "message": message}}
+            ],
+            "summary": {"total": 1, "succeeded": 0, "failed": 1},
+            "status": "partial",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_recall_does_not_read_as_an_empty_store(patched_transport):
+    """The reader sees an absent section for both, so a refusal used to say
+    'there is nothing on record' -- a positive claim about the world drawn from
+    the absence of an answer about it."""
+    patched_transport.return_value = _mcp_result(
+        _khive_refused_response(message="namespace is not readable")
+    )
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    assert "khive recall unavailable" in text
+    # The store's own words, so the reader is told what failed rather than that
+    # something did.
+    assert "namespace is not readable" in text
+    # The caller's degradation report learns it too. A failure only one of the
+    # two surfaces can see is the degradation nobody notices.
+    assert provider.degradation_reason == "op_refused:memory.recall"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_empty_recall_still_renders_nothing(patched_transport):
+    """The control that keeps the arm above honest: if 'unavailable' were
+    rendered for every recall that returned no bullets, the assertion above
+    would pass while saying nothing about refusals."""
+    patched_transport.return_value = _mcp_result(
+        json.dumps({"results": [{"ok": True, "tool": "memory.recall", "result": []}]})
+    )
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is None
+    assert provider.degradation_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_compose_is_reported_on_its_own_surface(patched_transport):
+    """compose renders through the same two-line path, so it carried the same
+    defect. Its own name in the block and in the reason, or a reader cannot
+    tell which of the two retrievals went down."""
+
+    def _by_op(_client, payload):
+        ops = payload["ops"]
+        if ops.startswith("knowledge.compose("):
+            return _mcp_result(
+                _khive_refused_response(tool="knowledge.compose", message="no frame")
+            )
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _by_op
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            compose=ComposePolicy(enabled=True, max_tokens=2000),
+        )
+    )
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    # The recall half still lands: a failure on one surface does not take the
+    # other one with it.
+    assert "khive recall" in text and "a prior lesson" in text
+    assert "khive compose unavailable" in text
+    assert "no frame" in text
+    assert provider.degradation_reason == "op_refused:knowledge.compose"
+
+
 @pytest.mark.asyncio
 async def test_transport_failure_returns_none_turn_proceeds():
     policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
