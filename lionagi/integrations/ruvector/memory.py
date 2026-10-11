@@ -9,13 +9,16 @@ import asyncio
 import json
 import math
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from lionagi.protocols.graph.node import Node
 from lionagi.protocols.memory import MemoryItem, MemoryQuery
 
 from .store import RuVectorStore, SearchHit, _integer, _text
+
+if TYPE_CHECKING:
+    from .learning import FeedbackRanker
 
 __all__ = ("RuVectorMemoryStore",)
 
@@ -41,13 +44,21 @@ class RuVectorMemoryStore:
         self,
         store: RuVectorStore,
         embedder: Callable[[str], Awaitable[Sequence[float]]],
+        *,
+        ranker: FeedbackRanker | None = None,
     ) -> None:
         if not isinstance(store, RuVectorStore):
             raise TypeError("store must be a RuVectorStore")
         if not callable(embedder):
             raise TypeError("embedder must be an async callable")
+        if ranker is not None:
+            from .learning import FeedbackRanker
+
+            if not isinstance(ranker, FeedbackRanker) or ranker.store is not store:
+                raise ValueError("ranker must be a FeedbackRanker bound to this store")
         self._store = store
         self._embedder = embedder
+        self._ranker = ranker
 
     def _tags(self, tags: Any) -> list[str]:
         if type(tags) is not list or len(tags) > 128:
@@ -140,5 +151,8 @@ class RuVectorMemoryStore:
             # trigger exact ranking across all eligible records, avoiding the
             # recall loss inherent in filtering an approximate top-k afterward.
             predicate = matches if tags or filters else None
-            hits = await self._store.asearch(vector, k=limit, predicate=predicate)
+            if self._ranker is None:
+                hits = await self._store.asearch(vector, k=limit, predicate=predicate)
+            else:
+                hits = await self._ranker.asearch(vector, query=text, k=limit, predicate=predicate)
         return [self._memory(hit) for hit in hits]
