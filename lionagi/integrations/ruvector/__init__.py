@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 try:
+    from .learning import FeedbackRanker
     from .memory import RuVectorMemoryStore
+    from .persistent import PersistentRuVectorStore
     from .store import RuVectorStore, SearchHit
 except ModuleNotFoundError as exc:
     if exc.name not in {"ruvector", "numpy"}:
@@ -15,4 +17,10 @@ except ModuleNotFoundError as exc:
         "RuVector integration requires the optional extra: uv add 'lionagi[ruvector]'"
     ) from exc
 
-__all__ = ("RuVectorMemoryStore", "RuVectorStore", "SearchHit")
+__all__ = (
+    "FeedbackRanker",
+    "PersistentRuVectorStore",
+    "RuVectorMemoryStore",
+    "RuVectorStore",
+    "SearchHit",
+)

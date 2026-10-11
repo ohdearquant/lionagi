@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 360" role="img" aria-labelledby="title desc">
+<title id="title">RVF durable memory with explicit relevance feedback</title>
+<desc id="desc">Validated documents and vectors form a complete RVF checkpoint. Restart rebuilds the retrieval index. Host authorized feedback changes candidate ranking and persists in the next checkpoint.</desc>
+<style>
+text{font-family:system-ui,sans-serif;fill:#e5edf8}.box{fill:#15263b;stroke:#467199;stroke-width:1.5}.label{font-size:17px;font-weight:600}.sub{font-size:13px;fill:#b8c9db}.line{fill:none;stroke:#63c9b8;stroke-width:2}.pulse{fill:#7de9d3;animation:flow 4s linear infinite}@keyframes flow{0%{opacity:0;transform:translateX(0)}10%,80%{opacity:1}100%{opacity:0;transform:translateX(58px)}}@media(prefers-reduced-motion:reduce){.pulse{animation:none}}
+</style>
+<rect width="900" height="360" rx="18" fill="#0b1626"/>
+<text x="34" y="43" font-size="24" font-weight="700">Durable memory. Explicit feedback.</text>
+<text x="34" y="69" class="sub">Canonical RVF records · Atomic checkpoints · Disposable HNSW index</text>
+<rect class="box" x="34" y="110" width="220" height="95" rx="12"/>
+<text class="label" x="54" y="145">Validated records</text><text class="sub" x="54" y="173">UUID · text · metadata · vectors</text>
+<path class="line" d="M254 158h72"/><circle class="pulse" cx="260" cy="158" r="4"/>
+<rect class="box" x="326" y="110" width="230" height="95" rx="12"/>
+<text class="label" x="346" y="145">Complete RVF checkpoint</text><text class="sub" x="346" y="173">Close · atomic replace · sync</text>
+<path class="line" d="M556 158h72"/><circle class="pulse" cx="562" cy="158" r="4"/>
+<rect class="box" x="628" y="110" width="238" height="95" rx="12"/>
+<text class="label" x="648" y="145">Rebuilt retrieval index</text><text class="sub" x="648" y="173">Filter candidates, then rerank</text>
+<rect class="box" x="326" y="248" width="230" height="72" rx="12"/>
+<text class="label" x="346" y="278">Authorized feedback</text><text class="sub" x="346" y="300">Bounded · query specific · resettable</text>
+<path class="line" d="M441 248v-43M556 284h192v-79"/>
+<text class="sub" x="34" y="342">Full checkpoints cost O(N). Batch writes. No implicit model training.</text>
+</svg>

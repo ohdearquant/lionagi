@@ -193,6 +193,7 @@ nav:
       - Agents & permissions: api/agent-config.md
       - Worktree sandboxes: api/sandbox.md
       - RuVector memory: guides/ruvector.md
+      - Durable RuVector memory: guides/ruvector-durable-learning.md
 
   - Orchestrate:
       - Orchestration guide: guides/orchestration.md

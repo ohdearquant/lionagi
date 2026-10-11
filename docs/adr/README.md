@@ -305,6 +305,8 @@ its area block.
 - [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
   lazy activation; number from the adjacent free gap — the substrates block is exhausted)
 
+- [ADR-0125](ADR-0125-rvf-durable-memory-and-relevance-feedback.md) — RVF durable memory and explicit relevance feedback (Proposed; sequential number)
+
 ### cli-orchestration (sequential numbers only)
 
 Ratified 2026-08-11 as the seventeenth area: the CLI orchestration surface — `li o flow` /
