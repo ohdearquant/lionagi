@@ -289,3 +289,17 @@ def test_missing_embedding_rejected_before_insertion():
     with pytest.raises(ValueError, match="embedding is required"):
         store.add_nodes([Node(content="no embedding")])
     assert len(store) == 0
+
+
+def test_filtered_cosine_endpoints_and_ties_are_stable():
+    store = RuVectorStore(2)
+    points = [
+        node("same", [1.0, 0.0]),
+        node("opposite", [-1.0, 0.0]),
+        node("orthogonal", [0.0, 1.0]),
+        node("orthogonal tie", [0.0, -1.0]),
+    ]
+    store.add_nodes(points)
+    hits = store.search([1.0, 0.0], k=4, predicate=lambda metadata: True)
+    assert [hit.distance for hit in hits] == [0.0, 1.0, 1.0, 2.0]
+    assert [hit.node_id for hit in hits[1:3]] == sorted(str(p.id) for p in points[2:])

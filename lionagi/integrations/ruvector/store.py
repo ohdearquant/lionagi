@@ -231,7 +231,9 @@ class RuVectorStore:
                 def candidates():
                     for node_id, (_, metadata, stored_vector) in self._records.items():
                         if predicate(json.loads(metadata)):
-                            distance = float(np.clip(1.0 - np.dot(query, stored_vector), 0.0, 2.0))
+                            # Scalar clamping avoids NumPy dispatch/temporary overhead for
+                            # every eligible record; preserve float32 subtraction semantics.
+                            distance = min(2.0, max(0.0, float(1.0 - np.dot(query, stored_vector))))
                             yield distance, node_id
 
                 ranked = heapq.nsmallest(k, candidates())

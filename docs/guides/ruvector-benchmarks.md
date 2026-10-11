@@ -4,7 +4,7 @@ Measured on 2026-10-11 using the proposed LionAGI source implementation on Linux
 
 ## Acceptance
 
-43 integration and optional-import tests plus 29 existing MemoryStore/Branch memory regression tests passed: **72 passed**. The real Rust extension and real Branch.act implementation are exercised. Ruff check and formatting pass for all added Python files. The lockfile passes `uv lock --check`. An isolated source distribution and wheel build succeeded.
+44 integration and optional-import tests plus 29 existing MemoryStore/Branch memory regression tests passed: **73 passed**. The real Rust extension and real Branch.act implementation are exercised. Ruff check and formatting pass for all added Python files. The lockfile passes `uv lock --check`. An isolated source distribution and wheel build succeeded.
 
 The full repository suite was attempted with the RuVector extra and development dependencies. Collection stopped with five missing-dependency errors in unrelated Studio/MCP tests (`fastapi` and `jsonschema`), with 81 skips. Therefore this is **not a claim that the full LionAGI suite or platform CI passed**. Maintainer CI uses all extras and remains the merge gate. The change does not alter existing CI or release permissions.
 
@@ -31,3 +31,26 @@ uv run python benchmarks/ruvector/retrieval.py --ef 100 --output /tmp/ruvector-b
 ```
 
 The benchmark uses the Unix `resource` module and runs on Linux/macOS. The integration itself does not depend on that module.
+
+## Exact filtered path optimization
+
+The native SDK filter applies after approximate retrieval. Using it here would change the existing exact pre-ranking filtering contract, so this change retains the exact path. The hot loop now clamps scalar cosine distances using Python min/max instead of dispatching NumPy clip for each eligible record. It preserves the original subtraction precision, output bounds, deterministic tie order and metadata isolation.
+
+Paired comparison against commit `cd6e3686c1586a271864c323d4998a1e3c9369df`: same store/index, 5,000 vectors, 64 dimensions, 40 queries, three rounds per configuration. Execution order alternates baseline/optimized. Two independent dataset seeds and two filter selectivities produce 480 timed pairs. **Every pair has identical complete results**, including IDs, order, distances and metadata. A new regression test pins cosine endpoints and tie ordering. Pyright reports zero errors/warnings; Ruff passes.
+
+| Seed | Records eligible | Baseline p50 ms | Optimized p50 ms | Reduction |
+| --- | --- | --- | --- | --- |
+| 20261011 | 25% | 16.037 | 10.567 | 34.1% |
+| 20261011 | 100% | 34.600 | 15.701 | 54.6% |
+| 20261012 | 25% | 15.826 | 9.999 | 36.8% |
+| 20261012 | 100% | 37.678 | 15.350 | 59.3% |
+
+Observed median reduction is 34% to 59%; every configuration exceeds the 10% acceptance target. Raw p95 measurements and environment details are in `benchmarks/ruvector/filtered-ab.json`. These are synthetic filtered retrieval measurements, **not an unfiltered HNSW or native SDK speedup**. Host predicate cost and metadata size can change the benefit. No approximate-search recall tradeoff or security check removal is involved.
+
+Reproduce the acceptance check from the repository root:
+
+```bash
+uv run python benchmarks/ruvector/filtered_ab.py --output /tmp/filtered-ab.json --min-reduction 0.10
+```
+
+The command rejects any result mismatch and exits unsuccessfully if any configuration misses the requested median reduction. Timing gates belong in a controlled benchmark environment; this command is not an unconditional wall-clock gate in general CI.
