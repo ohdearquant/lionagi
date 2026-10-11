@@ -1314,6 +1314,43 @@ describe("history/RunDetail.tsx — cancellation presentation", () => {
 });
 
 describe("history/RunDetail.tsx — operation lane escalation presentation", () => {
+  it("does not scan raw events when full-history lane projections are supplied", async () => {
+    const { EventsSection } = await import("./RunDetail");
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const rows = [sig({ id: "raw", kind: "NodeFailed", op_id: "op-raw", payload: {} })];
+    const events = new Proxy(rows, {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          throw new Error("projected lanes must bypass the raw-event lane scan");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    try {
+      act(() => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <EventsSection
+              live={false}
+              events={events}
+              projectedLanes={[{ op_id: "op-projected", lane: "succeeded", count: 10 }]}
+            />
+          </IntlProvider>,
+        );
+      });
+
+      expect(container.textContent).toContain("op-projectedsucceeded×10");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("uses a warning lane for escalated while a failed lane stays error-toned", async () => {
     const { EventsSection } = await import("./RunDetail");
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
