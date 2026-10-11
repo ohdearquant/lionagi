@@ -955,6 +955,16 @@ async def _run_agent(
 
                 warn(f"resume model override: {old_model} → {model}")
             cfg["model"] = model
+            if model != old_model and effort is None:
+                # The persisted effort was clamped for the OLD model; the new
+                # one has its own ceiling, so re-clamp instead of replaying a
+                # value that model may reject (a sol-derived 'ultra' is a 400
+                # on a spark resume).
+                from lionagi.service.providers import reclamp_effort_for_model
+
+                kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+                if kwarg and cfg.get(kwarg) is not None:
+                    cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
         if verbose:
             cfg["verbose_output"] = True
         if theme is not None:

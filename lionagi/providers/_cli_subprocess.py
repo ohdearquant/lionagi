@@ -140,6 +140,20 @@ class Redacted:
     __str__ = __repr__
 
 
+def reveal_redacted(value):
+    """The value inside a ``Redacted`` wrapper, or the value unchanged.
+
+    ``redact_runtime_fields_in_place`` runs at the TOP of every model-level
+    ``mode="before"`` validator, so any validator after the first one sees the
+    wrapper where the caller passed a mapping. ``Redacted`` is deliberately not
+    a mapping, so a reader that forgets this gets a silent miss rather than an
+    error — a validator asking ``isinstance(env, Mapping)`` simply decides the
+    caller supplied nothing. Code that needs to READ such a field goes through
+    here; nothing revealed this way may be printed, logged, or serialized.
+    """
+    return value.reveal() if isinstance(value, Redacted) else value
+
+
 def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """Reject a malformed environment without quoting anything out of it.
 

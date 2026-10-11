@@ -32,6 +32,7 @@ from lionagi.service.providers import (
     ModelSpec,
     _clamp_claude_effort,
     _clamp_codex_effort,
+    codex_unset_effort_default,
     normalize_effort,
     parse_model_spec,
 )
@@ -122,6 +123,8 @@ def build_imodel_from_spec(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
+    if effort is None and provider_raw == "codex":
+        effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
         if kwarg is not None:
@@ -163,7 +166,12 @@ def build_chat_model(
     mcp_servers: dict | None = None,
     mcp_exclusive: bool = False,
 ) -> iModel | str:
-    """Legacy: for agent.py compat. Returns bare spec string when no flags."""
+    """Legacy: for agent.py compat.
+
+    Returns the bare spec string only when no flag is set and no effort was
+    given or derived (a codex request may derive one from the global config);
+    any such setting needs an iModel to carry it.
+    """
     effort = normalize_effort(effort)
     extra: dict = {}
     # Before anything keyed on the model — the effort clamp below included,
@@ -203,6 +211,8 @@ def build_chat_model(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
+    if effort is None and provider == "codex":
+        effort = codex_unset_effort_default(model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:

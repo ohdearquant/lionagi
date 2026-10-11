@@ -96,6 +96,13 @@ async def create_agent(
 
         extra = {}
         effort = spec.effort or ms.effort
+        if not effort and provider == "codex":
+            # Unset is not "no opinion": codex would read the global config's
+            # effort, tuned for that config's own model, and 400 when it
+            # exceeds this one's ceiling. Same seam the CLI builders use.
+            from lionagi.service.providers import codex_unset_effort_default
+
+            effort = codex_unset_effort_default(model_name)
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:

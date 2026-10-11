@@ -647,14 +647,22 @@ def _apply_operator_effort(
     dependent clamping); the gemini-code CLI has no effort kwarg at all and
     instead folds it into the resolved ``--model`` display name.
     """
-    if not effort:
-        return model_name
     from lionagi.service.providers import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_EFFORT_VIA_MODEL_NAME,
         _clamp_claude_effort,
         _clamp_codex_effort,
+        codex_unset_effort_default,
     )
+
+    if not effort:
+        # Unset is not "no opinion": codex would read the global config's
+        # effort, which is tuned for that config's own model and 400s when it
+        # exceeds this one's ceiling. Same seam the CLI builders use.
+        if provider == "codex":
+            effort = codex_unset_effort_default(model_name)
+        if not effort:
+            return model_name
 
     kwarg = PROVIDER_EFFORT_KWARG.get(provider)
     if kwarg is not None:

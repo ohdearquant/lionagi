@@ -37,6 +37,16 @@ else:
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
+# The provider layer reads $CODEX_HOME (global codex config and config
+# profiles). Tests must never see the developer's real ~/.codex OR an
+# externally exported CODEX_HOME: a machine-local model_reasoning_effort would
+# change what the builders emit for an effort-less codex spawn, so the
+# replacement is unconditional. Tests that need a config write into this
+# directory or monkeypatch CODEX_HOME themselves.
+_TEST_CODEX_HOME = tempfile.mkdtemp(prefix="lionagi-tests-codex-")
+os.environ["CODEX_HOME"] = _TEST_CODEX_HOME
+atexit.register(_remove_test_home, _TEST_CODEX_HOME)
+
 if "lionagi._paths" in sys.modules:
     # The constants are already bound to the old value, so the redirect above
     # did nothing and every run-directory write in this session lands in the
