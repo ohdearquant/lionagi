@@ -20,6 +20,8 @@ from lionagi.casts.emission import EscalationRequest, SpawnRequest
 from lionagi.operations import Operation, flow
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.node import create_operation
+from lionagi.protocols._concepts import Condition
+from lionagi.protocols.graph.edge import Edge
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 from lionagi.session.signal import NodeEscalated, NodeSpawned
@@ -65,6 +67,163 @@ async def test_escalation_higher_tier_spawns_child():
     assert result["spawned_operations"] >= 1
     assert len(result["completed_operations"]) == 2
     assert "done by higher tier" in result["operation_results"].values()
+
+
+@pytest.mark.asyncio
+async def test_escalation_retry_replaces_emitter_for_downstream_context():
+    """The retry is spliced between the emitter and its existing dependent."""
+
+    async def cheap(instruction: str = "", **kw):
+        if instruction.startswith("[escalation]"):
+            return "answer from escalation retry"
+        return EscalationRequest(reason="needs a stronger model", urgency="blocked")
+
+    async def downstream(context: dict[str, Any] | None = None, **kw):
+        return dict(context or {})
+
+    session = _session(cheap=cheap, downstream=downstream)
+    builder = OperationGraphBuilder()
+    emitter_id = builder.add_operation(
+        "cheap",
+        node_id="cheap",
+        depends_on=[],
+        instruction="original request",
+    )
+    downstream_id = builder.add_operation(
+        "downstream",
+        node_id="downstream",
+        depends_on=[emitter_id],
+    )
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True)
+
+    retry = next(
+        node
+        for node in graph.internal_nodes.values()
+        if isinstance(node, Operation) and node.metadata.get("escalated_from") == str(emitter_id)
+    )
+    assert graph.predecessor_ids(retry) == (emitter_id,)
+    assert graph.successor_ids(emitter_id) == (retry.id,)
+    assert graph.predecessor_ids(downstream_id) == (retry.id,)
+
+    downstream_context = result["operation_results"][downstream_id]
+    assert downstream_context == {f"{retry.id}_result": "answer from escalation retry"}
+    assert f"{emitter_id}_result" not in downstream_context
+
+
+class _ResultEquals(Condition):
+    """Edge condition gating on the exact string an upstream op produced."""
+
+    def __init__(self, expected: str) -> None:
+        self.expected = expected
+
+    async def apply(self, context: dict) -> bool:
+        return context.get("result") == self.expected
+
+
+@pytest.mark.asyncio
+async def test_escalation_retry_result_reaches_conditional_dependent():
+    """A dependent gated on the emitter's result must evaluate the RETRY's
+    result, not the pre-escalation value: the dependent's task starts (and
+    resolves which incoming edge to wait on) before the emitter even runs, so
+    it is already waiting on the emitter's completion by the time the retry
+    is spliced in. It must still end up reading the retry's result rather
+    than the stale one it snapshotted its wait around."""
+
+    async def cheap(instruction: str = "", **kw):
+        if instruction.startswith("[escalation]"):
+            return "retry"
+        return EscalationRequest(reason="needs a stronger model", urgency="blocked")
+
+    async def downstream(**kw):
+        return "downstream ran"
+
+    session = _session(cheap=cheap, downstream=downstream)
+    builder = OperationGraphBuilder()
+    emitter_id = builder.add_operation(
+        "cheap",
+        node_id="cheap",
+        depends_on=[],
+        instruction="original request",
+    )
+    downstream_id = builder.add_operation(
+        "downstream",
+        node_id="downstream",
+        depends_on=[],
+    )
+    graph = builder.get_graph()
+    graph.add_edge(
+        Edge(
+            head=emitter_id,
+            tail=downstream_id,
+            condition=_ResultEquals("retry"),
+            label=["depends_on"],
+        )
+    )
+
+    result = await flow(session, graph, reactive=True)
+
+    assert downstream_id not in result["skipped_operations"]
+    assert result["operation_results"][downstream_id] == "downstream ran"
+
+
+@pytest.mark.asyncio
+async def test_escalation_retry_inherits_the_emitter_branch_not_the_session_default():
+    """The retry's authority is the emitter's, and no wider.
+
+    The retry clones the emitter's branch rather than the session default.
+    The default is the controller's branch, whose catalog includes the job
+    control the leaf projection exists to withhold, so falling back to it
+    would widen what the retry can reach rather than narrow it. Nothing else
+    holds that invariant: `independent` reaches graph dependency only, and
+    under `splice_after_emitter` not even that, so a future change routing
+    this through the default would pass every other test in this module."""
+
+    # Unannotated on purpose: this module carries `from __future__ import
+    # annotations`, so an annotated signature reaches the schema builder as
+    # strings and raises there instead of anywhere near the claim under test.
+    def emitter_only_tool(x):
+        """Registered on the emitter's own branch only."""
+        return x
+
+    async def cheap(instruction: str = "", **kw):
+        if instruction.startswith("[escalation]"):
+            return "answer from escalation retry"
+        return EscalationRequest(reason="needs a stronger model", urgency="blocked")
+
+    session = _session(cheap=cheap)
+    emitter_branch = Branch(name="cheap-branch")
+    emitter_branch.register_tools(emitter_only_tool)
+    emitter_branch.msgs.add_message(instruction="prior turn only the emitter should see")
+    session.include_branches(emitter_branch)
+
+    builder = OperationGraphBuilder()
+    emitter_id = builder.add_operation(
+        "cheap",
+        node_id="cheap",
+        instruction="original request",
+        branch=emitter_branch,
+    )
+    graph = builder.get_graph()
+
+    await flow(session, graph, reactive=True)
+
+    retry = next(
+        node
+        for node in graph.internal_nodes.values()
+        if isinstance(node, Operation) and node.metadata.get("escalated_from") == str(emitter_id)
+    )
+    # Must-not-match control: the emitter's branch carries the tool and the
+    # session default does not, so the two candidate bases are actually
+    # distinguishable by this assertion.
+    assert "emitter_only_tool" in emitter_branch.tools
+    assert "emitter_only_tool" not in session.default_branch.tools
+
+    retry_branch = session.branches[retry.branch_id]
+    assert retry_branch is not emitter_branch
+    assert retry_branch.metadata["clone_from"] is emitter_branch
+    assert "emitter_only_tool" in retry_branch.tools
 
 
 @pytest.mark.asyncio
@@ -140,7 +299,7 @@ async def test_escalation_child_carries_readable_name_and_parent_pointer():
     assert (str(child.id), "cheap escalation retry", "queued") in progress_events
     assert len(spawned_signals) == 1
     assert spawned_signals[0].parent_id == child.metadata["escalated_from"] == str(parent_id)
-    assert spawned_signals[0].independent is True
+    assert spawned_signals[0].independent is False
 
 
 @pytest.mark.asyncio
@@ -177,6 +336,90 @@ async def test_repeated_escalations_have_unique_retrievable_identity():
         builder.get_node_by_reference(reference_id) is child
         for reference_id, child in zip(reference_ids, children, strict=True)
     )
+
+
+@pytest.mark.asyncio
+async def test_escalation_splice_does_not_fail_a_dependent_waiting_on_another_upstream():
+    """A dependent with two upstreams resolves its edges once and waits on
+    the first-listed head. If the other upstream escalates during that wait,
+    the splice removes its original edge; the dependent must still evaluate
+    the retry's result rather than fail on the removed edge."""
+
+    async def slow(**kw: Any):
+        await asyncio.sleep(0.2)
+        return "slow done"
+
+    async def cheap(instruction: str = "", **kw: Any):
+        if instruction.startswith("[escalation]"):
+            return "retry"
+        return EscalationRequest(reason="blocked", urgency="blocked")
+
+    async def downstream(**kw: Any):
+        return "downstream ran"
+
+    session = _session(slow=slow, cheap=cheap, downstream=downstream)
+    builder = OperationGraphBuilder()
+    slow_id = builder.add_operation("slow", node_id="slow", depends_on=[])
+    emitter_id = builder.add_operation("cheap", node_id="cheap", depends_on=[], instruction="x")
+    downstream_id = builder.add_operation("downstream", node_id="downstream", depends_on=[])
+    graph = builder.get_graph()
+    graph.add_edge(Edge(head=slow_id, tail=downstream_id, label=["depends_on"]))
+    graph.add_edge(Edge(head=emitter_id, tail=downstream_id, condition=_ResultEquals("retry")))
+
+    result = await flow(session, graph, reactive=True)
+
+    assert downstream_id not in result["skipped_operations"]
+    assert result["operation_results"][downstream_id] == "downstream ran"
+
+
+@pytest.mark.asyncio
+async def test_repeated_escalations_chain_and_the_dependent_gates_on_its_predecessor():
+    """Two escalations of one node form emitter -> retry 1 -> retry 2 ->
+    dependent, and the dependent's condition reads the result of the node
+    that actually precedes it in the graph."""
+    order: list[str] = []
+
+    async def cheap(instruction: str = "", **kw: Any):
+        if instruction.startswith("[escalation] first"):
+            await asyncio.sleep(0.3)
+            order.append("retry 1 done")
+            return "retry-1"
+        if instruction.startswith("[escalation] second"):
+            order.append("retry 2 done")
+            return "retry-2"
+        await asyncio.sleep(0.05)  # the dependent is already waiting on this node
+        return [
+            EscalationRequest(reason="first", context={"route": "higher_tier"}),
+            EscalationRequest(reason="second", context={"route": "higher_tier"}),
+        ]
+
+    async def downstream(**kw: Any):
+        order.append("downstream ran")
+        return "downstream ran"
+
+    session = _session(cheap=cheap, downstream=downstream)
+    builder = OperationGraphBuilder()
+    emitter_id = builder.add_operation("cheap", node_id="cheap", depends_on=[], instruction="x")
+    downstream_id = builder.add_operation("downstream", node_id="downstream", depends_on=[])
+    graph = builder.get_graph()
+    graph.add_edge(Edge(head=emitter_id, tail=downstream_id, condition=_ResultEquals("retry-2")))
+
+    result = await flow(session, graph, reactive=True)
+
+    pred_ids = [
+        graph.internal_edges[eid].head for eid in graph.node_edge_mapping[downstream_id]["in"]
+    ]
+    assert len(pred_ids) == 1
+    assert result["operation_results"][pred_ids[0]] == "retry-2"
+    assert downstream_id not in result["skipped_operations"]
+    assert order.index("downstream ran") > order.index("retry 2 done")
+    # the second retry follows the first, not the emitter
+    (retry_2,) = pred_ids
+    retry_2_preds = [
+        graph.internal_edges[eid].head for eid in graph.node_edge_mapping[retry_2]["in"]
+    ]
+    assert retry_2_preds != [emitter_id]
+    assert result["operation_results"][retry_2_preds[0]] == "retry-1"
 
 
 # give_up: signals without re-spawning

@@ -20,6 +20,16 @@ runs synchronously at the tail of every node's execution — the only
 race-free point for a caller's `inject()` against the task group's
 convergence; `cli/orchestrate/flow.py`'s team-round wakeup logic is wired here.
 
+A `higher_tier` escalation retry is spliced immediately after its emitter:
+the emitter points to the retry, and the retry takes over the emitter's former
+outgoing edges (including their conditions, labels, and properties). Existing
+dependents therefore wait for the retry and assemble context from its result,
+not from the result that requested escalation. A node that escalates again is
+spliced after the retry already standing in for it, so repeated retries form
+one chain (emitter, retry 1, retry 2, former successors) and a dependent always
+gates on the result of the node that precedes it in the graph. Other reactive
+spawns retain their ordinary dependent/independent behavior.
+
 **`flow.py`** gate-reject contract — a playbook-authored node opts into gate
 semantics by setting `operation.metadata["is_gate"] = True` (e.g. via
 `OperationGraphBuilder.add_operation(..., is_gate=True)`). Once that node
