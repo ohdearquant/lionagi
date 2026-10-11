@@ -1103,6 +1103,21 @@ async def _run_agent(
         # consumer.
         drains_controls=True,
     )
+    if live is None and _write_run_manifest is not None:
+        # Setup returned no session (it may have committed a row before it failed, which `li
+        # monitor` lists under that row's own id; nothing here prints it), so the run id names no
+        # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
+        # says how to stop it (ADR-0104 Amendment 2).
+        from lionagi.cli._logging import warn
+
+        from .kill import current_pid_markers
+
+        run_manifest.update(current_pid_markers())
+        _write_run_manifest(run_manifest)
+        warn(
+            f"run {run.run_id}: persistence setup returned no session; "
+            f"stop it with: li kill {run.run_id}"
+        )
     if seed_injection_totals:
         await _seed_injection_stats(live, _injection_totals)
 

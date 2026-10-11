@@ -1824,6 +1824,12 @@ async def setup_orchestration_persist(
             exc_info=True,
         )
         _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
+        # It records no process to stop, so its run id is no `li kill` handle: say so now, with the
+        # pid, rather than leave the operator to find out at kill time (ADR-0104 Amendment 2).
+        warn(
+            f"run {run.run_id if run is not None else '(no run id)'}: persistence setup returned no "
+            f"session, and its run id is no `li kill` handle; its process is pid {os.getpid()}"
+        )
         if db is not None:
             try:
                 await db.close()

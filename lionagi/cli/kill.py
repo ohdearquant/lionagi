@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
 import signal
 import socket
 import time
+from pathlib import Path
 from typing import Any, Literal
 
 import psutil
@@ -65,7 +68,21 @@ _CREATE_TIME_TOLERANCE = 0.1
 #: Outcomes where nothing was stopped and no cancellation was written. A caller
 #: that reports these as a kill is claiming a stop that did not happen.
 _NOT_STOPPED_SIGNALS = frozenset(
-    {"identity_mismatch", "in_process", "host_mismatch", "boot_mismatch", "foreign_mode"}
+    {
+        "identity_mismatch",
+        "in_process",
+        "host_mismatch",
+        "boot_mismatch",
+        "foreign_mode",
+        # The kernel refused the signal, so the process is still running. It reaches this set
+        # from a different direction than its neighbours -- they are refusals this CLI decides
+        # before signalling, this one is a refusal it is handed after asking -- but the caller's
+        # question is the same either way: was it stopped. It was not.
+        "permission_denied",
+        "no_recorded_process",
+        "no_recorded_identity",
+        "imported_no_process",
+    }
 )
 
 #: Refusals to signal. A pid only names a process together with its host and boot; when the
@@ -79,6 +96,17 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
         "use the Studio cancel for this run"
     ),
     "foreign_mode": "records a process identity this CLI does not manage",
+    # Membership here routes this signal through the early return in `_kill_one`, so no
+    # cancellation is written for a process that is demonstrably still running.
+    "permission_denied": "could not be signalled: permission denied",
+    "no_recorded_process": "names a run whose persistence setup failed and recorded no process",
+    "no_recorded_identity": (
+        "was recorded with no start time, so nothing shows which process it named"
+    ),
+    "imported_no_process": (
+        "is a row `li state import` made from a run.json, which records no process: "
+        "stop the run by its own session id (`li monitor` lists them)"
+    ),
 }
 
 #: Re-exported so readers find it beside the check that uses it; defined once in ``_util``
@@ -492,8 +520,13 @@ async def _kill_one(
 
     pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
+    # A degraded run that `li state import` gave a row while it still ran: the row has no pid,
+    # the run's own run.json does, and that is the process this kill stops (ADR-0104 Amendment 2).
+    degraded = _degraded_run(entity_id) if pid is None and entity_type == "session" else None
 
-    if pid is not None:
+    if degraded is not None:
+        pid, signal_used = _signal_degraded_process(degraded[1], grace_seconds=grace_seconds)
+    elif pid is not None:
         # Only boot_mismatch can still be pending here; it stays out of the early return
         # because the stale sweep treats it as evidence the process is gone, unlike a kill.
         if unaddressable is not None:
@@ -516,6 +549,11 @@ async def _kill_one(
             except RuntimeError as exc:
                 warn(str(exc))
                 signal_used = "permission_denied"
+    elif entity_type == "session" and row.get("source_kind") == "imported_fs":
+        # `li state import` names a row by the run id of every run.json it reads and puts no pid
+        # on it. Unless the run is a degraded one (above), its process belongs to the session the
+        # run wrote itself, so cancelling this row would stop nothing and say it had.
+        signal_used = "imported_no_process"
     else:
         if verbose:
             warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
@@ -525,7 +563,7 @@ async def _kill_one(
         reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
     elif signal_used in _REFUSED_SIGNAL_REASONS:
         warn(
-            f"  {entity_type} {entity_id[:12]}: pid {pid} "
+            f"  {entity_type} {entity_id[:12]}: {f'pid {pid} ' if pid is not None else ''}"
             f"{_REFUSED_SIGNAL_REASONS[signal_used]} — kill skipped"
         )
         return {
@@ -555,6 +593,8 @@ async def _kill_one(
         reason_summary=reason_summary,
         evidence=evidence,
     )
+    if degraded is not None:
+        _settle_degraded_run(*degraded)
 
     return {
         "entity_type": entity_type,
@@ -562,6 +602,136 @@ async def _kill_one(
         "signal": signal_used,
         "pid": pid,
     }
+
+
+def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
+    """The run.json of a run whose persistence setup failed, or None for any other id.
+
+    Such a run's setup returned no session, so its run id names no row (setup may have committed
+    one before it failed, which `li monitor` lists under that row's own id, though the run prints
+    none), and the pid it recorded on its own manifest is what its run id reaches (ADR-0104
+    Amendment 2).
+    """
+    from ._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RUNS_ROOT
+
+    # a run id names one directory under RUNS_ROOT: anything that is not a single path
+    # component is no run id, and is never joined onto the path
+    if not run_id or run_id in (".", "..") or Path(run_id).name != run_id:
+        return None
+    # and reached through no link, to another run's directory or out of the root: the run.json
+    # read, and later written, is the one in the directory the id names
+    path = RUNS_ROOT.resolve() / run_id / "run.json"
+    if path.resolve() != path:
+        return None
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or not manifest.get(PERSISTENCE_DEGRADED_REASON_FIELD):
+        return None
+    return path, manifest
+
+
+def _signal_degraded_process(
+    manifest: dict[str, Any],
+    *,
+    grace_seconds: float,
+) -> tuple[int | None, str]:
+    """Signal the process a degraded run recorded on its run.json; ``(pid, signal)``.
+
+    The checks are a session pid's, less the session id such a run never set: host, boot and
+    identity mode, then the recorded start time and a lionagi command line, refusing when the
+    start time is absent (``no_recorded_identity``, whether or not the pid is alive). A run that
+    recorded no pid answers ``(None, "no_recorded_process")``.
+    """
+    try:
+        pid = int(manifest["pid"])
+    except (KeyError, TypeError, ValueError):
+        return None, "no_recorded_process"
+
+    signal_used = _unaddressable_pid_reason(manifest)
+    if signal_used is None:
+        try:
+            expected_create_time = float(manifest["pid_create_time"])
+        except (KeyError, TypeError, ValueError):
+            # The start time is the run's only recorded identity: it set no session id to read
+            # off the process. Without it the record cannot show which process the pid named, so
+            # the kill cannot say it stopped one, alive or dead: nothing is signalled or written.
+            return pid, "no_recorded_identity"
+        try:
+            signal_used = _terminate_pid(
+                pid,
+                grace_seconds=grace_seconds,
+                expected_cmd="lionagi",
+                expected_create_time=expected_create_time,
+            )
+        except RuntimeError as exc:
+            warn(str(exc))
+            signal_used = "permission_denied"
+    return pid, signal_used
+
+
+def _settle_degraded_run(path: Path, manifest: dict[str, Any]) -> None:
+    """Mark a stopped degraded run cancelled on its run.json, unless it wrote its own end.
+
+    A process that took the SIGTERM wrote its own terminal status on the way out; one that was
+    force-killed, or had already died, could not, and its manifest still says running. Invocations
+    sharing a run id (`LIONAGI_RUN_ID`) share this file, so it is settled only if, read here, it
+    still records the process this kill stopped: one that names another, by pid or start time, is
+    that invocation's record, and is left as it is. So is one this kill cannot read, since what it
+    records cannot be checked. On POSIX the read and the write are made under the run's manifest lock
+    (`flock` on a file beside run.json), which every writer of a run.json takes when it can, so no
+    other locked record lands between them. A lock this kill cannot take (opening or locking the file
+    fails) leaves the file as it is, with a warning; a writer that cannot take it writes without it,
+    with a warning, and where `fcntl` does not exist (Windows) nothing is held and the record is settled
+    unlocked, last writer wins (ADR-0104 Amendment 2, Limits).
+    """
+    from ._runs import _atomic_write_json, _run_manifest_lock
+
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(_run_manifest_lock(path.parent))
+        except OSError as exc:
+            warn(
+                f"  run {path.parent.name}: run.json lock could not be taken ({exc}), left as it is"
+            )
+            return
+        try:
+            current = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            warn(f"  run {path.parent.name}: run.json could not be read ({exc}), left as it is")
+            return
+        if not isinstance(current, dict) or current.get("status") != "running":
+            return
+        stopped = (manifest.get("pid"), manifest.get("pid_create_time"))
+        if (current.get("pid"), current.get("pid_create_time")) != stopped:
+            warn(
+                f"  run {path.parent.name}: run.json now records another process "
+                f"(pid {current.get('pid')}), left as it is"
+            )
+            return
+        current["status"] = "cancelled"
+        current["ended_at"] = time.time()
+        _atomic_write_json(path, current)
+
+
+def _kill_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: float) -> int:
+    """Stop the process a degraded run recorded, by the same identity checks as a session's."""
+    run_id = path.parent.name
+    status = manifest.get("status")
+    if status != "running":
+        log_error(f"run {run_id} is already in terminal state: {status!r} — nothing to kill")
+        return 1
+    pid, signal_used = _signal_degraded_process(manifest, grace_seconds=grace_seconds)
+    if pid is None:
+        log_error(f"run {run_id} recorded no process to stop")
+        return 1
+    if signal_used in _REFUSED_SIGNAL_REASONS:
+        warn(f"  run {run_id}: pid {pid} {_REFUSED_SIGNAL_REASONS[signal_used]} — kill skipped")
+        return 1
+    _settle_degraded_run(path, manifest)
+    print(f"killed run {run_id} (signal={signal_used}, pid={pid})")
+    return 0
 
 
 async def _do_kill(
@@ -584,6 +754,9 @@ async def _do_kill(
             log_error(str(exc))
             return 1
         if resolved is None:
+            degraded = _degraded_run(id_or_short)
+            if degraded is not None:
+                return _kill_degraded_run(*degraded, grace_seconds=grace_seconds)
             log_error(f"entity not found for id: {id_or_short!r}")
             return 1
 
@@ -1054,9 +1227,14 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         "id",
         nargs="?",
         help=(
-            "Entity id to kill: run_id / session_id / invocation_id / play_id / "
-            "show_id. Accepts a full UUID, or an id prefix (resolved to the "
-            "first matching row)."
+            "Entity id to kill: session_id / invocation_id / play_id / show_id. "
+            "Accepts a full UUID, or an id prefix, which is refused when it "
+            "matches more than one row rather than resolved to one of them. A "
+            "run_id stops a run only when its persistence setup failed, which "
+            "records its process on its own run.json and prints its run id when it "
+            "starts. Any other run_id stops nothing: it does not resolve, or it "
+            "names a row `li state import` made, which records no process and is "
+            "refused -- use `li monitor` for the session ids a run started."
         ),
     )
     kill.add_argument(

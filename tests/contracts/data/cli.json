@@ -6667,7 +6667,7 @@
               "nargs": "?",
               "default": null,
               "choices": null,
-              "help": "Entity id to kill: run_id / session_id / invocation_id / play_id / show_id. Accepts a full UUID, or an id prefix (resolved to the first matching row)."
+              "help": "Entity id to kill: session_id / invocation_id / play_id / show_id. Accepts a full UUID, or an id prefix, which is refused when it matches more than one row rather than resolved to one of them. A run_id stops a run only when its persistence setup failed, which records its process on its own run.json and prints its run id when it starts. Any other run_id stops nothing: it does not resolve, or it names a row `li state import` made, which records no process and is refused -- use `li monitor` for the session ids a run started."
             },
             {
               "option_strings": [
