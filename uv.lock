@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -3209,6 +3209,11 @@ reader = [
 rich = [
     { name = "rich" },
 ]
+ruvector = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "ruvector" },
+]
 sandbox = [
     { name = "ag2", extra = ["openai"] },
     { name = "daytona" },
@@ -3303,6 +3308,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.28.1" },
     { name = "msgspec", specifier = ">=0.20.0" },
     { name = "networkx", marker = "extra == 'graph'", specifier = ">=3.0.0" },
+    { name = "numpy", marker = "extra == 'ruvector'", specifier = ">=1.24,<3" },
     { name = "ollama", marker = "extra == 'ollama'", specifier = ">=0.6.1" },
     { name = "orjson", specifier = ">=3.11.8" },
     { name = "packaging", specifier = ">=21.0" },
@@ -3314,6 +3320,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", marker = "extra == 'rich'", specifier = ">=13.0.0" },
+    { name = "ruvector", marker = "extra == 'ruvector'", specifier = ">=0.1.2,<0.2" },
     { name = "sniffio", specifier = ">=1.3.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = ">=1.3.1" },
@@ -3324,7 +3331,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'studio'", specifier = ">=0.34" },
     { name = "xmltodict", marker = "extra == 'xml'", specifier = ">=0.12.0" },
 ]
-provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "sandbox", "studio", "all"]
+provides-extras = ["ruvector", "reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "sandbox", "studio", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -6835,6 +6842,25 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/88/27/0195d15fe7a897cbcba0904792c4b7c9fdd958456c3a17d2ea6093716a9a/ruff-0.15.11-py3-none-win32.whl", hash = "sha256:476a2aa56b7da0b73a3ee80b6b2f0e19cce544245479adde7baa65466664d5f3", size = 10655535, upload-time = "2026-04-16T18:46:12.47Z" },
     { url = "https://files.pythonhosted.org/packages/3a/5e/c927b325bd4c1d3620211a4b96f47864633199feed60fa936025ab27e090/ruff-0.15.11-py3-none-win_amd64.whl", hash = "sha256:8b6756d88d7e234fb0c98c91511aae3cd519d5e3ed271cae31b20f39cb2a12a3", size = 11779692, upload-time = "2026-04-16T18:46:17.268Z" },
     { url = "https://files.pythonhosted.org/packages/63/b6/aeadee5443e49baa2facd51131159fd6301cc4ccfc1541e4df7b021c37dd/ruff-0.15.11-py3-none-win_arm64.whl", hash = "sha256:063fed18cc1bbe0ee7393957284a6fe8b588c6a406a285af3ee3f46da2391ee4", size = 11032614, upload-time = "2026-04-16T18:46:34.487Z" },
+]
+
+[[package]]
+name = "ruvector"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/fe/e37de2fec649c2cc3c3f7161d4816c1b3b7bcd75b392cf29951d2aa3b53f/ruvector-0.1.2.tar.gz", hash = "sha256:73f8895ad98f74d941520c5848beaa552810f953e6b3064e1dac8acaa4d375f5", size = 1278727, upload-time = "2026-10-10T17:20:53.11Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f6/f1/71388775712139389cd731e16cf0e205f18b57838dd74d851cad97754adc/ruvector-0.1.2-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:d2b82c87b26760b60bec58cbb948ed09f2ba457594817308c48b8e01bd5156cc", size = 2460413, upload-time = "2026-10-10T17:20:49.589Z" },
+    { url = "https://files.pythonhosted.org/packages/21/2f/0ed599792dc1ad10c2a676d69f8b4bedfa665b16939a2217f3282d224f24/ruvector-0.1.2-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:c9438ced8aa54f7fa5ddc7be8038e6cdc3f771587f1fdf5b50926eb4b3bf9316", size = 2241991, upload-time = "2026-10-10T17:20:47.301Z" },
+    { url = "https://files.pythonhosted.org/packages/43/62/a223762b39f22b2cb5bb5b75fcfaf48ef1477907350b4e80f8af1923ac3f/ruvector-0.1.2-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:8014f69221b8da10ee7d2039ba30979370b78629028fc8c1dd333958d7f95960", size = 2322480, upload-time = "2026-10-10T17:20:43.351Z" },
+    { url = "https://files.pythonhosted.org/packages/40/8e/6e7d3036767d94bd23c5b1f80f5d2e397e496d37bdfc1684295ce9908692/ruvector-0.1.2-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:08e7cbf02fe640e921d2e8b78f7a5fd5c9379343b34c689fb283474280ac4da0", size = 2564897, upload-time = "2026-10-10T17:20:45.513Z" },
+    { url = "https://files.pythonhosted.org/packages/35/e0/c5eafdcba2c1258b41146492fbd79442625654539045ae73679d18ce41a6/ruvector-0.1.2-cp39-abi3-win_amd64.whl", hash = "sha256:b7da877c0df5958a76acadc1b9f1b0851551f927d28259af0b20a5be4ef542b8", size = 2590727, upload-time = "2026-10-10T17:20:51.379Z" },
 ]
 
 [[package]]
