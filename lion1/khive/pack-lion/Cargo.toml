@@ -1,0 +1,19 @@
+[package]
+name = "khive-pack-lion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "This runtime's sessions, messages, calls and runs as tables of its own in the store (ADR-0025)."
+publish = false
+
+[dependencies]
+khive-types = { workspace = true }
+khive-runtime = { workspace = true }
+khive-storage = { workspace = true }
+inventory = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }

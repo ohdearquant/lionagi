@@ -1,0 +1,99 @@
+{
+  "row": {
+    "id": "platform/builder",
+    "name": "builder",
+    "area": "platform",
+    "kind": "agent",
+    "state": "idle",
+    "now": "last woke 09:12, opened a branch",
+    "woken_by": [
+      "the reviewer finishes with changes asked"
+    ],
+    "model": "claude-code/sonnet",
+    "runs_in": "daytona",
+    "today": {
+      "cost": 0.19,
+      "wakes": 1,
+      "acted": 1
+    }
+  },
+  "definition": {
+    "name": "builder",
+    "area": "platform",
+    "built_from": {
+      "kind": "profile",
+      "ref": "builder"
+    },
+    "runs_in": {
+      "box": "daytona",
+      "size": "small"
+    },
+    "model": "claude-code/sonnet",
+    "limits": {
+      "cost_per_day": 2.0,
+      "turns_per_wake": 100,
+      "time_per_wake_s": 900,
+      "fold_at_tokens": 60000,
+      "escalates_to": "chair"
+    },
+    "instructions": {
+      "from_role": "Make code changes on a branch and open a pull request.",
+      "extra": ""
+    },
+    "wake": {
+      "rules": [
+        {
+          "id": "r1",
+          "on": true,
+          "source": {
+            "kind": "agent",
+            "agent": "platform/reviewer"
+          },
+          "deliver": {
+            "kind": "now"
+          },
+          "phrase": {
+            "when": "the reviewer finishes with changes asked",
+            "then": "make the changes on the branch"
+          },
+          "today": {
+            "fired": 1,
+            "acted": 1,
+            "skipped": 0,
+            "cost": 0.19
+          }
+        }
+      ],
+      "at_most_per_hour": 12,
+      "quiet": null,
+      "at_cap": "hold_tell_chair",
+      "run": "fresh"
+    },
+    "plugins": [
+      {
+        "name": "lion"
+      },
+      {
+        "name": "swe-kit"
+      },
+      {
+        "name": "deploy-preview"
+      }
+    ],
+    "shell_rules": "anything, in a box"
+  },
+  "editable": [
+    "name",
+    "model",
+    "limits",
+    "instructions.extra",
+    "wake",
+    "plugins",
+    "shell_rules",
+    "runs_in"
+  ],
+  "files": {
+    "instance": "~/.lion/agents/platform/builder.toml",
+    "profile": "~/.lion/profiles/builder.md"
+  }
+}

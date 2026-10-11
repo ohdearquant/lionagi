@@ -1,0 +1,25 @@
+{
+  "name": "community-plugins",
+  "address": "github.com/example/community-plugins",
+  "updated_at": "2026-10-03T18:00:00Z",
+  "plugins": [
+    {
+      "name": "browser",
+      "holds": "MCP server · 2 tools",
+      "installed": true,
+      "version": "0.4.0"
+    },
+    {
+      "name": "code-review",
+      "holds": "3 skills · 2 agents",
+      "installed": false,
+      "version": "1.0.0"
+    },
+    {
+      "name": "calendar",
+      "holds": "MCP server · 6 tools",
+      "installed": false,
+      "version": "0.8.0"
+    }
+  ]
+}

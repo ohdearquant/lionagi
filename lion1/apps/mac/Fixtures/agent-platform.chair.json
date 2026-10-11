@@ -1,0 +1,90 @@
+{
+  "row": {
+    "id": "platform/chair",
+    "name": "chair",
+    "area": "platform",
+    "kind": "chair",
+    "state": "idle",
+    "now": "last woke 10:40, routed two reviews",
+    "woken_by": [
+      "an agent in platform escalates"
+    ],
+    "model": "claude-code/opus",
+    "runs_in": "local",
+    "today": {
+      "cost": 0.21,
+      "wakes": 2,
+      "acted": 2
+    }
+  },
+  "definition": {
+    "name": "chair",
+    "area": "platform",
+    "built_from": {
+      "kind": "profile",
+      "ref": "chair"
+    },
+    "runs_in": "local",
+    "model": "claude-code/opus",
+    "limits": {
+      "cost_per_day": 2.0,
+      "turns_per_wake": 100,
+      "time_per_wake_s": 900,
+      "fold_at_tokens": 60000,
+      "escalates_to": null
+    },
+    "instructions": {
+      "from_role": "Keep the area moving: route escalations, decide what you can, ask when you cannot.",
+      "extra": ""
+    },
+    "wake": {
+      "rules": [
+        {
+          "id": "r1",
+          "on": true,
+          "source": {
+            "kind": "agent",
+            "agent": "any agent in platform"
+          },
+          "deliver": {
+            "kind": "now"
+          },
+          "phrase": {
+            "when": "an agent in platform escalates",
+            "then": "decide, or ask you"
+          },
+          "today": {
+            "fired": 2,
+            "acted": 2,
+            "skipped": 0,
+            "cost": 0.21
+          }
+        }
+      ],
+      "at_most_per_hour": 12,
+      "quiet": null,
+      "at_cap": "hold_tell_chair",
+      "run": "fresh"
+    },
+    "plugins": [
+      {
+        "name": "lion"
+      }
+    ],
+    "shell_rules": "read only"
+  },
+  "editable": [
+    "name",
+    "model",
+    "limits",
+    "instructions.extra",
+    "wake",
+    "plugins",
+    "shell_rules",
+    "runs_in"
+  ],
+  "files": {
+    "instance": "~/.lion/agents/platform/chair.toml",
+    "profile": "~/.lion/profiles/chair.md"
+  }
+}

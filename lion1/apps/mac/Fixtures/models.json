@@ -1,0 +1,169 @@
+{
+  "providers": [
+    {
+      "name": "claude-code",
+      "kind": "claude_code",
+      "state": "ok",
+      "detail": "signed in · version 2.1",
+      "signin": {
+        "state": "signed in",
+        "detail": "on a plan, through the Claude Code sign-in on this Mac"
+      },
+      "limits": {
+        "at_limit": "wait",
+        "at_once": 4
+      },
+      "command": "claude",
+      "checked_at": "2026-10-04T11:20:00Z"
+    },
+    {
+      "name": "codex",
+      "kind": "codex",
+      "state": "ok",
+      "detail": "signed in · version 0.40",
+      "signin": {
+        "state": "signed in",
+        "detail": "on a plan, through the Codex sign-in on this Mac"
+      },
+      "limits": {
+        "at_limit": "wait",
+        "at_once": 2
+      },
+      "command": "codex",
+      "checked_at": "2026-10-04T11:20:00Z"
+    },
+    {
+      "name": "openrouter",
+      "kind": "openrouter",
+      "state": "ok",
+      "detail": "key saved · 2 models",
+      "address": "https://openrouter.ai/api/v1",
+      "key": {
+        "set": true
+      },
+      "limits": {
+        "at_limit": "stop",
+        "per_minute": 60,
+        "daily": 10.0
+      },
+      "checked_at": "2026-10-04T11:18:00Z"
+    }
+  ],
+  "models": [
+    {
+      "id": "sonnet",
+      "shown_as": "Claude Sonnet",
+      "through": "claude-code",
+      "model_id": "sonnet",
+      "state": "ok",
+      "on_plan": true,
+      "price": null,
+      "context": 200000,
+      "max_output": 64000,
+      "reasoning": "medium",
+      "on_failure": "retry",
+      "default_for_new": true,
+      "images": true,
+      "limits": {
+        "at_limit": "wait"
+      },
+      "given_to": [
+        "platform/front-desk",
+        "platform/builder",
+        "support/chair",
+        "support/front-desk",
+        "ops/chair",
+        "ops/builder"
+      ]
+    },
+    {
+      "id": "opus",
+      "shown_as": "Claude Opus",
+      "through": "claude-code",
+      "model_id": "opus",
+      "state": "ok",
+      "on_plan": true,
+      "price": null,
+      "context": 200000,
+      "max_output": 32000,
+      "reasoning": "high",
+      "on_failure": "fallback:sonnet",
+      "default_for_new": false,
+      "images": true,
+      "limits": {
+        "at_limit": "wait",
+        "daily": 200
+      },
+      "given_to": [
+        "platform/chair",
+        "research/chair"
+      ]
+    },
+    {
+      "id": "gpt-5",
+      "shown_as": "GPT-5",
+      "through": "codex",
+      "model_id": "gpt-5",
+      "state": "ok",
+      "on_plan": true,
+      "price": null,
+      "context": 400000,
+      "reasoning": "high",
+      "on_failure": "retry",
+      "default_for_new": false,
+      "images": true,
+      "limits": {
+        "at_limit": "wait"
+      },
+      "given_to": [
+        "platform/reviewer"
+      ]
+    },
+    {
+      "id": "deepseek-chat",
+      "shown_as": "DeepSeek Chat",
+      "through": "openrouter",
+      "model_id": "deepseek/deepseek-chat",
+      "state": "ok",
+      "on_plan": false,
+      "price": {
+        "in": 0.27,
+        "out": 1.1
+      },
+      "context": 128000,
+      "on_failure": "retry",
+      "default_for_new": false,
+      "images": false,
+      "limits": {
+        "at_limit": "stop",
+        "daily": 3.0
+      },
+      "given_to": [
+        "research/front-desk"
+      ]
+    },
+    {
+      "id": "qwen-max",
+      "shown_as": "Qwen Max",
+      "through": "openrouter",
+      "model_id": "qwen/qwen-max",
+      "state": "warn",
+      "on_plan": false,
+      "price": {
+        "in": 1.6,
+        "out": 6.4
+      },
+      "context": 32000,
+      "on_failure": "stop",
+      "default_for_new": false,
+      "images": false,
+      "limits": {
+        "at_limit": "stop",
+        "daily": 1.0
+      },
+      "given_to": [
+        "support/builder"
+      ]
+    }
+  ]
+}

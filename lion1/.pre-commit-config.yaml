@@ -1,0 +1,54 @@
+# Install once per clone: `uvx pre-commit install` (or, on a machine with a global core.hooksPath,
+# a repo hook that runs `uvx pre-commit hook-impl`). Run by hand: `uvx pre-commit run --all-files`.
+#
+# The ADR register (docs/adr/PLAN.md) is enforced here: the formatter rewraps prose at 100 columns
+# and fails the commit when it changed a file, the linter checks every record against the register
+# (limits, sections, anchors, links, definitions, one owner per term), and the index must match the
+# records' frontmatter. The three scripts live inside the corpus, under docs/adr/_scripts, and are
+# stdlib only, so the hooks need no dependencies.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: adr-fmt
+        name: adr-fmt (rewrap ADR prose at 100 columns)
+        language: python
+        entry: python docs/adr/_scripts/adr_fmt.py
+        files: ^docs/adr/\d{3}-[a-z0-9-]+/ADR-\d{4}-.*\.md$
+        pass_filenames: true
+      - id: adr-lint
+        name: adr-lint (the record register)
+        language: python
+        entry: python docs/adr/_scripts/adr_lint.py
+        files: ^docs/adr/
+        pass_filenames: false
+      - id: adr-index
+        name: adr-index (INDEX.md matches the records)
+        language: python
+        entry: python docs/adr/_scripts/gen_adr_index.py --check
+        files: ^docs/adr/
+        pass_filenames: false

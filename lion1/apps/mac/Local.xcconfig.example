@@ -1,0 +1,7 @@
+// Copied to Local.xcconfig by build.sh when it is missing. Local.xcconfig is gitignored and never
+// staged: a real bundle prefix lives there, on this machine only. The app is signed ad hoc.
+LION_BUNDLE_PREFIX = com.example.lion
+
+// The directory holding this machine's build locks (with-build-lock.sh, with-machine-lock.sh), or
+// none. build.sh refuses to build until it is set here or in the environment.
+// LION_LOCK_DIR = /path/to/the/lock/scripts

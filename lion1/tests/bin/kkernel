@@ -1,0 +1,4 @@
+#!/bin/sh
+# the binary `patch_khive` (tests/lionfake.py) resolves: every op is answered in memory, so this never runs
+echo "kkernel: a patched client answers in memory; this binary runs nothing" >&2
+exit 97

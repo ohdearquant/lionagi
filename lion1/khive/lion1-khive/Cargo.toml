@@ -1,0 +1,16 @@
+[package]
+name = "lion1-khive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The store's CLI with the lion pack linked in."
+publish = false
+
+[[bin]]
+name = "lion1-khive"
+path = "src/main.rs"
+
+[dependencies]
+kkernel = { workspace = true }
+khive-pack-lion = { path = "../pack-lion" }
+anyhow = { workspace = true }

@@ -1,0 +1,212 @@
+"""A shell for the model: `bash` and `python` run inside a Linux VM (Apple's `container`), the
+console's directory mounted at its own path, uv's environment and cache on a named volume under
+/opt so the host's `.venv` is never touched. One VM per conversation, started when the chat opens
+and removed when it ends; a command is one `container exec`, ~60 ms after boot. Every command runs
+under the guest's `timeout -s KILL`, so a hung one ends there, not on the host."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from lion1 import Actor, Context
+
+from .box import Box, BoxBase
+
+__all__ = ("IMAGE", "OFFLINE_NETWORK", "SANDBOX_DIR", "Bash", "Python", "Sandbox", "shell", "host_zone")
+
+IMAGE = "lion-sandbox"
+OFFLINE_NETWORK = "lion-offline"  # `container network create --internal`: host-only, no DNS, no egress
+SANDBOX_DIR = Path(__file__).resolve().parent / "sandbox"  # the Dockerfile the image is built from
+
+
+class Bash(BaseModel):
+    """Run a shell line in the sandbox, the machine the sandbox guidance describes.
+    Returns rc, stdout, stderr, elapsed, whole."""
+
+    command: str = Field(
+        description="one shell line, run by `bash -o pipefail -c` from the console's directory: a "
+        "pipeline's rc is its first failing command's, so `pytest | tail` still fails when pytest does"
+    )
+    timeout: float = Field(default=120, description="seconds; the command is ended in the sandbox at this")
+
+
+class Python(BaseModel):
+    """Run Python source in the sandbox, with uv's environment under /opt/venv when the box has one.
+    Returns rc, stdout, stderr, elapsed, whole."""
+
+    code: str = Field(description="the source, run as a script from the console's directory")
+    timeout: float = Field(default=120, description="seconds; ended in the sandbox at this")
+
+
+@dataclass
+class Sandbox(BoxBase):
+    directory: Path
+    name: str  # the container's name; one per conversation
+    prelude: str = ""
+    image: str = IMAGE
+    offline: bool = False  # the host-only network: no DNS, no egress; else the default network
+    cpus: int = 2
+    memory: str = "4G"
+    volume: str = "lion-sandbox-opt"  # /opt across conversations: uv's environment and cache
+    cli: str = field(default_factory=lambda: shutil.which("container") or "container")
+    started: bool = False
+    launched: bool = False  # its container's `run` was sent: from then one may exist
+
+    @property
+    def workdir(self) -> str:  # the directory is mounted at its own path: the same string inside
+        return str(Path(self.directory).resolve())
+
+    async def _cli(
+        self, *argv: str, stdin: bytes | None = None, timeout: float | None = None
+    ) -> tuple[int, str, str]:
+        proc = await asyncio.create_subprocess_exec(
+            self.cli,
+            *argv,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(stdin), timeout)
+        except TimeoutError:
+            proc.terminate()
+            await proc.wait()
+            return -1, "", f"container {argv[0]} did not return in {timeout:g}s"
+        return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+
+    async def ensure_image(self) -> str | None:
+        """Build the image from `SANDBOX_DIR` when it is missing; returns the build's tail on failure."""
+        rc, out, _ = await self._cli("image", "list", "--format", "json")
+        if rc == 0 and self.image in out:
+            return None
+        rc, out, err = await self._cli("build", "-t", self.image, str(SANDBOX_DIR), timeout=600)
+        return None if rc == 0 else (err or out)[-800:]
+
+    async def host_only(self) -> None:
+        """The offline network, made when it is missing, and refused unless the CLI says it is
+        host-only: one of that name made without `--internal` would hand the VM its egress back."""
+        mode = None
+        for made in (False, True):
+            rc, out, _ = await self._cli("network", "inspect", OFFLINE_NETWORK)
+            try:  # an inspect that failed found nothing, whatever it printed
+                found = [n for n in json.loads(out if rc == 0 else "[]") if isinstance(n, dict)]
+                found = [n for n in found if n.get("id") == OFFLINE_NETWORK]
+            except (ValueError, TypeError):  # no JSON, or none that lists networks
+                found = []
+            if found:  # two of the name are not one network whose mode can be read
+                config = found[0].get("configuration") if len(found) == 1 else None
+                mode = config.get("mode") if isinstance(config, dict) else None
+                break
+            if not made:
+                await self._cli("network", "create", "--internal", OFFLINE_NETWORK)
+        if mode != "hostOnly":
+            raise RuntimeError(
+                f"sandbox {self.name} did not start: the network {OFFLINE_NETWORK} is not host-only "
+                f"(its mode reads {mode!r}); `container network delete {OFFLINE_NETWORK}` and start again"
+            )
+
+    async def start(self) -> None:
+        directory = str(Path(self.directory).resolve())
+        if self.offline:
+            await self.host_only()
+        _, out, _ = await self._cli("volume", "list", "--format", "json")
+        if self.volume not in out:
+            await self._cli("volume", "create", self.volume)
+        argv = ["run", "-d", "--name", self.name, "-v", f"{directory}:{directory}", "-w", directory]
+        argv += ["-v", f"{self.volume}:/opt", "--cpus", str(self.cpus), "--memory", self.memory]
+        if (zone := host_zone()) is not None:
+            argv += ["-e", f"TZ={zone}"]  # the sandbox's clock reads like the notice's
+        if self.offline:
+            argv += ["--network", OFFLINE_NETWORK]
+
+        async def launch() -> tuple[int, str, str]:
+            self.launched = True  # in the step that sends it: a task cut before that step sent nothing
+            return await self._cli(*argv, self.image, "sleep", "infinity", timeout=120)
+
+        run = asyncio.ensure_future(launch())
+        try:
+            rc, out, err = await asyncio.shield(run)
+        except (
+            asyncio.CancelledError
+        ):  # the `run` reaches its answer first, so a stop then finds what it made
+            await asyncio.wait([run])
+            raise
+        if rc != 0:
+            raise RuntimeError(f"sandbox {self.name} did not start: {(err or out).strip()[-400:]}")
+        self.started = True
+
+    async def exec(
+        self,
+        argv: list[str],
+        *,
+        stdin: bytes | None = None,
+        timeout: float = 120,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """One command in the VM after `prelude`, ended there at `timeout` (rc 137 and `timed_out`);
+        the whole of stdout and stderr."""
+        t0 = time.monotonic()
+        guard = ["timeout", "-s", "KILL", f"{timeout:g}"]
+        vars_ = [f"--env={k}={v}" for k, v in (env or {}).items()]
+        rc, out, err = await self._cli(
+            "exec", "-i", *vars_, self.name, *guard, *self.wrap(argv), stdin=stdin, timeout=timeout + 15
+        )
+        elapsed = round(time.monotonic() - t0, 2)
+        timed_out = rc == -1 or (rc == 137 and elapsed >= timeout)
+        if timed_out and rc == 137:
+            err = (err + f"\nended at the {timeout:g}s timeout").strip()
+        return {"rc": rc, "stdout": out, "stderr": err, "elapsed": elapsed, "timed_out": timed_out}
+
+    async def stop(self) -> None:
+        """Stop and delete the container once its `run` was sent, even when that `run` never answered.
+        Such a `run` may have made nothing, so a delete that fails counts only while the container is
+        still listed after it, or the list cannot be read: then this raises, and a later stop tries
+        again."""
+        if self.started or self.launched:  # a `run` whose answer never came may have made it
+            await self._cli("stop", self.name, timeout=60)
+            rc, out, err = await self._cli("delete", self.name, timeout=60)
+            if rc != 0:
+                listed, names, _ = await self._cli("list", "--all", "--format", "json", timeout=60)
+                if listed != 0 or f'"{self.name}"' in names:  # the name as a whole value
+                    raise RuntimeError(
+                        f"sandbox {self.name}: its delete exited {rc}: {(err or out).strip()[-200:]}"
+                    )
+            self.started = self.launched = False
+
+
+def shell(actor: Actor, sandbox: Box) -> set[str]:
+    """Register `bash` and `python` on the actor, both running in `sandbox` (any box)."""
+
+    @actor.handler(Bash)
+    async def bash(req: Bash, ctx: Context) -> dict[str, Any]:
+        return await sandbox.exec(["bash", "-o", "pipefail", "-c", req.command], timeout=req.timeout)
+
+    @actor.handler(Python)
+    async def python(req: Python, ctx: Context) -> dict[str, Any]:
+        run = "P=/opt/venv/bin/python; [ -x $P ] || P=python; exec $P -"
+        return await sandbox.exec(["sh", "-c", run], stdin=req.code.encode(), timeout=req.timeout)
+
+    return {"bash", "python"}
+
+
+def host_zone() -> str | None:
+    """The host's IANA time zone from the `/etc/localtime` link (`.../zoneinfo/America/New_York`), or
+    `TZ` when set; None when neither says."""
+    zone = os.environ.get("TZ")
+    if zone:
+        return zone
+    try:
+        target = os.readlink("/etc/localtime")
+    except OSError:
+        return None
+    _, sep, rest = target.partition("zoneinfo/")
+    return rest or None if sep else None

@@ -1,0 +1,28 @@
+{
+  "name": "research-brief",
+  "about": "Write a short brief from a set of sources.",
+  "source": "yours",
+  "kind": "plugin",
+  "on": true,
+  "folder": "~/.lion/plugins/research-brief/",
+  "agents": [
+    {
+      "name": "researcher",
+      "about": "Reads what arrives and writes a short brief of what matters.",
+      "in_use": 1
+    }
+  ],
+  "skills": [
+    {
+      "name": "brief-from-sources",
+      "loaded_when": "the task is a brief or a reading summary",
+      "on": true,
+      "text": "# Brief from sources\n\nOne paragraph per source: the claim, the evidence, and whether it changes anything we do."
+    }
+  ],
+  "tools": [],
+  "not_used": [],
+  "given_to": [
+    "research/front-desk"
+  ]
+}
