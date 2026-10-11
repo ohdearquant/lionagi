@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1183,6 +1186,895 @@ async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_pa
     assert segment_writes[-1]["segments"], "segment entry for the completed node was not recorded"
 
 
+async def test_synthesis_drains_the_reused_observers_second_write_wave(tmp_path):
+    """The execution drain is reusable after synthesis fires the same observers."""
+    import asyncio as _real_asyncio
+
+    events: list[str] = []
+
+    class _SlowFakeDB(_FakeDB):
+        async def update_branch(self, branch_id, **kw):
+            await _real_asyncio.sleep(0.05)
+            events.append(f"branch:{kw.get('status')}")
+
+        async def merge_session_node_metadata(self, session_id, patch):
+            await _real_asyncio.sleep(0.05)
+            await super().merge_session_node_metadata(session_id, patch)
+            if patch.get("segments"):
+                events.append(f"segments:{patch['segments'][-1]['op_id']}")
+
+    fake_db = _SlowFakeDB()
+    env = _make_env(
+        tmp_path,
+        live_persist={"db": fake_db, "session_id": "sess-1", "identity_markers": {}},
+    )
+    worker = _FakeBranch("researcher")
+    env.session.include_branches(worker)
+    env.session.include_branches(env.orc_branch)
+    worker_node = env.builder.add_operation("operate", branch=worker, depends_on=[])
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker_node],
+        known_nodes={worker_node},
+        deps_by_node={worker_node: []},
+        reactive=False,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted, NodeStarted
+
+    pass_number = 0
+
+    async def _run_dag_and_emit_node_signals(graph, **_kwargs):
+        nonlocal pass_number
+        pass_number += 1
+        handlers = dict(env.session._observers)
+        if pass_number == 1:
+            op_id, name, response = worker_node, "researcher", "worker output"
+        else:
+            op_id = next(node_id for node_id in graph.internal_nodes if node_id != worker_node)
+            name, response = "orchestrator", "synthesis output"
+        handlers[NodeStarted](NodeStarted(op_id=op_id, name=name), None)
+        handlers[NodeCompleted](NodeCompleted(op_id=op_id, name=name), None)
+        return {"operation_results": {op_id: response}, "spawned_operations": 0}
+
+    fake_engine_run = MagicMock(run_dag=_run_dag_and_emit_node_signals)
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+        )
+
+    events.clear()
+    result = await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    assert result is not None and result["response"] == "synthesis output"
+    assert "branch:completed" in events
+    assert "segments:node-1" in events
+
+
+class _SlowStatusDB(_FakeDB):
+    """A store whose writes take a set time: ``status_delay`` for branch status,
+    ``metadata_delay`` for session metadata; 0 is immediate and ``None`` never returns.
+
+    Each branch status that lands is recorded in ``landed``, and ``write_started`` is set when
+    a delayed write begins. With ``ignores_cancel``, a write that never returns also absorbs
+    every cancel and goes on waiting, until ``release`` is set. ``cancels`` counts the cancels
+    the writes that never return receive.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.status_delay: float | None = 0.0
+        self.metadata_delay: float | None = 0.0
+        self.landed: list[str] = []
+        self.write_started = asyncio.Event()
+        self.ignores_cancel = False
+        self.release = asyncio.Event()
+        self.cancels = 0
+
+    async def _wait(self, delay):
+        if delay == 0.0:
+            return
+        self.write_started.set()
+        if delay is None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancels += 1
+                if not self.ignores_cancel:
+                    raise
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        self.cancels += 1
+                raise
+        await asyncio.sleep(delay)
+
+    async def update_branch(self, branch_id, **kw):
+        await self._wait(self.status_delay)
+        self.landed.append(kw["status"])
+
+    async def merge_session_node_metadata(self, session_id, patch):
+        await self._wait(self.metadata_delay)
+        await super().merge_session_node_metadata(session_id, patch)
+
+
+class _FakeExchange:
+    """An exchange whose final collect raises *collect_raises* if given. With *hold*, its run
+    loop goes on after stop() until ``release`` is set; ``lingering`` is set once stop() has
+    been seen, and ``finished`` when the run loop ends, however it ends. With *hold_collect*,
+    the final collect sets ``collecting`` and waits for ``collect_release``."""
+
+    def __init__(self, *, hold=False, collect_raises=None, hold_collect=False):
+        self.hold = hold
+        self.collect_raises = collect_raises
+        self.hold_collect = hold_collect
+        self.stopped = asyncio.Event()
+        self.lingering = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.collecting = asyncio.Event()
+        self.collect_release = asyncio.Event()
+
+    async def run(self, _interval):
+        try:
+            await self.stopped.wait()
+            self.lingering.set()
+            if self.hold:
+                await self.release.wait()
+        finally:
+            self.finished.set()
+
+    def stop(self):
+        self.stopped.set()
+
+    async def collect_all(self):
+        if self.hold_collect:
+            self.collecting.set()
+            await self.collect_release.wait()
+        if self.collect_raises is not None:
+            raise self.collect_raises
+
+
+class _SlowPollUnwindDB(_SlowStatusDB):
+    """A store whose read of pending session controls never returns, and takes *unwind*
+    seconds to unwind once cancelled. ``polling`` is set when the read begins and
+    ``unwinding`` when its cancel arrives."""
+
+    def __init__(self, unwind):
+        super().__init__()
+        self.unwind = unwind
+        self.polling = asyncio.Event()
+        self.unwinding = asyncio.Event()
+
+    async def list_pending_session_controls(self, session_id):
+        self.polling.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.unwinding.set()
+            await asyncio.sleep(self.unwind)
+            raise
+
+
+def _watch_drain_bounds(monkeypatch):
+    """Record each deadline the flow module sets with ``move_on_after``, in order, and return
+    them with an event set at the first. The flow's own timeout sets one too, but these tests
+    run the DAG without it, so the first is the drain's, set as it starts on its first writes."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+
+    real_move_on_after = flow_mod.move_on_after
+    bounds: list[float] = []
+    started = asyncio.Event()
+
+    def _watching_move_on_after(delay):
+        bounds.append(delay)
+        started.set()
+        return real_move_on_after(delay)
+
+    monkeypatch.setattr(flow_mod, "move_on_after", _watching_move_on_after)
+    return bounds, started
+
+
+async def _executed_with_live_observers(
+    tmp_path, db, *, synthesis_raises=None, escalated=False, exchange=None, in_first_pass=None
+):
+    """Run the execution phase on *db* and return what `_synthesize` takes after it.
+
+    The engine's second pass, the synthesis, emits its node's started and completed signals
+    through the observers the execution phase installed, then raises *synthesis_raises* if
+    given. With *escalated*, the first pass also completes an escalated node, which queues an
+    escalation link. *exchange*, if given, is the run's message exchange, and *in_first_pass*,
+    if given, is awaited with the engine's keyword arguments at the end of the first pass."""
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+    from lionagi.session.signal import NodeCompleted, NodeStarted
+
+    env = _make_env(
+        tmp_path,
+        live_persist={"db": db, "session_id": "sess-1", "identity_markers": {}},
+    )
+    env.run.run_id = "run-1"
+    if exchange is not None:
+        env.exchange = exchange
+    worker = _FakeBranch("researcher")
+    env.session.include_branches(worker)
+    env.session.include_branches(env.orc_branch)
+    worker_node = env.builder.add_operation("operate", branch=worker, depends_on=[])
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker_node],
+        known_nodes={worker_node},
+        deps_by_node={worker_node: []},
+        reactive=False,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    passes: list = []
+
+    async def run_dag(graph, **_kwargs):
+        passes.append(graph)
+        handlers = dict(env.session._observers)
+        if len(passes) == 1:
+            op_id, name, response = worker_node, "researcher", "worker output"
+        else:
+            op_id = next(node_id for node_id in graph.internal_nodes if node_id != worker_node)
+            name, response = "orchestrator", "synthesis output"
+        handlers[NodeStarted](NodeStarted(op_id=op_id, name=name), None)
+        handlers[NodeCompleted](NodeCompleted(op_id=op_id, name=name), None)
+        if len(passes) == 1 and escalated:
+            node = create_operation("operate", parameters={})
+            node.metadata["escalated_from"] = "parent-op-1"
+            node._branch = SimpleNamespace(
+                chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+            )
+            _kwargs["on_op_complete"](node)
+        if len(passes) == 1 and in_first_pass is not None:
+            await in_first_pass(_kwargs)
+        if len(passes) > 1 and synthesis_raises is not None:
+            raise synthesis_raises
+        return {"operation_results": {op_id: response}, "spawned_operations": 0}
+
+    with patch.object(PlanningEngine, "new_run", return_value=MagicMock(run_dag=run_dag)):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+    return env, plan_result, dag_state, exec_result
+
+
+@pytest.mark.asyncio
+async def test_a_branch_status_write_that_never_returns_cannot_hold_the_synthesis_drain(
+    tmp_path, monkeypatch, caplog
+):
+    """A status write gets as long as a store write may wait for the writer, then is cancelled.
+
+    Waiting on it without a bound would keep `_synthesize` from returning and, because the
+    drain is shielded, keep the flow's own timeout from firing."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 50)
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(tmp_path, db)
+    db.status_delay = None
+
+    task = asyncio.ensure_future(
+        _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+    )
+    done, _ = await asyncio.wait({task}, timeout=3)
+
+    assert task in done, "the synthesis drain is still waiting on a write that never returns"
+    assert task.result()["response"] == "synthesis output"
+    assert "cancelled 2 branch-status task(s) after timeout" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_synthesis_drain_waits_for_its_writes(tmp_path):
+    """A cancel() that lands while the drain runs is raised once the writes have landed, so
+    teardown never closes the store under a write still in flight."""
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(tmp_path, db)
+    db.landed.clear()
+    db.status_delay = 0.2
+
+    task = asyncio.ensure_future(
+        _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+    )
+    await db.write_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert db.landed == ["running", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_synthesis_failure_outranks_a_cancel_that_lands_during_its_drain(tmp_path):
+    """The exception the synthesis was already unwinding with is the one the caller gets, with
+    the later cancel as its cause, and the writes still land first."""
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(
+        tmp_path, db, synthesis_raises=RuntimeError("synthesis failed")
+    )
+    db.landed.clear()
+    db.status_delay = 0.2
+
+    task = asyncio.ensure_future(
+        _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+    )
+    await db.write_started.wait()
+    task.cancel()
+
+    with pytest.raises(RuntimeError, match="synthesis failed") as raised:
+        await task
+    assert isinstance(raised.value.__cause__, asyncio.CancelledError)
+    assert db.landed == ["running", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_during_the_synthesis_drain_lands_the_writes_before_it_fires(tmp_path):
+    """A cancel scope that expires during the drain takes effect after the writes land."""
+    from lionagi.ln.concurrency import move_on_after
+
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(tmp_path, db)
+    db.landed.clear()
+    db.status_delay = 0.2
+
+    with move_on_after(0.05) as scope:
+        await _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+
+    assert scope.cancelled_caught
+    assert db.landed == ["running", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_the_synthesis_drain_does_not_report_writes_the_execution_drain_cancelled(
+    tmp_path, monkeypatch, caplog
+):
+    """Each drain takes and clears its own snapshot, so a write the first drain gave up on is
+    reported once, by that drain."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
+    db = _SlowStatusDB()
+    db.metadata_delay = None
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(tmp_path, db)
+    assert "segment-metadata task(s) after timeout" in caplog.text
+    caplog.clear()
+    db.metadata_delay = 0.0
+
+    await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    assert "segment-metadata" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_escalation_links_are_drained_gives_them_the_grace_period(
+    tmp_path, monkeypatch
+):
+    """A cancel that lands while the drain still waits on status writes puts the escalation
+    links, drained after them, under the grace period instead of their retry budget."""
+    import time
+
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 500)
+    db = _SlowStatusDB()
+    db.status_delay = 0.5
+
+    async def _link_that_never_returns(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    with patch("lionagi.state.claude_mirror.link_escalation_session", _link_that_never_returns):
+        task = asyncio.ensure_future(_executed_with_live_observers(tmp_path, db, escalated=True))
+        await db.write_started.wait()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        start = time.monotonic()
+        done, _ = await asyncio.wait({task}, timeout=3)
+
+    # The links' retry budget here is 4 x 1.0 s + 5 x 0.5 s + 0.05 s, about 6.5 s.
+    assert task in done, "the escalation links were given their retry budget under a cancel"
+    assert task.cancelled()
+    assert time.monotonic() - start < 2
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_escalation_links_are_drained_cuts_their_wait_to_the_grace(
+    tmp_path, monkeypatch
+):
+    """Links already waiting out their retry budget when a cancel lands get the grace period
+    from then on, not the rest of the budget."""
+    import time
+
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 500)
+    db = _SlowStatusDB()
+    link_started = asyncio.Event()
+
+    async def _link_that_never_returns(*_args, **_kwargs):
+        link_started.set()
+        await asyncio.Event().wait()
+
+    with patch("lionagi.state.claude_mirror.link_escalation_session", _link_that_never_returns):
+        task = asyncio.ensure_future(_executed_with_live_observers(tmp_path, db, escalated=True))
+        await link_started.wait()
+        # every other write is immediate, so by now the drain is waiting on the links
+        await asyncio.sleep(0.2)
+        task.cancel()
+        start = time.monotonic()
+        done, _ = await asyncio.wait({task}, timeout=3)
+
+    # The links' retry budget here is 4 x 1.0 s + 5 x 0.5 s + 0.05 s, about 6.5 s.
+    assert task in done, "the running escalation links kept their retry budget under a cancel"
+    assert task.cancelled()
+    assert time.monotonic() - start < 2
+
+
+@pytest.mark.asyncio
+async def test_a_status_write_that_ignores_every_cancel_is_abandoned_after_the_grace_period(
+    tmp_path, monkeypatch, caplog
+):
+    """A write that absorbs each cancel the drain sends and goes on waiting is left behind, so
+    the synthesis still returns."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 50)
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(tmp_path, db)
+    db.status_delay = None
+    db.ignores_cancel = True
+
+    task = asyncio.ensure_future(
+        _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+    )
+    try:
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done, "the synthesis drain is waiting on a write that ignores its cancel"
+        assert task.result()["response"] == "synthesis output"
+        assert "abandoned 2 branch-status task(s)" in caplog.text
+    finally:
+        db.release.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_status_write_is_cancelled_once_and_then_given_the_grace_period(
+    tmp_path, monkeypatch, caplog
+):
+    """Run data still being written at its budget gets one cancel, not another while it unwinds:
+    a store write needs only one, unwinding once its statement returns, and a further one would
+    only land in its cleanup. The grace period here is three re-cancel intervals, so a repeated
+    cancel would show."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 3 * flow_mod._DRAIN_RECANCEL_SECONDS)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 50)
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(tmp_path, db)
+    db.status_delay = None
+    db.ignores_cancel = True
+
+    task = asyncio.ensure_future(
+        _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+    )
+    try:
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done, "the synthesis drain is waiting on a write that ignores its cancel"
+        assert db.cancels == 2, "each of the two status writes is cancelled exactly once"
+        assert "abandoned 2 branch-status task(s)" in caplog.text
+    finally:
+        db.release.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_metadata_write_that_ignores_every_cancel_is_abandoned_after_the_grace_period(
+    tmp_path, monkeypatch, caplog
+):
+    """Segment metadata gets the grace period as its whole budget, then one cancel and the grace
+    period again, and a write that absorbs the cancel is left behind. The grace period here is
+    three re-cancel intervals, so a repeated cancel would show."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 3 * flow_mod._DRAIN_RECANCEL_SECONDS)
+    db = _SlowStatusDB()
+    db.metadata_delay = None
+    db.ignores_cancel = True
+    try:
+        task = asyncio.ensure_future(_executed_with_live_observers(tmp_path, db))
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done, "the execution drain is waiting on a write that ignores its cancel"
+        task.result()
+        # the node's started and completed segments, each cancelled once
+        assert "abandoned 2 segment-metadata task(s)" in caplog.text
+        assert db.cancels == 2
+    finally:
+        db.release.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_link_that_ignores_every_cancel_is_abandoned_after_the_grace_period(
+    tmp_path, monkeypatch, caplog
+):
+    """A link past its retry budget is cancelled again every re-cancel interval of the grace
+    period, and one that absorbs every cancel is left behind once the grace period ends."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 3.5 * flow_mod._DRAIN_RECANCEL_SECONDS)
+    monkeypatch.setattr(flow_mod, "_ESCALATION_LINK_RETRY_INTERVAL", 0.01)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 10)
+    release = asyncio.Event()
+    cancels = 0
+
+    async def _link_that_ignores_every_cancel(*_args, **_kwargs):
+        nonlocal cancels
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancels += 1
+        return True
+
+    try:
+        with patch(
+            "lionagi.state.claude_mirror.link_escalation_session", _link_that_ignores_every_cancel
+        ):
+            task = asyncio.ensure_future(
+                _executed_with_live_observers(tmp_path, _SlowStatusDB(), escalated=True)
+            )
+            done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done, "the execution drain is waiting on a link that ignores its cancel"
+        task.result()
+        assert "abandoned 1 escalation-link task(s)" in caplog.text
+        # one cancel at the budget, then one at each re-cancel interval inside the grace period
+        assert cancels >= 2, "the link was cancelled only once"
+    finally:
+        release.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_status_writes_queued_behind_a_link_on_the_write_lock_still_land(
+    tmp_path, monkeypatch, caplog
+):
+    """Each store write still running when the drain starts may hold the store's write lock
+    ahead of a status write, so the status writes get the store's writer wait once for each.
+
+    Here an escalation link takes the lock first and holds it until the drain has started, so
+    the link and both status writes are running then: the status writes get three writer waits
+    and the grace period, and land behind the link."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+    import lionagi.state.engine as engine_mod
+
+    monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 1000)
+    bounds, drain_started = _watch_drain_bounds(monkeypatch)
+    db = _SlowStatusDB()
+    write_lock = asyncio.Lock()
+    held: list[str] = []
+
+    async def _update_branch(branch_id, **kw):
+        await asyncio.sleep(0.01)  # the link, created after this write, takes the lock first
+        async with write_lock:
+            held.append(kw["status"])
+        db.landed.append(kw["status"])
+
+    async def _link(*_args, **_kwargs):
+        async with write_lock:
+            held.append("link")
+            await asyncio.wait_for(drain_started.wait(), 5)
+        return True
+
+    db.update_branch = _update_branch
+    with patch("lionagi.state.claude_mirror.link_escalation_session", _link):
+        await _executed_with_live_observers(tmp_path, db, escalated=True)
+
+    assert held == ["link", "running", "completed"]
+    assert db.landed == ["running", "completed"]
+    assert bounds[0] == pytest.approx(3 * 1.0 + 0.05)
+    assert "branch-status" not in caplog.text
+
+
+async def _fail_the_run(_engine_kwargs):
+    raise RuntimeError("dag failed")
+
+
+@pytest.mark.asyncio
+async def test_a_dag_failure_outranks_a_cancel_while_the_exchange_winds_down(tmp_path):
+    """The run's own failure is what the caller gets, with the later cancel as its cause, when
+    the cancel lands while teardown waits for the exchange to stop."""
+    db = _SlowStatusDB()
+    exchange = _FakeExchange(hold=True)
+
+    task = asyncio.ensure_future(
+        _executed_with_live_observers(tmp_path, db, exchange=exchange, in_first_pass=_fail_the_run)
+    )
+    await exchange.lingering.wait()
+    # As in the cancel-only case: the heartbeat and the poller stop at once, so the teardown is
+    # waiting on the exchange alone by the time this timer fires.
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done
+        with pytest.raises(RuntimeError, match="dag failed") as raised:
+            task.result()
+        assert isinstance(raised.value.__cause__, asyncio.CancelledError)
+        assert db.landed == ["running", "completed"]
+    finally:
+        exchange.release.set()
+        await asyncio.wait_for(exchange.finished.wait(), 3)
+
+
+@pytest.mark.asyncio
+async def test_a_dag_failure_outranks_a_cancel_during_the_final_exchange_collect(tmp_path):
+    """The same holds when the cancel lands in the exchange's final collect."""
+    db = _SlowStatusDB()
+    exchange = _FakeExchange(hold_collect=True)
+
+    task = asyncio.ensure_future(
+        _executed_with_live_observers(tmp_path, db, exchange=exchange, in_first_pass=_fail_the_run)
+    )
+    await exchange.collecting.wait()
+    task.cancel()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done
+        with pytest.raises(RuntimeError, match="dag failed") as raised:
+            task.result()
+        assert isinstance(raised.value.__cause__, asyncio.CancelledError)
+        assert db.landed == ["running", "completed"]
+    finally:
+        exchange.collect_release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_final_exchange_collect_does_not_skip_the_drain(tmp_path):
+    """The run's writes are drained even when the exchange teardown before the drain raises,
+    and the caller still gets that error."""
+    db = _SlowStatusDB()
+    db.status_delay = 0.2
+    exchange = _FakeExchange(collect_raises=RuntimeError("collect failed"))
+
+    with pytest.raises(RuntimeError, match="collect failed"):
+        await _executed_with_live_observers(tmp_path, db, exchange=exchange)
+    assert db.landed == ["running", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_exchange_winds_down_is_not_swallowed(tmp_path):
+    """A cancel of the run that lands while teardown waits for the exchange to stop reaches the
+    caller, after the writes are drained, rather than letting the phase return normally."""
+    db = _SlowStatusDB()
+    exchange = _FakeExchange(hold=True)
+
+    task = asyncio.ensure_future(_executed_with_live_observers(tmp_path, db, exchange=exchange))
+    await exchange.lingering.wait()
+    # The heartbeat and the control poller stop at once, so by the time this timer fires the
+    # teardown is waiting on the exchange alone.
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done
+        assert task.cancelled()
+        assert db.landed == ["running", "completed"]
+    finally:
+        exchange.release.set()
+        await asyncio.wait_for(exchange.finished.wait(), 3)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_control_poller_winds_down_is_not_swallowed(tmp_path, monkeypatch):
+    """A cancel of the run that lands while teardown waits for the control poller to stop
+    reaches the caller, rather than being taken for the poller's own cancellation."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "_CONTROL_POLL_INTERVAL", 0.01)
+    db = _SlowPollUnwindDB(unwind=0.5)
+
+    async def _poller_reading(engine_kwargs):
+        engine_kwargs["executor_ref"]["executor"] = SimpleNamespace(results={})
+        await db.polling.wait()
+
+    task = asyncio.ensure_future(
+        _executed_with_live_observers(tmp_path, db, in_first_pass=_poller_reading)
+    )
+    await db.unwinding.wait()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=3)
+
+    assert task in done
+    assert task.cancelled()
+    assert db.landed == ["running", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_dag_failure_outranks_a_cancel_while_the_control_poller_winds_down(
+    tmp_path, monkeypatch
+):
+    """The run's own failure is what the caller gets, with the later cancel as its cause, when
+    the cancel lands while teardown waits for the heartbeat and the control poller to stop."""
+    import lionagi.cli.orchestrate.flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "_CONTROL_POLL_INTERVAL", 0.01)
+    db = _SlowPollUnwindDB(unwind=0.5)
+
+    async def _poller_reading_then_fail(engine_kwargs):
+        engine_kwargs["executor_ref"]["executor"] = SimpleNamespace(results={})
+        await db.polling.wait()
+        raise RuntimeError("dag failed")
+
+    task = asyncio.ensure_future(
+        _executed_with_live_observers(tmp_path, db, in_first_pass=_poller_reading_then_fail)
+    )
+    await db.unwinding.wait()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=3)
+
+    assert task in done
+    with pytest.raises(RuntimeError, match="dag failed") as raised:
+        task.result()
+    assert isinstance(raised.value.__cause__, asyncio.CancelledError)
+    assert db.landed == ["running", "completed"]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="Task.cancelling() is 3.11+")
+@pytest.mark.asyncio
+async def test_a_cancel_the_drain_holds_stays_pending_on_the_task(tmp_path):
+    """When the synthesis's own failure is raised in place of a cancel that landed during its
+    drain, the cancel request is left counted on the task, so asyncio still sees it."""
+    db = _SlowStatusDB()
+    env, plan_result, dag_state, exec_result = await _executed_with_live_observers(
+        tmp_path, db, synthesis_raises=RuntimeError("synthesis failed")
+    )
+    db.status_delay = 0.2
+    cancelling: list[int] = []
+
+    async def _synthesis_then_count():
+        try:
+            await _synthesize(
+                env,
+                "task",
+                plan_result,
+                dag_state,
+                exec_result,
+                synthesis_model=None,
+                model_spec="codex/gpt-5.5",
+            )
+        except RuntimeError:
+            cancelling.append(asyncio.current_task().cancelling())
+
+    task = asyncio.ensure_future(_synthesis_then_count())
+    await db.write_started.wait()
+    task.cancel()
+    await asyncio.wait({task}, timeout=3)
+
+    assert cancelling == [1]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="Task.cancelling() is 3.11+")
+@pytest.mark.asyncio
+async def test_a_cancel_the_execution_drain_holds_stays_pending_on_the_task(tmp_path, monkeypatch):
+    """The same holds for the execution phase's drain: the run's own failure is raised in place
+    of the cancel, the writes land first, and the cancel request stays counted on the task."""
+    _, drain_started = _watch_drain_bounds(monkeypatch)
+    db = _SlowStatusDB()
+    db.status_delay = 0.2
+    cancelling: list[int] = []
+
+    async def _run_then_count():
+        try:
+            await _executed_with_live_observers(tmp_path, db, in_first_pass=_fail_the_run)
+        except RuntimeError as exc:
+            assert isinstance(exc.__cause__, asyncio.CancelledError)
+            cancelling.append(asyncio.current_task().cancelling())
+
+    task = asyncio.ensure_future(_run_then_count())
+    await asyncio.wait_for(drain_started.wait(), 5)
+    task.cancel()
+    await asyncio.wait({task}, timeout=3)
+
+    assert cancelling == [1]
+    assert db.landed == ["running", "completed"]
+
+
 # Reactive spawn artifact enforcement through REAL teardown
 # Replaces the old interim regression test that pinned spawned artifacts as
 # permanently non-required (a spawned node used to have no way to learn its
@@ -1492,6 +2384,7 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         role_base={},
         worker_models=["codex/gpt-5.5"],
     )
+    drain_observer_writes = AsyncMock()
     exec_result = _ExecResult(
         agent_results=[
             {
@@ -1506,6 +2399,7 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         engine_run=SimpleNamespace(
             run_dag=AsyncMock(return_value={"operation_results": {"node-0": "synthesized content"}})
         ),
+        drain_observer_writes=drain_observer_writes,
     )
 
     result = await _synthesize(
@@ -1522,6 +2416,60 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
     assert "model" in result
     assert "response" in result
     assert "time_ms" in result
+    drain_observer_writes.assert_awaited_once_with(cancellation_in_flight=False, in_flight_exc=None)
+
+
+@pytest.mark.asyncio
+async def test_synthesize_drains_observer_writes_when_engine_fails(tmp_path):
+    """A failed synthesis still has terminal observer writes to persist."""
+    env = _make_env(tmp_path)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    drain_observer_writes = AsyncMock()
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "response": "findings",
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+        engine_run=SimpleNamespace(run_dag=AsyncMock(side_effect=RuntimeError("synth failed"))),
+        drain_observer_writes=drain_observer_writes,
+    )
+
+    with pytest.raises(RuntimeError, match="synth failed"):
+        await _synthesize(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=None,
+            model_spec="codex/gpt-5.5",
+        )
+
+    drain_observer_writes.assert_awaited_once()
+    kwargs = drain_observer_writes.await_args.kwargs
+    assert kwargs["cancellation_in_flight"] is False
+    assert isinstance(kwargs["in_flight_exc"], RuntimeError)
 
 
 @pytest.mark.asyncio
