@@ -90,8 +90,12 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
             continue
         # A quoted key such as "mcp_servers.x.command" is a scalar to TOML, but
         # as a `-c` override codex splits it on the dots and declares a server,
-        # so any key with an mcp_servers segment is dropped, however it is spaced.
-        if "mcp_servers" in (segment.strip() for segment in key.split(".")):
+        # so any key with an mcp_servers segment is dropped, however it is
+        # spaced or quoted. A key carrying a backslash could spell that segment
+        # as an escape, and no setting codex takes needs one, so it goes too.
+        if "\\" in key or "mcp_servers" in (
+            segment.strip().strip("\"'").strip() for segment in key.split(".")
+        ):
             skipped.append(key)
             continue
         if isinstance(value, (str, int, float, bool)):

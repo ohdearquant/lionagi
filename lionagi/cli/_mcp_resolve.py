@@ -21,6 +21,7 @@ __all__ = (
     "McpConfigError",
     "McpResolution",
     "discover_mcp_config",
+    "explicit_mcp_config_path",
     "resolve_spawn_mcp_servers",
 )
 
@@ -128,6 +129,14 @@ def _read_servers(path: Path) -> dict[str, Any]:
     return servers
 
 
+def explicit_mcp_config_path(explicit: str | Path, *, launch_dir: str | Path) -> Path:
+    """The file a named config is read from: a relative name is taken from *launch_dir*."""
+    path = Path(explicit).expanduser()
+    if path.is_absolute():
+        return path
+    return (Path(launch_dir).expanduser().resolve() / path).resolve()
+
+
 def resolve_spawn_mcp_servers(
     explicit: str | Path | None = None,
     *,
@@ -147,9 +156,7 @@ def resolve_spawn_mcp_servers(
         return McpResolution(None, None, None, searched_from)
 
     if explicit is not None:
-        path = Path(explicit).expanduser()
-        if not path.is_absolute():
-            path = (searched_from / path).resolve()
+        path = explicit_mcp_config_path(explicit, launch_dir=searched_from)
         if not path.is_file():
             raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
         return McpResolution(_read_servers(path), None, path, searched_from, explicit=True)

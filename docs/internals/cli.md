@@ -88,16 +88,23 @@ reason.
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
 none of its own servers either. A search that found nothing, or found a config declaring no
-servers, is reported as such and leaves a new leg to what its CLI discovers, as the warning says;
-a resumed leg keeps the servers its earlier run was handed.
+servers, leaves a new leg to what its CLI discovers; a resumed leg keeps the servers its earlier
+run was handed. The one exception is a codex leg whose servers' `env` or `http_headers` went
+through a generated profile: that file is removed when the run that wrote it exits, so the resume
+is refused, naming the profile, rather than handing codex a profile whose file is gone.
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
 `mcp_launch`: the named config as an absolute path, the `--no-mcp-config` flag, and the launch
-directory. The resume resolves from the record, so a config near the resuming directory is
-never read. A flag given on the resume is used for that leg instead of the record. A branch
-created before the choice was recorded resolves nothing new, and its request keeps the servers
-its earlier run was handed.
+directory. The resume resolves from the record, searching from the launch directory, so the
+directory the resume runs in does not decide what is found. A flag given on the resume is used
+for that leg instead of the record. Either way, a set resolved on the resume replaces the servers
+the earlier run was handed, on codex (whose servers are merged overrides) as on Claude, and the
+Claude strict flag goes with them: a non-empty set is handed to a resumed leg as it is to a new
+one, without `--strict-mcp-config`. A recorded config is read from the launch directory when its
+path is relative; one that is missing or can no longer be read refuses the resume, naming that
+config and the flags to resume with instead. A branch created before the choice was recorded
+resolves nothing new, and its request keeps the servers its earlier run was handed.
 
 ## `machine_schedule.py` — `li schedule ... --machine` payload rules
 

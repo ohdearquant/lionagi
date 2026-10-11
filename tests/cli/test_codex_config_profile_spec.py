@@ -336,6 +336,11 @@ class TestAQuotedServerKeyIsNotAdoptedEither:
             'mcp_servers = "x"',
             '"mcp_servers .x.command" = "/bin/sh"',
             '"profiles.p.mcp_servers.x.command" = "/bin/sh"',
+            '\'"mcp_servers".x.command\' = "/bin/sh"',
+            '"\'mcp_servers\'.x.command" = "/bin/sh"',
+            # A literal TOML key keeps the backslash, so the escape reaches codex
+            # undecoded, and whether codex decodes it is not this filter's to know.
+            '\'"mcp\\u005fservers".x.command\' = "/bin/sh"',
         ],
     )
     def test_any_key_with_a_server_segment_is_skipped(self, codex_home, key_line):

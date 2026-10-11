@@ -607,6 +607,229 @@ async def test_a_branch_with_no_recorded_launch_keeps_its_servers_on_resume(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("named_by", ["flag", "record"])
+async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
+    monkeypatch, tmp_path, codex_home, named_by
+):
+    """codex takes a set as overrides merged into the persisted request, so the
+    servers the earlier run was handed go first, or the leg starts both sets.
+    Settings that are not servers stay."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server", "model_provider": "vendor"},
+    )
+    config = _mcp_config_file(tmp_path, SERVERS)
+    kwargs = {}
+    if named_by == "flag":
+        kwargs["mcp_config"] = config
+    else:
+        _record_launch(
+            tmp_path,
+            branch_id,
+            {"mcp_config": config, "no_mcp_config": False, "launch_dir": str(tmp_path)},
+        )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id, **kwargs)
+
+    assert seen["kwargs"]["config_overrides"] == {
+        "model_provider": "vendor",
+        "mcp_servers.khive.command": "kkernel",
+        "mcp_servers.khive.args": ["serve"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_path):
+    """The caller passed no --mcp-config, so the refusal names the config the
+    branch was launched with, and the two ways on."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    gone = tmp_path / "gone" / ".mcp.json"
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": str(gone), "no_mcp_config": False, "launch_dir": str(tmp_path)},
+    )
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    message = str(raised.value)
+    assert message.startswith(f"this branch was launched with the MCP config {gone}")
+    assert "which is no longer a readable file" in message
+    assert "--no-mcp-config" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["not_utf8", "unknown_user", "not_a_string"])
+async def test_a_recorded_config_that_cannot_even_be_read_is_refused_by_name(
+    monkeypatch, tmp_path, kind
+):
+    """A record naming a config whose bytes are not text, a home directory that
+    does not exist, or something that is not a path at all still refuses the
+    resume in its own words, before anything is spawned."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    if kind == "not_utf8":
+        path = tmp_path / "latin1" / ".mcp.json"
+        path.parent.mkdir()
+        path.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+        recorded = str(path)
+    elif kind == "unknown_user":
+        recorded = "~no-such-user-for-this-test/.mcp.json"
+    else:
+        recorded = 5
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": recorded, "no_mcp_config": False, "launch_dir": str(tmp_path)},
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    message = str(raised.value)
+    assert message.startswith(f"this branch was launched with the MCP config {recorded}")
+    assert "--no-mcp-config" in message
+    assert seen == {}
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch, tmp_path):
+    """The file is there but no longer reads as a config. The refusal still names
+    the recorded config and the ways on, not a --mcp-config the caller never passed."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    broken = tmp_path / "broken" / ".mcp.json"
+    broken.parent.mkdir()
+    broken.write_text("{not json")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": str(broken), "no_mcp_config": False, "launch_dir": str(tmp_path)},
+    )
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    message = str(raised.value)
+    assert message.startswith(f"this branch was launched with the MCP config {broken}")
+    assert "is not valid JSON" in message
+    assert "--no-mcp-config" in message
+
+
+@pytest.mark.asyncio
+async def test_a_relative_recorded_config_is_read_from_the_launch_directory(monkeypatch, tmp_path):
+    """A relative path in the record is taken from where the branch was launched,
+    as the search is, not from the directory the resume runs in."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    launched = tmp_path / "launched"
+    resumed = tmp_path / "resumed"
+    (launched / "cfg").mkdir(parents=True)
+    resumed.mkdir()
+    (launched / "cfg" / "mcp.json").write_text(json.dumps({"mcpServers": SERVERS}))
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": "cfg/mcp.json", "no_mcp_config": False, "launch_dir": str(launched)},
+    )
+    monkeypatch.chdir(resumed)
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["mcp_servers"] == SERVERS
+
+
+_GENERATED_PROFILE = "lionagi-mcp-" + "0" * 32
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_on_disk", [True, False])
+async def test_a_resume_naming_a_removed_generated_codex_profile_is_refused(
+    monkeypatch, tmp_path, codex_home, profile_on_disk
+):
+    """The earlier run gave codex its servers' env through a generated profile,
+    which is removed when that run exits. A resume that resolves no new set keeps
+    the request it had, so it would name a file that is gone: it is refused
+    instead. While the file is there, the leg keeps it."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    if profile_on_disk:
+        (codex_home.path / f"{_GENERATED_PROFILE}.config.toml").write_text(
+            '[mcp_servers.khive.env]\nKHIVE_API_KEY = "x"\n'
+        )
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        profile=_GENERATED_PROFILE,
+        config_overrides={"mcp_servers.khive.command": "kkernel"},
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+
+    if profile_on_disk:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+        assert seen["kwargs"]["profile"] == _GENERATED_PROFILE
+        return
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+    message = str(raised.value)
+    assert _GENERATED_PROFILE in message
+    assert "--no-mcp-config" in message
+    assert seen == {}
+
+
+@pytest.mark.asyncio
 async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatch, tmp_path):
     from lionagi.cli.agent import _run_agent
 

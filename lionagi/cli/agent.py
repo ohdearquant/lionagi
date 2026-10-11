@@ -35,7 +35,12 @@ from ._context_from import (
     resolve_and_build_context_block,
 )
 from ._logging import hint, log_error
-from ._mcp_resolve import McpConfigError, McpResolution, resolve_spawn_mcp_servers
+from ._mcp_resolve import (
+    McpConfigError,
+    McpResolution,
+    explicit_mcp_config_path,
+    resolve_spawn_mcp_servers,
+)
 from ._providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -747,11 +752,42 @@ async def _run_agent(
     if is_resumed_branch and mcp_config is None and not no_mcp_config:
         launched = branch.metadata.get(_MCP_LAUNCH_KEY)
         if isinstance(launched, dict) and isinstance(launched.get("launch_dir"), str):
-            mcp_resolution = resolve_spawn_mcp_servers(
-                launched.get("mcp_config"),
-                launch_dir=launched["launch_dir"],
-                disabled=bool(launched.get("no_mcp_config")),
+            recorded_config = launched.get("mcp_config")
+            disabled = bool(launched.get("no_mcp_config"))
+            # The resolver's own refusals name --mcp-config, which this caller
+            # never passed, so a recorded config is refused here in its own words.
+            how_to_go_on = (
+                "resume it with --mcp-config naming the config to use, or with --no-mcp-config"
             )
+            if recorded_config is not None and not disabled:
+                try:
+                    recorded_path = explicit_mcp_config_path(
+                        recorded_config, launch_dir=launched["launch_dir"]
+                    )
+                except (TypeError, RuntimeError) as exc:
+                    # Not a path, or a home directory that does not resolve.
+                    raise McpConfigError(
+                        f"this branch was launched with the MCP config {recorded_config}, "
+                        f"which can no longer be used ({exc}); {how_to_go_on}"
+                    ) from exc
+                if not recorded_path.is_file():
+                    raise McpConfigError(
+                        f"this branch was launched with the MCP config {recorded_path}, "
+                        f"which is no longer a readable file; {how_to_go_on}"
+                    )
+            try:
+                mcp_resolution = resolve_spawn_mcp_servers(
+                    recorded_config,
+                    launch_dir=launched["launch_dir"],
+                    disabled=disabled,
+                )
+            except (McpConfigError, UnicodeDecodeError) as exc:
+                # Only a named file is refused; a search that finds nothing usable
+                # says so in the resolution instead.
+                raise McpConfigError(
+                    f"this branch was launched with the MCP config {recorded_config}, "
+                    f"which can no longer be used ({exc}); {how_to_go_on}"
+                ) from exc
         else:
             mcp_resolution = McpResolution(
                 None, "no_mcp_launch_recorded", None, Path(os.getcwd()).resolve()
@@ -952,10 +988,17 @@ async def _run_agent(
         # not the caller's directory. Which providers can be given a set, and
         # over which transport, is not this call site's question to answer.
         from lionagi.agent.factory import (
+            _drop_forwarded_mcp_servers,
+            _missing_generated_codex_profile,
             apply_forwarded_mcp_servers,
             request_kwargs_carry_forwarded_mcp,
         )
 
+        if mcp_resolution.servers is not None:
+            # A set resolved for this leg replaces the one its earlier run was
+            # handed. The Claude map is overwritten below anyway; codex overrides
+            # are merged, so without this the leg would start both sets.
+            _drop_forwarded_mcp_servers(cfg)
         apply_forwarded_mcp_servers(
             cfg,
             mcp_resolution.servers,
@@ -965,6 +1008,14 @@ async def _run_agent(
             # leaves a new leg to what its CLI finds.
             exclusive=mcp_resolution.declared_empty,
         )
+        missing_profile = _missing_generated_codex_profile(cfg)
+        if missing_profile is not None:
+            raise McpConfigError(
+                f"this branch's earlier run gave codex its MCP servers' env and headers "
+                f"through the generated profile {missing_profile}, which is no longer a readable file "
+                "(it is removed when the run that wrote it exits); resume it with "
+                "--mcp-config naming the config to use, or with --no-mcp-config"
+            )
         # A resumed leg re-spawns from the persisted request, which is the only
         # thing that decides what it carries — read the answer off it.
         forwarded = request_kwargs_carry_forwarded_mcp(cfg)

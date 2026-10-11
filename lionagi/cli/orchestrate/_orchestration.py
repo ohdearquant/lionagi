@@ -612,8 +612,7 @@ def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
     if applied:
         return
     lost = (
-        "--no-mcp-config cannot be applied to it, and any servers the provider "
-        "loads by itself are not stopped by it"
+        "--no-mcp-config cannot be applied to it"
         if not servers
         else f"the {len(servers)} resolved server(s) ({', '.join(sorted(servers))}) "
         "are not reachable for this worker"

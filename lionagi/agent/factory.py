@@ -959,6 +959,25 @@ def _is_generated_codex_profile(name: object) -> bool:
     return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
 
+def _codex_home() -> Path:
+    from pathlib import Path
+
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:
+    """The generated profile a request names whose file is gone, if any.
+
+    That file holds the `env`/`http_headers` of the servers a run was handed
+    and is removed when the process that wrote it exits, so a resumed request
+    still naming it would hand codex a profile whose file is gone.
+    """
+    name = kwargs.get("profile")
+    if _is_generated_codex_profile(name) and not (_codex_home() / f"{name}.config.toml").is_file():
+        return name
+    return None
+
+
 # Profile files older than this are considered abandoned (the process that
 # wrote them was killed before its `atexit` cleanup ran, e.g. SIGKILL/crash)
 # and safe to reap on the next write.
@@ -993,7 +1012,6 @@ def _write_codex_mcp_secret_profile(
     """
     import atexit
     import uuid
-    from pathlib import Path
 
     import toml
 
@@ -1010,7 +1028,7 @@ def _write_codex_mcp_secret_profile(
             "server config."
         )
 
-    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    codex_home = _codex_home()
     codex_home.mkdir(parents=True, exist_ok=True)
     _reap_stale_codex_mcp_profiles(codex_home)
     profile_name = f"{_CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"
