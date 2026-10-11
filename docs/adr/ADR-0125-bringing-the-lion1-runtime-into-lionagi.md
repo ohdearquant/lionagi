@@ -1,6 +1,6 @@
 # ADR-0125: Bringing the lion1 runtime into lionagi: order, the internal actor, and consolidation
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-11)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: governance
