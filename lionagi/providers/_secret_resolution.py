@@ -17,7 +17,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln import (
+    aterminate_process_group,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+)
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 __all__ = (
@@ -203,6 +208,8 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     argv = tuple(arg.replace(_NAME_PLACEHOLDER, name) for arg in lookup.argv)
     program = os.path.basename(argv[0])
     proc = None
+    leader_created = None
+    child_env, group_marker = prepare_process_group_env()
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -210,13 +217,30 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
+            env=child_env,
+        )
+        leader_created = observe_process_group_leader(
+            getattr(proc, "pid", None),
+            expected_marker=group_marker,
         )
         stdout_bytes, _ = await asyncio.wait_for(
             proc.communicate(), timeout=_LOOKUP_TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
         if proc is not None:
-            await aterminate_process_group(proc, grace=None)
+            group_witnesses = (
+                capture_group_witnesses(
+                    proc,
+                    expected_leader_created=leader_created,
+                )
+                if leader_created is not None
+                else ()
+            )
+            await aterminate_process_group(
+                proc,
+                grace=None,
+                group_witnesses=group_witnesses,
+            )
             await proc.wait()
         logger.warning("secret lookup %s for %s timed out", program, name)
         return None
@@ -224,7 +248,19 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
         # The child must still be reaped, and the scope is already cancelled.
         if proc is not None:
             with CancelScope(shield=True):
-                await aterminate_process_group(proc, grace=None)
+                group_witnesses = (
+                    capture_group_witnesses(
+                        proc,
+                        expected_leader_created=leader_created,
+                    )
+                    if leader_created is not None
+                    else ()
+                )
+                await aterminate_process_group(
+                    proc,
+                    grace=None,
+                    group_witnesses=group_witnesses,
+                )
                 await proc.wait()
         raise
     except Exception as exc:  # noqa: BLE001 -- a lookup failure must never block a spawn
@@ -255,10 +291,11 @@ async def fill_declared_secrets(
 ) -> Mapping[str, str] | None:
     """Return the environment a CLI child should get, with declared secrets filled.
 
-    ``env=None`` means the child inherits this process's environment, and is
-    returned unchanged when there's nothing to add, so an inheriting child
-    stays inheriting rather than being handed a snapshot. A variable already
-    carrying a value is never looked up or overwritten. A refused lookup
+    ``env=None`` means the child inherits this process's environment and is
+    returned unchanged when there's nothing to add. The spawn helper snapshots
+    that ambient environment immediately before injecting its private identity
+    marker; an explicit replacement environment is never widened. A variable
+    already carrying a value is never looked up or overwritten. A refused lookup
     returns ``env`` unchanged too, but logs the distinction first — otherwise
     the child dies the same way (missing variable) whether the lookup was
     absent or misconfigured, with nothing pointing at the operator's own

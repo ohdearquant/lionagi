@@ -27,12 +27,17 @@ import re
 import shutil
 import stat
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln import (
+    aterminate_process_group,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+)
 from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
 
 logger = logging.getLogger(__name__)
@@ -528,7 +533,13 @@ async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[_CappedRead, _Capped
     return stdout, stderr
 
 
-async def _spawn(argv: list[str], bound: _BoundExecutable | None, cwd: str) -> Any:
+async def _spawn(
+    argv: list[str],
+    bound: _BoundExecutable | None,
+    cwd: str,
+    *,
+    env: Mapping[str, str],
+) -> Any:
     """Spawn *argv* in *cwd* — the same directory the command was resolved
     against for approval, never whichever directory the calling process
     happens to be in.
@@ -545,6 +556,7 @@ async def _spawn(argv: list[str], bound: _BoundExecutable | None, cwd: str) -> A
         "stderr": asyncio.subprocess.PIPE,
         "start_new_session": True,
         "cwd": cwd,
+        "env": dict(env),
     }
     if bound is None:
         return await asyncio.create_subprocess_exec(*argv, **common)
@@ -558,7 +570,12 @@ async def _run_hook_process(
     envelope_bytes: bytes,
     timeout: float,
 ) -> tuple[int, _CappedRead, _CappedRead]:
-    proc = await _spawn(argv, bound, cwd)
+    child_env, group_marker = prepare_process_group_env()
+    proc = await _spawn(argv, bound, cwd, env=child_env)
+    leader_created = observe_process_group_leader(
+        getattr(proc, "pid", None),
+        expected_marker=group_marker,
+    )
     try:
         stdout, stderr = await asyncio.wait_for(
             _drain(proc, envelope_bytes),
@@ -568,7 +585,19 @@ async def _run_hook_process(
         # Catches both since they're distinct classes before Python 3.11.
         # Kill the whole process group so a hung hook's children can't
         # continue side effects after the timeout is declared.
-        await aterminate_process_group(proc, grace=None)
+        group_witnesses = (
+            capture_group_witnesses(
+                proc,
+                expected_leader_created=leader_created,
+            )
+            if leader_created is not None
+            else ()
+        )
+        await aterminate_process_group(
+            proc,
+            grace=None,
+            group_witnesses=group_witnesses,
+        )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE)
         raise _HookTimeoutError(f"hook timed out after {timeout}s: {argv[0]!r}") from err

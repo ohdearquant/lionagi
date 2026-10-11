@@ -17,7 +17,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.ln._proc import aterminate_process_group, terminate_process_group
+from lionagi.ln._proc import (
+    aterminate_process_group,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+    process_create_time,
+    terminate_process_group,
+)
 
 
 def _fake_proc(pid):
@@ -101,6 +108,35 @@ async def test_aterminate_proc_group_pid_1_no_killpg_grace():
         mock_killpg.assert_not_called()
 
 
+def test_immediate_sync_cleanup_without_posix_signals_is_direct_child_only(monkeypatch):
+    """Windows-like platforms need no SIGKILL attribute for child cleanup."""
+    import lionagi.ln._proc as proc_mod
+
+    proc = _fake_proc(pid=4242)
+    monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
+    monkeypatch.setattr(proc_mod, "signal", SimpleNamespace())
+
+    terminate_process_group(proc, grace=None)
+
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_immediate_async_cleanup_without_posix_signals_is_direct_child_only(
+    monkeypatch,
+):
+    """The async direct-child fallback is portable when SIGKILL is absent."""
+    import lionagi.ln._proc as proc_mod
+
+    proc = _fake_async_proc(pid=4242)
+    monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
+    monkeypatch.setattr(proc_mod, "signal", SimpleNamespace())
+
+    await aterminate_process_group(proc, grace=None)
+
+    proc.kill.assert_called_once()
+
+
 def test_terminate_proc_group_never_signals_callers_group(monkeypatch):
     """A leaked parent PGID must fall back to direct-child termination."""
     import lionagi.ln._proc as proc_mod
@@ -134,8 +170,11 @@ def test_terminate_sigkill_only():
     if not hasattr(real_os, "killpg"):
         pytest.skip("os.killpg not available on this platform")
 
-    with patch.object(proc_mod.os, "killpg") as mock_killpg:
-        terminate_process_group(proc, grace=None)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg") as mock_killpg,
+    ):
+        terminate_process_group(proc, grace=None, group_witnesses=((1234, 10.0),))
         mock_killpg.assert_called_once_with(1234, signal.SIGKILL)
 
 
@@ -149,8 +188,11 @@ def test_terminate_sigterm_first_sync():
     if not hasattr(real_os, "killpg"):
         pytest.skip("os.killpg not available on this platform")
 
-    with patch.object(proc_mod.os, "killpg") as mock_killpg:
-        terminate_process_group(proc, grace=5.0)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg") as mock_killpg,
+    ):
+        terminate_process_group(proc, grace=5.0, group_witnesses=((5678, 10.0),))
         mock_killpg.assert_called_once_with(5678, signal.SIGTERM)
 
 
@@ -165,10 +207,42 @@ async def test_aterminate_sigkill_only():
     if not hasattr(real_os, "killpg"):
         pytest.skip("os.killpg not available on this platform")
 
-    with patch.object(proc_mod.os, "killpg") as mock_killpg:
-        await aterminate_process_group(proc, grace=None)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg") as mock_killpg,
+    ):
+        await aterminate_process_group(
+            proc,
+            grace=None,
+            group_witnesses=((9999, 10.0),),
+        )
         mock_killpg.assert_called_once_with(9999, signal.SIGKILL)
         proc.wait.assert_not_called()
+
+
+def test_immediate_sync_cleanup_without_spawn_witness_is_child_only():
+    """The immediate sync path does not invent group authority at teardown."""
+    import lionagi.ln._proc as proc_mod
+
+    proc = SimpleNamespace(pid=9999, returncode=0, kill=MagicMock())
+    with patch.object(proc_mod.os, "killpg") as killpg:
+        terminate_process_group(proc, grace=None)
+
+    killpg.assert_not_called()
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_immediate_async_cleanup_without_spawn_witness_is_child_only():
+    """The immediate async path does not invent group authority at teardown."""
+    import lionagi.ln._proc as proc_mod
+
+    proc = SimpleNamespace(pid=9999, returncode=0, kill=MagicMock())
+    with patch.object(proc_mod.os, "killpg") as killpg:
+        await aterminate_process_group(proc, grace=None)
+
+    killpg.assert_not_called()
+    proc.kill.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -187,8 +261,16 @@ async def test_aterminate_sigterm_then_sigkill_on_timeout():
     def _record_killpg(pgid, sig):
         calls.append((pgid, sig))
 
-    with patch.object(proc_mod.os, "killpg", side_effect=_record_killpg):
-        await aterminate_process_group(proc, grace=0.01)
+    witnesses = ((7777, 10.0),)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg", side_effect=_record_killpg),
+    ):
+        await aterminate_process_group(
+            proc,
+            grace=0.01,
+            group_witnesses=witnesses,
+        )
 
     assert (7777, signal.SIGTERM) in calls
     assert (7777, signal.SIGKILL) in calls
@@ -226,8 +308,15 @@ async def test_aterminate_sigterm_no_sigkill_when_exits_fast():
             raise ProcessLookupError(3, "No such process")
         calls.append((pgid, sig))
 
-    with patch.object(proc_mod.os, "killpg", side_effect=_record_killpg):
-        await aterminate_process_group(proc, grace=5.0)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg", side_effect=_record_killpg),
+    ):
+        await aterminate_process_group(
+            proc,
+            grace=5.0,
+            group_witnesses=((4444, 10.0),),
+        )
 
     # SIGTERM was sent, SIGKILL was NOT (process exited before timeout)
     assert (4444, signal.SIGTERM) in calls
@@ -302,8 +391,16 @@ def test_terminate_custom_sig_first():
     if not hasattr(real_os, "killpg"):
         pytest.skip("os.killpg not available on this platform")
 
-    with patch.object(proc_mod.os, "killpg") as mock_killpg:
-        terminate_process_group(proc, grace=5.0, sig_first=signal.SIGHUP)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg") as mock_killpg,
+    ):
+        terminate_process_group(
+            proc,
+            grace=5.0,
+            sig_first=signal.SIGHUP,
+            group_witnesses=((8888, 10.0),),
+        )
         mock_killpg.assert_called_once_with(8888, signal.SIGHUP)
 
 
@@ -444,6 +541,8 @@ def _terminate_with_a_descendant(*, escapes_group: bool, holds_pipe: bool, grace
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
+            leader_state, leader_created = process_create_time(proc.pid)
+            assert leader_state == "found" and leader_created is not None
             deadline = time.monotonic() + 20
             while not ready_path.exists():
                 if time.monotonic() > deadline:
@@ -459,9 +558,18 @@ def _terminate_with_a_descendant(*, escapes_group: bool, holds_pipe: bool, grace
                 f"descendant group placement is wrong for this case: "
                 f"shares_group={shares_group}, escapes_group={escapes_group}"
             )
+            witnesses = capture_group_witnesses(
+                proc,
+                expected_leader_created=leader_created,
+            )
+            assert witnesses, "the live child did not yield a spawn-bound group witness"
 
             started = time.monotonic()
-            await aterminate_process_group(proc, grace=grace)
+            await aterminate_process_group(
+                proc,
+                grace=grace,
+                group_witnesses=witnesses,
+            )
             elapsed = time.monotonic() - started
             survived = await _still_alive(descendant, settle=2.0)
             return survived, elapsed, proc.returncode
@@ -580,11 +688,221 @@ async def test_an_unreadable_group_probe_does_not_read_as_an_empty_group(
             raise probe_error
         calls.append((pgid, sig))
 
-    with patch.object(proc_mod.os, "killpg", side_effect=_killpg):
-        await aterminate_process_group(proc, grace=0.05)
+    with (
+        patch.object(proc_mod, "_group_has_witness", return_value=True),
+        patch.object(proc_mod.os, "killpg", side_effect=_killpg),
+    ):
+        await aterminate_process_group(
+            proc,
+            grace=0.05,
+            group_witnesses=((7777, 10.0),),
+        )
 
     assert (7777, signal.SIGTERM) in calls
     assert ((7777, signal.SIGKILL) in calls) is expect_forced_kill, (
         f"probe raised {type(probe_error).__name__} and the forced kill was "
         f"{'skipped' if expect_forced_kill else 'sent'}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_recycled_group_is_not_sigkilled_after_the_child_exits():
+    """A numeric PGID is not proof that the original group still owns it.
+
+    The original leader is captured at start time 10.0 and exits promptly on
+    SIGTERM. During the remainder of grace, another process takes the same
+    PID/PGID at start time 20.0. A membership-only probe still says that the
+    group is populated, but the captured identity no longer matches, so the
+    group-wide SIGKILL must be withheld. Direct-child cleanup remains the
+    fail-closed fallback.
+
+    This only requires a fresh identity witness immediately before signalling;
+    it deliberately does not claim to close the final verify-to-signal race,
+    which process-group APIs cannot close portably (see
+    docs/internals/ln-primitives.md#signalling-a-group).
+    """
+    import lionagi.ln._proc as proc_mod
+
+    if not hasattr(os, "killpg"):
+        pytest.skip("os.killpg not available on this platform")
+
+    proc = SimpleNamespace(pid=7777, returncode=None)
+
+    def _terminate():
+        proc.returncode = -signal.SIGTERM
+
+    proc.terminate = MagicMock(side_effect=_terminate)
+    proc.kill = MagicMock()
+    proc.wait = AsyncMock(return_value=proc.returncode)
+
+    witnesses = ((7777, 10.0),)
+    still_owned = MagicMock(side_effect=[True, False])
+    calls = []
+
+    def _killpg(pgid, sig):
+        calls.append((pgid, sig))
+
+    with (
+        patch.object(proc_mod, "_group_has_witness", still_owned),
+        patch.object(proc_mod, "_group_has_members", return_value=True),
+        patch.object(proc_mod.os, "killpg", side_effect=_killpg),
+    ):
+        await aterminate_process_group(
+            proc,
+            grace=0.01,
+            group_witnesses=witnesses,
+        )
+
+    assert (7777, signal.SIGTERM) in calls
+    assert (7777, signal.SIGKILL) not in calls
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+    assert [entry.args for entry in still_owned.call_args_list] == [
+        (7777, witnesses),
+        (7777, witnesses),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unproven_group_uses_only_direct_child_cleanup():
+    """No caller-supplied spawn witness means no group-wide signal."""
+    import lionagi.ln._proc as proc_mod
+
+    if not hasattr(os, "killpg"):
+        pytest.skip("os.killpg not available on this platform")
+
+    proc = _fake_async_proc(pid=8888, wait_delay=10.0)
+    late_capture = MagicMock()
+    calls = []
+
+    with (
+        patch.object(proc_mod, "capture_group_witnesses", late_capture),
+        patch.object(
+            proc_mod.os, "killpg", side_effect=lambda pgid, sig: calls.append((pgid, sig))
+        ),
+    ):
+        await aterminate_process_group(proc, grace=0.01)
+
+    assert calls == []
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+    late_capture.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "second_anchor",
+    [
+        ("found", (7777, 20.0)),
+        ("gone", None),
+    ],
+    ids=["leader-identity-changed", "leader-disappeared"],
+)
+def test_group_witness_capture_requires_the_same_leader_on_both_anchors(
+    second_anchor,
+):
+    """A scan is owned only while one leader identity brackets the whole read."""
+    import lionagi.ln._proc as proc_mod
+
+    first_anchor = ("found", (7777, 10.0))
+    members = ([(7777, 10.0), (7778, 11.0)], True)
+    with (
+        patch.object(
+            proc_mod,
+            "_pinned_group_identity",
+            side_effect=[first_anchor, second_anchor],
+        ) as pin,
+        patch.object(proc_mod, "_group_member_identities", return_value=members) as scan,
+    ):
+        captured = proc_mod._capture_group_witnesses(SimpleNamespace(pid=7777), 7777)
+
+    assert captured == ()
+    assert pin.call_count == 2
+    scan.assert_called_once_with(7777)
+
+
+def test_group_witness_capture_refuses_an_already_reaped_child():
+    """A returned process handle cannot anchor whatever later reused its pid."""
+    import lionagi.ln._proc as proc_mod
+
+    pin = MagicMock(return_value=("found", (7777, 20.0)))
+    scan = MagicMock(return_value=([(7777, 20.0)], True))
+    with (
+        patch.object(proc_mod, "_pinned_group_identity", pin),
+        patch.object(proc_mod, "_group_member_identities", scan),
+    ):
+        captured = proc_mod._capture_group_witnesses(SimpleNamespace(pid=7777, returncode=0), 7777)
+
+    assert captured == ()
+    pin.assert_not_called()
+    scan.assert_not_called()
+
+
+def test_public_group_witness_capture_requires_spawn_time():
+    """Teardown-time capture without spawn identity is not a public operation."""
+    with pytest.raises(TypeError):
+        capture_group_witnesses(SimpleNamespace(pid=7777))  # type: ignore[call-arg]
+
+
+def test_prepare_process_group_env_adds_a_fresh_private_marker():
+    """The identity fact exists before spawn without mutating caller state."""
+    base = {"PATH": "/bin"}
+
+    first_env, first_marker = prepare_process_group_env(base)
+    second_env, second_marker = prepare_process_group_env(base)
+
+    assert base == {"PATH": "/bin"}
+    assert first_env["PATH"] == "/bin"
+    assert first_marker in first_env.values()
+    assert second_marker in second_env.values()
+    assert first_marker != second_marker
+
+
+def test_spawn_marker_rejects_a_pid_reused_before_the_first_probe():
+    """A consistent live stranger cannot manufacture the pre-spawn fact."""
+    import lionagi.ln._proc as proc_mod
+
+    stranger = (7777, 20.0, "stranger-marker", True)
+    with (
+        patch.object(proc_mod.os, "getpgid", create=True),
+        patch.object(proc_mod, "pinned_member", return_value=("found", stranger)) as pin,
+    ):
+        created = observe_process_group_leader(
+            7777,
+            expected_marker="our-marker",
+        )
+
+    assert created is None
+    pin.assert_called_once_with(
+        7777,
+        7777,
+        marker_var=proc_mod._PROCESS_GROUP_MARKER,
+    )
+
+
+def test_spawn_marker_accepts_the_bracketed_original_leader():
+    """A matching injected marker yields the create time frozen for teardown."""
+    import lionagi.ln._proc as proc_mod
+
+    original = (7777, 10.0, "our-marker", True)
+    with (
+        patch.object(proc_mod.os, "getpgid", create=True),
+        patch.object(proc_mod, "pinned_member", return_value=("found", original)),
+    ):
+        created = observe_process_group_leader(
+            7777,
+            expected_marker="our-marker",
+        )
+
+    assert created == 10.0
+
+
+def test_group_witness_revalidation_rejects_a_reused_pid():
+    """The same PID and PGID with a new start time is a different group member."""
+    import lionagi.ln._proc as proc_mod
+
+    probe = MagicMock(return_value=("found", (7777, 20.0)))
+    with patch.object(proc_mod, "_pinned_group_identity", probe):
+        matched = proc_mod._group_has_witness(7777, ((7777, 10.0),))
+
+    assert matched is False
+    probe.assert_called_once_with(7777, 7777)

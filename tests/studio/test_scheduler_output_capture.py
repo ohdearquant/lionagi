@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.studio.scheduler.subprocess import _TAIL_BYTES, spawn_and_wait
+from lionagi.studio.scheduler.subprocess import (
+    _TAIL_BYTES,
+    SubprocessDeadlineExceededError,
+    spawn_and_wait,
+)
 
 
 def _py(script: str) -> list[str]:
@@ -151,10 +157,29 @@ async def test_a_deadline_terminates_the_owned_process_group(monkeypatch):
 
     async def _fake_exec(*_args, **kwargs):
         assert kwargs["start_new_session"] is True
+        assert kwargs["env"]["MARKED"] == "scheduler"
         return proc
 
     cleanup = AsyncMock()
+    witnesses = ((proc.pid, 14.0),)
     monkeypatch.setattr(subprocess_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(
+        subprocess_mod,
+        "prepare_process_group_env",
+        lambda env=None: ({**(env or {}), "MARKED": "scheduler"}, "scheduler-token"),
+    )
+    monkeypatch.setattr(
+        subprocess_mod,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            14.0 if (pid, expected_marker) == (proc.pid, "scheduler-token") else None
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess_mod,
+        "capture_group_witnesses",
+        lambda *args, **kwargs: witnesses,
+    )
     monkeypatch.setattr(subprocess_mod, "aterminate_process_group", cleanup)
 
     with pytest.raises(subprocess_mod.SubprocessDeadlineExceededError, match="0.01"):
@@ -164,7 +189,52 @@ async def test_a_deadline_terminates_the_owned_process_group(monkeypatch):
             deadline_seconds=0.01,
         )
 
-    cleanup.assert_awaited_once_with(proc, grace=5.0)
+    cleanup.assert_awaited_once_with(
+        proc,
+        grace=5.0,
+        group_witnesses=witnesses,
+    )
+
+
+_LEAVES_A_DESCENDANT_HOLDING_STDOUT = (
+    "import pathlib, subprocess, sys\n"
+    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+    "pathlib.Path(sys.argv[1]).write_text(str(p.pid))\n"
+    "sys.exit(0)\n"
+)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def test_a_deadline_after_the_child_exits_ends_the_descendant_holding_its_output(tmp_path):
+    """The child exits but a descendant keeps its stdout open, so the drain never
+    finishes and the deadline fires after the child has been reaped. The leader
+    can no longer vouch for the group; the descendant still carries the marker
+    injected at spawn, and that is what lets the deadline end it."""
+    pid_file = tmp_path / "descendant.pid"
+    with pytest.raises(SubprocessDeadlineExceededError):
+        await spawn_and_wait(
+            [*_py(_LEAVES_A_DESCENDANT_HOLDING_STDOUT), str(pid_file)],
+            "inv-deadline-descendant",
+            deadline_seconds=3.0,
+        )
+    descendant = int(pid_file.read_text())
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _alive(descendant):
+            await asyncio.sleep(0.1)
+        assert not _alive(descendant), f"descendant {descendant} survived the deadline"
+    finally:
+        if _alive(descendant):
+            os.kill(descendant, signal.SIGKILL)
 
 
 async def test_a_process_finishing_before_its_deadline_is_unchanged():

@@ -76,11 +76,10 @@ start-time bracket — sets `complete = False` rather than being silently
 dropped, because the group may still hold a member the scan never resolved.
 An incomplete scan is never read as an empty group: it is a member that may
 not have been seen, which is exactly the situation where treating the group
-as safe to signal would be wrong. `group_member_pids()` leans on one more
-fact to justify acting on a non-empty answer without further identity work:
-a process group id is not reissued while the group still has members, so a
-group that answers with members is still the group whose id was recorded,
-even though individual member pids inside it can still be reused elsewhere.
+as safe to signal would be wrong. A non-empty result establishes only that a
+group currently occupies the number. It does not tie that group to an earlier
+child after the original group may have drained; signal authorization requires
+matching one of the start-time-pinned witnesses captured before that boundary.
 
 ## Signalling a group
 
@@ -97,12 +96,41 @@ backstop for cleanup paths whose own graceful shutdown can itself be
 cancelled. A backstop that can be interrupted mid-await is not a backstop, so
 this one never awaits anything.
 
-`terminate_process_group()` / `aterminate_process_group()` send `sig_first`
-(default SIGTERM) to both the process group and the direct child — signalling
-the child directly is normally redundant with the group signal, but prevents
-orphaning it on platforms where `killpg` is unavailable. Passing `grace=None`
-skips the polite signal entirely and sends SIGKILL immediately. With a grace
-period, the async version waits up to `grace` seconds (via an `anyio`
+`terminate_process_group()` / `aterminate_process_group()` always signal the
+direct child. They signal its process group only when the caller also supplies
+frozen, spawn-bound `group_witnesses`; omitting that evidence deliberately
+limits cleanup to the direct child. Passing `grace=None` skips the polite signal
+and sends SIGKILL immediately. With a grace period, the async version waits up
+to `grace` seconds (via an `anyio`
 cancel scope, not `asyncio.wait_for` — `wait_for` raises "no running event
 loop" on a non-asyncio `anyio` backend before its timeout can apply) and
 escalates to SIGKILL if the process hasn't exited by then.
+
+Group-wide signals have a stricter identity rule than a liveness probe can
+provide. Before spawn, `prepare_process_group_env()` gives the caller an
+environment carrying a fresh private marker. Immediately after spawn,
+`observe_process_group_leader()` accepts a create time only when that marker,
+the leader group, and both sides of a start-time bracket agree. The caller then
+uses `capture_group_witnesses()` while that exact leader still anchors the group
+to freeze start-time-pinned member witnesses. An unreadable or mismatched marker
+is fail-closed, as are absent witnesses: the terminators signal only the direct
+child. Once the direct child has been reaped, its process-group id may be reused
+as soon as the original group empties. Therefore
+`killpg(pgid, 0)` can establish only that *some* group currently has that
+number; it cannot establish that this is still the group being terminated.
+Before escalating, the async path requires a live group member whose pid,
+exact start time, and group membership match an entry witness. An unreadable
+or incomplete observation, a replaced member, or a populated group with no
+matching witness is unproven: the group-wide SIGKILL is skipped, while
+direct-child `kill()` cleanup is still attempted. This intentionally prefers
+leaving a straggler for higher-level cleanup over killing an unrelated process
+group.
+
+That verification narrows but cannot close the final race. The identity read
+and `killpg()` remain separate system calls; the verified group can drain and
+its number can be reassigned in between them. POSIX process groups provide no
+verify-and-signal primitive. The honest guarantee is consequently **no delayed
+group signal without a positive identity witness**, not **the signal can never
+reach a recycled group**. Closing that last TOCTOU requires a non-reusable
+kernel containment handle, such as a Linux cgroup (or a Windows job object),
+rather than another process-group probe.

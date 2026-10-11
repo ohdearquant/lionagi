@@ -531,16 +531,36 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
         async def communicate(self, data=None):
             raise asyncio.TimeoutError()
 
-    async def _fake_exec(*argv, **kwargs):
-        return _FakeProc()
+    proc = _FakeProc()
 
-    async def _fake_terminate(proc, grace=None):
-        return None
+    async def _fake_exec(*argv, **kwargs):
+        assert kwargs["env"] == {"MARKED": "notify"}
+        return proc
+
+    witnesses = ((456, 17.0),)
+    cleanup_calls: list[tuple[object, object, object]] = []
+
+    async def _fake_terminate(proc, grace=None, group_witnesses=None):
+        cleanup_calls.append((proc, grace, group_witnesses))
 
     async def _fake_await_dead(proc, grace=2.0):
         return None
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.prepare_process_group_env",
+        lambda env=None: ({"MARKED": "notify"}, "notify-token"),
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            17.0 if (pid, expected_marker) == (456, "notify-token") else None
+        ),
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.capture_group_witnesses",
+        lambda *args, **kwargs: witnesses,
+    )
     monkeypatch.setattr(
         "lionagi.state.lifecycle.notify_settings.aterminate_process_group", _fake_terminate
     )
@@ -552,6 +572,7 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
         ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
     )
     await handler(_envelope())  # must not raise
+    assert cleanup_calls == [(proc, None, witnesses)]
 
     outcome = json.loads(run.notify_outcome_path.read_text())
     assert outcome == {

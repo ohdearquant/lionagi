@@ -11,9 +11,10 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,10 @@ from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
     aterminate_process_group,
-    group_member_pids,
-    kill_group_now,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+    signal_group_if_witnessed,
 )
 from lionagi.ln.concurrency.utils import maybe_await
 
@@ -82,6 +85,10 @@ class SpawnedProcess:
     pid: int
     pgid: int
     create_time: float | None
+    # Runtime-only proof used by teardown after the leader has been reaped.
+    # Hidden from the callback's representation and equality so the public
+    # identity remains pid/pgid/start-time.
+    _group_marker: str | None = field(default=None, repr=False, compare=False)
 
 
 class Redacted:
@@ -184,71 +191,129 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
         return
     if task.exception() is not None:
         return
-    # Not a raw kill: a spawn that completed may ALSO have been reaped by the
-    # time this callback runs, and a reaped pid names whatever now holds it.
-    _end_group_with_evidence(task.result())
+    # Identity was captured inside the spawn task, before its result became
+    # visible to this potentially-late callback. Deriving it here would let a
+    # reaped child's recycled pid describe a stranger.
+    proc, spawned = task.result()
+    witnesses = _witnesses_for_spawn(proc, spawned)
+    if spawned._group_marker is None:
+        _end_group_with_evidence(proc, witnesses)
+    else:
+        _end_group_with_evidence(
+            proc,
+            witnesses,
+            expected_marker=spawned._group_marker,
+        )
 
 
-def _end_group_with_evidence(proc: Any) -> str:
-    """End a child's group wherever its identity can be established: while
-    unreaped (pid can't have been reissued, no scan needed) or, once reaped,
-    only if a live member still pins the group id.
+def _witnesses_for_spawn(proc: Any, spawned: SpawnedProcess) -> tuple[tuple[int, float], ...]:
+    """Expand one spawn identity into frozen group-member witnesses."""
+    pid = getattr(proc, "pid", None)
+    if spawned.create_time is None or spawned.pid != pid or spawned.pgid != pid:
+        return ()
+    if spawned._group_marker is None:
+        return capture_group_witnesses(
+            proc,
+            expected_leader_created=spawned.create_time,
+        )
+    return capture_group_witnesses(
+        proc,
+        expected_leader_created=spawned.create_time,
+        expected_marker=spawned._group_marker,
+    )
+
+
+def _end_group_with_evidence(
+    proc: Any,
+    witnesses: tuple[tuple[int, float], ...] = (),
+    *,
+    expected_marker: str | None = None,
+) -> str:
+    """Synchronously end a group only through frozen spawn-time evidence.
+
+    ``returncode`` is deliberately irrelevant: a child watcher may already
+    have reaped the pid before the event loop publishes its return code. A
+    matching start-time witness is the only group-wide authority here.
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     pgid = getattr(proc, "pid", None)
-    if getattr(proc, "returncode", None) is None:
-        return "killed-unreaped" if kill_group_now(pgid) else "no-group"
-    return _kill_group_if_occupied(pgid)
-
-
-def _kill_group_if_occupied(pgid: Any) -> str:
-    """End a process group if it can be shown to still hold someone.
-
-    Returns ``killed``/``empty``/``unproven``/``no-group`` for the log, not
-    for caller branching. ``unproven`` is the case that matters: a process
-    table read that failed and showed no members is not an empty group, and
-    is the only outcome where something may still be running unaddressed.
-    """
-    if not isinstance(pgid, int):
-        return "no-group"
-    members, complete = group_member_pids(pgid)
-    if members:
-        kill_group_now(pgid)
-        return "killed"
-    if not complete:
-        log.warning(
-            "process group %s could not be read completely and showed no members; "
-            "leaving it alone rather than signalling a possibly reissued group id",
+    sigkill = getattr(signal, "SIGKILL", None)
+    if sigkill is None:
+        signalled = False
+    elif expected_marker is None:
+        signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
+    else:
+        signalled = signal_group_if_witnessed(
             pgid,
+            witnesses,
+            sigkill,
+            expected_marker=expected_marker,
         )
-        return "unproven"
-    return "empty"
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
+    return "killed-witnessed" if signalled else "unproven"
 
 
-async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
+async def end_child_group(
+    proc: Any,
+    *,
+    grace: float = 5.0,
+    spawned: SpawnedProcess | None = None,
+) -> None:
     """End every member of the child's group, and survive being cancelled.
 
     Drains the GROUP, not just the process — a descendant ignoring SIGTERM can
-    outlive a parent that doesn't, so the group is read afterwards and killed
-    if still occupied. Escalation is keyed on that membership evidence, not on
-    whether the direct child died, since those are different facts. The
-    graceful helper (reached only on the not-yet-waited path, since it signals
-    the group id unconditionally) is backed by a synchronous kill in a
-    ``finally`` so a second cancellation can't interpose.
+    outlive a parent that doesn't. The graceful helper freezes member identities
+    while the child still anchors its group, then revalidates a frozen witness
+    before delayed escalation. After reaping, no fresh numeric scan may replace
+    that evidence. A synchronous witness-gated kill in ``finally`` remains the
+    backstop when a second cancellation interposes.
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
+    witnesses = _witnesses_for_spawn(proc, spawned) if spawned is not None else ()
+    expected_marker = spawned._group_marker if spawned is not None else None
     swept = False
     try:
         if getattr(proc, "returncode", None) is None:
-            await aterminate_process_group(proc, grace=grace)
-        _end_group_with_evidence(proc)
+            if expected_marker is None:
+                await aterminate_process_group(
+                    proc,
+                    grace=grace,
+                    group_witnesses=witnesses,
+                )
+            else:
+                await aterminate_process_group(
+                    proc,
+                    grace=grace,
+                    group_witnesses=witnesses,
+                    expected_marker=expected_marker,
+                )
+        elif witnesses:
+            # The stream may have ended because the child exited while a
+            # descendant kept stdout open. The leader is already reaped here,
+            # so the marker-backed witness is the only safe group authority.
+            if expected_marker is None:
+                _end_group_with_evidence(proc, witnesses)
+            else:
+                _end_group_with_evidence(
+                    proc,
+                    witnesses,
+                    expected_marker=expected_marker,
+                )
         swept = True
     finally:
         # Synchronous, so a second cancellation cannot interpose, and keyed on
         # the same membership evidence as the pass it is backing up rather than
         # on anything about the direct child.
         if not swept:
-            _end_group_with_evidence(proc)
+            if expected_marker is None:
+                _end_group_with_evidence(proc, witnesses)
+            else:
+                _end_group_with_evidence(
+                    proc,
+                    witnesses,
+                    expected_marker=expected_marker,
+                )
 
 
 # How long the stream keeps draining after the CLI child itself has exited.
@@ -258,22 +323,29 @@ async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
 _POST_EXIT_DRAIN_GRACE = 10.0
 
 
-def observe_spawned(pid: int) -> SpawnedProcess:
-    """Read pid, group and start time as one observation of one process.
+def observe_spawned(pid: int, *, expected_marker: str) -> SpawnedProcess:
+    """Read pid, group, marker, and start time as one child observation.
 
     The group read is bracketed by a start-time read before and after,
     required unchanged, since the pid could otherwise be reassigned mid-read
-    and the two facts would describe a process that never existed. A failed
-    bracket yields ``create_time=None`` ("no identity captured"). A pid
-    reassigned before the first probe is separately covered:
-    :func:`spawned_create_time` returns None for both a reaped pid and a
-    zombie.
+    and the facts would describe a process that never existed. The unguessable
+    marker is injected before spawn and closes the earlier window where a pid
+    was already reassigned before the first start-time probe. Any failed or
+    mismatched read yields ``create_time=None`` ("no identity captured").
     """
-    created = spawned_create_time(pid)
+    created = observe_process_group_leader(
+        pid,
+        expected_marker=expected_marker,
+    )
     pgid = spawned_pgid(pid)
-    if created is not None and spawned_create_time(pid) != created:
+    if created is not None and pgid != pid:
         created = None
-    return SpawnedProcess(pid=pid, pgid=pgid, create_time=created)
+    return SpawnedProcess(
+        pid=pid,
+        pgid=pgid,
+        create_time=created,
+        _group_marker=expected_marker if created is not None and pgid == pid else None,
+    )
 
 
 def _no_stderr_reason(
@@ -588,7 +660,7 @@ async def ndjson_from_cli(
     child_env, declared = await fill_declared_secrets_and_names(env)
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
-    spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
+    spawn_env, spawn_marker = prepare_process_group_env(child_env)
     redaction_env: Mapping[str, str] = {
         **_secret_candidates(spawn_env, declared),
         **_cmd_secret_values(cmd),
@@ -606,15 +678,34 @@ async def ndjson_from_cli(
         kwargs["stdin"] = asyncio.subprocess.PIPE
     elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
+
     # Shielded, because the OS has already started the child by the time this
     # await resumes and a cancellation landing in the window before it returns
     # would abandon that child with no handle to sweep it by — unrecorded and
     # in a group nobody knows the id of. The shield keeps the creation running
     # so the handle still arrives, and the done-callback ends its group from
     # outside this coroutine, which is the only place left that can.
-    spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(*cmd, **kwargs))
+    async def _spawn_and_observe() -> tuple[asyncio.subprocess.Process, SpawnedProcess]:
+        child = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+        try:
+            observed = observe_spawned(
+                child.pid,
+                expected_marker=spawn_marker,
+            )
+        except BaseException:
+            # The task cannot publish a handle when identity observation itself
+            # fails. End and reap the direct child here; without a valid spawn
+            # observation there is intentionally no authority to signal its
+            # numeric process group.
+            _end_group_with_evidence(child)
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(child.wait(), timeout=5.0)
+            raise
+        return child, observed
+
+    spawn = asyncio.ensure_future(_spawn_and_observe())
     try:
-        proc = await asyncio.shield(spawn)
+        proc, spawned = await asyncio.shield(spawn)
     except BaseException:
         spawn.add_done_callback(_kill_abandoned_spawn)
         raise
@@ -625,9 +716,9 @@ async def ndjson_from_cli(
         # to a stranger's, and the start time that would have told them apart is
         # readable only while the process is alive. See docs/internals/runtime.md.
         try:
-            await maybe_await(on_spawn(observe_spawned(proc.pid)))
+            await maybe_await(on_spawn(spawned))
         except BaseException:
-            await end_child_group(proc)
+            await end_child_group(proc, spawned=spawned)
             raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -833,7 +924,7 @@ async def ndjson_from_cli(
             sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
         )
 
-        await end_child_group(proc)
+        await end_child_group(proc, spawned=spawned)
 
         if abandoned_silently:
             # Drain first, or the warning reports "said nothing" about a child

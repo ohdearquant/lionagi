@@ -26,6 +26,17 @@ def _block_real_process_group_signals(monkeypatch):
     monkeypatch.setattr(proc_mod.os, "killpg", fail_if_unmocked)
 
 
+def _spawn_call_for(mock_exec, executable: str):
+    """Return the provider spawn, excluding credential-helper subprocesses."""
+    matches = [
+        call
+        for call in mock_exec.call_args_list
+        if call.args and str(call.args[0]).rsplit("/", 1)[-1] == executable
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
 class TestSubprocessSessionIsolation:
     """Verify CLI subprocesses are isolated from the parent's process group."""
 
@@ -38,14 +49,7 @@ class TestSubprocessSessionIsolation:
         from lionagi.providers.anthropic.claude_code import _ndjson_from_cli
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.stdout = MagicMock()
-            mock_proc.stdout.read = AsyncMock(return_value=b"")
-            mock_proc.stderr = MagicMock()
-            mock_proc.stderr.read = AsyncMock(return_value=b"")
-            mock_proc.wait = AsyncMock(return_value=0)
-            mock_proc.terminate = MagicMock()
-            mock_proc.kill = MagicMock()
+            mock_proc = _make_mock_proc(pid=8101)
             mock_exec.return_value = mock_proc
 
             chunks = []
@@ -54,8 +58,7 @@ class TestSubprocessSessionIsolation:
                     chunks.append(obj)
 
             # Verify start_new_session=True was passed
-            mock_exec.assert_called_once()
-            _, kwargs = mock_exec.call_args
+            _, kwargs = _spawn_call_for(mock_exec, "claude")
             assert kwargs.get("start_new_session") is True, (
                 "CLI subprocess must use start_new_session=True to isolate from SIGINT"
             )
@@ -72,22 +75,14 @@ class TestSubprocessSessionIsolation:
             patch("lionagi.providers.openai.codex.CODEX_CLI", "codex"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
-            mock_proc = MagicMock()
-            mock_proc.stdout = MagicMock()
-            mock_proc.stdout.read = AsyncMock(return_value=b"")
-            mock_proc.stderr = MagicMock()
-            mock_proc.stderr.read = AsyncMock(return_value=b"")
-            mock_proc.wait = AsyncMock(return_value=0)
-            mock_proc.terminate = MagicMock()
-            mock_proc.kill = MagicMock()
+            mock_proc = _make_mock_proc(pid=8102)
             mock_exec.return_value = mock_proc
 
             async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
                 async for _ in stream:
                     pass
 
-            mock_exec.assert_called_once()
-            _, kwargs = mock_exec.call_args
+            _, kwargs = _spawn_call_for(mock_exec, "codex")
             assert kwargs.get("start_new_session") is True
 
     @pytest.mark.asyncio
@@ -102,22 +97,14 @@ class TestSubprocessSessionIsolation:
             patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
-            mock_proc = MagicMock()
-            mock_proc.stdout = MagicMock()
-            mock_proc.stdout.read = AsyncMock(return_value=b"")
-            mock_proc.stderr = MagicMock()
-            mock_proc.stderr.read = AsyncMock(return_value=b"")
-            mock_proc.wait = AsyncMock(return_value=0)
-            mock_proc.terminate = MagicMock()
-            mock_proc.kill = MagicMock()
+            mock_proc = _make_mock_proc(pid=8103)
             mock_exec.return_value = mock_proc
 
             async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
                 async for _ in stream:
                     pass
 
-            mock_exec.assert_called_once()
-            _, kwargs = mock_exec.call_args
+            _, kwargs = _spawn_call_for(mock_exec, "agy")
             assert kwargs.get("start_new_session") is True
 
 
@@ -276,6 +263,7 @@ class TestNdjsonCleanupPropagation:
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_proc = MagicMock()
+            mock_proc.pid = 8104
 
             read_call = 0
 
@@ -439,15 +427,16 @@ def _make_mock_proc(pid=12345):
 
 
 class TestProcessGroupCleanup:
-    """Gemini and Pi cleanup must use os.killpg on the process group.
+    """Gemini and Pi share the same identity-gated process-group cleanup.
 
     Claude and Codex capture the PGID immediately after spawn and call
     os.killpg(pgid, SIGTERM/SIGKILL) in cleanup so that descendant processes
-    started by the CLI are also terminated.  Gemini and Pi now mirror this.
+    started by a live CLI are also terminated. Once the direct child is reaped,
+    a bare numeric pid cannot authorize that group-wide signal.
     """
 
     @pytest.mark.asyncio
-    async def test_gemini_cleanup_calls_killpg(self):
+    async def test_gemini_reaped_cleanup_does_not_signal_a_numeric_group(self):
         from lionagi.providers.google.gemini_code import (
             GeminiCodeRequest,
             _ndjson_from_cli,
@@ -464,14 +453,6 @@ class TestProcessGroupCleanup:
                 "lionagi.ln._proc.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
             ),
-            # A mock pid names no real group, so without this the enumeration
-            # correctly reports nobody there and a conditioned kill correctly
-            # declines. The surviving descendant this test is about is the
-            # thing being stated here.
-            patch(
-                "lionagi.providers._cli_subprocess.group_member_pids",
-                return_value=([mock_proc.pid + 1], True),
-            ),
         ):
             mock_exec.return_value = mock_proc
 
@@ -479,14 +460,13 @@ class TestProcessGroupCleanup:
                 async for _ in stream:
                     pass
 
-        # At least one killpg(9001, ...) call must have been made.
-        assert any(pgid == 9001 for pgid, _ in killpg_calls), (
-            f"Expected os.killpg(9001, ...) in cleanup; got {killpg_calls}. "
-            "Gemini must terminate the whole process group."
+        assert killpg_calls == [], (
+            "Gemini reaped the direct child before teardown, so pid 9001 is now "
+            f"recyclable and cannot authorize a group signal: {killpg_calls}"
         )
 
     @pytest.mark.asyncio
-    async def test_pi_cleanup_calls_killpg(self):
+    async def test_pi_reaped_cleanup_does_not_signal_a_numeric_group(self):
         from lionagi.providers.pi.cli import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
@@ -500,14 +480,6 @@ class TestProcessGroupCleanup:
                 "lionagi.ln._proc.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
             ),
-            # A mock pid names no real group, so without this the enumeration
-            # correctly reports nobody there and a conditioned kill correctly
-            # declines. The surviving descendant this test is about is the
-            # thing being stated here.
-            patch(
-                "lionagi.providers._cli_subprocess.group_member_pids",
-                return_value=([mock_proc.pid + 1], True),
-            ),
         ):
             mock_exec.return_value = mock_proc
 
@@ -515,9 +487,9 @@ class TestProcessGroupCleanup:
                 async for _ in stream:
                     pass
 
-        assert any(pgid == 9002 for pgid, _ in killpg_calls), (
-            f"Expected os.killpg(9002, ...) in cleanup; got {killpg_calls}. "
-            "Pi must terminate the whole process group."
+        assert killpg_calls == [], (
+            "Pi reaped the direct child before teardown, so pid 9002 is now "
+            f"recyclable and cannot authorize a group signal: {killpg_calls}"
         )
 
     @pytest.mark.asyncio

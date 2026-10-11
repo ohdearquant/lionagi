@@ -13,7 +13,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln import (
+    aterminate_process_group,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+)
 
 __all__ = (
     "apply_hooks_from_settings",
@@ -237,6 +242,8 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
         async def shell_pre_hook(tn: str, action: str, args: dict) -> dict | None:
             argv = _render_argv(args)
             proc = None
+            leader_created = None
+            child_env, group_marker = prepare_process_group_env()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
@@ -244,6 +251,11 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
+                    env=child_env,
+                )
+                leader_created = observe_process_group_leader(
+                    getattr(proc, "pid", None),
+                    expected_marker=group_marker,
                 )
                 _, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(json.dumps(args).encode()),
@@ -253,7 +265,19 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                 # Kill the whole process group so lingering children can't
                 # continue side effects after the hook times out.
                 if proc is not None:
-                    await aterminate_process_group(proc, grace=None)
+                    group_witnesses = (
+                        capture_group_witnesses(
+                            proc,
+                            expected_leader_created=leader_created,
+                        )
+                        if leader_created is not None
+                        else ()
+                    )
+                    await aterminate_process_group(
+                        proc,
+                        grace=None,
+                        group_witnesses=group_witnesses,
+                    )
                     await _wait_proc(proc)
                 raise PermissionError(f"Hook timed out: {argv[0]!r}") from err
             except Exception as e:
@@ -270,6 +294,8 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
         async def shell_post_hook(tn: str, action: str, args: dict, result: dict) -> dict | None:
             argv = _render_argv({**args, **result})
             proc = None
+            leader_created = None
+            child_env, group_marker = prepare_process_group_env()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
@@ -277,6 +303,11 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
+                    env=child_env,
+                )
+                leader_created = observe_process_group_leader(
+                    getattr(proc, "pid", None),
+                    expected_marker=group_marker,
                 )
                 await asyncio.wait_for(
                     proc.communicate(json.dumps(result).encode()),
@@ -286,7 +317,19 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                 # Kill process group on post-hook timeout so no delayed side effects
                 # occur after the hook is silently dropped.
                 if proc is not None:
-                    await aterminate_process_group(proc, grace=None)
+                    group_witnesses = (
+                        capture_group_witnesses(
+                            proc,
+                            expected_leader_created=leader_created,
+                        )
+                        if leader_created is not None
+                        else ()
+                    )
+                    await aterminate_process_group(
+                        proc,
+                        grace=None,
+                        group_witnesses=group_witnesses,
+                    )
                     await _wait_proc(proc)
                 logger.warning("hook subprocess timed out (swallowed)", exc_info=exc)
             except Exception as exc:

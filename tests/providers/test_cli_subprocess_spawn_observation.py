@@ -20,6 +20,7 @@ import os
 import signal
 import sys
 from types import MappingProxyType, SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -176,19 +177,17 @@ async def _await_death(pid: int, deadline: float = _TEARDOWN_DEADLINE) -> None:
     pytest.fail(f"child {pid} was still alive {deadline}s after the callback failed")
 
 
-def _scan_can_see_an_occupied_group() -> bool:
-    """Whether the post-reap escalation can fire in this environment at all.
+def _scan_can_capture_group_witnesses() -> bool:
+    """Whether pre-signal witness capture can see group members here.
 
     Not a judgement about the platform, and not a check that the scan "works":
-    it asks the enumerator the production code uses about a group that is
-    provably occupied, because this process is in it. A scan that cannot find
-    us in our own group cannot find a descendant in a child's either.
+    it asks the identity-pinning enumerator about a group that is provably
+    occupied, because this process is in it. A scan that cannot find us in our
+    own group cannot freeze a descendant witness in a child's either.
 
     It keys on membership alone and deliberately not on the completeness flag,
-    because that is the order the decision itself uses: members present
-    short-circuits ahead of any completeness question, and an incomplete scan
-    that still saw a member kills the group. Gating on completeness would skip
-    runs the code would have handled.
+    because a positively identified member remains a usable witness even when
+    some unrelated process-table entries were unreadable.
     """
     from lionagi.ln._proc import group_member_pids
 
@@ -196,18 +195,43 @@ def _scan_can_see_an_occupied_group() -> bool:
     return os.getpid() in members
 
 
-_needs_the_membership_scan = pytest.mark.skipif(
-    not _scan_can_see_an_occupied_group(),
+_needs_group_witness_scan = pytest.mark.skipif(
+    not _scan_can_capture_group_witnesses(),
     reason=(
-        "the membership scan cannot see this process in its own group, so it cannot "
-        "see a descendant in a child's group either. Once the direct child is reaped "
-        "the documented behaviour is to refuse to signal an unproven group, so a "
-        "surviving descendant here is that refusal and not a defect"
+        "the identity scan cannot see this process in its own group, so it cannot "
+        "freeze a descendant witness before signalling a child group. Refusing a "
+        "later group-wide signal without that witness is the safety contract"
     ),
 )
 
 
 class TestSpawnObservation:
+    @pytest.mark.asyncio
+    async def test_observation_failure_reaps_the_created_child(self, monkeypatch):
+        """An identity probe failure must not orphan the child it cannot publish."""
+        import lionagi.providers._cli_subprocess as subprocess_mod
+
+        created = []
+        create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def tracking_spawn(*args, **kwargs):
+            child = await create_subprocess_exec(*args, **kwargs)
+            if args and args[0] == sys.executable:
+                created.append(child)
+            return child
+
+        def fail_observation(pid, *, expected_marker):
+            raise RuntimeError(f"cannot observe {pid}")
+
+        monkeypatch.setattr(subprocess_mod.asyncio, "create_subprocess_exec", tracking_spawn)
+        monkeypatch.setattr(subprocess_mod, "observe_spawned", fail_observation)
+
+        with pytest.raises(RuntimeError, match="cannot observe"):
+            await _drain(ndjson_from_cli(_cmd(_MUTE)))
+
+        assert len(created) == 1
+        assert created[0].returncode is not None
+
     @pytest.mark.asyncio
     async def test_reports_the_live_child_pid_and_its_real_process_group(self):
         seen: list[SpawnedProcess] = []
@@ -290,32 +314,22 @@ class TestSpawnObservation:
         assert spawned.create_time != spawned_create_time(os.getpid())
         assert live == [spawned.create_time]
 
-    @pytest.mark.asyncio
-    async def test_the_identity_is_read_as_one_observation(self):
-        """Group and start time are two reads by pid, and a pid reassigned
-        between them answers the second as the replacement process. A record
-        mixing the two would describe a process that never existed, so the
-        group read is bracketed by the start time and a bracket that fails
-        yields no start time at all."""
+    def test_observation_delegates_the_pre_spawn_marker(self, monkeypatch):
+        """The provider cannot substitute an unmarked start-time lookup."""
         import lionagi.providers._cli_subprocess as mod
 
-        real = mod.spawned_create_time
-        answers = iter([100.0, 200.0])
+        marker = "test-spawn-marker"
+        observe_leader = MagicMock(return_value=100.0)
+        monkeypatch.setattr(mod, "observe_process_group_leader", observe_leader)
+        monkeypatch.setattr(mod, "spawned_pgid", lambda pid: pid)
 
-        def shifting(pid: int) -> float | None:
-            return next(answers, 200.0)
+        observed = mod.observe_spawned(os.getpid(), expected_marker=marker)
 
-        monkey = pytest.MonkeyPatch()
-        monkey.setattr(mod, "spawned_create_time", shifting)
-        try:
-            mixed = mod.observe_spawned(os.getpid())
-        finally:
-            monkey.undo()
-
-        assert mixed.pid == os.getpid()
-        assert mixed.create_time is None, "a moved start time must not be recorded as an identity"
-        # The same call against a stable process does record one.
-        assert mod.observe_spawned(os.getpid()).create_time == real(os.getpid())
+        assert observed == SpawnedProcess(pid=os.getpid(), pgid=os.getpid(), create_time=100.0)
+        observe_leader.assert_called_once_with(
+            os.getpid(),
+            expected_marker=marker,
+        )
 
     @pytest.mark.asyncio
     async def test_identity_is_recorded_even_for_a_child_that_exits_at_once(self):
@@ -1047,20 +1061,16 @@ class TestTheWholeGroupIsEnded:
     ignores SIGTERM, because a cooperative one dies to the polite signal and
     makes every version of this path look identical.
 
-    Both reach the descendant only *after* the graceful pass has waited the
-    direct child, which is the one moment the code needs the membership scan:
-    the leader's pid is recyclable from then on, and only a live member pins
-    the group id. Where that scan cannot see a live group the documented
-    outcome is a refusal to signal, so the descendant survives by design and
-    these would report a defect that is not there. They are gated on a positive
-    control rather than on a platform name, and the gate skips nothing about
-    the refusal itself: what the decision does with an unreadable table is
-    pinned unconditionally, against a forced answer, in
-    :class:`TestWhatTheProcessTableCouldNotAnswer`.
+    Before the first signal, cleanup freezes every group member identity it can
+    observe while the direct child still anchors the group. After that leader
+    exits, the stubborn descendant must match one of those frozen witnesses to
+    authorize SIGKILL. Where the process table cannot capture that witness, the
+    documented outcome is a fail-closed refusal, so these are gated on a
+    positive capability check rather than on a platform name.
     """
 
     @pytest.mark.asyncio
-    @_needs_the_membership_scan
+    @_needs_group_witness_scan
     async def test_a_failing_recorder_ends_the_descendants_too(self, tmp_path):
         kid_pid = tmp_path / "kid.pid"
         ready = tmp_path / "ready"
@@ -1075,7 +1085,7 @@ class TestTheWholeGroupIsEnded:
         await _assert_dies(int(kid_pid.read_text()), "the descendant of a failed spawn")
 
     @pytest.mark.asyncio
-    @_needs_the_membership_scan
+    @_needs_group_witness_scan
     async def test_a_cancelled_stream_ends_the_descendants_too(self, tmp_path):
         """The recorder succeeds here, so the record exists and the ordinary
         teardown runs. That is the reassuring case, and it is where the direct
@@ -1208,60 +1218,6 @@ class TestAnEndpointTheCallerAlreadyBuilt:
             iModel(endpoint=endpoint, env={"TOKEN": "nowhere"})
 
         assert "env" in str(excinfo.value)
-
-
-class TestWhatTheProcessTableCouldNotAnswer:
-    """The escalation keys on positive evidence that the recorded group id is
-    still this child's, and an unreadable process table produces no evidence
-    either way. That branch cannot be reached by running real processes on a
-    machine where enumeration works, so the enumerator is stubbed: the point
-    under test is what the decision does with each answer, not how the answer
-    was obtained."""
-
-    def _decide(self, monkeypatch, members, complete):
-        import lionagi.providers._cli_subprocess as cs
-
-        killed: list = []
-        monkeypatch.setattr(cs, "group_member_pids", lambda pgid: (members, complete))
-        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: killed.append(pgid))
-        return cs._kill_group_if_occupied(4242), killed
-
-    def test_a_group_holding_someone_is_killed(self, monkeypatch):
-        """An occupied group id is never reissued, so this one is provably
-        still the child's."""
-        verdict, killed = self._decide(monkeypatch, [999], True)
-
-        assert verdict == "killed"
-        assert killed == [4242]
-
-    def test_a_group_read_completely_and_found_empty_is_left_alone(self, monkeypatch):
-        verdict, killed = self._decide(monkeypatch, [], True)
-
-        assert verdict == "empty"
-        assert killed == []
-
-    def test_a_group_that_could_not_be_read_is_not_signalled(self, monkeypatch):
-        """No members seen and the scan incomplete are the same observation as
-        an empty group, and one of the two readings sends a signal to whatever
-        now holds a recycled id. The cost is not symmetric: the orphan left by
-        refusing is a process whose identity a caller was handed and could have
-        written down, and a stranger's process group is not recoverable at all.
-        Could have, not did — nothing in this package writes such a record, and
-        saying otherwise would credit the refusal with a recovery route that
-        does not exist here."""
-        verdict, killed = self._decide(monkeypatch, [], False)
-
-        assert verdict == "unproven"
-        assert killed == []
-
-    def test_nothing_is_signalled_without_a_group_id(self, monkeypatch):
-        import lionagi.providers._cli_subprocess as cs
-
-        killed: list = []
-        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: killed.append(pgid))
-
-        assert cs._kill_group_if_occupied(None) == "no-group"
-        assert killed == []
 
 
 class TestTheRawInputShapesTheFixWasNotWrittenAgainst:
@@ -1685,60 +1641,123 @@ class TestTheContinuationKeepsTheCallersOwnRecorder:
         assert seen_requests[1].on_spawn.__self__ is supervisor
 
 
-class TestIdentityIsEstablishedTwoWaysNotOne:
-    """A recorded group id is provably still this child's under either of two
-    facts, and they cover different moments. While the child is unreaped its
-    pid cannot have been reissued. Once it is reaped, only a live member pins
-    the id. Checking only the second refuses where identity was never in
-    question; checking only the first signals a number that may name a
-    stranger."""
+class TestReapedAndUnreapedTeardownBoundaries:
+    """Lifecycle state alone never pins a recyclable process-group number.
 
-    def test_an_unreaped_child_is_ended_without_consulting_the_scan(self, monkeypatch):
-        """This is the half that was missing. On the cancellation backstop the
-        direct child has not been waited, so its pid cannot have been reissued
-        and the group is provably its own. Refusing here because the process
-        table could not be read left a SIGTERM-ignoring descendant alive on
-        every platform that cannot enumerate."""
+    Every group signal needs an identity witness captured while the live child
+    still anchored its group. Neither ``returncode is None`` nor fresh numeric
+    membership supplies that identity.
+    """
+
+    def test_returncode_none_without_a_witness_uses_direct_cleanup_only(self):
+        """A child watcher may reap before it publishes the terminal returncode."""
         import lionagi.providers._cli_subprocess as cs
 
-        signalled: list = []
-        scanned: list = []
-        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
-        monkeypatch.setattr(
-            cs, "group_member_pids", lambda pgid: (scanned.append(pgid), ([], False))[1]
-        )
+        proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
 
-        verdict = cs._end_group_with_evidence(SimpleNamespace(pid=4242, returncode=None))
-
-        assert verdict == "killed-unreaped"
-        assert signalled == [4242]
-        # The scan is not merely ignored, it is not reached: an unreadable
-        # process table must not be able to change this answer.
-        assert scanned == []
-
-    def test_a_reaped_child_still_defers_to_the_scan(self, monkeypatch):
-        """The other side of the same rule, so the fix cannot be satisfied by
-        always killing. Once reaped, the pid is just a number."""
-        import lionagi.providers._cli_subprocess as cs
-
-        signalled: list = []
-        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
-        monkeypatch.setattr(cs, "group_member_pids", lambda pgid: ([], False))
-
-        verdict = cs._end_group_with_evidence(SimpleNamespace(pid=4242, returncode=0))
+        verdict = cs._end_group_with_evidence(proc)
 
         assert verdict == "unproven"
-        assert signalled == []
+        proc.kill.assert_called_once()
+
+    def test_missing_sigkill_still_uses_direct_cleanup(self, monkeypatch):
+        """A Windows-like signal module must not block direct-child cleanup."""
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
+        signal_group = MagicMock()
+        monkeypatch.setattr(cs, "signal", SimpleNamespace())
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
+
+        verdict = cs._end_group_with_evidence(proc, ((4242, 10.0),))
+
+        assert verdict == "unproven"
+        signal_group.assert_not_called()
+        proc.kill.assert_called_once()
+
+    def test_a_frozen_witness_authorizes_the_synchronous_backstop(self, monkeypatch):
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
+        witnesses = ((4242, 10.0),)
+        signal_group = MagicMock(return_value=True)
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
+
+        verdict = cs._end_group_with_evidence(proc, witnesses)
+
+        assert verdict == "killed-witnessed"
+        signal_group.assert_called_once_with(4242, witnesses, signal.SIGKILL)
+        proc.kill.assert_called_once()
+
+    def test_a_populated_group_after_reap_is_still_unproven(self, monkeypatch):
+        """Fresh membership is liveness, not evidence of the old identity.
+
+        Once the direct child has been reaped, another process group can hold
+        the same numeric id. Even a complete scan that finds current members
+        therefore cannot authorize a delayed signal without a witness frozen
+        while the child still anchored the group.
+        """
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=0, kill=MagicMock())
+        signal_group = MagicMock(return_value=False)
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
+
+        verdict = cs._end_group_with_evidence(proc)
+
+        assert verdict == "unproven"
+        signal_group.assert_called_once_with(4242, (), signal.SIGKILL)
+        proc.kill.assert_called_once()
+
+    def test_a_handle_without_returncode_cannot_claim_to_be_unreaped(self, monkeypatch):
+        """Missing lifecycle state is unknown, never positive identity evidence."""
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, kill=MagicMock())
+        signal_group = MagicMock(return_value=False)
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
+
+        verdict = cs._end_group_with_evidence(proc)
+
+        assert verdict == "unproven"
+        signal_group.assert_called_once_with(4242, (), signal.SIGKILL)
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_graceful_teardown_does_not_repeat_a_numeric_sweep_after_reaping(
+        self, monkeypatch
+    ):
+        """The graceful helper owns the one identity-bearing group teardown.
+
+        It captures its witness before signalling. If it returns after reaping
+        the child, ``end_child_group`` must not start a second escalation from
+        the now-recyclable pid/pgid number, even when a fresh scan would report
+        that number as occupied.
+        """
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None)
+
+        async def graceful(child, *, grace, group_witnesses):
+            assert child is proc
+            assert grace == 0.25
+            assert group_witnesses == ()
+            child.returncode = 0
+
+        monkeypatch.setattr(cs, "aterminate_process_group", graceful)
+
+        await cs.end_child_group(proc, grace=0.25)
 
     def test_a_completed_but_reaped_spawn_is_not_signalled(self, monkeypatch):
         """A spawn task can complete AND its child be reaped before the
-        done-callback runs. The pid is then just a number, and the group scan
-        is the only thing that can say whether it still names this child."""
+        done-callback runs. The pid is then just a number, and this path has no
+        witness captured while the child was alive."""
         import lionagi.providers._cli_subprocess as cs
 
-        signalled: list = []
-        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
-        monkeypatch.setattr(cs, "group_member_pids", lambda pgid: ([], True))
+        proc = SimpleNamespace(pid=4242, returncode=0, kill=MagicMock())
+        spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=None)
+        signal_group = MagicMock(return_value=False)
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
 
         class CompletedSpawn:
             def cancelled(self):
@@ -1748,19 +1767,28 @@ class TestIdentityIsEstablishedTwoWaysNotOne:
                 return None
 
             def result(self):
-                return SimpleNamespace(pid=4242, returncode=0)
+                return proc, spawned
 
         cs._kill_abandoned_spawn(CompletedSpawn())
 
-        assert signalled == []
+        signal_group.assert_called_once_with(4242, (), signal.SIGKILL)
+        proc.kill.assert_called_once()
 
-    def test_a_completed_and_still_running_spawn_is_signalled(self, monkeypatch):
-        """The other half, so the fix above cannot be satisfied by never
-        signalling at all. Unreaped means the id is still this child's."""
+    def test_an_abandoned_spawn_uses_the_observation_captured_by_the_spawn_task(self, monkeypatch):
+        """The done callback must not derive identity after the task completed."""
         import lionagi.providers._cli_subprocess as cs
 
-        signalled: list = []
-        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
+        proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
+        spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
+        witnesses = ((4242, 10.0),)
+        signal_group = MagicMock(return_value=True)
+        monkeypatch.setattr(cs, "_witnesses_for_spawn", lambda child, observed: witnesses)
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
+        monkeypatch.setattr(
+            cs,
+            "observe_spawned",
+            MagicMock(side_effect=AssertionError("done callback observed identity too late")),
+        )
 
         class RunningSpawn:
             def cancelled(self):
@@ -1770,8 +1798,9 @@ class TestIdentityIsEstablishedTwoWaysNotOne:
                 return None
 
             def result(self):
-                return SimpleNamespace(pid=4242, returncode=None)
+                return proc, spawned
 
         cs._kill_abandoned_spawn(RunningSpawn())
 
-        assert signalled == [4242]
+        signal_group.assert_called_once_with(4242, witnesses, signal.SIGKILL)
+        proc.kill.assert_called_once()

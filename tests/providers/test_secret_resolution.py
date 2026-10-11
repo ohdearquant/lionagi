@@ -468,3 +468,55 @@ class TestOneConfigReadPerSpawn:
         # The names describe the fill that actually happened, which is the
         # property a second resolve cannot guarantee.
         assert set(names) <= set(env)
+
+
+@pytest.mark.asyncio
+async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
+    """Secret cleanup cannot acquire group authority from a recycled pid."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    lookup = _secret_resolution.ResolvedSecretLookup(
+        argv=("lookup", "{name}"),
+        names=(NAME,),
+    )
+    proc = MagicMock()
+    proc.pid = 5151
+    proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+    proc.wait = AsyncMock(return_value=-9)
+    witnesses = ((5151, 16.0),)
+    cleanup = AsyncMock()
+
+    monkeypatch.setattr(
+        _secret_resolution.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    monkeypatch.setattr(
+        _secret_resolution,
+        "prepare_process_group_env",
+        lambda env=None: ({"MARKED": "secret"}, "secret-token"),
+    )
+    monkeypatch.setattr(
+        _secret_resolution,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            16.0 if (pid, expected_marker) == (5151, "secret-token") else None
+        ),
+    )
+    monkeypatch.setattr(
+        _secret_resolution,
+        "capture_group_witnesses",
+        lambda *args, **kwargs: witnesses,
+    )
+    monkeypatch.setattr(_secret_resolution, "aterminate_process_group", cleanup)
+
+    assert await _secret_resolution._run_lookup(lookup, NAME) is None
+    cleanup.assert_awaited_once_with(
+        proc,
+        grace=None,
+        group_witnesses=witnesses,
+    )
+    assert _secret_resolution.asyncio.create_subprocess_exec.await_args.kwargs["env"] == {
+        "MARKED": "secret"
+    }

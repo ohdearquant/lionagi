@@ -8,7 +8,12 @@ import subprocess
 import threading
 from collections.abc import Mapping
 
-from lionagi.ln._proc import terminate_process_group
+from lionagi.ln import (
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+    terminate_process_group,
+)
 
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
@@ -50,6 +55,7 @@ def _subprocess_sync(
 ) -> dict:
     """Run ``cmd`` synchronously; ``env=None`` inherits the parent environment,
     an explicit mapping scopes less-trusted commands to a minimal one."""
+    child_env, group_marker = prepare_process_group_env(env)
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,
@@ -57,11 +63,16 @@ def _subprocess_sync(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd or None,
-            env=env,
+            env=child_env,
             start_new_session=True,
         )
     except Exception as e:
         return {"stdout": "", "stderr": f"Execution error: {e}", "returncode": -1}
+
+    leader_created = observe_process_group_leader(
+        getattr(proc, "pid", None),
+        expected_marker=group_marker,
+    )
 
     stdout_buf = bytearray()
     stderr_buf = bytearray()
@@ -83,7 +94,19 @@ def _subprocess_sync(
     try:
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
-        terminate_process_group(proc, grace=None)
+        group_witnesses = (
+            capture_group_witnesses(
+                proc,
+                expected_leader_created=leader_created,
+            )
+            if leader_created is not None
+            else ()
+        )
+        terminate_process_group(
+            proc,
+            grace=None,
+            group_witnesses=group_witnesses,
+        )
         proc.wait()
         t_out.join(timeout=1)
         t_err.join(timeout=1)

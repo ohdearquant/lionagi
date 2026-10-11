@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -315,14 +314,29 @@ class _BlockingStream:
 class TestSpawnAndWaitCancellation:
     """Cancelling spawn_and_wait must terminate the process GROUP, not just the direct
     child — `uv run li` forks the real worker, so signalling only the child orphans
-    grandchildren."""
+    grandchildren.
 
-    async def test_cancel_terminates_child_and_group(self, monkeypatch):
+    Group signalling is gated on *witnesses*: a frozen member identity, bound to a
+    private marker injected before the spawn, that still pins the pgid at signal time.
+    Without one, `aterminate_process_group` is documented fail-closed — it cleans up
+    the direct child and does not signal the group — because an unwitnessed pgid may
+    already belong to a stranger that reused the number.
+    """
+
+    async def test_cancel_terminates_child_and_leaves_unwitnessed_group_alone(self, monkeypatch):
+        """A fake proc can produce no witness, so the group must NOT be signalled.
+
+        This arm used to assert the opposite. It was written against the earlier
+        contract, where any pid > 1 was enough to engage the group kill; the marker-
+        bound witness gate replaced that, and a synthetic pid cannot satisfy it by
+        construction. The direct child must still be terminated, which is the part
+        that never depended on witnesses.
+        """
         from lionagi.studio.scheduler import subprocess as sp
 
         class _FakeProc:
             def __init__(self):
-                self.pid = 424242  # > 1 so the group-kill path engages
+                self.pid = 424242  # a pid no witness can ever pin
                 self.terminated = False
                 self.killed = False
                 self.returncode = -15
@@ -365,8 +379,10 @@ class TestSpawnAndWaitCancellation:
             await task
 
         assert proc.terminated is True, "direct child must be terminated"
-        assert killpg_calls, "the process GROUP must be signalled, not just the child"
-        assert killpg_calls[0] == (proc.pid, signal.SIGTERM)
+        assert killpg_calls == [], (
+            "an unwitnessed process group must NOT be signalled: the pgid may "
+            "already belong to a stranger that reused the number"
+        )
 
     async def test_cancel_no_killpg_platform(self, monkeypatch):
         """os.killpg is POSIX-only: on Windows cancellation must still terminate

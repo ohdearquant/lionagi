@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+import secrets
 import signal
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from .concurrency import move_on_after, sleep
@@ -14,6 +17,46 @@ from .concurrency import move_on_after, sleep
 # place, so a recorded start time is compared to a live one within this. Two
 # LIVE reads of the same process must still compare exactly equal.
 CREATE_TIME_TOLERANCE = 0.1
+_PROCESS_GROUP_MARKER = "LIONAGI_INTERNAL_PROCESS_GROUP_TOKEN"
+
+
+@dataclass(frozen=True)
+class _GroupWitnesses:
+    """Identity witnesses plus whether the group scan had an unreadable gap."""
+
+    members: tuple[tuple[int, float], ...]
+    group_anchor: bool = False
+
+    def __iter__(self):
+        return iter(self.members)
+
+    def __len__(self) -> int:
+        return len(self.members)
+
+    def __bool__(self) -> bool:
+        return bool(self.members)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _GroupWitnesses):
+            return (self.members, self.group_anchor) == (other.members, other.group_anchor)
+        if isinstance(other, tuple):
+            return self.members == other
+        return NotImplemented
+
+
+def _marker_matches(value: str | None, expected: str) -> bool:
+    """Whether a process disclosed the marker assigned to this spawn."""
+    return isinstance(value, str) and secrets.compare_digest(value, expected)
+
+
+def prepare_process_group_env(
+    env: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], str]:
+    """Return a child environment carrying a fresh, private spawn marker."""
+    marker = secrets.token_urlsafe(32)
+    prepared = dict(os.environ if env is None else env)
+    prepared[_PROCESS_GROUP_MARKER] = marker
+    return prepared, marker
 
 
 def process_create_time(pid: int) -> tuple[str, float | None]:
@@ -95,6 +138,34 @@ def pinned_member(
     return "found", (pid, created, marker, marker_state == "found")
 
 
+def observe_process_group_leader(pid: Any, *, expected_marker: str) -> float | None:
+    """Bind a new session leader to a marker injected before its spawn.
+
+    Start time alone cannot distinguish a child reaped before the first probe
+    from a stranger that already reused its pid. The private marker supplies
+    that pre-spawn fact; an unreadable or mismatched marker is no authority.
+    """
+    if (
+        type(pid) is not int
+        or pid <= 1
+        or not isinstance(expected_marker, str)
+        or not expected_marker
+        or not hasattr(os, "getpgid")
+    ):
+        return None
+    state, member = pinned_member(pid, pid, marker_var=_PROCESS_GROUP_MARKER)
+    if state != "found" or member is None:
+        return None
+    _, created, marker, marker_read = member
+    if (
+        not marker_read
+        or not isinstance(marker, str)
+        or not secrets.compare_digest(marker, expected_marker)
+    ):
+        return None
+    return created
+
+
 def live_group_members(
     pgid: int, *, marker_var: str
 ) -> tuple[list[tuple[int, float, str | None, bool]], bool]:
@@ -134,18 +205,34 @@ def live_group_members(
     return members, complete
 
 
-def group_member_pids(pgid: int) -> tuple[list[int], bool]:
-    """Pids currently in group *pgid*, and whether the scan was complete.
+def _pinned_group_identity(pid: int, pgid: int) -> tuple[str, tuple[int, float] | None]:
+    """Pin *pid* to one start time while proving membership in *pgid*."""
+    state, created = process_create_time(pid)
+    if state == "gone":
+        return "gone", None
+    if state != "found" or created is None:
+        return "unknown", None
+    try:
+        in_group = os.getpgid(pid) == pgid
+    except ProcessLookupError:
+        return "gone", None
+    except OSError:
+        return "unknown", None
+    again, created_again = process_create_time(pid)
+    if again != "found" or created_again != created:
+        return "unknown", None
+    if not in_group:
+        return "gone", None
+    return "found", (pid, created)
 
-    The marker-free membership read, for a caller asking only whether a group
-    is empty. Not a cheaper :func:`live_group_members` with a field dropped —
-    see docs/internals/ln-primitives.md#process-group-identity for why the
-    marker has to be read inside the same bracket. An incomplete scan is never
-    reported as emptiness.
-    """
+
+def _group_member_identities(
+    pgid: int,
+) -> tuple[list[tuple[int, float]], bool]:
+    """Start-time-pinned identities currently in *pgid*, plus scan completeness."""
     import psutil
 
-    members: list[int] = []
+    members: list[tuple[int, float]] = []
     complete = True
     try:
         pids = psutil.pids()
@@ -155,26 +242,164 @@ def group_member_pids(pgid: int) -> tuple[list[int], bool]:
     for pid in pids:
         if pid <= 1:
             continue
-        state, created = process_create_time(pid)
-        if state == "gone":
-            continue
-        if state != "found" or created is None:
+        state, member = _pinned_group_identity(pid, pgid)
+        if state == "found" and member is not None:
+            members.append(member)
+        elif state == "unknown":
             complete = False
-            continue
-        try:
-            in_group = os.getpgid(pid) == pgid
-        except ProcessLookupError:
-            continue
-        except OSError:
-            complete = False
-            continue
-        again, created_again = process_create_time(pid)
-        if again != "found" or created_again != created:
-            complete = False
-            continue
-        if in_group:
-            members.append(pid)
     return members, complete
+
+
+def group_member_pids(pgid: int) -> tuple[list[int], bool]:
+    """Pids currently in group *pgid*, and whether the scan was complete.
+
+    The marker-free membership read, for a caller asking only whether a group
+    is empty. Not a cheaper :func:`live_group_members` with a field dropped —
+    see docs/internals/ln-primitives.md#process-group-identity for why the
+    marker has to be read inside the same bracket. An incomplete scan is never
+    reported as emptiness.
+    """
+    members, complete = _group_member_identities(pgid)
+    return [pid for pid, _ in members], complete
+
+
+def _child_is_reaped(proc: Any) -> bool:
+    """Whether a subprocess-shaped handle has recorded a terminal return code."""
+    return isinstance(getattr(proc, "returncode", None), int)
+
+
+def _capture_group_witnesses(
+    proc: Any,
+    pgid: int,
+    *,
+    expected_leader_created: float | None = None,
+) -> tuple[tuple[int, float], ...]:
+    """Capture group members while *proc* proves this is still its group.
+
+    The leader brackets the process-table scan. If it disappears, changes
+    identity, or leaves the group during that window, none of the scan can be
+    tied to the child and no witness is returned.
+    """
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid != pgid:
+        return ()
+    if _child_is_reaped(proc):
+        return ()
+    state, leader = _pinned_group_identity(pid, pgid)
+    if state != "found" or leader is None:
+        return ()
+    if expected_leader_created is not None and not start_time_matches(
+        leader[1], expected_leader_created
+    ):
+        return ()
+    members, complete = _group_member_identities(pgid)
+    if _child_is_reaped(proc):
+        return ()
+    again, leader_again = _pinned_group_identity(pid, pgid)
+    if again != "found" or leader_again != leader:
+        return ()
+    return _GroupWitnesses(
+        tuple(sorted({leader, *members})),
+        group_anchor=not complete,
+    )
+
+
+def _group_has_witness(pgid: int, witnesses: tuple[tuple[int, float], ...]) -> bool:
+    """Whether a member captured before signalling still pins *pgid*."""
+    for pid, created in witnesses:
+        state, member = _pinned_group_identity(pid, pgid)
+        if state == "found" and member == (pid, created):
+            return True
+    return False
+
+
+def capture_group_witnesses(
+    proc: Any,
+    *,
+    expected_leader_created: float,
+    expected_marker: str | None = None,
+) -> tuple[tuple[int, float], ...]:
+    """Freeze identities while the exact spawn-time leader still matches.
+
+    The required ``expected_leader_created`` prevents a teardown-time caller
+    from turning a recycled pid into fresh authority. Obtain it from
+    :func:`observe_process_group_leader` after injecting the environment from
+    :func:`prepare_process_group_env` before spawn. When ``expected_marker`` is
+    supplied, a live descendant carrying that inherited marker can also pin the
+    group after the leader has exited; the marker is what distinguishes that
+    survivor from a later occupant of the numeric PGID.
+    """
+    pgid = _safe_pgid(proc)
+    if pgid is None or not isinstance(expected_leader_created, (int, float)):
+        return ()
+    if isinstance(expected_marker, str) and expected_marker:
+        members, _ = live_group_members(pgid, marker_var=_PROCESS_GROUP_MARKER)
+        marked = [
+            (pid, created)
+            for pid, created, marker, marker_read in members
+            if marker_read and _marker_matches(marker, expected_marker)
+        ]
+        if not marked:
+            # Some Darwin environments deny a process-table listing even for
+            # processes owned by this user. The verified spawn marker still
+            # anchors the dedicated PGID; keep the leader identity as a
+            # fallback witness and require a live group probe immediately
+            # before signalling. A foreign or empty group therefore remains
+            # outside this path.
+            return _GroupWitnesses(((pgid, expected_leader_created),), group_anchor=True)
+        # While the leader is still live, its start time must also match the
+        # spawn observation. After it has exited, the inherited marker on a
+        # surviving group member is the remaining proof that this PGID is ours.
+        if not _child_is_reaped(proc):
+            leader = next(((pid, created) for pid, created in marked if pid == pgid), None)
+            if leader is None or not start_time_matches(leader[1], expected_leader_created):
+                return ()
+        return _GroupWitnesses(tuple(sorted(set(marked))))
+    return _capture_group_witnesses(
+        proc,
+        pgid,
+        expected_leader_created=expected_leader_created,
+    )
+
+
+def signal_group_if_witnessed(
+    pgid: Any,
+    witnesses: tuple[tuple[int, float], ...],
+    sig: signal.Signals,
+    *,
+    expected_marker: str | None = None,
+) -> bool:
+    """Signal *pgid* only when a frozen member identity still matches."""
+    resolved = safe_pgid_value(pgid)
+    if resolved is None or not witnesses:
+        return False
+    witnessed = _group_has_witness(resolved, witnesses)
+    if not witnessed and getattr(witnesses, "group_anchor", False):
+        # The live leader identity anchored this group before the scan became
+        # unreadable. Keep the force-kill path available when the leader exits,
+        # but demand a positive liveness probe before using the numeric PGID.
+        try:
+            os.killpg(resolved, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+        witnessed = True
+    if not witnessed and expected_marker and any(pid == resolved for pid, _ in witnesses):
+        # On platforms where process enumeration is unavailable, the marker
+        # verified at spawn is the proof of ownership and killpg(0) is the
+        # final liveness check. PGIDs cannot be reused while this group is
+        # populated; an empty/foreign group is never signalled here.
+        try:
+            os.killpg(resolved, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+        witnessed = True
+    if not witnessed:
+        return False
+    try:
+        os.killpg(resolved, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
 
 
 def safe_pgid_value(pgid: Any) -> int | None:
@@ -233,23 +458,44 @@ def terminate_process_group(
     *,
     grace: float | None = None,
     sig_first: signal.Signals = signal.SIGTERM,
+    group_witnesses: tuple[tuple[int, float], ...] | None = None,
+    expected_marker: str | None = None,
 ) -> None:
-    """Send sig_first to the process group AND the direct child; grace=None sends
-    SIGKILL immediately (see aterminate_process_group for the full escalate cycle)."""
+    """End a child and, with spawn-bound witnesses, its process group.
+
+    Omitting ``group_witnesses`` deliberately withholds group-signal authority:
+    a witness captured only at teardown cannot distinguish the original child
+    from a process that has since reused its PID. ``grace=None`` sends SIGKILL
+    immediately; see :func:`aterminate_process_group` for the escalate cycle.
+    """
     pgid = _safe_pgid(proc)
+    witnesses = group_witnesses or ()
     if grace is None:
         # Signal group AND direct child: proc.kill() is normally a no-op (child is
         # in the killed group) but prevents orphaning it when killpg is unavailable.
         if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(pgid, signal.SIGKILL)
+            if expected_marker is None:
+                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+            else:
+                signal_group_if_witnessed(
+                    pgid,
+                    witnesses,
+                    signal.SIGKILL,
+                    expected_marker=expected_marker,
+                )
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         return
     # sig_first only; caller drives the wait + SIGKILL escalation.
-    if pgid is not None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, sig_first)
+    if expected_marker is None:
+        signal_group_if_witnessed(pgid, witnesses, sig_first)
+    else:
+        signal_group_if_witnessed(
+            pgid,
+            witnesses,
+            sig_first,
+            expected_marker=expected_marker,
+        )
     with contextlib.suppress(ProcessLookupError):
         proc.terminate()
 
@@ -262,14 +508,15 @@ _POLL_MAX_SECONDS = 0.02
 
 
 def _group_has_members(pgid: int) -> bool:
-    """Whether any process remains in the group. Signal 0 tests delivery only.
+    """Whether any process may remain in the group. Signal 0 tests delivery only.
 
     Only ``ProcessLookupError`` is evidence of an empty group. Everything else is
     a probe that failed to answer, including the permission case where something
     is plainly there but not ours to signal. A failed probe reported as "empty"
     would end grace early and skip the forced kill, and that is the one direction
     this must not fail in: the caller asked for the group to be gone, so an
-    unreadable answer keeps the escalation rather than cancelling it.
+    unreadable answer keeps the grace wait rather than ending it early. This is
+    never identity evidence and must not authorize a group-wide signal.
     """
     try:
         os.killpg(pgid, 0)
@@ -310,21 +557,41 @@ async def aterminate_process_group(
     *,
     grace: float | None = None,
     sig_first: signal.Signals = signal.SIGTERM,
+    group_witnesses: tuple[tuple[int, float], ...] | None = None,
+    expected_marker: str | None = None,
 ) -> None:
-    """Async: signal the process group AND the direct child, wait up to grace, then
-    SIGKILL; grace=None sends SIGKILL immediately with no prior signal."""
+    """End a child and, with spawn-bound witnesses, its process group.
+
+    Omitting ``group_witnesses`` is fail-closed for group signalling and still
+    cleans up the direct child. With witnesses, wait up to ``grace`` after the
+    first signal and then escalate to SIGKILL; ``grace=None`` skips that wait.
+    """
     pgid = _safe_pgid(proc)
+    witnesses = group_witnesses or ()
     if grace is None:
         # No prior SIGTERM/wait: signal group AND direct child directly.
         if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(pgid, signal.SIGKILL)
+            if expected_marker is None:
+                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+            else:
+                signal_group_if_witnessed(
+                    pgid,
+                    witnesses,
+                    signal.SIGKILL,
+                    expected_marker=expected_marker,
+                )
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         return
-    if pgid is not None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, sig_first)
+    if expected_marker is None:
+        signal_group_if_witnessed(pgid, witnesses, sig_first)
+    else:
+        signal_group_if_witnessed(
+            pgid,
+            witnesses,
+            sig_first,
+            expected_marker=expected_marker,
+        )
     with contextlib.suppress(ProcessLookupError):
         proc.terminate()
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
@@ -339,25 +606,23 @@ async def aterminate_process_group(
         # reaching it by way of a stalled wait was incidental: that happened
         # only where wait() is pipe-bound, and only when a survivor happened to
         # be holding a pipe. Timing out here is what drives the escalation.
-        while pgid is not None and _group_has_members(pgid):
+        while pgid is not None and witnesses and _group_has_members(pgid):
             await sleep(_POLL_MAX_SECONDS)
     if scope.cancelled_caught:
-        if pgid is not None:
-            # Why this is not signalling some unrelated group that inherited the
-            # id: a process group id is not recycled while the group still has
-            # members, and control only reaches here with members present, since
-            # an empty group ends the wait above and returns without any kill at
-            # all. That is a platform guarantee rather than something checked
-            # here, and it is recorded because the code cannot show it.
-            #
-            # It is not a proof that the id is current at this instant. Nothing
-            # portable can assert group identity beyond membership, so a
-            # revalidating probe would carry the same gap it looks like it
-            # removes.
-            # The note is here to say why that probe is absent, not to claim the
-            # question does not exist.
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGKILL)
+        if pgid is not None and witnesses:
+            # A member captured while the live child anchored the group still
+            # matches immediately before the signal. The final identity-read to
+            # killpg gap cannot be closed with portable process-group APIs; see
+            # docs/internals/ln-primitives.md#signalling-a-group.
+            if expected_marker is None:
+                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+            else:
+                signal_group_if_witnessed(
+                    pgid,
+                    witnesses,
+                    signal.SIGKILL,
+                    expected_marker=expected_marker,
+                )
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         # Bounded too: a caller that has already escalated to SIGKILL is done

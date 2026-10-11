@@ -18,7 +18,12 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln import (
+    aterminate_process_group,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -725,7 +730,9 @@ async def spawn_and_wait(
         _validate_action_command(command)
         _validate_command_allowlisted(command)
 
-    env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
+    env, group_marker = prepare_process_group_env(
+        {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
+    )
 
     _log.info("Spawning: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(
@@ -739,7 +746,11 @@ async def spawn_and_wait(
         # otherwise grandchildren survive scheduler shutdown as orphans.
         start_new_session=True,
     )
-    # Pgid == proc.pid; pid-guard and platform check live in aterminate_process_group.
+    leader_created = observe_process_group_leader(
+        getattr(proc, "pid", None),
+        expected_marker=group_marker,
+    )
+    # Pgid == proc.pid; cleanup authority remains bound to this spawn identity.
 
     drain = asyncio.gather(
         _drain_tail(proc.stdout, _TAIL_BYTES),
@@ -771,7 +782,20 @@ async def spawn_and_wait(
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
-        await aterminate_process_group(proc, grace=_PROCESS_TERMINATION_GRACE_SECONDS)
+        group_witnesses = (
+            capture_group_witnesses(
+                proc,
+                expected_leader_created=leader_created,
+                expected_marker=group_marker,
+            )
+            if leader_created is not None
+            else ()
+        )
+        await aterminate_process_group(
+            proc,
+            grace=_PROCESS_TERMINATION_GRACE_SECONDS,
+            group_witnesses=group_witnesses,
+        )
         raise SubprocessDeadlineExceededError(
             invocation_id=invocation_id,
             deadline_seconds=deadline_seconds,
@@ -785,7 +809,20 @@ async def spawn_and_wait(
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
-        await aterminate_process_group(proc, grace=_PROCESS_TERMINATION_GRACE_SECONDS)
+        group_witnesses = (
+            capture_group_witnesses(
+                proc,
+                expected_leader_created=leader_created,
+                expected_marker=group_marker,
+            )
+            if leader_created is not None
+            else ()
+        )
+        await aterminate_process_group(
+            proc,
+            grace=_PROCESS_TERMINATION_GRACE_SECONDS,
+            group_witnesses=group_witnesses,
+        )
         raise
     finally:
         if tmp_path is not None:
