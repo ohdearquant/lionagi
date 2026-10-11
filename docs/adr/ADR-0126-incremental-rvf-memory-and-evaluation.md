@@ -108,3 +108,159 @@ feedback separately from automatic compaction and expired-record search.
 
 This proposal depends on ADR-0125 and its upstream PR. It does not implement the
 ruvllm generation adapter work described in RuVector issue 1191.
+## Contract reference
+
+| Concern | Decision |
+| --- | --- |
+| Transaction visibility and replay | D1 |
+| Expiration and physical retention | D2 |
+| Retrieval approval and rollback | D3 |
+
+### D1 control and transaction shapes
+
+The literal control shape, with representative values, is:
+
+```json
+{
+  "version": 1,
+  "generation": 2,
+  "segments": [
+    {
+      "name": "segment-0123456789abcdef0123456789abcdef.rvf",
+      "sha256": "<64 lowercase hexadecimal characters>"
+    }
+  ]
+}
+```
+
+The generated basename never supplies an arbitrary path or native lineage parent.
+The first segment is a base operation; later generations are consecutive deltas.
+The RVF application envelope is:
+
+```python
+{
+    "configuration": {
+        # Inherited effective store options and embedding identity,
+        # plus journal version, max_segments and max_journal_bytes.
+    },
+    "generation": 2,
+    "operation": "feedback",
+    "records": [],  # For add/base: [UUID, content, metadata] rows.
+    "payload": ["event-id", "context-digest", "node-UUID", 1.0],
+}
+```
+
+Vector identifiers are the ordered row offsets in each segment, not global UUIDs.
+The metadata codec and envelope byte bounds are inherited from ADR-0125; journal
+replay also checks the final corpus and feedback capacities. Application metadata
+must remain JSON serializable and all numeric vectors and rewards finite.
+
+| Operation | Records | Payload | Replay effect |
+| --- | --- | --- | --- |
+| base | Complete live physical corpus | All explicit feedback events | Initialize records and events |
+| add | New canonical rows and vectors | null | Reject duplicate UUIDs, append records |
+| delete | Empty | UUID list | Remove records and associated feedback |
+| feedback | Empty | One event tuple | Enforce event identity and update aggregate |
+| reset | Empty | Context digest | Remove feedback for that context |
+
+An application write progresses through these visibility states:
+
+1. Validate request and mutate locked in-process state.
+2. Write bounded native segment; close and sync it.
+3. Check active count and byte limits; compact when needed.
+4. Publish a synced temporary CURRENT by atomic replacement and directory sync.
+5. Update in-process segment accounting; remove obsolete managed files after a
+   successful compaction.
+
+After a failed write the instance is unusable. Failure after atomic replacement
+can mean the new generation is visible even though the method raised. Reopen and
+inspect canonical state; retry feedback with the same event ID to avoid duplicate
+ratings. The API does not promise an exception always means no durable change.
+
+Files named by CURRENT must pass private regular file, ownership, single link,
+basename, hash and budget checks. Unreferenced files are not replayed. Cleanup
+only targets generated managed segment basenames that pass path validation.
+Compaction does not recursively remove application directories or arbitrary files.
+
+Migration from a single snapshot is explicit application export and ingestion
+into a fresh journal directory. The constructor does not reinterpret an existing
+single RVF file as CURRENT. Keep the source until verifying UUID, payload, vector,
+embedding identity and feedback equivalence; there is no automatic migration API.
+
+### D2 eligibility and retention contracts
+
+```python
+LifecycleRuVectorStore(
+    directory, dimensions, *, embedding_id, clock=time.time, **store_options
+)
+add_nodes(nodes, *, ttl_seconds=None) -> list[str]
+purge_expired(now=None) -> int
+compact(*, purge_expired=True) -> None
+```
+
+The reserved record metadata shape is exactly
+`{"_ruvector_lifecycle": {"version": 1, "expires_at": epoch_seconds}}`.
+Caller supplied reserved keys are rejected. TTL must be finite and positive.
+Expiry at the captured read time is ineligible. Public returned metadata omits
+the envelope, and host predicates receive public metadata.
+
+`len(store)` counts eligible records; physical capacity is still occupied until
+purge. Feedback cannot be added to an expired record. Purge deletes all expired
+UUIDs and their events in one transaction even when their count exceeds the
+public mutation batch limit. A host supplied `now` is a trusted retention
+decision, not tenant input. Async wrappers run these operations in threads;
+cancelling an await does not stop a worker already performing native I/O.
+
+### D3 evaluation and report contracts
+
+```python
+EvaluationCase(query, vector, relevant_ids, predicate=None)
+EvaluationGate(
+    min_cases=20, min_relative_improvement=0.1,
+    max_p95_ratio=1.5, allow_case_regressions=False
+)
+GovernedFeedbackRanker(store)
+promote(candidate, cases, gate=None, *, k=5) -> EvaluationReport
+rollback() -> bool
+```
+
+The immutable report fields are `cases`, `k`, `baseline_mrr`,
+`candidate_mrr`, `baseline_p95_ms`, `candidate_p95_ms`, `regressions`,
+`accepted`, `reasons`, `embedding_id`, `configuration`,
+`gate_configuration` and `dataset_digest`. Settings are stored as tuples of
+name/value pairs. Reports omit raw query, content and labels, but a digest is not
+an anonymization guarantee for guessable inputs.
+
+A relevant ID must exist and be eligible under the optional predicate. Case
+vectors must match the store dimension. Malformed or missing labels raise and
+restore the evaluation guard. Zero quality gain is rejected even when the
+relative improvement threshold is zero. p95 uses one paired sample per case;
+the caller must choose enough representative cases for reliable timing evidence.
+Synthetic repeated queries in the runnable example verify APIs only.
+
+## Deferred contracts
+
+### Durable policy evidence: DEFERRED
+
+A future durable approval would need a versioned policy record bound to exact
+corpus generation, embedding revision, feedback state, labeled evaluation
+partition and executable predicate identity. Recovery would verify every binding
+before activating the policy; mismatch would restore baseline. The current
+digest does not satisfy these bindings, so runtime approval is intentionally
+not serialized or inferred from persisted ratings.
+
+### Background compaction: DEFERRED
+
+A background implementation would snapshot a generation under the writer lease,
+build its base off-thread, then check that generation before publishing. Concurrent
+deltas would either be appended to the new base or force retry; file reclamation
+must wait for all readers. Cancellation and disk failure require explicit state
+and retry limits. The current synchronous lock avoids an unimplemented retry and
+reader lifetime contract, at the cost of observed compaction pauses.
+
+### Distributed ownership: DEFERRED
+
+A distributed lease would need fencing tokens enforced at publication and
+storage with conditional atomic writes. Local advisory locks do not implement
+that guarantee. Until a backend supplies fencing and shared filesystem durability
+semantics, multiple hosts must not open this store for writing.

@@ -304,6 +304,7 @@ its area block.
   lazy activation; number from the adjacent free gap — the substrates block is exhausted)
 
 - [ADR-0125](ADR-0125-rvf-durable-memory-and-relevance-feedback.md) — RVF durable memory and explicit relevance feedback (Proposed; sequential number)
+- [ADR-0126](ADR-0126-incremental-rvf-memory-and-evaluation.md) — Incremental RVF memory, retention and evaluated retrieval policies (Proposed; sequential number, substrates block exhausted)
 
 ### cli-orchestration (sequential numbers only)
 
