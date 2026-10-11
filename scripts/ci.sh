@@ -387,7 +387,7 @@ lint-hygiene() {
   # which is exactly what makes the source trees safe to scan and what the
   # narrower scope was leaving unscanned.
   if uv run python "$PY_HYGIENE_SCRIPT" \
-    docs/ notebooks/ cookbooks/ examples/ lionagi/ tests/ scripts/ benchmarks/ marketplace/; then
+    docs/ notebooks/ cookbooks/ examples/ lionagi/ tests/ scripts/ benchmarks/ marketplace/ lion1/; then
     :
   else
     scan_rc=$?

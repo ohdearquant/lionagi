@@ -76,7 +76,7 @@ def bench_dir(tmp_path):
     """A resident directory whose notes the stub binary serves, no note written yet."""
     d = tmp_path / "bench"
     d.mkdir()
-    (d / "chores.toml").write_text('actor = "lambda:x:bench"\n')
+    (d / "chores.toml").write_text('actor = "xena:bench"\n')
     resident_store(d)
     return d
 
@@ -1272,7 +1272,7 @@ def test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds
 class ExecKhive:
     """A khive whose `exec` answers per verb, for the instruments that read the store."""
 
-    actor, cwd = "lambda:x:agent", None
+    actor, cwd = "xena:agent", None
 
     def __init__(self, **by_verb):
         self.by_verb, self.ops = by_verb, []
@@ -1289,16 +1289,16 @@ def test_gtd_inbox_names_its_population_and_fails_its_control_on_an_unshared_nam
     old = {"id": "t1", "title": "triage me", "priority": "p1", "created_at": iso(30)}
     new = {"id": "t2", "title": "fresh", "priority": "p2", "created_at": iso(2)}
     k = ExecKhive(**{"gtd.tasks": [[old, new], [old]]})
-    inst = GtdInbox(k, "lambda:x", every="every:6h", max_age_h=24)
+    inst = GtdInbox(k, "xena", every="every:6h", max_age_h=24)
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings == ("1 gtd inbox row(s) older than 24h of 2 in inbox",)
-    assert out.population == "gtd tasks assigned to lambda:x with status inbox" and out.count == 2
+    assert out.population == "gtd tasks assigned to xena with status inbox" and out.count == 2
     assert out.predicate == "created_at older than 24h (1 match)" and "t1 p1 triage me (30h)" in out.evidence
     assert k.ops[0] == (  # the control rides in the same batch: does the namespace hold any task at all
-        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+        '[gtd.tasks(status="inbox", assignee="xena", limit=100), gtd.tasks(assignee="xena", limit=1)]'
     )
     k = ExecKhive(**{"gtd.tasks": [[], []]})  # an unshared namespace answers empty, not an error
-    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    out = asyncio.run(GtdInbox(k, "xena", every=None).run({}))
     assert not out.control and out.findings == () and "has NO task at all" in out.evidence
 
 
@@ -1306,26 +1306,26 @@ def test_gtd_inbox_names_its_population_and_fails_its_control_on_an_unshared_nam
 def test_gtd_inbox_an_inbox_read_that_is_not_a_list_is_unread_not_empty(answer):
     known = {"id": "t1", "title": "any", "priority": "p1", "created_at": iso(1)}
     k = ExecKhive(**{"gtd.tasks": [answer, [known]]})
-    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    out = asyncio.run(GtdInbox(k, "xena", every=None).run({}))
     assert not out.control and out.findings == () and out.positive == ""
     assert f"the inbox read answered {type(answer).__name__}, not a list of tasks" in out.evidence
-    assert "lambda:x has a task at all" in out.evidence  # the known-positive held; the answer did not
+    assert "xena has a task at all" in out.evidence  # the known-positive held; the answer did not
 
 
 def test_gtd_inbox_a_full_page_is_a_floor_and_fails_the_control():
     known = {"id": "t1", "title": "any", "priority": "p1", "created_at": iso(1)}
     fresh = [{"id": f"t{i}", "title": "new", "priority": "p2", "created_at": iso(1)} for i in range(99)]
     k = ExecKhive(**{"gtd.tasks": [fresh, [known]]})
-    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    out = asyncio.run(GtdInbox(k, "xena", every=None).run({}))
     assert out.control and out.count == 99 and "limit=100)" in k.ops[0]
     k = ExecKhive(**{"gtd.tasks": [[*fresh, known], [known]]})
-    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    out = asyncio.run(GtdInbox(k, "xena", every=None).run({}))
     assert not out.control and out.count == 100 and out.positive == ""
     assert "the inbox read returned a full page of 100; rows past it are unread" in out.evidence
 
 
 def test_inbox_sla_probes_each_actor_and_a_dead_read_fails_the_control():
-    page = [{"id": "m1", "from_actor": "lambda:owner", "created_at_us": 1789959858375317}]
+    page = [{"id": "m1", "from_actor": "ona", "created_at_us": 1789959858375317}]
     k = ExecKhive(
         **{
             "comm.probe": [
@@ -1334,18 +1334,17 @@ def test_inbox_sla_probes_each_actor_and_a_dead_read_fails_the_control():
             ]
         }
     )
-    inst = InboxSla(k, ["lambda:x", "lambda:x:echo"], every="every:15m", stale_minutes=20)
+    inst = InboxSla(k, ["xena", "xena:echo"], every="every:15m", stale_minutes=20)
     out = asyncio.run(inst.run({}))
-    assert out.findings == ("lambda:x: 3 unread message(s) older than 20 min",)
-    assert not out.control and "lambda:x:echo: empty page and zero count" in out.evidence
-    assert out.population == "messages on the probe pages of ['lambda:x', 'lambda:x:echo']"
+    assert out.findings == ("xena: 3 unread message(s) older than 20 min",)
+    assert not out.control and "xena:echo: empty page and zero count" in out.evidence
+    assert out.population == "messages on the probe pages of ['xena', 'xena:echo']"
     assert out.predicate == "unread and older than 20 minutes (3 match)"
     assert k.ops == [
-        '[comm.probe(actor="lambda:x", stale_minutes=20), '
-        'comm.probe(actor="lambda:x:echo", stale_minutes=20)]'
+        '[comm.probe(actor="xena", stale_minutes=20), comm.probe(actor="xena:echo", stale_minutes=20)]'
     ]
     k = ExecKhive(**{"comm.probe": [{"new_messages": page, "stale_unread_count": 0}]})
-    out = asyncio.run(InboxSla(k, ["lambda:x"], every=None).run({}))
+    out = asyncio.run(InboxSla(k, ["xena"], every=None).run({}))
     assert out.control and out.findings == ()
 
 
@@ -1719,7 +1718,7 @@ def test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unre
 def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     d = bench_dir(tmp_path)
     jobs = {
-        "r1": {"pid": 4242, "started": "x", "asker": "lambda:x", "reported": False},
+        "r1": {"pid": 4242, "started": "x", "asker": "xena", "reported": False},
         "r0": {"pid": 1, "reported": True},
     }
     resident_store(d).put("jobs", jobs, run="-", seq=0)
@@ -1728,7 +1727,7 @@ def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     inst = BenchJobs(str(d), str(tmp_path / "results"), every="every:1h", run=FakeSh(**{"-p 4242": ""}))
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings == (
-        "job r1: unreported, pid 4242 gone, 2 ledger row(s); asked by lambda:x",
+        "job r1: unreported, pid 4242 gone, 2 ledger row(s); asked by xena",
     )
     assert out.evidence.startswith(f"control: {d} notes read, 2 job(s) noted\n")
     out = asyncio.run(BenchJobs(str(tmp_path / "nope"), str(tmp_path), every=None).run({}))
@@ -1969,7 +1968,7 @@ def test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_b
     from types import SimpleNamespace
 
     job = f'{{artifact = "/x/out.json", max_age_h = {bound}}}'
-    cfg = tomllib.loads(f'owner = "lambda:x"\n[chores.scheduled-job]\njobs = [{job}]\n')
+    cfg = tomllib.loads(f'owner = "xena"\n[chores.scheduled-job]\njobs = [{job}]\n')
     with pytest.raises(ValueError, match="max_age_h is a positive number of hours"):
         instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), fresh_store().notes("agent"))
 
@@ -1978,7 +1977,7 @@ def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_s
     from types import SimpleNamespace
 
     cfg = {
-        "owner": "lambda:x",
+        "owner": "xena",
         "chores": {
             "lock-holder": {"every": "every:15m", "locks": ["/tmp/a.lock"]},
             "scheduled-job": {"every": "every:1h", "jobs": [{"artifact": "/x/out.json", "max_age_h": 26}]},
@@ -1998,19 +1997,19 @@ def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_s
 
 def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_path, kkernel_stub):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
-        'trusted = ["daemon:review"]\n'
+        'actor = "xena:agent"\nowner = "xena"\nsteward = "ona"\n'
+        'trusted = ["review-daemon"]\n'
         'aged_after = 3\n[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
-        '[chores.inbox-sla]\nevery = "every:15m"\nactors = ["lambda:x"]\n'
+        '[chores.inbox-sla]\nevery = "every:15m"\nactors = ["xena"]\n'
     )
     chores, agent = build(tmp_path, backend=None)
-    assert chores.trusted == frozenset({"lambda:x", "lambda:owner", "lambda:x:agent", "daemon:review"})
+    assert chores.trusted == frozenset({"xena", "ona", "xena:agent", "review-daemon"})
     assert chores.aged_after == 3 and sorted(chores.instruments) == ["disk", "inbox-sla"]
     assert isinstance(agent.khive, Bounded) and agent.khive.recipients == chores.trusted
-    assert agent.admit({"properties": {"from_actor": "daemon:review"}}) is True
-    assert agent.admit({"properties": {"from_actor": "lambda:stranger"}}) is False
+    assert agent.admit({"properties": {"from_actor": "review-daemon"}}) is True
+    assert agent.admit({"properties": {"from_actor": "stan"}}) is False
     with pytest.raises(AgentError, match="agent boundary"):
         asyncio.run(agent.khive.exec('gtd.complete(id="x")'))
     assert sorted((n, i.direction) for n, i in chores.instruments.items()) == [
@@ -2021,14 +2020,14 @@ def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_
 
 
 def desk_dir(tmp_path, front: str = "") -> None:
-    """An agent directory whose `[desk]` reads the chair `lambda:x`; `front` is appended to the table."""
+    """An agent directory whose `[desk]` reads the chair `xena`; `front` is appended to the table."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena:agent", tmp_path))
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
+    (chair / ".khive" / "config.toml").write_text(routed_config("xena", chair))
     (tmp_path / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        'actor = "xena:agent"\nowner = "xena"\nsteward = "ona"\n'
         + f"[desk]\nactor_dir = {json.dumps(str(chair))}\n{front}"
     )
 
@@ -2145,7 +2144,7 @@ def required(sh: FakeSh, classic: bool = True, state=None) -> RequiredContexts:
         [{"name": "o/r", "classic": classic}],
         state or fresh_store().notes("agent"),
         every=None,
-        source_identity="lambda:x:desk",
+        source_identity="xena:desk",
         run=sh,
     )
 
@@ -2180,7 +2179,7 @@ def test_required_contexts_reads_seven_classic_names_by_name_and_emits_the_check
     assert by["local/guards"]["completed_at"] == "2026-09-22T10:00:00Z"
     env = obs["envelope"]
     assert env["completeness"] == "complete" and env["reason"] is None  # complete | partial | unavailable
-    assert env["source_identity"] == "lambda:x:desk" and env["source_event"] == "chore run r1"
+    assert env["source_identity"] == "xena:desk" and env["source_event"] == "chore run r1"
     assert set(env["interval"]) == {"start", "end"} and env["interval"]["start"] <= env["interval"]["end"]
     assert obs["observed_at"].endswith("Z") and datetime.fromisoformat(obs["observed_at"]).tzinfo is not None
     payload = {k: obs[k] for k in ("repository", "repository_name", "head", "required")}
@@ -4176,7 +4175,7 @@ def test_ci_red_local_a_transcript_whose_header_names_another_head_fails_the_con
 
 def test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default():
     cfg = {
-        "owner": "lambda:x",
+        "owner": "xena",
         "chores": {
             "required-contexts": {"every": "every:30m", "repos": [{"name": "o/r", "classic": True}]},
             "verdict-freshness": {"every": "every:30m", "repos": ["o/r"], "verdict_dir": "/x/verdicts"},
@@ -4185,7 +4184,7 @@ def test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_defau
     }
     built = instr.instruments(cfg, None, fresh_store().notes("agent"))
     assert sorted(built) == ["ci-red", "required-contexts", "verdict-freshness"]
-    assert built["required-contexts"].source_identity == "lambda:x:desk"
+    assert built["required-contexts"].source_identity == "xena:desk"
     assert str(built["verdict-freshness"].dir) == "/x/verdicts"
     assert built["verdict-freshness"].repos == ["o/r"]
     assert built["ci-red"].repos == [{"name": "o/r", "channel": "local:/x"}]

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from lion_cli.agent import _desk_agents_line
 from lion_cli.agent import build as cli_build
 
 from hub.agent import Agent, AgentError, Budget, Posture, Wake, WakeRule
@@ -27,7 +28,9 @@ from tests.lionfake import store as fresh_store
 from tests.test_agent import own
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Probe, Scripted, full, mail
 
-ASKER = "lambda:a"  # an agent that wrote to the owner; not in the agent's trusted set
+ASKER = "ada"  # an agent that wrote to the owner; not in the agent's trusted set
+# `[desk] agents` for these tests: every sender they mean as an agent, as a deployment lists its own
+AGENTS = ("xena*", "ona", "ada*", "bea*", "cal", "yuri*", "stan", "review-daemon")
 
 
 def instant(stamp: str) -> datetime:
@@ -96,7 +99,7 @@ def inbox_row(sender: str, subject: str, content: str, mid: str, thread: str, at
 SWEEP = "<lact s1>sweep()</lact>"
 SWEEP2 = "<lact s2>sweep()</lact>"  # a later wake's: it replays the last run's aliases, `s1` among them
 Q1 = inbox_row(ASKER, "disk?", "how much disk is free under the roots right now?", "m-q1", "t-q1")
-NOTICE = inbox_row("lambda:b", "FYI quota", "weekly at 87%, nothing to do", "m-n1", "t-n1")
+NOTICE = inbox_row("bea", "FYI quota", "weekly at 87%, nothing to do", "m-n1", "t-n1")
 PERSON = inbox_row(
     "email:person@example.com",
     "bench?",
@@ -117,6 +120,7 @@ def build(
     cap: int = 10,
     routes: dict[str, str] | None = None,
     admit_replies: bool = False,
+    agents: tuple[str, ...] = AGENTS,
     **probes: Probe,
 ):
     actor = Actor("chores", privileges={"comm.send"}, store=fresh_store())
@@ -137,6 +141,7 @@ def build(
         tmp_path / "desk.jsonl",
         answers_per_hour=cap,
         escalate_from=(STEWARD,),
+        agents=agents,
         routes=routes or {},
         admit_replies=admit_replies,
     )
@@ -186,8 +191,8 @@ def test_a_sweep_lists_the_chairs_new_mail_and_an_answer_replies_on_the_senders_
     )
     run = asyncio.run(agent.wake())
     listed = results(run)[0]
-    assert listed.startswith(f"sweep: 2 new message(s) for {OWNER}") and "[msg m-q1 from lambda:a" in listed
-    assert "how much disk is free" in listed and "[msg m-n1 from lambda:b" in listed
+    assert listed.startswith(f"sweep: 2 new message(s) for {OWNER}") and "[msg m-q1 from ada" in listed
+    assert "how much disk is free" in listed and "[msg m-n1 from bea" in listed
     (sent,) = khive.sent
     assert sent["to"] == ASKER and sent["thread_id"] == "t-q1" and sent["subject"] == "Re: disk?"
     assert sent["content"].startswith(
@@ -200,7 +205,7 @@ def test_a_sweep_lists_the_chairs_new_mail_and_an_answer_replies_on_the_senders_
     rows = desk.rows()
     assert [(r["msg"], r["class"]) for r in rows] == [("m-q1", "answered"), ("m-n1", "left")]
     assert rows[0]["reply"] == "m1" and rows[0]["chore"] == "disk" and rows[1]["why"] == "notice"
-    assert any("m-q1: answered lambda:a on thread t-q1 with disk, 0 finding(s)" in r for r in results(run))
+    assert any("m-q1: answered ada on thread t-q1 with disk, 0 finding(s)" in r for r in results(run))
     assert all(op.startswith("comm.inbox(") and "since=" in op for op in reader.ops)  # read, never marked
     assert chores.rows() == []  # the desk's answer is not a chore run: no chore ledger row, no owner report
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
@@ -301,7 +306,7 @@ def test_a_desk_of_this_area_escalating_is_escalated_and_its_other_mail_is_liste
     plain = inbox_row(
         f"{OWNER}:mail", "chore disk: 1 finding(s)", "disk3s5 at 301 GiB", "m-e2", "t-e2", stamp(2)
     )
-    other = inbox_row("lambda:a:desk", "ESCALATE disk: x", "theirs", "m-e3", "t-e3", stamp(3))
+    other = inbox_row("ada:desk", "ESCALATE disk: x", "theirs", "m-e3", "t-e3", stamp(3))
     reader = FakeReader(esc, plain, other)
     reader.threads["t-e1"] = [esc]
     khive = FakeKhive()
@@ -447,16 +452,16 @@ def test_a_lost_escalation_receipt_is_settled_by_its_keyed_replay_and_never_list
 def test_build_reads_the_escalation_rule_from_chores_toml(tmp_path, kkernel_stub):
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
+    (chair / ".khive" / "config.toml").write_text(routed_config("xena", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        'actor = "xena:agent"\nowner = "xena"\nsteward = "ona"\n'
         f"[desk]\nactor_dir = {json.dumps(str(chair))}\n"
-        'escalate_from = ["lambda:owner", "lambda:b"]\nescalations_per_day = 5\n'
+        'escalate_from = ["ona", "bea"]\nescalations_per_day = 5\n'
     )
     desk = cli_build(tmp_path, backend=None)[1].desk
-    assert getattr(desk, "escalate_from", None) == ("lambda:owner", "lambda:b")
+    assert getattr(desk, "escalate_from", None) == ("ona", "bea")
     assert getattr(desk, "escalations_per_day", None) == 5
     default = chair_agent(tmp_path / "defaults").desk
     assert (getattr(default, "escalate_from", None), getattr(default, "escalations_per_day", None)) == (
@@ -465,7 +470,7 @@ def test_build_reads_the_escalation_rule_from_chores_toml(tmp_path, kkernel_stub
     )
 
 
-BUILD = "lambda:x:build"  # a specialized desk of the chair's area
+BUILD = "xena:build"  # a specialized desk of the chair's area
 WORK = inbox_row(ASKER, "reindex?", "please rebuild the ADR index", "m-w1", "t-w1", at="2026-09-22T10:00:01Z")
 WORK_BODY = "please rebuild the ADR index\nit went stale after 0026 was signed"
 
@@ -559,7 +564,7 @@ def test_the_guidance_names_the_routed_desks_and_the_task_command(tmp_path):
     assert "none, so route nothing" in bare.profile_for([]).system
 
 
-@pytest.mark.parametrize("actor", ["lambda:a:build", SELF, OWNER])
+@pytest.mark.parametrize("actor", ["ada:build", SELF, OWNER])
 def test_a_route_outside_the_chairs_area_or_to_itself_is_refused(tmp_path, actor):
     with pytest.raises(ValueError, match=rf"\[desk.routes\] names desks of {OWNER} other than {SELF}"):
         build(tmp_path, FakeKhive(), FakeReader(), [], routes={"elsewhere": actor})
@@ -574,15 +579,13 @@ def test_build_admits_the_routed_desks_and_names_them_in_the_guidance(tmp_path, 
     assert "none, so route nothing" in chair_agent(tmp_path / "bare").profile_for([]).system
 
 
-@pytest.mark.parametrize("actor", ["lambda:y:build", "lambda:x:agent", "lambda:x"])
+@pytest.mark.parametrize("actor", ["yuri:build", "xena:agent", "xena"])
 def test_build_refuses_a_route_outside_the_chairs_area_or_to_itself(tmp_path, kkernel_stub, actor):
-    with pytest.raises(
-        ValueError, match=r"\[desk.routes\] names desks of lambda:x other than lambda:x:agent"
-    ):
+    with pytest.raises(ValueError, match=r"\[desk.routes\] names desks of xena other than xena:agent"):
         chair_agent(tmp_path, f'[desk.routes]\nelsewhere = "{actor}"\n')
 
 
-@pytest.mark.parametrize("missing", ['from = ["daemon:review"]\n', 'verdict_dir = ""\n'])
+@pytest.mark.parametrize("missing", ['from = ["review-daemon"]\n', 'verdict_dir = ""\n'])
 def test_build_triages_verdicts_only_from_the_verdict_dir_the_config_names(tmp_path, kkernel_stub, missing):
     """There is no default verdict directory. `[desk.verdicts]` absent: no triage, and no sender's mail is
     read as a verdict notice. Present without a `verdict_dir`: refused at build, naming the key. Present
@@ -594,10 +597,55 @@ def test_build_triages_verdicts_only_from_the_verdict_dir_the_config_names(tmp_p
     verdicts = tmp_path / "verdicts"
     desk = chair_agent(
         tmp_path / "named",
-        f'[desk.verdicts]\nverdict_dir = {json.dumps(str(verdicts))}\nfrom = ["daemon:review"]\n',
+        f'[desk.verdicts]\nverdict_dir = {json.dumps(str(verdicts))}\nfrom = ["review-daemon"]\n',
     ).desk
     assert isinstance(desk.verdicts, Verdicts) and desk.verdicts.dir == str(verdicts)
-    assert desk.verdict_from == ("daemon:review",)
+    assert desk.verdict_from == ("review-daemon",)
+
+
+def test_build_reads_desk_agents_as_globs_none_by_default_and_refuses_a_string(tmp_path, kkernel_stub):
+    """`[desk] agents` absent is no agents: no sender is asked a clarify, has its work filed or is
+    answered from the record. A string is refused: its characters would read as globs, and `*` admits
+    every sender."""
+    assert chair_agent(tmp_path / "absent").desk.agents == ()
+    assert chair_agent(tmp_path / "named", 'agents = ["review-*", "ada"]\n').desk.agents == (
+        "review-*",
+        "ada",
+    )
+    for i, bad in enumerate(('"*"', '["ada", ""]', "[7]")):
+        with pytest.raises(ValueError, match=r"\[desk\] agents is a list of globs"):
+            chair_agent(tmp_path / f"bad{i}", f"agents = {bad}\n")
+
+
+def test_lion_agent_says_at_start_when_its_desk_has_no_agents(tmp_path, kkernel_stub):
+    """No agents listed is a configuration, and said once at start in words, so a desk that asks,
+    files and answers nothing is not read as broken; a listed set is named; no front desk, no line."""
+    assert _desk_agents_line(chair_agent(tmp_path / "absent")) == (
+        "desk: no agents are configured ([desk] agents is empty), so the desk asks no sender a "
+        "clarify, files no sender's work and answers no sender from the record"
+    )
+    assert _desk_agents_line(chair_agent(tmp_path / "named", 'agents = ["review-*", "ada"]\n')) == (
+        "desk: the agents are the senders matching review-*, ada"
+    )
+    assert _desk_agents_line(chair_agent(tmp_path / "off", "front = false\n")) is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "where"),
+    [
+        ('owner = "xena"', 'owner = "x y"', "chores.toml owner"),
+        ('steward = "ona"', 'steward = "on"', "chores.toml steward"),
+        ('actor = "xena:agent"', 'actor = ""', "chores.toml actor"),
+        ("[desk]\n", 'trusted = ["ada", "-x"]\n[desk]\n', "chores.toml trusted"),
+        ("[desk]\n", '[desk]\nescalate_from = ["e"]\n', "\\[desk\\] escalate_from"),
+    ],
+)
+def test_build_refuses_a_name_in_chores_toml_that_is_no_actor_name(tmp_path, kkernel_stub, old, new, where):
+    chair_agent(tmp_path)  # the control: the same directory builds as written
+    cfg = tmp_path / "chores.toml"
+    cfg.write_text(cfg.read_text().replace(old, new, 1))
+    with pytest.raises(ValueError, match=rf"^{where}: .* is not an actor name"):
+        cli_build(tmp_path, backend=None)
 
 
 TASK = inbox_row(
@@ -715,12 +763,31 @@ def test_a_task_title_is_one_to_120_characters_else_refused_and_the_message_stay
         assert any("task: a title of 1 to 120 characters" in r for r in results(run))
 
 
+@pytest.mark.parametrize(
+    ("agents", "tasked"),
+    [((), set()), (("review-*",), {"m-t3"}), (("xena", "local"), {"m-t2", "m-t4"})],
+)
+def test_whose_work_is_filed_is_the_desks_agents_list_and_none_named_files_none(tmp_path, agents, tasked):
+    """No name carries a kind: a sender is an agent when `[desk] agents` matches it, and a desk that
+    names none files nobody's work, the chair's own included."""
+    rows = [
+        inbox_row(name, "file this", "work", f"m-t{i}", f"t-t{i}", at=f"2026-09-22T10:00:0{i}Z")
+        for i, name in ((2, OWNER), (3, "review-daemon"), (4, "local"))
+    ]
+    calls = "".join(f'<lact t{i}>task(msg="m-t{i}", title="work {i}")</lact>' for i in (2, 3, 4))
+    desk, inner, agent = tasking(tmp_path, [SWEEP, calls, DONE], *rows)
+    desk.agents = agents
+    asyncio.run(agent.wake())
+    assert {r["msg"] for r in desk.rows() if r["class"] == "tasked"} == tasked
+    assert len(assigns(inner)) == len(tasked) and len(desk.rows()) == 3
+
+
 def test_a_task_files_agents_and_daemons_work_the_chairs_own_included(tmp_path):
     own = inbox_row(
         OWNER, "file this", "track the 0026 follow-ups", "m-t2", "t-t2", at="2026-09-22T10:00:05Z"
     )
     bot = inbox_row(
-        "daemon:review", "re-review", "re-review PR 12", "m-t3", "t-t3", at="2026-09-22T10:00:06Z"
+        "review-daemon", "re-review", "re-review PR 12", "m-t3", "t-t3", at="2026-09-22T10:00:06Z"
     )
     anon = inbox_row("local", "do it", "please rebuild", "m-t4", "t-t4", at="2026-09-22T10:00:07Z")
     calls = "".join(
@@ -728,7 +795,7 @@ def test_a_task_files_agents_and_daemons_work_the_chairs_own_included(tmp_path):
     )
     desk, inner, agent = tasking(tmp_path, [SWEEP, calls, DONE], own, bot, anon)
     asyncio.run(agent.wake())
-    why = "sender: task files lambda:*, daemon:* senders' work only"
+    why = "sender: task files the work of senders [desk] agents names only"
     got = sorted((r["msg"], r["class"], r.get("why")) for r in desk.rows())
     assert got == [("m-t2", "tasked", None), ("m-t3", "tasked", None), ("m-t4", "left", why)]
     assert len(assigns(inner)) == 2
@@ -1068,7 +1135,7 @@ def test_an_escalation_in_the_window_makes_the_brief_anomalous_and_names_it(tmp_
 def test_the_brief_names_routed_and_tasked_rows_and_lists_the_left_ones_grouped_by_why(tmp_path):
     rows = (
         ledger_row(T0 + 1, "m-l1", "left", why="notice"),
-        ledger_row(T0 + 2, "m-r1", "routed", to="lambda:x:build", reply="m7"),
+        ledger_row(T0 + 2, "m-r1", "routed", to="xena:build", reply="m7"),
         ledger_row(T0 + 3, "m-l2", "left", why="cap"),
         ledger_row(T0 + 4, "m-t1", "tasked", task="7a5c0001-0000-4000-8000-000000000000", title="fix it"),
         ledger_row(T0 + 5, "m-l3", "left", why="notice"),
@@ -1080,7 +1147,7 @@ def test_the_brief_names_routed_and_tasked_rows_and_lists_the_left_ones_grouped_
         f"front desk {iso(T0)} to {iso(T0 + 60)}: 0 sweep(s), 6 message(s) read, 0 answered, 1 routed, "
         "1 tasked, 0 escalated, 4 left, 0 asked; "
         "ANOMALOUS: 0 escalated, 0 delivery unresolved, 0 clarify open, 2 refused",
-        f"desk routed m-r1 from {ASKER} 's m-r1' to lambda:x:build",
+        f"desk routed m-r1 from {ASKER} 's m-r1' to xena:build",
         f"desk tasked m-t1 from {ASKER} 's m-t1' as 7a5c0001-0000-4000-8000-000000000000 'fix it'",
         f"left cap: m-l2 from {ASKER} 's m-l2'",
         f"left notice: m-l1 from {ASKER} 's m-l1'",
@@ -1213,8 +1280,8 @@ def test_the_brief_is_the_digest_tick_repeating_as_desk_brief_says(
 
 def test_a_desk_less_agent_keeps_the_daily_digest(tmp_path, kkernel_stub):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
-    (tmp_path / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\n')
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena:agent", tmp_path))
+    (tmp_path / "chores.toml").write_text('actor = "xena:agent"\nowner = "xena"\n')
     chores, agent = cli_build(tmp_path, backend=None)
     assert getattr(chores, "digest_every", "daily") == "daily" and getattr(agent, "desk", None) is None
 
@@ -1254,7 +1321,7 @@ def test_the_hourly_cap_leaves_the_next_answer_and_the_reply_grant_is_the_sender
         disk=Probe("disk", full()),
         pr=Probe("pr", full()),
     )
-    with pytest.raises(AgentError, match="lambda:a is not a recipient"):
+    with pytest.raises(AgentError, match="ada is not a recipient"):
         asyncio.run(khive.send(ASKER, "x"))  # before any sweep: an outsider
     asyncio.run(agent.wake())
     assert [s["to"] for s in inner.sent] == [ASKER]  # granted by the message the chair received
@@ -1345,11 +1412,11 @@ def test_a_refused_reply_spends_only_its_own_attempt():
 def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp_path, kkernel_stub):
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
+    (chair / ".khive" / "config.toml").write_text(routed_config("xena", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        'actor = "xena:agent"\nowner = "xena"\nsteward = "ona"\n'
         '[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
         f'[desk]\nactor_dir = {json.dumps(str(chair))}\nevery = "every:5m"\n'
         "answers_per_hour = 3\nclarify_hours = 12\nadmit_replies = true\n"
@@ -1363,10 +1430,10 @@ def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp
     assert agent.profile_for([]).specs == frozenset(
         {"check", "digest", "aged", "sweep", "answer", "leave", "clarify", "route", "task"}
     )
-    assert "You are also the front desk of lambda:x" in agent.profile_for([]).system
+    assert "You are also the front desk of xena" in agent.profile_for([]).system
     desk = agent.desk
     assert desk.answers_per_hour == 3 and desk.clarify_hours == 12 and desk.admit_replies is True
-    assert desk.reader.allowed == READ_VERBS and desk.reader.actor == "lambda:x" and desk.reader.cwd == chair
+    assert desk.reader.allowed == READ_VERBS and desk.reader.actor == "xena" and desk.reader.cwd == chair
     assert not any(hasattr(desk.reader, n) for n in ("send", "grant", "mark_read", "inbox"))
     with pytest.raises(AgentError, match=r"\['comm.read'\] are not verbs"):
         asyncio.run(desk.reader.exec('comm.read(ids=["x"])'))
@@ -1378,15 +1445,15 @@ def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp
 
 
 def chair_agent(tmp_path, extra: str = "") -> Agent:
-    """`lion agent`'s own build over an agent directory whose desk reads the chair `lambda:x`; `extra` is
+    """`lion agent`'s own build over an agent directory whose desk reads the chair `xena`; `extra` is
     appended to its chores.toml."""
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
+    (chair / ".khive" / "config.toml").write_text(routed_config("xena", chair))
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena:agent", tmp_path))
     (tmp_path / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        'actor = "xena:agent"\nowner = "xena"\nsteward = "ona"\n'
         f"[desk]\nactor_dir = {json.dumps(str(chair))}\n" + extra
     )
     return cli_build(tmp_path, backend=None)[1]
@@ -1410,8 +1477,8 @@ def test_reader_helpers_cannot_write(tmp_path, kkernel_stub, monkeypatch):
     reader = chair_agent(tmp_path).desk.reader
     for name, args in (
         ("mark_read", (["m-q1"],)),
-        ("grant", ("lambda:a",)),
-        ("send", ("lambda:a", "as the chair")),
+        ("grant", ("ada",)),
+        ("send", ("ada", "as the chair")),
         ("inbox", ()),
     ):
         try:
@@ -1437,7 +1504,7 @@ def test_reader_helpers_cannot_write(tmp_path, kkernel_stub, monkeypatch):
     assert reached == [], f"kkernel was handed {reached} through the reader"
     assert refused == [True] * 6
     asyncio.run(reader.exec('comm.inbox(status="unread", limit=1)'))  # the recorder is live
-    assert reached == [("lambda:x", 'comm.inbox(status="unread", limit=1)')]
+    assert reached == [("xena", 'comm.inbox(status="unread", limit=1)')]
 
 
 def test_agent_marks_only_own_mail(tmp_path):
@@ -1452,7 +1519,7 @@ def test_agent_marks_only_own_mail(tmp_path):
         async def mark_read(self, ids):
             self.marked += ids
 
-    khive = Marking(mail(SELF, "tick: sweep"), mail("lambda:stranger", "hi", mid="b2c3d4e5"))
+    khive = Marking(mail(SELF, "tick: sweep"), mail("stan", "hi", mid="b2c3d4e5"))
     reader = FakeReader(Q1)
     desk, chores, agent = build(
         tmp_path, khive, reader, [SWEEP, '<lact l1>leave(msg="m-q1", why="notice")</lact>', DONE]
@@ -1462,7 +1529,7 @@ def test_agent_marks_only_own_mail(tmp_path):
         "a1b2c3d4-0000-0000-0000-000000000000",
         "b2c3d4e5-0000-0000-0000-000000000000",
     ]
-    assert agent.state.get("cursor").value["dropped"] == [{"id": "b2c3d4e5", "from": "lambda:stranger"}]
+    assert agent.state.get("cursor").value["dropped"] == [{"id": "b2c3d4e5", "from": "stan"}]
     assert [(r["msg"], r["class"]) for r in desk.rows()] == [("m-q1", "left")]
     assert not any("comm.read" in op for op in reader.ops) and reader.ops
 
@@ -1532,7 +1599,7 @@ def test_a_clarify_quotes_the_message_asks_once_and_is_resolved_by_the_next_mess
     )
     rows = desk.rows()
     assert [(r["msg"], r["class"]) for r in rows] == [("m-c1", "clarified")] and rows[0]["reply"] == "m1"
-    assert any("m-c1: asked lambda:a on thread t-c1 whether" in r for r in results(run))
+    assert any("m-c1: asked ada on thread t-c1 whether" in r for r in results(run))
     day = rows[0]["at"][:10]
     t = time.time() + 2  # the brief's window ends at the clock's second; the clarify's row is inside it
     agent.clock = lambda: t
@@ -1540,8 +1607,8 @@ def test_a_clarify_quotes_the_message_asks_once_and_is_resolved_by_the_next_mess
         f"front desk {stored(agent, 'desk_since')} to {iso(t)}: 1 sweep(s), 1 message(s) read, 0 answered, "
         "0 routed, 0 tasked, 0 escalated, 0 left, 1 asked; "
         "ANOMALOUS: 0 escalated, 0 delivery unresolved, 1 clarify open, 0 refused",
-        "desk asked lambda:a on thread t-c1 'disk or pr?': 'the disk under the roots' or 'PR 12 that is red'",
-        f"desk clarify open since {rows[0]['at']}: m-c1 from lambda:a 'disk or pr?'",
+        "desk asked ada on thread t-c1 'disk or pr?': 'the disk under the roots' or 'PR 12 that is red'",
+        f"desk clarify open since {rows[0]['at']}: m-c1 from ada 'disk or pr?'",
     ]
     assert desk.summary(day) == f"desk {day}: 1 message(s) read, 0 answered, 0 left, 1 asked"  # --stats
     agent.clock = time.time
@@ -1572,9 +1639,9 @@ def test_the_model_is_told_the_readings_the_validator_admits():
 
 def test_a_clarify_is_refused_unless_both_readings_are_quoted_and_agents_only_once_per_thread(tmp_path):
     of_clarify = inbox_row(
-        "lambda:b:desk",
+        "bea:desk",
         "Re: x",
-        "[desk clarify] lambda:b:desk could not tell whether you mean 'a' or 'b'",
+        "[desk clarify] bea:desk could not tell whether you mean 'a' or 'b'",
         "m-c4",
         "t-c4",
     )
@@ -1614,7 +1681,7 @@ def test_a_clarify_is_refused_unless_both_readings_are_quoted_and_agents_only_on
         ("m-c5", "left"),
         ("m-c4", "left"),
     ]
-    assert rows[1]["why"] == "sender: clarify asks lambda:*, daemon:* senders only"
+    assert rows[1]["why"] == "sender: clarify asks the senders [desk] agents names only"
     reader.rows.append(inbox_row(ASKER, "again", "disk or PR 12?", "m-c3", "t-c1"))
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
     run = asyncio.run(agent.wake())
@@ -1856,7 +1923,7 @@ def test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and
 
 @pytest.mark.parametrize(
     "sender, mid, to_desk",
-    [(ASKER, "m-c2", False), ("lambda:b", "m-c3", False), (ASKER, ANSWER_ID, True)],
+    [(ASKER, "m-c2", False), ("bea", "m-c3", False), (ASKER, ANSWER_ID, True)],
     ids=["to-the-chair", "another-sender-on-the-thread", "to-the-desk"],
 )
 def test_a_clarify_whose_answer_is_pending_at_the_cap_is_resolved_by_it_and_never_left_unanswered(
@@ -1900,9 +1967,7 @@ def test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_ca
 
 def fyi(i: int) -> dict:
     """A notice on a thread of its own, stamped `i` seconds past ten."""
-    return inbox_row(
-        "lambda:b", f"n{i}", "fyi", f"m-n{i:02d}", f"t-n{i:02d}", at=f"2026-09-22T10:00:{i:02d}Z"
-    )
+    return inbox_row("bea", f"n{i}", "fyi", f"m-n{i:02d}", f"t-n{i:02d}", at=f"2026-09-22T10:00:{i:02d}Z")
 
 
 def test_a_sweep_whose_read_paged_past_a_clarifys_answer_leaves_no_clarify(tmp_path):
@@ -1990,7 +2055,7 @@ def test_a_clarify_whose_cap_passes_during_the_sweeps_own_work_waits_for_the_nex
 @pytest.mark.parametrize(
     "sender, thread, close, admit_replies",
     [
-        ("lambda:b", "t-c1", False, True),
+        ("bea", "t-c1", False, True),
         (ASKER, "t-other", False, True),
         (ASKER, "t-c1", True, True),
         (ASKER, "t-c1", False, False),
@@ -2036,7 +2101,7 @@ def test_the_gate_reads_the_ledger_once_per_message(tmp_path):
     answer = mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1")
     assert desk.admit(answer) is True and reads == ["read"]  # an answer: the open clarifies, then its own row
     reads.clear()
-    assert desk.admit(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1")) is False
+    assert desk.admit(mail("bea", "not an answer", mid="b2c3d4e5", thread="t-c1")) is False
     assert reads == ["read"]
 
 
@@ -2045,8 +2110,8 @@ def test_a_wake_asks_the_desks_gate_once_per_message(tmp_path):
     asked: list[str] = []
     admit = desk.admit
     desk.admit = lambda m: asked.append(m["id"]) or admit(m)
-    khive.mail.append(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1"))
-    khive.mail.append(mail("lambda:c", "nor this", mid="c3d4e5f6", thread="t-c1"))
+    khive.mail.append(mail("bea", "not an answer", mid="b2c3d4e5", thread="t-c1"))
+    khive.mail.append(mail("cal", "nor this", mid="c3d4e5f6", thread="t-c1"))
     assert asyncio.run(agent.wake()) is None
     assert asked == ["b2c3d4e5", "c3d4e5f6"]
     assert [d["id"] for d in stored(agent, "cursor")["dropped"]] == ["b2c3d4e5", "c3d4e5f6"]
@@ -2294,7 +2359,7 @@ def test_every_unread_message_since_go_live_is_listed_by_some_sweep(tmp_path):
     """The desk handles every listed message; the chair reads none of them."""
     rows = [
         inbox_row(
-            "lambda:y", f"q{i}", f"question {i}", f"s{i:02d}", f"t{i}", at=f"2026-09-22T10:00:{i:02d}.000000Z"
+            "yuri", f"q{i}", f"question {i}", f"s{i:02d}", f"t{i}", at=f"2026-09-22T10:00:{i:02d}.000000Z"
         )
         for i in range(25)
     ]
@@ -2523,7 +2588,7 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
     client marks, sends or is granted a recipient. A helper that is not there is a refusal too."""
     chair = tmp_path / "chair"
     (chair / ".khive").mkdir(parents=True)
-    (chair / ".khive" / "config.toml").write_text(routed_config("lambda:x", chair))
+    (chair / ".khive" / "config.toml").write_text(routed_config("xena", chair))
     stub = tmp_path / "kkernel"
     stub.write_text("")
     reached: list[tuple[str, str]] = []
@@ -2537,13 +2602,13 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
         return [{"messages": []}]
 
     monkeypatch.setattr(Khive, "exec", recorded)
-    reader = Reader(Khive(chair, "lambda:x", kkernel=str(stub)))
-    assert reader.allowed == READ_VERBS and reader.actor == "lambda:x" and reader.cwd == chair
+    reader = Reader(Khive(chair, "xena", kkernel=str(stub)))
+    assert reader.allowed == READ_VERBS and reader.actor == "xena" and reader.cwd == chair
     assert not any(hasattr(reader, n) for n in ("send", "grant", "mark_read", "inbox"))
     for name, args in (
         ("mark_read", (["m-q1"],)),
-        ("grant", ("lambda:a",)),
-        ("send", ("lambda:a", "as the chair")),
+        ("grant", ("ada",)),
+        ("send", ("ada", "as the chair")),
         ("inbox", ()),
     ):
         try:
@@ -2568,4 +2633,4 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
     assert reached == [], f"kkernel was handed {reached} through the reader"
     assert refused == [True] * 6
     asyncio.run(reader.exec('comm.inbox(status="unread", limit=1)'))  # the recorder is live
-    assert reached == [("lambda:x", 'comm.inbox(status="unread", limit=1)')]
+    assert reached == [("xena", 'comm.inbox(status="unread", limit=1)')]

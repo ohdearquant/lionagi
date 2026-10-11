@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 from xml.parsers.expat import ExpatError
 
 from lion1.actor import reported_cost
-from lion1.khive import Khive, KhiveError, lit
+from lion1.khive import Khive, KhiveError, actor_name, lit
 from lion1.store import KhiveNoteStore, Store
 
 __all__ = (
@@ -186,8 +186,9 @@ class Resident:
 
 def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
     """The registry: `[area.<name>]` tables with `chair` and `desks`. A missing file is no
-    areas, said by the caller; a table missing `chair` raises with the name, and so does an area
-    that lists one directory twice, since two rows of one directory are one agent named twice."""
+    areas, said by the caller; a table missing `chair`, or whose chair is not an actor's name
+    (`actor_name`), raises with the name, and so does an area that lists one directory twice, since
+    two rows of one directory are one agent named twice."""
     path = Path(path)
     if not path.exists():
         return []
@@ -206,7 +207,7 @@ def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
         for i, a in enumerate(desks):
             if Path(a) in [Path(b) for b in desks[:i]]:
                 raise ValueError(f"areas.toml: [area.{name}] desks lists {a} twice")
-        out.append(Area(name, str(t["chair"]), desks))
+        out.append(Area(name, actor_name(t["chair"], f"areas.toml: [area.{name}] chair"), desks))
     return out
 
 

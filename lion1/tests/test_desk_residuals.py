@@ -748,7 +748,7 @@ def test_unresolved_sends_never_take_the_page_a_new_request_needs(tmp_path):
     evidence = {"notices": notices, "head": parts[0], "first": parts[1][:60], "parts": len(parts)}
     print("EVIDENCE", json.dumps(evidence))
     assert parts[0].startswith(f"sweep: 1 new message(s) for {OWNER}; answer"), evidence
-    assert parts[1].startswith("[msg m-new from lambda:a"), evidence
+    assert parts[1].startswith("[msg m-new from ada"), evidence
     assert sum("delivery unresolved" in p for p in parts[2:]) == 20 and len(parts) == 22, evidence
     assert server.sent == [] and desk._accept(run, None) is not None, evidence  # m-new still owes a row
 
@@ -958,13 +958,13 @@ def test_a_verdict_task_whose_request_was_never_recorded_is_filed_by_the_next_di
     """A verdict notice from a sender in `verdict_from` is filed as a task by code; the write that
     records the task's request fails before the store is asked. The discovery fails before its cursor
     moves, and the next one triages the notice again and files it, once."""
-    notice = inbox_row("daemon:review", "verdict o/r#7", "APPROVE", "m-v", "t-v", at="2026-09-22T10:00:04Z")
+    notice = inbox_row("review-daemon", "verdict o/r#7", "APPROVE", "m-v", "t-v", at="2026-09-22T10:00:04Z")
     inner, reader = FakeKhive(), FakeReader(notice)
     reader.threads["t-v"] = [notice]
     desk, chores, agent = build(
         tmp_path, Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF})), reader, []
     )
-    desk.verdicts, desk.verdict_from = FreshVerdict(), ("daemon:review",)
+    desk.verdicts, desk.verdict_from = FreshVerdict(), ("review-daemon",)
     agent.state = LostIntent(agent.state, "assign")
     agent.state.put("desk_since", LIVE, run="-", seq=0)
     raised, cursor = watch_twice(desk, agent)

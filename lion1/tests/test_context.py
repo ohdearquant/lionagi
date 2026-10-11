@@ -40,7 +40,7 @@ from tests.test_areas import call, registry, serve_on, servers_end  # noqa: F401
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session_transcript.jsonl"
 AT_TAKE = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)  # the fixture's timed Monitor has not timed out yet
-ACTOR = "lambda:x"
+ACTOR = "xena"
 # one mark per kind the reader drops: tool calls and results, thinking, every hook and harness frame
 MARKS = (
     "REMINDER-INSIDE-MARK",
@@ -264,10 +264,10 @@ def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_ope
 ):
     # the lanes were the active tasks alone, and `source.lanes` said open PRs and threads were not read
     box = [  # newest first, as the box hands it
-        unread("m3", "lambda:owner", "re: placeholder one", "th1"),
-        unread("m2", "lambda:peer", "placeholder two", "th2"),
-        unread("m1", "lambda:owner", "placeholder one", "th1"),
-        unread("m0", "lambda:peer", "placeholder three"),  # no thread: the message is its own
+        unread("m3", "ona", "re: placeholder one", "th1"),
+        unread("m2", "pia", "placeholder two", "th2"),
+        unread("m1", "ona", "placeholder one", "th1"),
+        unread("m0", "pia", "placeholder three"),  # no thread: the message is its own
         "not a message",
     ]
     calls = gh_says(monkeypatch, out=json.dumps([PR, "not a pull request"]))
@@ -294,19 +294,19 @@ def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_ope
             "kind": "thread",
             "id": "th1",
             "title": "re: placeholder one",
-            "awaiting": "a reply to lambda:owner",
+            "awaiting": "a reply to ona",
         },
         "lane.thread.th2": {
             "kind": "thread",
             "id": "th2",
             "title": "placeholder two",
-            "awaiting": "a reply to lambda:peer",
+            "awaiting": "a reply to pia",
         },
         "lane.thread.m0": {
             "kind": "thread",
             "id": "m0",
             "title": "placeholder three",
-            "awaiting": "a reply to lambda:peer",
+            "awaiting": "a reply to pia",
         },
         "lane.pr.7": {
             "kind": "pr",
@@ -328,7 +328,7 @@ def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_ope
 
 
 def test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one(tmp_path, monkeypatch):
-    many = [unread(f"m{i}", "lambda:peer", f"placeholder {i}", f"th{i}") for i in range(60)]
+    many = [unread(f"m{i}", "pia", f"placeholder {i}", f"th{i}") for i in range(60)]
     got, said = asyncio.run(lanes(TaskKhive(mail=many)))
     assert (
         len(got) == 50
@@ -368,10 +368,10 @@ def test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take(t
     # or with no number became `lane.pr.0`, `lane.pr.None`
     tasks = [{**TASK, "properties": 42}, {**TASK, "id": None}, TASK]
     box = [
-        {**unread("m3", "lambda:peer", "placeholder three"), "properties": 42},
-        unread("m2", "lambda:peer", "placeholder two", "th2"),
-        {**unread("m1", "lambda:peer", "placeholder one"), "id": 5},
-        {**unread("m0", "lambda:peer", "placeholder zero"), "properties": {"thread_id": 42}},
+        {**unread("m3", "pia", "placeholder three"), "properties": 42},
+        unread("m2", "pia", "placeholder two", "th2"),
+        {**unread("m1", "pia", "placeholder one"), "id": 5},
+        {**unread("m0", "pia", "placeholder zero"), "properties": {"thread_id": 42}},
     ]
     numbers = [0, None, True, -3, "8"]  # None: the row carries no number
     prs = [{**PR, "number": n} if n is not None else {"title": "placeholder"} for n in numbers]
@@ -426,7 +426,7 @@ def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
 
 def test_a_watch_that_only_names_the_inbox_script_does_not_stand_for_it(tmp_path):
     raw, name = FIXTURE.read_text(), Path(INBOX_MONITOR).name
-    arm = "bash /tmp/watch-one.sh --actor lambda:x"
+    arm = "bash /tmp/watch-one.sh --actor xena"
 
     def names(command: str) -> list[str]:
         path = tmp_path / "t.jsonl"
@@ -488,14 +488,14 @@ def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_a
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        "hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("lambda:owner", ACTOR)
+        "hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("ona", ACTOR)
     )  # the actor itself is not repeated
     ws = watches(FIXTURE, ACTOR, AT_TAKE)
     cmds = monitor_commands()
     # tmon3 has a later TaskStop; the other two stand, each command byte for byte
     assert [w.name for w in ws] == ["watch.tmon1", "watch.tmon2", "watch.inbox"]
     assert [w.value["command"] for w in ws[:2]] == [cmds["toolu_m1"], cmds["toolu_m2"]]
-    assert ws[2].value["command"] == f"bash {INBOX_MONITOR} {ACTOR} lambda:owner"
+    assert ws[2].value["command"] == f"bash {INBOX_MONITOR} {ACTOR} ona"
     assert sum(INBOX_MONITOR in w.value["command"] for w in ws) == 1
     # every Monitor ends at its timeout, persistent or not (tmon1 says persistent, an hour long);
     # the tool kills them all at the deadline, so a day later only the inbox line stands
@@ -508,14 +508,14 @@ def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_a
     # a transcript that already runs the inbox monitor: no line added
     raw = FIXTURE.read_text()
     armed = tmp_path / "armed.jsonl"
-    armed.write_text(raw.replace("bash /tmp/watch-one.sh --actor lambda:x", f"bash {INBOX_MONITOR} {ACTOR}"))
+    armed.write_text(raw.replace("bash /tmp/watch-one.sh --actor xena", f"bash {INBOX_MONITOR} {ACTOR}"))
     assert [w.name for w in watches(armed, ACTOR, AT_TAKE)] == ["watch.tmon1", "watch.tmon2"]
     # the same command armed twice and both running: one watch, the newer
     assert raw.count('"task_id": "tmon3"') == 2  # the TaskStop's input and its toolUseResult
     twice = tmp_path / "twice.jsonl"
     twice.write_text(
         raw.replace('"task_id": "tmon3"', '"task_id": "tmon9"').replace(
-            "bash /tmp/watch-three.sh", "bash /tmp/watch-one.sh --actor lambda:x"
+            "bash /tmp/watch-three.sh", "bash /tmp/watch-one.sh --actor xena"
         )
     )
     assert [w.name for w in watches(twice, ACTOR, AT_TAKE)] == ["watch.tmon2", "watch.tmon3", "watch.inbox"]
@@ -596,14 +596,14 @@ def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_a
     (loop / "archive").mkdir()
     (loop / "archive" / "x_loop.md").write_text("# old\nARCHIVED-MARK\n")
     (loop / "x_loop.md").write_text(
-        "# lambda:x loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
+        "# xena loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
         "## LOG\nLOG-MARK 10:00 did things\n"
     )
     got = {v.name: v for v in cursor(d)}
-    assert got["cursor.header"].value == "# lambda:x loop cursor\n\n> HEADER-MARK newest record first"
+    assert got["cursor.header"].value == "# xena loop cursor\n\n> HEADER-MARK newest record first"
     assert got["cursor.posture"].value == "POSTURE-MARK holding" and got["cursor.posture"].kind == "posture"
     # a header past LAZY is named in the prompt and read whole by `show`, never inlined
-    long_header = "# lambda:x loop cursor\n\n> " + "HEADER-LONG-MARK " * 40
+    long_header = "# xena loop cursor\n\n> " + "HEADER-LONG-MARK " * 40
     (loop / "x_loop.md").write_text(long_header + "\n\n## Posture\nPOSTURE-MARK holding\n")
     assert len(long_header) > LAZY
     ckpt_long = take_session({}, cursor(d), actor=ACTOR, why="manual", budget=400)
@@ -614,7 +614,7 @@ def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_a
     checkpoint(d, "manual", transcript=FIXTURE, khive=k, now=AT_TAKE)
     assert show(d, "cursor.header", khive=k) == long_header.strip()  # computed whole, as the restore is
     (loop / "x_loop.md").write_text(
-        "# lambda:x loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
+        "# xena loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
         "## LOG\nLOG-MARK 10:00 did things\n"
     )
     assert "LOG-MARK" not in json.dumps({k: v.value for k, v in got.items()})
@@ -874,7 +874,7 @@ def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watche
 def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp_path, monkeypatch, capsys):
     import lion_cli.context as cli
 
-    monkeypatch.setattr("hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("lambda:owner",))
+    monkeypatch.setattr("hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("ona",))
     k = store_khive(monkeypatch, fail="kkernel exited 1: gtd down")  # the lanes down, the store up
     gh_says(monkeypatch, rc=1, err="no git remotes found")
     d = actor_dir(tmp_path)
@@ -931,7 +931,7 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
     first, rest = got["first_prompt"].split("\n", 1)
     assert first.startswith(f"Checkpoint {done['id']} of {ACTOR}, taken ")
     assert rest == prompt.rstrip("\n").split("\n", 1)[1]
-    assert got["watches"][-1]["command"].endswith(f"{ACTOR} lambda:owner")
+    assert got["watches"][-1]["command"].endswith(f"{ACTOR} ona")
     for argv, said in (
         (["restore", "--id", "../../etc/passwd"], "the store holds no session ../../etc/passwd"),
         (["restore", "--id", "@3"], "is not a session id"),

@@ -25,6 +25,7 @@ becomes the agent's own client with `namespace=`; nothing else here changes.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import time
 from collections.abc import Iterator
@@ -46,7 +47,6 @@ from .chores import Bounded, Chores, Outcome, sender_of
 __all__ = (
     "READ_VERBS",
     "WHY",
-    "CLARIFY_SENDERS",
     "CLARIFY_MARK",
     "Reader",
     "Sweep",
@@ -61,7 +61,6 @@ __all__ = (
 
 READ_VERBS = frozenset({"comm.inbox", "comm.thread"})  # the chair reader's whole vocabulary
 WHY = ("judgment", "action", "commitment", "from-person", "notice", "no-instrument")
-CLARIFY_SENDERS = ("lambda:", "daemon:")  # a templated question in the chair's name goes to agents only
 CLARIFY_MARK = "[desk clarify]"  # how a clarify begins; a message that begins so is never clarified
 _REPLIES = ("answered", "clarified")  # sent to the sender on its thread; every other send is a forward
 _BRIEFED = ("escalated", "routed", "tasked", "answered", "clarified")  # the brief's row lines, in order
@@ -145,6 +144,9 @@ class Desk:
     clarify_hours: int = 24  # a clarify unanswered this long is left for the chair, in the digest
     never: tuple[str, ...] = ("email:",)  # sender prefixes the desk never answers: a person's mail
     escalate_from: tuple[str, ...] = ()  # senders whose mail is escalated, never answered
+    # `[desk] agents`: globs on the sender's name (fnmatch) whose mail is an agent's; none = no sender's.
+    # Only an agent is asked a clarify, has its work filed as a task, or is answered from the record.
+    agents: tuple[str, ...] = ()
     escalations_per_day: int = 40  # past this an escalation is left `cap: escalations` for the brief
     routes: dict[str, str] = field(default_factory=dict)  # `[desk.routes]`: name -> a desk of this area
     tasks_per_day: int = 20  # past this a task is left `cap: tasks` for the brief
@@ -271,6 +273,9 @@ class Desk:
             }
             self.agent.state.put("desk_pending", {**held, mid: entry}, run="-", seq=0)
         return True
+
+    def _agent(self, sender: str) -> bool:
+        return any(fnmatch.fnmatchcase(sender, g) for g in self.agents)
 
     def _admits(self, m: dict) -> bool:
         """`admit` as the agent's gate calls it: a ledger the desk cannot read admits nothing here, the
@@ -501,11 +506,9 @@ class Desk:
             inst = self.chores.instruments.get(req.chore)
             if inst is None:
                 raise AgentError(f"no chore {req.chore!r}; known: {sorted(self.chores.instruments)}")
-            only = tuple(
-                getattr(inst, "senders", ())
-            )  # a lookup that carries record content back is for agents
-            if only and not sender.startswith(only):
-                why = f"sender: {req.chore} answers {', '.join(p + '*' for p in only)} senders only"
+            # a lookup that carries record content back is for agents
+            if getattr(inst, "agents_only", False) and not self._agent(sender):
+                why = f"sender: {req.chore} answers the senders [desk] agents names only"
                 self._row(req.msg, m, "left", why=why, chore=req.chore, run=run)
                 return f"{req.msg}: left, {why}"
             capped = f"{req.msg}: left, {self.answers_per_hour} answers already sent this hour"
@@ -587,8 +590,8 @@ class Desk:
             if any(r["thread"] == m["thread"] for r in asked):
                 raise AgentError(f"clarify: once per thread; this desk already asked on thread {m['thread']}")
             sender, owner = m["from"], self.chores.owner
-            if not sender.startswith(CLARIFY_SENDERS):
-                why = f"sender: clarify asks {', '.join(p + '*' for p in CLARIFY_SENDERS)} senders only"
+            if not self._agent(sender):  # a templated question in the chair's name goes to agents only
+                why = "sender: clarify asks the senders [desk] agents names only"
                 self._row(req.msg, m, "left", why=why, run=run)
                 return f"{req.msg}: left, {why}"
             body = (
@@ -644,8 +647,8 @@ class Desk:
                 raise AgentError(
                     f"task: a title of 1 to 120 characters, got {len(title)}; the message stays listed"
                 )
-            if not m["from"].startswith(("lambda:", "daemon:")):
-                why = "sender: task files lambda:*, daemon:* senders' work only"
+            if not self._agent(m["from"]):
+                why = "sender: task files the work of senders [desk] agents names only"
                 self._row(req.msg, m, "left", why=why, run=run)
                 return f"{req.msg}: left, {why}"
             text = await self._forwarded(req.msg, m) if m.get("assign") is None else ""

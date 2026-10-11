@@ -143,11 +143,11 @@ then a repository map, never the login.
 | command | gate, in code, before anything is sent |
 | ------- | -------------------------------------- |
 | `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) with nothing pending on its thread, after a scan that fit one page |
-| `answer(msg, chore, args)` | an id this run's sweep listed, held by no other handler, with no recorded send or task; the chore's `senders` (`record`: `Record.senders` only); `answers_per_hour` (10), shared with `route`; a void outcome is left with the instrument's reason |
+| `answer(msg, chore, args)` | an id this run's sweep listed, held by no other handler, with no recorded send or task; a record-carrying chore answers `[desk] agents` only (`Record.agents_only`); `answers_per_hour` (10), shared with `route`; a void outcome is left with the instrument's reason |
 | `leave(msg, why)` | a listed id; `why` one of six tests, else kept as other |
-| `clarify(msg, a, b)` | two different readings, each the message's own words or a chore or test name; `CLARIFY_SENDERS` only; once per thread; never a message that is itself a clarify |
+| `clarify(msg, a, b)` | two different readings, each the message's own words or a chore or test name; the senders `[desk] agents` matches only; once per thread; never a message that is itself a clarify |
 | `route(msg, desk)` | a desk `[desk.routes]` names, checked at build to be another desk of the owner; never mail of the owner or its desks; the hourly cap |
-| `task(msg, title)` | a title of 1 to 120 characters; the `CLARIFY_SENDERS` prefixes only; `tasks_per_day` (20), unresolved ones counted |
+| `task(msg, title)` | a title of 1 to 120 characters; the senders `[desk] agents` matches only; `tasks_per_day` (20), unresolved ones counted |
 | `check`, `digest`, `aged` | the chores' own ([[ADR-0015-chores|ADR-0015]], chores); an asker `check` names must be trusted, with mail on that thread this wake admitted |
 
 Each requires `comm.send` ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]); the agent's own `send` is not in
@@ -561,10 +561,11 @@ least two and at most all of them.
 - **S12**: The help text of `--file` names keys `home` and `agents`, which `load_areas` does not
   read; the registry's keys are `chair` and `desks`. No test drives `--json`, `--host` or
   `--refresh`.
-- **S13**: `Record.senders` and `CLARIFY_SENDERS` are actor-id prefixes set in code, named here by
-  constant. A record answer carries the record back and the ask's words drive `gh` and store
-  searches, so `record` answers only senders under `Record.senders`, where another chore answers any
-  listed sender.
+- **S13**: Which senders are agents is configuration: `[desk] agents` lists globs (fnmatch) on the
+  sender's name. With none listed no sender is one, so the desk asks no clarify, files no task and
+  answers nothing from the record. A record answer carries the record back and the ask's words drive
+  `gh` and store searches, so `record` answers agents only. One list serves all three gates. With
+  none listed, `lion agent` says so once at start.
 - **S14**: No test drives a second send inside one reply grant, an ADR finding past two headings or
   two Alternatives rows, a `Record` part that raises, or an unknown send that started before its
   cap's window.
@@ -579,3 +580,8 @@ least two and at most all of them.
 - **S16**: A GET is served whatever its Origin, as C11 names a POST, and no answer, `/events`
   included, carries an `Access-Control-*` header, so a page elsewhere cannot read one; pinned by
   `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
+- **S17**: A name carries no prefix or kind. An actor's name is a plain string of 3 to 100
+  characters: a letter or digit, then letters, digits and `. _ - : @` (`lion1.khive.actor_name`). It
+  is checked where a name enters: the khive client, an `areas.toml` chair and the names
+  `chores.toml` gives. A refusal names the rule broken and shows a value longer than 6 characters by
+  its first 6 and its length, since it may be a secret pasted into the wrong field.

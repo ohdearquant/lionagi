@@ -1548,10 +1548,10 @@ def test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked(tmp
         "claude-sonnet-5-5 · no actor · inbox 0"
     )
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
-    assert signer(tmp_path) == "lambda:x"
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    assert signer(tmp_path) == "xena"
     line = status_line(actor, profile, [], None, "m", signer(tmp_path))
-    assert line.startswith("m · lambda:x · inbox 0")
+    assert line.startswith("m · xena · inbox 0")
     (tmp_path / ".khive" / "config.toml").write_text("[actor]\n")
     assert signer(tmp_path) is None
 

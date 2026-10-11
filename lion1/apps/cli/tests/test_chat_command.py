@@ -33,9 +33,9 @@ def test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor(tmp_p
     with pytest.raises(ValueError, match="no such khive config file; a chat's record is rows of khive"):
         console(tmp_path)  # no .khive/config.toml here: a chat with no actor to sign as does not start
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
     actor, profile = console(tmp_path, model="deepseek/deepseek-v4.1-flash")
-    assert "khive_ops" in profile.specs and "signing as lambda:x" in profile.system
+    assert "khive_ops" in profile.specs and "signing as xena" in profile.system
     # every verb the boundary admits, by name: a count and a summary left a model to find them by failing
     from hub.agent.chores import ALLOWED_VERBS
 
@@ -86,15 +86,15 @@ def test_an_explicit_khive_config_signs_over_the_directorys_own_and_a_missing_on
     directory's own `.khive/config.toml` is not read (it may name a different actor, or none). A
     path that is not a file refuses the chat; the directory's config is never the fallback."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
     elsewhere = tmp_path / "elsewhere" / "khive.toml"
     elsewhere.parent.mkdir()
-    elsewhere.write_text(routed_config("lambda:y", tmp_path))
-    assert signer(tmp_path) == "lambda:x" and signer(tmp_path, elsewhere) == "lambda:y"
+    elsewhere.write_text(routed_config("yuri", tmp_path))
+    assert signer(tmp_path) == "xena" and signer(tmp_path, elsewhere) == "yuri"
     actor, profile = console(tmp_path, khive_config=elsewhere)
-    assert "khive_ops" in profile.specs and "signing as lambda:y" in profile.system
-    assert "lambda:x" not in profile.system
-    gone = tmp_path / "gone.toml"  # not the directory's lambda:x instead
+    assert "khive_ops" in profile.specs and "signing as yuri" in profile.system
+    assert "xena" not in profile.system
+    gone = tmp_path / "gone.toml"  # not the directory's xena instead
     with pytest.raises(ValueError, match=f"{re.escape(str(gone))}: no such khive config file;"):
         console(tmp_path, khive_config=gone)
 
@@ -114,7 +114,7 @@ def test_khive_config_missing_actor_table_or_id_refuses_the_chat_and_names_the_f
 
 def test_khive_absent_kkernel_refuses_the_chat_naming_it(tmp_path, monkeypatch):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
     # neither PATH nor the ~/.cargo/bin fallback resolves a kkernel, on any machine this runs on
     monkeypatch.setattr("lion1.khive.shutil.which", lambda name: None)
     monkeypatch.setattr("lion1.khive.Path.home", lambda: tmp_path / "no-kkernel-here")
@@ -203,7 +203,7 @@ def test_a_khive_config_that_is_not_a_file_or_names_no_actor_refuses_to_start_an
     """The chat refuses before any model work, naming the file; the directory's own config, which
     would sign as someone else, is not the fallback. The log opened for the chat is removed."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("lambda:x", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
     gone = tmp_path / "gone.toml"
     with pytest.raises(SystemExit, match=f"--khive-config {gone}: no such file"):
         asyncio.run(

@@ -25,7 +25,7 @@ from hub.hooks import install, load
 from hub.tools import LocalTree, files, khive_ops
 from lion1 import Actor, Profile, Store
 from lion1.actor import DEFAULT_HANDLERS
-from lion1.khive import Khive, KhiveError
+from lion1.khive import Khive, KhiveError, actor_name
 
 __all__ = (
     "DEFAULT_MODEL",
@@ -46,6 +46,21 @@ DEFAULT_MODEL = (
 MAX_TURNS = 6  # the turns of one wake, a chair's burst
 
 
+def _desk_agents_line(agent: Agent) -> str | None:
+    """What `lion agent` says once at start about whose mail its desk treats as an agent's; None with
+    no front desk. An empty `[desk] agents` is said in words, so a desk that asks, files and answers
+    nothing reads as configured that way, not as broken."""
+    desk = getattr(agent, "desk", None)  # set by `build` only for a front desk
+    if desk is None:
+        return None
+    if not desk.agents:
+        return (
+            "desk: no agents are configured ([desk] agents is empty), so the desk asks no sender a "
+            "clarify, files no sender's work and answers no sender from the record"
+        )
+    return f"desk: the agents are the senders matching {', '.join(desk.agents)}"
+
+
 def build(directory: Path, backend) -> tuple[Chores, Agent]:
     """The agent from its directory: the trusted senders are the floor (owner, steward, itself) plus
     the config's own `trusted` list; the khive client is bounded to read verbs and to those
@@ -60,9 +75,17 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
     if isinstance(backend, Codex) and backend.unmeasured:
         # `backend_for` builds none; on an unmeasured CLI release the model may act unseen (ADR-0009/S23)
         raise ValueError("a codex backend built to run an unmeasured CLI release: never served (ADR-0016/D3)")
-    actor_id = cfg["actor"]
+    # every name the file gives is checked before anything is built: a plain string, no prefix (khive.py)
+    actor_id = actor_name(cfg.get("actor"), "chores.toml actor")
+    actor_name(cfg.get("owner"), "chores.toml owner")
+    if cfg.get("steward") is not None:
+        actor_name(cfg["steward"], "chores.toml steward")
+    for name in cfg.get("trusted", []):
+        actor_name(name, "chores.toml trusted")
     trusted = frozenset({cfg["owner"], cfg.get("steward"), actor_id, *cfg.get("trusted", [])} - {None})
     routes = dict((cfg.get("desk") or {}).get("routes", {}))  # the desk forwards to these; `Desk` checks them
+    for name in routes.values():
+        actor_name(name, "[desk.routes]")
     if routes and not cfg["desk"].get("front", True):  # no Desk would check them, yet they widen the sends
         raise ValueError("[desk.routes] needs the front desk: front = false names no routes")
     store = Store(Khive(directory, actor_id))  # the runtime's own rows and notes, unbounded (ADR-0025)
@@ -114,6 +137,9 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
     # the front desk reads the owner's box through that reader; `front = false` builds no front desk
     if cfg.get("desk") and cfg["desk"].get("front", True):
         d = cfg["desk"]
+        agents = d.get("agents", [])  # a string would iterate as one-character globs, and "*" admits all
+        if not isinstance(agents, list) or not all(isinstance(g, str) and g for g in agents):
+            raise ValueError("[desk] agents is a list of globs on a sender's name, e.g. ['builder-*']")
         chores.digest_every = str(d.get("brief", "every:12h"))  # the digest is the front desk's brief
         v = d.get("verdicts")  # `[desk.verdicts]` absent: a verdict notice is listed like any mail
         if v is not None and not v.get("verdict_dir"):
@@ -125,7 +151,8 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
             directory / "desk.jsonl",
             answers_per_hour=int(d.get("answers_per_hour", 10)),
             clarify_hours=int(d.get("clarify_hours", 24)),
-            escalate_from=tuple(d.get("escalate_from", ())),
+            escalate_from=tuple(actor_name(s, "[desk] escalate_from") for s in d.get("escalate_from", ())),
+            agents=tuple(agents),
             escalations_per_day=int(d.get("escalations_per_day", 40)),
             routes=routes,
             tasks_per_day=int(d.get("tasks_per_day", 20)),
@@ -439,6 +466,8 @@ async def agent_main(a: argparse.Namespace) -> None:
             f"programs gh={GH} git={GIT}{settings}",
             flush=True,
         )
+        if (line := _desk_agents_line(agent)) is not None:
+            print(line, flush=True)
         await agent.serve(log=lambda line: print(time.strftime("%Y-%m-%d %H:%M:%S"), line, flush=True))
     finally:
         agent._release(pid)

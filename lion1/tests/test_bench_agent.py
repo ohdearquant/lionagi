@@ -28,9 +28,9 @@ THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 
 
 def _put_job(agent) -> None:
-    """A launched job t1, asked for on THREAD by lambda:a, as the launch leaves it in the state."""
+    """A launched job t1, asked for on THREAD by ada, as the launch leaves it in the state."""
     job = {
-        "asker": "lambda:a",
+        "asker": "ada",
         "thread": THREAD,
         "pid": 1,
         "started": "now",
@@ -42,9 +42,9 @@ def _put_job(agent) -> None:
 @pytest.fixture(autouse=True)
 def identity(monkeypatch):
     """The example's identity is configured by its caller; the tests configure it here."""
-    monkeypatch.setattr(bench_agent, "ACTOR_ID", "lambda:a:bench")
-    monkeypatch.setattr(bench_agent, "OWNER", "lambda:a")
-    monkeypatch.setattr(bench_agent, "TRUSTED", frozenset({"lambda:a", "lambda:a:bench"}))
+    monkeypatch.setattr(bench_agent, "ACTOR_ID", "ada:bench")
+    monkeypatch.setattr(bench_agent, "OWNER", "ada")
+    monkeypatch.setattr(bench_agent, "TRUSTED", frozenset({"ada", "ada:bench"}))
 
 
 class BenchKhive(FakeKhive):
@@ -80,8 +80,8 @@ def fake_child(results: Path, monkeypatch) -> None:
 def test_an_ask_launches_a_child_and_its_finish_mail_reports_the_row_on_the_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(bench_agent, "DIR", tmp_path)
     fake_child(tmp_path / "results", monkeypatch)
-    khive = BenchKhive(mail("lambda:a", "mini50, limit 1, deepseek"), cwd=tmp_path)
-    ask = f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", set="mini50", limit=1, run_id="t1")</lact>'
+    khive = BenchKhive(mail("ada", "mini50, limit 1, deepseek"), cwd=tmp_path)
+    ask = f'<lact l1>launch(asker="ada", thread="{THREAD}", set="mini50", limit=1, run_id="t1")</lact>'
     agent = bench_agent.build(
         khive,
         Scripted(ask, 'OUT{posture: {done: "launched t1", awaiting: "t1"}}', khive=khive),
@@ -92,7 +92,7 @@ def test_an_ask_launches_a_child_and_its_finish_mail_reports_the_row_on_the_thre
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "launch")
     assert result.ok and result.value.startswith("launched job t1 as pid ")
     job = agent.state.get("jobs").value["t1"]
-    assert job["asker"] == "lambda:a" and job["thread"] == THREAD and job["ask"]["limit"] == 1
+    assert job["asker"] == "ada" and job["thread"] == THREAD and job["ask"]["limit"] == 1
     ledger, log = tmp_path / "results" / "t1" / "ledger.jsonl", tmp_path / "jobs" / "t1.log"
     for _ in range(50):  # the child is a shell line; give it a moment
         if ledger.exists() and log.exists() and "wall" in log.read_text():
@@ -111,7 +111,7 @@ def test_an_ask_launches_a_child_and_its_finish_mail_reports_the_row_on_the_thre
     assert isinstance(run.outcome, Success)
     (sent,) = khive.sent
     row = json.loads(sent["content"])
-    assert sent["to"] == "lambda:a" and sent["thread_id"] == THREAD
+    assert sent["to"] == "ada" and sent["thread_id"] == THREAD
     assert row["resolved"] == 1 and row["total"] == 2 and row["cost_usd"] == 0.03 and row["errors"] == 1
     assert row["wall_s"] == 7
     assert len(khive.ops) == 1 and "memory.remember" in khive.ops[0] and "agent:bench" in khive.ops[0]
@@ -137,8 +137,8 @@ def test_a_finish_for_an_unknown_job_and_a_second_launch_of_the_same_id_are_refu
 
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
     for n, expect_ok in ((1, True), (2, False)):
-        khive.mail.append(mail("lambda:a", "again", mid=f"d{n}"))
-        launch = f'<lact l{n}>launch(asker="lambda:a", thread="{THREAD}", run_id="dup")</lact>'
+        khive.mail.append(mail("ada", "again", mid=f"d{n}"))
+        launch = f'<lact l{n}>launch(asker="ada", thread="{THREAD}", run_id="dup")</lact>'
         agent.backend = Scripted(launch, done, khive=khive)
         run = asyncio.run(agent.wake(wait_ms=0))
         result = next(e.content for e in own(run) if e.kind is Kind.RESULT and e.content.spec == "launch")
@@ -172,7 +172,7 @@ def test_the_job_line_names_the_set_runner_with_the_asks_fields(limit):
     assert "--parallel 2 --run-id r1" in line and "--instances x__1" in line and line.startswith("cd ")
     assert ("--limit 1" in line) is (limit == 1)
     notify = bench_agent.notify_line("r1")
-    assert "--expect-actor lambda:a:bench" in notify and "self_send=true" in notify and "$rc" in notify
+    assert "--expect-actor ada:bench" in notify and "self_send=true" in notify and "$rc" in notify
 
 
 def test_the_notify_line_hands_the_kernel_the_run_id_as_text_and_the_exit_code_the_shell_expanded(
@@ -187,7 +187,7 @@ def test_the_notify_line_hands_the_kernel_the_run_id_as_text_and_the_exit_code_t
     seen = argv.read_text().splitlines()
     assert seen[:4] == ["exec", "--strict", "--expect-actor", bench_agent.ACTOR_ID]
     assert seen[4] == (
-        'comm.send(to="lambda:a:bench", subject="job crit-off.1 finished", '
+        'comm.send(to="ada:bench", subject="job crit-off.1 finished", '
         'content="job crit-off.1 finished with exit 7. Report it.", self_send=true)'
     )
 
@@ -241,9 +241,9 @@ def test_the_acting_profile_is_the_typed_pair_and_has_no_prose_send(tmp_path):
 def test_the_owner_and_itself_are_trusted_without_a_trust_list(monkeypatch):
     """Imported and configured without `--trust`: the owner's ask and its own finish mail still act."""
     monkeypatch.setattr(bench_agent, "TRUSTED", frozenset())
-    for who in ("lambda:a", "lambda:a:bench"):
+    for who in ("ada", "ada:bench"):
         assert bench_agent.profile_for([mail(who, "go")]) is bench_agent.ACTING
-    assert bench_agent.profile_for([mail("lambda:b", "go")]) is bench_agent.READER
+    assert bench_agent.profile_for([mail("bea", "go")]) is bench_agent.READER
 
 
 @pytest.mark.parametrize("unset", ["ACTOR_ID", "OWNER"])
@@ -287,8 +287,8 @@ def test_finish_report_carries_selected_set_and_exit(tmp_path, monkeypatch):
     _job(base, monkeypatch, "t2", [a], selected=["a"])
     monkeypatch.setattr(bench_agent, "job_line", lambda req, run_id: "(exit 3)")
     monkeypatch.setattr(bench_agent, "notify_line", lambda run_id: "true")
-    khive = BenchKhive(mail("lambda:a", "run it"), cwd=base)
-    ask = f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", run_id="t2")</lact>'
+    khive = BenchKhive(mail("ada", "run it"), cwd=base)
+    ask = f'<lact l1>launch(asker="ada", thread="{THREAD}", run_id="t2")</lact>'
     agent = bench_agent.build(
         khive, Scripted(ask, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive), fresh_store()
     )
@@ -381,7 +381,7 @@ def test_the_report_send_is_keyed_by_the_job_so_a_lost_receipt_replays_and_never
     )
     _put_job(agent)
     asyncio.run(agent.wake(wait_ms=0))
-    assert keys == ["bench:lambda:a:bench:t1:report"]
+    assert keys == ["bench:ada:bench:t1:report"]
 
 
 def test_a_report_retried_after_a_lost_receipt_sends_the_body_it_first_sent(tmp_path, monkeypatch):
@@ -434,10 +434,10 @@ def test_a_launch_during_a_reports_send_is_not_written_away_by_the_report(tmp_pa
                 await asyncio.sleep(0)
             return await super().send(*a, **k)
 
-    khive = Slow(mail("lambda:a", "report t1 and launch t2"), cwd=tmp_path)
+    khive = Slow(mail("ada", "report t1 and launch t2"), cwd=tmp_path)
     program = (
         '<lact r1>report(run_id="t1")</lact>'
-        f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", set="mini50", limit=1, run_id="t2")</lact>'
+        f'<lact l1>launch(asker="ada", thread="{THREAD}", set="mini50", limit=1, run_id="t2")</lact>'
     )
     agent = bench_agent.build(
         khive, Scripted(program, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive), fresh_store()

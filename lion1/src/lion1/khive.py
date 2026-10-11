@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import signal
+import string
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,7 @@ __all__ = (
     "UNSTARTED",
     "ARGUMENT_BYTES",
     "lit",
+    "actor_name",
     "Khive",
 )
 
@@ -66,6 +68,40 @@ def lit(value: Any) -> str:
     return json.dumps(value)
 
 
+# a letter or digit, then letters, digits and `. _ - : @`, 3 to 100 in all; ASCII only, so no space,
+# control, invisible or look-alike character; `:` and `@` keep the names khive gives mail (`email:a@b.c`)
+_NAME_FIRST = frozenset(string.ascii_letters + string.digits)
+_NAME_REST = _NAME_FIRST | frozenset("._-:@")
+
+
+def _name_rule(value: str) -> str | None:
+    """The first rule `value` breaks, in words, or None when it is a name."""
+    if not 3 <= len(value) <= 100:
+        return f"length {len(value)}: a name is 3 to 100 characters"
+    for i, c in enumerate(value):
+        if not c.isascii():
+            return f"character {i + 1} is not ASCII"
+        if i == 0 and c not in _NAME_FIRST:
+            return "the first character is not a letter or digit"
+        if c not in _NAME_REST:
+            return f"character {i + 1} is not a letter, a digit or one of . _ - : @"
+    return None
+
+
+def actor_name(value: Any, where: str = "actor") -> str:
+    """`value` when it is an actor's name, unchanged; any other value raises `ValueError` naming
+    `where` and the rule it breaks. A name is a plain string compared as written, with no prefix of
+    any kind. The refusal shows a long value by its first 6 characters and its length only, since a
+    value refused here may be a secret pasted into the wrong field."""
+    if not isinstance(value, str):
+        raise ValueError(f"{where}: a {type(value).__name__} is not an actor name: a name is a string")
+    rule = _name_rule(value)
+    if rule is not None:
+        shown = f"{value[:6]!r}…[{len(value)} chars]" if len(value) > 6 else repr(value)
+        raise ValueError(f"{where}: {shown} is not an actor name: {rule}")
+    return value
+
+
 @dataclass
 class Khive:
     cwd: Path  # the directory whose .khive/config.toml names the actor, and where kkernel runs
@@ -76,6 +112,7 @@ class Khive:
     config: Path | None = None  # an explicit khive config: passed as --config, over the cwd's own
 
     def __post_init__(self) -> None:
+        actor_name(self.actor, "khive actor")
         self.cwd = Path(self.cwd)
         self.kkernel = self.kkernel or shutil.which("kkernel") or str(Path.home() / ".cargo/bin/kkernel")
         if not Path(self.kkernel).exists():

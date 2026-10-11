@@ -320,7 +320,7 @@ class Record:
         "word search over three records: a differently worded one is missed and the chair reads the ask"
     )
     empty_expected = False
-    senders = ("lambda:",)  # the reply carries record content back: actors only
+    agents_only = True  # the reply carries record content back: agents only
     lead = "the record holds these, one may settle it:"
     tail = TAIL
 
