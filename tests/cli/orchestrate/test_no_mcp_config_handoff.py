@@ -196,3 +196,125 @@ def test_a_dropped_grant_is_reported_as_well_as_a_dropped_refusal(caplog):
     assert "mcp_servers" not in imodel.endpoint.config.kwargs
     assert "reviewer-2" in caplog.text
     assert "khive" in caplog.text
+
+
+# The factory has a discovery of its own: handed no set, ``create_agent`` reads
+# ``~/.lionagi/.mcp.json``, starts the servers it names as lionagi tools, and
+# writes them into the CLI request over whatever the run already handed this
+# worker. The cases below put a server in that file and check it reaches no
+# worker the run resolved a set for.
+_HOME_SERVER = {"home-only": {"command": "home-only-server"}}
+_RUN_SERVER = {"run-set": {"command": "run-set-server"}}
+
+
+@pytest.fixture
+def home_mcp_config(monkeypatch, tmp_path):
+    """A home directory whose ``.lionagi/.mcp.json`` names one server, and a
+    record of every time the factory goes looking for it."""
+    import lionagi.agent.factory as factory_mod
+
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    (home / ".lionagi" / ".mcp.json").write_text(json.dumps({"mcpServers": _HOME_SERVER}))
+    monkeypatch.setenv("HOME", str(home))
+
+    discovered: list[str] = []
+
+    async def _record_discovery(branch, spec, *, trust_project_settings=False):
+        # Recorded instead of run: running it starts the servers the file names.
+        discovered.append(spec.profile.role.name)
+        return frozenset()
+
+    monkeypatch.setattr(factory_mod, "_load_mcp", _record_discovery)
+    return discovered
+
+
+def _mcp_config_arg(args: list[str]) -> dict:
+    assert "--mcp-config" in args
+    return json.loads(args[args.index("--mcp-config") + 1])
+
+
+async def _casts_worker_args(env) -> list[str]:
+    # A built-in casts role with no profile of its own is the worker that goes
+    # through create_agent; a profile with a body of its own does not.
+    branch, _, profile, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="critic",
+        model_override="claude_code/sonnet",
+    )
+    assert profile is None
+    return await _cli_args(branch.chat_model)
+
+
+@pytest.mark.asyncio
+async def test_no_mcp_config_keeps_the_home_config_off_a_casts_worker(tmp_run, home_mcp_config):
+    env = await _setup(no_mcp_config=True)
+    args = await _casts_worker_args(env)
+
+    assert _mcp_config_arg(args) == {"mcpServers": {}}
+    assert "--strict-mcp-config" in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_a_found_run_set_is_the_set_a_casts_worker_gets(tmp_run, home_mcp_config):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+    env = await _setup(no_mcp_config=False)
+    assert env.mcp_servers == _RUN_SERVER
+
+    args = await _casts_worker_args(env)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_a_found_run_set_is_the_set_the_orchestrator_gets(tmp_run, home_mcp_config):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+    env = await _setup(no_mcp_config=False)
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_no_mcp_config_keeps_the_home_config_off_the_synthesis_branch(
+    tmp_run, home_mcp_config
+):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    env = await _setup(no_mcp_config=True)
+    branch = await _fresh_synthesis_branch(env)
+    args = await _cli_args(branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": {}}
+    assert "--strict-mcp-config" in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_a_found_run_set_is_the_set_the_synthesis_branch_gets(tmp_run, home_mcp_config):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+    env = await _setup(no_mcp_config=False)
+    branch = await _fresh_synthesis_branch(env)
+    args = await _cli_args(branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_run_set_a_casts_worker_still_finds_the_home_config(tmp_run, home_mcp_config):
+    """The contrast case: the run found nothing and was told nothing, so the
+    worker keeps the factory's own discovery, home config included."""
+    env = await _setup(no_mcp_config=False)
+    assert env.mcp_servers is None
+
+    args = await _casts_worker_args(env)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _HOME_SERVER}
+    assert "critic" in home_mcp_config

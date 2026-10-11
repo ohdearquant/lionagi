@@ -745,16 +745,17 @@ async def setup_orchestration(
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
-        # The factory discovers a config from the agent's own directory unless a
-        # caller hands it a set. A refusal has to be handed over for the same
-        # reason a set does: left to discover, the factory would find one and
-        # overwrite the empty set the orchestrator was just given.
+        # The factory discovers a config of its own (the home
+        # `.lionagi/.mcp.json` included) unless a caller hands it a set, and
+        # what it finds replaces the set the orchestrator was just given. So the
+        # run's set goes in as the set, a refusal as the empty one; only a run
+        # with neither leaves the factory to discover.
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
             chat_model=orc_imodel,
             log_config=orc_log_config,
-            resolved_mcp_servers={} if no_mcp_config else Unset,
+            resolved_mcp_servers=Unset if run_mcp_servers is None else run_mcp_servers,
         )
         orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
@@ -999,11 +1000,15 @@ async def build_worker_branch(
             system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
+        # Handed no set, the factory would discover one and replace the set
+        # _hand_mcp_servers gave this worker above (see the orchestrator).
+        run_servers = getattr(env, "mcp_servers", None)
         wb = await create_agent(
             spec,
             load_settings=False,
             chat_model=w_imodel,
             log_config=log_config,
+            resolved_mcp_servers=Unset if run_servers is None else run_servers,
         )
         wb.name = wname
     else:

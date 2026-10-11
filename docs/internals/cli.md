@@ -293,7 +293,11 @@ none is warned about, naming the worker (`label`) since a run's workers can
 resolve different providers. `{}` (an explicit empty set) and `None` (no set
 at all) are different requests: `{}` means "apply no servers" and is applied
 as the whole set; `None` means there's nothing to hand over and the model
-keeps whatever it already had.
+keeps whatever it already had. Branches built through `create_agent` (the
+built-in orchestrator, casts-role workers, the fanout synthesis branch) get
+the same set as `resolved_mcp_servers`: left unset, the factory discovers a
+config of its own, the home `.lionagi/.mcp.json` included, and that replaces
+the set just handed over. Only a run with no set at all leaves it unset.
 
 **`collect_worker_artifacts`** — the worker roster comes from the artifact
 directories the run actually handed out, not a scan for non-empty ones, so a
