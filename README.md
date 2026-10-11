@@ -12,10 +12,16 @@ the terminal with the `li` CLI: single agents, parallel fan-outs, and DAG
 flows where an orchestrator plans specialist workers. Built continuously
 since 2023.
 
-> **Maintenance.** lionagi now takes fixes only. New work happens in lion1,
-> in the [`lion1/`](lion1/) directory of this repository. lion1 is a new
-> runtime, not a new version of lionagi: code written for lionagi keeps
-> working on lionagi releases and does not run on lion1 unchanged.
+> **Direction.** lion1, a second runtime kept in the [`lion1/`](lion1/)
+> directory of this repository until the migration completes, comes into
+> lionagi concept by concept, in the seven ordered steps set out in
+> [ADR-0125](docs/adr/ADR-0125-bringing-the-lion1-runtime-into-lionagi.md).
+> Through this migration, code written for lionagi keeps working: public
+> imports, supported call shapes and return types stay as they are, and new
+> capabilities arrive as additions. Removing a public name or behavior, or
+> changing what a default install can do, needs its own versioned compatibility
+> decision, and a behavior an adapter cannot keep waits for its own
+> compatibility decision.
 
 [Docs](https://ohdearquant.github.io/lionagi/) |
 [How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/) |

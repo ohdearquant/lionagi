@@ -284,6 +284,8 @@ its area block.
 - 0088-0089 — unused (0088 allocated to a substrates record from this gap; see below)
 - [ADR-0122](ADR-0122-feature-boundaries-and-optional-runtime-profiles.md) — Feature boundaries and
   optional runtime profiles (sequential number; see Numbering)
+- [ADR-0125](ADR-0125-bringing-the-lion1-runtime-into-lionagi.md) — Bringing the lion1 runtime into
+  lionagi: order, the internal actor, and consolidation (sequential number; see Numbering)
 
 ### substrates (0090-0095)
 
