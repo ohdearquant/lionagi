@@ -647,21 +647,28 @@ def apply_forwarded_mcp_servers(
     provider: str | None,
     exclusive: bool = False,
     allowed_names: Collection[str] | None = None,
-    known_server_names: Collection[str] = (),
 ) -> bool:
     """Write a resolved MCP server set into a CLI request's kwargs.
 
     Returns whether *servers* reached the request (False: provider has no
     transport for a caller-resolved set). See
     docs/internals/agent-runtime.md#mcp-server-forwarding for what
-    *exclusive*/*allowed_names*/*known_server_names* mean.
+    *exclusive*/*allowed_names* mean.
     """
-    if servers is None:
+    if servers is None and not exclusive:
+        # No set and no claim to the whole set: the request is left as it was.
         return False
+    # A caller declaring the whole set with no set declares the empty one.
+    servers = servers or {}
     if not provider_accepts_forwarded_mcp(provider):
         return False
 
-    if provider in _CLAUDE_PROVIDER_NAMES:
+    if exclusive:
+        _drop_forwarded_mcp_servers(kwargs)
+
+    # Folded like the capability check above: a spelling that resolves to the
+    # Claude CLI must not fall through to the codex override form.
+    if _canonical_provider(provider) in _CLAUDE_PROVIDER_NAMES:
         kwargs["mcp_servers"] = servers
         if exclusive:
             # The handed set alone is merged with whatever the CLI discovers
@@ -698,11 +705,13 @@ def apply_forwarded_mcp_servers(
 
     if exclusive:
         # codex has no wholesale "clear mcp_servers" override, so every
-        # server left out of the caller's set (including ambient ones codex
-        # would load on its own) is disabled by name instead.
+        # server left out of the caller's set that codex would load on its own
+        # is disabled by name instead. Only names codex's own config declares:
+        # `mcp_servers.<name>.enabled=false` for any other name is a table with
+        # no server in it, and codex refuses to start with one.
         allowed = set(servers) if allowed_names is None else set(allowed_names)
-        discovered = set(known_server_names) | _discover_ambient_codex_mcp_server_names()
-        for excluded_name in sorted(discovered - allowed):
+        configured = _discover_ambient_codex_mcp_server_names()
+        for excluded_name in sorted(configured - allowed):
             overrides[f"mcp_servers.{excluded_name}.enabled"] = False
 
     if secret_fields:
@@ -710,6 +719,32 @@ def apply_forwarded_mcp_servers(
     if overrides:
         kwargs["config_overrides"] = overrides
     return True
+
+
+def _drop_forwarded_mcp_servers(kwargs: dict[str, Any]) -> None:
+    """Remove every server set a request already carries.
+
+    A resumed leg's request is the persisted one, so it holds whatever the
+    previous run was handed: the Claude `mcp_servers` map, codex
+    `mcp_servers.<name>.<field>` overrides or a whole `mcp_servers` table, and a
+    generated codex profile, which holds nothing but servers. A profile the
+    caller named is theirs and stays.
+    """
+    kwargs.pop("mcp_servers", None)
+    kwargs.pop("strict_mcp_config", None)
+    overrides = kwargs.get("config_overrides")
+    if overrides:
+        kept = {
+            key: value
+            for key, value in overrides.items()
+            if key != "mcp_servers" and not key.startswith("mcp_servers.")
+        }
+        if kept:
+            kwargs["config_overrides"] = kept
+        else:
+            kwargs.pop("config_overrides", None)
+    if _is_generated_codex_profile(kwargs.get("profile")):
+        kwargs.pop("profile", None)
 
 
 def _forward_mcp_to_cli_request(
@@ -812,10 +847,6 @@ def _forward_mcp_to_cli_request(
             return
         servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
 
-    # Keep the pre-filter set: an explicit allowlist needs to know which
-    # discovered servers it excluded, not just which it kept.
-    available_servers = servers
-
     if spec.mcp_servers is not None:
         servers = {name: cfg for name, cfg in servers.items() if name in spec.mcp_servers}
 
@@ -826,9 +857,10 @@ def _forward_mcp_to_cli_request(
         branch.chat_model.endpoint.config.kwargs,
         servers,
         provider=provider,
-        exclusive=spec.mcp_servers is not None,
+        # A caller handing over an empty set has declared the whole set, as
+        # build_chat_model reads it for a plain leg.
+        exclusive=spec.mcp_servers is not None or (caller_resolved and not servers),
         allowed_names=spec.mcp_servers,
-        known_server_names=tuple(available_servers),
     )
 
 

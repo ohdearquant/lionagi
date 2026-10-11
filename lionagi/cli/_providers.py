@@ -161,6 +161,7 @@ def build_chat_model(
     fast: bool = False,
     bypass: bool = False,
     mcp_servers: dict | None = None,
+    mcp_exclusive: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     effort = normalize_effort(effort)
@@ -177,15 +178,20 @@ def build_chat_model(
             profile_name = model
             model, codex_profile_overrides = resolved_profile
             progress(f"codex profile {profile_name!r} resolves to model {model!r}")
-    if mcp_servers is not None:
+    if mcp_servers is not None or mcp_exclusive:
         from lionagi.agent.factory import apply_forwarded_mcp_servers
 
         # Whether/how this provider accepts a server set (e.g. codex via config
         # overrides) is decided by apply_forwarded_mcp_servers, not here. An
         # empty set means the caller states the whole set; non-empty adds to
-        # whatever the provider finds for itself.
+        # whatever the provider finds for itself. `mcp_exclusive` says the
+        # caller's set is the whole set even when it is null: `--no-mcp-config`
+        # arrives as the same null as a search that found nothing.
         apply_forwarded_mcp_servers(
-            extra, mcp_servers, provider=provider, exclusive=not mcp_servers
+            extra,
+            mcp_servers,
+            provider=provider,
+            exclusive=mcp_exclusive or not mcp_servers,
         )
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))

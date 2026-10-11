@@ -797,6 +797,7 @@ async def _run_agent(
             fast,
             bypass,
             mcp_servers=mcp_resolution.servers,
+            mcp_exclusive=mcp_resolution.declared_empty,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
         # Two spawn shapes hand the set over in two different places, so the
@@ -850,7 +851,9 @@ async def _run_agent(
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
-                resolved_mcp_servers=mcp_resolution.servers,
+                resolved_mcp_servers=(
+                    {} if mcp_resolution.declared_empty else mcp_resolution.servers
+                ),
                 resolved_mcp_explicit=mcp_resolution.explicit,
             )
             # The hand-over happened inside create_agent, so the request it
@@ -938,7 +941,10 @@ async def _run_agent(
             cfg,
             mcp_resolution.servers,
             provider=provider,
-            exclusive=not mcp_resolution.servers,
+            # The persisted request carries the previous run's servers; only a
+            # declared set replaces them. A failed search leaves them, as it
+            # leaves a new leg to what its CLI finds.
+            exclusive=mcp_resolution.declared_empty,
         )
         # A resumed leg re-spawns from the persisted request, which is the only
         # thing that decides what it carries — read the answer off it.

@@ -56,6 +56,21 @@ class McpResolution:
     def ok(self) -> bool:
         return self.servers is not None
 
+    @property
+    def declared_empty(self) -> bool:
+        """Whether "no servers" is the caller's answer rather than a failure to find one.
+
+        True for ``--no-mcp-config`` and for a named config that lists no
+        servers. A search that found nothing, or found a config declaring none,
+        is not a declaration: the leg is told it keeps whatever its own CLI
+        discovers, so it must not have that suppressed.
+        """
+        if self.servers:
+            return False
+        if self.servers is not None:
+            return True
+        return self.reason is None
+
 
 def discover_mcp_config(start: str | Path) -> Path | None:
     """Nearest ``.mcp.json`` at or above *start*, or None.

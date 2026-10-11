@@ -84,6 +84,12 @@ the directory that doesn't have it). "Nothing was configured" and "something was
 could not be used" are returned as distinct states, so a failed resolution always carries its
 reason.
 
+`McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
+was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
+path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
+none of its own servers either. A search that found nothing, or found a config declaring no
+servers, is reported as such and leaves the leg to what its CLI discovers, as the warning says.
+
 ## `machine_schedule.py` — `li schedule ... --machine` payload rules
 
 Three rules shape every schedule subcommand's machine payload (the envelope contract itself
