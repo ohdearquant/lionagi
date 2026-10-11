@@ -4,6 +4,10 @@ RuVector adds local native Rust HNSW retrieval to LionAGI Nodes, branch memory a
 
 ![Retrieval architecture](../assets/ruvector/architecture.svg)
 
+
+For incremental RVF transactions, expiry, reclamation and governed feedback policies,
+see [incremental memory](ruvector-incremental-memory.md).
+
 ## Install the optional backend
 
 This integration is proposed in the source tree and is not yet in a published LionAGI release. From this checkout:
@@ -96,3 +100,9 @@ The native contract suite covers Branch tools, memory fidelity, filtering, cance
 This code lives in LionAGI and depends directly on the RuVector SDK. It does not depend on the separately proposed `ruvector-lionagi` distribution, avoiding a circular package dependency. Adoption makes LionAGI the owner of this upstream implementation; any separate distribution should become a compatibility facade or be retired rather than evolving a second implementation.
 
 Existing LionAGI CI and publishing remain authoritative. This contribution adds no publishing credentials, workflow dispatch, version bump or release authority. Upstream maintainers decide whether to merge and release it.
+
+## Optional durable memory
+
+See [RVF persistence and relevance feedback](ruvector-durable-learning.md) for the
+optional durable store, native SDK prerequisite and bounded preference adaptation.
+The default `RuVectorStore` remains in memory.

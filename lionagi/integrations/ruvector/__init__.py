@@ -6,7 +6,12 @@
 from __future__ import annotations
 
 try:
+    from .evaluation import EvaluationCase, EvaluationGate, EvaluationReport, GovernedFeedbackRanker
+    from .journaled import JournaledRuVectorStore
+    from .learning import FeedbackRanker
+    from .lifecycle import LifecycleRuVectorStore
     from .memory import RuVectorMemoryStore
+    from .persistent import PersistentRuVectorStore
     from .store import RuVectorStore, SearchHit
 except ModuleNotFoundError as exc:
     if exc.name not in {"ruvector", "numpy"}:
@@ -15,4 +20,16 @@ except ModuleNotFoundError as exc:
         "RuVector integration requires the optional extra: uv add 'lionagi[ruvector]'"
     ) from exc
 
-__all__ = ("RuVectorMemoryStore", "RuVectorStore", "SearchHit")
+__all__ = (
+    "EvaluationCase",
+    "EvaluationGate",
+    "EvaluationReport",
+    "GovernedFeedbackRanker",
+    "JournaledRuVectorStore",
+    "LifecycleRuVectorStore",
+    "FeedbackRanker",
+    "PersistentRuVectorStore",
+    "RuVectorMemoryStore",
+    "RuVectorStore",
+    "SearchHit",
+)
