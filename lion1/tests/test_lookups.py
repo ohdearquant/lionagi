@@ -34,7 +34,7 @@ liveness: "partial (nothing serves before the cutover)"
 
 ## Decisions
 
-### D1: `hub/agent/queue.py`: three handlers on the chores actor ^d1
+### D1: Three handlers on the chores actor ^d1
 
 ## Alternatives
 
@@ -134,7 +134,10 @@ def test_adrs_score_titles_headings_and_rejected_alternatives_by_the_asks_words(
     assert f.startswith(
         "ADR-0023 ADR-0023: The build queue (signed, partial (nothing serves before the cutover))"
     )
-    assert "5 of 5 word(s); C6: A timeout is never surfaced to the person; D1: `hub/agent/queue.py`" in f
+    assert (
+        "5 of 5 word(s); C6: A timeout is never surfaced to the person; "
+        "D1: Three handlers on the chores actor" in f
+    )
     assert "alternatives: Timeouts escalated too | the person: the agent handles them" in f
     # one word only: one match is enough; nothing carrying it: no finding, control still passes
     out = asyncio.run(Adrs([d]).run({"query": "the box exec"}))
@@ -269,19 +272,19 @@ def test_decisions_keep_text_hits_only_and_the_positive_search_is_the_control():
             [hit("e1", "example PR#12", "both")],
         ]
     )
-    dec = Decisions(khive, positive="ona")
+    dec = Decisions(khive, positive="agent-c")
     out = asyncio.run(dec.run({"query": "build queue timeouts"}))
-    assert out.control and out.count == 2 and out.positive == "'ona' found as example PR#12"
+    assert out.control and out.count == 2 and out.positive == "'agent-c' found as example PR#12"
     assert out.findings == (
         "decision d1 (2026-09-22T10:00): build queue: timeouts by code: decided 2026-09-22",
         "insight i1 (2026-09-22T10:00): build queue insight",
     )
-    assert "decision: 2 returned, 1 by text" in out.evidence and "positive 'ona' (entity): 1 by text" in (
+    assert "decision: 2 returned, 1 by text" in out.evidence and "positive 'agent-c' (entity): 1 by text" in (
         out.evidence
     )
     (ops,) = khive.ops
     assert ops.startswith('[search(query="build queue timeouts", kind="decision", limit=5), ')
-    assert ops.endswith('search(query="ona", kind="entity", limit=1)]')
+    assert ops.endswith('search(query="agent-c", kind="entity", limit=1)]')
     khive.pages[2] = [hit("e1", "example PR#12", "vector")]  # the positive came back by vector only
     out = asyncio.run(dec.run({"query": "build queue timeouts"}))
     assert not out.control and out.positive == ""

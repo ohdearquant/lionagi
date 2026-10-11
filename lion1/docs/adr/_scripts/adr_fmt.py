@@ -3,7 +3,7 @@
 Rewrapped: paragraphs, and bullets (`- ...`) with their two-space continuation lines. Untouched:
 frontmatter, headings, tables, fenced code, blank lines, blockquotes. Idempotent.
 
-    uv run python docs/adr/_scripts/adr_fmt.py [files...]     # no files: the whole corpus
+    cd lion1 && uv run python docs/adr/_scripts/adr_fmt.py [files...]     # no files: the whole corpus
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from _md import fenced_code_mask
 
-ROOT = Path(__file__).resolve().parent.parent  # docs/adr
+ROOT = Path(__file__).resolve().parent.parent  # the ADR corpus
 WIDTH = 100
 
 

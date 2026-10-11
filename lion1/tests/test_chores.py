@@ -35,7 +35,7 @@ from lion1.khive import LOST, KhiveError
 from tests.lionfake import store as fresh_store
 from tests.test_agent import own
 
-OWNER, STEWARD, SELF = "xena", "ona", "xena:agent"
+OWNER, STEWARD, SELF = "agent-a", "agent-c", "agent-a:agent"
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 
 
@@ -479,7 +479,9 @@ def test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_a
     assert khive.sent[2]["subject"] == "ESCALATE disk: instrument dead"
     text = khive.sent[2]["content"]
     assert "instrument dead: 3 consecutive run(s) without an answer since" in text and "NOT-MEASURED" in text
-    assert any("instrument dead after 3 unanswered run(s), told ['xena', 'ona']" in r for r in results(run))
+    assert any(
+        "instrument dead after 3 unanswered run(s), told ['agent-a', 'agent-c']" in r for r in results(run)
+    )
     asyncio.run(agent.wake())  # the fourth: told once, not again
     assert len(khive.sent) == 4 and agent.state.get("dead_told").value == ["disk"]
     asyncio.run(agent.wake())  # an answer clears it
@@ -636,16 +638,16 @@ def test_an_escalation_the_steward_did_not_receive_is_sent_at_the_next_run_thoug
 
 
 def test_the_model_may_not_name_an_asker_outside_the_trusted_set(tmp_path):
-    khive = FakeKhive(mail(OWNER, "check disk for stan"))
+    khive = FakeKhive(mail(OWNER, "check disk for agent-g"))
     chores, agent = build(
         tmp_path,
         khive,
-        ['<lact c1>check(chore="disk", asker="stan", thread="t9")</lact>', DONE],
+        ['<lact c1>check(chore="disk", asker="agent-g", thread="t9")</lact>', DONE],
         disk=Probe("disk", full()),
     )
     run = asyncio.run(agent.wake())
     assert khive.sent == [] and chores.rows() == []
-    assert any("stan is not a sender this agent works for" in r for r in results(run))
+    assert any("agent-g is not a sender this agent works for" in r for r in results(run))
 
 
 def test_the_answer_to_an_ask_goes_on_the_asks_thread_whatever_the_model_wrote(tmp_path):
@@ -666,7 +668,7 @@ def test_the_answer_to_an_ask_goes_on_the_asks_thread_whatever_the_model_wrote(t
 
 def test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs(tmp_path):
     khive = FakeKhive(
-        mail("stan", "check disk now"),
+        mail("agent-g", "check disk now"),
         mail(SELF, "tick: disk", mid="b2c3d4e5"),
         mail("otto", "tick: disk", mid="c3d4e5f6"),
     )
@@ -674,7 +676,7 @@ def test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs
     assert asyncio.run(agent.wake()) is None  # the stranger's mail: read, noted, no run, no model call
     assert agent.backend.calls == [] and khive.sent == []
     cursor = agent.state.get("cursor").value
-    assert cursor["dropped"] == [{"id": "a1b2c3d4", "from": "stan"}] and "dropped_at" in cursor
+    assert cursor["dropped"] == [{"id": "a1b2c3d4", "from": "agent-g"}] and "dropped_at" in cursor
     agent.batch = 2
     run = asyncio.run(agent.wake())  # a mixed batch runs the tick alone and notes the drop beside it
     assert run is not None and len(chores.rows()) == 1
@@ -1710,7 +1712,7 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
     assert [s["to"] for s in khive.sent] == [OWNER] and "#7 red" in khive.sent[0]["content"]
     assert rows[1]["caught_up"] == [
         "tick: pr (fired at 2026-09-21T03:04:09Z): missed, ran now: pr: reported, 1 finding(s), "
-        "sent to ['xena']"
+        "sent to ['agent-a']"
     ]
     assert any("missed ticks run: [" in r and "tick: pr (fired" in r for r in results(run))
     asyncio.run(agent.wake())
@@ -2807,14 +2809,14 @@ def test_the_chores_profile_names_each_chore_with_its_direction_and_question_and
     )
     chores_p, reader = chores.profiles()
     assert chores_p.specs == frozenset({"check", "digest", "aged"}) and reader.specs == frozenset()
-    assert chores_p.name == "chores" and "You are the long-running agent of xena" in chores_p.system
+    assert chores_p.name == "chores" and "You are the long-running agent of agent-a" in chores_p.system
     assert (
         "  disk: probes disk [over-report] (every every:30m); answers: what the probe was pointed at"
         in chores_p.system
     )
     assert "  ask: probes ask [over-report] (on ask); answers: what the probe" in chores_p.system
     agent.actor.check(chores_p)
-    assert sender_of({"properties": {"from_actor": "ona"}}) == "ona" and sender_of({}) == "?"
+    assert sender_of({"properties": {"from_actor": "agent-c"}}) == "agent-c" and sender_of({}) == "?"
 
 
 def test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build(tmp_path):
@@ -2835,7 +2837,7 @@ def test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build(tm
 def test_the_bounded_client_refuses_every_verb_but_the_read_list_and_every_outside_recipient():
     inner = FakeKhive()
     k = Bounded(inner, recipients=frozenset({OWNER, STEWARD}))
-    ops = '[gtd.tasks(status="inbox", assignee="x"), comm.probe(actor="xena", stale_minutes=20)]'
+    ops = '[gtd.tasks(status="inbox", assignee="x"), comm.probe(actor="agent-a", stale_minutes=20)]'
     assert verbs(ops) == ["gtd.tasks", "comm.probe"]
     assert verbs('comm.read(id="x", note="run gtd.complete(id=1) now")') == [
         "comm.read"
@@ -2867,7 +2869,7 @@ def test_the_bounded_client_fails_closed_on_a_call_it_cannot_name_and_on_mail_as
     with pytest.raises(AgentError, match="3 call\\(s\\) in the op, 1 verb"):  # every paren group counts
         asyncio.run(k.exec('[gtd.tasks(assignee="x"), (gtd.complete)(id="a")]'))
     with pytest.raises(AgentError, match=r"\['comm.send'\] are not verbs the agent may call"):
-        asyncio.run(k.exec('comm.send(to="stan", content="probe", subject="probe")'))
+        asyncio.run(k.exec('comm.send(to="agent-g", content="probe", subject="probe")'))
     assert inner.ops == [] and inner.sent == []
 
 
@@ -2947,7 +2949,7 @@ def test_the_one_gtd_write_is_composed_by_code_and_the_model_may_not_compose_it_
         assign(title='say "hi"', namespace=OWNER, tags=["desk", "from:a"], idempotency_key="k1")
     )
     assert inner.ops == [
-        'gtd.assign(title="say \\"hi\\"", namespace="xena", tags=["desk", "from:a"], idempotency_key="k1")'
+        'gtd.assign(title="say \\"hi\\"", namespace="agent-a", tags=["desk", "from:a"], idempotency_key="k1")'
     ]
     assert row == {"id": "7a5c0001", "full_id": "7a5c0001-0000-4000-8000-000000000000", "replayed": False}
     assert "gtd.assign" not in k.allowed

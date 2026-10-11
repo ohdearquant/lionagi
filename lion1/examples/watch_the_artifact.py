@@ -8,7 +8,7 @@ after the section has looked, so it decides on what the model was just told. An 
 SWE bench runs with: the watcher reads `git diff`, the gate reads the tree and the model's own
 acceptance checks. Scripted backend; runs offline.
 
-    uv run python examples/watch_the_artifact.py
+    cd lion1 && uv run python examples/watch_the_artifact.py
 """
 
 from __future__ import annotations

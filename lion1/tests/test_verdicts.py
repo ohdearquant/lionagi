@@ -40,13 +40,13 @@ from tests.test_instruments import FakeSh
 EV = "f00dcafe" + "e" * 32  # the head the verdict evaluated
 NOW = "c0ffee00" + "1" * 32  # the PR's head after a later push
 COVERAGE = "- coverage bounds: debt-hits=hit(?/25), diff-chars=ok(10/100)"
-PREFIX = {"x": "xena", "b": "bea"}
-AUTHORS = {"Ann": "ada", "b": "bea"}
+PREFIX = {"x": "agent-a", "b": "agent-e"}
+AUTHORS = {"author-a": "agent-d", "b": "agent-e"}
 VIEW = [GH, "pr", "view", "7", "-R", "o/r", "--json", "headRefOid,headRefName,state,commits"]
 
 
 def verdicts_module():
-    """hub/agent/verdicts.py; a tree without it fails every case here, at this assertion."""
+    """lion1/hub/agent/verdicts.py; a tree without it fails every case here, at this assertion."""
     assert importlib.util.find_spec("hub.agent.verdicts") is not None, "hub.agent has no verdict triage"
     return importlib.import_module("hub.agent.verdicts")
 
@@ -91,7 +91,7 @@ def pair(
         )
 
 
-def gh(head=EV, branch="x/work", authors=("Pat",), state="OPEN") -> FakeSh:
+def gh(head=EV, branch="x/work", authors=("author-b",), state="OPEN") -> FakeSh:
     pr = {
         "headRefOid": head,
         "headRefName": branch,
@@ -162,7 +162,7 @@ def set_aside(d, name=ASIDE, *, evaluated=EV, decision="ENGINE-UNAVAILABLE", jso
 def triage(d, sh: FakeSh, text: str, actor_map=None, **stubs) -> dict:
     v = verdicts_module().Verdicts(
         verdict_dir=str(d),
-        actor_map={"o/r": "xena"} if actor_map is None else actor_map,
+        actor_map={"o/r": "agent-a"} if actor_map is None else actor_map,
         actor_prefix=PREFIX,
         author_actor=AUTHORS,
         run=sh,
@@ -178,14 +178,14 @@ def test_a_fresh_verdict_on_the_chairs_pr_is_decided_with_its_triage_line(tmp_pa
     got = triage(d, sh, notice(d))
     assert got["errors"] == [] and got["fresh"] is True
     assert got["line"] == (
-        "o/r#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner xena by branch prefix, "
+        "o/r#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner agent-a by branch prefix, "
         f"json: {d}/o-r-7-f00dcafe.json"
     )
-    assert (got["owner"], got["owner_by"], got["coverage"]) == ("xena", "branch prefix", COVERAGE)
+    assert (got["owner"], got["owner_by"], got["coverage"]) == ("agent-a", "branch prefix", COVERAGE)
     assert got["rungs"] == {
-        "branch prefix": "x -> xena",
-        "commit author": "Pat -> no actor",
-        "actor map": "o/r -> xena",
+        "branch prefix": "x -> agent-a",
+        "commit author": "author-b -> no actor",
+        "actor map": "o/r -> agent-a",
     }
     read = [got[k] for k in ("evaluated_head", "current_head", "state", "branch")]
     assert read == [EV, EV, "OPEN", "x/work"]
@@ -198,7 +198,7 @@ def test_a_stale_verdict_names_the_evaluated_head_and_the_head_now(tmp_path):
     got = triage(d, gh(head=NOW), notice(d))
     assert got["errors"] == [] and got["fresh"] is False
     assert got["line"] == (
-        "o/r#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head STALE (now c0ffee00), OPEN, owner xena by "
+        "o/r#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head STALE (now c0ffee00), OPEN, owner agent-a by "
         f"branch prefix, json: {d}/o-r-7-f00dcafe.json"
     )
 
@@ -209,12 +209,13 @@ def test_a_stale_verdict_names_the_evaluated_head_and_the_head_now(tmp_path):
         (
             "b/layer-corpus",
             ("b",),
-            "branch prefix b -> bea; commit author b -> bea; actor map o/r -> xena",
+            "branch prefix b -> agent-e; commit author b -> agent-e; actor map o/r -> agent-a",
         ),
         (
             "x/work",
-            ("Ann", "b"),
-            "branch prefix x -> xena; commit author Ann -> ada, b -> bea; actor map o/r -> xena",
+            ("author-a", "b"),
+            "branch prefix x -> agent-a; commit author author-a -> agent-d, "
+            "b -> agent-e; actor map o/r -> agent-a",
         ),
     ],
     ids=["later-rung", "two-authors"],
@@ -232,7 +233,8 @@ def test_no_rung_naming_an_actor_is_undecided(tmp_path):
     pair(d)
     got = triage(d, gh(branch="codex/fix"), notice(d), actor_map={})
     assert got["errors"] == [
-        "ownership: no rung names an actor: branch prefix codex -> no actor; commit author Pat -> no actor; "
+        "ownership: no rung names an actor: branch prefix codex -> no actor; commit author "
+        "author-b -> no actor; "
         "actor map o/r -> no actor"
     ]
     assert got["owner"] is None
@@ -320,7 +322,9 @@ def test_a_notice_without_an_artifact_line_reads_the_md_header_when_the_json_is_
     pair(d, json_file=False)
     got = triage(d, gh(), notice(d, artifact=False))
     assert got["errors"] == [] and got["read"] == "md header (no JSON)"
-    assert got["line"].endswith(f", owner xena by branch prefix, md header (no JSON): {d}/o-r-7-f00dcafe.md")
+    assert got["line"].endswith(
+        f", owner agent-a by branch prefix, md header (no JSON): {d}/o-r-7-f00dcafe.md"
+    )
     assert (got["decision"], got["blocking"], got["coverage"]) == ("REQUEST-CHANGES", 2, COVERAGE)
 
 
@@ -400,7 +404,7 @@ def test_a_notice_meets_its_artifact_by_the_case_blind_unpadded_identity(
     spelled = named.split("#")[0]
     if said is None:
         assert got["errors"] == [] and got["line"] == (
-            f"{spelled}#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner xena by "
+            f"{spelled}#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner agent-a by "
             f"branch prefix, json: {d}/o-r-7-f00dcafe.json"
         )
         assert sh.calls[-1] == [*VIEW[:5], spelled, *VIEW[6:]] and len(sh.calls) == 2
@@ -464,7 +468,7 @@ def test_the_actor_map_meets_the_notices_repo_by_the_case_blind_identity(
         )
     else:
         assert got["owner"] is None and got["errors"] == [
-            f"{said}: branch prefix dev -> no actor; commit author Pat -> no actor; "
+            f"{said}: branch prefix dev -> no actor; commit author author-b -> no actor; "
             f"actor map {spelled} -> {mapped}"
         ]
 
@@ -523,7 +527,7 @@ def test_a_degraded_but_reasoned_verdict_is_no_stub_and_reads_gh_and_the_ladder(
     sh = gh()
     got = triage(d, sh, notice(d))
     assert got["errors"] == [] and got.get("stub") is None and got["degraded"] is True
-    assert (got["owner"], got["owner_by"], got["fresh"]) == ("xena", "branch prefix", True)
+    assert (got["owner"], got["owner_by"], got["fresh"]) == ("agent-a", "branch prefix", True)
     assert sh.calls[-1] == VIEW and len(sh.calls) == 2
 
 
@@ -536,7 +540,7 @@ def test_a_configured_stub_set_replaces_the_default(tmp_path, decision, stub):
     sh = gh()
     got = triage(d, sh, notice(d), stub_decisions=frozenset({"ENGINE-TIMEOUT"}))
     assert got["errors"] == [] and got.get("stub") == stub
-    assert len(sh.calls) == (0 if stub else 2) and got["owner"] == (None if stub else "xena")
+    assert len(sh.calls) == (0 if stub else 2) and got["owner"] == (None if stub else "agent-a")
 
 
 @pytest.mark.parametrize("json_file", [False, True], ids=["md-only", "json-pair"])
@@ -573,7 +577,7 @@ def test_a_reasoned_verdict_set_aside_reads_gh_and_the_ladder_as_usual(tmp_path,
     sh = gh()
     got = triage(d, sh, notice(d, at=set_aside(d, name, decision="APPROVE")))
     assert (got["errors"], got["stub"], got["decision"]) == ([], None, "APPROVE")
-    assert (got["owner"], got["owner_by"], got["fresh"]) == ("xena", "branch prefix", True)
+    assert (got["owner"], got["owner_by"], got["fresh"]) == ("agent-a", "branch prefix", True)
     assert sh.calls[-1] == VIEW and len(sh.calls) == 2
 
 
@@ -609,7 +613,7 @@ def verdict_desk(
         pair(d, **(kind if stub else {}))
     named = set_aside(d) if aside else "o-r-7-f00dcafe.md"
     note = inbox_row(
-        "review-daemon",
+        "source-agent",
         "PR review verdict: o/r#7",
         notice(d, stub=stub or aside, at=named),
         VMID,
@@ -629,12 +633,12 @@ def verdict_desk(
         author_actor=AUTHORS,
         run=sh,
     )
-    desk.verdict_from = ("review-daemon",)
+    desk.verdict_from = ("source-agent",)
     return desk, inner, agent, d
 
 
 def forwarded(d) -> str:
-    return f"originating msg {VMID} from review-daemon on thread t-v1 at {VAT}\n\n{notice(d)}"
+    return f"originating msg {VMID} from source-agent on thread t-v1 at {VAT}\n\n{notice(d)}"
 
 
 def discover(desk) -> str:
@@ -651,10 +655,10 @@ def test_a_fresh_notice_on_the_chairs_pr_files_one_row_by_code_and_is_never_list
     desk, inner, agent, d = verdict_desk(tmp_path, gh())
     assert discover(desk).startswith(f"sweep: nothing new for {OWNER}")
     line = (
-        "o/r#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner xena by branch prefix, "
+        "o/r#7 @ f00dcafe: REQUEST-CHANGES, 2 blocking, head fresh, OPEN, owner agent-a by branch prefix, "
         f"json: {d}/o-r-7-f00dcafe.json"
     )
-    tags = json.dumps(["desk", "from-mail", "from:review-daemon", "verdict", "pr:o/r#7"])
+    tags = json.dumps(["desk", "from-mail", "from:source-agent", "verdict", "pr:o/r#7"])
     description = json.dumps(line + "\n" + COVERAGE + "\n\n" + forwarded(d))
     assert assigns(inner) == [
         f'gtd.assign(title="o/r#7 @ f00dcafe: REQUEST-CHANGES (2 blocking)", namespace="{OWNER}", '
@@ -690,9 +694,9 @@ def test_a_stale_or_closed_verdict_is_left_with_why_and_nothing_filed_or_sent(
 
 
 def test_another_actors_verdict_is_left_owner_and_nothing_filed_or_sent(tmp_path):
-    desk, inner, agent, _ = verdict_desk(tmp_path, gh(branch="b/x"), actor_map={"o/r": "bea"})
+    desk, inner, agent, _ = verdict_desk(tmp_path, gh(branch="b/x"), actor_map={"o/r": "agent-e"})
     assert discover(desk).startswith(f"sweep: nothing new for {OWNER}")
-    assert ledger(desk) == [(VMID, "left", "verdict: owner bea by branch prefix", None)]
+    assert ledger(desk) == [(VMID, "left", "verdict: owner agent-e by branch prefix", None)]
     assert assigns(inner) == [] and inner.sent == [] and pending(agent) == {}
 
 
@@ -702,14 +706,14 @@ def test_an_undecided_triage_is_escalated_to_the_chair_with_its_reason(tmp_path,
     desk, inner, agent, d = verdict_desk(tmp_path, sh, verdict=case != "artifact-missing")
     assert discover(desk).startswith(f"sweep: nothing new for {OWNER}")
     lead = {
-        "disagreement": "verdict triage: ownership disagreement: branch prefix b -> bea; "
-        "commit author Pat -> no actor; actor map o/r -> xena\nrungs: branch prefix b -> "
-        "bea; commit author Pat -> no actor; actor map o/r -> xena",
+        "disagreement": "verdict triage: ownership disagreement: branch prefix b -> agent-e; "
+        "commit author author-b -> no actor; actor map o/r -> agent-a\nrungs: branch prefix b -> "
+        "agent-e; commit author author-b -> no actor; actor map o/r -> agent-a",
         "artifact-missing": f"verdict triage: no verdict artifact at {d}/o-r-7-f00dcafe.json or .md\n"
         "rungs: not read",
     }[case]
     assert [(s["to"], s["subject"], s["content"]) for s in inner.sent] == [
-        (OWNER, "[NOW] review-daemon: PR review verdict: o/r#7", f"{lead}\n\n{forwarded(d)}")
+        (OWNER, "[NOW] source-agent: PR review verdict: o/r#7", f"{lead}\n\n{forwarded(d)}")
     ]
     assert [r[:2] for r in ledger(desk)] == [(VMID, "escalated")] and assigns(inner) == []
 
@@ -727,7 +731,7 @@ def test_an_engine_unavailable_stub_is_left_with_nothing_filed_or_escalated(tmp_
     assert desk.rows()[0]["verdict"] == line
     agent.clock = lambda: time.time() + 2  # the brief's window ends past the row's second
     brief = desk.digest_lines(time.strftime("%Y-%m-%d"))
-    left = f"left verdict: engine unavailable (provider-quota): {VMID[:8]} from review-daemon"
+    left = f"left verdict: engine unavailable (provider-quota): {VMID[:8]} from source-agent"
     assert f"{left} 'PR review verdict: o/r#7'" in brief, brief
 
 
@@ -775,7 +779,7 @@ def test_the_twenty_first_task_of_a_day_code_filed_or_mixed_is_left_cap_tasks(
     desk, inner, agent, _ = verdict_desk(tmp_path, gh())
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     rows = [
-        {"at": now, "msg": f"m-{i:02d}", "from": "ada", "subject": "s", "thread": f"t-{i:02d}"}
+        {"at": now, "msg": f"m-{i:02d}", "from": "agent-d", "subject": "s", "thread": f"t-{i:02d}"}
         | {"class": "tasked", "run": "-", "task": f"x{i}", "title": "t"}
         | ({"verdict": "o/r#1 @ 00000000: APPROVE"} if i < verdict_rows else {})
         for i in range(today)
@@ -929,7 +933,7 @@ def test_a_task_left_cap_tasks_stays_left_past_midnight_and_on_every_later_read(
     desk, inner, agent = persistent_desk(tmp_path)
     desk.tasks_per_day = 1
     at = time.strftime("%Y-%m-%d %H:%M:%S")
-    old = {"at": at, "msg": "previous-task", "from": "ada", "subject": "work", "thread": "t-old"}
+    old = {"at": at, "msg": "previous-task", "from": "agent-d", "subject": "work", "thread": "t-old"}
     desk.ledger.write_text(
         json.dumps(old | {"class": "tasked", "run": "-", "task": "old", "title": "t"}) + "\n"
     )

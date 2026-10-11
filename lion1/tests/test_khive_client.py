@@ -23,9 +23,9 @@ class Dropping(Khive):
 
     def __init__(self, tmp_path: Path, drops: int, error: str = LOST, page: dict | None = None):
         (tmp_path / ".khive").mkdir(exist_ok=True)
-        (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+        (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
         (tmp_path / "kkernel").write_text("")  # never run: exec is replaced below
-        super().__init__(tmp_path, "xena", kkernel=str(tmp_path / "kkernel"))
+        super().__init__(tmp_path, "agent-a", kkernel=str(tmp_path / "kkernel"))
         self.drops, self.error, self.ops = drops, error, []
         self.page = {"messages": [{"id": "m1"}]} if page is None else page
 
@@ -121,7 +121,7 @@ def test_ops_is_one_positional_argument(tmp_path):
     """A stub kkernel records the argv it was started with: the ops string, an option-shaped one
     included, arrives unchanged as the last argument, after `--`."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     log = tmp_path / "argv.jsonl"
     stub = tmp_path / "kkernel"
     stub.write_text(
@@ -130,13 +130,13 @@ def test_ops_is_one_positional_argument(tmp_path):
         "print(json.dumps({'results': [{'ok': True, 'result': None}]}))\n"
     )
     stub.chmod(0o755)
-    k = Khive(tmp_path, "xena", kkernel=str(stub))
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub))
     ops = ['gtd.tasks(query="two words")', "--ops-file=gtd.tasks().json"]
     for op in ops:
         assert asyncio.run(k.exec(op)) == [None]
     argvs = [json.loads(line) for line in log.read_text().splitlines()]
     assert [a[-2:] for a in argvs] == [["--", op] for op in ops], argvs
-    assert all(a[:4] == ["exec", "--strict", "--expect-actor", "xena"] for a in argvs)
+    assert all(a[:4] == ["exec", "--strict", "--expect-actor", "agent-a"] for a in argvs)
 
 
 def _call(k: Khive, how: str, ops: str):
@@ -150,14 +150,14 @@ def test_an_ops_string_past_the_argument_bound_is_a_khive_error_and_kkernel_neve
     gets a KhiveError naming the string's size, as for every other refusal, with no kind: the store
     never answered."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     started = tmp_path / "started"
     stub = tmp_path / "kkernel"
     stub.write_text(
         f"#!{sys.executable}\nopen({str(started)!r}, 'w').close()\nprint('{{\"results\": []}}')\n"
     )
     stub.chmod(0o755)
-    k = Khive(tmp_path, "xena", kkernel=str(stub))
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub))
     assert _call(k, how, "gtd.tasks()") == []  # the stub starts for an ordinary call
     started.unlink()
 
@@ -175,14 +175,14 @@ def test_an_environment_past_the_bound_is_named_beside_a_small_ops_string(tmp_pa
     """When the environment is the large one, the message names both sizes and does not put the
     excess on the ops string."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     started = tmp_path / "started"
     stub = tmp_path / "kkernel"
     stub.write_text(
         f"#!{sys.executable}\nopen({str(started)!r}, 'w').close()\nprint('{{\"results\": []}}')\n"
     )
     stub.chmod(0o755)
-    k = Khive(tmp_path, "xena", kkernel=str(stub))
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub))
     bound = os.sysconf("SC_ARG_MAX")
     monkeypatch.setenv("LION1_TEST_PAD", "x" * (bound + 65_536))
 
@@ -201,14 +201,14 @@ def test_a_fault_after_kkernel_started_is_not_called_a_failed_start(tmp_path, mo
     """Only the launch is a failed start. Once kkernel runs it may have applied the ops, so a fault
     reading its answer reaches the caller as it is, never as "could not start"."""
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     started = tmp_path / "started"
     stub = tmp_path / "kkernel"
     stub.write_text(
         f"#!{sys.executable}\nopen({str(started)!r}, 'w').close()\nprint('{{\"results\": []}}')\n"
     )
     stub.chmod(0o755)
-    k = Khive(tmp_path, "xena", kkernel=str(stub))
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub))
 
     def lost_sync(self, *args, **kwargs):
         self.wait()
@@ -229,11 +229,11 @@ def test_a_fault_after_kkernel_started_is_not_called_a_failed_start(tmp_path, mo
 @pytest.mark.parametrize("how", ["exec", "exec_sync"])
 def test_a_kkernel_that_cannot_be_started_is_a_khive_error(tmp_path, how):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     stub = tmp_path / "kkernel"
     stub.write_text("")  # present, so the client is built, but not executable
     stub.chmod(0o644)
-    k = Khive(tmp_path, "xena", kkernel=str(stub))
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub))
     with pytest.raises(KhiveError, match="^kkernel could not start: PermissionError"):
         _call(k, how, "gtd.tasks()")
 
@@ -242,7 +242,7 @@ def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch)
     # the child was left to the transport on cancel, and killed without a wait on timeout: its
     # grandchild held the pipes open past the loop's end
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     stub = tmp_path / "kkernel"
     stub.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'grandchild'}\nwait\n")
     stub.chmod(0o755)
@@ -255,7 +255,7 @@ def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch)
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing)
-    k = Khive(tmp_path, "xena", kkernel=str(stub), timeout=30)
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub), timeout=30)
 
     async def main():
         task = asyncio.create_task(k.exec("comm.inbox()"))
@@ -286,11 +286,11 @@ def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch)
 
 def test_a_timeout_after_kkernel_exited_still_stops_what_it_left_holding_the_pipes(tmp_path):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     stub = tmp_path / "kkernel"
     stub.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'child'}\nexit 0\n")
     stub.chmod(0o755)
-    k = Khive(tmp_path, "xena", kkernel=str(stub), timeout=0.5)
+    k = Khive(tmp_path, "agent-a", kkernel=str(stub), timeout=0.5)
     t0 = time.monotonic()
     with pytest.raises(KhiveError, match="did not answer within"):
         asyncio.run(asyncio.wait_for(k.exec("comm.inbox()"), 15))
@@ -320,26 +320,26 @@ def test_an_explicit_config_rides_every_call_and_a_missing_one_is_refused_never_
     stub.chmod(0o755)
     elsewhere = tmp_path / "elsewhere" / "config.toml"
     elsewhere.parent.mkdir()
-    elsewhere.write_text('[actor]\nid = "yuri"\n')
+    elsewhere.write_text('[actor]\nid = "agent-b"\n')
     cwd = tmp_path / "work"
     cwd.mkdir()  # no .khive here
-    k = Khive(cwd, "yuri", kkernel=str(stub), config=elsewhere)
+    k = Khive(cwd, "agent-b", kkernel=str(stub), config=elsewhere)
     assert asyncio.run(k.exec("comm.inbox(limit=1)")) == [None]
     (argv,) = [json.loads(line) for line in log.read_text().splitlines()]
     assert argv == [
         "exec",
         "--strict",
         "--expect-actor",
-        "yuri",
+        "agent-b",
         "--config",
         str(elsewhere),
         "--",
         "comm.inbox(limit=1)",
     ]
     with pytest.raises(KhiveError, match="no such khive config file"):
-        Khive(cwd, "yuri", kkernel=str(stub), config=tmp_path / "missing.toml")
+        Khive(cwd, "agent-b", kkernel=str(stub), config=tmp_path / "missing.toml")
     with pytest.raises(KhiveError, match="holds no .khive/config.toml"):  # the control: no config= at all
-        Khive(cwd, "yuri", kkernel=str(stub))
+        Khive(cwd, "agent-b", kkernel=str(stub))
 
 
 def test_kkernel_reads_the_config_the_client_names_never_one_the_environment_names(tmp_path, monkeypatch):
@@ -357,17 +357,17 @@ def test_kkernel_reads_the_config_the_client_names_never_one_the_environment_nam
     )
     stub.chmod(0o755)
     (tmp_path / "elsewhere").mkdir()
-    (tmp_path / "elsewhere" / "config.toml").write_text('[actor]\nid = "yuri"\n')
+    (tmp_path / "elsewhere" / "config.toml").write_text('[actor]\nid = "agent-b"\n')
     work = tmp_path / "work"
     (work / ".khive").mkdir(parents=True)
-    (work / ".khive" / "config.toml").write_text('[actor]\nid = "yuri"\n')
-    (work / "khive.toml").write_text('[actor]\nid = "yuri"\n')  # khive's own discovery prefers it
+    (work / ".khive" / "config.toml").write_text('[actor]\nid = "agent-b"\n')
+    (work / "khive.toml").write_text('[actor]\nid = "agent-b"\n')  # khive's own discovery prefers it
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("KHIVE_CONFIG", str(tmp_path / "other.toml"))
     monkeypatch.setenv("KHIVE_DB", str(tmp_path / "other.db"))
     monkeypatch.setenv("LION1_PROBE", "rides")
-    named = Khive(work, "yuri", kkernel=str(stub), config=Path("elsewhere/config.toml"))
-    own = Khive(work, "yuri", kkernel=str(stub))
+    named = Khive(work, "agent-b", kkernel=str(stub), config=Path("elsewhere/config.toml"))
+    own = Khive(work, "agent-b", kkernel=str(stub))
     for k in (named, own):
         asyncio.run(k.exec("comm.inbox(limit=1)"))
         k.exec_sync("comm.inbox(limit=1)")
@@ -401,13 +401,13 @@ def test_kkernel_reads_the_config_the_client_names_never_one_the_environment_nam
 )
 def test_a_failed_op_raises_with_the_kind_the_store_gave_its_error_and_no_other(tmp_path, code, error, kind):
     (tmp_path / ".khive").mkdir()
-    (tmp_path / ".khive" / "config.toml").write_text(routed_config("xena", tmp_path))
+    (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))
     answer = {"results": [{"ok": False, "tool": "get", "error": error}], "status": "partial"}
     stub = tmp_path / "kkernel"
     stub.write_text(f"#!{sys.executable}\nimport sys\nprint({json.dumps(answer)!r})\nsys.exit({code})\n")
     stub.chmod(0o755)
     with pytest.raises(KhiveError) as raised:
-        asyncio.run(Khive(tmp_path, "xena", kkernel=str(stub)).exec('get(id="ev1")'))
+        asyncio.run(Khive(tmp_path, "agent-a", kkernel=str(stub)).exec('get(id="ev1")'))
     assert raised.value.kind == kind
 
 

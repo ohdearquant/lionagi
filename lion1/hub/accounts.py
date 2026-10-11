@@ -345,7 +345,7 @@ def _security(args: list[str], stdin: str | None = None) -> subprocess.Completed
 
 def token(name: str) -> str:
     """The token in a Claude Code account's keychain item, read as the router's key is read
-    (`api_key` in hub/backend/openrouter.py). The one function that returns a token: its caller hands
+    (`api_key` in lion1/hub/backend/openrouter.py). The one function that returns a token: its caller hands
     it to `child_env` and nowhere else (ADR-0024/C1)."""
     _check_name(name)
     out = _security(["find-generic-password", "-a", name, "-s", _SERVICE, "-w"])

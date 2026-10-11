@@ -1,4 +1,4 @@
-"""Lint the ADR corpus under docs/adr against the record standard.
+"""Lint the ADR corpus under lion1/docs/adr against the record standard.
 
 Checks, per file: the frontmatter fields and their vocabularies; the file lives in a topic folder and its
 `area` equals the folder's suffix; the record number matches the file name; the section order; every
@@ -14,7 +14,7 @@ columns; a definition ends with a period, is used in its own record outside the 
 and no term is defined by two records; Context ends with a `Source:` sentence; a consequence bullet
 is `- **S1**: ...`.
 
-    uv run python scripts/adr_lint.py [files...]      # no files: the whole corpus
+    cd lion1 && uv run python docs/adr/_scripts/adr_lint.py [files...]      # no files: the whole corpus
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 
 from _md import mask_fenced_code, physical_lines
 
-ROOT = Path(__file__).resolve().parent.parent  # docs/adr: the scripts live inside the corpus they lint
+ROOT = Path(__file__).resolve().parent.parent  # the scripts live inside the corpus they lint
 STATUS = {
     "draft",
     "proposed",

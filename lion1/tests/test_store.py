@@ -1,6 +1,6 @@
 """The store (ADR-0025): a run's session, messages, calls and run rows written as it goes, a second run
 replayed from the message rows alone, the profiles' notes as rows, and the client's synchronous call.
-The binary is the stub `kkernel` of conftest, serving the lion pack from `tests/lionfake.py`; the last
+The binary is the stub `kkernel` of conftest, serving the lion pack from `lion1/tests/lionfake.py`; the last
 test runs the same run against the real binary when `LION1_KHIVE` names it."""
 
 import asyncio
@@ -41,28 +41,29 @@ def test_a_store_refuses_a_config_that_would_put_the_lion_tables_in_the_main_sto
     (tmp_path / ".khive").mkdir()
     cfg = tmp_path / ".khive" / "config.toml"
     unrouted = (
-        '[actor]\nid = "ada"\n',  # no backends at all: everything in the main store
-        '[actor]\nid = "ada"\n[[backends]]\nname = "main"\npath = "m.db"\n[[backends]]\nname = "lion"\n'
+        '[actor]\nid = "agent-d"\n',  # no backends at all: everything in the main store
+        '[actor]\nid = "agent-d"\n[[backends]]\nname = "main"\npath = "m.db"\n[[backends]]\nname = "lion"\n'
         'path = "l.db"\n',
-        '[actor]\nid = "ada"\n[[backends]]\nname = "lion"\npath = "l.db"\n[packs.lion]\nbackend = "lion"\n',
-        '[actor]\nid = "ada"\n[[backends]]\nname = "main"\npath = "m.db"\n[[backends]]\nname = "lion"\n'
+        '[actor]\nid = "agent-d"\n[[backends]]\nname = "lion"\npath = "l.db"\n[packs.lion]\n'
+        'backend = "lion"\n',
+        '[actor]\nid = "agent-d"\n[[backends]]\nname = "main"\npath = "m.db"\n[[backends]]\nname = "lion"\n'
         '[packs.lion]\nbackend = "lion"\n',
     )
     for text in unrouted:  # the lion entry missing, unrouted, without main, or without a path
         cfg.write_text(text)
         with pytest.raises(KhiveError, match="would resolve to the main store"):
-            Store(Khive(tmp_path, "ada"))
+            Store(Khive(tmp_path, "agent-d"))
     cfg.write_text("[actor\n")
     with pytest.raises(KhiveError, match="config.toml"):
-        Store(Khive(tmp_path, "ada"))
-    cfg.write_text(routed_config("ada", tmp_path))
-    assert Store(Khive(tmp_path, "ada")).database == tmp_path / ".khive" / "lion.db"
+        Store(Khive(tmp_path, "agent-d"))
+    cfg.write_text(routed_config("agent-d", tmp_path))
+    assert Store(Khive(tmp_path, "agent-d")).database == tmp_path / ".khive" / "lion.db"
     assert Store(LionKhive()).database is None  # a double has no file to route
 
 
 def backends(main: str, lion: str, lion_kind: str = "") -> str:
     return (
-        f'[actor]\nid = "ada"\n[[backends]]\nname = "main"\npath = {json.dumps(main)}\n'
+        f'[actor]\nid = "agent-d"\n[[backends]]\nname = "main"\npath = {json.dumps(main)}\n'
         f'[[backends]]\nname = "lion"\npath = {json.dumps(lion)}\n{lion_kind}[packs.lion]\nbackend = "lion"\n'
     )
 
@@ -101,29 +102,31 @@ def test_a_store_refuses_a_lion_path_that_reaches_the_main_stores_file(tmp_path,
     for m, lion in same.values():
         cfg.write_text(backends(m, lion))
         with pytest.raises(KhiveError, match="is the main store's own file"):
-            Store(Khive(tmp_path, "ada"))
+            Store(Khive(tmp_path, "agent-d"))
     for m, lion in ((str(main), f"file:{main}?mode=rwc"), (f"file:{main}", "l.db")):
         cfg.write_text(backends(m, lion))
         with pytest.raises(KhiveError, match="SQLite reads as a URI"):
-            Store(Khive(tmp_path, "ada"))
+            Store(Khive(tmp_path, "agent-d"))
     main.write_bytes(b"")
     (tmp_path / "hard.db").hardlink_to(main)  # two paths, one file: the binary's canonical paths differ
     cfg.write_text(backends(str(main), str(tmp_path / "hard.db")))
     with pytest.raises(KhiveError, match="is the main store's own file"):
-        Store(Khive(tmp_path, "ada"))
+        Store(Khive(tmp_path, "agent-d"))
     cfg.write_text(backends(str(main), "l.db") + '[[backends]]\nname = "lion"\npath = "other.db"\n')
     with pytest.raises(KhiveError, match="two backends share a name"):
-        Store(Khive(tmp_path, "ada"))
+        Store(Khive(tmp_path, "agent-d"))
     cfg.write_text(backends(str(main), "l.db", 'kind = "memory"\n'))
     with pytest.raises(KhiveError, match="would resolve to the main store"):
-        Store(Khive(tmp_path, "ada"))
+        Store(Khive(tmp_path, "agent-d"))
     # the controls: a relative lion path that is its own file, from the client's directory
     cfg.write_text(backends(".khive/main.db", "rows/lion.db"))
-    assert Store(Khive(tmp_path, "ada")).database == tmp_path / "rows" / "lion.db"
+    assert Store(Khive(tmp_path, "agent-d")).database == tmp_path / "rows" / "lion.db"
     cfg.write_text(backends(str(main), "l.db", 'kind = "sqlite"\n'))
-    assert Store(Khive(tmp_path, "ada")).database == tmp_path / "l.db"
+    assert Store(Khive(tmp_path, "agent-d")).database == tmp_path / "l.db"
     cfg.write_text(backends(str(main), "l.db").replace(f"path = {json.dumps(str(main))}", 'kind = "memory"'))
-    assert Store(Khive(tmp_path, "ada")).database == tmp_path / "l.db"  # a main in memory: no file to reach
+    assert (
+        Store(Khive(tmp_path, "agent-d")).database == tmp_path / "l.db"
+    )  # a main in memory: no file to reach
 
 
 def one(k: Khive, ops: str):

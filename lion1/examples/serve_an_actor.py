@@ -10,7 +10,7 @@ with the standard library: `GET /` is the card, `POST /runs` starts a run, and
 a client that arrives after the end still reads it, and this one stops at the first state that says
 ended, whether that is the first frame or a later one. Scripted backend; runs offline.
 
-    uv run --extra serve python examples/serve_an_actor.py
+    cd lion1 && uv run --extra serve python examples/serve_an_actor.py
 """
 
 import asyncio

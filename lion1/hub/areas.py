@@ -74,11 +74,11 @@ _STYLE = (
     "</style>"
 )
 
-# the line `serve` prints after each wake (hub/agent/agent.py); the tail after ` wake ` is optional so
+# the line `serve` prints after each wake (lion1/hub/agent/agent.py); the tail after ` wake ` is optional so
 # a wake line of another shape (a failed wake, a field printed as None) still matches and is kept whole.
 # The context the last turn stood in, and the sessions the backend started over from a folded view
 # during the burst, follow when any: both optional and each printed on its own (`_line` in
-# hub/agent/agent.py), so an older line without them still matches; the tasks of the queue the wake
+# lion1/hub/agent/agent.py), so an older line without them still matches; the tasks of the queue the wake
 # presented follow the same way, and so does the count of calls of unknown cost beside the dollars.
 # The phone app parses the `log` event's lines with this same pattern.
 _WAKE = re.compile(
@@ -476,7 +476,7 @@ def wake_table(directory: str) -> dict:
 
 def waiting_mail(directory: str) -> list[dict] | None:
     """The mail a `[wake]` rule deferred, kept under the `deferred` note until the batch window
-    opens (hub/agent/agent.py `_triage` keeps each whole, stamped `deferred_at`/`deferred_ts`): who
+    opens (lion1/hub/agent/agent.py `_triage` keeps each whole, stamped `deferred_at`/`deferred_ts`): who
     sent it, the subject and when it was deferred, the body left in the note. No note yet is no mail
     waiting; notes that cannot be read are None, never a count of zero."""
     try:

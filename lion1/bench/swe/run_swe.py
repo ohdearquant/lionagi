@@ -4,7 +4,7 @@ Per instance: start the eval image as a box, give the model the issue and the hu
 python, read_lines, search, edit), let it work in turns, take `git diff` as the patch when it
 finishes with OUT{}, write predictions.jsonl. `--oracle` then scores with the official harness.
 
-    uv run python bench/swe/run_swe.py --instances django__django-11119 --khive-dir DIR \\
+    cd lion1 && uv run python bench/swe/run_swe.py --instances django__django-11119 --khive-dir DIR \\
         [--model sonnet] [--oracle]
 
 `--khive-dir` names the directory whose `.khive/config.toml` names the actor and routes the lion
@@ -43,7 +43,7 @@ from lion1.khive import Khive
 HERE = Path(__file__).resolve().parent
 # A private codex home (auth.json symlinked) keeps the shared home's AGENTS.md and plugin skills
 # out of the model's prompt; without one the call runs from the shared home, the CLI's default.
-# It lives beside this file, `bench/swe/codex-home`, and is never tracked.
+# It lives beside this file in an untracked `codex-home` directory.
 _BENCH_HOME = HERE / "codex-home"
 CODEX_HOME = str(_BENCH_HOME) if _BENCH_HOME.is_dir() else None
 DATA = HERE / "data" / "local_verified.json"

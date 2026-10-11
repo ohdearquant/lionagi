@@ -151,7 +151,8 @@ class Adrs:
 
     HEAD = re.compile(r"^###? (C\d+|D\d+|ADR-\d+):? ?(.*)$")
     MARK = re.compile(r"\s*_\(enforced: \w+\)_|\s*\^\w+$")  # the lint's markers, not words of the record
-    FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")  # a top-level fence, as docs/adr/_scripts/_md.py reads one
+    FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+    # The corresponding ADR reader lives at lion1/docs/adr/_scripts/_md.py.
 
     def __init__(self, dirs: list[Path], *, limit: int = 5, min_terms: int = 2):
         self.dirs, self.limit, self.min_terms = [Path(d) for d in dirs], limit, min_terms

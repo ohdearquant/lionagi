@@ -7,7 +7,7 @@ from that subset, so a command outside it is never presented (the first gate), a
 `requires` is checked at dispatch (the second). Every step is an event on the bus, which is the
 run's trace. Scripted backend; runs offline.
 
-    uv run python examples/tools_and_gates.py
+    cd lion1 && uv run python examples/tools_and_gates.py
 """
 
 from __future__ import annotations

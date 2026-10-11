@@ -1,16 +1,17 @@
 """A whole SWE-bench set through the LNDL loop, one box per instance, graded in that box.
 
-    uv run --with swebench --with daytona python bench/swe/run_set.py --set mini50 --where daytona \\
+    cd lion1 && uv run --with swebench --with daytona python bench/swe/run_set.py \\
+        --set mini50 --where daytona \\
         --backend openrouter --model deepseek/deepseek-v4.1-flash --parallel 4 --run-id ds-mini50 \\
         --khive-dir DIR
 
 `--khive-dir` names the directory whose `.khive/config.toml` names the actor and routes the lion
 pack's tables to their own file (ADR-0026 C8).
 
-`--where local` runs the eval image under docker on this machine (amd64 emulation: one at a time is
-what it can bear) and streams images: pull, solve, grade, remove. `--where daytona` creates one
+`--where local` runs the eval image under Docker (amd64 emulation: one at a time) and streams images:
+pull, solve, grade, remove. `--where daytona` creates one
 Daytona sandbox per instance from the same image, natively x86_64, `--parallel` wide; nothing lands
-on this machine but the records. `--where runta` (the `runta` extra: `--with runta-sdk`) does the
+locally, only the records are retained. `--where runta` (the `runta` extra: `--with runta-sdk`) does the
 same on Runta, from a Runta image built
 over the eval image the first time an instance runs there
 (`sandbox.runta_image`). Grading happens inside the instance's own box either way (sandbox.grade
@@ -441,7 +442,7 @@ if __name__ == "__main__":
         choices=["lndl", "codex-cli"],
         default="lndl",
         help="who runs the loop: this runtime (LNDL, `--backend` says which model API) or the codex CLI "
-        "inside the box on the same model through OpenRouter (bench/swe/codex_cli.py)",
+        "inside the box on the same model through OpenRouter (lion1/bench/swe/codex_cli.py)",
     )
     ap.add_argument("--backend", choices=["turns", "session", "openrouter", "codex"], default="openrouter")
     ap.add_argument("--model", default="deepseek/deepseek-v4.1-flash")
