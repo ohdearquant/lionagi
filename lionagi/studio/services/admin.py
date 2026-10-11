@@ -1397,7 +1397,8 @@ async def readiness_route(
         description="How long the probe waits for the store before reporting slow",
     ),
 ) -> dict[str, Any]:
-    """Whether a query against the store will actually return.
+    """Whether a query against the store will actually return, and whether the
+    scheduler is still advancing.
 
     Distinct from ``/health``, which answers only whether the process is up:
     that stays true while every database-backed endpoint is unresponsive, which
@@ -1405,7 +1406,16 @@ async def readiness_route(
     body, so a caller can tell "store unreachable" from "store slow" from
     "healthy" instead of getting one boolean for all three.
     """
-    return await store_probe(timeout_ms=timeout_ms)
+    from lionagi.studio.scheduler.engine import scheduler
+
+    result = await store_probe(timeout_ms=timeout_ms)
+    # Reported as its own field rather than folded into the store probe. The probe
+    # answers whether the store responds; this answers whether the scheduler is
+    # still advancing. They are different questions, and widening the probe's
+    # meaning to cover a subject it does not measure is what made a stalled
+    # scheduler read healthy.
+    result["scheduler"] = scheduler.health()
+    return result
 
 
 @studio_route("/admin/transition", method="POST", area="admin", name="transition")

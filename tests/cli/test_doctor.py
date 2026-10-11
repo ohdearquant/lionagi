@@ -223,6 +223,40 @@ def test_readiness_verdict_unrecognised_status_is_unknown() -> None:
     assert result["status"] == "unknown"
 
 
+def test_readiness_verdict_stalled_scheduler_beside_a_healthy_store_is_warn() -> None:
+    """A store that answers reads says nothing about whether the scheduler fires."""
+    body = json.dumps(
+        {
+            "status": "healthy",
+            "detail": "store answered",
+            "scheduler": {
+                "ready": False,
+                "status": "stalled",
+                "detail": "no scheduler tick has completed for 900s",
+            },
+        }
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "warn"
+    assert "stalled" in result["detail"]
+    assert "900s" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    "scheduler",
+    [
+        {"ready": True, "status": "healthy", "detail": "last scheduler tick completed 3s ago"},
+        {"ready": True, "status": "offline", "detail": "scheduler was not started in this process"},
+    ],
+)
+def test_readiness_verdict_advancing_or_unstarted_scheduler_is_ok(scheduler: dict) -> None:
+    body = json.dumps(
+        {"status": "healthy", "detail": "store answered", "scheduler": scheduler}
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "ok"
+
+
 # _check_lionagi_home
 
 

@@ -55,6 +55,12 @@ _TICK_RESTART_BACKOFF = (1.0, 2.0, 5.0, 15.0, 30.0)
 # How long stop() waits for a cancelled recovery pass to unwind before it closes the state
 # service anyway, so a recovery cleanup that never returns holds the shutdown this long at most.
 _RECOVERY_UNWIND_SECONDS = 10.0
+# How long since the last completed tick before the scheduler is reported stalled.
+# Deliberately many intervals rather than two: a tick under load legitimately runs long,
+# and this gates readiness, so a false stall is a self-inflicted outage. Ten intervals is
+# still an order of magnitude inside the observed failure, where nothing advanced for 35
+# minutes while the daemon answered every request it was asked.
+_TICK_STALL_AFTER = _TICK_INTERVAL * 10  # seconds
 # Throttles deferred-capacity skipped-run records to one per schedule per this
 # many deferrals, so sustained saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
@@ -407,16 +413,45 @@ class SchedulerEngine:
         # scheduler, and the process staying up says nothing about whether it still is.
         self._tick_loop_restarts = 0
         self._last_tick_loop_failure: tuple[float, str] | None = None
+        # Stamped only when a tick completes without raising, because a tick that
+        # raised did not advance anything. Readiness reads this: every other health
+        # signal in the daemon reports whether the store answers, which stays true
+        # while the scheduler fires nothing.
+        self._last_tick_completed_at: float | None = None
+        # When this process first started a scheduler, which bounds how long
+        # "started but nothing has completed yet" is allowed to read as ready.
+        # Set by start() only: a tick loop that dies and respawns must not
+        # refresh it, or a scheduler that never ticks could hold itself in the
+        # startup window forever by restarting.
+        self._started_at: float | None = None
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
             _log.info("Scheduler engine starting")
+            self._started_at = time.time()
             self._stopping = False
             self._log_scheduler_timezone()
             await self._backfill_action_cwd()
             await self._stamp_effective_timezones()
             await self._recompute_armed_cron_schedules()
+            # Every field health() reads to describe *this* run is cleared together,
+            # immediately before the loop is spawned, so that adding a fifth one and
+            # not clearing it is visibly an omission. Clearing here rather than at the
+            # top of start() is deliberate: the previous run's tick task is still the
+            # one self._task names until the line below, so its done-callback can
+            # still fire during the awaits above and re-stamp these. Last write wins,
+            # and it should be this one.
+            #
+            # Without this a stop/start in one process lets the new run answer with
+            # the old run's evidence. A stale _last_tick_completed_at is the worst of
+            # them: it lets a loop that has never completed a tick report itself as
+            # advancing, which is the precise failure this readiness check exists to
+            # catch. A stale _last_tick_loop_failure is the mirror case, and it also
+            # contradicts the counter reset beside it, since zero restarts reported
+            # next to the failure that caused one cannot both be true.
             self._tick_loop_restarts = 0
+            self._last_tick_loop_failure = None
+            self._last_tick_completed_at = None
             self._task = self._spawn_tick_loop()
 
     def _spawn_tick_loop(self) -> asyncio.Task:
@@ -451,6 +486,94 @@ class SchedulerEngine:
         if self._stopping:
             return
         self._task = self._spawn_tick_loop()
+
+    def health(self) -> dict[str, Any]:
+        """Whether this scheduler is still ADVANCING, which no store probe can answer.
+
+        A read against the store succeeds whenever the store answers reads, and a
+        WAL-backed store answers reads while writes are blocked, so the daemon can
+        report healthy for hours beside a scheduler that has fired nothing. This
+        reports the engine's own last completed tick instead, because the loop
+        advancing is the only thing that makes this a scheduler.
+
+        `ready` is false for a scheduler that was started and is not advancing --
+        whether it went quiet after ticking or never completed a tick at all. A
+        process that never started one is not failing at scheduling, so it reports
+        `status="offline"` with `ready=True`; making the absence of a subsystem
+        block readiness would turn every non-daemon host unready. That exemption is
+        for the never-started case only, and must not be read as covering a
+        scheduler that started and then failed to get anywhere.
+        """
+        last = self._last_tick_completed_at
+        failure_at, failure_reason = self._last_tick_loop_failure or (None, None)
+        report: dict[str, Any] = {
+            "ready": True,
+            "status": "offline",
+            "detail": "scheduler was not started in this process",
+            "last_tick_completed_at": (
+                datetime.fromtimestamp(last, tz=timezone.utc).isoformat() if last else None
+            ),
+            "seconds_since_last_tick": None,
+            "stall_after_seconds": _TICK_STALL_AFTER,
+            "tick_interval_seconds": _TICK_INTERVAL,
+            "tick_loop_restarts": self._tick_loop_restarts,
+            "last_tick_loop_failure": (
+                {
+                    "at": datetime.fromtimestamp(failure_at, tz=timezone.utc).isoformat(),
+                    "reason": failure_reason,
+                }
+                if failure_at is not None
+                else None
+            ),
+        }
+        if self._task is None:
+            return report
+        if self._stopping:
+            report["status"] = "stopping"
+            report["detail"] = "scheduler is shutting down"
+            return report
+        if last is None:
+            # Started but no tick has completed yet. For a while that is not a stall:
+            # the first tick runs startup recovery before it, and calling that unready
+            # would fail readiness for the normal startup window. But the window has to
+            # END. A scheduler whose every tick raises from process start never stamps
+            # the field at all, so it sits here permanently -- and the stall branch
+            # below, which is the whole point of this report, is unreachable for it
+            # because that branch needs a last tick to measure from. Without a deadline
+            # the one failure this exists to catch is the one it cannot see.
+            #
+            # The deadline is the stall threshold measured from start instead of from
+            # the last tick, rather than a second tunable: a scheduler that has not
+            # completed a tick within that window is not advancing by the same standard
+            # whether or not it ever managed one. It stays `starting` -- the status is
+            # accurate, it never finished starting -- and only `ready` changes, because
+            # what readiness answers is whether to send this daemon work.
+            report["status"] = "starting"
+            since_start = (
+                None if self._started_at is None else max(0.0, time.time() - self._started_at)
+            )
+            if since_start is not None and since_start > _TICK_STALL_AFTER:
+                report["ready"] = False
+                report["detail"] = (
+                    f"scheduler started {since_start:.0f}s ago and no tick has completed "
+                    f"(stall threshold {_TICK_STALL_AFTER}s)"
+                )
+            else:
+                report["detail"] = "scheduler started; no tick has completed yet"
+            return report
+        age = max(0.0, time.time() - last)
+        report["seconds_since_last_tick"] = round(age, 1)
+        if age > _TICK_STALL_AFTER:
+            report["ready"] = False
+            report["status"] = "stalled"
+            report["detail"] = (
+                f"no scheduler tick has completed for {age:.0f}s "
+                f"(interval {_TICK_INTERVAL}s, stall threshold {_TICK_STALL_AFTER}s)"
+            )
+            return report
+        report["status"] = "healthy"
+        report["detail"] = f"last scheduler tick completed {age:.0f}s ago"
+        return report
 
     def _log_scheduler_timezone(self) -> None:
         """Say the effective cron timezone out loud, once, at startup."""
@@ -791,6 +914,7 @@ class SchedulerEngine:
         while not self._stopping:
             try:
                 await self._tick()
+                self._last_tick_completed_at = time.time()
             except asyncio.CancelledError:
                 # stop() cancels this task, so a cancel while stopping IS the shutdown. A cancel
                 # at any other time escaped from something the tick awaited, and ending the loop

@@ -4054,3 +4054,284 @@ async def test_stop_ends_the_loop_rather_than_restarting_it(monkeypatch):
         # stop() is idempotent, so this only matters when an assertion above never reached it:
         # a live loop outliving its test runs during every later one.
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_scheduler_that_has_stopped_advancing_reports_stalled(monkeypatch):
+    """The failure the store probe cannot see: nothing fires, every read still answers."""
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    try:
+        await engine.start()
+        await _until(lambda: engine._last_tick_completed_at is not None)
+        assert engine.health()["status"] == "healthy"
+
+        # Age the last completed tick past the threshold. Nothing else changes: the
+        # task is alive, the process is up, and a store probe would still answer.
+        engine._last_tick_completed_at = time.time() - (engine_mod._TICK_STALL_AFTER + 1)
+        report = engine.health()
+        assert report["status"] == "stalled"
+        assert report["ready"] is False
+        assert report["seconds_since_last_tick"] > engine_mod._TICK_STALL_AFTER
+        assert "no scheduler tick has completed" in report["detail"]
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_tick_that_raises_does_not_count_as_advancing(monkeypatch):
+    """A tick that raised fired nothing, so stamping it would report progress that did not happen."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _raising_tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    monkeypatch.setattr(engine, "_tick", _raising_tick)
+    try:
+        await engine.start()
+        await _until(lambda: len(ticks) >= 3)
+        # The loop survives a raising tick by design, so liveness cannot be inferred
+        # from the loop being alive -- only from a tick having completed.
+        assert engine._tick_loop_restarts == 0
+        assert engine._last_tick_completed_at is None
+        report = engine.health()
+        assert report["status"] == "starting"
+        # Asserted rather than left out: this test reaches the state where every
+        # tick raises, which is precisely where `ready` is the field that can be
+        # wrong. Checking only `status` here lets a scheduler that never advances
+        # keep reporting ready, and the two neighbouring tests both assert it.
+        # Inside the startup window ready is still True -- the deadline below is
+        # what ends that.
+        assert report["ready"] is True
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_scheduler_that_never_completes_a_tick_stops_being_ready(monkeypatch):
+    """The failure the stall branch cannot see, because it has no tick to measure from.
+
+    Every tick raising from process start leaves `_last_tick_completed_at` None
+    forever, so the engine sits in `starting` for the life of the process. Without
+    a deadline on that state it reports ready the whole time, and readiness ANDs
+    that answer into the daemon's.
+    """
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _raising_tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    monkeypatch.setattr(engine, "_tick", _raising_tick)
+    try:
+        await engine.start()
+        await _until(lambda: len(ticks) >= 3)
+        assert engine._last_tick_completed_at is None
+
+        # Age the start past the window. Nothing else changes: the loop is alive,
+        # the process is up, and no tick has ever completed -- which is the point.
+        engine._started_at = time.time() - (engine_mod._TICK_STALL_AFTER + 1)
+        report = engine.health()
+        assert report["ready"] is False
+        assert report["status"] == "starting"
+        assert report["last_tick_completed_at"] is None
+        assert "no tick has completed" in report["detail"]
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_does_not_inherit_the_previous_runs_completed_tick(monkeypatch):
+    """A second run in one process must not answer with the first run's evidence.
+
+    Everything else here measures a single run. `start()` can be called again
+    after `stop()` in the same process, and the fields health() reads to describe
+    the run outlive the run unless something clears them. That turns the check
+    inside out: a loop that has never completed a tick reports itself as
+    advancing, on the strength of a tick that a previous loop completed.
+
+    The first run really does advance rather than having its timestamp set by
+    hand, because a hand-set value would prove only that the reset line runs, not
+    that the engine produces the state the reset exists to clear.
+    """
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    await engine.start()
+    try:
+        await _until(lambda: engine._last_tick_completed_at is not None)
+    finally:
+        await engine.stop()
+    assert engine._last_tick_completed_at is not None, (
+        "the first run has to advance, or there is no inherited value to be wrong about"
+    )
+
+    async def _raising_tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    monkeypatch.setattr(engine, "_tick", _raising_tick)
+    before = len(ticks)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= before + 3)
+        assert engine._last_tick_completed_at is None, (
+            "the new run is reporting the previous run's tick as its own"
+        )
+
+        # Same ageing the neighbouring tests use: past the startup window, a run
+        # that has never completed a tick is not ready. Before the fix this read
+        # ready, because the inherited timestamp was recent.
+        engine._started_at = time.time() - (engine_mod._TICK_STALL_AFTER + 1)
+        report = engine.health()
+        assert report["last_tick_completed_at"] is None
+        assert report["ready"] is False
+        assert report["status"] == "starting"
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_does_not_inherit_the_previous_runs_loop_failure(monkeypatch):
+    """The mirror case, and the one that reports a pair that cannot both be true.
+
+    `_tick_loop_restarts` was already cleared on start and `_last_tick_loop_failure`
+    was not, so a restarted engine reported zero restarts beside the failure that
+    caused one. Either number alone looks plausible; only together are they
+    visibly impossible, which is why this asserts both in one read.
+    """
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    calls: list = []
+
+    async def _short_lived_loop():
+        calls.append(time.monotonic())
+        if len(calls) <= 2:
+            raise RuntimeError("loop blew up")
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(engine, "_tick_loop", _short_lived_loop)
+    await engine.start()
+    try:
+        await _until(lambda: len(calls) >= 3)
+        assert engine._last_tick_loop_failure is not None
+        assert engine._tick_loop_restarts >= 2
+    finally:
+        await engine.stop()
+
+    async def _healthy_loop():
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(engine, "_tick_loop", _healthy_loop)
+    await engine.start()
+    try:
+        report = engine.health()
+        assert engine._last_tick_loop_failure is None, (
+            "the new run is reporting the previous run's loop failure"
+        )
+        assert engine._tick_loop_restarts == 0
+        assert report["last_tick_loop_failure"] is None
+        assert report["tick_loop_restarts"] == 0
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_restarting_tick_loop_does_not_refresh_the_startup_deadline(monkeypatch):
+    """A deadline a restart can reset is not a deadline.
+
+    The loop is supervised, so a scheduler that cannot tick dies and respawns. If
+    respawning re-opened the startup window, that scheduler would hold itself
+    ready forever by failing repeatedly -- the guard would be defeated by exactly
+    the condition it is meant to catch.
+    """
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    attempts: list = []
+
+    async def _raising_tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    async def _recovery_that_fails_once():
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise RuntimeError("startup recovery blew up")
+
+    # A raising _tick keeps the loop alive and stamps nothing; a raising startup
+    # recovery is what actually kills it. Both, so the loop really restarts and
+    # still never completes a tick.
+    monkeypatch.setattr(engine, "_tick", _raising_tick)
+    monkeypatch.setattr(engine, "_run_startup_recovery", _recovery_that_fails_once)
+    try:
+        await engine.start()
+        started_at = engine._started_at
+        assert started_at is not None
+
+        await _until(lambda: engine._tick_loop_restarts >= 1)
+        await _until(lambda: len(ticks) >= 1)
+        assert engine._last_tick_completed_at is None
+        assert engine._started_at == started_at, "a respawned tick loop reopened the startup window"
+
+        engine._started_at = time.time() - (engine_mod._TICK_STALL_AFTER + 1)
+        assert engine.health()["ready"] is False
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_scheduler_that_was_never_started_does_not_block_readiness(monkeypatch):
+    """A host that runs no scheduler is not failing to schedule; calling it unready is a self-inflicted outage."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    report = engine.health()
+    assert report["status"] == "offline"
+    assert report["ready"] is True
+    assert report["last_tick_completed_at"] is None
+    assert report["seconds_since_last_tick"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_tick_loop_actually_advances_again(monkeypatch):
+    """Restart acceptance is behavioral: a NEW loop must advance, not merely exist.
+
+    The restart tests above replace `_tick_loop` wholesale, so they prove a
+    replacement was spawned and never that it does the job. This drives a real
+    loop through a real death -- startup recovery raising -- and then asserts
+    advancement resumed, read off the same field readiness reports.
+    """
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    attempts: list = []
+
+    async def _recovery_that_fails_once():
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise RuntimeError("startup recovery blew up")
+
+    monkeypatch.setattr(engine, "_run_startup_recovery", _recovery_that_fails_once)
+    await engine.start()
+    try:
+        await _until(lambda: engine._tick_loop_restarts >= 1)
+        assert engine._last_tick_loop_failure is not None
+        _, reason = engine._last_tick_loop_failure
+        assert "RuntimeError" in reason, reason
+
+        # The point of the whole exercise: the replacement is advancing.
+        await _until(lambda: engine._last_tick_completed_at is not None)
+        advanced = len(ticks)
+        await _until(lambda: len(ticks) > advanced)
+        assert engine.health()["status"] == "healthy"
+    finally:
+        await engine.stop()

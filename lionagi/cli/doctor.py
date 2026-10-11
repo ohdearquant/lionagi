@@ -136,6 +136,17 @@ def _readiness_verdict(target: str, body: bytes) -> dict[str, str]:
 
     detail = payload.get("detail") or ""
     if state == "healthy":
+        # The store answering says nothing about whether the scheduler is firing; a
+        # daemon whose scheduler stopped advancing still answers every store read.
+        # A daemon too old to report the field is read as before.
+        scheduler_health = payload.get("scheduler")
+        if isinstance(scheduler_health, dict) and scheduler_health.get("ready") is False:
+            return _result(
+                "warn",
+                f"Studio daemon is up at {target} and its store answers, but its scheduler "
+                f"is {scheduler_health.get('status')} ({scheduler_health.get('detail')}) — "
+                "scheduled actions do not fire while it is not advancing.",
+            )
         return _result("ok", f"Studio daemon ready at {target} ({detail})")
     if state in ("slow", "unavailable"):
         return _result(
