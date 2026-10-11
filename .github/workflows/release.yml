@@ -26,6 +26,10 @@ permissions:
 
 jobs:
   test:
+    # This repository also publishes lion1, under tags of its own (lion1-v*).
+    # Only a lionagi release, a v* tag, publishes lionagi's wheel and image;
+    # every later job needs this one, so skipping it skips them all.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     strategy:
       matrix:
