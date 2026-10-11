@@ -167,7 +167,8 @@ class Mail:
 
     async def exec(self, ops: str) -> list:
         if ops.startswith("comm.read("):
-            await self.mark_read(json.loads(re.fullmatch(r"comm\.read\(ids=(\[.*\])\)", ops).group(1)))
+            assert ops.endswith("])"), ops
+            await self.mark_read(json.loads(ops.removeprefix("comm.read(ids=").removesuffix(")")))
             return [{"status": "success"}]
         if "offset=" in ops:
             return [{"messages": []}]

@@ -22,9 +22,11 @@ const ENTITIES = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", hellip: '\u2026', middot: '\u00b7', nbsp: '\u00a0',
 };
 // a comment, the doctype, or a tag: [1] its slash, [2] its name, [3] its attributes
+// (an unquoted value takes no quote, so a quoted value has one reading and a malformed tag
+// fails in linear time)
 const TOKEN = new RegExp(
   '<!--[\\s\\S]*?-->|<!doctype[^>]*>|<(/?)([a-zA-Z][a-zA-Z0-9]*)' +
-    '((?:\\s+[^\\s=>/]+(?:\\s*=\\s*(?:"[^"]*"|\'[^\']*\'|[^\\s>]+))?)*)\\s*/?>',
+    '((?:\\s+[^\\s=>/]+(?:\\s*=\\s*(?:"[^"]*"|\'[^\']*\'|[^\\s"\'=<>`]+))?)*)\\s*/?>',
   'gi',
 );
 const ATTRIBUTE = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
