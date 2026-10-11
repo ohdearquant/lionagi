@@ -35,8 +35,9 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
     """Resolve a codex model part that names a codex config profile.
 
     Only a bare name is looked up (no dots/separators), so an ordinary vendor
-    model id is never treated as a profile path. Table-valued keys (notably
-    ``mcp_servers``) are not applied, and are logged instead. Returns
+    model id is never treated as a profile path. Table-valued keys and any
+    ``mcp_servers`` key (a quoted dotted one included) are not applied, and are
+    logged instead. Returns
     ``None`` when no such profile file exists, leaving the name to be
     treated as a model id exactly as before. See
     docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
@@ -86,6 +87,11 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
     skipped: list[str] = []
     for key, value in data.items():
         if key == "model":
+            continue
+        # A quoted key such as "mcp_servers.x.command" is a scalar to TOML, but
+        # as a `-c` override codex splits it on the dots and declares a server.
+        if key == "mcp_servers" or key.startswith("mcp_servers."):
+            skipped.append(key)
             continue
         if isinstance(value, (str, int, float, bool)):
             overrides[key] = value

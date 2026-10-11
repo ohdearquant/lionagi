@@ -2283,13 +2283,19 @@ def _env_for_run_flow(tmp_path: Path) -> OrchestrationEnv:
 
 
 async def test_run_flow_and_resume_round_trip_a_no_mcp_config_refusal(
-    temp_db_path: Path, tmp_path: Path
+    temp_db_path: Path, tmp_path: Path, caplog
 ):
     """End-to-end through both halves of the seam: `_run_flow` must persist a
     `--no-mcp-config` refusal into the checkpoint config it hands off for
     writing, and `_resume_flow` must replay exactly that value on the next
     `_run_flow` call -- not the ambient-discovery default a dropped field
-    would fall back to."""
+    would fall back to.
+
+    The replayed value alone cannot tell persistence from the fallback for a
+    checkpoint that lacks the field, which also resumes as `no_mcp_config=True`;
+    the persisted key and the absent fallback warning can."""
+    import logging
+
     from lionagi.cli.orchestrate import flow as flow_module
 
     env = _env_for_run_flow(tmp_path)
@@ -2302,6 +2308,7 @@ async def test_run_flow_and_resume_round_trip_a_no_mcp_config_refusal(
         await flow_module._run_flow("claude", "do the thing", no_mcp_config=True)
 
     persisted_config = inner_mock.call_args.kwargs["checkpoint_config"]
+    assert persisted_config["no_mcp_config"] is True
     checkpoint = _mcp_checkpoint(persisted_config)
 
     resumed_run_flow_mock = AsyncMock(return_value=("ok", "completed"))
@@ -2312,10 +2319,55 @@ async def test_run_flow_and_resume_round_trip_a_no_mcp_config_refusal(
             AsyncMock(return_value=(SimpleNamespace(), checkpoint)),
         ),
         patch.object(flow_module, "_run_flow", resumed_run_flow_mock),
+        caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"),
     ):
         await flow_module._resume_flow("abc123")
 
     assert resumed_run_flow_mock.call_args.kwargs["no_mcp_config"] is True
+    assert "containment" not in caplog.text.lower()
+
+
+async def test_a_resumed_flow_resolves_mcp_from_the_directory_it_was_launched_in(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With no MCP flag a run resolves the nearest `.mcp.json` above the
+    directory it was launched from. A resume started elsewhere must resolve
+    from that same directory, or its workers get whatever config sits near the
+    resuming one."""
+    from lionagi.cli.orchestrate import flow as flow_module
+
+    launched_from = tmp_path / "launched-from"
+    resumed_from = tmp_path / "resumed-from"
+    launched_from.mkdir()
+    resumed_from.mkdir()
+
+    monkeypatch.chdir(launched_from)
+    launch_setup = AsyncMock(return_value=_env_for_run_flow(tmp_path))
+    inner_mock = AsyncMock(return_value="ok result")
+    with (
+        patch.object(flow_module, "setup_orchestration", launch_setup),
+        patch.object(flow_module, "_run_flow_inner", inner_mock),
+    ):
+        await flow_module._run_flow("claude", "do the thing")
+    checkpoint = _mcp_checkpoint(inner_mock.call_args.kwargs["checkpoint_config"])
+
+    monkeypatch.chdir(resumed_from)
+    resume_setup = AsyncMock(return_value=_env_for_run_flow(tmp_path))
+    with (
+        patch.object(
+            flow_module,
+            "resolve_checkpoint_target",
+            AsyncMock(return_value=(SimpleNamespace(), checkpoint)),
+        ),
+        patch.object(flow_module, "setup_orchestration", resume_setup),
+        patch.object(flow_module, "_run_flow_inner", AsyncMock(return_value="ok result")),
+    ):
+        await flow_module._resume_flow("abc123")
+
+    launched = Path(launch_setup.call_args.kwargs["mcp_launch_dir"]).resolve()
+    resumed = Path(resume_setup.call_args.kwargs["mcp_launch_dir"]).resolve()
+    assert launched == launched_from.resolve()
+    assert resumed == launched
 
 
 async def test_resume_treats_a_legacy_checkpoint_as_no_mcp_config_and_warns(tmp_path: Path, caplog):

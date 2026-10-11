@@ -130,6 +130,36 @@ async def test_no_config_found_hands_over_nothing_and_says_nothing(tmp_run):
     assert "--strict-mcp-config" not in args
 
 
+@pytest.mark.asyncio
+async def test_a_run_resolves_its_set_from_the_launch_dir_it_is_given(tmp_run, tmp_path):
+    """A resumed flow hands setup the directory the run was launched from, and
+    the set must come from there rather than from where the resume runs."""
+    launched_from = tmp_path / "launched-from"
+    launched_from.mkdir()
+    (launched_from / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-launch-dir": {"command": "a"}}})
+    )
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": {"from-here": {"command": "b"}}}))
+
+    # Control: without a launch dir the config beside this process is the one found.
+    here = await _setup(no_mcp_config=False)
+    assert set(here.mcp_servers) == {"from-here"}
+
+    there = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="claude_code/sonnet",
+        agent_name=None,
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+        mcp_launch_dir=str(launched_from),
+    )
+    assert set(there.mcp_servers) == {"from-launch-dir"}
+
+
 def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home):
     """codex has no per-request server set and no wholesale clear, so a refusal
     reaches it as every server it would have loaded, disabled by name."""

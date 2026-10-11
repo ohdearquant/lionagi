@@ -344,12 +344,15 @@ node as already-terminal would report `n_spawned=0` and silently skip the
 `with_synthesis`-or-`n_spawned` gate in `_run_flow_inner`.
 
 **Resume replays the original MCP decision.** `_run_flow`'s
-`_checkpoint_config` persists `mcp_config`/`no_mcp_config` alongside the rest
-of the call's kwargs, and `_resume_flow` replays them unchanged: a run
-started with `--no-mcp-config` keeps no servers across `li o flow --resume`,
-rather than re-running `setup_orchestration` with today's defaults and
-re-discovering whatever `.mcp.json` happens to sit near the resuming
-directory. A checkpoint written before these fields existed (no `no_mcp_config`
+`_checkpoint_config` persists `mcp_config`/`no_mcp_config` and the directory
+the run resolved its MCP config from (`mcp_launch_dir`) alongside the rest of
+the call's kwargs, and `_resume_flow` replays them unchanged: a run started
+with `--no-mcp-config` keeps no servers across `li o flow --resume`, and a run
+started with no flag searches for `.mcp.json` from its original launch
+directory, rather than re-running `setup_orchestration` with today's defaults
+and re-discovering whatever `.mcp.json` happens to sit near the resuming
+directory. The search runs again at resume, so it reads that config as it is
+then. A checkpoint written before these fields existed (no `no_mcp_config`
 key in its persisted `config`) has no record of that original decision, so
 `_resume_flow` fails closed: it treats the checkpoint as `no_mcp_config=True`
 and logs a warning, rather than defaulting to ambient discovery for a run

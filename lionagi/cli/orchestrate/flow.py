@@ -2533,7 +2533,7 @@ def _finalize_flow(
     return output
 
 
-def _canonical_mcp_config(mcp_config: str | None) -> str | None:
+def _canonical_mcp_config(mcp_config: str | None, *, base: str | None = None) -> str | None:
     """Freeze --mcp-config to the file this run actually resolved.
 
     ``resolve_spawn_mcp_servers`` resolves a relative path against the launching
@@ -2543,9 +2543,10 @@ def _canonical_mcp_config(mcp_config: str | None) -> str | None:
     a different MCP configuration, or a file someone else placed on that path,
     and so can be handed command and URL transports the original never had.
 
-    Resolving here uses the same base the resolver will use moments later in
-    this process, so the first run's behaviour is unchanged and only the
-    persisted value becomes unambiguous. Existence is not asserted -- an
+    Resolving against *base* (the run's MCP launch directory, this process's
+    own by default) uses the same base the resolver will use moments later,
+    so the first run's behaviour is unchanged and only the persisted value
+    becomes unambiguous. Existence is not asserted -- an
     unreadable path is the resolver's error to raise, with its own message.
     """
     if mcp_config is None:
@@ -2558,7 +2559,7 @@ def _canonical_mcp_config(mcp_config: str | None) -> str | None:
         # temp directory is a symlink, a canonicalized path stops matching what
         # the run was asked for -- without closing anything.
         return str(path)
-    return str((Path(os.getcwd()) / path).resolve())
+    return str((Path(base or os.getcwd()) / path).resolve())
 
 
 # ── Public entry points ───────────────────────────────────────────────────────
@@ -2602,6 +2603,7 @@ async def _run_flow(
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_launch_dir: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
@@ -2616,6 +2618,10 @@ async def _run_flow(
 
     _started_at = time.time()
     _invocation_kind = "play" if playbook_name else "flow"
+    # The directory this run resolves its MCP config from: the launching
+    # process's on a first run, the persisted one on a resume, so a resume
+    # started elsewhere searches where the original run searched.
+    mcp_launch_dir = mcp_launch_dir or os.getcwd()
 
     # The checkpoint's own "config" replays THIS call's kwargs verbatim on
     # --resume (dry_run/show_graph excluded — presentation flags, not "what
@@ -2648,8 +2654,9 @@ async def _run_flow(
         "invocation_id": invocation_id,
         "project": project,
         "pack": pack,
-        "mcp_config": _canonical_mcp_config(mcp_config),
+        "mcp_config": _canonical_mcp_config(mcp_config, base=mcp_launch_dir),
         "no_mcp_config": no_mcp_config,
+        "mcp_launch_dir": mcp_launch_dir,
     }
 
     env = await setup_orchestration(
@@ -2669,6 +2676,7 @@ async def _run_flow(
         pack=pack,
         mcp_config=mcp_config,
         no_mcp_config=no_mcp_config,
+        mcp_launch_dir=mcp_launch_dir,
     )
 
     # `--notify` is compatibility sugar over the terminal-callback registry:

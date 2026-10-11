@@ -612,8 +612,8 @@ def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
     if applied:
         return
     lost = (
-        "--no-mcp-config was not applied, so this worker keeps the servers that "
-        "configuration gives it"
+        "--no-mcp-config cannot be applied to its request, and any servers that "
+        "configuration starts are not stopped by it"
         if not servers
         else f"the {len(servers)} resolved server(s) ({', '.join(sorted(servers))}) "
         "are not reachable for this worker"
@@ -642,6 +642,7 @@ async def setup_orchestration(
     pack: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    mcp_launch_dir: str | None = None,
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
     from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
@@ -650,10 +651,12 @@ async def setup_orchestration(
     # Read from *this* process's directory, before --cwd is applied to anything.
     # Every worker this run builds is handed the same set, so it is resolved
     # once here — the only point at which the directory the run was started
-    # from is still the one in effect.
+    # from is still the one in effect. A resumed flow passes the directory
+    # its first run was launched from instead, since this process may be
+    # somewhere else.
     mcp_resolution = resolve_spawn_mcp_servers(
         mcp_config,
-        launch_dir=os.getcwd(),
+        launch_dir=mcp_launch_dir or os.getcwd(),
         disabled=no_mcp_config,
     )
     # A refusal resolves to no servers for the same reason a fruitless search

@@ -491,6 +491,43 @@ async def test_resumed_claude_leg_with_no_mcp_config_is_strict_and_empty(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_resumed_leg_whose_search_finds_nothing_keeps_the_previous_runs_servers(
+    monkeypatch, tmp_path, codex_home
+):
+    """Only a declared set replaces the persisted one. A search that finds no
+    config declares nothing: it leaves a resumed leg the servers it had, as it
+    leaves a new leg to what its CLI finds, and disables none of codex's own."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpResolution
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server"},
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "resolve_spawn_mcp_servers",
+        lambda *a, **kw: McpResolution(None, "no_mcp_config_found", None, tmp_path),
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["config_overrides"] == {"mcp_servers.old.command": "old-server"}
+
+
+@pytest.mark.asyncio
 async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatch, tmp_path):
     from lionagi.cli.agent import _run_agent
 
