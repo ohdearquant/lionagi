@@ -12,16 +12,18 @@ the terminal with the `li` CLI: single agents, parallel fan-outs, and DAG
 flows where an orchestrator plans specialist workers. Built continuously
 since 2023.
 
-> **Direction.** lion1, a second runtime kept in the [`lion1/`](lion1/)
-> directory of this repository until the migration completes, comes into
-> lionagi concept by concept, in the seven ordered steps set out in
-> [ADR-0125](docs/adr/ADR-0125-bringing-the-lion1-runtime-into-lionagi.md).
-> Through this migration, code written for lionagi keeps working: public
-> imports, supported call shapes and return types stay as they are, and new
-> capabilities arrive as additions. Removing a public name or behavior, or
-> changing what a default install can do, needs its own versioned compatibility
-> decision, and a behavior an adapter cannot keep waits for its own
-> compatibility decision.
+> **Direction.** lionagi's underlying architecture is migrating towards lion1,
+> the runtime kept in the [`lion1/`](lion1/) directory of this repository until
+> the migration completes, while lionagi stays the package you install and
+> import. The migration is backward compatible: public imports, supported call
+> shapes and return types stay as they are, and new capabilities arrive as
+> additions. Removing a public name or behavior, or changing what a default
+> install can do, needs its own versioned compatibility decision. lionagi v1.0
+> is planned for around the end of October 2026. The
+> [roadmap](docs/roadmap.md) sets out the seven steps and the compatibility
+> terms, and
+> [ADR-0125](docs/adr/ADR-0125-bringing-the-lion1-runtime-into-lionagi.md)
+> records the decision.
 
 [Docs](https://ohdearquant.github.io/lionagi/) |
 [How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/) |
@@ -232,6 +234,7 @@ Perplexity, Groq, OpenRouter): [Providers reference](docs/reference/providers.md
 | [Cookbook](docs/cookbook/) | 5 runnable scenarios: codebase audit, research synthesis, multi-model pipeline, team coordination, resumable background run |
 | [API Reference](docs/api/) | `branch.operate`, `branch.ReAct`, `iModel`, `Session` |
 | [Architecture (DeepWiki)](https://deepwiki.com/ohdearquant/lionagi) | Auto-generated architecture walkthrough |
+| [Roadmap](docs/roadmap.md) | Migration towards lion1, compatibility terms, v1.0 target |
 | [Contributing](docs/contributing.md) | Dev setup, PR workflow |
 
 ## Optional Extras
