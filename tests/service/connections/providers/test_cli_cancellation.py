@@ -48,7 +48,10 @@ class TestSubprocessSessionIsolation:
 
         from lionagi.providers.anthropic.claude_code import _ndjson_from_cli
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        with (
+            patch("lionagi.providers.anthropic.claude_code.CLAUDE_CLI", "claude"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
             mock_proc = _make_mock_proc(pid=8101)
             mock_exec.return_value = mock_proc
 
