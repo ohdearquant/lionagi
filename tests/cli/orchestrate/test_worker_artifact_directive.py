@@ -529,3 +529,48 @@ def test_report_is_emitted_and_recorded_by_finalize(tmp_path, monkeypatch, caplo
     by_id = {e["agent_id"]: e for e in extras["worker_artifacts"]}
     assert by_id["researcher"]["files"] == ["out.md"]
     assert by_id["critic"]["files"] == []
+
+
+def test_a_directory_the_run_cannot_reach_is_unreadable_not_missing(tmp_path):
+    """A row saying "I could not look" is not a row saying "it was removed".
+
+    The trigger is a directory whose PARENT cannot be traversed, not one that
+    is merely mode 000 itself: a locked directory is still stat-able, because
+    that only needs the traverse bit on its parent.
+
+    The probe used to sit outside the try, and it went wrong differently on
+    either side of 3.14. On 3.13 and below `exists()` raises here, and nothing
+    caught it, so one unreachable worker directory took down the whole harvest
+    including every other worker's row. On 3.14 it answers False instead, so
+    the row read `missing` with an error naming a deletion that never happened
+    for a directory sitting right there. Both are now `unreadable`, which is
+    the status this function already carried for exactly this case.
+    """
+
+    locked = tmp_path / "locked"
+    (locked / "child").mkdir(parents=True)
+    (locked / "child" / "notes.md").write_text("x")
+    locked.chmod(0o000)
+    try:
+        try:
+            (locked / "child").stat()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("the 0o000 mode does not bind for this process")
+
+        entries = collect_worker_artifacts(_env_with_dirs({"a": locked / "child"}))
+
+        assert entries[0]["status"] == "unreadable"
+        assert "does not exist" not in (entries[0]["error"] or "")
+        assert "PermissionError" in entries[0]["error"]
+    finally:
+        locked.chmod(0o755)
+
+
+def test_a_genuinely_absent_directory_is_still_missing(tmp_path):
+    """The must-match control: the fix must not turn every absent row unreadable."""
+
+    entries = collect_worker_artifacts(_env_with_dirs({"a": tmp_path / "never-created"}))
+    assert entries[0]["status"] == "missing"
+    assert "does not exist" in entries[0]["error"]

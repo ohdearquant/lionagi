@@ -1409,9 +1409,20 @@ def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     for agent_id, adir in registered.items():
         entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
         adir = Path(adir)
-        if not adir.exists():
+        # `stat` rather than `exists()`: on Python 3.14 `exists()` answers
+        # False for a directory it cannot stat instead of raising, which would
+        # report an unreadable directory as "missing" with an error naming the
+        # wrong cause, and on older interpreters it raises and would abort the
+        # whole harvest. This function carries a distinct "unreadable" status
+        # for exactly that case.
+        try:
+            adir.stat()
+        except FileNotFoundError:
             entry["status"] = "missing"
             entry["error"] = "the directory recorded for this worker does not exist"
+        except OSError as exc:
+            entry["status"] = "unreadable"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
         else:
             try:
                 files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
