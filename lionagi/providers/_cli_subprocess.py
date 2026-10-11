@@ -1098,11 +1098,28 @@ def build_declarative_cli_args(model_instance: Any) -> list[str]:
     return args
 
 
+def cli_fallback_bin_dirs() -> tuple[Path, ...]:
+    """Dirs probed, in order, when PATH lookup fails. Detached servers (MCP
+    bridges, launchd jobs) inherit their launcher's PATH, which routinely
+    lacks the per-user install dirs the CLIs actually live in; PATH still wins
+    when it resolves, so a user's explicit override is never shadowed.
+    Computed at call time: ``Path.home()`` follows the live environment."""
+    return (
+        Path.home() / ".local" / "bin",
+        Path("/usr/local/bin"),
+        Path("/opt/homebrew/bin"),
+    )
+
+
 def discover_cli(binary: str) -> tuple[bool, str | None]:
-    """Return (available, resolved_path_or_name) for a CLI binary discovered on PATH."""
+    """Return (available, resolved_path) for a CLI binary, from PATH first, then cli_fallback_bin_dirs()."""
     candidate = shutil.which(binary) or binary
     if shutil.which(candidate):
         return True, candidate
+    for bin_dir in cli_fallback_bin_dirs():
+        fallback = bin_dir / binary
+        if fallback.is_file() and os.access(fallback, os.X_OK):
+            return True, str(fallback)
     return False, None
 
 

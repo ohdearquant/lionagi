@@ -584,7 +584,11 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     from lionagi.studio.operator.types import OperatorEngineTurn
 
     monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+    # Patch the resolver, not just the cached constant: a None constant is
+    # exactly the value that makes resolve_claude_cli() re-discover, so on a
+    # machine that HAS the CLI it would resolve and this case never arise.
     monkeypatch.setattr(claude_mod, "CLAUDE_CLI", None)
+    monkeypatch.setattr(claude_mod, "resolve_claude_cli", lambda: None)
 
     def _turn(provider: str | None, model: str | None) -> OperatorEngineTurn:
         return OperatorEngineTurn(
@@ -608,9 +612,22 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
         stream = engine.stream(_turn(None, None))
         await stream.__anext__()
 
-    # The regression: a selected Codex turn must get past the preflight. It
-    # fails later for an unrelated reason (no codex binary, no network) or
-    # succeeds; what matters is that it is not the Claude-unavailable refusal.
+    # The regression: a selected Codex turn must get past the preflight. Simply
+    # accepting every non-Claude exception would also accept a turn that failed
+    # before it ever reached the provider -- a generic early RuntimeError would
+    # pass while proving nothing -- so the positive fact is asserted after:
+    # branch construction was reached, and it saw the selected Codex pair.
+    import lionagi.studio.operator.engine as engine_mod
+
+    built: list[tuple[str, str]] = []
+    real_build = engine_mod.build_operator_branch
+
+    def _record_build(built_turn, **kwargs):
+        built.append(engine_mod.resolve_operator_provider_model(built_turn))
+        return real_build(built_turn, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "build_operator_branch", _record_build)
+
     stream = engine.stream(_turn("codex", "gpt-5.3-codex"))
     try:
         await stream.__anext__()
@@ -619,9 +636,119 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     except StopAsyncIteration:
         pass
     except Exception:
+        # A later failure (no codex binary, no network) is out of scope here;
+        # the assertions below are what carry this arm.
         pass
     finally:
         await stream.aclose()
+
+    assert built, "branch construction was never reached: the preflight refused the codex turn"
+    assert built[0][0] == "codex", (
+        f"the branch was built for {built[0][0]!r}, not the selected codex provider"
+    )
+
+
+async def test_the_preflight_gates_on_the_resolved_provider_not_the_live_env(tmp_path, monkeypatch):
+    """The coordinator resolves the pair once and builds runtime_branch from it.
+
+    Every resolution re-reads the environment, so an engine that resolves again
+    can gate a turn on a provider it does not run: here the turn was resolved as
+    codex, the environment has since moved to claude_code, and there is no
+    Claude CLI. Re-resolving refuses a turn that would have run fine.
+    """
+    import lionagi.providers.anthropic.claude_code as claude_mod
+    import lionagi.studio.operator.engine as engine_mod
+    from lionagi.studio.operator.engine import (
+        BranchOperatorEngine,
+        OperatorProviderUnavailableError,
+    )
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    monkeypatch.setattr(claude_mod, "CLAUDE_CLI", None)
+    monkeypatch.setattr(claude_mod, "resolve_claude_cli", lambda: None)
+    # The live environment disagrees with what this turn was resolved as.
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+
+    turn = OperatorEngineTurn(
+        conversation_id="c1",
+        request_id="r1",
+        instruction="do it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        history=[],
+        request_permission=None,
+        store_path=str(tmp_path / "state.db"),
+        # The caller selected nothing; the coordinator resolved codex.
+        provider=None,
+        model=None,
+        resolved_provider="codex",
+    )
+
+    built: list[str] = []
+    real_build = engine_mod.build_operator_branch
+
+    def _record_build(built_turn, **kwargs):
+        built.append(built_turn.resolved_provider)
+        return real_build(built_turn, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "build_operator_branch", _record_build)
+
+    stream = BranchOperatorEngine().stream(turn)
+    try:
+        await stream.__anext__()
+    except OperatorProviderUnavailableError as exc:  # pragma: no cover - the defect
+        raise AssertionError(
+            f"a turn resolved as codex was refused for a Claude reason: {exc}"
+        ) from exc
+    except StopAsyncIteration:
+        pass
+    except Exception:
+        # Anything later (no codex binary, no network) is out of scope; the
+        # assertion below is what carries this arm.
+        pass
+    finally:
+        await stream.aclose()
+
+    assert built == ["codex"], (
+        "the preflight did not reach branch construction for the resolved codex turn"
+    )
+
+
+async def test_the_branch_is_built_from_the_resolved_pair_not_the_live_env(tmp_path, monkeypatch):
+    """The branch itself must consume the recorded pair, not re-resolve.
+
+    Gating the preflight on the resolved provider is not enough: branch
+    construction resolved again, so an environment that moved between the
+    coordinator's resolution and the build produced a branch for a DIFFERENT
+    provider than the preflight approved. This asserts the built branch's own
+    model, not the turn field that fed it.
+    """
+    from lionagi.studio.operator.engine import build_operator_branch
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    # The live environment disagrees with what this turn was resolved as.
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+
+    turn = OperatorEngineTurn(
+        conversation_id="c1",
+        request_id="r1",
+        instruction="do it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        history=[],
+        request_permission=None,
+        store_path=str(tmp_path / "state.db"),
+        provider=None,
+        model=None,
+        resolved_provider="codex",
+        resolved_model="gpt-5.3-codex",
+    )
+
+    branch = build_operator_branch(turn)
+    model_id = str(branch.chat_model.endpoint.config.kwargs.get("model", ""))
+    assert "codex" in model_id or "gpt-5.3" in model_id, (
+        f"the branch was built for {model_id!r}, not the resolved codex pair"
+    )
+    assert "sonnet" not in model_id, "the live environment must not decide the built branch"
 
 
 # ── clearing a conversation's pin ───────────────────────────────────────────
