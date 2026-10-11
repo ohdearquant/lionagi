@@ -125,6 +125,24 @@ def _first_op_result(khive_response: Any) -> Any:
     return results[0].get("result")
 
 
+def _first_op_ok(khive_response: Any) -> bool:
+    """Whether khive's first op reported success.
+
+    `request` answers rc 0 for a batch in which an op REFUSED: the refusal is
+    ``results[0]["ok"] is False`` with an ``error`` beside it, and the envelope's
+    own ``status`` reads "partial". So a caller that only catches exceptions sees
+    a refused write exactly as it sees a written one. Anything that is not a
+    dict carrying a first op that says ``ok`` is treated as not-written, because
+    the alternative is counting an unparseable answer as a success.
+    """
+    if not isinstance(khive_response, dict):
+        return False
+    results = khive_response.get("results") or []
+    if not results or not isinstance(results[0], dict):
+        return False
+    return results[0].get("ok") is True
+
+
 def _first_result_id(khive_response: Any) -> str | None:
     op_result = _first_op_result(khive_response)
     if isinstance(op_result, list) and op_result and isinstance(op_result[0], dict):
@@ -334,9 +352,16 @@ class KhiveInjectionProvider:
                 f"salience={wb.salience_cap}, tags={json.dumps(tags)}{ns})"
             )
             try:
-                await _call_khive(ops, self._mcp_config)
+                response = await _call_khive(ops, self._mcp_config)
             except Exception:
                 logger.warning("KhiveInjectionProvider writeback failed; skipping", exc_info=True)
+                return records_written
+            if not _first_op_ok(response):
+                # Stops rather than continuing, matching the transport-failure
+                # path above: a refusal is normally a property of this pass --
+                # namespace, grant, store state -- so the remaining pairs would
+                # refuse identically and each would cost another round trip.
+                logger.warning("KhiveInjectionProvider writeback refused by khive; not counted")
                 return records_written
             records_written += 1
         return records_written
