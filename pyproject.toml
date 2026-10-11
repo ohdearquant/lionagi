@@ -89,6 +89,12 @@ li = "lionagi.cli.main:main"
 
 [project.optional-dependencies]
 
+ruvector = [
+    "ruvector>=0.1.2,<0.2",
+    "numpy>=1.24,<3",
+]
+
+
 reader = [
     "docling>=2.91.0",
 ]

@@ -225,6 +225,7 @@ Perplexity, Groq, OpenRouter): [Providers reference](docs/reference/providers.md
 | | |
 |--|--|
 | [Getting Started](docs/getting-started/first-flow.md) | Install, first flow, API key setup |
+| [RuVector memory](docs/guides/ruvector.md) | Optional native retrieval, branch memory and tools |
 | [Concepts](docs/concepts.md) | Branch, Session, flow, team, operate, persist |
 | [How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/) | Architecture-level comparison with LangChain / LangGraph |
 | [CLI Reference](docs/cli-reference.md) | `li agent`, `li o fanout`, `li o flow`, `li team` — all flags |

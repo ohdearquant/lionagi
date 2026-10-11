@@ -191,6 +191,7 @@ nav:
       - Models & providers: api/imodel.md
       - Agents & permissions: api/agent-config.md
       - Worktree sandboxes: api/sandbox.md
+      - RuVector memory: guides/ruvector.md
 
   - Orchestrate:
       - Orchestration guide: guides/orchestration.md

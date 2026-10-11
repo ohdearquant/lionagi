@@ -1,0 +1,89 @@
+{
+  "baseline_commit": "cd6e3686c1586a271864c323d4998a1e3c9369df",
+  "environment": {
+    "python": "3.10.22",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "packages": {
+      "numpy": "2.2.6",
+      "ruvector": "0.1.2",
+      "lionagi": "0.35.3"
+    }
+  },
+  "runs": [
+    {
+      "seed": 20261011,
+      "n": 5000,
+      "dimensions": 64,
+      "queries": 40,
+      "rounds": 3,
+      "results": [
+        {
+          "selectivity": 0.25,
+          "identical_results": true,
+          "baseline": {
+            "p50_ms": 16.037007,
+            "p95_ms": 28.71943555
+          },
+          "optimized": {
+            "p50_ms": 10.566623499999999,
+            "p95_ms": 15.858906699999999
+          },
+          "p50_reduction": 0.3411100026332844
+        },
+        {
+          "selectivity": 1.0,
+          "identical_results": true,
+          "baseline": {
+            "p50_ms": 34.5996475,
+            "p95_ms": 52.27266949999999
+          },
+          "optimized": {
+            "p50_ms": 15.700881500000001,
+            "p95_ms": 22.45480015
+          },
+          "p50_reduction": 0.5462126745655429
+        }
+      ]
+    },
+    {
+      "seed": 20261012,
+      "n": 5000,
+      "dimensions": 64,
+      "queries": 40,
+      "rounds": 3,
+      "results": [
+        {
+          "selectivity": 0.25,
+          "identical_results": true,
+          "baseline": {
+            "p50_ms": 15.8258525,
+            "p95_ms": 26.943705549999997
+          },
+          "optimized": {
+            "p50_ms": 9.999311500000001,
+            "p95_ms": 15.4511215
+          },
+          "p50_reduction": 0.3681660119099428
+        },
+        {
+          "selectivity": 1.0,
+          "identical_results": true,
+          "baseline": {
+            "p50_ms": 37.678029,
+            "p95_ms": 61.41893895
+          },
+          "optimized": {
+            "p50_ms": 15.350487000000001,
+            "p95_ms": 27.500230749999997
+          },
+          "p50_reduction": 0.5925878447622619
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Synthetic filtered queries, not unfiltered HNSW acceleration.",
+    "Same process/index and alternating order; timing remains hardware dependent.",
+    "Exact equality to baseline is checked on every timed pair."
+  ]
+}

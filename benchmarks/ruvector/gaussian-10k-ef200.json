@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "seed": 20261011,
+  "n": 10000,
+  "dimensions": 64,
+  "queries": 200,
+  "k": 10,
+  "ef_search": 200,
+  "dataset_sha256": "20233c271e4207483ec4ccb9154d5a2c77e4871f4cd1995c8190c1f0190e3220",
+  "build_seconds": 8.417855395004153,
+  "peak_rss_delta_bytes": 49594368,
+  "process_peak_rss_bytes": 146186240,
+  "recall_at_10": 0.996,
+  "adapter": {
+    "p50_ms": 1.4461745000000001,
+    "p95_ms": 2.1575118999999994
+  },
+  "numpy_exact": {
+    "p50_ms": 0.160078,
+    "p95_ms": 0.45409444999999976
+  },
+  "environment": {
+    "python": "3.10.22",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "cpu": "x86_64",
+    "logical_cpus": 9,
+    "packages": {
+      "lionagi": "0.35.3",
+      "ruvector": "0.1.2",
+      "numpy": "2.2.6"
+    }
+  },
+  "limitations": [
+    "Synthetic independent Gaussian vectors, not application relevance.",
+    "One process; high-water RSS includes Python and native allocations, not exclusive index memory.",
+    "Includes Python adapter overhead; excludes embedding, network and LLM costs.",
+    "HNSW graph construction is not fully deterministic; repeat for variance.",
+    "Exact baseline uses one BLAS thread and full exact ranking of ten results."
+  ]
+}
