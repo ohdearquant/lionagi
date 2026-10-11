@@ -398,12 +398,15 @@ class TestBuiltinToolCollisionDiagnostic:
 
         assert caplog.text.count("greeter") == 1
 
-    def test_shadow_resolution_is_cached_until_reset(self, write_plugin):
-        """The shadow-diagnostic resolution is cached per plugin-registry
-        generation: a new peer plugin trusted after the cache was populated
-        is not consulted until `PluginRegistry.reset()` bumps the
-        generation -- and even after reset, the peer collision stays a
-        diagnostic only, never a raise (the local tool always wins)."""
+    def test_disabling_peer_invalidates_cached_collision_without_reset(self, write_plugin, caplog):
+        """An enablement write changes the diagnostic inside one generation.
+
+        A peer collision initially suppresses the single-owner shadow warning;
+        disabling one peer must expose the remaining owner immediately without
+        requiring ``PluginRegistry.reset()``.
+        """
+
+        import logging
 
         def greet():
             return "local"
@@ -411,7 +414,7 @@ class TestBuiltinToolCollisionDiagnostic:
         manager = ActionManager()
         manager.register_tool(greet)
 
-        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _write_tool_plugin(write_plugin, "p1", name="plugin-one", tool_name="greet")
         _write_tool_plugin(
             write_plugin,
             "p2",
@@ -420,32 +423,68 @@ class TestBuiltinToolCollisionDiagnostic:
             func_name="b",
         )
         _trust("p1")
-        PluginRegistry.reset()
-
-        first = manager.match_tool({"function": "greet", "arguments": {}})
-        assert first.func_tool.func_callable is greet
-
         _trust("p2")
-
-        # No reset(): same generation, cached resolution reused -- the
-        # newly trusted peer plugin is not consulted yet.
-        second = manager.match_tool({"function": "greet", "arguments": {}})
-        assert second.func_tool.func_callable is greet
-
         PluginRegistry.reset()
 
-        # A fresh generation forces one fresh resolution -- still resolves
-        # the local tool, and still never raises even though p1 and p2 now
-        # peer-collide on "greet".
-        third = manager.match_tool({"function": "greet", "arguments": {}})
-        assert third.func_tool.func_callable is greet
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            first = manager.match_tool({"function": "greet", "arguments": {}})
+            assert "plugin-one" not in caplog.text
+
+            settings = read_user_settings()
+            settings.setdefault("plugins", {})["plugin-two"] = {"enabled": False}
+            write_user_settings(settings)
+
+            second = manager.match_tool({"function": "greet", "arguments": {}})
+
+        assert first.func_tool.func_callable is greet
+        assert second.func_tool.func_callable is greet
+        assert "plugin-one" in caplog.text
+
+    def test_bundle_mutation_staleness_is_bounded_without_reset(
+        self, write_plugin, caplog, monkeypatch
+    ):
+        """Non-settings mutations refresh after the documented one-second window."""
+
+        import logging
+
+        import lionagi.protocols.action.manager as manager_mod
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+        _write_tool_plugin(write_plugin, "p1", name="plugin-one", tool_name="greet")
+        peer = _write_tool_plugin(
+            write_plugin,
+            "p2",
+            name="plugin-two",
+            tool_name="greet",
+            func_name="b",
+        )
+        _trust("p1")
+        _trust("p2")
+        PluginRegistry.reset()
+        clock = [10.0]
+        monkeypatch.setattr(manager_mod, "_plugin_shadow_cache_now", lambda: clock[0])
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            manager.match_tool({"function": "greet", "arguments": {}})
+            (peer / "tools" / "impl.py").write_text("def b():\n    return 'changed'\n")
+            clock[0] = 10.5
+            manager.match_tool({"function": "greet", "arguments": {}})
+            assert "plugin-one" not in caplog.text
+            clock[0] = 11.0
+            manager.match_tool({"function": "greet", "arguments": {}})
+
+        assert "plugin-one" in caplog.text
 
 
 class TestShadowResolutionCacheCost:
     """A registered-tool hit against `match_tool` must not pay for a fresh
     plugin-manifest rescan (`PluginRegistry.resolve_tool_target`) on every
-    call once any plugin is trusted -- only once per plugin-registry
-    generation -- repeated rescans were a real disk-I/O regression."""
+    call once any plugin is trusted -- only once per stable cache window --
+    repeated rescans were a real disk-I/O regression."""
 
     def test_repeated_hits_within_a_generation_resolve_the_plugin_registry_once(
         self, write_plugin, monkeypatch

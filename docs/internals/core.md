@@ -683,6 +683,18 @@ same signal a caller already needs to point the fallback at a real custom
 host. Anything else raises `ProviderNotFoundError` naming the requested
 provider and every provider currently registered.
 
+### ActionManager plugin-shadow diagnostics
+
+A registered local tool remains authoritative when a plugin declares the same
+name. `ActionManager` resolves that collision only for its warning and caches
+the answer per registry generation and tool name. The cache also records the
+user-settings revision, so trust and enable/disable writes invalidate it
+immediately even when no `PluginRegistry.reset()` occurs. Other same-generation
+mutations, including bundle edits and cross-process settings rewrites that
+deliberately preserve file metadata, are refreshed on a one-second monotonic
+deadline. That is the complete accepted staleness window for this diagnostic;
+it never affects tool routing or plugin activation.
+
 ### EndpointRegistry plugin revalidation
 
 `_revalidate_plugin_entry` keeps plugin entries available only while their
