@@ -40,10 +40,6 @@ jobs:
       uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
-        # lion1/ is a project of its own with its own checks (ci.yml, job lion1).
-        config: |
-          paths-ignore:
-            - lion1
 
     - name: Autobuild
       uses: github/codeql-action/autobuild@v4
