@@ -75,6 +75,62 @@ class _FakeCompleted:
         self.killed = True
 
 
+def test_delivery_timeout_passes_spawn_bound_witnesses(monkeypatch):
+    """Synchronous notifier cleanup retains authority from its own spawn."""
+
+    class _TimedOut(_FakeCompleted):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pid = 6161
+
+        def communicate(self, input=None, timeout=None):
+            raise subprocess.TimeoutExpired("notify", timeout)
+
+    import subprocess
+
+    proc = _TimedOut()
+    witnesses = ((6161, 18.0),)
+    seen: dict[str, object] = {}
+
+    def _popen(*args, **kwargs):
+        seen["env"] = kwargs["env"]
+        return proc
+
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", _popen)
+    monkeypatch.setattr(
+        _notify_hook,
+        "prepare_process_group_env",
+        lambda env=None: ({"MARKED": "notify-hook"}, "notify-hook-token"),
+    )
+    monkeypatch.setattr(
+        _notify_hook,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            18.0 if (pid, expected_marker) == (6161, "notify-hook-token") else None
+        ),
+    )
+
+    def _capture(child, *, expected_leader_created=None):
+        seen["capture"] = (child, expected_leader_created)
+        return witnesses
+
+    def _terminate(child, **kwargs):
+        seen["terminate"] = (child, kwargs)
+
+    monkeypatch.setattr(_notify_hook, "capture_group_witnesses", _capture)
+    monkeypatch.setattr(_notify_hook, "terminate_process_group", _terminate)
+
+    outcome = _notify_hook._deliver(["notify"], {}, timeout=0.01)
+
+    assert outcome["error"] == "TimeoutExpired"
+    assert seen["env"] == {"MARKED": "notify-hook"}
+    assert seen["capture"] == (proc, 18.0)
+    assert seen["terminate"] == (
+        proc,
+        {"grace": None, "group_witnesses": witnesses},
+    )
+
+
 def _no_settings_notifier(monkeypatch):
     monkeypatch.setattr(
         "lionagi.state.lifecycle.notify_settings.resolve_notify_config",

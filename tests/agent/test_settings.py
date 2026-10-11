@@ -135,11 +135,12 @@ async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatc
         await hook("bash", "run", {"file_path": "test.py"})
 
 
-async def test_pre_hook_timeout_kills_process_group(monkeypatch):
-    """On TimeoutError the pre-hook must kill the process group."""
+async def test_pre_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch):
+    """Timeout cleanup carries identity captured from this exact spawn."""
     import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock
 
+    import lionagi.agent.settings as settings_mod
     from lionagi.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
@@ -149,25 +150,41 @@ async def test_pre_hook_timeout_kills_process_group(monkeypatch):
     mock_proc.wait = AsyncMock(return_value=None)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+    witnesses = ((9999, 10.0),)
+    cleanup = AsyncMock()
+    monkeypatch.setattr(
+        settings_mod,
+        "prepare_process_group_env",
+        lambda env=None: ({"MARKED": "pre"}, "pre-token"),
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            10.0 if (pid, expected_marker) == (9999, "pre-token") else None
+        ),
+    )
+    monkeypatch.setattr(settings_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(settings_mod, "aterminate_process_group", cleanup)
 
-    killed: list[int] = []
+    hook = _make_shell_hook(["slow_guard"], "pre", "bash")
+    with pytest.raises(PermissionError, match="timed out"):
+        await hook("bash", "run", {})
 
-    def fake_killpg(pgid: int, sig: int) -> None:
-        killed.append(pgid)
-
-    with patch("lionagi.ln._proc.os.killpg", side_effect=fake_killpg):
-        hook = _make_shell_hook(["slow_guard"], "pre", "bash")
-        with pytest.raises(PermissionError, match="timed out"):
-            await hook("bash", "run", {})
-
-    assert killed, "Expected killpg to be called after pre-hook timeout"
+    cleanup.assert_awaited_once_with(
+        mock_proc,
+        grace=None,
+        group_witnesses=witnesses,
+    )
+    assert asyncio.create_subprocess_exec.await_args.kwargs["env"] == {"MARKED": "pre"}
 
 
-async def test_post_hook_timeout_kills_process_group(monkeypatch):
-    """On TimeoutError the post-hook must kill the process group."""
+async def test_post_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch):
+    """Post-hook cleanup uses the same spawn-bound authority as pre-hooks."""
     import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock
 
+    import lionagi.agent.settings as settings_mod
     from lionagi.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
@@ -176,19 +193,34 @@ async def test_post_hook_timeout_kills_process_group(monkeypatch):
     mock_proc.wait = AsyncMock(return_value=None)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+    witnesses = ((8888, 11.0),)
+    cleanup = AsyncMock()
+    monkeypatch.setattr(
+        settings_mod,
+        "prepare_process_group_env",
+        lambda env=None: ({"MARKED": "post"}, "post-token"),
+    )
+    monkeypatch.setattr(
+        settings_mod,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            11.0 if (pid, expected_marker) == (8888, "post-token") else None
+        ),
+    )
+    monkeypatch.setattr(settings_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(settings_mod, "aterminate_process_group", cleanup)
 
-    killed: list[int] = []
-
-    def fake_killpg(pgid: int, sig: int) -> None:
-        killed.append(pgid)
-
-    with patch("lionagi.ln._proc.os.killpg", side_effect=fake_killpg):
-        hook = _make_shell_hook(["slow_notifier"], "post", "bash")
-        # Post-hook swallows timeout; must not raise
-        result = await hook("bash", "run", {}, {})
+    hook = _make_shell_hook(["slow_notifier"], "post", "bash")
+    # Post-hook swallows timeout; must not raise
+    result = await hook("bash", "run", {}, {})
 
     assert result is None
-    assert killed, "Expected killpg to be called after post-hook timeout"
+    cleanup.assert_awaited_once_with(
+        mock_proc,
+        grace=None,
+        group_witnesses=witnesses,
+    )
+    assert asyncio.create_subprocess_exec.await_args.kwargs["env"] == {"MARKED": "post"}
 
 
 # aterminate_process_group must never signal the init/session process group.
@@ -219,13 +251,15 @@ def test_kill_proc_group_signals_real_pid(monkeypatch):
     import signal
     from unittest.mock import MagicMock
 
+    import lionagi.ln._proc as proc_mod
     from lionagi.ln._proc import terminate_process_group
 
     called: list = []
     monkeypatch.setattr("lionagi.ln._proc.os.killpg", lambda pgid, sig: called.append((pgid, sig)))
+    monkeypatch.setattr(proc_mod, "_group_has_witness", lambda pgid, witnesses: True)
 
     proc = MagicMock()
     proc.pid = 4242
-    terminate_process_group(proc, grace=None)
+    terminate_process_group(proc, grace=None, group_witnesses=((4242, 10.0),))
 
     assert called == [(4242, signal.SIGKILL)]

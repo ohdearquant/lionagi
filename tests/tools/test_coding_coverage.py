@@ -3,6 +3,9 @@
 
 """Coverage-targeted tests for tools/coding.py — uncovered paths."""
 
+import io
+import os
+
 import pytest
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
@@ -239,6 +242,37 @@ def test_subprocess_sync_file_not_found_returns_error():
     result = _subprocess_sync(["cmd_that_does_not_exist_xyz_abc_999"], False, 5.0, None)
     assert result["returncode"] == -1
     assert "stderr" in result
+
+
+class _CompletedPopen:
+    def __init__(self) -> None:
+        self.stdout = io.BytesIO(b"")
+        self.stderr = io.BytesIO(b"")
+        self.returncode = 0
+        self.pid = 4242
+
+    def wait(self, timeout=None):
+        return 0
+
+
+@pytest.mark.parametrize("caller_env", [None, {"PATH": "/usr/bin", "ONLY": "this"}])
+def test_subprocess_sync_hands_the_child_a_private_group_marker(monkeypatch, caller_env):
+    """The marker binds group cleanup to this spawn. It rides on whichever
+    environment the caller chose (inherited or replaced) and changes nothing else."""
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("LIONAGI_GENERIC_INHERIT_TEST", "inherited")
+
+    def fake_popen(cmd, **kwargs):
+        captured.update({"cmd": cmd, **kwargs})
+        return _CompletedPopen()
+
+    monkeypatch.setattr("lionagi.tools._subprocess.subprocess.Popen", fake_popen)
+
+    _subprocess_sync(["find", ".", "-name", "*.py"], False, 1.0, None, env=caller_env)
+
+    child_env = dict(captured["env"])
+    assert child_env.pop("LIONAGI_INTERNAL_PROCESS_GROUP_TOKEN")
+    assert child_env == (dict(os.environ) if caller_env is None else caller_env)
 
 
 def test_subprocess_sync_timeout_returns_timed_out():

@@ -95,6 +95,9 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "to_uuid": ("_utils", "to_uuid"),
     "union_members": ("_utils", "union_members"),
     # ._proc (imports .concurrency at module scope)
+    "capture_group_witnesses": ("_proc", "capture_group_witnesses"),
+    "observe_process_group_leader": ("_proc", "observe_process_group_leader"),
+    "prepare_process_group_env": ("_proc", "prepare_process_group_env"),
     "terminate_process_group": ("_proc", "terminate_process_group"),
     "aterminate_process_group": ("_proc", "aterminate_process_group"),
     # .concurrency (imports anyio)
@@ -188,6 +191,9 @@ __all__ = (
     "BcallParams",
     "ToListParams",
     "MAX_JSON_INPUT_SIZE",
+    "capture_group_witnesses",
+    "observe_process_group_leader",
+    "prepare_process_group_env",
     "terminate_process_group",
     "aterminate_process_group",
     # ln.types

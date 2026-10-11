@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lionagi.agent.settings import load_settings
-from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln import (
+    aterminate_process_group,
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+)
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 from .callbacks import (
@@ -466,8 +471,10 @@ def _make_exec_handler(
     async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
         payload = json.dumps(payload_fn(envelope)).encode()
         launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
-        env = {**os.environ, **env_fn(envelope)} if env_fn is not None else None
+        base_env = {**os.environ, **env_fn(envelope)} if env_fn is not None else None
+        env, group_marker = prepare_process_group_env(base_env)
         proc = None
+        leader_created = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *launch_argv,
@@ -477,12 +484,28 @@ def _make_exec_handler(
                 env=env,
                 start_new_session=True,
             )
+            leader_created = observe_process_group_leader(
+                getattr(proc, "pid", None),
+                expected_marker=group_marker,
+            )
             _, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
             )
         except asyncio.TimeoutError:
             if proc is not None:
-                await aterminate_process_group(proc, grace=None)
+                group_witnesses = (
+                    capture_group_witnesses(
+                        proc,
+                        expected_leader_created=leader_created,
+                    )
+                    if leader_created is not None
+                    else ()
+                )
+                await aterminate_process_group(
+                    proc,
+                    grace=None,
+                    group_witnesses=group_witnesses,
+                )
                 await _await_proc_dead(proc)
             logger.warning(
                 "notify.on_terminal exec adapter %s timed out", _adapter_label(launch_argv)
@@ -496,7 +519,19 @@ def _make_exec_handler(
             # deadline race: child must still be reaped, shielded since scope is cancelled
             if proc is not None:
                 with CancelScope(shield=True):
-                    await aterminate_process_group(proc, grace=None)
+                    group_witnesses = (
+                        capture_group_witnesses(
+                            proc,
+                            expected_leader_created=leader_created,
+                        )
+                        if leader_created is not None
+                        else ()
+                    )
+                    await aterminate_process_group(
+                        proc,
+                        grace=None,
+                        group_witnesses=group_witnesses,
+                    )
                     await _await_proc_dead(proc)
             raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run

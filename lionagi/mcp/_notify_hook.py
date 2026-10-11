@@ -29,7 +29,12 @@ import subprocess
 import time
 from typing import Any
 
-from lionagi.ln._proc import terminate_process_group
+from lionagi.ln import (
+    capture_group_witnesses,
+    observe_process_group_leader,
+    prepare_process_group_env,
+    terminate_process_group,
+)
 from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
@@ -169,7 +174,11 @@ def _delivery_failure(exc: BaseException, program: str | None) -> dict[str, Any]
     return outcome
 
 
-def _kill_delivery_group(proc: subprocess.Popen) -> None:
+def _kill_delivery_group(
+    proc: subprocess.Popen,
+    *,
+    expected_leader_created: float | None,
+) -> None:
     """Take down the delivery's whole process group, then reap it.
 
     The delivery leads its own group (``start_new_session``), so its pid is the
@@ -192,7 +201,19 @@ def _kill_delivery_group(proc: subprocess.Popen) -> None:
     open, and waiting on it indefinitely would spend the reserve and lose the
     record, which is the failure this whole path exists to prevent.
     """
-    terminate_process_group(proc, grace=None)
+    group_witnesses = (
+        capture_group_witnesses(
+            proc,
+            expected_leader_created=expected_leader_created,
+        )
+        if expected_leader_created is not None
+        else ()
+    )
+    terminate_process_group(
+        proc,
+        grace=None,
+        group_witnesses=group_witnesses,
+    )
     try:
         proc.communicate(timeout=_REAP_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
@@ -374,6 +395,7 @@ def _deliver(
     # a shell wrapper, a mailer that backgrounds its send — leaves those
     # descendants running once this hook exits. One per terminal event, each
     # holding whatever the notifier held, and nothing left watching them.
+    child_env, group_marker = prepare_process_group_env(env)
     try:
         proc = subprocess.Popen(  # noqa: S603 — argv is the operator-configured delivery command, no shell
             argv,
@@ -381,17 +403,25 @@ def _deliver(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
+            env=child_env,
             cwd=cwd,
             start_new_session=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return _delivery_failure(exc, program)
 
+    leader_created = observe_process_group_leader(
+        getattr(proc, "pid", None),
+        expected_marker=group_marker,
+    )
+
     try:
         stdout, stderr = proc.communicate(input=json.dumps(payload), timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
-        _kill_delivery_group(proc)
+        _kill_delivery_group(
+            proc,
+            expected_leader_created=leader_created,
+        )
         return _delivery_failure(exc, program)
 
     ok = proc.returncode == 0

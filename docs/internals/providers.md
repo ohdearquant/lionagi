@@ -329,33 +329,44 @@ through `ndjson_from_cli()`. Most of the module exists to answer one
 question honestly: is the child, and everything it spawned, actually gone
 when the caller is done with it?
 
-A pid and its process-group id are both recyclable — once reaped, the
-kernel is free to hand them to an unrelated process. `SpawnedProcess` (pid,
-pgid, create_time) is what makes a later signal target provably still the
-same child: `observe_spawned()` reads the group id bracketed by two
-start-time reads, before and after, and reports no identity
-(`create_time=None`) if the process was replaced mid-read or was already
-reaped or zombied. A consumer that gets `create_time=None` must treat it as
-"no identity captured," not as a statement about the child. `on_spawn`,
-when given, fires with this observation once the child exists and is
-awaited before any output is consumed, so a caller with durable accounting
-has recorded the process before anything can happen to it; its exceptions
-are not swallowed, since a failed recording leaves a live process nothing
-is tracking.
+A pid and its process-group id are both recyclable — once reaped, the kernel
+is free to hand them to an unrelated process. Before spawn, the shared process
+helper adds a fresh unguessable marker to the child's private environment; the
+marker value is included in diagnostic redaction. `observe_spawned()` accepts a
+start time only when that marker and the expected leader group are found inside
+one start-time bracket. This covers both reassignment during the read and the
+earlier case where a short-lived child was already reaped and its pid reused
+before the first read. An unreadable environment, marker mismatch, changed
+start time, reaped process, or zombie reports no identity
+(`create_time=None`) and therefore grants no group-signal authority. `on_spawn`,
+when given, fires with this observation once the child exists and is awaited
+before any output is consumed; its exceptions are not swallowed, since failed
+accounting must tear down the child.
 
-Group cleanup only signals when it can prove the recorded group id is
-still this child's: either the leader is unreaped (its pid can't have been
-recycled yet, so no scan is needed), or, after reaping, a live member is
-still found occupying that group id. A process-table read that comes back
-incomplete and empty is *not* treated as an empty group — it is logged as
-`"unproven"` and left alone, because an unprovable group and a reissued one
-look identical from here. `end_child_group()` awaits a graceful terminate
-bounded by `grace`, then does a synchronous group sweep in a `finally` so a
-second cancellation can't interpose; the graceful path only runs on the
-not-yet-waited branch, since calling it after a drain has already happened
-would signal whatever now holds a possibly-recycled group id. A process
-group is also not a containment boundary — a descendant that calls
-`setsid()` leaves it, and cleanup then says nothing about that descendant.
+An engine run installs a separate context-local observer while creating its
+run task. That observer receives the live process handle and the same verified
+spawn identity, so `EngineRun.cancel_active()` can reap a child even when the
+worker task swallows cancellation and never unwinds this generator. Context
+propagation associates nested CLI spawns with the owning run without adding a
+runtime field to every provider request model; resetting the binding immediately
+after task creation prevents concurrent runs from sharing ownership. The public
+`on_spawn(SpawnedProcess)` contract remains identity-only.
+
+Group cleanup signals only through that positively marker-bound observation.
+The shielded spawn task captures `(pid, pgid, create_time)` before publishing
+its result, including to the abandoned-spawn callback. At teardown, that spawn
+identity anchors a scan which freezes `(pid, create_time)` member witnesses;
+one of those exact members must remain live in the same group immediately
+before any delayed signal. `returncode is None` is not ownership:
+Python's child watcher may already have reaped the pid before the event loop
+publishes its terminal return code. A *fresh* post-reap membership scan is not
+proof either — an unrelated group may now occupy the same number — so teardown
+reports `"unproven"` and refuses the group-wide signal. `end_child_group()`
+awaits that witness-gated graceful terminate bounded by `grace`; its
+synchronous `finally` backstop uses the same frozen witnesses, so a second
+cancellation cannot turn a stale number into authority. A process group is
+also not a containment boundary — a descendant that calls `setsid()` leaves
+it, and cleanup then says nothing about that descendant.
 
 One hole is stated rather than closed: if the coroutine awaiting subprocess
 creation is cancelled after the OS has created the child but before the

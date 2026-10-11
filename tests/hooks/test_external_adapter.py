@@ -555,7 +555,9 @@ async def test_post_tool_use_error_result_maps_tool_response_to_error_dict(monke
     assert envelope["tool_response"] == {"error": "kaboom"}
 
 
-async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
+async def test_pre_tool_use_timeout_passes_spawn_bound_witnesses_and_denies(monkeypatch):
+    import lionagi.hooks.external as external_mod
+
     proc = MagicMock()
     proc.pid = 9999
     proc.stdin = _FakeStdin()
@@ -566,15 +568,33 @@ async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
     proc.stderr = _FakeStream()
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
-
-    killed: list[int] = []
-    monkeypatch.setattr("lionagi.ln._proc.os.killpg", lambda pgid, sig: killed.append(pgid))
+    witnesses = ((9999, 15.0),)
+    cleanup = AsyncMock()
+    monkeypatch.setattr(
+        external_mod,
+        "prepare_process_group_env",
+        lambda env=None: ({"MARKED": "hook"}, "hook-token"),
+    )
+    monkeypatch.setattr(
+        external_mod,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            15.0 if (pid, expected_marker) == (9999, "hook-token") else None
+        ),
+    )
+    monkeypatch.setattr(external_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(external_mod, "aterminate_process_group", cleanup)
 
     hook = external_hook_adapter(event="PreToolUse", command=["slow_guard"], timeout=0.01)
     result = await hook("bash", {"command": ["ls"]})
     assert result.decision == "deny"
     assert "timed out" in result.reason
-    assert killed, "expected the hook's process group to be killed on timeout"
+    cleanup.assert_awaited_once_with(
+        proc,
+        grace=None,
+        group_witnesses=witnesses,
+    )
+    assert asyncio.create_subprocess_exec.await_args.kwargs["env"] == {"MARKED": "hook"}
 
 
 async def test_post_tool_use_timeout_surfaces_reason_not_raise(monkeypatch):

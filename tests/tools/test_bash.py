@@ -273,6 +273,116 @@ async def test_bash_tool_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
     assert resp.timed_out is True
 
 
+def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch):
+    """A timeout cleanup may signal only the group observed at spawn."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    import lionagi.tools._subprocess as subprocess_mod
+
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.stdout.read.return_value = b""
+    proc.stderr.read.return_value = b""
+    proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    witnesses = ((4242, 12.5),)
+    seen: dict[str, object] = {}
+
+    def _popen(*args, **kwargs):
+        seen["env"] = kwargs["env"]
+        return proc
+
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", _popen)
+    monkeypatch.setattr(
+        subprocess_mod,
+        "prepare_process_group_env",
+        lambda env=None: ({"ONLY": "marked"}, "spawn-token"),
+        raising=False,
+    )
+
+    def _observe(pid, *, expected_marker):
+        seen["observe"] = (pid, expected_marker)
+        return 12.5
+
+    monkeypatch.setattr(
+        subprocess_mod,
+        "observe_process_group_leader",
+        _observe,
+        raising=False,
+    )
+
+    def _capture(child, *, expected_leader_created=None):
+        seen["capture"] = (child, expected_leader_created)
+        return witnesses
+
+    def _terminate(child, **kwargs):
+        seen["terminate"] = (child, kwargs)
+
+    monkeypatch.setattr(
+        subprocess_mod,
+        "capture_group_witnesses",
+        _capture,
+        raising=False,
+    )
+    monkeypatch.setattr(subprocess_mod, "terminate_process_group", _terminate)
+
+    result = subprocess_mod._subprocess_sync(["slow"], False, 0.01, None)
+
+    assert result["timed_out"] is True
+    assert seen["env"] == {"ONLY": "marked"}
+    assert seen["observe"] == (4242, "spawn-token")
+    assert seen["capture"] == (proc, 12.5)
+    assert seen["terminate"] == (
+        proc,
+        {"grace": None, "group_witnesses": witnesses},
+    )
+
+
+def test_subprocess_marker_mismatch_is_direct_child_only(monkeypatch):
+    """A child that cannot prove the injected marker gets no group authority."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    import lionagi.tools._subprocess as subprocess_mod
+
+    proc = MagicMock()
+    proc.pid = 4343
+    proc.stdout.read.return_value = b""
+    proc.stderr.read.return_value = b""
+    proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(
+        subprocess_mod,
+        "prepare_process_group_env",
+        lambda env=None: ({"MARKED": "yes"}, "expected-token"),
+    )
+    monkeypatch.setattr(
+        subprocess_mod,
+        "observe_process_group_leader",
+        lambda pid, *, expected_marker: None,
+    )
+    monkeypatch.setattr(
+        subprocess_mod,
+        "capture_group_witnesses",
+        lambda *a, **k: pytest.fail("marker mismatch must not capture teardown witnesses"),
+    )
+
+    def _terminate(child, **kwargs):
+        seen["terminate"] = (child, kwargs)
+
+    monkeypatch.setattr(subprocess_mod, "terminate_process_group", _terminate)
+
+    result = subprocess_mod._subprocess_sync(["slow"], False, 0.01, None)
+
+    assert result["timed_out"] is True
+    assert seen["terminate"] == (
+        proc,
+        {"grace": None, "group_witnesses": ()},
+    )
+
+
 @pytest.mark.parametrize("invalid_pid", [None, 0, 1, -1, True, False])
 async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, invalid_pid):
     """Lock in the `> 1` half of the guard against accidental removal.

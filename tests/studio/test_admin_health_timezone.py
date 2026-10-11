@@ -14,7 +14,7 @@ fire times with, not a fresh read that would answer a different question.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
@@ -125,14 +125,24 @@ def test_surrendered_utc_is_distinguishable_from_a_chosen_one(monkeypatch, tmp_p
 
 def test_payload_carries_resolution_and_process_start_times(monkeypatch, tmp_path):
     """A frozen value is only diagnostic if you can tell when it froze — a
-    restart is the only thing that re-reads it."""
+    restart is the only thing that re-reads it.
+
+    ``daemon_started_at`` is additionally required to be *recent*, not merely
+    in the past: it is read off the process clock, and a start time expressed
+    in any other epoch than the Unix one — seconds since boot, say — still
+    parses, still sorts before now, and reports a daemon that started in 1970.
+    """
     payload = _health_timezone(monkeypatch, tmp_path)
+    now = datetime.now(tz=timezone.utc)
 
     for key in ("resolved_at", "daemon_started_at"):
         assert payload[key] is not None
         parsed = datetime.fromisoformat(payload[key])
         assert parsed.tzinfo is not None
-        assert parsed <= datetime.now(tz=timezone.utc)
+        assert parsed <= now
+
+    started = datetime.fromisoformat(payload["daemon_started_at"])
+    assert now - started < timedelta(days=1)
 
 
 # The reported value is the one the scheduler actually uses

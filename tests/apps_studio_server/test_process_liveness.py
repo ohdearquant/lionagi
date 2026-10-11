@@ -49,6 +49,26 @@ def test_node_metadata_pid_with_mismatched_create_time_is_recycled_dead():
     assert process_liveness(session, None, ps_snapshot="") is False
 
 
+def test_launch_markers_stay_alive_across_boot_time_slew(monkeypatch):
+    """psutil adjusts ``Process.create_time()`` on macOS by a boot-time value
+    frozen at its import, which slews apart between the process that recorded
+    a run's markers and the one asking about it later. Recorded under a value
+    moved by five seconds and read under one moved by ten, a live process must
+    still read as alive, not as a recycled pid."""
+    from lionagi.cli.kill import current_pid_markers
+
+    psplatform = psutil._psplatform
+    if not hasattr(psplatform, "INIT_BOOT_TIME"):
+        pytest.skip("this platform's psutil backend has no boot-time adjustment")
+    frozen = psplatform.INIT_BOOT_TIME
+
+    monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", frozen + 5.0)
+    session = {"id": "s1", "node_metadata": current_pid_markers()}
+
+    monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", frozen + 10.0)
+    assert process_liveness(session, None, ps_snapshot="") is True
+
+
 def test_node_metadata_accepts_json_string():
     session = {
         "id": "s1",

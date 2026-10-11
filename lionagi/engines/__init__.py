@@ -18,6 +18,7 @@ from .coding import (
     VerifyResult as CodeVerifyResult,
 )
 from .engine import (
+    CancellationRecord,
     ChainRun,
     Engine,
     EngineBudgetError,
@@ -60,6 +61,7 @@ from .review import (
 __all__ = (
     "Engine",
     "EngineRun",
+    "CancellationRecord",
     "ChainRun",
     "EngineEvent",
     "EngineBudgetError",

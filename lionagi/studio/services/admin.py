@@ -495,7 +495,9 @@ def process_liveness(
             if proc.status() == psutil.STATUS_ZOMBIE:
                 return False
             if create_time is not None:
-                actual = proc.create_time()
+                from lionagi.ln._proc import raw_create_time
+
+                actual = raw_create_time(proc)
                 if abs(actual - create_time) > _PID_CREATE_TIME_TOLERANCE:
                     return False  # pid recycled; the recorded process is gone
         except (psutil.NoSuchProcess, psutil.ZombieProcess):
