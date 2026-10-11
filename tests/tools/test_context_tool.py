@@ -146,6 +146,61 @@ async def test_compact_all_mode_collapses_more_than_tool_io():
     assert res_all["compacted"] > res_io["compacted"]
 
 
+async def test_compact_all_mode_keeps_the_first_instruction_in_view():
+    b = _build_branch()
+    first_instruction = b.progression[1]
+    res = await _call(b, action="compact", start=1, end=7, summary="s", mode="all")
+    assert res["success"] is True
+    assert b.progression[1] == first_instruction
+    assert "CONTEXT COMPACTION" in b.msgs.messages[b.progression[2]].content.assistant_response
+
+
+async def test_compact_summary_takes_the_place_of_the_first_collapsed_message():
+    b = _build_branch()
+    first_tool_request = b.progression[3]  # system, instruction, reasoning, request
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True and res["compacted"] == 2
+    assert b.progression[3] != first_tool_request
+    assert "CONTEXT COMPACTION" in b.msgs.messages[b.progression[3]].content.assistant_response
+
+
+async def test_compact_refuses_a_view_with_two_instructions_in_a_row(monkeypatch):
+    b = Branch(system="sys")
+    b.msgs.add_message(instruction="first")
+    b.msgs.add_message(assistant_response="first answer")
+    b.msgs.add_message(instruction="second")
+    b.msgs.add_message(assistant_response="second answer")
+    await _call(b, action="evict", start=2, end=3)  # view: sys, first, second, answer
+    record = len(b.msgs.messages)
+    view = list(b.progression)
+    called = {"chat": False}
+
+    async def fake_chat(self, *, instruction=None, **kw):
+        called["chat"] = True
+        return "unused"
+
+    monkeypatch.setattr(Branch, "chat", fake_chat)
+    res = await _call(b, action="compact", start=3, end=4, mode="all", auto=True)
+
+    assert res["success"] is False
+    assert "two instructions in a row" in res["error"]
+    assert called["chat"] is False
+    assert len(b.msgs.messages) == record
+    assert list(b.progression) == view
+
+
+async def test_compact_refuses_a_view_that_would_begin_with_the_summary():
+    b = _build_branch()
+    await _call(b, action="evict", start=1, end=3)  # drop the first instruction and reply
+    record = len(b.msgs.messages)
+    view = list(b.progression)
+    res = await _call(b, action="compact", start=1, end=3, summary="s")
+    assert res["success"] is False
+    assert "begin with an assistant response" in res["error"]
+    assert len(b.msgs.messages) == record
+    assert list(b.progression) == view
+
+
 async def test_compact_auto_generates_summary_via_model_call(monkeypatch):
     b = _build_branch()
     called: dict = {}
