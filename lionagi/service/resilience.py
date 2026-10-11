@@ -106,11 +106,6 @@ class CircuitBreaker:
             "state_changes": [],
         }
 
-        logger.debug(
-            f"Initialized CircuitBreaker '{self.name}' with failure_threshold={failure_threshold}, "
-            f"recovery_time={recovery_time}, half_open_max_calls={half_open_max_calls}"
-        )
-
     @property
     def metrics(self) -> dict[str, Any]:
         return self._metrics.copy()

@@ -115,7 +115,8 @@ async def _read_history(kind: str, name: str) -> list[dict[str, Any]]:
             "definition history is unreadable for %s/%s: %s",
             kind,
             name,
-            mask_credentials(repr(exc)),
+            # the class only: a store's text can carry a connection string the masker misses
+            type(exc).__name__,
         )
         raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
 
@@ -198,7 +199,8 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
             # these definitions have never been saved.
             _log.warning(
                 "definition history is unreadable for the listing: %s",
-                mask_credentials(repr(exc)),
+                # the class only: a store's text can carry a connection string the masker misses
+                type(exc).__name__,
             )
             for entry in result:
                 entry["has_versions"] = None
@@ -345,7 +347,8 @@ async def _read_version_row(kind: str, name: str, version: int) -> dict[str, Any
             "definition version is unreadable for %s/%s: %s",
             kind,
             name,
-            mask_credentials(repr(exc)),
+            # the class only: a store's text can carry a connection string the masker misses
+            type(exc).__name__,
         )
         raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
 
@@ -558,7 +561,8 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
             "definition history became unreadable mid-rollback for %s/%s: %s",
             kind,
             name,
-            mask_credentials(repr(exc)),
+            # the class only: a store's text can carry a connection string the masker misses
+            type(exc).__name__,
         )
         raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
     current_version = latest["version"] if latest else 0
