@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -168,6 +169,12 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 # The most the lifecycle command may write on its result channel.
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 _PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
+
+# Admission resolves an explicit notification sender through khive before a
+# run is reserved. This is a local identity query, so it gets the same bounded
+# subprocess treatment as the lifecycle query below.
+_NOTIFY_IDENTITY_TIMEOUT_SECONDS = 20.0
+_NOTIFY_IDENTITY_OUTPUT_LIMIT = 64_000
 
 # Bounds for wait(). The maximum sits below ordinary MCP client timeouts so a
 # bounded observation returns partial results rather than being cut off mid-call.
@@ -856,6 +863,14 @@ class SpawnError(RuntimeError):
         self.record = record
 
 
+class NotifySenderMismatchError(ValueError):
+    """The submitting directory resolves to an actor other than the requested sender."""
+
+
+class NotifySenderResolutionError(RuntimeError):
+    """The submitting directory's actor could not be resolved for admission."""
+
+
 def _outcome_for(status: Any) -> str:
     """How a terminal run came out, from the status the CLI recorded.
 
@@ -987,13 +1002,90 @@ def _submit_cwd() -> str | None:
     Valid as "the submitter's directory" only because the server is served over
     stdio (one client spawns one server, inheriting its cwd) — a future
     multi-caller transport must carry the anchor on the request instead. Errors
-    are swallowed to None rather than raised, since a removed cwd must not
-    strand the run being submitted.
+    are swallowed to None rather than raised. An ordinary submission can still
+    proceed without this metadata; one that explicitly names a notification
+    sender is refused by admission because its authority cannot be verified.
     """
     try:
         return os.getcwd()
     except OSError:
         return None
+
+
+def _resolve_submitter_identity(cwd: str) -> str:
+    """Resolve the actor that *cwd* can sign as through khive's canonical resolver."""
+    binary = shutil.which("kkernel")
+    if binary is None:
+        raise NotifySenderResolutionError("kkernel is not available on PATH")
+
+    argv = [
+        binary,
+        "exec",
+        "whoami()",
+        "--presentation",
+        "agent",
+        "--output-format",
+        "json",
+        "--strict",
+    ]
+    try:
+        completed = subprocess.run(  # noqa: S603 — resolved kkernel, fixed identity query, no shell
+            argv,
+            cwd=cwd,
+            capture_output=True,
+            timeout=_NOTIFY_IDENTITY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise NotifySenderResolutionError(
+            f"kkernel did not resolve an actor within {_NOTIFY_IDENTITY_TIMEOUT_SECONDS:g}s"
+        ) from exc
+    except OSError as exc:
+        raise NotifySenderResolutionError(f"could not launch kkernel: {exc}") from exc
+
+    stdout = completed.stdout
+    if len(stdout) > _NOTIFY_IDENTITY_OUTPUT_LIMIT:
+        raise NotifySenderResolutionError(
+            f"kkernel identity result exceeded {_NOTIFY_IDENTITY_OUTPUT_LIMIT} bytes"
+        )
+    text = (stdout.decode("utf-8", "replace") if isinstance(stdout, bytes) else str(stdout)).strip()
+    if completed.returncode != 0 or not text:
+        raise NotifySenderResolutionError(
+            f"kkernel could not resolve an actor (exit {completed.returncode})"
+        )
+    try:
+        envelope = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise NotifySenderResolutionError("kkernel returned an unreadable identity result") from exc
+    try:
+        actor = envelope["results"][0]["result"]["actor_id"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise NotifySenderResolutionError("kkernel returned no resolved actor") from exc
+    if not isinstance(actor, str) or not actor:
+        raise NotifySenderResolutionError("kkernel returned no resolved actor")
+    return actor
+
+
+def _validate_notify_sender(sender: str | None, submit_cwd: str | None) -> None:
+    """Refuse an explicit sender that the submitting directory cannot sign as."""
+    if not sender:
+        return
+    if submit_cwd is None:
+        raise NotifySenderResolutionError(
+            f"cannot validate notify_sender {sender!r}: the submitting directory is unavailable"
+        )
+    try:
+        actual = _resolve_submitter_identity(submit_cwd)
+    except NotifySenderResolutionError as exc:
+        raise NotifySenderResolutionError(
+            f"cannot validate notify_sender {sender!r} from submitting directory "
+            f"{submit_cwd!r}: {exc}"
+        ) from exc
+    if actual != sender:
+        raise NotifySenderMismatchError(
+            f"notify_sender {sender!r} does not match actor {actual!r} resolved from "
+            f"submitting directory {submit_cwd!r}; use {actual!r} or omit notify_sender"
+        )
 
 
 def submit(
@@ -1028,6 +1120,9 @@ def submit(
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
+
+    submit_cwd = _submit_cwd()
+    _validate_notify_sender(notify_sender, submit_cwd)
 
     run_id, d = _reserve_run_dir()
     log_path = d / "console.log"
@@ -1166,7 +1261,7 @@ def submit(
         # own directory. Recorded separately even when they agree — a directory-
         # anchored notifier must sign as the submitter, not the run, so delivery
         # resolves identity from submit_cwd. See docs/internals/mcp.md#deliver-terminal-notice-two-callers.
-        "submit_cwd": _submit_cwd(),
+        "submit_cwd": submit_cwd,
         "label": label,
         "notify_command": notify_command,
         "notify_target": notify_target,

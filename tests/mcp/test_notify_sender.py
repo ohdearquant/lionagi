@@ -5,7 +5,12 @@ resolve an identity from whatever directory the run happened to work in."""
 
 from __future__ import annotations
 
-from lionagi.mcp import _notify_hook, jobs
+import json
+import subprocess
+
+import pytest
+
+from lionagi.mcp import _notify_hook, config, jobs
 
 
 def test_sender_substitutes_into_the_delivery_command():
@@ -40,6 +45,122 @@ def test_hook_command_omits_the_sender_when_none_is_given():
     --sender token, which the hook would read as an explicit empty identity."""
     template = jobs._notify_template("run-1", "seat-b", None, None)
     assert "--sender" not in template
+
+
+def test_submitter_identity_uses_the_canonical_khive_resolver(monkeypatch, tmp_path):
+    """Admission asks the same directory-aware resolver the notifier trusts."""
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        payload = {
+            "results": [
+                {
+                    "ok": True,
+                    "result": {"actor_id": "agent:submitter"},
+                    "tool": "whoami",
+                }
+            ],
+            "status": "success",
+        }
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload).encode(), b"")
+
+    monkeypatch.setattr(jobs.shutil, "which", lambda command: "/opt/khive/bin/kkernel")
+    monkeypatch.setattr(jobs.subprocess, "run", fake_run)
+
+    assert jobs._resolve_submitter_identity(str(tmp_path)) == "agent:submitter"
+    assert captured["argv"] == [
+        "/opt/khive/bin/kkernel",
+        "exec",
+        "whoami()",
+        "--presentation",
+        "agent",
+        "--output-format",
+        "json",
+        "--strict",
+    ]
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["timeout"] == jobs._NOTIFY_IDENTITY_TIMEOUT_SECONDS
+    assert captured["kwargs"]["check"] is False
+
+
+def _submit_sandbox(monkeypatch, tmp_path):
+    submit_dir = tmp_path / "submitter"
+    submit_dir.mkdir()
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["echo"])
+    monkeypatch.setattr(jobs, "_submit_cwd", lambda: str(submit_dir))
+    monkeypatch.setattr(jobs, "_read_lifecycle", lambda _run_id: None)
+    return submit_dir
+
+
+def test_submit_rejects_a_sender_the_submitting_directory_cannot_sign_for(monkeypatch, tmp_path):
+    submit_dir = _submit_sandbox(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:actual-submitter")
+    spawned: list = []
+    monkeypatch.setattr(
+        jobs.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs))
+    )
+
+    with pytest.raises(jobs.NotifySenderMismatchError) as caught:
+        jobs.submit(
+            "agent",
+            [],
+            prompt="work",
+            notify_sender="agent:requested-sender",
+            no_mcp_config=True,
+        )
+
+    message = str(caught.value)
+    assert "agent:requested-sender" in message
+    assert "agent:actual-submitter" in message
+    assert str(submit_dir) in message
+    assert spawned == []
+    assert not config.JOBS_DIR.exists(), "identity refusal must precede run reservation"
+
+
+def test_submit_without_a_sender_does_not_require_identity_resolution(monkeypatch, tmp_path):
+    submit_dir = _submit_sandbox(monkeypatch, tmp_path)
+
+    def should_not_resolve(_cwd):
+        raise AssertionError("an omitted notify_sender must not resolve an identity")
+
+    class Spawned:
+        pid = 999_999
+
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", should_not_resolve)
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
+
+    handle = jobs.submit("agent", [], prompt="work", no_mcp_config=True)
+    record = jobs._read_job(handle["run_id"])
+
+    assert record["notify_sender"] is None
+    assert record["submit_cwd"] == str(submit_dir)
+
+
+def test_submit_accepts_the_actor_resolved_from_the_submitting_directory(monkeypatch, tmp_path):
+    submit_dir = _submit_sandbox(monkeypatch, tmp_path)
+
+    class Spawned:
+        pid = 999_999
+
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:submitter")
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
+
+    handle = jobs.submit(
+        "agent",
+        [],
+        prompt="work",
+        notify_sender="agent:submitter",
+        no_mcp_config=True,
+    )
+    record = jobs._read_job(handle["run_id"])
+
+    assert record["notify_sender"] == "agent:submitter"
+    assert record["submit_cwd"] == str(submit_dir)
 
 
 def _job(monkeypatch, tmp_path):

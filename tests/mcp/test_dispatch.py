@@ -899,6 +899,51 @@ def test_the_fingerprint_is_not_a_claim_that_anyone_read_the_schema(submitted):
 
 
 @pytest.mark.parametrize(
+    ("failure", "kind"),
+    [
+        (
+            jobs.NotifySenderMismatchError(
+                "notify_sender 'agent:requested' does not match actor 'agent:actual'"
+            ),
+            "invalid_input",
+        ),
+        (
+            jobs.NotifySenderResolutionError(
+                "cannot validate notify_sender 'agent:requested': kkernel is unavailable"
+            ),
+            "unavailable",
+        ),
+    ],
+)
+def test_notify_sender_admission_failure_is_reported_to_the_caller(
+    submitted, monkeypatch, failure, kind
+):
+    def reject(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(jobs, "submit", reject)
+    answer = call(
+        ops=[
+            spawn_op(
+                "agent.submit",
+                {
+                    "query": ["codex"],
+                    "prompt": "work",
+                    "notify_sender": "agent:requested",
+                },
+            )
+        ]
+    )["ops"][0]
+
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == kind
+    assert "agent:requested" in answer["error"]["message"]
+    if kind == "invalid_input":
+        assert "agent:actual" in answer["error"]["message"]
+    assert submitted == {}
+
+
+@pytest.mark.parametrize(
     ("op", "args"),
     [
         ("agent.submit", {"prompt": "do it"}),

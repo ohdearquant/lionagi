@@ -157,9 +157,12 @@ _NOTIFY_SENDER = {
     "description": (
         "Who the terminal notice is from. Fills the {sender} placeholder in the "
         "delivery command and is published to it as LIONAGI_NOTIFY_SENDER. "
-        "Without it the notifier reports whatever identity it resolves from the "
-        "run's working directory, which is the directory's owner and not the "
-        "submitter."
+        "The submitting directory must resolve to this actor or submission is "
+        "refused. Without it, LIONAGI_MCP_NOTIFY_SENDER is used as given when "
+        "set; otherwise a delivery command that takes {sender} is not run, and "
+        "one that does not reports whatever identity it resolves from the "
+        "directory it runs in (the submitting directory unless "
+        "LIONAGI_MCP_NOTIFY_CWD names another)."
     ),
     "x-server-owned": True,
 }
