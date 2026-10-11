@@ -182,6 +182,7 @@ nav:
       - First agent & flow: getting-started/first-flow.md
       - Python quickstart: getting-started/python.md
       - Choose a surface: choosing-a-surface.md
+      - Roadmap: roadmap.md
 
   - Build:
       - Python SDK: api/index.md
