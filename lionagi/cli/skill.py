@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 from lionagi.libs.path_safety import validate_path_component
@@ -15,8 +17,78 @@ def _skills_root() -> Path:
     return Path("~/.lionagi/skills").expanduser()
 
 
+# Pointer files git writes (.git gitfiles, commondir) hold one short line; a skill
+# lookup must not pay for whatever else happens to be sitting at that path.
+_POINTER_READ_LIMIT = 4096
+
+
+def _first_line(path: Path) -> str:
+    """First line of a pointer file, stripped, bounded, "" when unreadable.
+
+    Regular files only, decided from the OPEN FILE rather than from a prior stat: a FIFO at a
+    pointer path would otherwise block this open until someone writes to it, and a stat-then-open
+    pair can be raced. ``O_NONBLOCK`` makes the FIFO open return at once so the shape test can run;
+    it does not change how a regular file reads.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    handle = None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        handle = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+        return handle.readline(_POINTER_READ_LIMIT).strip()
+    except OSError:
+        return ""
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            os.close(fd)
+
+
+def _is_git_dir(git: Path) -> bool:
+    """git's own shape test for a repository directory: HEAD and refs/, with
+    objects/ either here or, for a linked worktree's private gitdir, in the
+    common directory its ``commondir`` file names (that gitdir has no objects/
+    of its own, so requiring one here rejects every linked worktree)."""
+    if not (git.is_dir() and (git / "HEAD").is_file() and (git / "refs").is_dir()):
+        return False
+    if (git / "objects").is_dir():
+        return True
+    common = _first_line(git / "commondir")
+    return bool(common) and (git / common).resolve().joinpath("objects").is_dir()
+
+
+def _is_repository(directory: Path) -> bool:
+    """A working tree root: ``.git`` is a repository directory, or a gitfile whose
+    ``gitdir:`` line points at one (linked worktree). Any other ``.git`` entry is not."""
+    git = directory / ".git"
+    if git.is_file():
+        line = _first_line(git)
+        if not line.startswith("gitdir:"):
+            return False
+        return _is_git_dir((directory / line[len("gitdir:") :].strip()).resolve())
+    return _is_git_dir(git)
+
+
+def _containment_anchor(resolved_root: Path) -> Path:
+    """Directory a resolved SKILL.md must stay under: the repository the skills
+    root resolves into, or the root itself when it is not inside one."""
+    for directory in (resolved_root, *resolved_root.parents):
+        if _is_repository(directory):
+            return directory
+    return resolved_root
+
+
 def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
-    """Resolve a skill NAME to (Path, None) or (None, error); blocks symlink escapes outside skills root."""
+    """Resolve a skill NAME to (Path, None) or (None, error).
+
+    The resolved SKILL.md must stay under the repository the skills root resolves
+    into (or under the root itself when it is not inside one); anything else is a
+    symlink escape."""
     if not name or not isinstance(name, str):
         return None, "skill name must be a non-empty string"
     try:
@@ -33,11 +105,15 @@ def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
         )
         return None, f"skill not found: {candidate}.{hint}"
     # Symlink containment: blocks a SKILL.md symlinked to an arbitrary file.
-    # See docs/internals/cli.md.
+    # The skills root may itself be a symlink into a repository whose skill
+    # directories are symlinks to sibling trees of that repository, so the
+    # bound is the repository the root resolves into, not the root itself.
     try:
         resolved_root = _skills_root().resolve(strict=True)
         resolved_candidate = candidate.resolve(strict=True)
-        resolved_candidate.relative_to(resolved_root)
+        if resolved_candidate.name != "SKILL.md":
+            raise ValueError(resolved_candidate)
+        resolved_candidate.relative_to(_containment_anchor(resolved_root))
     except (OSError, ValueError):
         return (
             None,

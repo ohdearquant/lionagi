@@ -5,17 +5,52 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import threading
 from pathlib import Path
+
+import pytest
 
 from lionagi.cli._logging import _LazyStderrHandler
 from lionagi.cli._providers import _clamp_claude_effort
 from lionagi.cli.main import _handle_play_shortcut
 from lionagi.cli.orchestrate import _resolve_playbook_path, _validate_spec_fields
-from lionagi.cli.skill import resolve_skill_path
+from lionagi.cli.skill import _containment_anchor, _first_line, resolve_skill_path
 from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
 
 # Symlink containment
+
+
+def _make_repository(root: Path) -> None:
+    """Lay down the shape git requires of a repository directory."""
+    git = root / ".git"
+    (git / "objects").mkdir(parents=True)
+    (git / "refs").mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+
+
+def _real_repository_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """A real repository and a real linked worktree of it, made by git itself:
+    the on-disk shape of a linked worktree is git's to define, not this test's."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.email=t@e.st", "-c", "user.name=t", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("-c", "init.defaultBranch=main", "init", "-q")
+    git("commit", "-qm", "seed", "--allow-empty")
+    worktree = tmp_path / "wt"
+    git("worktree", "add", "-q", "-b", "wt", str(worktree))
+    return repo, worktree
 
 
 class TestSkillSymlinkContainment:
@@ -51,6 +86,98 @@ class TestSkillSymlinkContainment:
         assert path is not None
         assert path.read_text().startswith("---")
 
+    def test_accepts_skill_symlinked_within_the_root_repository(self, monkeypatch, tmp_path: Path):
+        """A skills root inside a repository may hold skill directories that are
+        symlinks to another tree of the same repository (a marketplace layout).
+        """
+        repo = tmp_path / "repo"
+        _make_repository(repo)
+        real = repo / "marketplace" / "plugin" / "skills" / "ok"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text("---\nname: ok\n---\nbody")
+        (repo / "resources" / "skills").mkdir(parents=True)
+        (repo / "resources" / "skills" / "ok").symlink_to(real)
+        home = tmp_path / "home"
+        (home / ".lionagi").mkdir(parents=True)
+        (home / ".lionagi" / "skills").symlink_to(repo / "resources" / "skills")
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("ok")
+        assert err is None
+        assert path is not None
+        assert path.read_text().startswith("---")
+
+    def test_rejects_skill_symlinked_to_another_repository(self, monkeypatch, tmp_path: Path):
+        repo = tmp_path / "repo"
+        _make_repository(repo)
+        (repo / "resources" / "skills").mkdir(parents=True)
+        other = tmp_path / "other"
+        _make_repository(other)
+        (other / "leak").mkdir()
+        (other / "leak" / "SKILL.md").write_text("---\nname: leak\n---\nbody")
+        (repo / "resources" / "skills" / "leak").symlink_to(other / "leak")
+        home = tmp_path / "home"
+        (home / ".lionagi").mkdir(parents=True)
+        (home / ".lionagi" / "skills").symlink_to(repo / "resources" / "skills")
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("leak")
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
+    def test_rejects_non_skill_file_inside_the_root_repository(self, monkeypatch, tmp_path: Path):
+        """Widening the bound to the repository must not admit a SKILL.md that
+        is a symlink to some other file of that repository.
+        """
+        repo = tmp_path / "repo"
+        _make_repository(repo)
+        (repo / "secret.txt").write_text("DO NOT LEAK")
+        (repo / "resources" / "skills" / "leak").mkdir(parents=True)
+        (repo / "resources" / "skills" / "leak" / "SKILL.md").symlink_to(repo / "secret.txt")
+        home = tmp_path / "home"
+        (home / ".lionagi").mkdir(parents=True)
+        (home / ".lionagi" / "skills").symlink_to(repo / "resources" / "skills")
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("leak")
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
+    @pytest.mark.parametrize(
+        "marker",
+        ["empty_dir", "head_only", "file_without_gitdir", "gitfile_to_nothing"],
+    )
+    def test_malformed_git_entry_above_the_root_does_not_widen_the_bound(
+        self, monkeypatch, tmp_path: Path, marker: str
+    ):
+        """A ``.git`` entry that git itself would not read as a repository must
+        not become the containment anchor, whatever shape it takes.
+        """
+        git = tmp_path / ".git"
+        if marker == "empty_dir":
+            git.mkdir()
+        elif marker == "head_only":
+            git.mkdir()
+            (git / "HEAD").write_text("ref: refs/heads/main\n")
+        elif marker == "file_without_gitdir":
+            git.write_text("not a gitfile\n")
+        elif marker == "gitfile_to_nothing":
+            git.write_text(f"gitdir: {tmp_path / 'nowhere'}\n")
+        else:
+            raise AssertionError(f"unhandled marker {marker!r}")
+        private = tmp_path / "private"
+        private.mkdir()
+        (private / "SKILL.md").write_text("---\nname: leak\n---\nbody")
+        home = tmp_path / "home"
+        skills = home / ".lionagi" / "skills"
+        (skills / "leak").mkdir(parents=True)
+        (skills / "leak" / "SKILL.md").symlink_to(private / "SKILL.md")
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("leak")
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
     def test_accepts_root_symlink(self, monkeypatch, tmp_path: Path):
         """The skills *root* itself may be a symlink (users point it at
         any directory they manage); the resolve check must accept that.
@@ -66,6 +193,140 @@ class TestSkillSymlinkContainment:
         path, err = resolve_skill_path("ok")
         assert err is None
         assert path is not None
+
+    def test_linked_worktree_root_is_the_containment_anchor(self, tmp_path: Path):
+        """A linked worktree's private gitdir keeps its objects in the common
+        directory, so the worktree root is still the repository that bounds
+        containment. An exact anchor assert catches both failure directions:
+        collapsing to the skills root, and widening to some ancestor.
+        """
+        _, worktree = _real_repository_with_worktree(tmp_path)
+        skills = worktree / "resources" / "skills"
+        skills.mkdir(parents=True)
+
+        assert _containment_anchor(skills.resolve()) == worktree.resolve()
+
+    def test_accepts_skill_symlinked_within_a_linked_worktree(self, monkeypatch, tmp_path: Path):
+        _, worktree = _real_repository_with_worktree(tmp_path)
+        real = worktree / "marketplace" / "plugin" / "skills" / "ok"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text("---\nname: ok\n---\nbody")
+        (worktree / "resources" / "skills").mkdir(parents=True)
+        (worktree / "resources" / "skills" / "ok").symlink_to(real)
+        home = tmp_path / "home"
+        (home / ".lionagi").mkdir(parents=True)
+        (home / ".lionagi" / "skills").symlink_to(worktree / "resources" / "skills")
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("ok")
+        assert err is None
+        assert path is not None
+
+    def test_rejects_skill_symlinked_out_of_a_linked_worktree(self, monkeypatch, tmp_path: Path):
+        """The anchor is the worktree, not an ancestor of it: a skill pointing
+        into the main checkout beside it is still an escape.
+        """
+        repo, worktree = _real_repository_with_worktree(tmp_path)
+        (repo / "leak").mkdir()
+        (repo / "leak" / "SKILL.md").write_text("---\nname: leak\n---\nbody")
+        (worktree / "resources" / "skills").mkdir(parents=True)
+        (worktree / "resources" / "skills" / "leak").symlink_to(repo / "leak")
+        home = tmp_path / "home"
+        (home / ".lionagi").mkdir(parents=True)
+        (home / ".lionagi" / "skills").symlink_to(worktree / "resources" / "skills")
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("leak")
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
+
+class TestPointerReads:
+    """A pointer path holds a short line of text. Anything else there is not a pointer, and reading
+    it must not cost the caller a wait."""
+
+    @staticmethod
+    def _read_within(path: Path, seconds: float = 5.0) -> str | None:
+        """`_first_line(path)` on a daemon thread: a blocking read fails this as a timeout instead
+        of hanging the suite, which is the whole property under test."""
+        answer: list[str] = []
+        worker = threading.Thread(target=lambda: answer.append(_first_line(path)), daemon=True)
+        worker.start()
+        worker.join(seconds)
+        return None if worker.is_alive() else answer[0]
+
+    @staticmethod
+    def _descriptors() -> int:
+        return len(os.listdir("/dev/fd"))
+
+    @pytest.mark.skipif(not Path("/dev/fd").is_dir(), reason="no /dev/fd to count descriptors in")
+    def test_the_refused_shapes_leave_no_open_descriptor(self, tmp_path: Path):
+        """The open precedes the shape test, so every refusal owns a descriptor it must close.
+        Counted over many rounds: one leaked descriptor per call shows as a rising count, while a
+        single sample would be lost in whatever else the process holds open."""
+        fifo = tmp_path / "fifo"
+        os.mkfifo(fifo)
+        directory = tmp_path / "dir"
+        directory.mkdir()
+        device = tmp_path / "dev"
+        device.symlink_to("/dev/zero")
+        regular = tmp_path / "commondir"
+        regular.write_text("../.git\n")
+        shapes = (fifo, directory, device, regular)
+
+        for path in shapes:  # first call pays for any lazy import; count after that
+            _first_line(path)
+        before = self._descriptors()
+        for _ in range(50):
+            for path in shapes:
+                _first_line(path)
+        assert self._descriptors() == before
+
+    def test_a_regular_pointer_still_reads(self, tmp_path: Path):
+        """The control: without it a function that always returned "" would pass every case below."""
+        pointer = tmp_path / "commondir"
+        pointer.write_text("../.git\nignored second line\n")
+        assert self._read_within(pointer) == "../.git"
+
+    def test_a_fifo_at_a_pointer_path_returns_empty_rather_than_blocking(self, tmp_path: Path):
+        """A FIFO with no writer blocks a plain open until one appears, which would stop a skill
+        lookup for as long as the attacker likes."""
+        pointer = tmp_path / "commondir"
+        os.mkfifo(pointer)
+        assert self._read_within(pointer) == ""
+
+    @pytest.mark.skipif(not Path("/dev/zero").exists(), reason="no character device to point at")
+    def test_a_character_device_at_a_pointer_path_returns_empty(self, tmp_path: Path):
+        """The arm that makes the regular-file test load-bearing rather than decorative. A device
+        opens and reads without blocking, so the non-blocking open alone would hand back 4096 NUL
+        bytes as a pointer line; only the shape test refuses it."""
+        pointer = tmp_path / "commondir"
+        pointer.symlink_to("/dev/zero")
+        assert self._read_within(pointer) == ""
+
+    def test_a_directory_at_a_pointer_path_returns_empty(self, tmp_path: Path):
+        pointer = tmp_path / "commondir"
+        pointer.mkdir()
+        assert self._read_within(pointer) == ""
+
+    def test_a_repository_whose_commondir_is_a_fifo_is_not_an_anchor(self, tmp_path: Path):
+        """The reachable path: `_is_git_dir` consults `commondir` only for a gitdir with no
+        `objects/` of its own, which is exactly a linked worktree's shape."""
+        git = tmp_path / "anchor" / ".git"
+        (git / "refs").mkdir(parents=True)
+        (git / "HEAD").write_text("ref: refs/heads/main\n")
+        os.mkfifo(git / "commondir")
+        skills = tmp_path / "anchor" / "skills"
+        skills.mkdir()
+
+        answer: list[Path] = []
+        worker = threading.Thread(
+            target=lambda: answer.append(_containment_anchor(skills)), daemon=True
+        )
+        worker.start()
+        worker.join(5.0)
+        assert not worker.is_alive(), "resolving an anchor blocked on a FIFO commondir"
+        assert answer[0] == skills  # no repository found, so the root bounds itself
 
 
 class TestPlaybookSymlinkContainment:
