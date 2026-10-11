@@ -124,6 +124,28 @@ def test_the_registry_reads_areas_and_a_missing_file_is_no_areas(tmp_path):
         load_areas(reg)
 
 
+def test_a_desk_named_either_way_answers_with_the_registrys_own_spelling(tmp_path):
+    reg = tmp_path / "areas.toml"
+    reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x/desk/"]\n')
+    area = Area("a", "lambda:a", ["/x/desk/"])
+    assert areas_cli._desk(reg, "/x/desk/") == (area, "/x/desk/")
+    assert areas_cli._desk(reg, "/x/desk") == (area, "/x/desk/")  # as a row prints it
+    assert areas_cli._desk(reg, "/x/desk/../desk") is None  # a spelling the registry does not hold
+
+
+def test_the_context_api_reads_the_desk_the_registry_spells(tmp_path, monkeypatch):
+    reg = tmp_path / "areas.toml"
+    reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x/desk/"]\n')
+    seen = []
+    monkeypatch.setattr(areas_cli, "context_status", lambda d: seen.append(d) or {"ok": True})
+    for spelling in ("/x/desk/", "/x/desk"):
+        assert areas_cli.context_api(reg, "GET", "/api/context/status", {"dir": spelling}) == (
+            200,
+            {"ok": True},
+        )
+    assert seen == ["/x/desk/", "/x/desk/"]
+
+
 def test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file(tmp_path):
     d = agent_dir(
         tmp_path,

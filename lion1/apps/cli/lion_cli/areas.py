@@ -165,10 +165,12 @@ def _tail(
 
 
 def _desk(registry: Path, want: str) -> tuple[Area, str] | None:
-    # as written in the registry, or as a Resident's `dir` prints it (the link the page carries)
+    # as written in the registry, or as a Resident's `dir` prints it (the link the page carries); the
+    # answer is the registry's own spelling, so every path a caller builds starts from the registry
     for a in load_areas(registry):
-        if any(want in (d, str(Path(d))) for d in a.desks):
-            return a, want
+        for d in a.desks:
+            if want in (d, str(Path(d))):
+                return a, d
     return None
 
 
@@ -187,12 +189,14 @@ def context_api(registry: Path, method: str, path: str, params: dict) -> tuple[i
     does not name is 404, a refused take, restore or declaration 409."""
     if (method, path) not in _CONTEXT_ROUTES:
         return 404, {"ok": False, "detail": f"no route {method} {path}"}
-    d = str(params.get("dir") or "")
-    if _desk(registry, d) is None:
+    want = str(params.get("dir") or "")
+    found = _desk(registry, want)
+    if found is None:
         return 404, {
             "ok": False,
-            "detail": f"no resident at {d!r}: not a desk in {registry}; nothing was read",
+            "detail": f"no resident at {want!r}: not a desk in {registry}; nothing was read",
         }
+    d = found[1]
     try:
         if path == "/api/context/status":
             return 200, context_status(d)
@@ -751,11 +755,12 @@ def make_server(
                     code, resp = once_cache[once]
                     self.answer_json(code, resp)
                     return
-                if desk(d) is None:
+                found = desk(d)
+                if found is None:
                     detail = f"no resident at {d!r}: not a desk in {registry}; nothing was done"
                     self.answer_json(404, {"ok": False, "action": action, "detail": detail})
                     return
-                code, resp = self._act(Path(d), action, body)
+                code, resp = self._act(Path(found[1]), action, body)
                 if once:
                     once_cache[once] = (code, resp)
                     while len(once_cache) > _ONCE_KEEP:
