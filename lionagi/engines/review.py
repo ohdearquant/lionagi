@@ -113,6 +113,7 @@ _MCP_REQUEST_TIMEOUT = 408  # httpx.codes.REQUEST_TIMEOUT, the SDK's timeout cod
 # stops recognising a dropped connection and the run fails loudly instead of
 # degrading, which is the safe direction to be wrong in.
 _MCP_CONNECTION_CLOSED_MESSAGE = "Connection closed"
+_MCP_TRANSPORT_PROBE_TIMEOUT_S = 1.0
 
 
 def _carries_only_the_sdks_own_fields(error: object) -> bool:
@@ -150,26 +151,53 @@ def _is_transport_mcp_error(exc: BaseException) -> bool:
         # without reading the message.
         return isinstance(exc.__context__, TimeoutError)
     if code == _MCP_CONNECTION_CLOSED:
-        # Known residual, stated here because this is where the call is made.
-        # A server that answers with exactly this code, exactly this message
-        # and no other field is indistinguishable from a real drop, and no
-        # further check closes it: the SDK builds its closed-connection reply
-        # with those two fields and pushes it onto the same response stream a
-        # server's reply arrives on, so both surface from one raise with an
-        # empty context. Code and message are the whole of the difference and
-        # both travel in the server's payload.
-        #
-        # What bounds it is where the answer is used rather than how good the
-        # answer is. A dimension classified either way is recorded as skipped
-        # and forces a degraded result, so getting this wrong mislabels the
-        # cause of a failure that is reported either way. It cannot turn a
-        # failure into a pass. Closing the residual needs something outside
-        # the exception -- whether the session survived, or whether the other
-        # dimensions died with it -- which this signature cannot see.
+        # This predicate deliberately remains exception-only. A server that
+        # answers with exactly this code, message, and field set is identical
+        # here to the SDK's synthesized disconnect signal. The async isolation
+        # boundary resolves that residual with the originating client's ping
+        # when the MCP transport layer was able to preserve one.
+        # This function therefore returns the provisional transport answer;
+        # callers that own liveness evidence refine it before deciding whether
+        # to isolate the dimension.
         return getattr(
             error, "message", None
         ) == _MCP_CONNECTION_CLOSED_MESSAGE and _carries_only_the_sdks_own_fields(error)
     return False
+
+
+async def _is_all_isolated_failure_after_probe(exc: BaseException) -> bool:
+    """Apply transport liveness evidence to the otherwise ambiguous MCP error.
+
+    A missing or failed probe preserves the historical classification: a real
+    disconnect must still be isolated even when no client handle reached this
+    layer. Only a successful round trip proves that the peer sent the bare
+    connection-closed payload while keeping its transport open.
+    """
+    if not _is_all_isolated_failure(exc):
+        return False
+    if is_exception_group(exc):
+        for leaf in get_exception_group_exceptions(exc):
+            if not await _is_all_isolated_failure_after_probe(leaf):
+                return False
+        return True
+    if not _is_transport_mcp_error(exc):
+        return True
+
+    error = getattr(exc, "error", None)
+    if getattr(error, "code", None) != _MCP_CONNECTION_CLOSED:
+        return True
+
+    from lionagi.service.connections.mcp_wrapper import _mcp_transport_probe
+
+    probe = _mcp_transport_probe(exc)
+    if not callable(probe):
+        return True
+    try:
+        with anyio.fail_after(_MCP_TRANSPORT_PROBE_TIMEOUT_S):
+            result = await probe()
+    except Exception:
+        return True
+    return result is False
 
 
 def _is_all_isolated_failure(exc: BaseException) -> bool:
@@ -275,6 +303,7 @@ class ReviewRun(EngineRun):
         # Flagged both ways and on sight of any peer: a start-order test would
         # only ever be right about the emissions that had already happened.
         self.shares_session: bool = False
+        self._dimension_failures: dict[str, str] = {}
         peers = _SESSION_RUNS.setdefault(self.session, [])
         live = []
         for ref in peers:
@@ -556,6 +585,16 @@ class ReviewEngine(Engine):
         # the drain stays clean; anything the wrapper does not claim still
         # reaches here and ends the run.
         await run.wait_quiescence()
+        if self._all_dimensions_failed(run, dims):
+            run.notify(
+                "verdict_withheld",
+                reason="all_dimensions_failed",
+                dimensions=list(dims),
+            )
+            return (
+                "No review verdict was emitted: every configured dimension "
+                "failed before producing review evidence."
+            )
         # A clean or minor-only review spawns no verifiers, so gate on zero
         # VerifyResult to make both shapes carry one adversarial audit.
         if self.verify_clean and not run.by_type(VerifyResult):
@@ -587,9 +626,11 @@ class ReviewEngine(Engine):
             # is one: a mixed group carries something this stage has no claim
             # to swallow (budget exhaustion, a genuine defect), and laundering
             # it into a per-dimension degrade would hide it behind a verdict.
-            if not _is_all_isolated_failure(exc):
+            if not await _is_all_isolated_failure_after_probe(exc):
                 raise
             error_type = _failure_label(exc)
+            if isinstance(run, ReviewRun):
+                run._dimension_failures[dimension] = error_type
             run.notify(
                 "dimension_failed",
                 dimension=dimension,
@@ -599,11 +640,11 @@ class ReviewEngine(Engine):
             if marker not in run._emission_failures:
                 run._emission_failures.append(marker)
 
-    def _isolate_verification_failure(
+    async def _isolate_verification_failure(
         self, run: EngineRun, exc: BaseException, *, stage: str
     ) -> bool:
         """Record an isolated verification failure; False means the caller must re-raise."""
-        if not _is_all_isolated_failure(exc):
+        if not await _is_all_isolated_failure_after_probe(exc):
             return False
         error_type = _failure_label(exc)
         run.notify("verification_failed", stage=stage, error_type=error_type)
@@ -619,7 +660,9 @@ class ReviewEngine(Engine):
             # Spawned into the run's background set, so an escape does not fail
             # this verifier alone: the drain collects it and re-raises, which
             # discards a review whose dimensions have already succeeded.
-            if not self._isolate_verification_failure(run, exc, stage=f"verify-{issue.dimension}"):
+            if not await self._isolate_verification_failure(
+                run, exc, stage=f"verify-{issue.dimension}"
+            ):
                 raise
 
     async def _verify_clean_isolated(
@@ -628,7 +671,7 @@ class ReviewEngine(Engine):
         try:
             await self._verify_clean(run, artifact, dimensions)
         except Exception as exc:
-            if not self._isolate_verification_failure(run, exc, stage="verify-clean"):
+            if not await self._isolate_verification_failure(run, exc, stage="verify-clean"):
                 raise
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
@@ -776,6 +819,15 @@ class ReviewEngine(Engine):
         reported = {i.dimension for i in run.by_type(IssueFound)}
         reported |= {c.dimension for c in run.by_type(DimensionClean)}
         return reported
+
+    def _all_dimensions_failed(self, run: EngineRun, dimensions: tuple[str, ...]) -> bool:
+        """True when isolation recorded every reviewer and none produced evidence."""
+        failures = getattr(run, "_dimension_failures", {})
+        return (
+            bool(dimensions)
+            and all(dimension in failures for dimension in dimensions)
+            and not self._reported_dimensions(run)
+        )
 
     def _rule(
         self,

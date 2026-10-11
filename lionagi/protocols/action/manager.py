@@ -349,7 +349,10 @@ class ActionManager(Manager):
     ) -> list[str]:
         registered_tools = []
 
-        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import (
+            MCPConnectionPool,
+            _attach_mcp_transport_probe,
+        )
 
         # Mint the recovery authorization once, bound to this call's
         # effective security, and thread it into every Tool created below.
@@ -425,7 +428,11 @@ class ActionManager(Manager):
             )
 
             client = await MCPConnectionPool.get_client(server_config, security=security)
-            tools = await client.list_tools()
+            try:
+                tools = await client.list_tools()
+            except Exception as exc:
+                _attach_mcp_transport_probe(exc, client)
+                raise
             advertised = {tool.name for tool in tools}
             registered_wire_names: set[str] = set()
             registration_errors: dict[str, Exception] = {}
