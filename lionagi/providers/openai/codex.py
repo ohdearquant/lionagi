@@ -98,6 +98,20 @@ _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # begin with the retry prefix, e.g. "Reconnecting... 5/5 failed".
 _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 
+#: The longest turn input the Codex CLI takes, in characters, as its own refusal states it
+#: (``turn/start`` answers ``input_too_large`` with ``max_chars``). Past it the CLI refuses only
+#: after the process has started; the request refuses first.
+CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
+
+
+def _refuse_a_turn_input_past_the_cli_limit(prompt: str) -> None:
+    if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
+        raise ValueError(
+            f"the Codex turn input is {len(prompt):,} characters, past the CLI's limit of "
+            f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A resumed session sends its whole transcript as "
+            "the input: start a new session and hand it the earlier result as a file."
+        )
+
 
 def _toml_scalar(value: str | int | float | bool) -> str:
     """Render a single TOML scalar (or its quoted-string form), via the
@@ -522,6 +536,13 @@ class CodexCodeRequest(BaseModel):
         return validate_message_prompt(data)
 
     @model_validator(mode="after")
+    def _refuse_a_turn_input_past_the_cli_limit(self):
+        # A branch resumed from its snapshot sends every stored message, joined, as this one
+        # input, so a long session grows past the limit; refused here, before any process starts.
+        _refuse_a_turn_input_past_the_cli_limit(self.prompt)
+        return self
+
+    @model_validator(mode="after")
     def _warn_dangerous_settings(self):
         if self.bypass_approvals:
             warnings.warn(
@@ -649,6 +670,9 @@ CodexSession = CLISession
 async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
+    # The request's validator refuses this already, but model_copy(update=...) skips validation,
+    # so the input is checked again where it would reach the process.
+    _refuse_a_turn_input_past_the_cli_limit(request.prompt)
     cmd = [CODEX_CLI, *request.as_cmd_args()]
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
