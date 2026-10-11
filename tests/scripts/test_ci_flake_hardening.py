@@ -449,6 +449,30 @@ def test_docs_job_always_guard_survives_upstream_changes_failure() -> None:
     assert docs_job.count("if: needs.changes.outputs.adr == 'true'") >= 1
 
 
+def test_no_checkout_leaves_the_token_in_git_config() -> None:
+    # Most jobs install and run the pull request's own code. actions/checkout
+    # writes the job token into .git/config unless told not to, where that code
+    # could read it. GitHub resolves an action's owner and repository without
+    # regard to case, so the match here does too.
+    import yaml
+
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    checkouts = [
+        (name, step)
+        for name, job in jobs.items()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).lower().startswith("actions/checkout@")
+    ]
+
+    assert {name for name, _ in checkouts} >= {"docs", "test", "lint"}
+    persisting = [
+        name
+        for name, step in checkouts
+        if (step.get("with") or {}).get("persist-credentials") is not False
+    ]
+    assert persisting == [], f"checkouts that persist the token: {persisting}"
+
+
 def test_every_required_ci_exclusion_has_a_workflow_lane() -> None:
     workflow = CI_WORKFLOW.read_text()
     performance_job = workflow.split("  performance:", 1)[1].split("  quarantine:", 1)[0]
