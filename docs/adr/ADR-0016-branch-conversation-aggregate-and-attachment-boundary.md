@@ -1,10 +1,27 @@
 # ADR-0016: Branch conversation aggregate and attachment boundary
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-11 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: session-branch
 - **Date**: 2026-07-09
 - **Relations**: none
+
+## Amendment 1 (2026-10-11) — a clone's parse model follows its own chat model
+
+D5 lists how `clone()` treats models: a CLI model is copied, a non-CLI model is reused, and a
+distinct parse model stays distinct. It did not say what happens when the parse model is the chat
+model, which is the default. The code handed on the source's object in that case, so the clone's
+chat model was a fresh copy while its parse model was the source's chat model. For a resumable CLI
+provider such as Claude Code, the clone's parse calls were sent the provider session the source's
+model held, and a session id one of them returned was stored on the source's model.
+
+Decision: a parse model that is the chat model is, in the clone, the clone's own chat model. The
+clone's chat and parse calls therefore share one model, as the source's do, and continue none of
+the source's provider sessions. `Session.split()`, `asplit()` and the flow and orchestration paths
+that clone a branch inherit this.
+
+Limits: a branch whose chat and parse calls share one model still shares that model's provider
+session between its own chat and parse calls.
 
 ## Context
 
@@ -396,7 +413,8 @@ experimental in its module and is not serialized.
   the new branch;
 - registered tools are passed into the new action manager;
 - CLI models are copied where needed, while non-CLI model objects are reused; a distinct parse model
-  remains distinct;
+  remains distinct, and a parse model that is the chat model is the clone's own chat model
+  (Amendment 1);
 - the clone receives `metadata={"clone_from": source}` and the source `user`;
 - logs, log configuration, memory, providers, provider report, capabilities, pending runtime state,
   named operations, observer, hooks, and session ownership are not copied.
