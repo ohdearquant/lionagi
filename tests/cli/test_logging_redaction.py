@@ -12,8 +12,8 @@ from lionagi.cli._logging import configure_cli_logging, log_error
 
 def test_error_log_masks_database_url_password(caplog, capsys):
     # Synthetic credential: the CLI error channel must retain the diagnosis while masking it.
-    password = "example-log-secret-value"
-    url = f"postgresql://dbuser:{password}@db.example.test/lionagi"
+    planted = "example-log-planted-value"
+    url = f"postgresql://dbuser:{planted}@db.example.test/lionagi"
     logger = logging.getLogger("lionagi.cli.error")
     logger.handlers.clear()
     logger.propagate = False
@@ -24,8 +24,8 @@ def test_error_log_masks_database_url_password(caplog, capsys):
         log_error(f"could not connect to {url}")
 
     captured = capsys.readouterr()
-    assert password not in caplog.text
-    assert password not in captured.out + captured.err
+    assert planted not in caplog.text
+    assert planted not in captured.out + captured.err
     assert "could not connect" in caplog.text
     assert "dbuser:***@db.example.test/lionagi" in captured.err
 
