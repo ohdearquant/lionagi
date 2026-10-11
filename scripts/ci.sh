@@ -73,7 +73,7 @@ test-python() {
     --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
     -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
     --disable-warnings \
-    "${report_args[@]}" \
+    ${report_args[@]+"${report_args[@]}"} \
     "${targets[@]}"
 }
 
@@ -93,7 +93,7 @@ test-python-cov() {
     -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
     --disable-warnings \
     --cov=lionagi --cov-report=xml --cov-report=term \
-    "${report_args[@]}" \
+    ${report_args[@]+"${report_args[@]}"} \
     "${targets[@]}"
 }
 
@@ -117,7 +117,7 @@ test-python-quarantine() {
     --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
     -m flaky_quarantine \
     --disable-warnings \
-    "${report_args[@]}" \
+    ${report_args[@]+"${report_args[@]}"} \
     tests/
 }
 
