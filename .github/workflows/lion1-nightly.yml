@@ -1,6 +1,6 @@
-name: nightly
+name: lion1 nightly
 
-# run by hand only: no schedule spends hosted minutes
+# lion1's deep checks, run by hand only: no schedule spends hosted minutes
 on:
   workflow_dispatch:
 
@@ -10,6 +10,10 @@ permissions:
 env:
   FORCE_COLOR: "1"
 
+defaults:
+  run:
+    working-directory: lion1
+
 jobs:
   deep:
     name: property tests, deep profile
@@ -18,6 +22,8 @@ jobs:
       HYPOTHESIS_PROFILE: deep
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.11"
@@ -28,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
@@ -40,6 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.11"
@@ -66,4 +76,4 @@ jobs:
         if: always()
         with:
           name: mutation-stats
-          path: mutants/mutmut-cicd-stats.json
+          path: lion1/mutants/mutmut-cicd-stats.json

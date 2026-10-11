@@ -447,6 +447,7 @@ jobs:
       adr: ${{ steps.filter.outputs.adr }}
       imports: ${{ steps.filter.outputs.imports }}
       lionrs: ${{ steps.filter.outputs.lionrs }}
+      lion1: ${{ steps.filter.outputs.lion1 }}
     steps:
     - uses: actions/checkout@v7
     - uses: dorny/paths-filter@v4
@@ -476,6 +477,9 @@ jobs:
             - '.github/workflows/ci.yml'
           lionrs:
             - 'lionrs/**'
+            - '.github/workflows/ci.yml'
+          lion1:
+            - 'lion1/**'
             - '.github/workflows/ci.yml'
 
   # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
@@ -614,6 +618,35 @@ jobs:
     - name: Test
       run: cargo test --workspace --all-features --locked
 
+  # lion1/ is a project of its own, with its own pyproject, lock, pre-commit config and
+  # suite; this job is lion1's checks as they ran in its own repository. It runs when
+  # lion1/ or this workflow changes; ci-gate accepts its skip only then.
+  lion1:
+    needs: changes
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lion1 == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lion1
+    env:
+      HYPOTHESIS_PROFILE: ci
+      FORCE_COLOR: "1"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      with:
+        python-version: "3.11"
+        enable-cache: true
+        cache-dependency-glob: lion1/uv.lock
+    - name: pre-commit (ruff, ruff format, the ADR register)
+      run: uvx pre-commit run --config .pre-commit-config.yaml --all-files --show-diff-on-failure
+    - name: the interpreter is 3.11
+      run: uv run --locked --python 3.11 python -c "import sys; assert sys.version.startswith('3.11.'), sys.version; print(sys.version)"
+    - name: pytest
+      run: uv run --locked --python 3.11 pytest --cov --cov-report=term-missing
+
   vscode:
     runs-on: ubuntu-latest
     defaults:
@@ -650,13 +683,13 @@ jobs:
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
   # The conditional jobs (studio-docker, minimal-import, no-eager-heavies,
-  # lionrs) may
+  # lionrs, lion1) may
   # skip only when the changes path-filter job itself succeeded and reported
   # their inputs unchanged; any other skip, failure, or cancellation fails the
   # aggregate.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, lionrs, vscode, marketplace]
+    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, lionrs, lion1, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -694,6 +727,7 @@ jobs:
             "minimal-import": "imports",
             "no-eager-heavies": "imports",
             "lionrs": "lionrs",
+            "lion1": "lion1",
         }
         for job, flag in conditional_gates.items():
             changed = needs["changes"].get("outputs", {}).get(flag)
