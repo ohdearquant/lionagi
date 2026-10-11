@@ -1041,8 +1041,12 @@ async def _run_agent(
     # explicitly requested role must get that role's
     # system prompt rather than have it silently dropped).
     if not is_resumed_branch:
+        # The file on the line is what a resume reads again, named or not: a
+        # leg submitted through the MCP server is pointed at a snapshot of the
+        # config its submission found, and that snapshot is its set.
+        named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
         branch.metadata[_MCP_LAUNCH_KEY] = {
-            "mcp_config": str(mcp_resolution.source) if mcp_resolution.explicit else None,
+            "mcp_config": str(mcp_resolution.source) if named_on_the_line else None,
             "no_mcp_config": no_mcp_config,
             "launch_dir": str(mcp_resolution.searched_from),
         }

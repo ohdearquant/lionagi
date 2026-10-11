@@ -355,10 +355,18 @@ def _write_job(record: dict[str, Any]) -> None:
         raise
 
 
-def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any]) -> None:
-    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at."""
-    raise_if_non_finite({"mcpServers": servers})
-    path.write_text(json.dumps({"mcpServers": servers}, indent=2))
+def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any], *, source: Path | str) -> None:
+    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
+
+    *source* is the config the submission found. Naming it in the snapshot is
+    what keeps the child, which reads this file through ``--mcp-config``, from
+    taking a found set for one the caller named.
+    """
+    from lionagi.cli._mcp_resolve import SNAPSHOT_SOURCE_KEY
+
+    document = {"mcpServers": servers, SNAPSHOT_SOURCE_KEY: str(source)}
+    raise_if_non_finite(document)
+    path.write_text(json.dumps(document, indent=2))
 
 
 def _lock_fd(fd: int) -> None:
@@ -1233,7 +1241,9 @@ def submit(
         if prompt_path is not None:
             prompt_path.write_text(prompt)
         if mcp_servers is not None and mcp_config_path is not None:
-            _write_mcp_server_snapshot(Path(mcp_config_path), mcp_servers)
+            _write_mcp_server_snapshot(
+                Path(mcp_config_path), mcp_servers, source=mcp_config_source or ""
+            )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)
         raise

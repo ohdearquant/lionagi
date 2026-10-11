@@ -13,6 +13,7 @@ on whether a helper was called.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,9 @@ def tmp_run(monkeypatch, tmp_path):
     """Isolate state while simulating host routing for implementers."""
     launch_dir = tmp_path / "launch"
     launch_dir.mkdir()
+    test_home = tmp_path / "home"
+    test_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: test_home))
     monkeypatch.chdir(launch_dir)
 
     def _load_profile(name):
@@ -56,10 +60,12 @@ def tmp_run(monkeypatch, tmp_path):
     return launch_dir
 
 
-async def _setup(*, no_mcp_config: bool):
+async def _setup(
+    *, no_mcp_config: bool, mcp_config: str | None = None, model_spec: str = "claude_code/sonnet"
+):
     return await setup_orchestration(
         pattern_name="Fanout",
-        model_spec="claude_code/sonnet",
+        model_spec=model_spec,
         agent_name=None,
         save_dir=None,
         cwd=None,
@@ -67,6 +73,7 @@ async def _setup(*, no_mcp_config: bool):
         verbose=False,
         effort=None,
         theme=None,
+        mcp_config=mcp_config,
         no_mcp_config=no_mcp_config,
     )
 
@@ -158,6 +165,80 @@ async def test_a_run_resolves_its_set_from_the_launch_dir_it_is_given(tmp_run, t
         mcp_launch_dir=str(launched_from),
     )
     assert set(there.mcp_servers) == {"from-launch-dir"}
+
+
+@pytest.mark.asyncio
+async def test_ambient_job_control_is_withheld_from_leaf_workers(tmp_run):
+    """A config found by walking up the tree is not consent to hand every worker
+    lionagi's own job-control server, whatever alias it is registered under."""
+    ambient = {
+        "control-under-an-alias": {"command": "/usr/local/bin/li", "args": ["mcp"]},
+        "knowledge": {"command": "kkernel", "args": ["mcp"]},
+    }
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": ambient}))
+
+    env = await _setup(no_mcp_config=False)
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
+    args = await _cli_args(branch.chat_model)
+    forwarded = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
+
+    assert forwarded == {"knowledge": ambient["knowledge"]}
+    assert "--strict-mcp-config" in args
+    assert env.withheld_mcp_servers == ("control-under-an-alias",)
+    assert "control-under-an-alias" in branch.system.rendered
+    assert "withheld" in branch.system.rendered
+
+
+@pytest.mark.asyncio
+async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
+    granted = {
+        "nested-control": {"command": "python3", "args": ["-m", "lionagi.mcp"]},
+        "knowledge": {"command": "kkernel", "args": ["mcp"]},
+    }
+    named = tmp_path / "nested.json"
+    named.write_text(json.dumps({"mcpServers": granted}))
+
+    env = await _setup(no_mcp_config=False, mcp_config=str(named))
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
+    args = await _cli_args(branch.chat_model)
+    forwarded = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]
+
+    assert forwarded == granted
+    assert "--strict-mcp-config" in args
+    assert env.withheld_mcp_servers == ()
+    assert "withheld" not in branch.system.rendered
+
+
+@pytest.mark.asyncio
+async def test_codex_worker_disables_withheld_job_control_by_name(tmp_run, codex_home):
+    servers = {
+        "lion-control": {"command": "li", "args": ["mcp"]},
+        "knowledge": {"command": "kkernel", "args": ["mcp"]},
+    }
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+    codex_home.write_config(servers)
+
+    env = await _setup(no_mcp_config=False)
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="codex/gpt-5",
+    )
+
+    overrides = branch.chat_model.endpoint.config.kwargs["config_overrides"]
+    assert overrides["mcp_servers.knowledge.command"] == "kkernel"
+    assert overrides["mcp_servers.lion-control.enabled"] is False
 
 
 def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home):
@@ -369,3 +450,155 @@ async def test_with_no_run_set_a_casts_worker_still_finds_the_home_config(tmp_ru
 
     assert _mcp_config_arg(args) == {"mcpServers": _HOME_SERVER}
     assert "critic" in home_mcp_config
+
+
+_CONTROL_AND_KNOWLEDGE = {
+    "control": {"command": "li", "args": ["mcp"]},
+    "knowledge": {"command": "kkernel", "args": ["mcp"]},
+}
+
+
+@pytest.mark.asyncio
+async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_run, tmp_path):
+    """A run submitted through the MCP server is pointed at a snapshot of the
+    config the submission found, with the same --mcp-config a caller names a
+    file with. Found is still found: the snapshot grants nothing by name."""
+    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+
+    snapshot = tmp_path / "job" / "mcp.json"
+    snapshot.parent.mkdir()
+    _write_mcp_server_snapshot(snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json")
+
+    env = await _setup(no_mcp_config=False, mcp_config=str(snapshot))
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
+    args = await _cli_args(branch.chat_model)
+
+    assert _mcp_config_arg(args) == {
+        "mcpServers": {"knowledge": _CONTROL_AND_KNOWLEDGE["knowledge"]}
+    }
+    assert env.withheld_mcp_servers == ("control",)
+
+
+@pytest.mark.asyncio
+async def test_the_synthesis_branch_gets_the_worker_set_as_its_whole_set(tmp_run):
+    """The synthesis branch starts from a copy of the orchestrator's model, whose
+    request carries the run's whole set. It is handed the worker set the way a
+    worker is, so the copy's job-control server does not ride along."""
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _CONTROL_AND_KNOWLEDGE}))
+    env = await _setup(no_mcp_config=False)
+    branch = await _fresh_synthesis_branch(env)
+    args = await _cli_args(branch.chat_model)
+    orchestrator_args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _mcp_config_arg(args) == {
+        "mcpServers": {"knowledge": _CONTROL_AND_KNOWLEDGE["knowledge"]}
+    }
+    assert "--strict-mcp-config" in args
+    assert _mcp_config_arg(orchestrator_args) == {"mcpServers": _CONTROL_AND_KNOWLEDGE}
+
+
+@pytest.mark.asyncio
+async def test_a_codex_synthesis_branch_drops_the_orchestrators_job_control(tmp_run, codex_home):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _CONTROL_AND_KNOWLEDGE}))
+    codex_home.write_config({})
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
+    branch = await _fresh_synthesis_branch(env)
+
+    overrides = branch.chat_model.endpoint.config.kwargs["config_overrides"]
+    orchestrator = env.orc_branch.chat_model.endpoint.config.kwargs["config_overrides"]
+    assert overrides["mcp_servers.knowledge.command"] == "kkernel"
+    assert not [key for key in overrides if key.startswith("mcp_servers.control.")]
+    assert orchestrator["mcp_servers.control.command"] == "li"
+
+
+@pytest.mark.asyncio
+async def test_a_casts_worker_is_told_which_servers_were_withheld(tmp_run):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _CONTROL_AND_KNOWLEDGE}))
+    env = await _setup(no_mcp_config=False)
+    branch, _, profile, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="critic",
+        model_override="claude_code/sonnet",
+    )
+
+    assert profile is None
+    # The alias in place: the surrounding text says "job-control" whatever it names.
+    assert "job-control server(s) control were withheld" in branch.system.rendered
+
+
+@pytest.mark.asyncio
+async def test_a_worker_with_no_spawn_grant_is_not_told_to_spawn(tmp_run):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _CONTROL_AND_KNOWLEDGE}))
+    env = await _setup(no_mcp_config=False)
+    branch, _, _, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+        grant_spawn=False,
+    )
+
+    assert "withheld" in branch.system.rendered
+    assert "spawn" not in branch.system.rendered.split("MCP CAPABILITY POLICY", 1)[1]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"command": "li", "args": ["mcp"]},
+        {"command": "/opt/venv/bin/li", "args": ["mcp"]},
+        {"command": "LI.EXE", "args": ["mcp"]},
+        {"command": "li", "args": ["--verbose", "mcp"]},
+        {"command": "uv", "args": ["run", "li", "mcp"]},
+        {"command": "uvx", "args": ["--from", "lionagi", "li", "mcp"]},
+        {"command": "env", "args": ["LIONAGI_HOME=/x", "li", "mcp"]},
+        {"command": "python3.12", "args": ["-m", "lionagi.mcp"]},
+        {"command": "py", "args": ["-m", "lionagi.mcp"]},
+        {"command": "uv", "args": ["run", "python", "-m", "lionagi.mcp"]},
+        {"command": "python", "args": ["-mlionagi.mcp"]},
+        {"command": "python", "args": ["-m", "lionagi.cli", "mcp"]},
+        {"command": "python3", "args": ["-mlionagi.cli", "--verbose", "mcp"]},
+        {"command": "uv", "args": ["run", "python", "-m", "lionagi.cli.main", "mcp"]},
+        {"command": "python", "args": ["-m", "lionagi.mcp.server"]},
+        {"command": "python", "args": ["-m", "lionagi.cli.__main__", "mcp"]},
+        {"command": "python", "args": ["-Im", "lionagi.mcp"]},
+        {"command": "python", "args": ["-Imlionagi.cli", "mcp"]},
+        {"command": "python", "args": ["-X", "dev", "-m", "lionagi.cli", "mcp"]},
+        {"command": "python", "args": ["/opt/venv/site-packages/lionagi/mcp/__main__.py"]},
+        {"command": "python3", "args": ["/opt/venv/site-packages/lionagi/cli/main.py", "mcp"]},
+    ],
+)
+def test_job_control_is_recognised_through_launchers(config):
+    assert orch_mod._is_job_control_server(config)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"command": "li", "args": ["agent", "mcp"]},
+        {"command": "li", "args": []},
+        {"command": "uv", "args": ["run", "li", "agent"]},
+        {"command": "python", "args": ["-m", "lionagi.cli"]},
+        {"command": "python", "args": ["-m", "lionagi.cli", "agent", "mcp"]},
+        {"command": "python", "args": ["-m", "other.cli", "mcp"]},
+        {"command": "python", "args": ["-m", "lionagi.mcp._notify_hook"]},
+        {"command": "python", "args": ["-Xm", "lionagi.mcp"]},
+        {"command": "python", "args": ["/opt/venv/site-packages/lionagi/cli/main.py", "agent"]},
+        {"command": "kkernel", "args": ["mcp"]},
+        {"command": "uvx", "args": ["some-mcp-server"]},
+        {"url": "https://example.invalid/mcp"},
+        "li mcp",
+    ],
+)
+def test_other_servers_are_not_taken_for_job_control(config):
+    assert not orch_mod._is_job_control_server(config)

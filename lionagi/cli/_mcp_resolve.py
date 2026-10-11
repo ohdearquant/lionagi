@@ -20,12 +20,19 @@ __all__ = (
     "MCP_CONFIG_FILENAME",
     "McpConfigError",
     "McpResolution",
+    "SNAPSHOT_SOURCE_KEY",
     "discover_mcp_config",
     "explicit_mcp_config_path",
     "resolve_spawn_mcp_servers",
 )
 
 MCP_CONFIG_FILENAME = ".mcp.json"
+
+# Carried by a snapshot of a config that was found rather than named, naming the
+# file it was taken from. A submitted run is pointed at its snapshot with
+# --mcp-config, the flag a caller names a file with, so without this key the set
+# a search found would reach the run as one the caller asked for.
+SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
 
 
 class McpConfigError(ValueError):
@@ -107,6 +114,12 @@ def _reject_json_constant(token: str) -> Any:
 def _read_servers(path: Path) -> dict[str, Any]:
     """Parse ``{"mcpServers": {...}}`` from *path*; raises ValueError on any
     shape this cannot hand to a provider."""
+    return _read_config(path)["mcpServers"]
+
+
+def _read_config(path: Path) -> dict[str, Any]:
+    """The config object at *path*, its ``mcpServers`` checked as
+    :func:`_read_servers` documents."""
     try:
         raw = path.read_text()
     except OSError as exc:
@@ -126,7 +139,7 @@ def _read_servers(path: Path) -> dict[str, Any]:
         raise McpConfigError(
             f"{path}: 'mcpServers' must be an object, got {type(servers).__name__}"
         )
-    return servers
+    return data
 
 
 def explicit_mcp_config_path(explicit: str | Path, *, launch_dir: str | Path) -> Path:
@@ -159,7 +172,14 @@ def resolve_spawn_mcp_servers(
         path = explicit_mcp_config_path(explicit, launch_dir=searched_from)
         if not path.is_file():
             raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
-        return McpResolution(_read_servers(path), None, path, searched_from, explicit=True)
+        data = _read_config(path)
+        return McpResolution(
+            data["mcpServers"],
+            None,
+            path,
+            searched_from,
+            explicit=SNAPSHOT_SOURCE_KEY not in data,
+        )
 
     found = discover_mcp_config(searched_from)
     if found is None:

@@ -84,6 +84,14 @@ the directory that doesn't have it). "Nothing was configured" and "something was
 could not be used" are returned as distinct states, so a failed resolution always carries its
 reason.
 
+A run submitted through the MCP server reaches its snapshot through `--mcp-config`, the flag a
+caller names a file with, so the snapshot carries `lionagiSnapshotOf`, the path of the config the
+submission found. A file carrying that key resolves as found (`McpResolution.explicit` is false),
+so the set the submission found is not taken for one the caller named: the job-control policy
+under `_hand_mcp_servers` still applies to it, and a leg on a provider with no MCP transport is
+not refused for it the way it is for a named config. The key is read wherever the file is named,
+so a caller who names a copy of a snapshot gets it read as found too.
+
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
@@ -95,16 +103,17 @@ is refused, naming the profile, rather than handing codex a profile whose file i
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
-`mcp_launch`: the named config as an absolute path, the `--no-mcp-config` flag, and the launch
-directory. The resume resolves from the record, searching from the launch directory, so the
-directory the resume runs in does not decide what is found. A flag given on the resume is used
-for that leg instead of the record. Either way, a set resolved on the resume replaces the servers
-the earlier run was handed, on codex (whose servers are merged overrides) as on Claude, and the
-Claude strict flag goes with them: a non-empty set is handed to a resumed leg as it is to a new
-one, without `--strict-mcp-config`. A recorded config is read from the launch directory when its
-path is relative; one that is missing or can no longer be read refuses the resume, naming that
-config and the flags to resume with instead. A branch created before the choice was recorded
-resolves nothing new, and its request keeps the servers its earlier run was handed.
+`mcp_launch`: the config file on the command line as an absolute path (a submitted leg's
+snapshot included), the `--no-mcp-config` flag, and the launch directory. The resume resolves
+from the record, searching from the launch directory, so the directory the resume runs in does
+not decide what is found. A flag given on the resume is used for that leg instead of the record.
+Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
+codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
+them: a non-empty set is handed to a resumed leg as it is to a new one, without
+`--strict-mcp-config`. A recorded config is read from the launch directory when its path is
+relative; one that is missing or can no longer be read refuses the resume, naming that config
+and the flags to resume with instead. A branch created before the choice was recorded resolves
+nothing new, and its request keeps the servers its earlier run was handed.
 
 ## `machine_schedule.py` — `li schedule ... --machine` payload rules
 
@@ -303,17 +312,43 @@ choice — the budget is still enforced on these ops, they're just never told
 about it, so this case logs a warning and returns no preambles rather than
 inventing a value.
 
-**`_hand_mcp_servers`** — a caller-named MCP server set is applied to every
-worker whose provider has a transport for it; a worker whose provider has
-none is warned about, naming the worker (`label`) since a run's workers can
-resolve different providers. `{}` (an explicit empty set) and `None` (no set
-at all) are different requests: `{}` means "apply no servers" and is applied
-as the whole set; `None` means there's nothing to hand over and the model
-keeps whatever it already had. Branches built through `create_agent` (the
-built-in orchestrator, casts-role workers, the fanout synthesis branch) get
-the same set as `resolved_mcp_servers`: left unset, the factory discovers a
-config of its own, the home `.lionagi/.mcp.json` included, and that replaces
-the set just handed over. Only a run with no set at all leaves it unset.
+**`_hand_mcp_servers`** — the orchestrator is handed the set the run resolved.
+When the run resolved a set, leaf workers, nodes spawned while the flow runs
+and the fanout synthesis branch are handed an exact set: when the run's set
+came from discovery, lionagi's own job-control server (`li mcp`, `python -m
+lionagi.mcp` or `python -m lionagi.cli mcp`, under whatever alias it is
+registered and behind a launcher such as `uv run` or `env`, recognised by
+`_is_job_control_server`; any program named `li` run with `mcp` is taken for
+it) is withheld and the rest of the found set reaches them, and a planned
+worker's system prompt names each withheld alias, so its absence is explained
+rather than met as a missing tool. Naming `--mcp-config` is the opt-in: it
+grants everything the file lists, job control included, for a worker meant to
+orchestrate in turn. A submission's snapshot is the exception: it is read as
+found even when named (above), so the policy still applies to it. Once a worker set exists it is the worker's whole set, handed over
+exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
+of the servers it would discover itself, and every server a codex config
+declares outside the set is disabled by name. A worker handed a set therefore
+has none of the servers its CLI would load from its own configuration, a
+withheld one included; the orchestrator keeps them. To disable them a codex
+worker reads codex's own server list (`$CODEX_HOME/config.toml`, else `codex
+mcp list --json`), and its build fails rather than leave them enabled when
+neither can be read, as a `--no-mcp-config` codex worker's build already does.
+The synthesis branch starts from a copy of the orchestrator's model, so the
+same exclusive hand-over is what takes the orchestrator's servers off it. A
+worker whose provider has no transport for the set is warned
+about, naming the worker (`label`) since a run's workers can resolve
+different providers. `{}` (an explicit empty set) and `None` (no set at all)
+are different requests: `{}` means "apply no servers" and is applied as the
+whole set; `None` means there's nothing to hand over and the model keeps
+whatever it already had. Branches built through `create_agent` get the
+matching set as `resolved_mcp_servers` (the built-in orchestrator the run's
+set; casts-role workers and the fanout synthesis branch the worker set): left
+unset, the factory discovers a config of its own, the home
+`.lionagi/.mcp.json` included, and that replaces the set just handed over.
+Only a run with no set at all leaves it unset, so in such a run the built-in
+orchestrator, a casts-role worker and the fanout synthesis branch each get the
+factory's home `.lionagi/.mcp.json`, which the job-control policy does not
+filter (#3444).
 
 **`collect_worker_artifacts`** — the worker roster comes from the artifact
 directories the run actually handed out, not a scan for non-empty ones, so a
