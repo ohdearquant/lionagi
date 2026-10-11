@@ -306,9 +306,11 @@ async def test_explicit_mcp_config_beats_a_config_at_the_target_directory(spawn,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
-async def test_no_mcp_config_hands_nothing_over(spawn, model):
+async def test_no_mcp_config_hands_nothing_over(spawn, codex_home, model):
     """--no-mcp-config is a choice: the leg's request carries no server set."""
     from lionagi.cli.agent import _run_agent
+
+    codex_home.write_config({})
 
     await _run_agent(
         model,
@@ -320,6 +322,60 @@ async def test_no_mcp_config_hands_nothing_over(spawn, model):
     )
 
     assert _forwarded_servers(spawn.branches[-1]) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
+async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_path, preset):
+    """The record holds the launch directory, the named config as an absolute
+    path and the refusal flag: what a resume that names no flag replays."""
+    from lionagi.cli.agent import _MCP_LAUNCH_KEY, _run_agent
+
+    named = _write_mcp_config(tmp_path / "named", {"named": {"command": "named-server"}})
+
+    await _run_agent(
+        "claude_code/sonnet",
+        "go",
+        preset=preset,
+        cwd=str(spawn.target_dir),
+        yolo=True,
+        mcp_config=str(named),
+    )
+
+    assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY] == {
+        "mcp_config": str(named.resolve()),
+        "no_mcp_config": False,
+        "launch_dir": str(spawn.submit_dir.resolve()),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
+@pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
+async def test_no_mcp_config_leaves_the_leg_no_servers_of_its_own_either(
+    spawn, codex_home, model, preset
+):
+    """Handing nothing over is half of it: a CLI left to itself loads every
+    server its own config declares, so the request has to say the set is empty."""
+    from lionagi.cli.agent import _run_agent
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+
+    await _run_agent(
+        model,
+        "go",
+        preset=preset,
+        cwd=str(spawn.target_dir),
+        yolo=True,
+        no_mcp_config=True,
+    )
+
+    kwargs = spawn.branches[-1].chat_model.endpoint.config.kwargs
+    if model.startswith("codex"):
+        assert kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    else:
+        assert kwargs["mcp_servers"] == {}
+        assert kwargs["strict_mcp_config"] is True
 
 
 @pytest.mark.asyncio
@@ -341,9 +397,10 @@ async def test_spawn_message_names_what_the_request_carries(spawn, model):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
-async def test_no_mcp_config_is_not_reported_as_servers_handed_over(spawn, model):
+async def test_no_mcp_config_is_not_reported_as_servers_handed_over(spawn, codex_home, model):
     from lionagi.cli.agent import _run_agent
 
+    codex_home.write_config({})
     with _capture_cli_messages() as messages:
         await _run_agent(
             model,

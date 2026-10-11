@@ -87,16 +87,20 @@ def _is_assignment_shaped_synthesis(value: object) -> bool:
 async def _fresh_synthesis_branch(env: OrchestrationEnv):
     """Build a clean synthesizer branch without the planner conversation."""
     from lionagi.agent import AgentSpec, create_agent
+    from lionagi.ln import Unset
 
     spec = AgentSpec.compose(
         "synthesizer",
         pack=env.pack if env.pack is not None else "default",
         grant_emissions=False,
     )
+    # The run's set, not the factory's own discovery: see setup_orchestration.
+    run_servers = getattr(env, "mcp_servers", None)
     branch = await create_agent(
         spec,
         load_settings=False,
         chat_model=env.orc_branch.chat_model.copy(),
+        resolved_mcp_servers=Unset if run_servers is None else run_servers,
     )
     branch.name = "synthesis"
     env.session.include_branches(branch)

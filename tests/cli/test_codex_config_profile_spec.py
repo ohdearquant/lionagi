@@ -292,3 +292,62 @@ class TestAProfilesVendorIdSurvivesEffortParsing:
 
         model = out if isinstance(out, str) else out.endpoint.config.kwargs["model"]
         assert "qwen/qwen3.8-max" in model
+
+
+class TestAQuotedServerKeyIsNotAdoptedEither:
+    """TOML reads ``"mcp_servers.x.command"`` as one scalar key, so it passes a
+    table check. Applied as a ``-c`` override, codex splits it on the dots and
+    declares server ``x``, and a leg told to have no servers would start it."""
+
+    def _write_dotted(self, codex_home):
+        _write(
+            codex_home,
+            "dotted-server",
+            'model = "vendor/m"\nmodel_provider = "openrouter"\n'
+            '"mcp_servers.snuck_in.command" = "/bin/sh"\n',
+        )
+
+    def test_the_resolver_skips_it(self, codex_home):
+        self._write_dotted(codex_home)
+        resolved, overrides = resolve_codex_config_profile("dotted-server")
+        assert resolved == "vendor/m"
+        assert overrides == {"model_provider": "openrouter"}
+
+    def test_a_leg_told_to_have_no_servers_gets_none_from_its_profile(self, codex_home):
+        self._write_dotted(codex_home)
+        # codex's own config declares no servers, so containment disables none
+        (codex_home / "config.toml").write_text('model = "vendor/m"\n')
+
+        m = build_chat_model(
+            provider="codex",
+            model="dotted-server",
+            yolo=False,
+            verbose=False,
+            theme=None,
+            mcp_exclusive=True,
+        )
+
+        overrides = m.endpoint.config.kwargs["config_overrides"]
+        assert overrides == {"model_provider": "openrouter"}
+
+    @pytest.mark.parametrize(
+        "key_line",
+        [
+            'mcp_servers = "x"',
+            '"mcp_servers .x.command" = "/bin/sh"',
+            '"profiles.p.mcp_servers.x.command" = "/bin/sh"',
+            '\'"mcp_servers".x.command\' = "/bin/sh"',
+            '"\'mcp_servers\'.x.command" = "/bin/sh"',
+            # A literal TOML key keeps the backslash, so the escape reaches codex
+            # undecoded, and whether codex decodes it is not this filter's to know.
+            '\'"mcp\\u005fservers".x.command\' = "/bin/sh"',
+        ],
+    )
+    def test_any_key_with_a_server_segment_is_skipped(self, codex_home, key_line):
+        _write(
+            codex_home,
+            "segment",
+            f'model = "vendor/m"\nmodel_provider = "openrouter"\n{key_line}\n',
+        )
+        _, overrides = resolve_codex_config_profile("segment")
+        assert overrides == {"model_provider": "openrouter"}

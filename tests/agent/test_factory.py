@@ -262,6 +262,27 @@ def test_unforwardable_mcp_without_native_registration_still_warns(tmp_path, cap
     assert any("will not be reachable" in record.getMessage() for record in caplog.records)
 
 
+def test_a_caller_resolved_empty_set_is_not_reported_unreachable(caplog):
+    """A caller that resolved no servers asked for none, so a provider with no
+    passthrough loses nothing. The second call is the control: a non-empty set
+    on the same branch still warns."""
+    import logging
+
+    from lionagi.agent.factory import _forward_mcp_to_cli_request
+    from lionagi.service.imodel import iModel
+
+    config = AgentSpec.compose("implementer", model="openai/gpt-4.1-mini")
+    branch = Branch(chat_model=iModel(provider="openai", model="gpt-4.1-mini"))
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
+        _forward_mcp_to_cli_request(branch, config, resolved_servers={})
+    assert not any("will not be reachable" in r.getMessage() for r in caplog.records)
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
+        _forward_mcp_to_cli_request(branch, config, resolved_servers={"khive": {"command": "true"}})
+    assert any("will not be reachable" in r.getMessage() for r in caplog.records)
+
+
 async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_path):
     """User pre-hooks must not be able to rewrite safe args after permission checks."""
     from lionagi.agent.permissions import PermissionPolicy
@@ -1155,16 +1176,18 @@ async def test_forward_mcp_codex_empty_allowlist_disables_discovered_servers(tmp
     from spec.mcp_servers=None ("not configured"). codex has no wholesale
     `mcp_servers` clear override (`-c mcp_servers={}` merges rather than
     replaces, confirmed against the installed CLI), so each server the
-    .mcp.json would otherwise have exposed must be disabled by name.
+    .mcp.json names that codex would also load must be disabled by name.
 
-    CODEX_HOME points at an isolated dir with a config.toml carrying no
-    ambient `[mcp_servers.*]` tables, so ambient ecosystem discovery
-    contributes nothing here and the exact-override assertion below stays
-    scoped to just the two lionagi-resolved servers (ambient-union coverage
-    is test_forward_mcp_codex_empty_allowlist_disables_ambient_servers_too)."""
+    codex disables only names its own config declares (a name it has no
+    table for gets none, see
+    test_codex_disables_only_servers_its_own_config_declares), so the isolated
+    CODEX_HOME declares both servers here."""
     codex_home = tmp_path / "codex_home"
     codex_home.mkdir()
-    (codex_home / "config.toml").write_text('model = "gpt-5"\n')
+    (codex_home / "config.toml").write_text(
+        'model = "gpt-5"\n\n[mcp_servers.khive]\ncommand = "kkernel"\n\n'
+        '[mcp_servers.other]\ncommand = "other-mcp"\n'
+    )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     mcp_path = _write_mcp_config(

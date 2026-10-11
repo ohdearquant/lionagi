@@ -85,6 +85,114 @@ def test_an_empty_exclusive_set_disables_by_name_for_the_codex_transport(codex_h
     }
 
 
+def test_an_exclusive_caller_with_no_set_is_strict_for_the_claude_transport():
+    """No set from a caller that declares the whole set means no servers.
+
+    `--no-mcp-config` resolves to a null map, the same map a failed search
+    produces. Read as "no opinion", it left the request untouched and the Claude
+    CLI loaded every server it finds for itself.
+    """
+    kwargs: dict = {}
+    assert apply_forwarded_mcp_servers(kwargs, None, provider="claude_code", exclusive=True)
+    assert kwargs["mcp_servers"] == {}
+    assert kwargs["strict_mcp_config"] is True
+
+
+def test_an_exclusive_caller_with_no_set_disables_every_configured_codex_server(codex_home):
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(kwargs, None, provider="codex", exclusive=True)
+
+    assert kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+
+
+def test_a_caller_with_no_set_and_no_claim_to_the_whole_set_changes_nothing(codex_home):
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(kwargs, None, provider="codex") is False
+    assert kwargs == {}
+
+
+def test_an_exclusive_set_replaces_the_servers_a_request_already_carries(codex_home):
+    """A resumed leg's request is the persisted one, holding the servers the
+    previous run was handed; a set declared whole replaces them, both the
+    per-field overrides and a whole `mcp_servers` table."""
+    codex_home.write_config({})
+    kwargs: dict = {
+        "config_overrides": {
+            "mcp_servers.old.command": "old-server",
+            "mcp_servers": {"older": {"command": "older-server"}},
+            "model_reasoning_effort": "high",
+        }
+    }
+
+    assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
+
+    assert kwargs["config_overrides"] == {"model_reasoning_effort": "high"}
+
+
+def test_an_exclusive_set_leaves_no_emptied_override_map_behind(codex_home):
+    codex_home.write_config({})
+    kwargs: dict = {"config_overrides": {"mcp_servers.old.command": "old-server"}}
+
+    assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
+
+    assert "config_overrides" not in kwargs
+
+
+def test_an_exclusive_set_drops_a_generated_profile_and_keeps_a_named_one(codex_home):
+    """A generated profile holds nothing but a previous run's servers; a profile
+    the caller named is theirs."""
+    from lionagi.agent.factory import _CODEX_MCP_PROFILE_PREFIX
+
+    codex_home.write_config({})
+    generated = {"profile": _CODEX_MCP_PROFILE_PREFIX + "0" * 32}
+    named = {"profile": "work"}
+
+    apply_forwarded_mcp_servers(generated, {}, provider="codex", exclusive=True)
+    apply_forwarded_mcp_servers(named, {}, provider="codex", exclusive=True)
+
+    assert "profile" not in generated
+    assert named["profile"] == "work"
+
+
+@pytest.mark.asyncio
+async def test_codex_disables_only_servers_its_own_config_declares(codex_home, tmp_path):
+    """An allowlist excludes servers of the config it filters, and codex is told
+    to disable only the names its own config declares: an
+    `mcp_servers.<name>.enabled=false` override for any other name is a table
+    with no server in it, which codex refuses to start with."""
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.spec import AgentSpec
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    config_path = tmp_path / ".mcp.json"
+    config_path.write_text(json.dumps({"mcpServers": {"docs": {"command": "docs-mcp-absent"}}}))
+    spec = AgentSpec.compose("reviewer", model=CODEX_SPEC)
+    spec.mcp_config_path = str(config_path)
+    spec.mcp_servers = []
+
+    branch = await create_agent(spec, load_settings=False)
+
+    overrides = branch.chat_model.endpoint.config.kwargs["config_overrides"]
+    assert overrides == {"mcp_servers.khive.enabled": False}
+
+
+@pytest.mark.parametrize("spelling", ["CLAUDE_CODE", " claude_code ", "Claude_Code"])
+def test_a_claude_provider_spelling_takes_the_claude_transport(spelling):
+    """A spelling that resolves to the Claude CLI must not fall through to the
+    codex override form, which leaves the strict flag unset."""
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(kwargs, SERVERS, provider=spelling, exclusive=True)
+
+    assert kwargs["mcp_servers"] == SERVERS
+    assert kwargs["strict_mcp_config"] is True
+    assert "config_overrides" not in kwargs
+
+
 def test_a_provider_without_a_transport_reports_that_it_carried_nothing():
     kwargs: dict = {}
     assert apply_forwarded_mcp_servers(kwargs, SERVERS, provider="gemini_code") is False
@@ -152,19 +260,51 @@ def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
     assert claude.endpoint.config.kwargs["strict_mcp_config"] is True
 
 
+def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(codex_home):
+    """`--no-mcp-config` reaches build_chat_model as a null map; the caller says
+    it was declared, so the request is the whole (empty) set."""
+    from lionagi.cli._providers import build_chat_model
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+
+    codex = build_chat_model(
+        "codex", "gpt-5.3-codex", False, False, None, mcp_servers=None, mcp_exclusive=True
+    )
+    assert codex.endpoint.config.kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+
+    claude = build_chat_model(
+        "claude_code", "claude-opus-4-5", False, False, None, mcp_servers=None, mcp_exclusive=True
+    )
+    assert claude.endpoint.config.kwargs["mcp_servers"] == {}
+    assert claude.endpoint.config.kwargs["strict_mcp_config"] is True
+
+
+def test_plain_leg_with_no_set_and_no_declaration_is_left_alone(codex_home):
+    from lionagi.cli._providers import build_chat_model
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers=None)
+    assert model == "codex/gpt-5.3-codex"
+
+
 # Site 2 — the resumed leg.
 
 
-def _wire_resume_stubs(monkeypatch, tmp_path: Path, provider: str, model: str) -> str:
+def _wire_resume_stubs(
+    monkeypatch, tmp_path: Path, provider: str, model: str, **request_kwargs
+) -> str:
     """Persist a branch on *provider* and stub every external I/O `_run_agent`
     does, so what the resumed leg's request ends up carrying is all that is
-    left to observe."""
+    left to observe. *request_kwargs* is what the previous run's request
+    carried."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch, iModel
     from lionagi.service.manager import iModelManager
 
     branch = Branch(
-        chat_model=iModel(provider=provider, endpoint="query_cli", model=model, api_key="dummy")
+        chat_model=iModel(
+            provider=provider, endpoint="query_cli", model=model, api_key="dummy", **request_kwargs
+        )
     )
     branch_path = tmp_path / f"{branch.id}.json"
     branch_path.write_text(json.dumps(branch.to_dict()))
@@ -296,6 +436,397 @@ async def test_resumed_leg_keeps_codex_secret_fields_off_the_command_line(
     )
 
     _assert_secret_is_off_the_wire(seen["kwargs"], seen["args"], codex_home)
+
+
+@pytest.mark.asyncio
+async def test_resumed_codex_leg_with_no_mcp_config_drops_the_previous_runs_servers(
+    monkeypatch, tmp_path, codex_home
+):
+    """The persisted request holds the servers the previous run was handed;
+    `--no-mcp-config` on the resume means none of them, and none of codex's own."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server"},
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id, no_mcp_config=True)
+
+    assert seen["kwargs"]["config_overrides"] == {"mcp_servers.khive.enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_resumed_claude_leg_with_no_mcp_config_is_strict_and_empty(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    branch_id = _wire_resume_stubs(
+        monkeypatch, tmp_path, "claude_code", "sonnet", mcp_servers=dict(SERVERS)
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id, no_mcp_config=True)
+
+    assert seen["kwargs"]["mcp_servers"] == {}
+    assert seen["kwargs"]["strict_mcp_config"] is True
+
+
+@pytest.mark.asyncio
+async def test_resumed_leg_whose_search_finds_nothing_keeps_the_previous_runs_servers(
+    monkeypatch, tmp_path, codex_home
+):
+    """Only a declared set replaces the persisted one. A search that finds no
+    config declares nothing: it leaves a resumed leg the servers it had, as it
+    leaves a new leg to what its CLI finds, and disables none of codex's own."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpResolution
+
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server"},
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "resolve_spawn_mcp_servers",
+        lambda *a, **kw: McpResolution(None, "no_mcp_config_found", None, tmp_path),
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["config_overrides"] == {"mcp_servers.old.command": "old-server"}
+
+
+def _record_launch(tmp_path: Path, branch_id: str, launch: dict) -> None:
+    import lionagi.cli.agent as agent_mod
+
+    branch_path = tmp_path / f"{branch_id}.json"
+    data = json.loads(branch_path.read_text())
+    data.setdefault("metadata", {})[agent_mod._MCP_LAUNCH_KEY] = launch
+    branch_path.write_text(json.dumps(data))
+
+
+@pytest.mark.asyncio
+async def test_a_resume_with_no_flag_searches_where_the_branch_was_launched(monkeypatch, tmp_path):
+    """The launch directory decides, not the directory the resume runs in. That
+    directory holds a config of its own, and its server must not reach the leg."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    launched = tmp_path / "launched"
+    resumed = tmp_path / "resumed"
+    launched.mkdir()
+    resumed.mkdir()
+    (launched / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-launch": {"command": "a"}}})
+    )
+    (resumed / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-resume": {"command": "b"}}})
+    )
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": None, "no_mcp_config": False, "launch_dir": str(launched)},
+    )
+    monkeypatch.chdir(resumed)
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert set(seen["kwargs"]["mcp_servers"]) == {"from-launch"}
+
+
+@pytest.mark.asyncio
+async def test_a_branch_with_no_recorded_launch_keeps_its_servers_on_resume(
+    monkeypatch, tmp_path, caplog
+):
+    """A branch from before the launch was recorded resolves nothing new: it keeps
+    what its earlier run was handed, and the resuming directory adds nothing."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    resumed = tmp_path / "resumed"
+    resumed.mkdir()
+    (resumed / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-resume": {"command": "b"}}})
+    )
+    branch_id = _wire_resume_stubs(
+        monkeypatch, tmp_path, "claude_code", "sonnet", mcp_servers=dict(SERVERS)
+    )
+    monkeypatch.chdir(resumed)
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    with caplog.at_level(logging.WARNING, logger=WARN_LOGGER):
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["mcp_servers"] == SERVERS
+    assert "no MCP servers are being handed" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named_by", ["flag", "record"])
+async def test_a_set_resolved_on_resume_replaces_the_one_the_codex_leg_had(
+    monkeypatch, tmp_path, codex_home, named_by
+):
+    """codex takes a set as overrides merged into the persisted request, so the
+    servers the earlier run was handed go first, or the leg starts both sets.
+    Settings that are not servers stay."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({})
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        config_overrides={"mcp_servers.old.command": "old-server", "model_provider": "vendor"},
+    )
+    config = _mcp_config_file(tmp_path, SERVERS)
+    kwargs = {}
+    if named_by == "flag":
+        kwargs["mcp_config"] = config
+    else:
+        _record_launch(
+            tmp_path,
+            branch_id,
+            {"mcp_config": config, "no_mcp_config": False, "launch_dir": str(tmp_path)},
+        )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id, **kwargs)
+
+    assert seen["kwargs"]["config_overrides"] == {
+        "model_provider": "vendor",
+        "mcp_servers.khive.command": "kkernel",
+        "mcp_servers.khive.args": ["serve"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_resume_whose_recorded_config_is_gone_names_it(monkeypatch, tmp_path):
+    """The caller passed no --mcp-config, so the refusal names the config the
+    branch was launched with, and the two ways on."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    gone = tmp_path / "gone" / ".mcp.json"
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": str(gone), "no_mcp_config": False, "launch_dir": str(tmp_path)},
+    )
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    message = str(raised.value)
+    assert message.startswith(f"this branch was launched with the MCP config {gone}")
+    assert "which is no longer a readable file" in message
+    assert "--no-mcp-config" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["not_utf8", "unknown_user", "not_a_string"])
+async def test_a_recorded_config_that_cannot_even_be_read_is_refused_by_name(
+    monkeypatch, tmp_path, kind
+):
+    """A record naming a config whose bytes are not text, a home directory that
+    does not exist, or something that is not a path at all still refuses the
+    resume in its own words, before anything is spawned."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    if kind == "not_utf8":
+        path = tmp_path / "latin1" / ".mcp.json"
+        path.parent.mkdir()
+        path.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+        recorded = str(path)
+    elif kind == "unknown_user":
+        recorded = "~no-such-user-for-this-test/.mcp.json"
+    else:
+        recorded = 5
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": recorded, "no_mcp_config": False, "launch_dir": str(tmp_path)},
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    message = str(raised.value)
+    assert message.startswith(f"this branch was launched with the MCP config {recorded}")
+    assert "--no-mcp-config" in message
+    assert seen == {}
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_config_that_can_no_longer_be_used_names_it(monkeypatch, tmp_path):
+    """The file is there but no longer reads as a config. The refusal still names
+    the recorded config and the ways on, not a --mcp-config the caller never passed."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    broken = tmp_path / "broken" / ".mcp.json"
+    broken.parent.mkdir()
+    broken.write_text("{not json")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": str(broken), "no_mcp_config": False, "launch_dir": str(tmp_path)},
+    )
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    message = str(raised.value)
+    assert message.startswith(f"this branch was launched with the MCP config {broken}")
+    assert "is not valid JSON" in message
+    assert "--no-mcp-config" in message
+
+
+@pytest.mark.asyncio
+async def test_a_relative_recorded_config_is_read_from_the_launch_directory(monkeypatch, tmp_path):
+    """A relative path in the record is taken from where the branch was launched,
+    as the search is, not from the directory the resume runs in."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    launched = tmp_path / "launched"
+    resumed = tmp_path / "resumed"
+    (launched / "cfg").mkdir(parents=True)
+    resumed.mkdir()
+    (launched / "cfg" / "mcp.json").write_text(json.dumps({"mcpServers": SERVERS}))
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": "cfg/mcp.json", "no_mcp_config": False, "launch_dir": str(launched)},
+    )
+    monkeypatch.chdir(resumed)
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["mcp_servers"] == SERVERS
+
+
+_GENERATED_PROFILE = "lionagi-mcp-" + "0" * 32
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_on_disk", [True, False])
+async def test_a_resume_naming_a_removed_generated_codex_profile_is_refused(
+    monkeypatch, tmp_path, codex_home, profile_on_disk
+):
+    """The earlier run gave codex its servers' env through a generated profile,
+    which is removed when that run exits. A resume that resolves no new set keeps
+    the request it had, so it would name a file that is gone: it is refused
+    instead. While the file is there, the leg keeps it."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpConfigError
+
+    if profile_on_disk:
+        (codex_home.path / f"{_GENERATED_PROFILE}.config.toml").write_text(
+            '[mcp_servers.khive.env]\nKHIVE_API_KEY = "x"\n'
+        )
+    branch_id = _wire_resume_stubs(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "gpt-5.3-codex",
+        profile=_GENERATED_PROFILE,
+        config_overrides={"mcp_servers.khive.command": "kkernel"},
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+
+    if profile_on_disk:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+        assert seen["kwargs"]["profile"] == _GENERATED_PROFILE
+        return
+
+    with pytest.raises(McpConfigError) as raised:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+    message = str(raised.value)
+    assert _GENERATED_PROFILE in message
+    assert "--no-mcp-config" in message
+    assert seen == {}
 
 
 @pytest.mark.asyncio
