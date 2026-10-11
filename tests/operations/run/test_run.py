@@ -30,6 +30,7 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
+from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
@@ -37,10 +38,16 @@ from lionagi.session.branch import Branch
 # Helpers
 
 
-def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = None):
+def _make_fake_cli_model(
+    chunks: list[StreamChunk],
+    session_id: str | None = None,
+    api_call_metadata: dict | None = None,
+    api_call_metadata_on_close: dict | None = None,
+):
     """Return (model, captured_kwargs_dict) where model is an iModel patched to
     behave as a CLI endpoint yielding *chunks* from its stream() method."""
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    api_call_endpoint = m.endpoint
     endpoint_ns = types.SimpleNamespace(
         is_cli=True,
         session_id=session_id,
@@ -52,14 +59,24 @@ def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = Non
 
     async def create_event(**kw):
         captured.update(kw)
+        if api_call_metadata is not None or api_call_metadata_on_close is not None:
+            return APICalling(
+                payload=kw,
+                endpoint=api_call_endpoint,
+                metadata=dict(api_call_metadata or {}),
+            )
         return object()
 
     m.create_event = create_event
     m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
 
     async def stream(api_call=None):
-        for chunk in chunks:
-            yield chunk
+        try:
+            for chunk in chunks:
+                yield chunk
+        finally:
+            if api_call_metadata_on_close is not None:
+                api_call.metadata.update(api_call_metadata_on_close)
 
     m.stream = stream
     return m, captured
@@ -124,6 +141,34 @@ async def test_run_passes_resume_from_provider_session_id_and_updates_endpoint_s
     text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
     assert len(text_msgs) == 1
     assert text_msgs[0].response == "ok"
+
+
+async def test_run_persists_exact_call_served_model_on_final_response():
+    """Close the call before persisting evidence on a benign early stream end."""
+    model, _ = _make_fake_cli_model(
+        [
+            StreamChunk(type="text", content="verified"),
+            StreamChunk(type="error", metadata={"benign_eos": True}),
+        ],
+        api_call_metadata_on_close={"served_model": "claude-opus-4-1"},
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "attest", RunParam()))
+
+    response = next(result for result in results if isinstance(result, AssistantResponse))
+    assert response.metadata["api_call_meta"]["metadata"]["served_model"] == "claude-opus-4-1"
+
+    branch_record = branch.to_dict()
+    messages = branch_record["messages"]
+    terminal_id = messages["progression"]["order"][-1]
+    terminal_message = next(
+        message for message in messages["collections"] if message["id"] == terminal_id
+    )
+    assert terminal_message["metadata"]["api_call_meta"]["metadata"]["served_model"] == (
+        "claude-opus-4-1"
+    )
 
 
 async def test_run_threads_context_provider_blocks_into_first_prompt():
@@ -995,6 +1040,7 @@ async def test_imodel_stream_propagates_cancellation():
 
     api_call = AsyncMock(spec=APICalling)
     api_call.id = "test-api-call-id"
+    api_call.metadata = {}
     api_call.execution = AsyncMock()
     api_call.execution.status = EventStatus.PENDING
 
