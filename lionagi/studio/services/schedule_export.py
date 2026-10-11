@@ -99,21 +99,22 @@ def _member_key(row: dict[str, Any], doc_project: str, used: set[str]) -> str:
 
 
 def _effective_project(row: dict[str, Any]) -> str | None:
-    """The project namespace a row is grouped under for document assignment:
-    the stored project column when set, else the qualified name's own
-    prefix. This is a grouping heuristic only -- it does not by itself
-    guarantee round-trip identity (a stored ``action_project`` that doesn't
-    match the name's own prefix, or doesn't match at all, still gets grouped
-    here). The actual round-trip check happens afterwards in
-    ``_group_into_documents``, which compares the name reconstructed from
-    the assigned document project + local key against the row's stored
-    name and discloses any mismatch -- so a wrong grouping decision here can
-    at worst produce an over-eager disclosure, never a silent miss."""
+    """Choose the document namespace without guessing past stored identity.
+
+    ``action_project`` is authoritative only when the row's qualified name
+    actually carries that namespace.  A conflicting qualified name groups
+    under its own prefix so re-apply preserves its identity; the member still
+    retains the stored project as its execution project.  Bare names have no
+    namespace evidence, so their stored project remains the best available
+    grouping and the later reconstruction check discloses the rename.
+    """
     project = row.get("action_project")
-    if project:
-        return project
     name = row["name"]
-    return name.split("/", 1)[0] if "/" in name else None
+    if project and name.startswith(f"{project}/"):
+        return project
+    if "/" in name:
+        return name.split("/", 1)[0]
+    return project
 
 
 def _rename_note(original_name: str, reconstructed_name: str) -> str | None:
@@ -341,9 +342,9 @@ def _group_into_documents(
     base_name: str,
 ) -> tuple[list[ScheduleSetDocument], dict[str, str]]:
     """Split *ready* rows into one ``ScheduleSet`` document per distinct
-    effective project (``_effective_project``: stored column, else the
-    qualified name's prefix; bare-named rows share a single
-    *base_name*-keyed group). Grouping before computing member keys
+    effective project (``_effective_project``: a matching stored namespace,
+    else the qualified name's prefix; bare-named rows use their stored
+    project or share a *base_name*-keyed group). Grouping before computing member keys
     guarantees a row's effective project always matches its document's
     project, avoiding double-qualification on re-apply. Also returns a
     ``{row_name: reconstructed_qualified_name}`` map so callers can compare
