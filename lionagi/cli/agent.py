@@ -1400,6 +1400,29 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if _terminal_status == "failed":
+                # The reason teardown decided for this run, so a reader of the run directory
+                # alone can tell a provider's refusal from a crash. A failure teardown decides
+                # (a missing required artifact, a failed operation) raises nothing here, and the
+                # session row is not a reliable record of it: a resume reuses the row, and one
+                # whose reopen or terminal write missed still carries an earlier run's reason. The
+                # exception speaks for a run teardown decided nothing for.
+                _decided = (live or {}).get("terminal_reason")
+                _error = _decided[1] if _decided and _decided[0] == _terminal_status else None
+                if _decided and _decided[0] != _terminal_status:
+                    # Teardown writes only the outcome it decided, so a row reading another one
+                    # was ended by another writer: a concurrent run of the session, or the state
+                    # doctor sweeping it as stale. The error names this run's outcome and leaves
+                    # the other writer's reason on the row.
+                    _error = (
+                        f"The session row reads {_terminal_status}, which this run's teardown "
+                        f"did not write; this run's own outcome was {_decided[0]}."
+                    )
+                if _error is None and _terminal_exc is not None:
+                    _, _error, _ = resolve_run_reason(
+                        status=_terminal_status, exception=_terminal_exc
+                    )
+                run_manifest["error"] = _error or "The run failed; no reason was recorded for it."
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
             # Only when an exception is on its way out, because then this is
@@ -1431,6 +1454,11 @@ async def _run_agent(
         _terminal_status = "failed"
         run_manifest["status"] = _terminal_status
         run_manifest["ended_at"] = time.time()
+        # Failed only now, after teardown wrote run.json, so the reason is written here.
+        run_manifest["error"] = (
+            "Resume produced an empty stream; the session may have expired "
+            f"(resume target: {resume or 'last'})."
+        )
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)
 

@@ -688,7 +688,9 @@ async def run(
                             if res := await _flush_response():
                                 yield res
                             content = chunk.content or "(empty error)"
-                            raise classify_provider_error(content)
+                            raise classify_provider_error(
+                                content, status=chunk.metadata.get("error_status")
+                            )
 
                 # A benign provider sentinel exits the loop before the wrapper
                 # naturally exhausts. Close it now: iModel stamps exact-call

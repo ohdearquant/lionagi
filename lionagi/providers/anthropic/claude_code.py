@@ -35,6 +35,10 @@ from lionagi.providers._cli_subprocess import (
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
+from lionagi.providers._provider_errors import (
+    ProviderError,
+    classify_provider_error,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -620,18 +624,35 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [resolve_claude_cli(), *request.as_cmd_args()]
-    # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
-    async with contextlib.aclosing(
-        ndjson_from_cli(
-            cmd,
-            cwd=workspace,
-            env=request.env,
-            tail_repair=_claude_tail_repair,
-            on_spawn=request.on_spawn,
-        )
-    ) as stream:
-        async for obj in stream:
-            yield obj
+    # The CLI states a refusal (a session limit, say) on stdout as an error result and then exits
+    # nonzero with nothing on stderr; the exit alone would read as a crash, so the result it gave
+    # rides the raised error, classified.
+    refusal: dict | None = None
+    try:
+        # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
+        async with contextlib.aclosing(
+            ndjson_from_cli(
+                cmd,
+                cwd=workspace,
+                env=request.env,
+                tail_repair=_claude_tail_repair,
+                on_spawn=request.on_spawn,
+            )
+        ) as stream:
+            async for obj in stream:
+                if isinstance(obj, dict) and obj.get("type") == "result" and obj.get("is_error"):
+                    refusal = obj
+                yield obj
+    except RuntimeError as exc:
+        if refusal is None or isinstance(exc, ProviderError):
+            raise
+        said = str(refusal.get("result") or "").strip() or "an error result with no text"
+        status = refusal.get("api_error_status")
+        if status is not None:
+            said = f"{said} (api_error_status {status})"
+        message = f"Claude Code said: {said}; {exc}"
+        # The status is the result's own field and decides quota; the text never does beside it.
+        raise classify_provider_error(message, status=status) from exc
 
 
 # --------------------------------------------------------------------------- SSE route
@@ -920,6 +941,7 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.duration_ms = obj.get("duration_ms")
                 session.duration_api_ms = obj.get("duration_api_ms")
                 session.is_error = obj.get("is_error", False)
+                session.error_status = obj.get("api_error_status")
 
                 # Terminal usage/cost/turns/duration — the only channel run.py
                 # reads provider-reported usage from.
@@ -1028,6 +1050,12 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                             type="error",
                             content=item.result or "Claude Code session failed",
                             is_error=True,
+                            # the run classifies by this, ahead of the text (classify_provider_error)
+                            metadata=(
+                                {"error_status": item.error_status}
+                                if item.error_status is not None
+                                else {}
+                            ),
                         )
                     continue
                 yield item
