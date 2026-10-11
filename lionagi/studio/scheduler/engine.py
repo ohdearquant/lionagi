@@ -376,6 +376,10 @@ class SchedulerEngine:
         # would close the store those awaits then reopen.
         self._lifecycle_lock = asyncio.Lock()
         self._fire_tasks: set[asyncio.Task] = set()
+        # One tracked poll-and-fire task per github_poll schedule. Its fires are awaited inside the
+        # poll loop (the cursor advances per committed event), so the loop lasts as long as the
+        # slowest action it dispatched; run inside the tick, it made every other schedule wait for it.
+        self._github_tick_tasks: dict[str, asyncio.Task] = {}
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
         # Starts unresolved rather than at 0.0, which would make a prune due on the first tick. It
@@ -742,6 +746,11 @@ class SchedulerEngine:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._retention_task
                 self._retention_task = None
+            if self._github_tick_tasks:
+                for gt in list(self._github_tick_tasks.values()):
+                    gt.cancel()
+                await asyncio.gather(*self._github_tick_tasks.values(), return_exceptions=True)
+                self._github_tick_tasks.clear()
             if self._fire_tasks:
                 for ft in list(self._fire_tasks):
                     ft.cancel()
@@ -1389,7 +1398,7 @@ class SchedulerEngine:
         for s in schedules:
             try:
                 if s["trigger_type"] == "github_poll":
-                    await self._tick_github(s, now)
+                    self._start_github_tick(s, now)
                 else:
                     nfa = s.get("next_fire_at")
                     if nfa is not None and nfa <= now:
@@ -1404,6 +1413,37 @@ class SchedulerEngine:
                             )
             except Exception:
                 _log.exception("Error evaluating schedule %s", s.get("name"))
+
+    def _start_github_tick(self, schedule: dict, now: float) -> None:
+        """Run this schedule's poll-and-fire pass as a tracked task, one at a time per schedule.
+
+        A pass still in flight from an earlier tick keeps the schedule's turn: the events it has not
+        reached are re-listed by its own next poll, and starting a second pass would race it on the
+        cursor. The tick records only the hand-off, so one long action no longer stalls every other
+        schedule on the box.
+        """
+        sid = schedule["id"]
+        active = self._github_tick_tasks.get(sid)
+        if active is not None and not active.done():
+            _log.debug(
+                "Schedule %s (%s): github poll pass still running; not starting another",
+                schedule.get("name"),
+                sid,
+            )
+            return
+        task = asyncio.create_task(self._tick_github_guarded(schedule, now))
+        self._github_tick_tasks[sid] = task
+        task.add_done_callback(lambda done, sid=sid: self._discard_github_tick(sid, done))
+
+    def _discard_github_tick(self, sid: str, done: asyncio.Task) -> None:
+        if self._github_tick_tasks.get(sid) is done:
+            del self._github_tick_tasks[sid]
+
+    async def _tick_github_guarded(self, schedule: dict, now: float) -> None:
+        try:
+            await self._tick_github(schedule, now)
+        except Exception:
+            _log.exception("Error evaluating schedule %s", schedule.get("name"))
 
     async def _deliver_due_dispatches(self, now: float) -> None:
         """Scan due dispatch_outbox rows and attempt delivery; not interval-gated."""
