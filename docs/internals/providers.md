@@ -170,7 +170,7 @@ logged — lionagi decides a leg's MCP servers itself, and silently
 re-introducing servers from a config file would go around that). A quoted
 scalar key such as `"mcp_servers.x.command"` is dropped as well: TOML reads it
 as one key, but codex splits a `-c` override on its dots and would declare
-server `x`.
+server `x`. The same holds for any key with an `mcp_servers` segment.
 
 Two limits keep this from misfiring on an ordinary model id. Only a bare
 name is looked up (no dots, no separators), so a vendor id like

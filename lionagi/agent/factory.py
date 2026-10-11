@@ -786,7 +786,8 @@ def _forward_mcp_to_cli_request(
             named_explicitly=named_explicitly,
             asked_for_servers=asked_for_servers,
         )
-        if has_config:
+        # A caller that resolved no servers asked for none: nothing is lost.
+        if asked_for_servers:
             if native_mcp_servers:
                 logger.debug(
                     "The active provider (%s) has no MCP passthrough, but server(s) "

@@ -527,6 +527,85 @@ async def test_resumed_leg_whose_search_finds_nothing_keeps_the_previous_runs_se
     assert seen["kwargs"]["config_overrides"] == {"mcp_servers.old.command": "old-server"}
 
 
+def _record_launch(tmp_path: Path, branch_id: str, launch: dict) -> None:
+    import lionagi.cli.agent as agent_mod
+
+    branch_path = tmp_path / f"{branch_id}.json"
+    data = json.loads(branch_path.read_text())
+    data.setdefault("metadata", {})[agent_mod._MCP_LAUNCH_KEY] = launch
+    branch_path.write_text(json.dumps(data))
+
+
+@pytest.mark.asyncio
+async def test_a_resume_with_no_flag_searches_where_the_branch_was_launched(monkeypatch, tmp_path):
+    """The launch directory decides, not the directory the resume runs in. That
+    directory holds a config of its own, and its server must not reach the leg."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    launched = tmp_path / "launched"
+    resumed = tmp_path / "resumed"
+    launched.mkdir()
+    resumed.mkdir()
+    (launched / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-launch": {"command": "a"}}})
+    )
+    (resumed / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-resume": {"command": "b"}}})
+    )
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": None, "no_mcp_config": False, "launch_dir": str(launched)},
+    )
+    monkeypatch.chdir(resumed)
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert set(seen["kwargs"]["mcp_servers"]) == {"from-launch"}
+
+
+@pytest.mark.asyncio
+async def test_a_branch_with_no_recorded_launch_keeps_its_servers_on_resume(
+    monkeypatch, tmp_path, caplog
+):
+    """A branch from before the launch was recorded resolves nothing new: it keeps
+    what its earlier run was handed, and the resuming directory adds nothing."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    resumed = tmp_path / "resumed"
+    resumed.mkdir()
+    (resumed / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"from-resume": {"command": "b"}}})
+    )
+    branch_id = _wire_resume_stubs(
+        monkeypatch, tmp_path, "claude_code", "sonnet", mcp_servers=dict(SERVERS)
+    )
+    monkeypatch.chdir(resumed)
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    with caplog.at_level(logging.WARNING, logger=WARN_LOGGER):
+        await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["mcp_servers"] == SERVERS
+    assert "no MCP servers are being handed" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatch, tmp_path):
     from lionagi.cli.agent import _run_agent

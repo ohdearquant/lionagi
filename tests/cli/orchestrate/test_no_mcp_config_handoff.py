@@ -228,6 +228,23 @@ def test_a_dropped_grant_is_reported_as_well_as_a_dropped_refusal(caplog):
     assert "khive" in caplog.text
 
 
+@pytest.mark.parametrize("spec", ["gemini-cli/gemini-3.5-flash", "openai/gpt-4.1-mini"])
+def test_the_unforwardable_warning_says_only_what_holds_for_each_provider(caplog, spec):
+    """Some providers that reach this warning load servers of their own and some
+    load none, so it says only that the request cannot carry a set."""
+    import logging
+
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    imodel = build_imodel_from_spec(spec)
+    provider = imodel.endpoint.config.provider
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        orch_mod._hand_mcp_servers(imodel, {}, label="reviewer-2")
+
+    assert f"the {provider} provider takes no MCP server set through its request" in caplog.text
+    assert "own configuration" not in caplog.text
+
+
 # The factory has a discovery of its own: handed no set, ``create_agent`` reads
 # ``~/.lionagi/.mcp.json``, starts the servers it names as lionagi tools, and
 # writes them into the CLI request over whatever the run already handed this

@@ -2950,6 +2950,27 @@ def test_canonical_mcp_config_leaves_absent_and_absolute_values_alone(
     assert _canonical_mcp_config(str(absolute)) == str(absolute)
 
 
+def test_canonical_mcp_config_resolves_a_relative_path_against_its_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run's launch directory, not the calling process's, anchors a relative
+    path. The last assertion is the control: with no base, the process's own
+    directory is used."""
+    from lionagi.cli.orchestrate.flow import _canonical_mcp_config
+
+    launched_from = tmp_path / "launched-from"
+    elsewhere = tmp_path / "elsewhere"
+    launched_from.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    assert _canonical_mcp_config("cfg.json", base=str(launched_from)) == str(
+        (launched_from / "cfg.json").resolve()
+    )
+    assert _canonical_mcp_config("cfg.json") == str((elsewhere / "cfg.json").resolve())
+
+
 async def test_run_flow_persists_a_relative_mcp_config_as_the_path_it_resolved(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -326,6 +326,31 @@ async def test_no_mcp_config_hands_nothing_over(spawn, codex_home, model):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
+async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_path, preset):
+    """The record holds the launch directory, the named config as an absolute
+    path and the refusal flag: what a resume that names no flag replays."""
+    from lionagi.cli.agent import _MCP_LAUNCH_KEY, _run_agent
+
+    named = _write_mcp_config(tmp_path / "named", {"named": {"command": "named-server"}})
+
+    await _run_agent(
+        "claude_code/sonnet",
+        "go",
+        preset=preset,
+        cwd=str(spawn.target_dir),
+        yolo=True,
+        mcp_config=str(named),
+    )
+
+    assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY] == {
+        "mcp_config": str(named.resolve()),
+        "no_mcp_config": False,
+        "launch_dir": str(spawn.submit_dir.resolve()),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
 @pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
 async def test_no_mcp_config_leaves_the_leg_no_servers_of_its_own_either(
     spawn, codex_home, model, preset

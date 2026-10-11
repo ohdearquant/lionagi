@@ -329,3 +329,20 @@ class TestAQuotedServerKeyIsNotAdoptedEither:
 
         overrides = m.endpoint.config.kwargs["config_overrides"]
         assert overrides == {"model_provider": "openrouter"}
+
+    @pytest.mark.parametrize(
+        "key_line",
+        [
+            'mcp_servers = "x"',
+            '"mcp_servers .x.command" = "/bin/sh"',
+            '"profiles.p.mcp_servers.x.command" = "/bin/sh"',
+        ],
+    )
+    def test_any_key_with_a_server_segment_is_skipped(self, codex_home, key_line):
+        _write(
+            codex_home,
+            "segment",
+            f'model = "vendor/m"\nmodel_provider = "openrouter"\n{key_line}\n',
+        )
+        _, overrides = resolve_codex_config_profile("segment")
+        assert overrides == {"model_provider": "openrouter"}

@@ -67,6 +67,8 @@ from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
+# The MCP choice a branch was launched with, replayed by a resume that names none.
+_MCP_LAUNCH_KEY = "mcp_launch"
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
 This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
@@ -738,6 +740,23 @@ async def _run_agent(
     # reliable "reopened existing" vs "minting new" signal once that block runs.
     is_resumed_branch = branch is not None
 
+    # A resume that names no MCP flag replays the choice its branch was launched
+    # with, searched from where it was launched rather than from where it is
+    # resumed. A branch from before that choice was recorded resolves nothing
+    # new, so its request keeps the servers its earlier run was handed.
+    if is_resumed_branch and mcp_config is None and not no_mcp_config:
+        launched = branch.metadata.get(_MCP_LAUNCH_KEY)
+        if isinstance(launched, dict) and isinstance(launched.get("launch_dir"), str):
+            mcp_resolution = resolve_spawn_mcp_servers(
+                launched.get("mcp_config"),
+                launch_dir=launched["launch_dir"],
+                disabled=bool(launched.get("no_mcp_config")),
+            )
+        else:
+            mcp_resolution = McpResolution(
+                None, "no_mcp_launch_recorded", None, Path(os.getcwd()).resolve()
+            )
+
     if model_str is not None:
         ms = parse_model_spec(model_str)
         if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
@@ -948,12 +967,19 @@ async def _run_agent(
         )
         # A resumed leg re-spawns from the persisted request, which is the only
         # thing that decides what it carries — read the answer off it.
-        _report_mcp_resolution(
-            mcp_resolution,
-            provider=provider,
-            cwd=cwd,
-            forwarded=request_kwargs_carry_forwarded_mcp(cfg),
-        )
+        forwarded = request_kwargs_carry_forwarded_mcp(cfg)
+        if mcp_resolution.servers is None and mcp_resolution.reason and forwarded:
+            hint(
+                f"[mcp] no server set resolved ({mcp_resolution.reason}); this resumed "
+                "leg keeps the servers its earlier run was handed"
+            )
+        else:
+            _report_mcp_resolution(
+                mcp_resolution,
+                provider=provider,
+                cwd=cwd,
+                forwarded=forwarded,
+            )
 
     # Skip the profile system prompt for a branch that carries (or would carry)
     # a create_agent-composed system message — full rationale in
@@ -963,6 +989,13 @@ async def _run_agent(
     # re-derived from persisted content (a markerless branch with an
     # explicitly requested role must get that role's
     # system prompt rather than have it silently dropped).
+    if not is_resumed_branch:
+        branch.metadata[_MCP_LAUNCH_KEY] = {
+            "mcp_config": str(mcp_resolution.source) if mcp_resolution.explicit else None,
+            "no_mcp_config": no_mcp_config,
+            "launch_dir": str(mcp_resolution.searched_from),
+        }
+
     if is_resumed_branch:
         from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
