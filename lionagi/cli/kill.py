@@ -14,6 +14,7 @@ from typing import Any, Literal
 import psutil
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln._proc import raw_create_time
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
@@ -51,7 +52,7 @@ def current_pid_markers() -> dict[str, Any]:
     """Host-scoped process identity for liveness and kill verification."""
     return {
         "pid": os.getpid(),
-        "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        "pid_create_time": raw_create_time(psutil.Process(os.getpid())),
         "pid_host": socket.gethostname(),
         "pid_boot_time": psutil.boot_time(),
         "process_identity_mode": "local",
@@ -196,7 +197,7 @@ def _check_pid_identity(
     if expected_create_time is not None:
         try:
             create_time_ok = (
-                abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
+                abs(raw_create_time(proc) - expected_create_time) <= _CREATE_TIME_TOLERANCE
             )
         except psutil.ZombieProcess:
             return "zombie"

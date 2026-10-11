@@ -34,8 +34,26 @@ from lionagi.cli.kill import (
     _resolve_entity,
     _terminate_pid,
 )
+from lionagi.ln._proc import raw_create_time
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+
+
+def _script_create_time(fake_proc: MagicMock, value: float) -> None:
+    """Make a fake process answer the same start time on either read path.
+
+    Production reads the unadjusted start time through ``raw_create_time``,
+    which on a platform that adjusts start times reaches the backend object
+    (``proc._proc``) rather than the public ``create_time()``; on a bare
+    ``MagicMock`` that path returns another mock. Point the backend attribute
+    back at the fake itself, so the identity arithmetic under test sees the
+    number the test set whichever reader this platform selected — rather than
+    patching ``raw_create_time`` out of the module under test, which would
+    make every test here bypass the reader production actually uses.
+    """
+    fake_proc.create_time.return_value = value
+    fake_proc._proc = fake_proc
+
 
 # Fixtures
 
@@ -237,7 +255,7 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "unrelated_script.py"]
-    fake_proc.create_time.return_value = 100.0
+    _script_create_time(fake_proc, 100.0)
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -264,7 +282,7 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli.main"]
-    fake_proc.create_time.return_value = 100.0
+    _script_create_time(fake_proc, 100.0)
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -338,7 +356,10 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
         assert _await(
             lambda: _check_pid_identity(child.pid, "lionagi", expected_session_id=sid) == "ours"
         ), "child never came up carrying its session marker"
-        create_time = psutil.Process(child.pid).create_time()
+        # The reader production records with. The public create_time() is
+        # adjusted for clock slew on some platforms, so a value read that way
+        # is not the value the identity check will compare against.
+        create_time = raw_create_time(psutil.Process(child.pid))
 
         # While it is alive the identity check accepts it. Nothing about the
         # arguments changes below, so whatever answer comes back after the
@@ -449,7 +470,7 @@ def _mock_psutil(
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = cmdline
     fake_proc.environ.return_value = environ or {}
-    fake_proc.create_time.return_value = create_time
+    _script_create_time(fake_proc, create_time)
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -719,6 +740,58 @@ def test_current_pid_markers_records_own_pid():
     assert markers["pid_host"]
     assert markers["pid_boot_time"] == pytest.approx(psutil.boot_time())
     assert markers["process_identity_mode"] == "local"
+
+
+# Records its own launch markers the way a launching process does, under a
+# boot-time value moved by five seconds, then stays alive to be checked.
+_RECORDS_ITS_MARKERS_UNDER_SLEW = (
+    "import json, sys, time\n"
+    "import psutil\n"
+    "from lionagi.cli.kill import current_pid_markers\n"
+    "psutil._psplatform.INIT_BOOT_TIME += 5.0\n"
+    "sys.stdout.write(json.dumps(current_pid_markers()) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(30)\n"
+)
+
+
+def test_a_launch_record_still_identifies_its_process_across_boot_time_slew(monkeypatch):
+    """The start time a kill checks was recorded by a different process.
+
+    psutil adjusts ``Process.create_time()`` on macOS by a boot-time value it
+    freezes at its own import, so two processes read the same live pid through
+    different adjustments once the boot clock has slewed between their imports.
+    The child records its markers under a value moved by five seconds and this
+    process checks them under one moved by ten: the record must still identify
+    the child, which holds only when both sides read the unadjusted start time.
+    """
+    psplatform = psutil._psplatform
+    if not hasattr(psplatform, "INIT_BOOT_TIME"):
+        pytest.skip("this platform's psutil backend has no boot-time adjustment")
+
+    session_id = f"slew-{uuid.uuid4().hex}"
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", _RECORDS_ITS_MARKERS_UNDER_SLEW],
+        env={**os.environ, "LIONAGI_SESSION_ID": session_id},
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        markers = json.loads(child.stdout.readline())
+        assert markers["pid"] == child.pid
+
+        monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", psplatform.INIT_BOOT_TIME + 10.0)
+        verdict = _check_pid_identity(
+            child.pid,
+            "lionagi",
+            expected_session_id=session_id,
+            expected_create_time=markers["pid_create_time"],
+        )
+        assert verdict == "ours"
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+        child.stdout.close()
 
 
 async def test_kill_one_skips_recycled_pid_via_create_time(
@@ -1214,7 +1287,7 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
     fake_proc.environ.return_value = {}
-    fake_proc.create_time.return_value = 999.0  # does NOT match recorded 100.0
+    _script_create_time(fake_proc, 999.0)  # does NOT match recorded 100.0
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -1261,7 +1334,7 @@ async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
     fake_proc.environ.return_value = {}
-    fake_proc.create_time.return_value = 999.0  # does NOT match recorded 100.0
+    _script_create_time(fake_proc, 999.0)  # does NOT match recorded 100.0
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -1310,7 +1383,7 @@ async def test_do_kill_all_stale_matching_correlation_skips_live(
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
     fake_proc.environ.return_value = {}
-    fake_proc.create_time.return_value = 100.0  # matches recorded value
+    _script_create_time(fake_proc, 100.0)  # matches recorded value
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})

@@ -27,6 +27,7 @@ from lionagi.ln._proc import (
     capture_group_witnesses,
     observe_process_group_leader,
     prepare_process_group_env,
+    raw_create_time,
     signal_group_if_witnessed,
 )
 from lionagi.ln.concurrency.utils import maybe_await
@@ -66,7 +67,7 @@ def spawned_create_time(pid: int) -> float | None:
         proc = psutil.Process(pid)
         if proc.status() == psutil.STATUS_ZOMBIE:
             return None
-        return proc.create_time()
+        return raw_create_time(proc)
     except (psutil.Error, OSError):
         return None
 

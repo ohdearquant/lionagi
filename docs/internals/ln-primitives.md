@@ -35,6 +35,19 @@ one within `CREATE_TIME_TOLERANCE` (0.1s), because two reads of a kernel
 clock for the *same* process can differ in the last decimal place even
 though two live reads of the same process must otherwise agree exactly.
 
+Every start time that is recorded or compared for identity is read through
+`raw_create_time()`, never the plain `psutil.Process.create_time()`. On macOS
+psutil adjusts that value by a boot-time reading it freezes when psutil is
+imported, and the boot clock moves under NTP slew, so the process that
+recorded a start time and the process checking it later (or the same process
+an hour later) read different values for one live process, and a live run
+reads as a recycled pid. `raw_create_time()` takes psutil's unadjusted reading
+on the platform that applies the adjustment and the plain epoch value
+everywhere else; on Linux the unadjusted reading is seconds since boot, which
+would change what every recorded value means. The reader is chosen on the
+first call. A start time that is reported as a wall-clock instant rather than
+compared, such as the Studio daemon's start, uses the plain call.
+
 ## The marker, and why a `None` reading is ambiguous
 
 `process_marker()` reads an environment variable from a target process

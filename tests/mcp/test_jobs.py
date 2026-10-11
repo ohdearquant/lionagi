@@ -2200,6 +2200,50 @@ def test_a_group_outlives_its_leader_and_is_reaped_by_identity(sandbox):
                 pass
 
 
+def test_process_liveness_survives_boot_time_clock_slew(monkeypatch):
+    """A live child's identity still confirms after the boot-time clock slews.
+
+    psutil >= 7.1 adjusts ``Process.create_time()`` on the platforms that
+    support it (macOS, NetBSD) by ``INIT_BOOT_TIME - boot_time()``, where
+    ``INIT_BOOT_TIME`` is frozen at psutil's own import time. ``kern.boottime``
+    moves under NTP clock slew, so that offset drifts while a real process
+    runs — reproduced here by moving the frozen value directly rather than
+    waiting on a real slew. If the value recorded for a run and the value read
+    back later don't come from the same raw (unadjusted) reader, a live child
+    reads as a stranger that recycled its pid.
+    """
+    import sys
+
+    import psutil
+
+    psplatform = psutil._psplatform
+    if not hasattr(psplatform, "INIT_BOOT_TIME"):
+        pytest.skip("this platform's psutil backend has no boot-time adjustment")
+
+    proc = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(30)"]
+    )
+    try:
+        state, created = jobs._process_create_time(proc.pid)
+        assert state == "found" and created is not None
+        job = {"pid": proc.pid, "pid_create_time": created}
+
+        # Simulate the boot-time clock stepping forward by a second between
+        # the record above and the liveness check below — the same shift a
+        # real NTP slew produces over the run's lifetime. Shift the frozen
+        # value itself rather than rebuilding it from psutil.boot_time(): the
+        # shift is then exactly one second whatever the sysctl reports, and
+        # the test does not fail on a platform that denies that read.
+        monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", psplatform.INIT_BOOT_TIME + 1.0)
+
+        liveness = jobs._run_process_liveness(job, proc.pid)
+        assert liveness.alive is True
+        assert liveness.finding == "identity_confirmed"
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 @pytest.mark.parametrize("cli_status", ["timed_out", "cancelled", "aborted", "completed_empty"])
 def test_mark_terminal_records_cli_status_verbatim(sandbox, monkeypatch, cli_status):
     """The CLI's terminal status is authoritative and recorded verbatim.

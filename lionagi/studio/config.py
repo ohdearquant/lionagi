@@ -432,7 +432,14 @@ SCHEDULER_TZ_RESOLVED_AT: float = time.time()
 
 
 def _process_started_at() -> float | None:
-    """This process's start time, or None if the platform won't say."""
+    """This process's start time as seconds since the epoch, or None.
+
+    This is a reported wall-clock instant, not a process identity, so it wants
+    the plain epoch reading rather than the identity reader in ``ln._proc``:
+    that one deliberately returns a value chosen to be comparable rather than
+    meaningful, and on some platforms it is relative to boot, which would date
+    the daemon to 1970 once handed to :func:`datetime.fromtimestamp`.
+    """
     try:
         import psutil
 

@@ -23,6 +23,7 @@ from lionagi.ln._proc import (
     observe_process_group_leader,
     prepare_process_group_env,
     process_create_time,
+    raw_create_time,
     terminate_process_group,
 )
 
@@ -47,6 +48,136 @@ def _fake_async_proc(pid, wait_delay: float = 0.0):
     p.terminate = MagicMock()
     p.kill = MagicMock()
     return p
+
+
+def test_raw_create_time_ignores_boot_time_clock_slew(monkeypatch):
+    """raw_create_time is immune to the boot-time-drift adjustment; the plain
+    psutil call is not.
+
+    psutil >= 7.1 adjusts ``Process.create_time()`` on the platforms that
+    support it (macOS, NetBSD) by ``INIT_BOOT_TIME - boot_time()``, where
+    ``INIT_BOOT_TIME`` is frozen at psutil's own import time
+    (``psutil._psosx.adjust_proc_create_time``). ``kern.boottime`` moves under
+    NTP clock slew, so that offset drifts open while a process runs — a
+    recorded value and a freshly-read one for the SAME live process stop
+    matching. Reproduce the mechanism directly by moving the frozen value,
+    rather than waiting on a real slew: a fresh ``Process`` handle should then
+    read a plain ``create_time()`` that has moved by the same amount, while
+    ``raw_create_time`` on the same handle has not moved at all.
+    """
+    import psutil
+
+    psplatform = psutil._psplatform
+    if not hasattr(psplatform, "INIT_BOOT_TIME"):
+        pytest.skip("this platform's psutil backend has no boot-time adjustment")
+
+    pid = os.getpid()
+    baseline_adjusted = psutil.Process(pid).create_time()
+    baseline_raw = raw_create_time(psutil.Process(pid))
+
+    # Shift the frozen value itself rather than rebuilding it from
+    # psutil.boot_time(): the shift is then exactly one second whatever the
+    # sysctl reports, and the test does not fail on a platform that denies
+    # that read.
+    monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", psplatform.INIT_BOOT_TIME + 1.0)
+
+    # A fresh handle: psutil.Process caches create_time() after first call, so
+    # reusing the process above would hide the drift behind that cache rather
+    # than exercising the adjustment.
+    drifted = psutil.Process(pid)
+    adjusted = drifted.create_time()
+    raw = raw_create_time(drifted)
+
+    assert adjusted == pytest.approx(baseline_adjusted + 1.0, abs=0.01)
+    assert raw == pytest.approx(baseline_raw, abs=0.01)
+
+
+class _RecordingProc:
+    """A psutil-shaped stub that records how its start time was read."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self._proc = self
+
+    def create_time(self, **kwargs):
+        self.calls.append(kwargs)
+        return 1234.5
+
+
+def test_raw_create_time_reader_skips_monotonic_without_the_boot_adjustment(monkeypatch):
+    """Backends that adjust nothing must keep the plain epoch reading.
+
+    ``monotonic=True`` does not mean the same thing on every psutil backend.
+    On Linux nothing is adjusted, and the keyword only omits the ``boot_time()``
+    addition, so it yields seconds since boot: taking it there would redefine
+    every recorded ``pid_create_time``, make live processes stop matching their
+    own records, and let a post-reboot pid reuse at a similar uptime match a
+    stranger. Exercised through the selector's seam because the branch belongs
+    to a platform this suite cannot run on.
+    """
+    import psutil
+
+    from lionagi.ln import _proc
+
+    class _UnadjustedProcess:
+        # Linux's backend accepts the keyword and applies no adjustment, so
+        # offering it is exactly what makes the wrong reader available.
+        def create_time(self, monotonic=False): ...
+
+    monkeypatch.setattr(psutil, "_psplatform", SimpleNamespace(Process=_UnadjustedProcess))
+
+    reader = _proc._select_raw_create_time_reader()
+    proc = _RecordingProc()
+
+    assert reader(proc) == 1234.5
+    assert proc.calls == [{}]
+
+
+def test_raw_create_time_reader_takes_monotonic_where_the_adjustment_exists(monkeypatch):
+    """The backend that applies the slewing adjustment is the one to bypass."""
+    import psutil
+
+    from lionagi.ln import _proc
+
+    class _AdjustingProcess:
+        def create_time(self, monotonic=False): ...
+
+    monkeypatch.setattr(
+        psutil,
+        "_psplatform",
+        SimpleNamespace(
+            adjust_proc_create_time=lambda value: value,
+            Process=_AdjustingProcess,
+        ),
+    )
+
+    reader = _proc._select_raw_create_time_reader()
+    proc = _RecordingProc()
+
+    assert reader(proc) == 1234.5
+    assert proc.calls == [{"monotonic": True}]
+
+
+def test_raw_create_time_selects_its_reader_once_on_first_read(monkeypatch):
+    """Selection is deferred to the first read, then cached.
+
+    Importing this module must not cost a psutil import and two signature
+    inspections on the many paths that never read a start time.
+    """
+    from lionagi.ln import _proc
+
+    selections = []
+
+    def _select():
+        selections.append(True)
+        return lambda proc: 7.0
+
+    monkeypatch.setattr(_proc, "_read_raw_create_time", None)
+    monkeypatch.setattr(_proc, "_select_raw_create_time_reader", _select)
+
+    assert _proc.raw_create_time(object()) == 7.0
+    assert _proc.raw_create_time(object()) == 7.0
+    assert len(selections) == 1
 
 
 # pid-guard: must never signal pid <= 1

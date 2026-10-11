@@ -257,6 +257,46 @@ class TestSpawnObservation:
         assert first_object_before_callback == [{"type": "hello"}]
 
     @pytest.mark.asyncio
+    async def test_the_spawn_start_time_still_matches_its_child_after_boot_time_slew(
+        self, monkeypatch
+    ):
+        """Teardown compares the start time recorded at spawn with a fresh read
+        of the same child, and ``spawned_create_time`` is the fresh read a
+        caller holding a ``SpawnedProcess`` compares it with. psutil adjusts
+        ``Process.create_time()`` on macOS by a boot-time value frozen at
+        import, and a long run spans boot-clock slew, so every one of these
+        must be the unadjusted reading. Spawned under a boot-time value moved
+        by five seconds, read back under one moved by ten.
+        """
+        import psutil
+
+        from lionagi.ln._proc import process_create_time, start_time_matches
+
+        psplatform = psutil._psplatform
+        if not hasattr(psplatform, "INIT_BOOT_TIME"):
+            pytest.skip("this platform's psutil backend has no boot-time adjustment")
+        frozen = psplatform.INIT_BOOT_TIME
+        monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", frozen + 5.0)
+        seen: list[SpawnedProcess] = []
+        reads = []
+
+        async def run():
+            async for _ in ndjson_from_cli(_cmd(_SLEEPER), on_spawn=seen.append):
+                monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", frozen + 10.0)
+                reads.append(process_create_time(seen[0].pid))
+                reads.append(spawned_create_time(seen[0].pid))
+                break
+
+        await asyncio.wait_for(asyncio.create_task(run()), timeout=30)
+
+        (state, observed), helper_read = reads
+        assert state == "found"
+        assert seen[0].create_time is not None
+        assert start_time_matches(observed, seen[0].create_time)
+        assert helper_read is not None
+        assert start_time_matches(helper_read, seen[0].create_time)
+
+    @pytest.mark.asyncio
     async def test_the_callback_fires_on_a_child_that_has_produced_nothing(self):
         """The ordering IS the contract, and "before the first object" is too
         weak to state it: an implementation that recorded just before yielding

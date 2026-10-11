@@ -59,6 +59,83 @@ def prepare_process_group_env(
     return prepared, marker
 
 
+def _select_raw_create_time_reader():
+    """Choose, once, how to read a psutil ``Process``'s unadjusted start time.
+
+    psutil >= 7.1 adjusts ``Process.create_time()`` on macOS by ``INIT_BOOT_TIME
+    - boot_time()`` (``psutil._psosx.adjust_proc_create_time``), where
+    ``INIT_BOOT_TIME`` is frozen at psutil's own import time. ``kern.boottime``
+    moves under NTP clock slew, so that offset grows while a process runs: a
+    value recorded at spawn stops matching a value read later for the SAME live
+    process, and two different processes started at different times read as
+    the same age apart rather than their real one. Passing ``monotonic=True``
+    skips the adjustment, but the *public* ``Process.create_time()`` does not
+    forward that keyword in any released psutil version — only the internal
+    per-platform implementation accepts it. psutil's own PID-reuse detection
+    (``Process._get_ident``) reaches that implementation directly
+    (``self._proc.create_time(monotonic=True)``) for exactly this reason, so
+    this does the same, falling back to the adjusted public call only if
+    neither path is available.
+
+    That skip is taken ONLY on a platform that actually applies the adjustment,
+    because ``monotonic=True`` does not mean the same thing everywhere. On Linux
+    (``psutil._pslinux``) nothing is adjusted at all: ``create_time()`` is the
+    process's ``starttime`` in jiffies plus ``boot_time()``, and ``monotonic``
+    merely omits that addition, yielding SECONDS SINCE BOOT rather than seconds
+    since the epoch. Taking it there would silently change what every recorded
+    ``pid_create_time`` means: live processes would stop matching their own
+    stored records, a reused pid at a similar uptime after a reboot would start
+    matching a stranger, and ``datetime.fromtimestamp`` would date a daemon to
+    1970. The adjustment is the thing being avoided, so its presence is what
+    selects the reader — ``adjust_proc_create_time`` exists on the macOS backend
+    and nowhere else. Everywhere else the plain epoch call is already the
+    stable, comparable value.
+    """
+    import inspect
+
+    import psutil
+
+    if not hasattr(psutil._psplatform, "adjust_proc_create_time"):
+        return lambda proc: proc.create_time()
+
+    try:
+        if "monotonic" in inspect.signature(psutil.Process.create_time).parameters:
+            return lambda proc: proc.create_time(monotonic=True)
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        platform_process = psutil._psplatform.Process
+        if "monotonic" in inspect.signature(platform_process.create_time).parameters:
+            return lambda proc: proc._proc.create_time(monotonic=True)
+    except (TypeError, ValueError, AttributeError):
+        pass
+
+    return lambda proc: proc.create_time()
+
+
+_read_raw_create_time = None
+
+
+def raw_create_time(proc) -> float:
+    """The kernel-reported start time of *proc*, unadjusted for clock slew.
+
+    Use this everywhere a start time is recorded or compared for process
+    identity; see :func:`_select_raw_create_time_reader` for why the plain
+    ``proc.create_time()`` is not comparable across processes or over time.
+
+    The reader is selected on the first read rather than at import, so that
+    importing this module — which the package does eagerly, on many paths that
+    never read a start time — does not pay for importing psutil and inspecting
+    two signatures.
+    """
+    global _read_raw_create_time
+
+    if _read_raw_create_time is None:
+        _read_raw_create_time = _select_raw_create_time_reader()
+    return _read_raw_create_time(proc)
+
+
 def process_create_time(pid: int) -> tuple[str, float | None]:
     """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
     or ``("unknown", None)``.
@@ -73,7 +150,7 @@ def process_create_time(pid: int) -> tuple[str, float | None]:
         proc = psutil.Process(pid)
         if proc.status() == psutil.STATUS_ZOMBIE:
             return "gone", None
-        return "found", proc.create_time()
+        return "found", raw_create_time(proc)
     except psutil.NoSuchProcess:
         return "gone", None
     except (psutil.Error, OSError):
