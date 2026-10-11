@@ -1275,6 +1275,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             child.metadata["reference_id"] = str(child.id)
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
+                self._tg.start_soon(self._run_tracked, child)
         elif route == "notify":
             # Soft help signal: NodeEscalated already fired above for
             # observability; the node is NOT marked escalated (it still

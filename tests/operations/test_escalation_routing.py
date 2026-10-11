@@ -40,37 +40,31 @@ def _session(**ops):
 
 @pytest.mark.asyncio
 async def test_escalation_higher_tier_spawns_child():
-    """An EscalationRequest with route=higher_tier causes a child op to be injected."""
+    """An accepted higher-tier child is scheduled and runs to completion."""
     executed: list[str] = []
 
-    async def cheap(**kw):
-        executed.append("cheap")
+    async def cheap(instruction: str = "", **kw):
+        executed.append(instruction)
+        if instruction.startswith("[escalation]"):
+            return "done by higher tier"
         return EscalationRequest(reason="too hard", context={"route": "higher_tier"})
-
-    async def cheap_escalated(**kw):
-        executed.append("cheap_escalated")
-        return "done by higher tier"
 
     session = _session(cheap=cheap)
 
-    # node_builder maps the escalation re-spawn -> cheap_escalated
-    def node_builder(req: Any, emitter: Operation) -> Operation:
-        return create_operation("cheap_escalated", parameters={})
-
-    # Register the op the re-spawned child will use
-    session.register_operation("cheap_escalated", cheap_escalated)
-
     builder = OperationGraphBuilder()
-    builder.add_operation("cheap")
+    builder.add_operation("cheap", instruction="original request")
     graph = builder.get_graph()
 
-    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+    result = await flow(session, graph, reactive=True)
 
-    assert "cheap" in executed
-    # escalation re-spawn uses the default node builder path, so we need to
-    # check escalated_operations is populated and spawn_count reflects it.
+    assert executed == [
+        "original request",
+        "[escalation] too hard\nOriginal: original request",
+    ]
     assert len(result["escalated_operations"]) >= 1
     assert result["spawned_operations"] >= 1
+    assert len(result["completed_operations"]) == 2
+    assert "done by higher tier" in result["operation_results"].values()
 
 
 @pytest.mark.asyncio
