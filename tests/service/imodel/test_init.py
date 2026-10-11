@@ -615,6 +615,25 @@ class TestiModel:
         # Check that session_id was stored on the CLI endpoint
         assert imodel.endpoint.session_id == "new-session-456"
 
+    @pytest.mark.parametrize("empty", [None, ""])
+    @pytest.mark.asyncio
+    async def test_an_invoke_that_returns_no_session_id_keeps_the_confirmed_one(self, empty):
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = "confirmed-session"
+
+        # a call whose stream carried no id-bearing chunk returns the field empty
+        async def no_session(request, cache_control=False, **kwargs):
+            return {"session_id": empty, "response": "test"}
+
+        with patch.object(imodel.endpoint, "call", side_effect=no_session):
+            await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+
+        assert imodel.endpoint.session_id == "confirmed-session"
+
     def test_imodel_to_dict(self):
         imodel = iModel(
             provider="openai",
