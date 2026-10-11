@@ -108,6 +108,7 @@ class SeededDaemon:
     host: str
     port: int
     process: subprocess.Popen
+    child_log_path: Path | None = None
 
     @property
     def base_url(self) -> str:
@@ -160,25 +161,38 @@ class SeededDaemon:
         env.pop("LIONAGI_STUDIO_FRONTEND_DIST", None)
         env.pop("LIONAGI_STUDIO_URL", None)
 
-        process = subprocess.Popen(  # noqa: S603
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "tests.e2e_studio.studio_app:app",
-                "--host",
-                host,
-                "--port",
-                str(port),
-            ],
-            cwd=REPO_ROOT,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        # The child's output goes to a file, never a pipe: nothing drains a
+        # pipe after startup, so uvicorn's per-request access log would fill
+        # the 64KB buffer during any long-lived run and block the event loop
+        # mid-write — the daemon then accepts connections and answers nothing.
+        child_log_path = tmp_dir / "daemon-child.log"
+        with child_log_path.open("w", encoding="utf-8") as child_log:
+            process = subprocess.Popen(  # noqa: S603
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "tests.e2e_studio.studio_app:app",
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=child_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
 
-        daemon = cls(tmp_dir=tmp_dir, db_path=db_path, host=host, port=port, process=process)
+        daemon = cls(
+            tmp_dir=tmp_dir,
+            db_path=db_path,
+            host=host,
+            port=port,
+            process=process,
+            child_log_path=child_log_path,
+        )
         try:
             daemon._wait_healthy(ready_timeout)
         except Exception:
@@ -192,7 +206,9 @@ class SeededDaemon:
         last_err: Exception | None = None
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                output = self.process.stdout.read() if self.process.stdout else ""
+                output = ""
+                if self.child_log_path is not None and self.child_log_path.exists():
+                    output = self.child_log_path.read_text(encoding="utf-8")
                 raise RuntimeError(
                     f"seeded daemon exited early (code={self.process.returncode}):\n{output}"
                 )
