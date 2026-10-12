@@ -62,4 +62,4 @@
 - **026-submission**, ADR-0026: The submission
 - **027-suite**, ADR-0027: The suite's launch guard
 - **028-anthropic**, ADR-0028: The Messages backend and the API-key accounts
-- **029-leg-isolation**, ADR-0029: Leg isolation
+- **029-leg-isolation**, ADR-0029: Worker isolation

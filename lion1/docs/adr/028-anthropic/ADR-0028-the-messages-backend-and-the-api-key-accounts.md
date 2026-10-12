@@ -21,14 +21,9 @@ tags:
 
 ## Context
 
-This record serves the author's requests of 2026-10-09:
-
-- 10:47: support the Anthropic Messages endpoint and take six API keys, one for each of six
-  accounts, then use their credit up and make good use of it. The same line names Haiku on the mini
-  SWE bench and iterating the source.
-- 10:49: weigh cache use carefully, and look at how Claude Code does it
-- 11:07: use the standard Messages API endpoint, on the API credit the accounts carry, not extra
-  usage inside Claude Code
+This record defines an Anthropic Messages backend and account selection across six API keys. It
+tracks monthly credits and provider limits while using the Messages API endpoint directly. The
+backend places prompt-cache breakpoints based on the provider's behavior.
 
 Six Console accounts each carry a month's API credit. Each is its own organization: six keys
 answered with six rate-limit sets and reset clocks, so six prompt caches.
@@ -38,8 +33,7 @@ cache. This record adds the provider's own endpoint as a second chat-completion 
 cache placed by the backend. It amends [[ADR-0024-accounts-and-the-pick|ADR-0024]] with accounts
 that have no windows but a month's budget. Source: `hub/backend/openrouter.py`, `hub/accounts.py`,
 `apps/cli/lion_cli/account.py`, `bench/swe/run_swe.py`; the provider's prompt-caching and pricing
-pages read 2026-10-09; the installed Claude Code 2.1.295 bundle's placement, extracted and kept in
-the user's workspace.
+pages read 2026-10-09; the installed Claude Code 2.1.295 bundle's cache placement.
 
 ## Definitions
 
@@ -65,7 +59,7 @@ the user's workspace.
 | A2 | A 1h entry must come before every 5m entry in a request. | measured 2026-10-09: the reverse order is a 400 naming the rule | one TTL per call makes the order moot |
 | A3 | The credit is spent at the published prices, per request, and a Haiku request is priced by its whole prompt, cache reads included. | the pricing page read 2026-10-09; the Console's own bill not read | the month ledger drifts from the bill; the Console's figure corrects it by hand (S6) |
 | A4 | Caches and limits are per organization, and the six keys are six organizations. | the prompt-caching page; six rate-limit sets with their own reset clocks measured 2026-10-09 | two runs on two keys share one cache and one limit; the spread gains less, nothing breaks |
-| A5 | The credit expires at the month's end; a fresh one is not promised, and the provider's policy moves. | the author's word on the month | the pace targets the wrong end; `month_start` moves it (D3); a credit that does not return is spent, not paced |
+| A5 | The credit expires at the month's end; a fresh one is not promised, and the provider's policy moves. | the account holder's statement; no provider document was read | the pace targets the wrong end; `month_start` moves it (D3); a credit that does not return is spent, not paced |
 
 ## Claims
 
@@ -220,7 +214,7 @@ totals them. The row's tokens carry the cache split.
 | Settling the ledger at a run's end | a running or crashed run's spend is invisible to every other account's admission; per-call settlement under the lock is measured before it is optimized |
 | Merging a turn's results into one message so a turn adds two blocks | changes the view every backend sees; the pin keeps the view and the hit |
 | Reading spend from the provider's usage endpoint | it takes an administrator's key per organization, six more secrets; the envelopes are already the spend row ([[ADR-0016-the-lion-command|ADR-0016]]) |
-| Spending the credit through the Claude Code CLI with the key set | the author's 11:07 line: the credit is for the endpoint, not the CLI; and the CLI's fixed context is 34k tokens a call ([[ADR-0009-backends|ADR-0009]] A3) |
+| Spending the credit through the Claude Code CLI with the key set | the credit is for the Messages endpoint, not the CLI; and the CLI's fixed context is 34k tokens a call ([[ADR-0009-backends|ADR-0009]] A3) |
 | Picking an account per call, spreading faster | each change loses the organization's cache (A4), the reason [[ADR-0024-accounts-and-the-pick|ADR-0024]] picks once per wake |
 | Moving a refused call to another account | the lost call's effects are unknown ([[ADR-0024-accounts-and-the-pick#^c7|ADR-0024/C7]]) |
 | Keys in the environment or a dotfile | [[ADR-0024-accounts-and-the-pick#^c1|ADR-0024/C1]] |
@@ -242,7 +236,7 @@ totals them. The row's tokens carry the cache split.
   and date, never by editing a row; an attempt the table or the provider could not price holds its
   ceiling, never zero.
 - **S7**: Using the credit up is a schedule of work, not a property of the backend. The pace column
-  says which account is behind; what to run on it is the author's call.
+  says which account is behind; the operator chooses what work to run.
 - **S8**: At Haiku 5.5's lower tier, our own ledgers reprice to about $0.73 for a Mini-50 bench run
   and $2.36 for Hard-45; Sonnet 5.5 is twenty times that. A request over the tier's line is priced
   five times higher, and the envelope says which tier it paid.
@@ -259,8 +253,8 @@ totals them. The row's tokens carry the cache split.
   outside the runtime's reach, and `keys` says so. A person who wants no residue uses `add` on
   standard input.
 - **S13**: No response naming an exhausted credit has been measured. Until one is, kept as a fixture
-  with its status, type and body, no refusal marks an account out of quota, and the month's reset is
-  the author's word (A5).
+  with its status, type and body, no refusal marks an account out of quota, and the month's reset
+  rests on the account holder's statement (A5).
 - **S14**: The router landed no envelope on a call refused before any billed attempt; this backend
   does, and [[ADR-0009-backends#^c5|ADR-0009/C5]] now holds the router to the same rule.
 - **S15**: The counted prompt is bounded by the body's bytes as measured, not as proved: through the

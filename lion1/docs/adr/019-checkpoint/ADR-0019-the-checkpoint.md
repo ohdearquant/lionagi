@@ -23,10 +23,8 @@ tags:
 
 ## Context
 
-The Codex half of this record serves the author's request of 2026-10-04 that a Codex session support
-the checkpoint feature too. The store's half serves his reply of 2026-10-05, which took roughly the
-first two options offered and added that the store already keeps the data, so a checkpoint is
-something computed from it, and every turn is a natural checkpoint.
+Codex checkpoints capture a session's rollout. Store-backed checkpoints are computed from stored
+messages, so each completed turn provides the data needed for a checkpoint.
 
 A Claude Code session's state is its transcript and the files around it: the Monitors it armed, the
 Agents it spawned, the words the person typed, the figure its statusline shows. A Codex session's is
@@ -165,7 +163,7 @@ an agent id and it started within 12 hours (A4). A timestamp with no zone is rea
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
 - **Subject**: `save` in `src/lion1/checkpoint.py`, `context_dir` and `assert_ignored` in
-  `hub/khive.py`, `set_var` and `checkpoint` in `apps/cli/lion_cli/context.py`.
+  `src/lion1/khive.py`, `set_var` and `checkpoint` in `apps/cli/lion_cli/context.py`.
 
 - **Violated when**: a file lands under a `.khive/context/` a git work tree does not ignore, a git
   that cannot answer reads as ignored, a take replaces another, `latest.json` names no file, or a
@@ -251,7 +249,7 @@ record is refused. The replay checks content: a row's text and a result's fields
   `test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named`, the
   long-value test; `tests/test_chat.py`:
   `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`;
-  `tests/test_khive_context.py`:
+  `tests/test_khive_context.py` (historical tests for the file-based design):
   `test_assert_ignored_reads_gits_two_answers_and_refuses_when_git_cannot_answer`,
   `test_the_guard_refuses_a_folder_git_would_commit_and_a_checkpoint_saved_past_it_stays_untracked`.
 
@@ -314,15 +312,14 @@ none: `hub/agent/agent.py` holds no take and no restore.
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`.
 
-### D5: `hub/backend/codex/checkpoint.py` in the backend's package, beside the sources both sessions share ^d5
+### D5: `hub/backend/codex/checkpoint.py` in the backend package, beside the sources both sessions share ^d5
 
-Serves C1, C3, C7, C8 and C9. A module of the package `hub/backend/codex/`, whose `__init__.py` is
-the backend [[ADR-0009-backends|ADR-0009]] names, every import unchanged; the module beside
-`codex.py` it replaced on 2026-10-05 is in Alternatives. The fold and the restore's body live in
-`hub/backend/checkpoint.py` (D2). `lion context checkpoint --codex` reads `--session`'s rollout,
-else the directory's newest whose first row says a person's, the later name first on a tie; a
-`--transcript` whose first row is a `session_meta` is a Codex session's (S16). `restore` renders by
-`source.kind`.
+Serves C1, C3, C7, C8 and C9. The package `hub/backend/codex/` keeps the backend entry point named
+by [[ADR-0009-backends|ADR-0009]] and leaves every `hub.backend.codex` import unchanged. The fold
+and the restore's body live in `hub/backend/checkpoint.py` (D2). `lion context checkpoint --codex`
+reads `--session`'s rollout, else the directory's newest whose first row says a person's, with the
+later name first on a tie. A `--transcript` whose first row is a `session_meta` is a Codex session's
+(S16). `restore` renders by `source.kind`.
 
 - **Landing evidence**: `tests/test_codex_checkpoint.py`:
   `test_lion_context_takes_a_codex_session_by_its_flag_or_by_its_rollout_and_restores_it`,
@@ -358,7 +355,7 @@ else the directory's newest whose first row says a person's, the later name firs
 | Copying tool calls and their results into the checkpoint | it grows with the session and the fold gains nothing; the transcript keeps them (A1) |
 | Re-arming every Monitor that says `persistent` | the tool ends every Monitor at its deadline, and none of 65 persistent ones read was still running (A3) |
 | The statusline's last-rendered file as the figure | it belongs to whichever session rendered last; the per-session file is named by the session id (C7) |
-| A package `hub/backend/codex/` in place of `codex.py` | rejected at first because the backend's record and its tests named `hub/backend/codex.py`; reversed on 2026-10-05, when the store's change made the package with `codex.py` as its `__init__.py`, every import of `hub.backend.codex` unchanged (D5) |
+| A single-file Codex backend | Related checkpoint modules belong beside the backend entry point, while the `hub.backend.codex` import remains unchanged (D5) |
 | Every user message of a rollout read as a prompt | the CLI writes the environment, AGENTS.md and the plugin list as user messages, each item marked (A5) |
 | The newest rollout whatever wrote it | a sub-agent runs in its parent's directory and writes as often (D5) |
 | One file per directory, overwritten at each take | a take would erase the one before; each take is its own file and `latest.json` names the newest (C6) |

@@ -20,28 +20,22 @@ tags:
 
 ## Context
 
-This record serves the author's request of 2026-10-04:
-
-- 11:40:29: Claude Code and Codex can each sign in to many accounts; build a load balancer across
-  them
-
-The same line asks that the earlier tool's work move into this repository. This record serves the
-agent half of that instruction first; moving a person's sessions is S2, and the order is the
-author's to reverse.
+Claude Code and Codex can each use multiple accounts. This record defines account selection for
+agents; moving interactive session selection is a separate concern (S2).
 
 An agent on Claude Code or Codex runs today on the sign-in its process inherited. The Claude Code
 backend runs the CLI's one-envelope form, which carries no limit figure (measured 2026-10-04). No
 failure reads as a spent account.
 
-An earlier tool does part of this for interactive sessions. It ranks an unobserved account at 50
-percent, reads an expired figure as 0, keeps tokens in plain files and learns a session's account
-from the process table.
+Interactive session selection has different state from agent account selection. Agent selection uses
+observed limit readings and a per-run launch record; it does not guess missing limits, store tokens
+in plain files, or inspect another process.
 
 This record fixes one runtime part: the two CLI providers' accounts, the evidence about each, the
 pick at a wake, what a refusal does, how a run's account is known, and the commands. API providers'
 keys and the app's screen are later records (S3, S4). Source: `hub/backend/claude_code/__init__.py`
-(`_exec`), `hub/backend/codex.py` (`TRANSIENT`, `_env`, `_meter`), `hub/agent/agent.py` (`wake`,
-`_spend`), `apps/cli/lion_cli/agent.py` (`arm`).
+(`_exec`), `hub/backend/codex/__init__.py` (`TRANSIENT`, `_env`, `_meter`), `hub/agent/agent.py`
+(`wake`, `_spend`), `apps/cli/lion_cli/agent.py` (`arm`).
 
 ## Definitions
 
@@ -69,7 +63,7 @@ keys and the app's screen are later records (S3, S4). Source: `hub/backend/claud
 | - | --------- | ------ | -------- |
 | A1 | Claude Code's stream form carries its limit row under a token sign-in as it does under the CLI's stored login. | measured 2026-10-04: one stream call under a token sign-in carried the row with both windows, its seven-day figure equal to that account's own reading; two calls under the stored login carried it too | Claude Code accounts with a token are usable with figures unknown, and a refusal is their only signal |
 | A2 | A keychain item can be read by a job the operating system starts in the background, with the screen locked. | the router's key is read from a keychain item by name (`api_key` in `hub/backend/openrouter.py`); a locked screen was not measured | a served agent cannot set a token, so its Claude Code accounts other than `default` hold its wakes until custody is amended |
-| A3 | Two Codex homes keep separate sign-ins, and the CLI writes a refreshed credential back into the home it read it from. | the backend's private home reads one login through a link the CLI writes in place (`hub/backend/codex.py`); two real homes were not measured | Codex accounts cannot be told apart by home, and Codex runs on `default` alone |
+| A3 | Two Codex homes keep separate sign-ins, and the CLI writes a refreshed credential back into the home it read it from. | the backend's private home reads one login through a link the CLI writes in place (`hub/backend/codex/__init__.py`); two real homes were not measured | Codex accounts cannot be told apart by home, and Codex runs on `default` alone |
 | A4 | A Codex `token_count` row names each window's length and the instant it resets. | measured 2026-10-09 on 31 rows the Codex backend's private home kept for one account: each fills `primary` with `used_percent`, `window_minutes` 10080 and `resets_at` in epoch seconds, and leaves `secondary` empty | a Codex limit reading has no reset, and only `max_age` ends it |
 | A5 | A Claude Code token is `sk-ant-` then letters, digits, `-`, `_` and `.`, 65 to 2048 characters in all. | gitleaks 8.30.1's rules for Anthropic keys: `sk-ant-api03-` and `sk-ant-admin01-`, each with 95 characters more; measured 2026-10-06 on one live token, the access token of Claude Code's stored login: prefix `sk-ant-oat01-`, 108 characters; the token `claude setup-token` prints was not measured | `lion account add` refuses a real token of another form, so its account cannot be added until the form is widened; one not holding `sk-ant-` would also pass as a label |
 
@@ -99,12 +93,12 @@ log and error, and `lion account add` as its own process, is nowhere (S1).
 The environment starts from the process's own, removes every variable the CLI takes a credential
 from, then sets the chosen one. For Claude Code these are `ANTHROPIC_API_KEY`, which the CLI prefers
 when it is set (`arm` in `apps/cli/lion_cli/agent.py`), and `CLAUDE_CODE_OAUTH_TOKEN`, which carries
-a token. `CC_ACCOUNT`, the earlier tool's account name, goes too.
+a token. `CC_ACCOUNT`, another account selection, goes too.
 
-For Codex, `CODEX_ACCESS_TOKEN` goes (named in `hub/backend/codex.py`), and `CODEX_HOME` is the
-agent's private home, whose login the pick points at the account's (D2). A relative private home, or
-one whose login resolves to another, is refused; neither file is opened to tell. The `default`
-account sets nothing. The list is completed before D3 lands (S9).
+For Codex, `CODEX_ACCESS_TOKEN` goes (named in `hub/backend/codex/__init__.py`), and `CODEX_HOME` is
+the agent's private home, whose login the pick points at the account's (D2). A relative private
+home, or one whose login resolves to another, is refused; neither file is opened to tell. The
+`default` account sets nothing. The list is completed before D3 lands (S9).
 
 ### C3: A limit reading comes from its source, and an unknown figure is never a number _(enforced: mechanical; owed, S1)_ ^c3
 
@@ -331,7 +325,7 @@ before the error goes on. No class sends the call to another account.
 | class | read from | does |
 | ----- | --------- | ---- |
 | out of quota | the limit row's `status` saying the call was refused, a limit reading from the failed call at a window's limit, or the CLI stating a usage limit (S6) | marks the account and its plan group until the reset named, else until a later probe succeeds; the wake ends |
-| sign-in failed | what `AUTH` in `hub/backend/codex.py` matches: 401, 403, unauthorized or forbidden | marks the account as needing its person until `lion account add` writes it again or a probe succeeds |
+| sign-in failed | what `AUTH` in `hub/backend/codex/__init__.py` matches: 401, 403, unauthorized or forbidden | marks the account as needing its person until `lion account add` writes it again or a probe succeeds |
 | passing | any other failure | retried as today; a call that still fails ends the wake; no mark |
 
 - **Landing evidence**: none yet; owed with the code (S1).
@@ -397,9 +391,9 @@ command.
 | A pick per serving process | a served agent runs for days and would stay on an account long after its limit was reached |
 | Keeping the last account until it is no longer usable | one account is spent to its threshold before the next is touched, and the person's own sessions on it find it spent |
 | Ranking a missing reading in the middle of the table | an account never observed may be spent or empty, and a middle rank treats a guess as a figure (C3) |
-| The earlier tool's 0 for an expired figure or a missing five-hour one, and its 50 for a missing seven-day one | each ranks a figure no source reported, a spent account first under the 0 (C3) |
+| Fixed percentages for missing or expired readings | each ranks a figure no source reported, potentially putting a spent account first (C3) |
 | Probing every candidate at every pick | at 60 wakes an hour and five candidates it is 300 calls an hour for one agent, while the kept account's own calls already carry its reading (C6) |
-| Reading a run's account from the process table | another process's environment is not readable for every process, and the earlier tool's reads missed live ones; the runtime's own record answers (C8) |
+| Reading a run's account from the process table | another process's environment is not readable by every process; the runtime's own record answers (C8) |
 | Tokens in plain files | a file travels with every copy and backup of its directory, and its mode is its only guard (C1) |
 | Retrying a refused call on another account | the lost call's effects are not known, so a second call may repeat them (C7) |
 | One record for this and for moving interactive sessions | the two are separate state machines with separate failures; that record reads this one's pool and evidence (S2) |
@@ -410,9 +404,8 @@ command.
   of D1 to D9 lands with tests named when it lands, and each claim marked owed names this row. Among
   them is the canary of C1: a made-up token put through every command, route, log and error and
   asserted absent from all of them.
-- **S2**: Moving a person's interactive sessions between accounts is a later record, and so is the
-  rest of what the earlier tool does. The earlier tool stays in use until the part that record fixes
-  has run and moved a real session.
+- **S2**: Interactive session migration is outside this record. It has different state and failure
+  behavior from agent account selection and needs its own account pool and evidence.
 - **S3**: API providers' keys and limits are a later record. This record takes only the accounts of
   the two CLI providers from what ADR-0022 S15 defers.
 - **S4**: The app's screen for accounts is an amendment to ADR-0022. It shows what `lion account
