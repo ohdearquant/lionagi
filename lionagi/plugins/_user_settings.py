@@ -35,13 +35,45 @@ else:
 __all__ = (
     "locked_user_settings",
     "read_user_settings",
+    "user_settings_revision",
     "user_settings_path",
     "write_user_settings",
 )
 
+_USER_SETTINGS_WRITE_GENERATION = 0
+
+
+def _note_user_settings_write() -> None:
+    global _USER_SETTINGS_WRITE_GENERATION
+    _USER_SETTINGS_WRITE_GENERATION += 1
+
 
 def user_settings_path() -> Path:
     return Path.home() / ".lionagi" / "settings.yaml"
+
+
+def user_settings_revision() -> tuple[Any, ...] | None:
+    """Cheap process-aware token for settings mutations.
+
+    The in-process generation closes same-metadata rewrites through these
+    helpers; file metadata lets a long-running process notice writes made by
+    another process. Consumers that need a hard bound for adversarially
+    preserved metadata must pair this token with a refresh deadline.
+    """
+
+    try:
+        stat_result = user_settings_path().stat()
+    except FileNotFoundError:
+        return (_USER_SETTINGS_WRITE_GENERATION, "missing")
+    except OSError as exc:
+        return (_USER_SETTINGS_WRITE_GENERATION, "unreadable", exc.errno)
+    return (
+        _USER_SETTINGS_WRITE_GENERATION,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+        stat_result.st_size,
+        stat_result.st_ino,
+    )
 
 
 def _load_yaml_dict(raw: str) -> dict[str, Any]:
@@ -108,6 +140,7 @@ def write_user_settings(data: dict[str, Any]) -> None:
             yaml.safe_dump(data, fp, sort_keys=False, allow_unicode=True)
             fp.flush()
             os.fsync(fp.fileno())
+            _note_user_settings_write()
         finally:
             _unlock_file(fp)
 
@@ -142,5 +175,6 @@ def locked_user_settings():
             yaml.safe_dump(data, fp, sort_keys=False, allow_unicode=True)
             fp.flush()
             os.fsync(fp.fileno())
+            _note_user_settings_write()
         finally:
             _unlock_file(fp)
