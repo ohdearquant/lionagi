@@ -364,10 +364,17 @@ class DataClass:
 
         return hash_dict(self.to_dict())
 
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, DataClass):
-            return False
-        return hash(self) == hash(other)
+    def __eq__(self, other: object) -> bool:
+        """Compare declared field state; instances of different classes are never equal.
+
+        Equal instances hash equal, since ``__hash__`` reads the same field state through
+        ``to_dict()``.
+        """
+        if self is other:
+            return True
+        return type(self) is type(other) and _structural_key(
+            self._field_state()
+        ) == _structural_key(cast(DataClass, other)._field_state())
 
 
 # Concrete key-container types accepted by fuzzy_match_keys. Bare ``str`` is

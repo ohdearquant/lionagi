@@ -302,6 +302,53 @@ def test_dataclass_eq_not_dataclass():
     assert obj != 42
 
 
+def test_dataclass_equality_is_structural_not_hash_based(monkeypatch):
+    """Equality compares declared field state of the same class, never hashes.
+
+    With every hash forced equal, the hash-based comparison called any two instances equal.
+    """
+
+    @dataclass(slots=True, eq=False)
+    class Context(DataClass):
+        values: list[int] = field(default_factory=list)
+
+    @dataclass(slots=True, eq=False)
+    class OtherContext(DataClass):
+        values: list[int] = field(default_factory=list)
+
+    import lionagi.ln._hash as legacy_hash
+
+    monkeypatch.setattr(legacy_hash, "hash_dict", lambda _value: 0)
+    first = Context(values=[1])
+    second = Context(values=[1])
+    assert first == second
+    assert first != OtherContext(values=[1])
+    assert first != Context(values=[2])
+
+    second.values.append(2)
+    assert first != second
+
+
+def test_equal_dataclasses_hash_equal():
+    """Structural equality keeps the hash contract: equal instances hash equal.
+
+    The subclass opts out of the generated ``__eq__`` (``eq=False``), which would
+    otherwise replace DataClass.__eq__ and set ``__hash__`` to None.
+    """
+
+    @dataclass(slots=True, eq=False)
+    class Point(DataClass):
+        name: str = "p"
+        tags: list[str] = field(default_factory=list)
+
+    first = Point(name="a", tags=["x"])
+    second = Point(name="a", tags=["x"])
+    assert first is not second
+    assert first == second
+    assert hash(first) == hash(second)
+    assert first != Point(name="a", tags=["y"])
+
+
 def test_params_to_dict():
     """Test Params.to_dict() method"""
     params = MyParams(field1="test", field2=42)
