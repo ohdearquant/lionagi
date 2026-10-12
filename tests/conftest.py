@@ -238,6 +238,32 @@ def write_plugin(plugin_home):
 
 
 @pytest.fixture(autouse=True)
+def _contain_the_frontend_dist_variable(monkeypatch: pytest.MonkeyPatch):
+    """Stop the CLI's frontend-dist path from following every later test.
+
+    ``studio/cli.py`` sets ``LIONAGI_STUDIO_FRONTEND_DIST`` directly in
+    ``os.environ`` on the production start path -- correctly, since the app
+    reads it at import to decide whether to mount the SPA. But a test that
+    drives that path leaves the variable set for every later test in the same
+    worker, and those tests then build an app with the SPA mounted without
+    asking for one.
+
+    The failures that causes do not look like leakage. The SPA's 404 handler
+    answers unrouted paths with the shell at 200, and mounting it registers an
+    extra route, so what shows up is a traversal assertion getting 200 instead
+    of 404 in one file and a route-count baseline off by one in another --
+    both far from the test that actually set the variable, and both dependent
+    on execution order, so neither reproduces when its own file is run alone.
+
+    ``delenv`` rather than a save/restore pair: registering the name with
+    monkeypatch is what makes teardown undo a later raw write, which is the
+    whole problem here. Tests that want the SPA mounted set it themselves and
+    are unaffected -- this runs first, they set it after.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_plugin_registry():
     """Reset PluginRegistry's process-lifetime scan cache around every test.
 
