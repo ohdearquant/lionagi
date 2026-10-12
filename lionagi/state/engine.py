@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from bisect import bisect_left
 from pathlib import Path
@@ -139,6 +141,91 @@ def _warn_if_wal_reset_unfixed() -> None:
         "library to remove the exposure.",
         sqlite3.sqlite_version,
     )
+
+
+_NOT_STOPPED = object()
+
+
+@functools.cache
+def _stop_once_class(cls: type) -> type:
+    """A subclass of the aiosqlite connection class *cls* that stops once.
+
+    Every ``stop()`` returns the first call's future, and once stopped, the
+    connection refuses new work with "no active connection", the error aiosqlite
+    gives once its sqlite3 connection is gone.
+    """
+
+    class StopOnceConnection(cls):
+        _stops_once = True
+
+        def stop(self):
+            future = getattr(self, "_first_stop", _NOT_STOPPED)
+            if future is _NOT_STOPPED:
+                future = self._first_stop = super().stop()
+            return future
+
+        async def _execute(self, fn, *args, **kwargs):
+            if getattr(self, "_first_stop", _NOT_STOPPED) is not _NOT_STOPPED:
+                raise ValueError("no active connection")
+            return await super()._execute(fn, *args, **kwargs)
+
+        @property
+        def _conn(self):
+            # SQLAlchemy sets the isolation level by queueing work on the driver itself, past
+            # _execute; behind a stop that work would never run. The driver thread still reads
+            # the connection for work queued before the stop, which runs as it did; any other
+            # thread is refused, so interrupt() is refused after a stop too.
+            if getattr(self, "_first_stop", _NOT_STOPPED) is not _NOT_STOPPED and (
+                threading.current_thread() is not getattr(self, "_thread", None)
+            ):
+                raise ValueError("no active connection")
+            return super()._conn
+
+    return StopOnceConnection
+
+
+def _stop_aiosqlite_once(driver_connection) -> None:
+    """Let an aiosqlite connection be stopped and then closed without hanging.
+
+    When a cancel breaks a statement, SQLAlchemy discards the connection: it asks
+    for a graceful ``close()``, which queues behind the statement still running on
+    the driver thread, and if a second cancel interrupts that wait it falls back
+    to ``stop()``. aiosqlite 0.22.1 ends ``close()`` with its own ``stop()`` and
+    waits for that future, but the worker thread exits at the first stop it takes
+    from its queue, so the second one never runs and the cleanup waits forever,
+    holding the pooled connection and, in a StateDB write, the write lock. Every
+    later ``stop()`` here returns the first one's future.
+
+    The same interruption leaves SQLAlchemy's connection unmarked, so it goes on
+    to roll back through the stopped driver. aiosqlite answers that with
+    "Connection closed", which SQLAlchemy does not recognise as a dead connection,
+    so the pooled connection is never returned. Work refused after a stop raises
+    "no active connection" instead, the error aiosqlite gives once its sqlite3
+    connection is gone, which SQLAlchemy reads as a lost connection when a
+    statement raises it.
+
+    Releases before 0.22.1 have no ``stop()`` for SQLAlchemy to fall back to, so
+    they are left alone.
+    """
+    import aiosqlite
+
+    cls = type(driver_connection)
+    if not isinstance(driver_connection, aiosqlite.Connection) or getattr(
+        cls, "_stops_once", False
+    ):
+        return
+    if not callable(getattr(cls, "stop", None)):
+        return
+    try:
+        driver_connection.__class__ = _stop_once_class(cls)
+    except TypeError:
+        # A layout this subclass cannot take (slots added upstream): keep the
+        # driver's own behaviour, and say so.
+        _log.warning(
+            "%s cannot take the stop-once subclass; a second cancel during a"
+            " connection's cleanup can leave that cleanup waiting forever",
+            cls.__qualname__,
+        )
 
 
 def _json_serializer(obj):
@@ -387,7 +474,8 @@ def make_engine(url: str, **overrides):
         kwargs.update(overrides)
         engine = create_async_engine(url, **kwargs)
 
-        def _apply_pragmas(dbapi_conn, _connection_record):
+        def _apply_pragmas(dbapi_conn, connection_record):
+            _stop_aiosqlite_once(connection_record.driver_connection)
             cursor = dbapi_conn.cursor()
             cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             cursor.execute("PRAGMA journal_mode = WAL")
@@ -452,7 +540,8 @@ def make_readonly_engine(url: str, **overrides):
     kwargs.update(overrides)
     engine = create_async_engine(ro_url, **kwargs)
 
-    def _apply_readonly_pragmas(dbapi_conn, _connection_record):
+    def _apply_readonly_pragmas(dbapi_conn, connection_record):
+        _stop_aiosqlite_once(connection_record.driver_connection)
         cursor = dbapi_conn.cursor()
         cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         cursor.execute("PRAGMA query_only = 1")
