@@ -2507,7 +2507,7 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
     system = run.profile.system
     assert "You are agent-a:v1, the chair of agent-a" in system and "twin of agent-a" in system
     assert (
-        "signing as agent-a:v1" in system and "Mail from agent-c, agent-a, agent-a:v1 is your work" in system
+        "signing as agent-a:v1" in system and "Mail from agent-a, agent-a:v1, agent-c is your work" in system
     )
     named = ", ".join(sorted(ALLOWED_VERBS))  # the verbs by name, not a count and a summary
     assert f"(these verbs and no other: {named}; memory.remember with an explicit salience" in system

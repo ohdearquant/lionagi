@@ -34,7 +34,7 @@ liveness: "partial (nothing serves before the cutover)"
 
 ## Decisions
 
-### D1: Three handlers on the chores actor ^d1
+### D1: `hub/agent/queue.py`: three handlers on the chores actor ^d1
 
 ## Alternatives
 
@@ -134,10 +134,7 @@ def test_adrs_score_titles_headings_and_rejected_alternatives_by_the_asks_words(
     assert f.startswith(
         "ADR-0023 ADR-0023: The build queue (signed, partial (nothing serves before the cutover))"
     )
-    assert (
-        "5 of 5 word(s); C6: A timeout is never surfaced to the person; "
-        "D1: Three handlers on the chores actor" in f
-    )
+    assert "5 of 5 word(s); C6: A timeout is never surfaced to the person; D1: `hub/agent/queue.py`" in f
     assert "alternatives: Timeouts escalated too | the person: the agent handles them" in f
     # one word only: one match is enough; nothing carrying it: no finding, control still passes
     out = asyncio.run(Adrs([d]).run({"query": "the box exec"}))

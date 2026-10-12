@@ -833,7 +833,7 @@ def test_a_task_title_is_one_to_120_characters_else_refused_and_the_message_stay
 
 @pytest.mark.parametrize(
     ("agents", "tasked"),
-    [((), set()), (("review-*",), {"m-t3"}), (("agent-a", "local"), {"m-t2", "m-t4"})],
+    [((), set()), (("source-*",), {"m-t3"}), (("agent-a", "local"), {"m-t2", "m-t4"})],
 )
 def test_whose_work_is_filed_is_the_desks_agents_list_and_none_named_files_none(tmp_path, agents, tasked):
     """No name carries a kind: a sender is an agent when `[desk] agents` matches it, and a desk that
