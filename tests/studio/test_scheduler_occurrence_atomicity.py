@@ -12,6 +12,7 @@ is a genuine transaction boundary: a simulated mid-write crash must leave
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -415,9 +416,26 @@ async def test_recovery_refires_occurrence_committed_but_never_dispatched(tmp_pa
     async with StateDB(db_path) as db:
         orphaned = await db.get_schedule_run("run-orphaned")
         remaining_undispatched = await db.list_undispatched_schedule_runs()
+        history = await db.fetch_all(
+            "SELECT previous_status, status, reason_code, reason_summary, evidence_refs "
+            "FROM status_transitions WHERE entity_type = ? AND entity_id = ? "
+            "ORDER BY created_at",
+            ("schedule_run", "run-orphaned"),
+        )
+        replacement_run_id = next(
+            row["id"] for row in await db.list_schedule_runs(sid) if row["id"] != "run-orphaned"
+        )
     assert orphaned["status"] == "failed"
     assert orphaned["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
     assert remaining_undispatched == []
+    assert [(row["previous_status"], row["status"]) for row in history] == [
+        (None, "running"),
+        ("running", "failed"),
+    ]
+    assert history[-1]["reason_summary"].startswith("Scheduler crashed after committing")
+    assert json.loads(history[-1]["evidence_refs"]) == [
+        {"kind": "schedule_run", "id": replacement_run_id}
+    ]
 
     # A fresh occurrence was re-fired with the SAME trigger_context.
     assert len(tracked_calls) == 1

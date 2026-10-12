@@ -229,8 +229,7 @@ async def test_managed_entity_creations_write_initial_lifecycle_history(db: Stat
                 await conn.execute(
                     text(
                         "SELECT entity_type, entity_id, previous_status, status "
-                        f"FROM status_transitions WHERE entity_id IN ({placeholders}) "
-                        "AND previous_status IS NULL"
+                        f"FROM status_transitions WHERE entity_id IN ({placeholders})"
                     ),
                     params,
                 )
@@ -239,10 +238,21 @@ async def test_managed_entity_creations_write_initial_lifecycle_history(db: Stat
             .all()
         )
 
-    assert len(rows) == len(expected)
-    for row in rows:
+    initial_rows = [row for row in rows if row["previous_status"] is None]
+    assert len(initial_rows) == len(expected)
+    for row in initial_rows:
         assert row["previous_status"] is None
         assert (row["entity_type"], row["status"]) == expected[row["entity_id"]]
+
+    tombstones = [
+        row
+        for row in rows
+        if row["entity_id"] == schedule_run_id and row["previous_status"] == "running"
+    ]
+    assert len(rows) == len(expected) + 1
+    assert [(row["status"], row["entity_type"]) for row in tombstones] == [
+        ("failed", "schedule_run")
+    ]
 
 
 async def test_creation_history_failure_rolls_back_managed_entity(

@@ -205,6 +205,29 @@ class SQLAlchemyLifecycleService:
             write_reason_columns=policy.reason_columns,
         )
 
+    async def _emit_terminal_event(
+        self,
+        command: TransitionCommand,
+        *,
+        previous_status: str | None,
+        transition_id: str | None,
+        occurred_at: float,
+    ) -> None:
+        if transition_id is None or previous_status == command.to_status:
+            return
+        policy = self._registry.get(command.entity_type)
+        if (
+            command.entity_type in EXECUTION_ENTITY_KINDS
+            and command.to_status in policy.terminal_statuses
+        ):
+            envelope = _build_terminal_envelope(
+                command,
+                previous_status=previous_status,
+                transition_id=transition_id,
+                occurred_at=occurred_at,
+            )
+            await self._terminal_callbacks.emit(envelope)
+
     async def _transition(
         self,
         command: TransitionCommand,
@@ -516,19 +539,12 @@ class SQLAlchemyLifecycleService:
                     },
                 )
 
-        if (
-            transition_id is not None
-            and previous_status != command.to_status
-            and command.entity_type in EXECUTION_ENTITY_KINDS
-            and command.to_status in policy.terminal_statuses
-        ):
-            envelope = _build_terminal_envelope(
-                command,
-                previous_status=previous_status,
-                transition_id=transition_id,
-                occurred_at=now,
-            )
-            await self._terminal_callbacks.emit(envelope)
+        await self._emit_terminal_event(
+            command,
+            previous_status=previous_status,
+            transition_id=transition_id,
+            occurred_at=now,
+        )
         return TransitionOutcome(
             result="applied",
             previous_status=previous_status,

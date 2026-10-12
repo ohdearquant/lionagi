@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue, field_validator
@@ -397,14 +398,16 @@ _FIELD_CONSTANTS = {
     "LIST_INSTRUCT_FIELD_MODEL": ("instruct", {"listable": True}),
     "REASON_FIELD": ("reason", {}),
 }
+_FIELD_CONSTANTS_LOCK = threading.Lock()
 
 
 def __getattr__(name: str):
     if name in _FIELD_CONSTANTS:
-        field_name, kwargs = _FIELD_CONSTANTS[name]
-        value = get_default_field(field_name, **kwargs)
-        globals()[name] = value
-        return value
+        with _FIELD_CONSTANTS_LOCK:
+            if name not in globals():
+                field_name, kwargs = _FIELD_CONSTANTS[name]
+                globals()[name] = get_default_field(field_name, **kwargs)
+            return globals()[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

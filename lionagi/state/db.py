@@ -3986,28 +3986,34 @@ class StateDB:
         replacement_run: dict[str, Any],
         *,
         expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Tombstone an undispatched orphan and insert its replacement in one transaction."""
         run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
+        lifecycle_service = self._lifecycle_service()
+        now = time.time()
+        command = _TransitionCommand(
+            entity_type="schedule_run",
+            entity_id=orphan_id,
+            to_status="failed",
+            reason=_ReasonRecord(
+                code=_RunReasons.FAILED_NEVER_DISPATCHED,
+                summary=reason_summary,
+                evidence_refs=tuple(evidence_refs or ()),
+            ),
+            actor=_ActorRecord(
+                type="scheduler",
+                id="tombstone_and_replace_schedule_run",
+            ),
+        )
         async with self._tx() as conn:
-            transition_id = await self._lifecycle_service()._write(  # noqa: SLF001
+            transition_id = await lifecycle_service._write(  # noqa: SLF001
                 conn,
                 "schedule_runs",
-                _TransitionCommand(
-                    entity_type="schedule_run",
-                    entity_id=orphan_id,
-                    to_status="failed",
-                    reason=_ReasonRecord(
-                        code=_RunReasons.FAILED_NEVER_DISPATCHED,
-                        summary="undispatched schedule run replaced during recovery",
-                    ),
-                    actor=_ActorRecord(
-                        type="scheduler",
-                        id="tombstone_and_replace_schedule_run",
-                    ),
-                ),
+                command,
                 previous_status=expected_orphan_status,
-                now=time.time(),
+                now=now,
                 extra_guard={"dispatched_at": None},
             )
             if transition_id is None:
@@ -4020,6 +4026,12 @@ class StateDB:
                 status=run_params["status"],
                 actor_id="tombstone_and_replace_schedule_run",
             )
+        await lifecycle_service._emit_terminal_event(  # noqa: SLF001
+            command,
+            previous_status=expected_orphan_status,
+            transition_id=transition_id,
+            occurred_at=now,
+        )
         return True
 
     async def update_schedule_run(

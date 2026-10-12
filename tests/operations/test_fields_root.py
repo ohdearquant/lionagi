@@ -1,5 +1,7 @@
 """Tests for lionagi.operations.fields imports, __getattr__ field generation, and __all__ exports."""
 
+import threading
+
 import pytest
 
 
@@ -177,6 +179,59 @@ class TestFieldGeneration:
         assert isinstance(Instruct, type)
         assert isinstance(Reason, type)
         assert callable(get_default_field)
+
+
+def test_first_concurrent_field_access_returns_one_object(monkeypatch):
+    import lionagi.operations.fields as fields_module
+
+    name = "LIST_INSTRUCT_FIELD_MODEL"
+    fields_module.__dict__.pop(name, None)
+    first_entered = threading.Event()
+    second_attempting = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    built: list[object] = []
+    results: list[object] = []
+
+    def build(_field_name, **_kwargs):
+        value = object()
+        built.append(value)
+        if len(built) == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_entered.set()
+        return value
+
+    monkeypatch.setattr(fields_module, "get_default_field", build)
+
+    def read_constant(attempting=None):
+        if attempting is not None:
+            attempting.set()
+        results.append(getattr(fields_module, name))
+
+    first = threading.Thread(target=read_constant)
+    second = threading.Thread(target=read_constant, args=(second_attempting,))
+    try:
+        first.start()
+        assert first_entered.wait(timeout=2)
+        second.start()
+        assert second_attempting.wait(timeout=2)
+        assert not second_entered.wait(timeout=0.5)
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert len(built) == 1
+        assert len(results) == 2
+        assert results[0] is results[1]
+    finally:
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        fields_module.__dict__.pop(name, None)
 
 
 if __name__ == "__main__":

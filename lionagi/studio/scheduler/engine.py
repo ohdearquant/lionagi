@@ -2081,25 +2081,15 @@ class SchedulerEngine:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
             applied = await self._svc.tombstone_and_replace_schedule_run(
-                supersedes_run_id, run, expected_orphan_status="running"
+                supersedes_run_id,
+                run,
+                expected_orphan_status="running",
+                reason_summary=(
+                    "Scheduler crashed after committing this occurrence but "
+                    "before confirming the external process launched."
+                ),
+                evidence_refs=[{"kind": "schedule_run", "id": run["id"]}],
             )
-            if applied:
-                # The atomic write above sets only status and updated_at, so layer the reason code
-                # and history on now, the same pattern create_schedule_run_and_advance()'s callers
-                # follow. A same-status append, not a CAS: the orphan is already durably terminal.
-                await self._svc.update_status(
-                    "schedule_run",
-                    supersedes_run_id,
-                    new_status="failed",
-                    reason_code=RunReasons.FAILED_NEVER_DISPATCHED,
-                    reason_summary=(
-                        "Scheduler crashed after committing this occurrence but "
-                        "before confirming the external process launched."
-                    ),
-                    evidence_refs=[{"kind": "schedule_run", "id": run["id"]}],
-                    source="system",
-                    actor="scheduler_startup_recovery",
-                )
             return applied
         # The cursor this fire was selected on is the claim: if another scheduler already advanced
         # it, that scheduler owns this occurrence and nothing is written here.

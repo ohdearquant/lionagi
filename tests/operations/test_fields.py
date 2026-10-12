@@ -245,6 +245,13 @@ class TestGetDefaultFieldChaining:
         assert first is not second
         assert first.extract_metadata("validator") is second.extract_metadata("validator")
 
+    def test_action_required_invalid_value_uses_false_default(self):
+        validator = get_default_field("action_required", nullable=False).extract_metadata(
+            "validator"
+        )
+
+        assert validator(None, "not-a-boolean") is False
+
     def test_lazy_field_constants_preserve_identity(self):
         import lionagi.operations.fields as fields
 

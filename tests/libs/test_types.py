@@ -3,9 +3,12 @@
 import os
 import subprocess
 import sys
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 import pytest
 
@@ -54,6 +57,15 @@ class ParamsWithDefaults(Params):
 
     label: str = "default-label"
     items: list[str] = field(default_factory=list)
+
+
+class _Coordinate(NamedTuple):
+    x: int
+    y: int
+
+
+class _ValueList(list):
+    pass
 
 
 def test_params_invalid_parameter():
@@ -347,6 +359,88 @@ def test_equal_dataclasses_hash_equal():
     assert first == second
     assert hash(first) == hash(second)
     assert first != Point(name="a", tags=["y"])
+
+
+@pytest.mark.parametrize(
+    ("label", "left", "right"),
+    [
+        pytest.param("datetime", datetime(2026, 1, 1), datetime(2026, 1, 1), id="datetime"),
+        pytest.param("decimal", Decimal("1.25"), Decimal("1.250"), id="decimal"),
+        pytest.param("named-tuple", _Coordinate(1, 2), _Coordinate(1, 2), id="named-tuple"),
+        pytest.param(
+            "ordered-dict",
+            OrderedDict((("a", 1), ("b", 2))),
+            OrderedDict((("b", 2), ("a", 1))),
+            id="ordered-dict",
+        ),
+        pytest.param(
+            "default-dict",
+            defaultdict(list, {"a": 1}),
+            defaultdict(list, {"a": 1}),
+            id="default-dict",
+        ),
+        pytest.param("list-subclass", _ValueList([1, 2]), _ValueList([1, 2]), id="list-subclass"),
+    ],
+)
+def test_equal_dataclass_values_preserve_hash_membership(label, left, right):
+    @dataclass(slots=True, eq=False)
+    class Box(DataClass):
+        value: object
+
+    first = Box(left)
+    second = Box(right)
+
+    assert first == second, label
+    assert hash(first) == hash(second), label
+    assert second in {first}, label
+
+
+def test_dataclass_float_fields_follow_float_equality():
+    @dataclass(slots=True, eq=False)
+    class Box(DataClass):
+        value: float
+
+    first_nan = Box(float("nan"))
+    second_nan = Box(float("nan"))
+    assert first_nan != second_nan
+    assert second_nan not in {first_nan}
+    shared_nan = float("nan")
+    assert Box(shared_nan) != Box(shared_nan)
+
+    positive_zero = Box(0.0)
+    negative_zero = Box(-0.0)
+    assert positive_zero == negative_zero
+    assert hash(positive_zero) == hash(negative_zero)
+    assert negative_zero in {positive_zero}
+
+
+def test_dataclass_equality_handles_cyclic_list_fields():
+    @dataclass(slots=True, eq=False)
+    class Box(DataClass):
+        values: list[object]
+
+    first_values = []
+    first_values.append(first_values)
+    second_values = []
+    second_values.append(second_values)
+
+    assert Box(first_values) != Box(second_values)
+
+
+def test_dataclass_equality_handles_deleted_nested_fields():
+    @dataclass(slots=True, eq=False)
+    class Item(DataClass):
+        value: str
+
+    @dataclass(slots=True, eq=False)
+    class Box(DataClass):
+        item: Item
+
+    first_item = Item("value")
+    second_item = Item("value")
+    del first_item.value
+
+    assert Box(first_item) != Box(second_item)
 
 
 def test_params_to_dict():
