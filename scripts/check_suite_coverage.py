@@ -8,19 +8,15 @@ stops the session at its cap. Neither prints how much of the suite was left
 unrun, so two heads compared on "N failed / M passed" can be compared over
 different populations without either side saying so.
 
-The junit report counts the tests that actually produced a result. Collecting
-the same targets under the same marker expression counts the tests that were
-supposed to run. When those two numbers differ, the run covered less than it
-claims and this script says so and exits nonzero.
+The JUnit report can contain repeated entries for one test after an xdist
+worker crash, and collection-time skips can produce entries for tests pytest
+did not collect. This check compares distinct test IDs from the report with
+distinct IDs collected from the same targets and marker expression. Any
+collected ID missing from the report makes the command exit nonzero.
 
-A collection error is the second condition, and comparing those two numbers
-cannot see it, because it moves BOTH of them in opposite directions: the module
-contributes one junit testcase carrying a collection failure, and contributes
-nothing at all to the re-collection. Compared raw, N collection errors would read
-as a surplus of N, which looks like a crashed xdist worker that never happened.
-They can also cancel a real truncation out: executed = collected - unrun +
-errors, so a run that stopped at its --maxfail cap with as many collection
-errors as tests it skipped would read exactly clean.
+A collection error is reported separately: its JUnit placeholder is not a test
+ID, and the module contributes no IDs to the re-collection. The placeholder
+therefore cannot count as a test result or hide a collection failure.
 
 Collection errors are therefore counted off the report directly rather than
 inferred from a difference, and the two conditions are reported separately
@@ -39,7 +35,7 @@ from xml.etree import ElementTree
 
 
 class CoverageCheckError(Exception):
-    """The check could not read one of its two numbers, so it refuses."""
+    """The check could not read a report or collection, so it refuses."""
 
 
 #: The message pytest gives the ``<error>`` of a testcase that stands in for a
@@ -47,6 +43,7 @@ class CoverageCheckError(Exception):
 #: wording, and they belong to a test that really ran, so only this one means a
 #: module contributed no tests at all.
 COLLECTION_FAILURE_MESSAGE = "collection failure"
+JunitIdentity = tuple[str, str, str]
 
 
 def _suites(junit: Path) -> list[ElementTree.Element]:
@@ -60,27 +57,48 @@ def _suites(junit: Path) -> list[ElementTree.Element]:
     return suites
 
 
-def executed_count(junit: Path) -> int:
-    """Return the number of entries the junit report holds, results and all.
+def _nodeid_identity(nodeid: str) -> JunitIdentity:
+    """Return the JUnit identity pytest derives from a collected node ID."""
+    address, bracket, parameters = nodeid.partition("[")
+    names = address.split("::")
+    names[0] = names[0].replace("/", ".")  # pytest node IDs always use "/"
+    if names[0].endswith(".py"):
+        names[0] = names[0][:-3]
+    names[-1] += bracket + parameters
+    return (nodeid.split("::", 1)[0], ".".join(names[:-1]), names[-1])
 
-    This is the raw ``tests`` attribute, which counts a collection error as an
-    entry. `collection_failures` is what separates the two.
-    """
-    total = 0
+
+def executed_nodeids(junit: Path) -> set[JunitIdentity]:
+    """Return distinct real test IDs represented in the JUnit report."""
+    nodeids: set[JunitIdentity] = set()
     for suite in _suites(junit):
-        tests = suite.get("tests")
-        if tests is None:
+        if suite.get("tests") is None:
             raise CoverageCheckError(f"a testsuite in {junit} carries no tests attribute")
-        total += int(tests)
-    return total
+        for case in suite.iter("testcase"):
+            if any(
+                error.get("message") == COLLECTION_FAILURE_MESSAGE for error in case.iter("error")
+            ):
+                continue
+            file = case.get("file")
+            classname = case.get("classname")
+            name = case.get("name")
+            if file is None or classname is None or name is None:
+                raise CoverageCheckError(f"a testcase in {junit} has no file, classname, or name")
+            nodeids.add((file, classname, name))
+    return nodeids
+
+
+def executed_count(junit: Path) -> int:
+    """Return the number of distinct test IDs represented in the JUnit report."""
+    return len(executed_nodeids(junit))
 
 
 def collection_failures(junit: Path) -> list[str]:
     """Name every module the report says could not be collected.
 
-    Read off the report rather than derived from a count, because the count is
-    exactly what a collection error corrupts. Names, not a number, because the
-    remedy is per-module and a bare count sends the reader back to the log.
+    Read from the report because a collection error has no collected test IDs.
+    Names, not a number, because the remedy is per-module and a bare count
+    sends the reader back to the log.
     """
     names = []
     for suite in _suites(junit):
@@ -91,8 +109,8 @@ def collection_failures(junit: Path) -> list[str]:
     return sorted(names)
 
 
-def collected_count(markexpr: str, targets: list[str]) -> int:
-    """Collect the same targets under the same marker expression and count them.
+def collected_nodeids(markexpr: str, targets: list[str]) -> set[JunitIdentity]:
+    """Collect the same targets and marker expression as distinct test IDs.
 
     Runs in-process with a plugin rather than parsing collection output, whose
     shape depends on the verbosity the caller's addopts happen to set.
@@ -100,30 +118,37 @@ def collected_count(markexpr: str, targets: list[str]) -> int:
     import pytest
 
     class _Counter:
-        items = None
+        nodeids: set[JunitIdentity] | None = None
 
         def pytest_collection_finish(self, session) -> None:  # noqa: ANN001
-            self.items = len(session.items)
+            self.nodeids = {_nodeid_identity(item.nodeid) for item in session.items}
 
     counter = _Counter()
     args = ["--collect-only", "-n0", "-p", "no:cacheprovider", "-m", markexpr, *targets]
     noise = io.StringIO()
     with redirect_stdout(noise):
         code = pytest.main(args, plugins=[counter])
-    if counter.items is None:
+    if counter.nodeids is None:
         raise CoverageCheckError(
             f"collection did not finish (pytest exit {code}); the last of its output was: "
             f"{noise.getvalue()[-400:]!r}"
         )
-    if counter.items == 0:
+    if not counter.nodeids:
         raise CoverageCheckError(
             f"collected 0 tests from {' '.join(targets)} under -m {markexpr!r}: "
             "the check has no denominator, so it cannot certify the run"
         )
-    return counter.items
+    return counter.nodeids
 
 
-def verdict(collected: int, executed: int, failures: list[str]) -> tuple[int, str]:
+def collected_count(markexpr: str, targets: list[str]) -> int:
+    """Return the number of distinct tests in the matching collection."""
+    return len(collected_nodeids(markexpr, targets))
+
+
+def verdict(
+    collected: set[JunitIdentity], executed: set[JunitIdentity], failures: list[str]
+) -> tuple[int, str]:
     """Return the exit code and the line that names which condition tripped.
 
     Two conditions, reported separately because their remedies are different. A
@@ -131,40 +156,31 @@ def verdict(collected: int, executed: int, failures: list[str]) -> tuple[int, st
     it ran; a shortfall means the session ended early and there are real
     failures to read. A run can hit both, and each one alone is a refusal.
 
-    ``executed`` counts every junit entry, so the collection-error stand-ins are
-    subtracted before any comparison. Without that subtraction each one adds to
-    the left side while removing from the right, so it would read as a surplus
-    and pass.
-
-    A run can still report MORE results than the collection holds: xdist records
-    a result of its own for the test a crashed worker was running, on top of the
-    ones the workers reported. That surplus is not a coverage hole, and the
-    crash it comes from is already a failure in the same report, so it is said
-    out loud and not refused.
+    Both sides are sets of pytest test IDs. Collection placeholders and
+    repeated reports for a crashed worker therefore cannot make a missing test
+    look covered.
     """
-    results = executed - len(failures)
+    ran = collected & executed
+    missing = collected - ran
     reasons = []
     if failures:
         reasons.append(
             f"{len(failures)} module(s) failed to collect and contributed no tests "
             f"({', '.join(failures)}) -- a missing dependency, not a failure to read"
         )
-    if results < collected:
+    if missing:
+        names = sorted(f"{classname}::{name}" for _, classname, name in missing)
+        shown = ", ".join(names[:10])
+        if len(names) > 10:
+            shown += f", and {len(names) - 10} more"
         reasons.append(
-            f"only {results} of {collected} collected tests ran, {collected - results} never "
+            f"only {len(ran)} of {len(collected)} collected tests ran, {len(missing)} never "
             "ran -- the session ended early (a crashed xdist worker can shut it down, and "
-            "--maxfail stops it at its cap), so there are real failures above to read"
+            f"--maxfail stops it at its cap); missing test IDs: {shown}"
         )
     if reasons:
         return 1, "suite coverage: REFUSED -- " + "; and ".join(reasons)
-    if results > collected:
-        surplus = results - collected
-        return 0, (
-            f"suite coverage: {results} results for {collected} collected tests, "
-            f"{surplus} more than were collected -- xdist reports one of these for a "
-            "worker that crashed while running a test"
-        )
-    return 0, f"suite coverage: {results} of {collected} collected tests ran"
+    return 0, f"suite coverage: {len(ran)} of {len(collected)} collected tests ran"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -174,9 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("targets", nargs="+", help="the run's test targets")
     args = parser.parse_args(argv)
     try:
-        executed = executed_count(args.junit)
+        executed = executed_nodeids(args.junit)
         failures = collection_failures(args.junit)
-        collected = collected_count(args.markexpr, args.targets)
+        collected = collected_nodeids(args.markexpr, args.targets)
     except CoverageCheckError as error:
         print(f"suite coverage: UNCHECKED -- {error}", file=sys.stderr)
         return 1

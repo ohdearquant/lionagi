@@ -244,10 +244,11 @@ extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
 # missed is the cost of the alternative: at 0, xdist shuts every worker down at
 # the first crash, so the run ends there and prints counts that read like a whole
 # suite, with thousands of collected tests left unrun and nothing in the output
-# saying so; at 4 the crashed worker is replaced and the run finishes. A job that
+# saying so; at 4 xdist may retry crashed workers until its restart limit is
+# exhausted, and a run can still stop with tests missing. A job that
 # hits the blocked-controller case sets MAX_WORKER_RESTART=0 (scripts/ci.sh) or
-# passes --max-worker-restart=0. scripts/ci.sh refuses on the executed-vs-
-# collected count; a caller who runs pytest directly gets no such disclosure.
+# passes --max-worker-restart=0. scripts/ci.sh checks distinct collected and
+# reported test IDs; a caller who runs pytest directly gets no such check.
 addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=4"
 # Strict, so that a test written for anyio (marked `anyio`, or taking the
 # `anyio_backend` fixture) runs on the backend it is parametrized with. Auto

@@ -8,6 +8,7 @@ temp-dir safety assertion actually fires on a bad path.
 
 from __future__ import annotations
 
+import socket
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pytest_asyncio
 
 from lionagi.state.db import StateDB
 
+from . import harness
 from .fixtures import (
     SESSION_STATUSES,
     SMOKE_EXECUTION_GRAPH,
@@ -25,7 +27,7 @@ from .fixtures import (
     seed_filesystem_fixtures,
     seed_state_db,
 )
-from .harness import _seed
+from .harness import SeededDaemon, _seed
 
 
 @pytest_asyncio.fixture
@@ -85,3 +87,31 @@ async def test_seed_refuses_a_db_path_outside_the_temp_dir():
         outside_db_path = Path(other_dir) / "state.db"
         with pytest.raises(RuntimeError, match="outside the temp dir"):
             await _seed(outside_db_path, Path(tmp_dir))
+
+
+def test_seeded_daemon_start_reports_an_early_child_exit(monkeypatch) -> None:
+    async def skip_seed(_db_path: Path, _tmp_dir: Path) -> None:
+        pass
+
+    class ExitedProcess:
+        returncode = 1
+
+        def poll(self) -> int:
+            return self.returncode
+
+    with socket.socket() as occupied_port:
+        occupied_port.bind(("127.0.0.1", 0))
+        port = occupied_port.getsockname()[1]
+
+        def exit_before_start(_args, *, env, stdout, **_kwargs):
+            assert env["LIONAGI_STUDIO_PORT"] == str(port)
+            stdout.write("address already in use\n")
+            return ExitedProcess()
+
+        monkeypatch.setattr(harness, "_seed", skip_seed)
+        monkeypatch.setattr(harness.subprocess, "Popen", exit_before_start)
+
+        with pytest.raises(RuntimeError, match="seeded daemon exited early") as exc_info:
+            SeededDaemon.start(port=port)
+
+    assert "address already in use" in str(exc_info.value)

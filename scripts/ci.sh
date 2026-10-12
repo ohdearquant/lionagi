@@ -29,7 +29,7 @@ _require() {
 # summary that reads like a whole suite: at a restart limit of 0 a crashed xdist
 # worker takes the whole session down with it, and --maxfail stops the session
 # at its cap. Neither says how much was left unrun, so every lane below writes a
-# junit report and then refuses on the count itself.
+# JUnit report and refuses when any collected test ID has no result.
 _junit_report_path() {
   if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
     mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
@@ -86,12 +86,13 @@ test-python() {
   # running <nodeid>" whatever this limit is, but at 0 xdist shuts every other
   # worker down with it, and the run then ends wherever it had got to while its
   # summary counts still read like a whole suite, with thousands of collected
-  # tests left unrun; at 4 the crashed worker is replaced and the run finishes.
+  # tests left unrun; at 4 xdist may retry crashed workers, but the run can
+  # still stop with tests missing after its restart limit is exhausted.
   # The risk it buys is the one this was 0 for -- a replacement that is never
   # scheduled leaves the controller blocked with no test name -- seen only on
   # small target sets, never on the full suite; MAX_WORKER_RESTART=0 is the way
   # back for a job that hits it. The coverage check below is what makes an
-  # early end loud either way.
+  # early end loud either way by checking distinct test IDs.
   local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
   [ ${#targets[@]} -gt 0 ] || targets=(tests/)

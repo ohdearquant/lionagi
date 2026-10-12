@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date, timedelta
 from pathlib import Path
@@ -11,8 +12,10 @@ import pytest
 from scripts.check_suite_coverage import (
     CoverageCheckError,
     collected_count,
+    collected_nodeids,
     collection_failures,
     executed_count,
+    executed_nodeids,
     verdict,
 )
 from scripts.collect_flake_failures import records_from_junit
@@ -448,10 +451,14 @@ def test_every_suite_lane_replaces_a_crashed_worker_and_checks_its_own_coverage(
         # An explicit flag so MAX_WORKER_RESTART can change the limit for a job
         # that needs the other trade; an override of the default asserted below.
         assert '--max-worker-restart="${MAX_WORKER_RESTART:-4}"' in body, name
-        assert "_check_suite_coverage " in body, name
+        coverage_lines = [
+            line.strip() for line in body.splitlines() if "_check_suite_coverage " in line
+        ]
+        assert coverage_lines, name
+        assert all(line.endswith("|| rc=1") for line in coverage_lines), name
 
 
-def test_a_crashed_worker_is_replaced_by_the_project_config(
+def test_project_config_allows_xdist_worker_restarts(
     request: pytest.FixtureRequest,
 ) -> None:
     # Reads the effective ini configuration rather than the text of any one
@@ -465,8 +472,9 @@ def test_a_crashed_worker_is_replaced_by_the_project_config(
     # The limit must not be 0. At 0, xdist shuts every worker down at the first
     # crash, and the run then reports the counts it had reached as if they were
     # the whole suite: measured on this suite, one crashed worker left 9681 of
-    # 23822 collected tests unrun. At 4 the same crash was replaced and the run
-    # finished.
+    # 23822 collected tests unrun. At 4 the measured crash was replaced, but
+    # the restart limit does not guarantee the run reaches every test; the
+    # suite check covers that case.
     flags = [
         opt for opt in request.config.getini("addopts") if opt.startswith("--max-worker-restart")
     ]
@@ -476,34 +484,82 @@ def test_a_crashed_worker_is_replaced_by_the_project_config(
 
 
 def test_a_run_that_left_tests_unrun_is_refused_and_names_both_numbers() -> None:
-    code, line = verdict(collected=23822, executed=14141, failures=[])
+    collected = _coverage_identities(23822)
+    executed = set(sorted(collected)[:14141])
+    code, line = verdict(collected=collected, executed=executed, failures=[])
 
     assert code == 1
     assert "23822" in line and "14141" in line and "9681" in line
 
-    code, line = verdict(collected=23822, executed=23822, failures=[])
+    code, line = verdict(collected=collected, executed=collected, failures=[])
 
     assert code == 0
     assert "23822 of 23822" in line
 
 
-def test_more_results_than_collected_tests_is_said_out_loud_and_not_refused() -> None:
-    # xdist writes a result of its own for the test a crashed worker was
-    # running, so a full run that survived a crash reports one more result than
-    # the collection holds. Measured on this suite: 23831 results for 23830
-    # collected. Refusing there would redden a run that covered everything.
-    code, line = verdict(collected=23830, executed=23831, failures=[])
+def _coverage_identities(count: int) -> set[tuple[str, str, str]]:
+    return {
+        ("tests/test_sample.py", "tests.test_sample", f"test_case_{index}")
+        for index in range(count)
+    }
+
+
+def _write_junit_cases(tmp_path: Path, cases: list[tuple[str, str, str, bool]]) -> Path:
+    body = []
+    for file, classname, name, skipped in cases:
+        result = "<skipped />" if skipped else ""
+        body.append(
+            f'<testcase file="{file}" classname="{classname}" name="{name}">{result}</testcase>'
+        )
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        f'<testsuites><testsuite name="pytest" tests="{len(cases)}">'
+        f"{''.join(body)}</testsuite></testsuites>"
+    )
+    return report
+
+
+def test_module_skips_cannot_cover_tests_stopped_by_maxfail(tmp_path: Path) -> None:
+    collected = _coverage_identities(5)
+    cases = [(*next(iter(sorted(collected))), False)]
+    cases.extend(
+        (f"tests/skip_{index}.py", "pytest", f"skip_{index}.py", True) for index in range(5)
+    )
+    executed = executed_nodeids(_write_junit_cases(tmp_path, cases))
+    code, line = verdict(collected=collected, executed=executed, failures=[])
+
+    assert code == 1
+    assert "4 never ran" in line
+
+
+def test_repeated_worker_failures_do_not_count_as_distinct_tests(tmp_path: Path) -> None:
+    collected = _coverage_identities(9)
+    repeated = next(iter(sorted(collected)))
+    cases = [(*repeated, False)] * 5
+    executed = executed_nodeids(_write_junit_cases(tmp_path, cases))
+    code, line = verdict(collected=collected, executed=executed, failures=[])
+
+    assert code == 1
+    assert "8 never ran" in line
+    assert "test_case_1" in line or "test_case_0" in line
+
+
+def test_duplicate_worker_reports_do_not_refuse_a_fully_covered_run(tmp_path: Path) -> None:
+    collected = _coverage_identities(3)
+    cases = [(*identity, False) for identity in sorted(collected)]
+    cases.extend([(*cases[0][:3], False), (*cases[0][:3], False)])
+    executed = executed_nodeids(_write_junit_cases(tmp_path, cases))
+    code, line = verdict(collected=collected, executed=executed, failures=[])
 
     assert code == 0
-    assert "23831" in line and "23830" in line and "1 more" in line
+    assert "3 of 3" in line
 
 
 def test_a_collection_error_is_refused_and_named_rather_than_read_as_a_surplus() -> None:
     # A module that cannot be imported contributes one junit entry and no
-    # collected tests, so the raw difference is +1 and looks exactly like the
-    # crashed-worker surplus above. Read raw, it would exit 0 with a message
-    # blaming a crash that had not happened.
-    code, line = verdict(collected=10, executed=11, failures=["tests/needs_numpy.py"])
+    # collected tests, so that entry cannot satisfy any collected test ID.
+    collected = _coverage_identities(10)
+    code, line = verdict(collected=collected, executed=collected, failures=["tests/needs_numpy.py"])
 
     assert code == 1
     assert "tests/needs_numpy.py" in line
@@ -511,11 +567,15 @@ def test_a_collection_error_is_refused_and_named_rather_than_read_as_a_surplus()
 
 
 def test_a_collection_error_cannot_cancel_a_truncation_out() -> None:
-    # executed = collected - unrun + errors, so a session that stopped early
-    # with as many collection errors as tests it skipped arrives at the clean
-    # number. Both conditions hold here and both have to be said, because
-    # one is an environment fix and the other is failures to read.
-    code, line = verdict(collected=100, executed=100, failures=["tests/a.py", "tests/b.py"])
+    # Collection failures and missing test IDs are reported independently,
+    # because one needs an environment fix and the other needs test failures read.
+    collected = _coverage_identities(100)
+    executed = set(sorted(collected)[:98])
+    code, line = verdict(
+        collected=collected,
+        executed=executed,
+        failures=["tests/a.py", "tests/b.py"],
+    )
 
     assert code == 1
     assert "tests/a.py" in line and "tests/b.py" in line
@@ -526,7 +586,7 @@ def test_verdict_will_not_judge_without_the_collection_failures_it_cannot_infer(
     # No default: the whole defect was a caller that never supplied this, and a
     # default would let the next one arrive at the old answer in silence.
     with pytest.raises(TypeError):
-        verdict(collected=10, executed=10)  # type: ignore[call-arg]
+        verdict(collected=set(), executed=set())  # type: ignore[call-arg]
 
 
 def test_collection_failures_are_read_off_the_report_and_exclude_fixture_errors(
@@ -570,8 +630,15 @@ def test_a_junit_report_the_check_cannot_read_refuses_rather_than_certifying(
 
     two_suites = tmp_path / "two.xml"
     two_suites.write_text(
-        '<testsuites><testsuite name="a" tests="3"></testsuite>'
-        '<testsuite name="b" tests="4"></testsuite></testsuites>'
+        '<testsuites><testsuite name="a" tests="3">'
+        '<testcase file="a.py" classname="a" name="test_1"/>'
+        '<testcase file="a.py" classname="a" name="test_2"/>'
+        '<testcase file="a.py" classname="a" name="test_3"/></testsuite>'
+        '<testsuite name="b" tests="4">'
+        '<testcase file="b.py" classname="b" name="test_1"/>'
+        '<testcase file="b.py" classname="b" name="test_2"/>'
+        '<testcase file="b.py" classname="b" name="test_3"/>'
+        '<testcase file="b.py" classname="b" name="test_4"/></testsuite></testsuites>'
     )
     assert executed_count(two_suites) == 7
 
@@ -585,6 +652,25 @@ def test_a_collection_that_finds_nothing_refuses_to_certify_a_run(tmp_path: Path
 
     with pytest.raises(CoverageCheckError):
         collected_count("performance", [str(tmp_path)])
+
+
+def test_collected_ids_match_junit_address_fields(tmp_path: Path) -> None:
+    (tmp_path / "test_sample.py").write_text(
+        "import pytest\n"
+        "class TestGroup:\n"
+        "    @pytest.mark.parametrize('value', [1, 2], ids=['first', 'second'])\n"
+        "    def test_values(self, value):\n"
+        "        assert value in (1, 2)\n"
+    )
+
+    nodeids = collected_nodeids("not performance", [str(tmp_path)])
+    file = next(iter(nodeids))[0]
+    module = file.replace(os.sep, ".").removesuffix(".py")
+
+    assert nodeids == {
+        (file, f"{module}.TestGroup", "test_values[first]"),
+        (file, f"{module}.TestGroup", "test_values[second]"),
+    }
 
 
 def test_docs_job_always_guard_survives_upstream_changes_failure() -> None:
