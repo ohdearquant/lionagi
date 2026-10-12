@@ -751,6 +751,11 @@ export interface OperatorStreamHandlers {
   onError?: (error: Error, fatal: boolean) => void;
 }
 
+// The daemon emits a heartbeat every five seconds. Three missed heartbeats is
+// enough to distinguish a dead upstream from ordinary scheduling jitter while
+// still recovering a turn accepted by a replacement daemon promptly.
+const OPERATOR_STREAM_LIVENESS_TIMEOUT_MS = 15_000;
+
 /**
  * Authenticated, replayable SSE subscription. The cursor advances only after
  * a validated v1 frame and is sent on every reconnect, so delivery may repeat
@@ -786,14 +791,34 @@ export function streamOperatorConversation(
     while (!closed) {
       handlers.onConnection?.(firstAttempt ? "connecting" : "reconnecting");
       controller = new AbortController();
+      let livenessExpired = false;
+      const withLivenessDeadline = async <T>(operation: Promise<T>): Promise<T> => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        try {
+          return await Promise.race([
+            operation,
+            new Promise<T>((_resolve, reject) => {
+              timer = setTimeout(() => {
+                livenessExpired = true;
+                controller?.abort();
+                reject(new Error("Operator stream heartbeat timed out."));
+              }, OPERATOR_STREAM_LIVENESS_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
       try {
         const query = new URLSearchParams({ after_sequence: String(cursor) });
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         const token = resolveAuthToken();
         if (token) headers.Authorization = `Bearer ${token}`;
-        const response = await fetch(
-          `${API_BASE}/api/operator/conversations/${encodeURIComponent(conversationId)}/stream?${query}`,
-          { headers, signal: controller.signal },
+        const response = await withLivenessDeadline(
+          fetch(
+            `${API_BASE}/api/operator/conversations/${encodeURIComponent(conversationId)}/stream?${query}`,
+            { headers, signal: controller.signal },
+          ),
         );
         if (!response.ok || !response.body) {
           const fatal =
@@ -816,7 +841,7 @@ export function streamOperatorConversation(
         const decoder = new TextDecoder();
         let buffer = "";
         while (!closed) {
-          const { done, value } = await reader.read();
+          const { done, value } = await withLivenessDeadline(reader.read());
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const chunk = consumeOperatorSse(buffer);
@@ -855,10 +880,17 @@ export function streamOperatorConversation(
           }
         }
       } catch (error) {
-        if (closed || controller.signal.aborted) break;
+        // close() is the only intentional abort. A liveness abort belongs to
+        // the retry path: the durable cursor lets the replacement daemon
+        // replay every frame committed while this stale stream was silent.
+        if (closed) break;
         reportConnectivityFailure();
         handlers.onError?.(
-          error instanceof Error ? error : new Error("Operator stream disconnected."),
+          livenessExpired
+            ? new Error("Operator stream heartbeat timed out.")
+            : error instanceof Error
+              ? error
+              : new Error("Operator stream disconnected."),
           false,
         );
       }
