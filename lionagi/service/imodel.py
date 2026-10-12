@@ -437,10 +437,14 @@ class iModel:  # noqa: N801
                 self._reported_served_model(response),
             )
             if response:
+                # An empty id never erases the last confirmed one: a call whose
+                # stream carried no id-bearing chunk returns the field empty,
+                # and storing that would start the next call in a new provider
+                # session instead of continuing this one.
                 if (
                     isinstance(self.endpoint, AgenticEndpoint)
                     and isinstance(response, dict)
-                    and "session_id" in response
+                    and response.get("session_id")
                 ):
                     self.endpoint.session_id = response["session_id"]
 
