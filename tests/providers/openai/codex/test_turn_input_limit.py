@@ -14,6 +14,8 @@ import pytest
 from lionagi.providers.openai import codex as codex_mod
 from lionagi.providers.openai.codex import CODEX_MAX_TURN_INPUT_CHARS, CodexCodeRequest
 
+SYSTEM_PROMPT_MAX_BYTES = codex_mod._SYSTEM_PROMPT_ARGUMENT_MAX_BYTES
+
 
 def test_a_prompt_at_the_limit_is_taken_and_one_past_it_is_refused(tmp_path):
     assert len(CodexCodeRequest(prompt="x" * CODEX_MAX_TURN_INPUT_CHARS, repo=tmp_path).prompt) == (
@@ -83,7 +85,7 @@ async def test_a_copied_large_system_prompt_is_refused_before_the_cli_starts(tmp
     monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
     monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
     request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
-        update={"system_prompt": "s" * CODEX_MAX_TURN_INPUT_CHARS}
+        update={"system_prompt": "s" * SYSTEM_PROMPT_MAX_BYTES}
     )
 
     with pytest.raises(ValueError, match="system prompt.*command-line argument"):
@@ -91,15 +93,28 @@ async def test_a_copied_large_system_prompt_is_refused_before_the_cli_starts(tmp
             pass
 
 
-def test_a_large_system_message_is_refused_before_it_reaches_argv(tmp_path):
+def test_a_system_message_no_platform_passes_as_one_argument_is_refused(tmp_path):
     with pytest.raises(ValueError, match="system prompt.*command-line argument"):
         CodexCodeRequest(
             messages=[
-                {"role": "system", "content": "s" * CODEX_MAX_TURN_INPUT_CHARS},
+                {"role": "system", "content": "s" * SYSTEM_PROMPT_MAX_BYTES},
                 {"role": "user", "content": "hi"},
             ],
             repo=tmp_path,
         )
+
+
+def test_the_system_prompt_bound_counts_utf8_bytes(tmp_path):
+    """The system prompt is a command-line argument, which the operating system measures in
+    bytes, so the bound is in bytes where the turn input's is in characters."""
+    just_under = "s" * (SYSTEM_PROMPT_MAX_BYTES - 1)
+    request = CodexCodeRequest(prompt="hi", system_prompt=just_under, repo=tmp_path)
+    assert request.system_prompt == just_under
+
+    wide = "漢" * (SYSTEM_PROMPT_MAX_BYTES // 3 + 1)
+    assert len(wide) < SYSTEM_PROMPT_MAX_BYTES < len(wide.encode("utf-8"))
+    with pytest.raises(ValueError, match=f"{len(wide.encode('utf-8')):,} bytes in UTF-8"):
+        CodexCodeRequest(prompt="hi", system_prompt=wide, repo=tmp_path)
 
 
 @pytest.mark.asyncio

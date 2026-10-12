@@ -103,6 +103,12 @@ _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 #: after the process has started; the request refuses first.
 CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 
+# The system prompt reaches the CLI as one argument, ``developer_instructions=<text>``. Linux
+# caps a single argument at 128 KiB and macOS caps the whole argument list, environment
+# included, at 1 MiB, so no supported platform passes a system prompt of this many UTF-8 bytes.
+# A shorter one can still be refused when the process starts, with the operating system's error.
+_SYSTEM_PROMPT_ARGUMENT_MAX_BYTES = 1_048_576
+
 
 def _refuse_oversized_cli_inputs(prompt: str, system_prompt: str | None = None) -> None:
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
@@ -113,10 +119,11 @@ def _refuse_oversized_cli_inputs(prompt: str, system_prompt: str | None = None) 
         )
     if system_prompt is not None:
         system_prompt_bytes = len(system_prompt.encode("utf-8"))
-        if system_prompt_bytes >= CODEX_MAX_TURN_INPUT_CHARS:
+        if system_prompt_bytes >= _SYSTEM_PROMPT_ARGUMENT_MAX_BYTES:
             raise ValueError(
-                f"the Codex system prompt is {system_prompt_bytes:,} bytes, too large to pass "
-                "as a command-line argument"
+                f"the Codex system prompt is {system_prompt_bytes:,} bytes in UTF-8. The CLI "
+                "takes it as one command-line argument, and no supported platform passes an "
+                f"argument of {_SYSTEM_PROMPT_ARGUMENT_MAX_BYTES:,} bytes or more."
             )
 
 
