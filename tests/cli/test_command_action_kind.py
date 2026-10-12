@@ -7,6 +7,7 @@ spawned directly with templated argv, distinct from the `li`-invoking kinds."""
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -181,6 +182,58 @@ class TestCommandAllowlist:
 
         with pytest.raises(ValueError, match="not in LIONAGI_SCHEDULER_COMMAND_ALLOWLIST"):
             build_argv(_schedule(), {})
+
+    def test_refusal_names_whose_environment_it_read_and_not_the_document(self, monkeypatch):
+        """The refusal used to read `action_command 'uv' is not in
+        LIONAGI_SCHEDULER_COMMAND_ALLOWLIST (currently: [])`, which names the
+        DOCUMENT's field and a value, and says nothing about whose environment
+        produced that value. Every call site but the spawn-time one runs in the
+        author's shell, where the variable is unset by design, so that sentence
+        sent readers to audit a correct declaration. Measured: one sat unapplied
+        for six days.
+        """
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
+        with pytest.raises(ValueError) as unset:
+            _validate_command_allowlisted("uv")
+        message = str(unset.value)
+        assert "is not set in the environment of this process" in message
+        assert f"(pid {os.getpid()})" in message
+        assert "not of the document being checked" in message
+        assert "checks again at spawn time" in message
+
+    def test_refusal_separates_an_unset_variable_from_an_empty_one(self, monkeypatch):
+        """`(currently: [])` is what BOTH an unset and a deliberately empty
+        variable produced, and the two have different causes: one is a shell
+        that never exported it, the other is a policy that permits nothing.
+        A reader cannot act on the first without being told which it is.
+        """
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
+        with pytest.raises(ValueError) as unset:
+            _validate_command_allowlisted("uv")
+        monkeypatch.setenv(ALLOWLIST_ENV, " , ")
+        with pytest.raises(ValueError) as empty:
+            _validate_command_allowlisted("uv")
+        assert "is not set in" in str(unset.value)
+        assert "naming no command" in str(empty.value) and "' , '" in str(empty.value)
+        assert str(unset.value) != str(empty.value)
+
+    def test_refusal_prints_an_invocation_that_carries_the_whole_allow_list(self, monkeypatch):
+        """The remediation is a command the reader runs verbatim, so it keeps
+        the names already permitted instead of replacing them with the refused
+        one. Dropping the others would trade this refusal for the next.
+        """
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.setenv(ALLOWLIST_ENV, "other-tool,kdev")
+        with pytest.raises(ValueError) as exc:
+            _validate_command_allowlisted("uv")
+        message = str(exc.value)
+        assert f"{ALLOWLIST_ENV}=kdev,other-tool,uv <your command>" in message
+        assert "['kdev', 'other-tool']" in message
 
     def test_allowlisted_command_builds_exact_argv(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "kdev,other-tool")

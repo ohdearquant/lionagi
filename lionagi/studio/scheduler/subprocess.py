@@ -187,17 +187,38 @@ def _command_allowlist() -> frozenset[str]:
 def _validate_command_allowlisted(command: str) -> None:
     """Raise ValueError if *command* is not on ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST``.
 
-    Called both at schedule build/validation time (services/schedules.py)
-    and again here inside ``build_argv`` at actual spawn time, since the
-    environment variable can change between schedule creation and fire.
+    Called at schedule build/validation time (services/schedules.py,
+    services/schedule_declaration.py) and again here inside ``build_argv`` at
+    actual spawn time, since the environment variable can change between
+    schedule creation and fire.
+
+    Those call sites run in DIFFERENT PROCESSES with different environments,
+    which is why the refusal says whose environment it read. The declaration
+    path runs in the author's shell, where this variable is normally unset; the
+    spawn path runs inside the scheduler daemon, which sets it. Measured cost of
+    not saying so: a refusal naming the document's ``action_command`` field
+    reads as "your declaration is wrong", and a correct declaration sat
+    unapplied for six days.
     """
     allowlist = _command_allowlist()
-    if command not in allowlist:
-        raise ValueError(
-            f"action_command {command!r} is not in {_COMMAND_ALLOWLIST_ENV} "
-            f"(currently: {sorted(allowlist)!r}). Add it to the allow-list "
-            "environment variable to permit this command."
-        )
+    if command in allowlist:
+        return
+    raw = os.environ.get(_COMMAND_ALLOWLIST_ENV)
+    if raw is None:
+        read = "which is not set in the environment of this process"
+    elif not allowlist:
+        read = f"which this process's environment sets to {raw!r}, naming no command"
+    else:
+        read = f"which this process's environment sets to {sorted(allowlist)!r}"
+    permitted = ",".join(sorted(allowlist | {command}))
+    raise ValueError(
+        f"action_command {command!r} is not in {_COMMAND_ALLOWLIST_ENV}, {read} "
+        f"(pid {os.getpid()}). That is a property of the process running this check, not of the "
+        "document being checked: the scheduler daemon reads the same variable from its OWN "
+        "environment and checks again at spawn time, so an empty value here says nothing about "
+        "what the daemon will permit. To run this command with it permitted: "
+        f"{_COMMAND_ALLOWLIST_ENV}={permitted} <your command>"
+    )
 
 
 def _render_command_arg(template: str, context: dict) -> str:
