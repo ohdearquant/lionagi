@@ -765,9 +765,10 @@ def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
 
 
 def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
-    """Validate the profile 'contain_account_integrations' flag; warn on anything but a YAML
-    boolean. A value that is present but unreadable contains, since the field only ever
-    narrows what a leg can reach."""
+    """Validate the profile flag; a connector grant can lift containment when a request is built.
+
+    An unreadable value warns and defaults to contained.
+    """
     if raw is None:
         return False
     if isinstance(raw, bool):

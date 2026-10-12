@@ -991,9 +991,10 @@ async def _run_agent(
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
-        # The stored row never carries a connector grant (Endpoint.from_dict drops it), so a
-        # resume runs with the current role's grant alone.
+        # The stored row never carries a connector grant; its containment value also belongs
+        # to the previous role, so both settings come from the current role.
         if provider == "codex":
+            cfg.pop("contain_account_integrations", None)
             _add_codex_account_integration_kwargs(
                 cfg, account_connectors, contain_account_integrations
             )

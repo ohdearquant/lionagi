@@ -48,7 +48,7 @@ from ._config import CodexConfigs
 try:
     import tomllib as _tomllib
 except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
-    # (`toml` 0.10 is not one: it keeps the space in `features . apps` and leaves `"apps"` encoded)
+    # (`toml` 0.10 does not normalize whitespace around dotted key parts)
     import tomli as _tomllib  # type: ignore[no-redef]
 
 HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
@@ -129,12 +129,12 @@ def _override_key_path(key: str) -> list[str]:
     TOML cannot read is refused here, by name, rather than handed to the CLI."""
     try:
         table: Any = _tomllib.loads(f"{key} = 1")
+        path: list[str] = []
+        while isinstance(table, dict):
+            ((part, table),) = table.items()
+            path.append(part)
     except Exception as e:
         raise ValueError(f"config override key {key!r} is not a TOML key: {e}") from None
-    path: list[str] = []
-    while isinstance(table, dict):
-        ((part, table),) = table.items()
-        path.append(part)
     return path
 
 
@@ -651,15 +651,14 @@ class CodexCodeRequest(BaseModel):
 
         containing = self._contains_account_integrations()
         for key, value in self.config_overrides.items():
-            # Contained, the switch reaches this spelling of a feature too: a
-            # `features.apps` or `features.plugins` override, or either name in a
-            # `features` table, which a codex config profile can contribute as
-            # well as the caller. Dropped here rather than left to how the CLI
-            # orders `-c` against `--disable`.
+            # Containment removes overrides under `features.apps` and
+            # `features.plugins`, plus those keys from an inline `features`
+            # table. Config profiles can contribute either form alongside the
+            # caller. Drop them here rather than relying on flag order.
             if containing:
                 path = _override_key_path(key)
                 if path[0] == "features":
-                    if len(path) == 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
+                    if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
                         continue
                     if len(path) == 1 and isinstance(value, Mapping):
                         value = {

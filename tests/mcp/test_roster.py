@@ -470,6 +470,31 @@ def test_fields_returns_only_what_was_asked_for_plus_the_name(roots):
     assert entries == [{"name": "builder", "resolved": {"model": "anthropic/claude"}}]
 
 
+def test_fields_can_ask_for_account_integration_settings(roots):
+    write_profile(
+        roots.proj,
+        "builder",
+        "---\nmodel: m\ncontain_account_integrations: true\n"
+        "account_connectors: [github]\n---\nbody\n",
+    )
+
+    result = op(
+        "profile.list",
+        {"fields": ["resolved.contain_account_integrations", "resolved.account_connectors"]},
+    )
+
+    assert result["ok"] is True, result
+    assert result["result"]["profiles"] == [
+        {
+            "name": "builder",
+            "resolved": {
+                "contain_account_integrations": True,
+                "account_connectors": ["github"],
+            },
+        }
+    ]
+
+
 def test_fields_can_ask_for_placement_without_the_configuration(roots):
     builder = write_profile(roots.proj, "builder", "---\nmodel: m\n---\nbody\n")
 

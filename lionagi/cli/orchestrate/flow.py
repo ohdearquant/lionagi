@@ -1867,6 +1867,7 @@ async def _execute_dag(
             exclusive=worker_mcp_servers is not None,
         )
         kwargs = chat_model.endpoint.config.kwargs
+        kwargs.pop("account_connectors", None)
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])

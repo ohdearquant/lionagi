@@ -55,7 +55,7 @@ _BUSY = dict(
 # ── neither field set: today's argv ─────────────────────────────────────
 
 
-def test_unset_fields_leave_the_argv_unchanged():
+def test_unset_fields_leave_the_argv_unchanged(tmp_path):
     req = CodexCodeRequest(**_BUSY)
     assert req.contain_account_integrations is False
     assert req.account_connectors is None
@@ -65,6 +65,54 @@ def test_unset_fields_leave_the_argv_unchanged():
     assert "features.apps=true" in _overrides(args)
     assert any(o.startswith("features=") and "apps" in o for o in _overrides(args))
     assert args == CodexCodeRequest(**_BUSY, account_connectors=None).as_cmd_args()
+
+    plain_args = CodexCodeRequest(prompt="hi", repo=tmp_path).as_cmd_args()
+    assert plain_args == [
+        "exec",
+        "--json",
+        "-m",
+        "gpt-5.3-codex",
+        "--skip-git-repo-check",
+        "--disable",
+        "tool_search",
+        "-C",
+        str(tmp_path),
+        "--",
+        "-",
+    ]
+
+    busy_args = CodexCodeRequest(**_BUSY, repo=tmp_path).as_cmd_args()
+    assert busy_args == [
+        "exec",
+        "--json",
+        "-m",
+        "gpt-5.3-codex",
+        "--skip-git-repo-check",
+        "--enable",
+        "apps",
+        "--enable",
+        "web_search",
+        "--enable",
+        "plugins",
+        "--disable",
+        "plugins",
+        "--disable",
+        "shell_snapshot",
+        "--disable",
+        "tool_search",
+        "-c",
+        "features.apps=true",
+        "-c",
+        'features."\\u0070lugins"=true',
+        "-c",
+        "features={ apps = true, web_search = true }",
+        "-c",
+        'model_verbosity="low"',
+        "-C",
+        str(tmp_path),
+        "--",
+        "-",
+    ]
 
 
 def test_unset_fields_do_not_read_an_unparseable_override_key():
@@ -115,6 +163,13 @@ def test_containment_reads_the_key_as_toml_does(key):
     assert ("--disable", "apps") in _features_switched(args)
 
 
+def test_toml_decodes_a_quoted_dotted_key():
+    import toml
+
+    assert toml.loads('features."apps" = 1') == {"features": {"apps": 1}}
+    assert toml.loads("features . apps = 1") != {"features": {"apps": 1}}
+
+
 def test_containment_keeps_a_nested_key_under_another_table():
     args = CodexCodeRequest(
         prompt="hi",
@@ -124,9 +179,28 @@ def test_containment_keeps_a_nested_key_under_another_table():
     assert "profiles.work.features.apps=true" in _overrides(args)
 
 
+def test_containment_drops_a_nested_account_feature_override():
+    args = CodexCodeRequest(
+        prompt="hi",
+        contain_account_integrations=True,
+        config_overrides={"features.apps.enabled": True},
+    ).as_cmd_args()
+    assert _overrides(args) == []
+
+
 def test_containment_refuses_an_override_key_toml_cannot_read():
     req = CodexCodeRequest(
         prompt="hi", contain_account_integrations=True, config_overrides={"a b": 1}
+    )
+    with pytest.raises(ValueError, match="is not a TOML key"):
+        req.as_cmd_args()
+
+
+def test_containment_refuses_a_multiline_override_key_by_name():
+    req = CodexCodeRequest(
+        prompt="hi",
+        contain_account_integrations=True,
+        config_overrides={"x = 1\nfeatures.apps": True},
     )
     with pytest.raises(ValueError, match="is not a TOML key"):
         req.as_cmd_args()

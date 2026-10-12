@@ -52,7 +52,9 @@ def _stored_codex_branch(tmp_path: Path) -> tuple[str, Path]:
 
     branch = Branch(chat_model=iModel(provider="codex", model="gpt-5.5"))
     data = branch.to_dict()
-    data["chat_model"]["endpoint"]["config"]["kwargs"]["account_connectors"] = ["github"]
+    kwargs = data["chat_model"]["endpoint"]["config"]["kwargs"]
+    kwargs["account_connectors"] = ["github"]
+    kwargs["contain_account_integrations"] = True
     path = tmp_path / f"{branch.id}.json"
     path.write_text(json.dumps(data))
     return str(branch.id), path
@@ -83,11 +85,11 @@ async def test_a_new_run_takes_the_roles_settings(monkeypatch, tmp_path, role, e
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("role", "expected"),
-    [(_GRANTING_ROLE, ["gmail"]), (_PLAIN_ROLE, None)],
+    ("role", "expected_connectors", "expected_containment"),
+    [(_GRANTING_ROLE, ["gmail"], True), (_PLAIN_ROLE, None, False)],
 )
 async def test_a_resume_runs_with_the_roles_grant_not_the_stored_one(
-    monkeypatch, tmp_path, role, expected
+    monkeypatch, tmp_path, role, expected_connectors, expected_containment
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi.cli.agent import _run_agent
@@ -100,7 +102,8 @@ async def test_a_resume_runs_with_the_roles_grant_not_the_stored_one(
 
     await _run_agent(None, "continue", resume=branch_id, agent_name="role")
 
-    assert captured[-1].get("account_connectors") == expected
+    assert captured[-1].get("account_connectors") == expected_connectors
+    assert captured[-1].get("contain_account_integrations", False) is expected_containment
 
 
 class _Reached(Exception):
