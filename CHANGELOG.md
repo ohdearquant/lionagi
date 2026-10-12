@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.5] - 2026-10-11
+
+### Added
+
+- An optional RuVector backend for memory and retrieval, installed with the `ruvector` extra
+  (`lionagi[ruvector]`, which depends on the `ruvector` SDK and `numpy`) and imported explicitly
+  from `lionagi.integrations.ruvector`; the default `import lionagi` does not load it.
+  `RuVectorMemoryStore` implements the `MemoryStore` protocol for `Branch(memory=...)` over a native
+  HNSW index. A text query ranks by cosine similarity, approximately through the index when no tags
+  or filters are given and exactly over every eligible record when they are; tags match any
+  supplied tag and metadata filters must all match. `RuVectorStore.as_tool` gives a branch a
+  read-only `ruvector_search` tool. Embeddings come from the application, and the index lives in
+  process memory with no persistence. Contributed by @ruvnet (#3451).
+- A roadmap (`docs/roadmap.md`, linked from the README) and its design record, ADR-0125, set out
+  the planned migration of lionagi's architecture towards lion1, the runtime kept in this
+  repository's `lion1/` directory, in seven steps that keep public imports, call shapes and return
+  types working. These are documents only; no runtime code changes for the migration in this
+  release.
+
+### Fixed
+
+- Cancelling an engine run no longer leaves a CLI process running when it was spawned during the
+  reap and given the memory address of a process already reaped: the rescan for late spawns took
+  it for one it had already handled and returned with it still tracked.
+- `fail_at` and `move_on_at` in `lionagi.ln.concurrency` put the deadline they are given on the
+  cancel scope. They converted it to a duration and read the clock again, so the scope ended later
+  than asked by however long passed between the two reads.
+
 ## [0.35.4] - 2026-10-11
 
 ### Added
