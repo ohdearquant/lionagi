@@ -241,6 +241,7 @@
       "allHint": "첫 에이전트 또는 워크플로를 만들어 시작하세요.",
       "filtered": "필터와 일치하는 항목이 없습니다.",
       "filteredHint": "다른 종류를 시도하거나 검색을 지우세요.",
+      "clearFilters": "필터 지우기",
       "createFirst": "첫 항목 만들기",
       "createWorkflow": "새 워크플로",
       "createAgent": "새 에이전트",

@@ -241,6 +241,7 @@
       "allHint": "Crie seu primeiro agente ou fluxo de trabalho para começar.",
       "filtered": "Nenhum item corresponde ao filtro.",
       "filteredHint": "Tente outro tipo ou limpe a busca.",
+      "clearFilters": "Limpar filtros",
       "createFirst": "Criar o primeiro",
       "createWorkflow": "Novo fluxo de trabalho",
       "createAgent": "Novo agente",

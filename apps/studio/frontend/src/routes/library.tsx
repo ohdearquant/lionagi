@@ -83,12 +83,15 @@ interface LibraryItem {
   meta?: string;
 }
 
+type KindLoadStatus = "loaded" | "failed";
+
 function useLibraryData() {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [allAgents, setAllAgents] = useState<AgentProfileSummary[]>([]);
   const [allEngines, setAllEngines] = useState<EngineDef[]>([]);
+  const [kindStatus, setKindStatus] = useState<Partial<Record<LibraryKind, KindLoadStatus>>>({});
 
   const reload = useCallback(() => {
     let alive = true;
@@ -236,6 +239,21 @@ function useLibraryData() {
         if (results.some((result) => result.status === "rejected")) {
           setError("degraded");
         }
+        setKindStatus({
+          agent: agentsRes.status === "fulfilled" ? "loaded" : "failed",
+          // "playbook" items come from two sources (builtin templates,
+          // custom playbooks); either failing means the kind's list can't
+          // be asserted complete or empty.
+          playbook:
+            builtinsRes.status === "fulfilled" && playbooksRes.status === "fulfilled"
+              ? "loaded"
+              : "failed",
+          workflow: workflowsRes.status === "fulfilled" ? "loaded" : "failed",
+          skill: skillsRes.status === "fulfilled" ? "loaded" : "failed",
+          plugin: pluginsRes.status === "fulfilled" ? "loaded" : "failed",
+          engine: enginesRes.status === "fulfilled" ? "loaded" : "failed",
+          mcp: mcpRes.status === "fulfilled" ? "loaded" : "failed",
+        });
         setLoading(false);
       },
     );
@@ -252,7 +270,7 @@ function useLibraryData() {
     return reload();
   }, [reload]);
 
-  return { items, loading, error, reload, allAgents, allEngines };
+  return { items, loading, error, reload, allAgents, allEngines, kindStatus };
 }
 
 const PLAYBOOK_SUB_KINDS: PlaybookSubKind[] = ["builtin", "custom"];
@@ -347,7 +365,7 @@ function CatalogSkeleton() {
 function LibraryPage() {
   const t = useTranslations("library");
   const tDaemon = useTranslations("daemon");
-  const { items, loading, error, reload, allAgents, allEngines } = useLibraryData();
+  const { items, loading, error, reload, allAgents, allEngines, kindStatus } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
@@ -386,6 +404,11 @@ function LibraryPage() {
     }
     return true;
   });
+
+  const scopedItems = items.filter(
+    (item) =>
+      !UNFINISHED_KINDS.has(item.kind) && (kindFilter === "all" || item.kind === kindFilter),
+  );
 
   // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
   useEffect(() => {
@@ -470,12 +493,35 @@ function LibraryPage() {
       : null;
 
   const isEmpty = !loading && filtered.length === 0;
-  const isFiltered = kindFilter !== "all" || search.trim().length > 0;
+  // A search is only responsible for an empty result when clearing it would
+  // actually reveal rows. An empty kind tab is a genuinely empty collection,
+  // even when other Library kinds contain items.
+  const isFiltered = search.trim().length > 0 && scopedItems.length > 0;
   // A skill/plugin tab with nothing on it and no active text search is
   // "nothing installed here", not "a search matched nothing" — it earns its
   // own empty-state copy pointing at where these are discovered from.
-  const isEmptyLibraryTab =
-    NO_CREATE_KINDS.has(kindFilter as LibraryKind) && search.trim().length === 0;
+  const isEmptyLibraryTab = NO_CREATE_KINDS.has(kindFilter as LibraryKind) && !isFiltered;
+  // A single-kind tab whose backing source(s) failed to load can't assert
+  // its list is actually empty — an empty result there is "unknown", not
+  // "zero items", so it must not offer the create CTA that a genuine empty
+  // collection gets. The "all" tab has the same problem: if any visible
+  // kind's source failed and the fulfilled kinds happen to have nothing in
+  // them, the aggregate list is empty for the same "unknown" reason, not
+  // because every catalog is genuinely empty — so it must not show the
+  // generic empty state with a "New Workflow" CTA either.
+  const kindLoadFailed =
+    kindFilter === "hooks"
+      ? false
+      : kindFilter === "all"
+        ? LIBRARY_KINDS.some((kind) => !UNFINISHED_KINDS.has(kind) && kindStatus[kind] === "failed")
+        : kindStatus[kindFilter as LibraryKind] === "failed";
+
+  const createLabel =
+    kindFilter === "mcp"
+      ? t("newMcpServer")
+      : kindFilter === "agent"
+        ? t("newAgent")
+        : t("newWorkflow");
 
   const detailPaneActive = detailActive || showCreate || !!parsed;
 
@@ -510,12 +556,7 @@ function LibraryPage() {
               });
             }}
           >
-            +{" "}
-            {kindFilter === "mcp"
-              ? t("newMcpServer")
-              : kindFilter === "agent"
-                ? t("newAgent")
-                : t("newWorkflow")}
+            + {createLabel}
           </Button>
         )}
       </div>
@@ -537,6 +578,17 @@ function LibraryPage() {
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <CatalogSkeleton />
+        ) : isEmpty && kindLoadFailed ? (
+          <EmptyState
+            glyph="▤"
+            title={t("loadError")}
+            action={
+              <Button size="sm" variant="secondary" onClick={reload}>
+                {tDaemon("retry")}
+              </Button>
+            }
+            className="px-6 py-16"
+          />
         ) : isEmpty ? (
           <EmptyState
             glyph="▤"
@@ -563,7 +615,11 @@ function LibraryPage() {
                   : t("empty.allHint")
             }
             action={
-              !isFiltered ? (
+              isFiltered ? (
+                <Button size="sm" variant="secondary" onClick={() => setSearch("")}>
+                  {t("empty.clearFilters")}
+                </Button>
+              ) : !NO_CREATE_KINDS.has(kindFilter as LibraryKind) ? (
                 <Button
                   size="sm"
                   variant="primary"
@@ -572,7 +628,7 @@ function LibraryPage() {
                     setDetailActive(true);
                   }}
                 >
-                  + {t("empty.createWorkflow")}
+                  + {createLabel}
                 </Button>
               ) : undefined
             }

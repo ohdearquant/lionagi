@@ -241,6 +241,7 @@
       "allHint": "tạo tác nhân hoặc quy trình làm việc đầu tiên để bắt đầu.",
       "filtered": "không có mục nào khớp với bộ lọc.",
       "filteredHint": "thử loại khác hoặc xóa tìm kiếm.",
+      "clearFilters": "Xóa bộ lọc",
       "createFirst": "tạo mục đầu tiên",
       "createWorkflow": "quy trình làm việc mới",
       "createAgent": "tác nhân mới",

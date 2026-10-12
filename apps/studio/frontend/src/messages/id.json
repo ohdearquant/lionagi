@@ -241,6 +241,7 @@
       "allHint": "Buat agen atau alur kerja pertama Anda untuk memulai.",
       "filtered": "Tidak ada item yang cocok dengan filter Anda.",
       "filteredHint": "Coba jenis lain atau bersihkan pencarian.",
+      "clearFilters": "Hapus filter",
       "createFirst": "Buat yang pertama",
       "createWorkflow": "Alur kerja baru",
       "createAgent": "Agen baru",

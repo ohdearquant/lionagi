@@ -241,6 +241,7 @@
       "allHint": "Erstelle deinen ersten Agenten oder Workflow, um loszulegen.",
       "filtered": "Keine Elemente entsprechen deinem Filter.",
       "filteredHint": "Versuche einen anderen Typ oder setze die Suche zurück.",
+      "clearFilters": "Filter zurücksetzen",
       "createFirst": "Ersten erstellen",
       "createWorkflow": "Neuer Workflow",
       "createAgent": "Neuer Agent",

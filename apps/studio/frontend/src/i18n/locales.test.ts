@@ -246,8 +246,9 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // discard-changes confirmation and schedules.error.unclassified for a failure
   // the server could not classify. All six additions are natively translated in
   // all 16 locales, so they add nothing to the identity-leak baseline.
-  it("en.json has 1105 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1105);
+  // 1106 = 1105 + the Library's explicit clear-filter action.
+  it("en.json has 1106 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1106);
   });
 
   it.each(LOCALES.map((l) => l.code))(
