@@ -982,7 +982,12 @@ def _warn_worker_config_collision(
     else:
         effort_source = "provider default"
 
-    modes_source = "task override validated by pack" if modes else "pack"
+    if modes:
+        modes_source = (
+            "task override validated by pack" if pack_config.modes_allow else "task override"
+        )
+    else:
+        modes_source = "pack"
     if system_prompt_override is not None:
         prompt_source = "worker override"
     elif profile.raw_body:

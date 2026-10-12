@@ -648,6 +648,8 @@ def _signal_degraded_process(
         pid = int(manifest["pid"])
     except (KeyError, TypeError, ValueError):
         return None, "no_recorded_process"
+    if pid <= 0:
+        return None, "no_recorded_process"
 
     signal_used = _unaddressable_pid_reason(manifest)
     if signal_used is None:
@@ -669,6 +671,24 @@ def _signal_degraded_process(
             warn(str(exc))
             signal_used = "permission_denied"
     return pid, signal_used
+
+
+def _imported_degraded_process_is_live(run_id: str) -> bool:
+    """Whether an imported row's degraded run still names a live process."""
+    degraded = _degraded_run(run_id)
+    if degraded is None:
+        return False
+    manifest = degraded[1]
+    if manifest.get("status") != "running" or _unaddressable_pid_reason(manifest) is not None:
+        return False
+    try:
+        pid = int(manifest["pid"])
+        expected_create_time = float(manifest["pid_create_time"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if pid <= 0 or not _pid_alive(pid):
+        return False
+    return _check_pid_identity(pid, "lionagi", expected_create_time=expected_create_time) == "ours"
 
 
 def _settle_degraded_run(path: Path, manifest: dict[str, Any]) -> None:
@@ -944,6 +964,19 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
+                if (
+                    entity_type == "session"
+                    and pid is None
+                    and row_dict.get("source_kind") == "imported_fs"
+                    and _imported_degraded_process_is_live(entity_id)
+                ):
+                    skipped_live += 1
+                    if verbose:
+                        print(
+                            f"  skip {entity_type} {entity_id[:12]}: "
+                            "process recorded in run.json is still alive"
+                        )
+                    continue
                 # A live pid alone isn't enough — the OS may have reused it. Correlate against
                 # the row's own session id/create_time, same as the direct-kill path.
                 pid_alive_now = pid is not None and _pid_alive(pid)
@@ -1230,11 +1263,12 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Entity id to kill: session_id / invocation_id / play_id / show_id. "
             "Accepts a full UUID, or an id prefix, which is refused when it "
             "matches more than one row rather than resolved to one of them. A "
-            "run_id stops a run only when its persistence setup failed, which "
-            "records its process on its own run.json and prints its run id when it "
-            "starts. Any other run_id stops nothing: it does not resolve, or it "
-            "names a row `li state import` made, which records no process and is "
-            "refused -- use `li monitor` for the session ids a run started."
+            "A run_id can reach a degraded run when persistence setup failed. It "
+            "stops the process only when run.json records a process identity. "
+            "`li agent` writes that identity and prints its run id when it starts. "
+            "`li state import` rows have no pid; `li kill` uses a matching degraded "
+            "run.json when it can identify a process and otherwise refuses. Use "
+            "`li monitor` for the session ids a run started."
         ),
     )
     kill.add_argument(

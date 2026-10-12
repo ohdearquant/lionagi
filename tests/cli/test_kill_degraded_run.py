@@ -33,10 +33,16 @@ from lionagi.cli._runs import (
     _run_manifest_lock,
     allocate_run,
 )
-from lionagi.cli.kill import _do_kill, _settle_degraded_run
+from lionagi.cli.kill import _do_kill, _do_kill_all_stale, _settle_degraded_run
 from lionagi.ln._proc import raw_create_time
 
 RUN_ID = "20261005T030000-abc123"
+
+
+@pytest.fixture(autouse=True)
+def stable_boot_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep host-scoped process identity checks deterministic."""
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1_700_000_000.0)
 
 
 @pytest.fixture
@@ -93,6 +99,17 @@ def _degraded(pid: int, **extra) -> dict:
         **_markers(pid),
         **extra,
     }
+
+
+def _assert_manifest_lock_is_held(state_root: Path, flock) -> None:
+    import fcntl
+
+    fd = os.open(state_root / ".run.json.lock", os.O_RDWR)
+    try:
+        with pytest.raises(BlockingIOError):
+            flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(fd)
 
 
 @pytest.mark.asyncio
@@ -210,42 +227,82 @@ def test_a_record_written_while_the_kill_settles_waits_for_it_and_is_kept(
     stopped = {"run_id": RUN_ID, **_degraded(leg.pid)}
     run.manifest_path.write_text(json.dumps(stopped))
     other = {"status": "running", "pid": os.getpid(), "pid_create_time": 1.0}
-    writer = threading.Thread(target=run.write_manifest, args=(other,))
-    waited = []
+    writer_started = threading.Event()
+    writer_finished = threading.Event()
+    lock_attempted = threading.Event()
+    writer = None
+    import fcntl
+
+    actual_flock = fcntl.flock
+
+    def observe_flock(fd, operation):
+        if threading.current_thread() is writer:
+            lock_attempted.set()
+        return actual_flock(fd, operation)
+
+    def write_next_manifest():
+        writer_started.set()
+        run.write_manifest(other)
+        writer_finished.set()
+
+    writer = threading.Thread(target=write_next_manifest)
 
     def read_then_record(text):
         current = json.loads(text)
         writer.start()  # the other invocation records itself after the kill's read
-        writer.join(0.5)
-        waited.append(writer.is_alive())
+        assert writer_started.wait(timeout=10)
+        assert lock_attempted.wait(timeout=10)
+        _assert_manifest_lock_is_held(run.state_root, actual_flock)
         return current
 
+    monkeypatch.setattr(fcntl, "flock", observe_flock)
     monkeypatch.setattr(kill_mod, "json", SimpleNamespace(loads=read_then_record))
     _settle_degraded_run(run.manifest_path, stopped)
     writer.join(10)
 
-    assert waited == [True]
     assert not writer.is_alive()
+    assert writer_finished.is_set()
     final = json.loads(run.manifest_path.read_text())
     assert (final["status"], final["pid"]) == ("running", os.getpid())
 
 
 @pytest.mark.parametrize("writer", ["write_manifest", "degradation record"])
-def test_every_run_json_writer_waits_for_the_manifest_lock(runs_root, writer):
+def test_every_run_json_writer_waits_for_the_manifest_lock(runs_root, monkeypatch, writer):
+    import fcntl
+
     run = allocate_run(run_id=RUN_ID)
     write = {
         "write_manifest": lambda: run.write_manifest({"status": "running", "pid": 1}),
         "degradation record": lambda: _record_persistence_degraded(RuntimeError("locked"), run=run),
     }[writer]
     before = run.manifest_path.read_text()
-    thread = threading.Thread(target=write)
+    writer_started = threading.Event()
+    writer_finished = threading.Event()
+    lock_attempted = threading.Event()
+    thread = None
+    actual_flock = fcntl.flock
+
+    def observe_flock(fd, operation):
+        if threading.current_thread() is thread:
+            lock_attempted.set()
+        return actual_flock(fd, operation)
+
+    def write_manifest():
+        writer_started.set()
+        write()
+        writer_finished.set()
+
+    thread = threading.Thread(target=write_manifest)
     with _run_manifest_lock(run.state_root):
+        monkeypatch.setattr(fcntl, "flock", observe_flock)
         thread.start()
-        thread.join(0.5)
-        assert thread.is_alive()
+        assert writer_started.wait(timeout=10)
+        assert lock_attempted.wait(timeout=10)
+        _assert_manifest_lock_is_held(run.state_root, actual_flock)
         assert run.manifest_path.read_text() == before
     thread.join(10)
     assert not thread.is_alive()
+    assert writer_finished.is_set()
     assert run.manifest_path.read_text() != before
 
 
@@ -370,6 +427,38 @@ async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog):
         assert await _do_kill(RUN_ID) == 1
 
     assert "did not match the expected lionagi process" in caplog.text
+    assert leg.poll() is None
+    assert json.loads(path.read_text())["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_a_degraded_run_permission_denial_is_not_marked_cancelled(
+    runs_root, leg, monkeypatch
+):
+    path = _write_run(runs_root, _degraded(leg.pid))
+    real_kill = os.kill
+
+    def deny_signals(pid, sig):
+        if sig == 0:
+            return real_kill(pid, sig)
+        raise PermissionError("signal denied")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "kill", deny_signals)
+        assert await _do_kill(RUN_ID) == 1
+
+    assert leg.poll() is None
+    assert json.loads(path.read_text())["status"] == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pid", [0, -1])
+async def test_a_degraded_run_with_a_nonpositive_pid_is_left_unchanged(runs_root, leg, pid):
+    manifest = {**_degraded(leg.pid), "pid": pid}
+    path = _write_run(runs_root, manifest)
+
+    assert await _do_kill(RUN_ID) == 1
+
     assert leg.poll() is None
     assert json.loads(path.read_text())["status"] == "running"
 
@@ -580,6 +669,27 @@ async def test_a_degraded_run_imported_mid_run_is_stopped_through_its_row(runs_r
     path = _write_run(runs_root, _degraded(leg.pid))
     await _import_mid_run(path)
 
+    assert await _do_kill(RUN_ID, grace_seconds=5.0) == 0
+
+    assert leg.wait(timeout=10) is not None
+    assert await _row_status() == "cancelled"
+    assert json.loads(path.read_text())["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_stale_sweep_preserves_a_live_imported_degraded_run(runs_root, leg):
+    path = _write_run(runs_root, _degraded(leg.pid))
+    await _import_mid_run(path)
+
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as db:
+        await db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 7200, RUN_ID),
+        )
+
+    assert await _do_kill_all_stale(threshold_seconds=3600) == 0
     assert await _do_kill(RUN_ID, grace_seconds=5.0) == 0
 
     assert leg.wait(timeout=10) is not None

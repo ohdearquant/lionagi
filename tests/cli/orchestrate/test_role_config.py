@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from lionagi.cli.orchestrate._orchestration import (
+    _warn_worker_config_collision,
     build_worker_branch,
     casts_role_system,
     mode_roster,
@@ -105,6 +106,171 @@ class TestCastsRoleSystem:
 def test_role_config_model_unset_in_default_pack():
     # the shipped pack must not pin a provider
     assert role_config("critic").model is None
+
+
+def test_casts_reference_describes_model_and_mode_fallbacks():
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[3] / "docs/reference/casts.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "role name when a profile has no model" in doc
+    assert "without a profile, the orchestration default applies" in doc
+    assert "only when `modes_allow` is non-empty" in doc
+
+
+@pytest.mark.parametrize(
+    (
+        "case",
+        "role",
+        "model_override",
+        "effort_override",
+        "prompt_override",
+        "modes",
+        "raw_body",
+        "expected",
+    ),
+    [
+        (
+            "worker model override",
+            "researcher",
+            "openai/task-model",
+            None,
+            None,
+            None,
+            "profile prompt",
+            "model=worker override",
+        ),
+        (
+            "effort override",
+            "researcher",
+            None,
+            "high",
+            None,
+            None,
+            "profile prompt",
+            "effort=orchestration override",
+        ),
+        (
+            "mode override without allowlist",
+            "researcher",
+            None,
+            None,
+            None,
+            ["adversarial"],
+            "profile prompt",
+            "modes=task override",
+        ),
+        (
+            "prompt override",
+            "researcher",
+            None,
+            None,
+            "task prompt",
+            None,
+            "profile prompt",
+            "prompt=worker override",
+        ),
+        (
+            "casts role prompt",
+            "critic",
+            None,
+            None,
+            None,
+            None,
+            "",
+            "prompt=cast role with pack policy",
+        ),
+        (
+            "generic prompt",
+            "custom_worker",
+            None,
+            None,
+            None,
+            None,
+            "",
+            "prompt=generic worker",
+        ),
+    ],
+)
+def test_collision_notice_names_resolved_sources(
+    monkeypatch,
+    case,
+    role,
+    model_override,
+    effort_override,
+    prompt_override,
+    modes,
+    raw_body,
+    expected,
+):
+    from types import SimpleNamespace
+
+    from lionagi.casts.pack import Pack, RoleConfig
+
+    pack = Pack(name="selected", configs={role: RoleConfig()})
+    resolved_modes = resolve_modes(role, modes, pack) if modes else None
+    profile = SimpleNamespace(
+        name=role,
+        model="openai/profile-model",
+        effort="medium",
+        raw_body=raw_body,
+    )
+    env = SimpleNamespace(
+        bare=False,
+        effort=effort_override,
+        pack=pack,
+    )
+    notices = []
+    monkeypatch.setattr("lionagi.cli.orchestrate._orchestration.warn", notices.append)
+
+    _warn_worker_config_collision(
+        env,
+        role,
+        model_override=model_override,
+        system_prompt_override=prompt_override,
+        modes=resolved_modes,
+        profile=profile,
+        pack_config=pack.config(role),
+    )
+
+    assert len(notices) == 1, case
+    assert expected in notices[0], case
+    if case == "mode override without allowlist":
+        assert "validated by pack" not in notices[0]
+
+
+def test_collision_notice_is_emitted_once_per_environment(monkeypatch):
+    from types import SimpleNamespace
+
+    from lionagi.casts.pack import Pack, RoleConfig
+
+    role = "researcher"
+    pack = Pack(name="selected", configs={role: RoleConfig()})
+    profile = SimpleNamespace(
+        name=role,
+        model="openai/profile-model",
+        effort="medium",
+        raw_body="profile prompt",
+    )
+    notices = []
+    monkeypatch.setattr("lionagi.cli.orchestrate._orchestration.warn", notices.append)
+
+    for _ in range(2):
+        env = SimpleNamespace(bare=False, effort=None, pack=pack)
+        for _ in range(2):
+            _warn_worker_config_collision(
+                env,
+                role,
+                model_override=None,
+                system_prompt_override=None,
+                modes=None,
+                profile=profile,
+                pack_config=pack.config(role),
+            )
+
+    assert len(notices) == 2
 
 
 @pytest.mark.asyncio

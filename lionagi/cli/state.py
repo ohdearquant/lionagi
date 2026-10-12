@@ -1120,6 +1120,7 @@ async def _doctor(
     from lionagi.cli.kill import (
         _NOT_JUDGEABLE_HERE,
         _check_pid_identity,
+        _imported_degraded_process_is_live,
         _read_pid_from_entity,
         _unaddressable_pid_reason,
     )
@@ -1130,7 +1131,7 @@ async def _doctor(
                 (
                     await conn.execute(
                         text(
-                            "SELECT id, started_at, node_metadata, artifacts_path "
+                            "SELECT id, started_at, node_metadata, artifacts_path, source_kind "
                             "FROM sessions WHERE status = 'running'"
                         )
                     )
@@ -1163,6 +1164,13 @@ async def _doctor(
                 skipped += 1
                 continue
             pid = _read_pid_from_entity(entity)
+            if (
+                pid is None
+                and entity.get("source_kind") == "imported_fs"
+                and _imported_degraded_process_is_live(row["id"])
+            ):
+                skipped += 1
+                continue
             if pid is not None and pid_alive(pid):
                 # A live PID alone isn't proof — the OS can hand a dead session's number to an
                 # unrelated process, so reuse the same identity check as the stale-kill sweep.
