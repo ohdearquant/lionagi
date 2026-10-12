@@ -216,18 +216,31 @@ def test_readiness_verdict_missing_status_key_is_unknown() -> None:
     assert result["status"] == "unknown"
 
 
-def test_readiness_verdict_unrecognised_status_is_unknown() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"status": "brand-new-state"},
+        # "unhealthy" is explained only by a scheduler that is not ready
+        {"status": "unhealthy", "detail": "d"},
+        {"status": "unhealthy", "detail": "d", "scheduler": {"ready": True}},
+    ],
+)
+def test_readiness_verdict_unrecognised_status_is_unknown(body: dict) -> None:
     """An unknown verdict has established nothing, so it must not read as a pass."""
-    body = json.dumps({"status": "brand-new-state"}).encode()
-    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    result = _readiness_verdict("http://x/api/admin/readiness", json.dumps(body).encode())
     assert result["status"] == "unknown"
 
 
-def test_readiness_verdict_stalled_scheduler_beside_a_healthy_store_is_warn() -> None:
-    """A store that answers reads says nothing about whether the scheduler fires."""
+@pytest.mark.parametrize("state", ["healthy", "unhealthy"])
+def test_readiness_verdict_stalled_scheduler_beside_a_healthy_store_is_warn(state: str) -> None:
+    """A store that answers reads says nothing about whether the scheduler fires.
+
+    A current daemon folds the scheduler into its status as "unhealthy"; an older one
+    reported "healthy" beside the same scheduler field.
+    """
     body = json.dumps(
         {
-            "status": "healthy",
+            "status": state,
             "detail": "store answered",
             "scheduler": {
                 "ready": False,
