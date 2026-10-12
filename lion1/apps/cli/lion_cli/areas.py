@@ -769,7 +769,7 @@ def make_server(
 
         def _act(self, d: Path, action: str, body: dict) -> tuple[int, dict]:
             """One control onto a registered resident: (status, the JSON answer). The resident reads
-            `hold`, `wake-now` and chores.toml at its next poll (hub/agent/agent.py); this process
+            `hold`, `wake-now` and chores.toml at its next poll (lion1/hub/agent/agent.py); this process
             only writes them, and notes each control in `<dir>/landing/controls.log`."""
             who = me or "unknown"
             now = datetime.now().astimezone().isoformat(timespec="seconds")

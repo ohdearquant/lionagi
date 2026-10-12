@@ -99,8 +99,9 @@ def console(
             raise KhiveError("no [actor].id")
         store = Store(Khive(directory, actor_id, config=khive_config))
     except KhiveError as e:
+        said = str(e) if str(e).startswith(f"{config}: ") else f"{config}: {e}"
         raise NoSigner(
-            f"{config}: {e}; a chat's record is rows of khive, so the directory's .khive/config.toml "
+            f"{said}; a chat's record is rows of khive, so the directory's .khive/config.toml "
             "or --khive-config must name the actor (ADR-0025 D3)"
         ) from None
     given = tools if tools is not None else frozenset({"files", "khive"})  # the chat's own

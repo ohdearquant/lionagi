@@ -232,19 +232,7 @@ def test_every_tracked_python_tree_is_in_the_ci_scan_list() -> None:
     )
     assert scan_line is not None, "could not locate the hygiene scan list in ci.sh"
 
-    # lion1/ names its actors `lambda:<name>` by design, so this scanner reads its fixtures as leaked
-    # identifiers; lion1/ runs its own checks from its own pre-commit config instead, and none of them
-    # looks for identifiers of this kind. The exemption holds only while both halves of that hold.
-    exempt = {"lion1": REPO_ROOT / "lion1" / ".pre-commit-config.yaml"}
-    for tree, config in exempt.items():
-        assert tree in trees, (
-            f"{tree}/ is exempted from the scan list but tracks no python: drop the exemption"
-        )
-        assert config.is_file(), (
-            f"{tree}/ is exempted for running its own checks, but {config} is gone"
-        )
-
-    missing = sorted(tree for tree in trees if f"{tree}/" not in scan_line and tree not in exempt)
+    missing = sorted(tree for tree in trees if f"{tree}/" not in scan_line)
     assert not missing, (
         f"tracked python trees absent from the ci.sh hygiene scan list: {missing}. "
         "They are scanned by nothing, which reads exactly like being clean."

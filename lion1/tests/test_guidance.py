@@ -29,11 +29,8 @@ def test_each_guidance_file_is_read_by_name_and_its_fields_filled():
         "read only in the notice the loop writes." in text
     )
     assert "$image" in guidance("box")  # an unfilled field stays visible
-    chair = guidance("chair", actor="a:v1", owner="a", senders="a, lambda:owner", tools="read(path)")
-    assert (
-        chair.startswith("You are a:v1, the chair of a,")
-        and "Mail from a, lambda:owner is your work" in chair
-    )
+    chair = guidance("chair", actor="a:v1", owner="a", senders="a, agent-c", tools="read(path)")
+    assert chair.startswith("You are a:v1, the chair of a,") and "Mail from a, agent-c is your work" in chair
     assert "$owner" in guidance("chores", chores="- disk")
     job = guidance("job", model="m1", submitter="a:caller", tools="none")
     # a submitted job has nobody to answer it, and it ends with OUT{} where the console never writes one

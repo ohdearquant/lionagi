@@ -328,6 +328,14 @@ class Chores:
             req.asker and req.asker not in self.trusted
         ):  # the gate admitted the mail; the model may not widen it
             raise AgentError(f"{req.asker} is not a sender this agent works for")
+        if req.chore == "record" and req.asker:
+            desk = getattr(self.agent, "desk", None)
+            if desk is None:
+                raise AgentError(
+                    "record answers only senders admitted by [desk] agents, and this agent has no desk"
+                )
+            if not desk._agent(req.asker):
+                raise AgentError("record answers only senders admitted by [desk] agents")
         if req.asker:  # the ask is a message this wake admitted: its sender, answered on its thread
             threads = {
                 str(t)

@@ -21,7 +21,7 @@ tags:
 
 ## Context
 
-Withdrawn on 2026-10-03: the runtime seam is gone, and the record, stores and lesson Spec sit in
+Withdrawn: the runtime seam is gone, and the record, stores and lesson Spec sit in
 `hub/experience.py`, wired to nothing.
 
 The model is fixed. What can move between two runs of the same ask is what the first run recorded:
@@ -288,8 +288,8 @@ the calls that did not; the record carries the sum, both counts and a `complete`
 Serves C10 and C1. `examples/experience_twice.py` runs one ask twice on a scripted backend with a
 `FileExperienceStore` reopened between runs; `tests/test_experience_example.py` reads the second
 run's record, bus and first backend call, then repeats with the store write removed and with the
-file deleted. `hub/experience.py` (`KhiveExperienceStore` over `hub/khive.py`) lands under its own
-record once it proves scope filtering before `k` and idempotency over an ambiguous write.
+file deleted. `hub/experience.py` (`KhiveExperienceStore` over `src/lion1/khive.py`) lands under its
+own record once it proves scope filtering before `k` and idempotency over an ambiguous write.
 
 - **Landing evidence**: `tests/test_experience_example.py`:
   `test_the_second_run_recalls_the_first_runs_lesson_on_record_bus_and_call`,

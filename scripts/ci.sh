@@ -341,8 +341,10 @@ lint-hygiene() {
   # docs/ is scanned recursively, so docs/_archive/ (nested under it) is
   # covered by the same pass. Repo root is scanned at depth 1 only (its own
   # files), so this never descends into src/tests/benchmarks trees where
-  # "lambda:" is overwhelmingly Python's own closure syntax.
-  local CONTENT_PATHS=(docs/ notebooks/ cookbooks/)
+  # "lambda:" is overwhelmingly Python's own closure syntax. lion1/ is a
+  # subproject with its own docs and notebooks; the "lambda:" pass below skips
+  # *.py, so its source is read by the Python scanner instead.
+  local CONTENT_PATHS=(docs/ notebooks/ cookbooks/ lion1/)
 
   echo "  checking absolute machine-local paths..."
   # Scanned across ALL file types, including .py — a hardcoded machine path
@@ -387,7 +389,7 @@ lint-hygiene() {
   # which is exactly what makes the source trees safe to scan and what the
   # narrower scope was leaving unscanned.
   if uv run python "$PY_HYGIENE_SCRIPT" \
-    docs/ notebooks/ cookbooks/ examples/ lionagi/ tests/ scripts/ benchmarks/ marketplace/; then
+    docs/ notebooks/ cookbooks/ examples/ lionagi/ tests/ scripts/ benchmarks/ marketplace/ lion1/; then
     :
   else
     scan_rc=$?
@@ -398,7 +400,7 @@ lint-hygiene() {
     fi
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if uv run python "$NOTEBOOK_HYGIENE_SCRIPT" notebooks/ cookbooks/; then
+  if uv run python "$NOTEBOOK_HYGIENE_SCRIPT" notebooks/ cookbooks/ lion1/; then
     :
   else
     scan_rc=$?

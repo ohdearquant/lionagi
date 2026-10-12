@@ -1,5 +1,6 @@
-"""The scripts under examples/ keep working: each one imports, each scripted one runs to its end, and the
-live one, with no key and no CLI to reach a model, stops with one line naming what is missing."""
+"""The scripts under lion1/examples/ keep working: each one imports, each scripted one runs to its
+end, and the live one, with no key and no CLI to reach a model, stops with one line naming what is
+missing."""
 
 import ast
 import asyncio
@@ -26,7 +27,7 @@ SCRIPTED = (
     "serve_an_actor",
 )
 LIVE = ("backends",)
-# tests/test_bench_agent.py drives this one: a fake store, and a child that writes a ledger
+# lion1/tests/test_bench_agent.py drives this one: a fake store, and a child that writes a ledger
 OWN_TESTS = ("bench_agent",)
 
 
