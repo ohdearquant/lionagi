@@ -344,19 +344,267 @@ _CREDENTIAL_IN_TEXT = re.compile(r"(?<![\w.+~%-])([\w.+~%-]+):([^\s:@/\\'\"]+)@"
 
 # A query parameter's key, found at every `?` and `&`, so one standing inside
 # another's value is found too. libpq and asyncpg read a `password` parameter as
-# the password. The key is compared percent-decoded, as SQLAlchemy decodes it,
-# and in any case, which is wider than SQLAlchemy's exact match. SQLAlchemy reads
+# the password, and a key ending in `password` is masked too, as the keyword
+# reading below masks one. The key is compared percent-decoded, as SQLAlchemy
+# decodes it, and in any case, which is wider than SQLAlchemy's exact match. SQLAlchemy reads
 # the value to the next `&`, a `#`, a space or a carriage return included, and
 # ends it at a newline; a URL given alone has it masked to the next `&` whatever
 # it holds, and prose to the next `&` or whitespace. A tab or line break in the
 # key is dropped before the compare, as urlsplit drops it wherever it stands, so
 # asyncpg reads `?\rpassword=` as the password. Only the key: in prose a value,
-# like a password, still ends at whitespace, a tab or line break included.
+# like a password, still ends at whitespace, a tab or line break included. That
+# whitespace is ASCII only: a no-break or other Unicode space, which the drivers
+# read as part of the value, stays inside it.
 _QUERY_KEY = re.compile(r"(?=[?&]((?:[^?&=\s]|[\t\r\n])*)=)")
 _KEY_BREAK = re.compile(r"[\t\r\n]")
-_VALUE_END = re.compile(r"[&\s]")
+_VALUE_END = re.compile(r"[&\s]", re.ASCII)
 _WHOLE_VALUE_END = re.compile(r"&")
 _SPACE = re.compile(r"\s")
+
+# A key ending in `password`, in any case, written `key=value` outside a URL
+# query: a keyword/value connection string (`host=db password=secret`), an
+# environment assignment (`PGPASSWORD=secret`), a flag (`--db-password=secret`).
+# After a `?` the key is a query parameter, read above instead. Whitespace
+# around the `=` is passed over, as libpq passes it over. The value is read the
+# way libpq reads a connection string's value and the way a shell reads a word,
+# once with `$'..'` quoting and once without it, since not every shell has it,
+# and masked to the end of the longest reading and on to the next space, tab or
+# line feed:
+#   libpq: quoted, to the first `'` a backslash does not escape; unquoted, to
+#   the first whitespace a backslash does not escape, so a `;` or `)` is in it.
+#   a shell: to the first space, tab, line feed or one of `|&;)<>` that is
+#   neither escaped nor quoted, so a `,`, `]` or `}` is in it. A `'..'` part
+#   runs to the next `'` and has no escapes; a `$'..'` part, where a shell has
+#   that quoting, runs to the next `'` a backslash does not escape.
+#   `ab'cd ef'gh` is one word, and `'a\'b'c d'` reads as `a\bc d`. A backtick
+#   part runs to the next backtick a backslash does not escape. A `".."` part
+#   runs to the next `"`, and a `${..}` part to the next `}`, that is neither
+#   escaped nor quoted nor inside a part it holds, so `"a b"` and `${PW:-a b}`
+#   are each one part. In a `${..}` part a `"` or `${` opens a part of its own,
+#   and so does a `{`, to its own `}`, as zsh reads it (bash and dash end the
+#   part at the first `}`). In a `".."` part a `${` does, an escape and a
+#   backtick part are read, and a `'` or `$'` is a plain character; in a `${..}`
+#   part inside it bash reads a `'` as a quote, and other shells as a plain
+#   character, so the two shell readings take each way. Where some parts end,
+#   only a shell's command grammar finds (a `case` pattern's `)`, a comment, a
+#   here-document), and none of these is read: a `$(..)` or `$[..]` part, bash's
+#   `${ ..; }` and `${| ..; }`, a `<(..)` or `>(..)` part outside a `".."` part
+#   and, for bash, in a `${..}` part inside one, and in the word itself whatever
+#   an unquoted `(` opens (zsh's `=(..)`, an extended glob's `@(..)`) each run to
+#   the end of the text. So `$(cat pwfile) psql` is masked whole.
+# After a `&` the key is a query parameter, read above, or follows a shell's `&`,
+# so it is read here as a shell reads it too, but no further than the next `&`,
+# where the query parameter's value ends, and masked on to the next space, tab,
+# line feed or `&`. So a value holding a quoted or escaped `&` is masked only up
+# to that `&`.
+# libpq separates its keywords with whitespace only, so its reading starts no
+# value there.
+# A quote that is never closed runs to the end of the text. Every reading is
+# ASCII, so a no-break or other Unicode space stays inside the value. Python's
+# string literals are read none of these ways: Python joins `'a' 'b c'` into one
+# string and keeps the backslash in `r'a\'b c'`, and both are masked only to the
+# space. A key standing inside another key's value, as in
+# `password=ab;password='c d'`, is read as well.
+_PASSWORD_KEY = re.compile(r"(?<![\w.?-])[\w.-]*password\s*=\s*", re.IGNORECASE | re.ASCII)
+_BLANK = re.compile(r"[ \t\n]")
+_BLANK_OR_AMPERSAND = re.compile(r"[ \t\n&]")
+
+# Each reading, in its plain state, outside quotes and escapes, reads up to the
+# next character that may end that state (its stop pattern). A part may start
+# there: an escape, a `'..'` or `$'..'` part or a backtick part (its part
+# pattern), after which it is plain again; or an opening, whose part a reading
+# of its own reads inside, to the character that closes it, after which this
+# reading is plain again past that character. Where neither starts, the reading
+# ends: the value at whitespace, or a backslash that ends the text, for libpq,
+# and at a space, tab, line feed or one of `|&;)<>` for a shell; a part read
+# inside at the `"` or `}` that closes it. A part read to the end of the text
+# is not read at all.
+_LIBPQ_QUOTED = re.compile(r"'(?:\\.|[^'\\])*'?", re.DOTALL)
+_LIBPQ_STOP = re.compile(r"[\s\\]", re.ASCII)
+_LIBPQ_PART = re.compile(r"\\.", re.DOTALL)
+_SHELL_PART = re.compile(r"""\\.?|'[^']*'?|`(?:\\.|[^`\\])*`?""", re.DOTALL)
+_BASH_PART = re.compile(r"""\\.?|'[^']*'?|`(?:\\.|[^`\\])*`?|\$'(?:\\.|[^'\\])*'?""", re.DOTALL)
+_QUOTED_PART = re.compile(r"""\\.?|`(?:\\.|[^`\\])*`?""", re.DOTALL)
+# what an opening hands a part read to the end of the text, which no reading here
+# reads: where it ends, only a shell's command grammar finds
+_REST = "the rest of the text"
+_REST_QUOTED = {"$(": _REST, "$[": _REST, **dict.fromkeys(("${ ", "${\t", "${\n", "${|"), _REST)}
+_REST_UNQUOTED = {**_REST_QUOTED, "<(": _REST, ">(": _REST, "(": _REST}
+_SHELL_OPENINGS = {**_REST_UNQUOTED, '"': "shell quoted", "${": "shell expansion"}
+_BASH_OPENINGS = {**_REST_UNQUOTED, '"': "bash quoted", "${": "bash expansion"}
+# in a `${..}` part zsh reads an unquoted `{` as opening a part to its own `}`, where
+# bash and dash end the part at the first `}`; the part is read zsh's way, the longer
+_SHELL_EXPANSION_OPENINGS = {**_SHELL_OPENINGS, "{": "shell expansion"}
+_BASH_EXPANSION_OPENINGS = {**_BASH_OPENINGS, "{": "bash expansion"}
+# name: (stop pattern, part pattern, the reading each opening's part is read by). A
+# reading meets an opening only where its stop pattern stops: a `(` alone is one in
+# the word itself, not in a `${..}` part.
+_READINGS: dict[str, tuple[re.Pattern[str], re.Pattern[str], dict[str, str]]] = {
+    "libpq": (_LIBPQ_STOP, _LIBPQ_PART, {}),
+    "shell": (re.compile(r"""[ \t\n|&;()<>\\'"`]|\$[({\[]"""), _SHELL_PART, _SHELL_OPENINGS),
+    "shell expansion": (
+        re.compile(r"""[{}\\'"`]|\$[({\[]|[<>]\("""),
+        _SHELL_PART,
+        _SHELL_EXPANSION_OPENINGS,
+    ),
+    "shell quoted": (
+        re.compile(r"""[\\"`]|\$[({\[]"""),
+        _QUOTED_PART,
+        {**_REST_QUOTED, "${": "shell quoted expansion"},
+    ),
+    "shell quoted expansion": (
+        re.compile(r"""[}\\"`]|\$[({\[]"""),
+        _QUOTED_PART,
+        {**_REST_QUOTED, '"': "shell quoted", "${": "shell quoted expansion"},
+    ),
+    "bash": (re.compile(r"""[ \t\n|&;()<>\\'"`]|\$[('{\[]"""), _BASH_PART, _BASH_OPENINGS),
+    "bash expansion": (
+        re.compile(r"""[{}\\'"`]|\$[('{\[]|[<>]\("""),
+        _BASH_PART,
+        _BASH_EXPANSION_OPENINGS,
+    ),
+    "bash quoted": (
+        re.compile(r"""[\\"`]|\$[({\[]"""),
+        _QUOTED_PART,
+        {**_REST_QUOTED, "${": "bash quoted expansion"},
+    ),
+    # bash reads a `<(` or `>(` here as a process substitution, which other shells
+    # inside `".."` read as plain characters
+    "bash quoted expansion": (
+        re.compile(r"""[}\\'"`]|\$[('{\[]|[<>]\("""),
+        _BASH_PART,
+        {
+            **_REST_QUOTED,
+            "<(": _REST,
+            ">(": _REST,
+            '"': "bash quoted",
+            "${": "bash quoted expansion",
+        },
+    ),
+}
+
+
+class _ValueEnds:
+    """Where each reading of a keyword's value ends, for values starting
+    anywhere in *text*.
+
+    A reading is in its plain state where a value starts and after each part
+    it reads, and from a position in that state it ends in the same place
+    whichever value it came from. So each reading notes, for each position it
+    passed in that state, where it ended, and a later value's reading that
+    starts, or resumes after a part, at a noted position ends there too. A
+    reading inside a quoted part opened it at the same quote whichever value
+    it came from, and passed that quote in its plain state, so no quoted part
+    is read twice either. What an opening's part holds is read by a reading of
+    its own, which ends at the character that closes the part and is noted
+    the same way; a part read to the end of the text is not read. However
+    many values overlap, each position is read a bounded number of times.
+    The readings waiting on a part are kept in a list, not on the call
+    stack, so parts nested however deep are read.
+    """
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._noted: dict[str, list[int | None]] = {}
+        # 1 where `_noted` holds an end, so the next noted position is found by
+        # `bytearray.find`, not by stepping through the list
+        self._is_noted: dict[str, bytearray] = {}
+        self._ends: list[int] = []
+        self._found: dict[re.Pattern[str], list[int]] = {}
+
+    def next_match(self, pattern: re.Pattern[str], pos: int) -> int:
+        """Where *pattern* next matches at or after *pos*, or the end of the text:
+        all matches are found once, so a search per value does not rescan."""
+        found = self._found.get(pattern)
+        if found is None:
+            found = self._found[pattern] = [m.start() for m in pattern.finditer(self._text)]
+            found.append(len(self._text))
+        return found[bisect_left(found, pos)]
+
+    def libpq(self, start: int) -> int:
+        if quoted := _LIBPQ_QUOTED.match(self._text, start):
+            # another quoted value can start in this one only at the quote that
+            # closes it, which no backslash escapes, so no quoted part is read twice
+            return quoted.end()
+        return self._read(start, "libpq")
+
+    def shell(self, start: int) -> int:
+        return self._read(start, "shell")
+
+    def bash(self, start: int) -> int:
+        return self._read(start, "bash")
+
+    @staticmethod
+    def _plain_to(
+        text: str, pos: int, stops: re.Pattern[str], is_noted: bytearray
+    ) -> tuple[int, int | None]:
+        """Where a reading in its plain state at *pos* goes next: ``(stop, None)``
+        at the next character its stop pattern matches, or the end of the text, or
+        ``(pos, seen)`` at a position it passed in that state for an earlier value,
+        if that comes first. The text is searched in windows that double, so the
+        cost follows the distance to whichever comes first, not to a stop far past
+        a position already read."""
+        n = len(text)
+        lo, width = pos, 64
+        while True:
+            hi = min(lo + width, n + 1)
+            seen = is_noted.find(1, lo, hi)
+            # a stop is at most two characters, so one starting before `hi` is found
+            found = stops.search(text, lo, min(hi + 1, n))
+            first = found.start() if found and found.start() < hi else None
+            if seen != -1 and (first is None or seen <= first):
+                return pos, seen
+            if first is not None:
+                return first, None
+            if hi > n:
+                return n, None
+            lo, width = hi, width * 2
+
+    def _read(self, start: int, reading: str) -> int:
+        text = self._text
+        waiting: list[tuple[str, list[tuple[int, int]]]] = []
+        passed: list[tuple[int, int]] = []
+        pos = start
+        while True:
+            if reading == _REST:
+                end = len(text)
+            else:
+                noted = self._noted.get(reading)
+                if noted is None:
+                    noted = self._noted[reading] = [None] * (len(text) + 1)
+                    self._is_noted[reading] = bytearray(len(text) + 1)
+                is_noted = self._is_noted[reading]
+                if (known := noted[pos]) is None:
+                    stops, part, openings = _READINGS[reading]
+                    stop, seen = self._plain_to(text, pos, stops, is_noted)
+                    if seen is not None:
+                        # plain up to a position this reading passed in the same state
+                        # for an earlier value, so it ends where that one did
+                        passed.append((pos, seen - 1))
+                        end = self._ends[noted[seen]]  # type: ignore[index]
+                    else:
+                        passed.append((pos, stop))
+                        if opening := next((o for o in openings if text.startswith(o, stop)), None):
+                            waiting.append((reading, passed))
+                            reading, passed, pos = openings[opening], [], stop + len(opening)
+                            continue
+                        if m := part.match(text, stop):
+                            pos = m.end()
+                            continue
+                        end = stop
+                else:
+                    end = self._ends[known]
+                self._ends.append(end)
+                for first, last in passed:
+                    noted[first : last + 1] = [len(self._ends) - 1] * (last + 1 - first)
+                    is_noted[first : last + 1] = b"\x01" * (last + 1 - first)
+            if not waiting:
+                return end
+            # past the character that closes the part, or at the end of the text if
+            # none does
+            reading, passed = waiting.pop()
+            pos = min(end + 1, len(text))
+
 
 # What a masked secret becomes. No part of it survives: a prefix of a password
 # is still part of the password.
@@ -367,18 +615,26 @@ def mask_credentials(text: str) -> str:
     """Return *text* with every secret it finds replaced by ``***``.
 
     For prose as well as a URL -- an error message that quotes the store it
-    failed to open carries the credential as plainly as the URL field
-    beside it. A span is masked when any reader would take it for a secret:
-    a URL's password to the first ``@`` and to the last ``@`` before
-    whitespace, the value of each ``password`` query parameter to the next
-    ``&`` or whitespace, and a ``user:secret@`` outside a URL. Spans that
-    overlap or touch are masked as one, so what stands between two of them
-    is masked too. A URL's password holding whitespace is not matched here.
-    Outside a URL, text is scanned, not parsed: a secret holding whitespace,
-    a slash, a backslash or a quote is not matched, one holding ``:`` keeps
-    the part before its last ``:``, one holding ``@`` keeps the part after
-    its first ``@``, and a secret passed as a bare argument isn't matched at
-    all.
+    failed to open carries the credential as plainly as the URL field beside it.
+    A span is masked when one of the readings below takes it for a secret: a
+    URL's password to the first ``@`` and to the last ``@`` before whitespace,
+    the value of each query parameter whose key ends in ``password`` to the next
+    ``&`` or whitespace, the value of a key ending in ``password`` written
+    ``key=value`` anywhere else, as a keyword/value connection string, an
+    environment assignment or a flag writes it, and a ``user:secret@`` outside a
+    URL. Spans that overlap or touch are masked as one, so what stands between
+    two of them is masked too. A URL's password holding whitespace is not
+    matched here. Such a keyword's value is masked to the end of the longest of
+    its readings, libpq's and a shell's with and without ``$'..'`` quoting,
+    quotes, backslash escapes and a shell's parameter expansions included, a
+    command substitution or any other part whose end only a shell's command
+    grammar finds taken to the end of the text, and on to the next space, tab
+    or line feed; a Python string literal is read none of these ways. Otherwise, outside a
+    URL, text is scanned, not parsed: a secret holding whitespace, a slash, a
+    backslash or a quote is not matched, one holding ``:`` keeps the part
+    before its last ``:``, one holding ``@`` keeps the part after its first
+    ``@``, and a secret passed as a separate argument (``--password secret``)
+    isn't matched at all.
     """
     return _mask_spans(text, whole=False)
 
@@ -400,24 +656,45 @@ def mask_db_url(url: str) -> str:
 
 def _mask_spans(text: str, *, whole: bool) -> str:
     """Mask each span these readings take for a secret, all found before any
-    is masked: each ``password`` query value, then each URL password and
-    ``user:secret@``, read on *text* and again on a view with those values
-    blanked, which takes out a delimiter such a value may hold that would
-    stop a reading short. *whole* reads *text* as one URL given alone. Each
-    reading is found by one scan of the string plus a binary search per
-    match, so the cost grows with the length of *text*."""
+    is masked: each query value whose key ends in ``password``, each value of
+    a key ending in ``password`` outside a query, then each URL password and
+    ``user:secret@``, read on *text* and again on a view with the query
+    values blanked, which takes out a delimiter such a value may hold that
+    would stop a reading short. *whole* reads *text* as one URL given alone.
+    The query and URL readings take one scan of the string plus a binary
+    search per match, and the keyword readings read each position a bounded
+    number of times however many values overlap (``_ValueEnds``), so the cost
+    grows with the length of *text*."""
     ends = [m.start() for m in (_WHOLE_VALUE_END if whole else _VALUE_END).finditer(text)]
     values = []
     for m in _QUERY_KEY.finditer(text):
-        if unquote(_KEY_BREAK.sub("", m.group(1))).lower() == "password":
+        if unquote(_KEY_BREAK.sub("", m.group(1))).lower().endswith("password"):
             start = m.end(1) + 1
             i = bisect_left(ends, start)
-            values.append((start, ends[i] if i < len(ends) else len(text)))
+            stop = ends[i] if i < len(ends) else len(text)
+            if stop > start:  # an empty value has nothing to mask
+                values.append((start, stop))
     values = _merged(values)
     blanked = list(text)
     for start, end in values:
         blanked[start:end] = "x" * (end - start)
     spans = list(values)
+    reads = _ValueEnds(text)
+    pos = 0
+    while m := _PASSWORD_KEY.search(text, pos):
+        # to the end of the longest reading, then on to the next space, tab or line
+        # feed, or, after a `&`, no further than the next `&`. An empty value, or an
+        # empty pair of quotes, has nothing to mask. A key may stand inside this
+        # value, so the search goes on from where the value starts.
+        pos = m.end()
+        after_ampersand = text[m.start() - 1 : m.start()] == "&"
+        end = max(reads.shell(pos), reads.bash(pos), pos if after_ampersand else reads.libpq(pos))
+        if after_ampersand:
+            end = min(end, reads.next_match(_WHOLE_VALUE_END, pos))
+        if end - pos <= 2 and text[pos:end] in ("", "''", '""'):
+            continue
+        stops = _BLANK_OR_AMPERSAND if after_ampersand else _BLANK
+        spans.append((pos, reads.next_match(stops, end)))
     for s in (text, "".join(blanked)):
         ats = [m.start() for m in re.finditer("@", s)]
         gaps = [m.start() for m in _SPACE.finditer(s)]
