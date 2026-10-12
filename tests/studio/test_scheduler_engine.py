@@ -3525,6 +3525,386 @@ async def test_a_stop_during_recovery_does_not_wait_for_the_pass_in_flight(monke
 
 
 @pytest.mark.asyncio
+async def test_stop_drains_recovery_cancellation_before_closing_the_state_service(monkeypatch):
+    """Cancellation cleanup may still use the store, so close must come after it."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+
+    svc = _DBSchedulerStateService(persistent=True)
+    close = AsyncMock()
+    monkeypatch.setattr(svc, "close", close)
+    engine = SchedulerEngine(svc=svc)
+    entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def _recovery_with_delayed_cleanup():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_finished.set()
+
+    monkeypatch.setattr(engine, "_startup_recovery_passes", _recovery_with_delayed_cleanup)
+    engine._task = asyncio.create_task(engine._run_startup_recovery())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    stopping = asyncio.create_task(engine.stop())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+    try:
+        await asyncio.sleep(0)
+        assert not stopping.done(), "stop returned while recovery cleanup was still running"
+        close.assert_not_awaited()
+    finally:
+        release_cleanup.set()
+        await asyncio.wait_for(stopping, timeout=2)
+
+    assert cleanup_finished.is_set()
+    close.assert_awaited_once()
+
+
+@pytest.mark.slow_timing
+@pytest.mark.asyncio
+async def test_a_recovery_cleanup_that_never_returns_holds_stop_only_for_the_unwind_bound(
+    monkeypatch, caplog
+):
+    """stop() waits for the unwind, but a cleanup that never returns must not hang shutdown."""
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+
+    monkeypatch.setattr(engine_mod, "_RECOVERY_UNWIND_SECONDS", 0.2)
+    svc = _DBSchedulerStateService(persistent=True)
+    close = AsyncMock()
+    monkeypatch.setattr(svc, "close", close)
+    engine = SchedulerEngine(svc=svc)
+    entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    passes: list[asyncio.Task] = []
+
+    async def _recovery_whose_cleanup_does_not_return():
+        passes.append(asyncio.current_task())
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    monkeypatch.setattr(engine, "_startup_recovery_passes", _recovery_whose_cleanup_does_not_return)
+    engine._task = asyncio.create_task(engine._run_startup_recovery())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    started = time.monotonic()
+    stopping = asyncio.create_task(engine.stop())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+    try:
+        await asyncio.sleep(0)
+        assert not stopping.done(), "stop returned without waiting for the unwind"
+        # asyncio.wait, not wait_for: stop() absorbs a cancel of its own caller, so a timeout
+        # that cancels it would read as stop() returning
+        with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+            done, _ = await asyncio.wait({stopping}, timeout=5)
+        assert stopping in done, "stop is still waiting on a cleanup that never returns"
+        elapsed = time.monotonic() - started
+        assert elapsed >= 0.2, "stop returned before the unwind bound"
+        # ten times the bound, the margin a real-deadline test keeps for a slow machine
+        assert elapsed < 2.0, "stop waited well past the unwind bound"
+        close.assert_awaited_once()
+        assert not passes[0].done()
+        assert "still unwinding" in caplog.text
+    finally:
+        release_cleanup.set()
+        await asyncio.wait([*passes, stopping], timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_a_second_stop_during_the_recovery_unwind_still_waits_for_it(monkeypatch):
+    """A second stop() during the unwind waits for the first; neither closes the store before
+    the cleanup has finished."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+
+    svc = _DBSchedulerStateService(persistent=True)
+    cleanup_finished = asyncio.Event()
+    closed_after_cleanup: list[bool] = []
+    close = AsyncMock(side_effect=lambda: closed_after_cleanup.append(cleanup_finished.is_set()))
+    monkeypatch.setattr(svc, "close", close)
+    engine = SchedulerEngine(svc=svc)
+    entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def _recovery_with_delayed_cleanup():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_finished.set()
+
+    monkeypatch.setattr(engine, "_startup_recovery_passes", _recovery_with_delayed_cleanup)
+    engine._task = asyncio.create_task(engine._run_startup_recovery())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    first = asyncio.create_task(engine.stop())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+    second = asyncio.create_task(engine.stop())
+    try:
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not first.done() and not second.done()
+        close.assert_not_awaited()
+    finally:
+        release_cleanup.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
+
+    assert closed_after_cleanup and all(closed_after_cleanup)
+
+
+@pytest.mark.asyncio
+async def test_a_second_stop_does_not_close_the_store_while_the_first_is_closing_it(monkeypatch):
+    """stop() calls run one at a time: a second one waits for the first to finish closing."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+
+    svc = _DBSchedulerStateService(persistent=True)
+    closing = 0
+    overlapped: list[bool] = []
+    first_closing = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def _held_close():
+        nonlocal closing
+        closing += 1
+        overlapped.append(closing > 1)
+        first_closing.set()
+        await release_close.wait()
+        closing -= 1
+
+    monkeypatch.setattr(svc, "close", _held_close)
+    engine = SchedulerEngine(svc=svc)
+
+    first = asyncio.create_task(engine.stop())
+    await asyncio.wait_for(first_closing.wait(), timeout=2)
+    second = asyncio.create_task(engine.stop())
+    try:
+        await asyncio.sleep(0.2)
+        assert not second.done()
+        assert closing == 1, "the second stop started closing while the first was"
+    finally:
+        release_close.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
+
+    assert overlapped == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_of_stops_caller_during_the_recovery_unwind_still_waits_for_it(monkeypatch):
+    """stop() awaits the loop, so a cancel of its caller reaches the recovery wait, which must
+    absorb it rather than let the close overtake the cleanup. stop() then closes the store and
+    returns normally, as it did before when that cancel reached it while it awaited the loop."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+
+    svc = _DBSchedulerStateService(persistent=True)
+    cleanup_finished = asyncio.Event()
+    closed_after_cleanup: list[bool] = []
+    close = AsyncMock(side_effect=lambda: closed_after_cleanup.append(cleanup_finished.is_set()))
+    monkeypatch.setattr(svc, "close", close)
+    engine = SchedulerEngine(svc=svc)
+    entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def _recovery_with_delayed_cleanup():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_finished.set()
+
+    monkeypatch.setattr(engine, "_startup_recovery_passes", _recovery_with_delayed_cleanup)
+    engine._task = asyncio.create_task(engine._run_startup_recovery())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    stopping = asyncio.create_task(engine.stop())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+    stopping.cancel()
+    try:
+        for _ in range(5):
+            await asyncio.sleep(0)
+        close.assert_not_awaited()
+    finally:
+        release_cleanup.set()
+        await asyncio.wait({stopping}, timeout=2)
+
+    assert stopping.done()
+    assert not stopping.cancelled()
+    assert stopping.result() is None
+    assert closed_after_cleanup == [True]
+
+
+def _live_tick_loops() -> list[asyncio.Task]:
+    return [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "SchedulerEngine._tick_loop"
+    ]
+
+
+async def _end_tick_loops(engine) -> None:
+    """Teardown for a failed test: a loop takes a cancel without a stop for a stray one."""
+    engine._stopping = True
+    loops = _live_tick_loops()
+    for loop_task in loops:
+        loop_task.cancel()
+    if loops:
+        await asyncio.wait(loops, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_a_start_during_the_recovery_unwind_waits_for_the_stop(monkeypatch):
+    """stop() can wait for a recovery pass to unwind, so a start() can arrive inside that wait.
+    It must not run until the stop has returned: clearing the stop flag under the old loop would
+    let it run its later passes and keep ticking beside the new loop, and the start would come
+    before the close."""
+    from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    order: list[str] = []
+    svc = _DBSchedulerStateService(persistent=True)
+    monkeypatch.setattr(svc, "close", AsyncMock(side_effect=lambda: order.append("close")))
+    engine._svc = svc
+    entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    calls = 0
+    old_passes: list[asyncio.Task] = []
+    later_pass_tasks: list[asyncio.Task] = []
+
+    async def _first_pass_with_held_cleanup():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            return
+        old_passes.append(asyncio.current_task())
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    async def _second_pass():
+        later_pass_tasks.append(asyncio.current_task())
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _first_pass_with_held_cleanup)
+    monkeypatch.setattr(engine, "_reconcile_dispatched_orphans", _second_pass)
+    await engine.start()
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    monkeypatch.setattr(
+        engine, "_backfill_action_cwd", AsyncMock(side_effect=lambda: order.append("start"))
+    )
+    stopping = asyncio.create_task(engine.stop())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+    starting = asyncio.create_task(engine.start())
+    try:
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not starting.done(), "start ran inside the stop's wait"
+        assert engine._stopping
+        release_cleanup.set()
+        await asyncio.wait_for(asyncio.gather(stopping, starting), timeout=2)
+        assert order == ["close", "start"]
+        await _until(lambda: len(ticks) >= 1)
+        assert old_passes[0] not in later_pass_tasks, "the stopped loop ran a later pass"
+        assert _live_tick_loops() == [engine._task]
+        await asyncio.wait_for(engine.stop(), timeout=2)
+        assert _live_tick_loops() == []
+    finally:
+        release_cleanup.set()
+        await _end_tick_loops(engine)
+        await asyncio.wait({stopping, starting}, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_a_start_created_with_a_stop_does_not_hold_the_stop(monkeypatch):
+    """A start() created in the same loop step as a stop() must not clear the stop flag before
+    the loop handles the stop's cancel, or the loop reads that cancel as a stray one and the stop
+    waits on recovery for as long as it runs."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    calls = 0
+
+    async def _first_pass_that_never_returns():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            return
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _first_pass_that_never_returns)
+    await engine.start()
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    stopping = asyncio.create_task(engine.stop())
+    starting = asyncio.create_task(engine.start())
+    try:
+        done, _ = await asyncio.wait({stopping}, timeout=2)
+        assert stopping in done, "stop is waiting on a recovery pass that never returns"
+        await asyncio.wait_for(starting, timeout=2)
+        await _until(lambda: len(ticks) >= 1)
+        assert _live_tick_loops() == [engine._task]
+        await asyncio.wait_for(engine.stop(), timeout=2)
+        assert _live_tick_loops() == []
+    finally:
+        await _end_tick_loops(engine)
+        await asyncio.wait({stopping, starting}, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_starts_no_later_pass_when_a_pass_cleanup_replaces_its_cancel(monkeypatch):
+    """The stop's cancel reaches only the pass in flight; if that pass's cleanup raises another
+    error instead, the passes after it must still not start during the stop."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _first_with_failing_cleanup():
+        entered.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            raise RuntimeError("cleanup failed")
+
+    async def _second():
+        ran.append("second")
+
+    async def _third():
+        ran.append("third")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _first_with_failing_cleanup)
+    monkeypatch.setattr(engine, "_reconcile_dispatched_orphans", _second)
+    monkeypatch.setattr(engine, "_check_missed_fires", _third)
+
+    await engine.start()
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    await asyncio.wait_for(engine.stop(), timeout=5)
+    assert ran == []
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_skips_the_delay(
     monkeypatch,
 ):

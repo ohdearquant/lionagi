@@ -52,6 +52,9 @@ _TICK_INTERVAL = 30  # seconds
 # Backoff between tick-loop restarts, holding at the last value. A loop that dies every
 # time must not spin, and one that died once must come back before the next schedule is due.
 _TICK_RESTART_BACKOFF = (1.0, 2.0, 5.0, 15.0, 30.0)
+# How long stop() waits for a cancelled recovery pass to unwind before it closes the state
+# service anyway, so a recovery cleanup that never returns holds the shutdown this long at most.
+_RECOVERY_UNWIND_SECONDS = 10.0
 # Throttles deferred-capacity skipped-run records to one per schedule per this
 # many deferrals, so sustained saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
@@ -360,6 +363,12 @@ class SchedulerEngine:
         self._worker_task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
+        # start() and stop() run one at a time. stop() can wait for a cancelled recovery pass
+        # to unwind, and a start() inside that wait would clear _stopping under it: the old
+        # loop would read the stop's cancel as a stray one and run its later passes, and its
+        # exit would schedule a restart beside the new loop. A stop() inside start()'s awaits
+        # would close the store those awaits then reopen.
+        self._lifecycle_lock = asyncio.Lock()
         self._fire_tasks: set[asyncio.Task] = set()
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
@@ -400,14 +409,15 @@ class SchedulerEngine:
         self._last_tick_loop_failure: tuple[float, str] | None = None
 
     async def start(self) -> None:
-        _log.info("Scheduler engine starting")
-        self._stopping = False
-        self._log_scheduler_timezone()
-        await self._backfill_action_cwd()
-        await self._stamp_effective_timezones()
-        await self._recompute_armed_cron_schedules()
-        self._tick_loop_restarts = 0
-        self._task = self._spawn_tick_loop()
+        async with self._lifecycle_lock:
+            _log.info("Scheduler engine starting")
+            self._stopping = False
+            self._log_scheduler_timezone()
+            await self._backfill_action_cwd()
+            await self._stamp_effective_timezones()
+            await self._recompute_armed_cron_schedules()
+            self._tick_loop_restarts = 0
+            self._task = self._spawn_tick_loop()
 
     def _spawn_tick_loop(self) -> asyncio.Task:
         task = asyncio.create_task(self._tick_loop())
@@ -587,34 +597,35 @@ class SchedulerEngine:
         return new
 
     async def stop(self) -> None:
-        _log.info("Scheduler engine stopping")
-        self._stopping = True
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._worker_task is not None:
-            self._worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker_task
-            self._worker_task = None
-        if self._retention_task is not None:
-            # Cancelling mid-prune keeps whichever chunks committed and writes no event, so the next
-            # process reads the older prune and is due straight away.
-            self._retention_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._retention_task
-            self._retention_task = None
-        if self._fire_tasks:
-            for ft in list(self._fire_tasks):
-                ft.cancel()
-            await asyncio.gather(*self._fire_tasks, return_exceptions=True)
-            self._fire_tasks.clear()
-        if isinstance(self._svc, _DBSchedulerStateService):
-            await self._svc.close()
+        async with self._lifecycle_lock:
+            _log.info("Scheduler engine stopping")
+            self._stopping = True
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                self._task = None
+            if self._worker_task is not None:
+                self._worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._worker_task
+                self._worker_task = None
+            if self._retention_task is not None:
+                # Cancelling mid-prune keeps whichever chunks committed and writes no event, so the
+                # next process reads the older prune and is due straight away.
+                self._retention_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._retention_task
+                self._retention_task = None
+            if self._fire_tasks:
+                for ft in list(self._fire_tasks):
+                    ft.cancel()
+                await asyncio.gather(*self._fire_tasks, return_exceptions=True)
+                self._fire_tasks.clear()
+            if isinstance(self._svc, _DBSchedulerStateService):
+                await self._svc.close()
 
     def _tracked_fire(self, *args: Any, **kwargs: Any) -> asyncio.Task:
         """Create a tracked _fire task; prevents orphans surviving shutdown."""
@@ -713,6 +724,11 @@ class SchedulerEngine:
             self._reconcile_dispatched_orphans,
             self._check_missed_fires,
         ):
+            # A stop's cancel reaches only the pass in flight, and that pass's own cleanup can
+            # replace it with another error, which the handler below absorbs. Without this check
+            # the later passes would then start during the stop.
+            if self._stopping:
+                return
             try:
                 await recovery()
             except asyncio.CancelledError:
@@ -744,6 +760,23 @@ class SchedulerEngine:
             except asyncio.CancelledError:
                 if self._stopping:
                     passes.cancel()
+                    # Cancelling only requests termination. Recovery cleanup may still be
+                    # using the scheduler store, so stop() must not close that store until
+                    # the pass has unwound, or until _RECOVERY_UNWIND_SECONDS have passed.
+                    # A cancel that arrives meanwhile is absorbed here, since it would end
+                    # this wait early: stop() is awaiting this task, so a cancel of stop()'s
+                    # own caller reaches it.
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + _RECOVERY_UNWIND_SECONDS
+                    while not passes.done() and (left := deadline - loop.time()) > 0:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.wait({passes}, timeout=left)
+                    if not passes.done():
+                        _log.warning(
+                            "Scheduler startup recovery still unwinding %.0fs after the stop; "
+                            "closing the state service under it",
+                            _RECOVERY_UNWIND_SECONDS,
+                        )
                     raise
                 # Re-shield rather than await the task directly: a bare await is itself
                 # cancellable, so the second cancel would tear the pass in half exactly

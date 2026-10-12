@@ -524,11 +524,22 @@ async def _prune_session_chunk(
             await conn.execute(*_q(sql, chunk))
 
     if candidate_msg_ids:
+        # One DELETE for the whole chunk. Its survivor check reads every progression's collection
+        # in the store, and a DELETE per batch of ids repeated that read inside the write
+        # transaction; the candidates go into a scratch table so the check runs once.
+        await conn.execute(text("DROP TABLE IF EXISTS prune_candidate_messages"))
+        await conn.execute(
+            text("CREATE TEMPORARY TABLE prune_candidate_messages (id TEXT PRIMARY KEY)")
+        )
         for i in range(0, len(candidate_msg_ids), _SQL_IN_CHUNK):
             chunk = candidate_msg_ids[i : i + _SQL_IN_CHUNK]
-            ph = ", ".join("?" * len(chunk))
-            sql = (
-                f"DELETE FROM messages WHERE id IN ({ph})"  # noqa: S608
+            ph = ", ".join("(?)" for _ in chunk)
+            await conn.execute(
+                *_q(f"INSERT INTO prune_candidate_messages (id) VALUES {ph}", chunk)  # noqa: S608
+            )
+        await conn.execute(
+            text(
+                "DELETE FROM messages WHERE id IN (SELECT id FROM prune_candidate_messages)"
                 " AND id NOT IN ("
                 "  SELECT value FROM progressions, json_each(progressions.collection)"
                 "  WHERE value IS NOT NULL"
@@ -540,7 +551,8 @@ async def _prune_session_chunk(
                 "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
                 ")"
             )
-            await conn.execute(*_q(sql, chunk))
+        )
+        await conn.execute(text("DROP TABLE prune_candidate_messages"))
 
     return sessions_pruned
 
