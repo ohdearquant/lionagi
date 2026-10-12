@@ -1045,9 +1045,16 @@ async def _run_agent(
         # The file on the line is what a resume reads again, named or not: a
         # leg submitted through the MCP server is pointed at a snapshot of the
         # config its submission found, and that snapshot is its set.
+        # A snapshot's resolution reports the config it was taken from, which is
+        # provenance; a resume must read the snapshot itself.
         named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
+        line_file = (
+            explicit_mcp_config_path(mcp_config, launch_dir=mcp_resolution.searched_from)
+            if named_on_the_line
+            else None
+        )
         branch.metadata[_MCP_LAUNCH_KEY] = {
-            "mcp_config": str(mcp_resolution.source) if named_on_the_line else None,
+            "mcp_config": str(line_file) if line_file is not None else None,
             "no_mcp_config": no_mcp_config,
             "launch_dir": str(mcp_resolution.searched_from),
         }
