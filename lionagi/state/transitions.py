@@ -5,7 +5,6 @@ entity-agnostic API, scoped to dispatch/schedule_run entities. See docs/internal
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -50,7 +49,8 @@ class TransitionResult(BaseModel):
     conflict: bool = False
     previous_state: str | None = None
     current_state: str
-    transition_id: str
+    # None on a conflict: no status_transitions row is written, so there is no id to return.
+    transition_id: str | None = None
     event_id: str | None = None
 
 
@@ -122,7 +122,7 @@ async def transition(
             conflict=True,
             previous_state=outcome.previous_status,
             current_state=outcome.current_status,
-            transition_id=uuid.uuid4().hex,
+            transition_id=None,
         )
 
     # "rejected" is unreachable here (raise_on_undeclared_edge=True) — see docs/internals/runtime.md.
