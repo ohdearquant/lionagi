@@ -451,12 +451,25 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _invocation_kind(inv: dict[str, Any]) -> str:
+    """The row's own action kind when one was recorded, else the generic label.
+
+    ``_session_to_row`` has always projected ``invocation_kind``; invocations
+    hardcoded ``"invocation"``, so a command-kind fire was indistinguishable
+    from every other fire in the table. The kind lives in ``node_metadata``
+    because the ``invocations`` table carries no column for it.
+    """
+    node_metadata = _parse_json_field(inv.get("node_metadata")) or {}
+    kind = node_metadata.get("action_kind")
+    return kind if isinstance(kind, str) and kind else "invocation"
+
+
 def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
     return {
         "id": inv["id"][:16],
-        "type": "invocation",
+        "type": _invocation_kind(inv),
         "project": "-",
         "status": inv.get("status") or "?",
         "phase": inv.get("skill") or "-",
@@ -687,6 +700,7 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
+    lines.append(f"  kind:          {_invocation_kind(inv)}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
     lines.append(f"  session_count: {inv.get('session_count') or 0}")
@@ -704,6 +718,17 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             f"  started:       {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}"
         )
 
+    # The spawn path already persists the exit reason and the drained stderr
+    # tail on a non-zero exit; until this line nothing read them back, so a
+    # run that fired and died was indistinguishable at the CLI from one that
+    # never fired.
+    reason_code = inv.get("status_reason_code")
+    if reason_code:
+        lines.append(f"  reason_code:   {reason_code}")
+    reason_summary = inv.get("status_reason_summary")
+    if reason_summary:
+        lines.append(f"  reason:        {reason_summary}")
+
     node_metadata = _parse_json_field(inv.get("node_metadata"))
     coordination = (node_metadata or {}).get("coordination")
     if isinstance(coordination, dict):
@@ -718,6 +743,30 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             for entry in top:
                 if isinstance(entry, dict) and entry.get("path"):
                     lines.append(f"      {entry['path']}  (workers={entry.get('workers', '?')})")
+
+    # A scheduled fire keeps its exit code and its stderr tail on the
+    # schedule_run, not on the invocation: resolve_invocation_terminal derives
+    # the invocation's reason from CHILD SESSIONS, and a command-kind fire has
+    # none, so its reason reads "failed with exit code N" and the tail lives
+    # one table over. Reading it back here is what lets `li monitor <id>`
+    # answer "fired and died, and here is why" for a command action.
+    run_rows = await db.fetch_all(
+        "SELECT id, action_kind, exit_code, error_detail FROM schedule_runs "
+        "WHERE invocation_id = ? ORDER BY fired_at DESC LIMIT 1",
+        (inv["id"],),
+    )
+    if run_rows:
+        run = run_rows[0]
+        lines.append("")
+        lines.append(_dim("  -- schedule run --"))
+        lines.append(f"    run:        {run['id']}")
+        lines.append(f"    kind:       {run['action_kind'] or '-'}")
+        exit_code = run["exit_code"]
+        lines.append(f"    exit_code:  {exit_code if exit_code is not None else '-'}")
+        if run["error_detail"]:
+            lines.append(_dim("    -- stderr tail --"))
+            for tail_line in str(run["error_detail"]).splitlines():
+                lines.append(f"      {tail_line}")
 
     child_rows = await db.fetch_all(
         "SELECT id, status, model, started_at FROM sessions WHERE invocation_id = ? ORDER BY created_at",
@@ -919,8 +968,12 @@ async def _gather_entities(
 
     rows.extend(("session", s) for s in sessions)
 
-    if entity_type in (None, "invocation"):
+    if entity_type in (None, "invocation", "command"):
         invocations = await _query_running_invocations(db, since=since)
+        if entity_type == "command":
+            # Filtered here rather than in SQL: the kind rides node_metadata
+            # JSON, so a WHERE clause would have to reach into it per backend.
+            invocations = [i for i in invocations if _invocation_kind(i) == "command"]
         rows.extend(("invocation", i) for i in invocations)
 
     if entity_type in (None, "show"):
@@ -1724,8 +1777,11 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "-t",
         dest="entity_type",
         default=None,
-        choices=["session", "invocation", "show", "play"],
-        help="Narrow the table to one kind of entity: session, invocation, show or play.",
+        choices=["session", "invocation", "show", "play", "command"],
+        help=(
+            "Narrow the table to one kind of entity: session, invocation, show or play. "
+            "`command` narrows to invocations launched as a command action."
+        ),
     )
     mon.add_argument(
         "--project",

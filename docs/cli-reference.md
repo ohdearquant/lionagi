@@ -508,6 +508,7 @@ li monitor --watch              # live-refresh table
 li monitor --watch <id>         # live-refresh detail view
 li monitor --since 1h           # entities updated in the last hour
 li monitor --type session       # filter table by entity type
+li monitor --type command       # command actions only; the detail view carries rc and the stderr tail
 li monitor --project myproject  # filter sessions by project
 ```
 
@@ -517,7 +518,7 @@ li monitor --project myproject  # filter sessions by project
 | `-w, --watch` | false | Live-refresh every `--refresh` seconds |
 | `--refresh SECS` | 2 | Refresh interval for `--watch` |
 | `--since WINDOW` | all | Time window: `30m`, `1h`, `2d` |
-| `-t, --type` | none | One of `session`, `invocation`, `show`, `play` |
+| `-t, --type` | none | One of `session`, `invocation`, `show`, `play`, `command`. `command` narrows to invocations launched as a command action |
 | `-p, --project` | none | Filter sessions by project name |
 
 A session detail view includes a `khive injection` block when an opted-in profile recorded
