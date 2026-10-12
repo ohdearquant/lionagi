@@ -246,10 +246,14 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
     cfg_path = d / "chores.toml"
     try:
         cfg = tomllib.loads(cfg_path.read_text())
-        actor, model = str(cfg.get("actor", "?")), str(cfg.get("model", "?"))
+        model = str(cfg.get("model", "?"))
         role = "desk" if "desk" in cfg else "chores"
+        if "actor" in cfg:
+            actor = actor_name(cfg["actor"], f"{cfg_path}: actor")
     except (OSError, tomllib.TOMLDecodeError) as e:
         problem.append(f"chores.toml: {e}")
+    except ValueError as e:
+        problem.append(str(e))
     try:
         serving, pid = _held(d / "agent.pid")
     except OSError as e:  # one resident's unreadable lock is its own problem, not the whole table's
@@ -593,8 +597,13 @@ def identity(directory: Path | str) -> tuple[str, Khive] | None:
     cfg = d / ".khive" / "config.toml"
     if not cfg.exists():
         return None
-    actor = (tomllib.loads(cfg.read_text()).get("actor") or {}).get("id")
-    return (str(actor), Khive(d, str(actor))) if actor else None
+    actor = tomllib.loads(cfg.read_text()).get("actor") or {}
+    if not isinstance(actor, dict):
+        raise ValueError(f"{cfg}: [actor] is a {type(actor).__name__}, not a table")
+    if "id" not in actor:
+        return None
+    actor_id = actor_name(actor["id"], f"{cfg}: [actor] id")
+    return actor_id, Khive(d, actor_id)
 
 
 async def talk(khive: Khive, actor: str, limit: int = 50) -> list[dict]:

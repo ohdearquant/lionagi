@@ -112,6 +112,20 @@ def test_khive_config_missing_actor_table_or_id_refuses_the_chat_and_names_the_f
         console(tmp_path)
 
 
+@pytest.mark.parametrize(("value", "kind"), [("true", "bool"), ("12345", "int")])
+def test_khive_config_non_string_actor_id_refuses_the_chat_and_names_the_file(tmp_path, value, kind):
+    khive_dir = tmp_path / ".khive"
+    khive_dir.mkdir()
+    config = khive_dir / "config.toml"
+    config.write_text(f"[actor]\nid = {value}\n")
+
+    with pytest.raises(ValueError) as caught:
+        console(tmp_path)
+
+    assert str(caught.value).count(str(config)) == 1
+    assert f"khive actor: a {kind} is not an actor name: a name is a string" in str(caught.value)
+
+
 def test_khive_absent_kkernel_refuses_the_chat_naming_it(tmp_path, monkeypatch):
     (tmp_path / ".khive").mkdir()
     (tmp_path / ".khive" / "config.toml").write_text(routed_config("agent-a", tmp_path))

@@ -580,8 +580,9 @@ least two and at most all of them.
 - **S16**: A GET is served whatever its Origin, as C11 names a POST, and no answer, `/events`
   included, carries an `Access-Control-*` header, so a page elsewhere cannot read one; pinned by
   `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
-- **S17**: A name carries no prefix or kind. An actor's name is a plain string of 3 to 100
-  characters: a letter or digit, then letters, digits and `. _ - : @` (`lion1.khive.actor_name`). It
-  is checked where a name enters: the khive client, an `areas.toml` chair and the names
-  `chores.toml` gives. A refusal names the rule broken and shows a value longer than 6 characters by
-  its first 6 and its length, since it may be a secret pasted into the wrong field.
+- **S17**: A name carries no kind, except that `email:` mail is never an agent and `owner:`
+  addresses the owner. A name is a string of 3 to 100 characters: an ASCII letter or digit, then
+  ASCII letters, digits and `. _ - : @` (`lion1.khive.actor_name`), checked where it enters: the
+  khive client, an `areas.toml` chair and the names `chores.toml` gives. A refusal names the broken
+  rule, showing a value over 6 characters as its first 6 and length; shorter ones appear whole,
+  their first 6 being all of them.

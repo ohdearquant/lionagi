@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 
 from hub import guidance
 from lion1.actor import Context, Run
-from lion1.khive import LOST, UNSTARTED, Khive, KhiveError, lit
+from lion1.khive import LOST, UNSTARTED, Khive, KhiveError, actor_name_display, lit
 
 from .agent import Agent, AgentError
 from .chores import Bounded, Chores, Outcome, sender_of
@@ -160,9 +160,16 @@ class Desk:
 
     def __post_init__(self) -> None:
         owner, me = self.chores.owner, self.agent.khive.actor
-        bad = {n: a for n, a in self.routes.items() if not a.startswith(f"{owner}:") or a == me}
+        bad = [
+            f"{actor_name_display(n)} -> {actor_name_display(a)}"
+            for n, a in self.routes.items()
+            if not a.startswith(f"{owner}:") or a == me
+        ]
         if bad:
-            raise ValueError(f"[desk.routes] names desks of {owner} other than {me} only; refused: {bad}")
+            raise ValueError(
+                f"[desk.routes] names desks of {actor_name_display(owner)} other than "
+                f"{actor_name_display(me)} only; refused: {bad}"
+            )
         actor = self.agent.actor
 
         @actor.handler(Sweep, requires={"comm.send"})
@@ -275,7 +282,8 @@ class Desk:
         return True
 
     def _agent(self, sender: str) -> bool:
-        return any(fnmatch.fnmatchcase(sender, g) for g in self.agents)
+        """A sender `[desk] agents` matches; mail from outside (`never`) is no agent whatever the globs."""
+        return not sender.startswith(self.never) and any(fnmatch.fnmatchcase(sender, g) for g in self.agents)
 
     def _admits(self, m: dict) -> bool:
         """`admit` as the agent's gate calls it: a ledger the desk cannot read admits nothing here, the
@@ -353,7 +361,7 @@ class Desk:
                 or (sender.startswith(f"{owner}:") and subject.startswith("ESCALATE"))
             ):
                 now.append((mid, entry))
-            elif self.verdicts is not None and sender in self.verdict_from:
+            elif self.verdicts is not None and sender in self.verdict_from and self._agent(sender):
                 notices.append((mid, entry))
             else:
                 pending[mid] = entry
@@ -618,7 +626,8 @@ class Desk:
         with self._take(req.msg, run, does="route") as m:
             to = self.routes.get(req.desk)
             if to is None:
-                raise AgentError(f"route: no desk {req.desk!r}; known: {sorted(self.routes)}")
+                known = ", ".join(actor_name_display(name) for name in sorted(self.routes))
+                raise AgentError(f"route: no desk {actor_name_display(req.desk)}; known: [{known}]")
             sender, owner = m["from"], self.chores.owner
             if sender == owner or sender.startswith((f"{owner}:", *self.never)):
                 why = "sender: route forwards other departments' mail only"

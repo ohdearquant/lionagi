@@ -46,6 +46,12 @@ DEFAULT_MODEL = (
 MAX_TURNS = 6  # the turns of one wake, a chair's burst
 
 
+def _string_list(value: Any, where: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{where} must be a list of strings")
+    return value
+
+
 def _desk_agents_line(agent: Agent) -> str | None:
     """What `lion agent` says once at start about whose mail its desk treats as an agent's; None with
     no front desk. An empty `[desk] agents` is said in words, so a desk that asks, files and answers
@@ -75,19 +81,50 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
     if isinstance(backend, Codex) and backend.unmeasured:
         # `backend_for` builds none; on an unmeasured CLI release the model may act unseen (ADR-0009/S23)
         raise ValueError("a codex backend built to run an unmeasured CLI release: never served (ADR-0016/D3)")
-    # every name the file gives is checked before anything is built: a plain string, no prefix (khive.py)
+    # every name the file gives is checked before anything is built (khive.py)
     actor_id = actor_name(cfg.get("actor"), "chores.toml actor")
     actor_name(cfg.get("owner"), "chores.toml owner")
     if cfg.get("steward") is not None:
         actor_name(cfg["steward"], "chores.toml steward")
-    for name in cfg.get("trusted", []):
+    trusted_names = _string_list(cfg.get("trusted", []), "chores.toml trusted")
+    for name in trusted_names:
         actor_name(name, "chores.toml trusted")
-    trusted = frozenset({cfg["owner"], cfg.get("steward"), actor_id, *cfg.get("trusted", [])} - {None})
-    routes = dict((cfg.get("desk") or {}).get("routes", {}))  # the desk forwards to these; `Desk` checks them
+    trusted = frozenset({cfg["owner"], cfg.get("steward"), actor_id, *trusted_names} - {None})
+    d = cfg.get("desk") or {}
+    routes = dict(d.get("routes", {}))  # the desk forwards to these; `Desk` checks them
     for name in routes.values():
         actor_name(name, "[desk.routes]")
-    if routes and not cfg["desk"].get("front", True):  # no Desk would check them, yet they widen the sends
+    if routes and not d.get("front", True):  # no Desk would check them, yet they widen the sends
         raise ValueError("[desk.routes] needs the front desk: front = false names no routes")
+    agents: list[str] = []
+    v = None
+    escalate_from: list[str] = []
+    verdict_from: list[str] = []
+    actor_map: dict = {}
+    actor_prefix: dict = {}
+    author_actor: dict = {}
+    if d and d.get("front", True):
+        agents = d.get("agents", [])  # a string would iterate as one-character globs, and "*" admits all
+        if not isinstance(agents, list) or not all(isinstance(g, str) and g for g in agents):
+            raise ValueError("[desk] agents is a list of globs on a sender's name, e.g. ['builder-*']")
+        v = d.get("verdicts")  # `[desk.verdicts]` absent: a verdict notice is listed like any mail
+        if v is not None and not v.get("verdict_dir"):
+            raise ValueError("[desk.verdicts] names the verdict_dir the review daemon writes its verdicts to")
+        escalate_from = _string_list(d.get("escalate_from", []), "[desk] escalate_from")
+        for sender in escalate_from:
+            actor_name(sender, "[desk] escalate_from")
+        verdict_from = _string_list((v or {}).get("from", []), "[desk.verdicts] from")
+        for sender in verdict_from:
+            actor_name(sender, "[desk.verdicts] from")
+        actor_map = dict((v or {}).get("actor_map", {}))
+        for actor in actor_map.values():
+            actor_name(actor, "[desk.verdicts] actor_map value")
+        actor_prefix = dict((v or {}).get("actor_prefix", {}))
+        if any(not isinstance(prefix, str) or not prefix for prefix in actor_prefix.values()):
+            raise ValueError("[desk.verdicts] actor_prefix values must be non-empty strings")
+        author_actor = dict((v or {}).get("author_actor", {}))
+        for actor in author_actor.values():
+            actor_name(actor, "[desk.verdicts] author_actor value")
     store = Store(Khive(directory, actor_id))  # the runtime's own rows and notes, unbounded (ADR-0025)
     khive = Bounded(store.khive, recipients=trusted | frozenset(routes.values()))
     actor = Actor("chores", privileges={"comm.send"}, store=store)
@@ -121,8 +158,8 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         config=directory / "chores.toml",
     )
     reader = None
-    if cfg.get("desk"):  # the owner's box, read through a reader that only reads: the front desk's
-        reader = Reader(Khive(Path(cfg["desk"]["actor_dir"]), cfg["owner"]))
+    if d:  # the owner's box, read through a reader that only reads: the front desk's
+        reader = Reader(Khive(Path(d["actor_dir"]), cfg["owner"]))
     chores = Chores(
         agent,
         cfg["owner"],
@@ -135,15 +172,8 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         dead_after=int(cfg.get("dead_after", 3)),
     )
     # the front desk reads the owner's box through that reader; `front = false` builds no front desk
-    if cfg.get("desk") and cfg["desk"].get("front", True):
-        d = cfg["desk"]
-        agents = d.get("agents", [])  # a string would iterate as one-character globs, and "*" admits all
-        if not isinstance(agents, list) or not all(isinstance(g, str) and g for g in agents):
-            raise ValueError("[desk] agents is a list of globs on a sender's name, e.g. ['builder-*']")
+    if d and d.get("front", True):
         chores.digest_every = str(d.get("brief", "every:12h"))  # the digest is the front desk's brief
-        v = d.get("verdicts")  # `[desk.verdicts]` absent: a verdict notice is listed like any mail
-        if v is not None and not v.get("verdict_dir"):
-            raise ValueError("[desk.verdicts] names the verdict_dir the review daemon writes its verdicts to")
         agent.desk = Desk(
             agent,
             chores,
@@ -151,7 +181,7 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
             directory / "desk.jsonl",
             answers_per_hour=int(d.get("answers_per_hour", 10)),
             clarify_hours=int(d.get("clarify_hours", 24)),
-            escalate_from=tuple(actor_name(s, "[desk] escalate_from") for s in d.get("escalate_from", ())),
+            escalate_from=tuple(escalate_from),
             agents=tuple(agents),
             escalations_per_day=int(d.get("escalations_per_day", 40)),
             routes=routes,
@@ -161,12 +191,12 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
             if v is None
             else Verdicts(
                 verdict_dir=str(v["verdict_dir"]),
-                actor_map=dict(v.get("actor_map", {})),
-                actor_prefix=dict(v.get("actor_prefix", {})),
-                author_actor=dict(v.get("author_actor", {})),
+                actor_map=actor_map,
+                actor_prefix=actor_prefix,
+                author_actor=author_actor,
                 stub_decisions=frozenset(v.get("stub_decisions", ["ENGINE-UNAVAILABLE"])),
             ),
-            verdict_from=tuple((v or {}).get("from", ())),
+            verdict_from=tuple(verdict_from),
         )
     profiles["chores"], profiles["reader"] = chores.profiles()
     # `[chair]`: the chair itself is the resident; admitted mail runs under its own hat, not the chores'

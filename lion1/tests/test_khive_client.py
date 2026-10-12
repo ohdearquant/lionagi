@@ -50,16 +50,16 @@ def test_an_actor_name_is_a_plain_string_kept_as_written(name):
         ("", "length 0: a name is 3 to 100 characters"),
         ("ab", "length 2: a name is 3 to 100 characters"),
         ("9" * 101, "length 101: a name is 3 to 100 characters"),
-        ("-builder", "the first character is not a letter or digit"),
-        (":desk", "the first character is not a letter or digit"),
-        (" builder", "the first character is not a letter or digit"),
-        ("two words", "character 4 is not a letter, a digit or one of . _ - : @"),
-        ("builder\n", "character 8 is not a letter, a digit or one of . _ - : @"),  # a trailing newline too
+        ("-builder", "the first character is not an ASCII letter or digit"),
+        (":desk", "the first character is not an ASCII letter or digit"),
+        (" builder", "the first character is not an ASCII letter or digit"),
+        ("two words", "character 4 is not an ASCII letter, an ASCII digit or one of . _ - : @"),
+        ("builder\n", "character 8 is not an ASCII letter, an ASCII digit or one of . _ - : @"),
         ("build\u200ber", "character 6 is not ASCII"),  # invisible
         ("b\u00fcilder", "character 2 is not ASCII"),  # no look-alikes
         ("\u00fcber", "character 1 is not ASCII"),
-        ("path/name", "character 5 is not a letter, a digit or one of . _ - : @"),
-        ("glob*", "character 5 is not a letter, a digit or one of . _ - : @"),
+        ("path/name", "character 5 is not an ASCII letter, an ASCII digit or one of . _ - : @"),
+        ("glob*", "character 5 is not an ASCII letter, an ASCII digit or one of . _ - : @"),
         (None, "a name is a string"),
         (7, "a name is a string"),
     ],
@@ -72,23 +72,35 @@ def test_anything_else_is_refused_naming_where_it_came_from_and_the_rule_it_brea
 
 
 def test_a_refused_long_value_is_shown_by_its_first_six_characters_and_its_length():
-    """A value refused as a name may be a secret pasted into the wrong field, so the refusal never
-    carries it whole; a short one cannot be one and is shown as it is."""
+    """Values over six characters are masked; shorter values appear whole in a refusal shown to the
+    person who wrote the file."""
     pasted = "xq9" + "Q7" * 19 + "/"  # secret-shaped, 42 characters, refused for the `/`
     with pytest.raises(ValueError) as caught:
         actor_name(pasted, "owner")
     assert str(caught.value) == (
         "owner: 'xq9Q7Q'…[42 chars] is not an actor name: "
-        "character 42 is not a letter, a digit or one of . _ - : @"
+        "character 42 is not an ASCII letter, an ASCII digit or one of . _ - : @"
     )
     assert pasted[:7] not in str(caught.value)
     with pytest.raises(ValueError, match=r"^owner: 'x y' is not an actor name: character 2 "):
         actor_name("x y", "owner")
 
 
+def test_a_refused_six_character_value_is_whole_and_a_seven_character_value_is_masked():
+    with pytest.raises(ValueError) as six:
+        actor_name("abcde!", "owner")
+    assert "'abcde!'" in str(six.value)
+
+    seven = "abcdef!"
+    with pytest.raises(ValueError) as seven_error:
+        actor_name(seven, "owner")
+    assert "'abcdef'…[7 chars]" in str(seven_error.value)
+    assert seven not in str(seven_error.value)
+
+
 def test_a_client_for_a_name_that_is_no_actor_name_is_refused_before_anything_is_read(tmp_path):
     # no config and no kkernel here: the name is checked first, so the refusal names it and nothing else
-    with pytest.raises(ValueError, match="khive actor: 'x' is not an actor name"):
+    with pytest.raises(KhiveError, match=r"\.khive/config\.toml: khive actor: 'x' is not an actor name"):
         Khive(tmp_path, "x", kkernel=str(tmp_path / "absent"))
 
 

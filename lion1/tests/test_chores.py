@@ -30,6 +30,7 @@ from hub.agent.chores import (
     sender_of,
     verbs,
 )
+from hub.agent.desk import Desk
 from lion1 import Actor, Kind, Message
 from lion1.khive import LOST, KhiveError
 from tests.lionfake import store as fresh_store
@@ -648,6 +649,38 @@ def test_the_model_may_not_name_an_asker_outside_the_trusted_set(tmp_path):
     run = asyncio.run(agent.wake())
     assert khive.sent == [] and chores.rows() == []
     assert any("agent-g is not a sender this agent works for" in r for r in results(run))
+
+
+@pytest.mark.parametrize(
+    ("agents", "answers"),
+    [((), False), (("agent-b",), True)],
+    ids=["empty-agent-list", "listed-agent"],
+)
+def test_record_checks_answer_only_askers_admitted_by_the_desks_agents(tmp_path, agents, answers):
+    sender = "agent-b"
+    khive = FakeKhive(mail(sender, "record this question"))
+    probe = Probe("record", full(findings=(), evidence="0 rows", population="records", predicate="words"))
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [f'<lact c1>check(chore="record", asker="{sender}", thread="{THREAD}")</lact>', DONE],
+        record=probe,
+    )
+    chores.trusted |= {sender}
+
+    class Reader:
+        async def exec(self, ops):
+            return [{"messages": []}]
+
+    agent.desk = Desk(agent, chores, Reader(), tmp_path / "desk.jsonl", agents=agents)
+    run = asyncio.run(agent.wake())
+
+    assert bool(probe.args) is answers
+    assert bool(khive.sent) is answers
+    if answers:
+        assert khive.sent[0]["to"] == sender
+    else:
+        assert any("record answers only senders admitted by [desk] agents" in r for r in results(run))
 
 
 def test_the_answer_to_an_ask_goes_on_the_asks_thread_whatever_the_model_wrote(tmp_path):
@@ -2974,3 +3007,22 @@ def test_evidence_is_capped_in_the_message_and_the_row_and_says_so(tmp_path):
     assert row["evidence"].endswith("[evidence capped: 100 of 5000 chars]")
     assert row["population"] == "targets under the root" and row["predicate"] == "size > 20 GiB"
     assert Check(chore="disk").args == {} and Digest().day is None
+
+
+def test_record_refuses_every_asker_when_the_agent_has_no_desk(tmp_path):
+    sender = "agent-b"
+    khive = FakeKhive(mail(sender, "record this question"))
+    probe = Probe("record", full(findings=(), evidence="0 rows", population="records", predicate="words"))
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [f'<lact c1>check(chore="record", asker="{sender}", thread="{THREAD}")</lact>', DONE],
+        record=probe,
+    )
+    chores.trusted |= {sender}
+    assert getattr(agent, "desk", None) is None
+
+    run = asyncio.run(agent.wake())
+
+    assert not probe.args and khive.sent == []
+    assert any("[desk] agents, and this agent has no desk" in r for r in results(run))

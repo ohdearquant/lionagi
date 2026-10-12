@@ -23,6 +23,7 @@ from lion1.khive import KhiveError
 from tests.lionfake import store as fresh_store
 from tests.test_chores import DONE, OWNER, SELF, STEWARD, FakeKhive, Scripted
 from tests.test_desk import (
+    AGENTS,
     LIVE,
     SWEEP,
     TASK2,
@@ -600,7 +601,13 @@ class Stalling(FakeKhive):
 
 
 def verdict_desk(
-    tmp_path, sh: FakeSh, actor_map=None, verdict: bool = True, stub: bool = False, aside: bool = False
+    tmp_path,
+    sh: FakeSh,
+    actor_map=None,
+    verdict: bool = True,
+    stub: bool = False,
+    aside: bool = False,
+    agents: tuple[str, ...] = AGENTS,
 ):
     """A front desk of OWNER behind the bounded client, the chair's box holding one daemon notice whose
     thread holds it word for word; `verdict` pairs its artifact in the verdict dir, `stub` makes it the
@@ -624,7 +631,7 @@ def verdict_desk(
     reader.threads["t-v1"] = [note]
     inner = Stalling()
     khive = Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF}))
-    desk, _, agent = desk_build(tmp_path, khive, reader, [])
+    desk, _, agent = desk_build(tmp_path, khive, reader, [], agents=agents)
     agent.state.put("desk_since", LIVE, run="-", seq=0)
     desk.verdicts = verdicts_module().Verdicts(
         verdict_dir=str(d),
@@ -676,6 +683,20 @@ def test_a_fresh_notice_on_the_chairs_pr_files_one_row_by_code_and_is_never_list
     agent.clock = lambda: time.time() + 2  # the brief's window ends past the row's second
     brief = desk.digest_lines(time.strftime("%Y-%m-%d"))
     assert any(ln.startswith(f"desk tasked {VMID[:8]}") and ln.endswith(f" verdict {line}") for ln in brief)
+
+
+@pytest.mark.parametrize(
+    ("agents", "files"),
+    [((), False), (("agent-*",), False), (("source-agent",), True)],
+    ids=["empty", "outside-glob", "matching-glob"],
+)
+def test_a_verdict_sender_must_match_the_desks_agents_before_it_files_a_task(tmp_path, agents, files):
+    desk, inner, _, _ = verdict_desk(tmp_path, gh(), agents=agents)
+
+    asyncio.run(desk._discover())
+
+    assert bool(assigns(inner)) is files
+    assert bool(ledger(desk)) is files
 
 
 @pytest.mark.parametrize(

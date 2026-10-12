@@ -197,6 +197,19 @@ def test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid
     assert r.problem == "no notes yet: never ran from this directory" and r.wake == 0
 
 
+@pytest.mark.parametrize(("value", "kind"), [("true", "bool"), ("12345", "int")])
+def test_a_residents_row_refuses_a_non_string_actor_and_names_the_config_file(tmp_path, value, kind):
+    d = tmp_path / "resident"
+    d.mkdir()
+    config = d / "chores.toml"
+    config.write_text(f"actor = {value}\n")
+
+    row = resident(Area("a", "agent-a", [str(d)]), str(d), TODAY)
+
+    assert row.actor == "?"
+    assert f"{config}: actor: a {kind} is not an actor name" in row.problem
+
+
 def test_the_table_and_the_page_say_the_counts_and_each_residents_state(tmp_path):
     d = agent_dir(
         tmp_path,
@@ -302,6 +315,19 @@ def test_identity_is_none_without_a_config_or_without_an_actor_id(tmp_path):
     (tmp_path / ".khive").mkdir()
     (tmp_path / ".khive" / "config.toml").write_text('[actor]\ndisplay_name = "no id"\n')
     assert identity(tmp_path) is None
+
+
+@pytest.mark.parametrize(("value", "kind"), [("true", "bool"), ("12345", "int")])
+def test_identity_refuses_a_non_string_actor_id_and_names_the_config_file(tmp_path, value, kind):
+    config = tmp_path / ".khive" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(f"[actor]\nid = {value}\n")
+
+    with pytest.raises(ValueError) as caught:
+        identity(tmp_path)
+
+    assert str(config) in str(caught.value)
+    assert f"{config}: [actor] id: a {kind} is not an actor name" in str(caught.value)
 
 
 def test_talk_merges_my_sent_box_and_my_inbox_oldest_first_and_marks_nothing_read():
@@ -2049,3 +2075,26 @@ def test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top(tmp_pa
     assert seen["atTop"] == {"before": "line 5", "after": "line 8", "scrollTop": 0, "nodes": 400}
     # a window two lines down loses the line it was on with the oldest, and rests at the top
     assert seen["nearTop"] == {"before": "line 10", "after": "line 11", "scrollTop": 0, "nodes": 400}
+
+
+def test_a_residents_row_keeps_its_model_and_role_when_the_actor_is_refused(tmp_path):
+    d = tmp_path / "resident"
+    d.mkdir()
+    config = d / "chores.toml"
+    config.write_text('actor = 12345\nmodel = "m-1"\n\n[desk]\n')
+
+    row = resident(Area("a", "agent-a", [str(d)]), str(d), TODAY)
+
+    assert (row.actor, row.model, row.role) == ("?", "m-1", "desk")
+    assert f"{config}: actor: a int is not an actor name" in row.problem
+
+
+def test_identity_refuses_an_actor_that_is_not_a_table_and_names_the_config_file(tmp_path):
+    config = tmp_path / ".khive" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('actor = "agent-a"\n')
+
+    with pytest.raises(ValueError, match=r"\[actor\] is a str, not a table") as caught:
+        identity(tmp_path)
+
+    assert str(caught.value).startswith(f"{config}: ")

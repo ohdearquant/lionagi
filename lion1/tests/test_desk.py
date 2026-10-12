@@ -566,7 +566,10 @@ def test_the_guidance_names_the_routed_desks_and_the_task_command(tmp_path):
 
 @pytest.mark.parametrize("actor", ["agent-d:build", SELF, OWNER])
 def test_a_route_outside_the_chairs_area_or_to_itself_is_refused(tmp_path, actor):
-    with pytest.raises(ValueError, match=rf"\[desk.routes\] names desks of {OWNER} other than {SELF}"):
+    with pytest.raises(
+        ValueError,
+        match=r"\[desk.routes\] names desks of 'agent-'…\[7 chars\] other than 'agent-'…\[13 chars\]",
+    ):
         build(tmp_path, FakeKhive(), FakeReader(), [], routes={"elsewhere": actor})
 
 
@@ -581,8 +584,21 @@ def test_build_admits_the_routed_desks_and_names_them_in_the_guidance(tmp_path, 
 
 @pytest.mark.parametrize("actor", ["agent-b:build", "agent-a:agent", "agent-a"])
 def test_build_refuses_a_route_outside_the_chairs_area_or_to_itself(tmp_path, kkernel_stub, actor):
-    with pytest.raises(ValueError, match=r"\[desk.routes\] names desks of agent-a other than agent-a:agent"):
+    with pytest.raises(
+        ValueError,
+        match=r"\[desk.routes\] names desks of 'agent-'…\[7 chars\] other than 'agent-'…\[13 chars\]",
+    ):
         chair_agent(tmp_path, f'[desk.routes]\nelsewhere = "{actor}"\n')
+
+
+def test_a_refused_route_masks_a_long_configured_actor_value(tmp_path, kkernel_stub):
+    token = "ghp_EXAMPLE0000000000000000000000000000"
+    with pytest.raises(ValueError) as caught:
+        chair_agent(tmp_path, f'[desk.routes]\nbuild = "{token}"\n')
+
+    message = str(caught.value)
+    assert token not in message
+    assert f"'ghp_EX'…[{len(token)} chars]" in message
 
 
 @pytest.mark.parametrize("missing", ['from = ["source-agent"]\n', 'verdict_dir = ""\n'])
@@ -603,6 +619,49 @@ def test_build_triages_verdicts_only_from_the_verdict_dir_the_config_names(tmp_p
     assert desk.verdict_from == ("source-agent",)
 
 
+@pytest.mark.parametrize(
+    ("entry", "where"),
+    [
+        ('from = ["bad name"]\n', r"\[desk.verdicts\] from"),
+        ('actor_map = { "o/r" = "bad name" }\n', r"\[desk.verdicts\] actor_map value"),
+        ('actor_prefix = { "main" = "" }\n', r"\[desk.verdicts\] actor_prefix values"),
+        ('actor_prefix = { "main" = 7 }\n', r"\[desk.verdicts\] actor_prefix values"),
+        ('author_actor = { "review-bot" = "bad name" }\n', r"\[desk.verdicts\] author_actor value"),
+    ],
+)
+def test_build_checks_verdict_senders_and_actor_values(tmp_path, kkernel_stub, entry, where):
+    config = f'[desk.verdicts]\nverdict_dir = "verdicts"\n{entry}'
+    with pytest.raises(ValueError, match=where):
+        chair_agent(tmp_path, config)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("trusted", '"agent-d"'),
+        ("trusted", '""'),
+        ("trusted", "7"),
+        ("escalate_from", '"agent-d"'),
+        ("escalate_from", '""'),
+        ("escalate_from", "7"),
+    ],
+)
+def test_build_requires_lists_for_trusted_and_escalate_from(tmp_path, kkernel_stub, key, value):
+    chair_agent(tmp_path)
+    config = tmp_path / "chores.toml"
+    text = config.read_text()
+    if key == "trusted":
+        text = text.replace("[desk]\n", f"trusted = {value}\n[desk]\n", 1)
+        where = "chores.toml trusted"
+    else:
+        text = text.replace("[desk]\n", f"[desk]\nescalate_from = {value}\n", 1)
+        where = r"\[desk\] escalate_from"
+    config.write_text(text)
+
+    with pytest.raises(ValueError, match=rf"^{where} must be a list of strings$"):
+        cli_build(tmp_path, backend=None)
+
+
 def test_build_reads_desk_agents_as_globs_none_by_default_and_refuses_a_string(tmp_path, kkernel_stub):
     """`[desk] agents` absent is no agents: no sender is asked a clarify, has its work filed or is
     answered from the record. A string is refused: its characters would read as globs, and `*` admits
@@ -615,6 +674,15 @@ def test_build_reads_desk_agents_as_globs_none_by_default_and_refuses_a_string(t
     for i, bad in enumerate(('"*"', '["agent-d", ""]', "[7]")):
         with pytest.raises(ValueError, match=r"\[desk\] agents is a list of globs"):
             chair_agent(tmp_path / f"bad{i}", f"agents = {bad}\n")
+
+
+@pytest.mark.parametrize("sender", ["daemon:x", "team:x"])
+def test_sender_prefixes_do_not_admit_a_desk_agent_without_a_matching_glob(tmp_path, kkernel_stub, sender):
+    desk = chair_agent(tmp_path / "empty", "agents = []\n").desk
+    assert not desk._agent(sender)
+
+    desk.agents = (sender,)
+    assert desk._agent(sender)
 
 
 def test_lion_agent_says_at_start_when_its_desk_has_no_agents(tmp_path, kkernel_stub):
@@ -1688,6 +1756,24 @@ def test_a_clarify_is_refused_unless_both_readings_are_quoted_and_agents_only_on
     assert [(r["msg"], r["class"]) for r in desk.rows()][3:] == [("m-c3", "left"), ("m-c1", "resolved")]
 
 
+def test_a_desk_with_no_agents_leaves_a_clarify_request_without_sending(tmp_path):
+    khive = FakeKhive(mail(SELF, "tick: sweep"))
+    desk, _, agent = build(
+        tmp_path,
+        khive,
+        FakeReader(Q1),
+        [SWEEP, '<lact c1>clarify(msg="m-q1", a="disk", b="free")</lact>', DONE],
+        agents=(),
+    )
+
+    asyncio.run(agent.wake())
+
+    assert khive.sent == []
+    assert [(row["msg"], row["class"], row.get("why")) for row in desk.rows()] == [
+        ("m-q1", "left", "sender: clarify asks the senders [desk] agents names only")
+    ]
+
+
 def test_an_unanswered_clarify_expires_into_a_leave_the_chair_hears_of(tmp_path):
     khive = FakeKhive(mail(SELF, "tick: sweep"))
     desk, chores, agent = build(
@@ -2632,3 +2718,10 @@ def test_the_reader_reaches_kkernel_through_its_admitted_read_verbs_only(tmp_pat
     assert refused == [True] * 6
     asyncio.run(reader.exec('comm.inbox(status="unread", limit=1)'))  # the recorder is live
     assert reached == [("agent-a", 'comm.inbox(status="unread", limit=1)')]
+
+
+def test_mail_from_outside_is_never_an_agent_whatever_the_globs(tmp_path):
+    desk, _, _ = build(tmp_path, FakeKhive(), FakeReader(), [], agents=("*",))
+
+    assert desk._agent("agent-x")
+    assert not desk._agent("email:a@b.c")

@@ -33,6 +33,7 @@ __all__ = (
     "UNSTARTED",
     "ARGUMENT_BYTES",
     "lit",
+    "actor_name_display",
     "actor_name",
     "Khive",
 )
@@ -68,7 +69,7 @@ def lit(value: Any) -> str:
     return json.dumps(value)
 
 
-# a letter or digit, then letters, digits and `. _ - : @`, 3 to 100 in all; ASCII only, so no space,
+# an ASCII letter or digit, then ASCII letters, digits and `. _ - : @`, 3 to 100 in all; no space,
 # control, invisible or look-alike character; `:` and `@` keep the names khive gives mail (`email:a@b.c`)
 _NAME_FIRST = frozenset(string.ascii_letters + string.digits)
 _NAME_REST = _NAME_FIRST | frozenset("._-:@")
@@ -82,22 +83,29 @@ def _name_rule(value: str) -> str | None:
         if not c.isascii():
             return f"character {i + 1} is not ASCII"
         if i == 0 and c not in _NAME_FIRST:
-            return "the first character is not a letter or digit"
+            return "the first character is not an ASCII letter or digit"
         if c not in _NAME_REST:
-            return f"character {i + 1} is not a letter, a digit or one of . _ - : @"
+            return f"character {i + 1} is not an ASCII letter, an ASCII digit or one of . _ - : @"
     return None
+
+
+def actor_name_display(value: Any) -> str:
+    """A name for a refusal message, under the same disclosure rule as `actor_name`."""
+    if not isinstance(value, str):
+        return f"<{type(value).__name__}>"
+    return f"{value[:6]!r}…[{len(value)} chars]" if len(value) > 6 else repr(value)
 
 
 def actor_name(value: Any, where: str = "actor") -> str:
     """`value` when it is an actor's name, unchanged; any other value raises `ValueError` naming
-    `where` and the rule it breaks. A name is a plain string compared as written, with no prefix of
-    any kind. The refusal shows a long value by its first 6 characters and its length only, since a
-    value refused here may be a secret pasted into the wrong field."""
+    `where` and the rule it breaks. A name is a plain string compared as written, with no kind. A
+    refusal shows values longer than 6 characters by their first 6 characters and their length, and
+    shorter values whole, since their first 6 characters are all of them."""
     if not isinstance(value, str):
         raise ValueError(f"{where}: a {type(value).__name__} is not an actor name: a name is a string")
     rule = _name_rule(value)
     if rule is not None:
-        shown = f"{value[:6]!r}…[{len(value)} chars]" if len(value) > 6 else repr(value)
+        shown = actor_name_display(value)
         raise ValueError(f"{where}: {shown} is not an actor name: {rule}")
     return value
 
@@ -112,13 +120,18 @@ class Khive:
     config: Path | None = None  # an explicit khive config: passed as --config, over the cwd's own
 
     def __post_init__(self) -> None:
-        actor_name(self.actor, "khive actor")
         self.cwd = Path(self.cwd)
+        if self.config is not None:
+            self.config = Path(self.config).absolute()
+        config = self.config if self.config is not None else self.cwd / ".khive" / "config.toml"
+        try:
+            actor_name(self.actor, "khive actor")
+        except ValueError as e:
+            raise KhiveError(f"{config}: {e}") from None
         self.kkernel = self.kkernel or shutil.which("kkernel") or str(Path.home() / ".cargo/bin/kkernel")
         if not Path(self.kkernel).exists():
             raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
         if self.config is not None:
-            self.config = Path(self.config).absolute()
             if not self.config.is_file():  # explicit means explicit: never the cwd's instead
                 raise KhiveError(f"{self.config}: no such khive config file")
         elif not (self.cwd / ".khive" / "config.toml").exists():
