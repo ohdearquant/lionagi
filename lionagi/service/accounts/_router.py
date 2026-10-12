@@ -38,7 +38,7 @@ __all__ = ("AccountRouter",)
 _CANONICAL_BASE_URL = "https://api.anthropic.com/v1"
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key"})
 _FORBIDDEN_CLIENT_OPTIONS = frozenset(
-    {"auth", "trace_configs", "allow_redirects", "follow_redirects"}
+    {"auth", "trace_configs", "allow_redirects", "follow_redirects", "raise_for_status"}
 )
 _UNSET = object()
 _router: AccountRouter | None = None
@@ -98,7 +98,10 @@ class AccountRouter:
             raise _refuse(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT)
 
         final_payload = dict(payload)
-        final_payload["service_tier"] = "standard_only"
+        # Only a request that names no tier is sent as standard_only. A tier the caller
+        # names reaches the price check, which refuses every tier but standard_only.
+        if final_payload.get("service_tier") is None:
+            final_payload["service_tier"] = "standard_only"
         ttls = request_ttls(final_payload)
         body = freeze_request(final_payload)
         quote = quote_ceiling(self.revision, body)
@@ -143,8 +146,14 @@ class AccountRouter:
     async def block(self, attempt: RouterAttempt, reason: str) -> None:
         await self.ledger.block("anthropic", attempt.account, reason)
 
-    async def settle_stream_end(self, attempt: RouterAttempt, usage: CompleteUsage | None) -> bool:
-        evidence = usage or UnknownOutcome("usage_incomplete")
+    async def settle_stream_end(
+        self,
+        attempt: RouterAttempt,
+        usage: CompleteUsage | None,
+        *,
+        reason: str = "usage_incomplete",
+    ) -> bool:
+        evidence = usage or UnknownOutcome(reason)
         timeout = max(0.1, self.ledger.busy_timeout_s)
         with anyio.CancelScope(shield=True):
             with anyio.move_on_after(timeout, shield=True) as timeout_scope:
@@ -263,10 +272,12 @@ class StreamingSecretRedactor:
         self._tail = b""
 
     def feed(self, value: bytes, *, final: bool = False) -> bytes:
-        data = self._tail + value
+        # Replace whole keys before cutting, so a key that straddles the cut is not
+        # split between this output and the held tail, where neither half matches.
+        data = (self._tail + value).replace(self._secret, b"[REDACTED]")
         if final:
             self._tail = b""
-            return data.replace(self._secret, b"[REDACTED]")
+            return data
         safe_length = max(0, len(data) - len(self._secret) + 1)
         output, self._tail = data[:safe_length], data[safe_length:]
-        return output.replace(self._secret, b"[REDACTED]")
+        return output

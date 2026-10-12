@@ -588,3 +588,199 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
         await task
     row = _attempts(path)[0]
     assert row[2] == "open" and row[3] is None
+
+
+def _sse(events) -> bytes:
+    return b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)
+
+
+_MESSAGE_START = {
+    "type": "message_start",
+    "message": {"id": "msg_s", "model": MODEL, "usage": {"input_tokens": 100, "output_tokens": 0}},
+}
+_PARTIAL_TEXT = {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {"type": "text_delta", "text": "partial"},
+}
+
+
+@pytest.mark.parametrize("hand_over", ["stream", "invoke"])
+@pytest.mark.asyncio
+async def test_a_refused_prebuilt_call_does_not_stay_queued_for_the_next_invoke(
+    monkeypatch, tmp_path, hand_over
+):
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    queued_request = {**REQUEST, "messages": [{"role": "user", "content": "queued elsewhere"}]}
+    with _branch_routing_context(uuid4(), model):
+        queued = await model.create_event(stream=hand_over == "stream", **queued_request)
+    await model.executor.append(queued)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if hand_over == "stream":
+            async for _ in model.stream(api_call=queued):
+                pass
+        else:
+            await model.invoke(api_call=queued)
+    assert caught.value.code is RouterErrorCode.ACCOUNT_CONFIG_CONFLICT
+    assert queued.id not in model.executor.pending
+    assert queued.id not in model.executor.pile
+
+    with _branch_routing_context(uuid4(), model):
+        await model.invoke(**REQUEST)
+    sent = [json.loads(call["data"])["messages"][0]["content"] for call in transport.calls]
+    assert sent == ["A short request"]
+
+
+@pytest.mark.parametrize("where", ["client", "request", "stream"])
+@pytest.mark.asyncio
+async def test_raise_for_status_is_refused_before_a_key_is_read(monkeypatch, tmp_path, where):
+    # aiohttp's own raise would skip the 401/403 block and keep the sent headers,
+    # key included, on the exception the routed error replaces.
+    path = _install_accounts(monkeypatch, tmp_path)
+    lookups = []
+    monkeypatch.setattr(router_module, "resolve_account_key", lambda *args: lookups.append(args))
+    model, transport = _model(monkeypatch, [_response()])
+    if where == "client":
+        model.endpoint.config.client_kwargs = {"raise_for_status": True}
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if where == "client":
+            await model.endpoint.call(REQUEST)
+        elif where == "request":
+            await model.endpoint.call(REQUEST, raise_for_status=True)
+        else:
+            async for _ in model.endpoint.stream(REQUEST, raise_for_status=True):
+                pass
+    assert type(caught.value) is AccountRoutingError
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
+    assert not lookups
+    assert not transport.calls
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("ready_payload", [False, True])
+@pytest.mark.parametrize("tier", ["priority", "auto"])
+@pytest.mark.asyncio
+async def test_a_service_tier_other_than_standard_only_is_refused_not_rewritten(
+    monkeypatch, tmp_path, tier, ready_payload
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    request = {**REQUEST, "service_tier": tier}
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if ready_payload:
+            payload, headers = model.endpoint.create_payload(REQUEST)
+            await model.endpoint.call(
+                {**payload, "service_tier": tier},
+                skip_payload_creation=True,
+                extra_headers=headers,
+            )
+        else:
+            await model.endpoint.call(request)
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.asyncio
+async def test_a_standard_only_tier_named_by_the_caller_is_sent(monkeypatch, tmp_path):
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    await model.endpoint.call({**REQUEST, "service_tier": "standard_only"})
+    assert json.loads(transport.calls[0]["data"])["service_tier"] == "standard_only"
+
+
+def test_the_stream_redactor_masks_a_key_that_straddles_its_cut():
+    from pydantic import SecretStr
+
+    from lionagi.service.accounts._router import StreamingSecretRedactor
+
+    redactor = StreamingSecretRedactor(SecretStr(CANARY))
+    # One feed holding the whole key, ending two bytes past it: the held tail is the
+    # key's length minus one, so the cut falls inside the key.
+    out = redactor.feed(b"ab" + CANARY.encode() + b"cd") + redactor.feed(b"", final=True)
+    assert out == b"ab[REDACTED]cd"
+
+    redactor = StreamingSecretRedactor(SecretStr(CANARY))
+    key = CANARY.encode()
+    out = redactor.feed(b"ab" + key[:5]) + redactor.feed(key[5:] + b"cd")
+    out += redactor.feed(b"", final=True)
+    assert out == b"ab[REDACTED]cd"
+
+
+@pytest.mark.parametrize(
+    ("pieces", "reason"),
+    [
+        ([_sse([_MESSAGE_START]), _sse([_PARTIAL_TEXT])], "stream_truncated"),
+        (
+            [
+                _sse([_MESSAGE_START]),
+                b"event: error\ndata: "
+                + json.dumps({"type": "error", "error": {"type": "overloaded_error"}}).encode()
+                + b"\n\n",
+            ],
+            "stream_error",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_stream_ending_before_message_stop_records_why(
+    monkeypatch, tmp_path, pieces, reason
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [StubResponse(pieces=pieces)])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert chunks
+    row = _attempts(path)[0]
+    assert row[2:] == ("open", None, reason)
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_closing_the_stream_early_records_why(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(
+        monkeypatch, [StubResponse(pieces=[_sse([_MESSAGE_START, _PARTIAL_TEXT])])]
+    )
+
+    stream = model.endpoint.stream(REQUEST)
+    await stream.__anext__()
+    await stream.aclose()
+
+    row = _attempts(path)[0]
+    assert row[2:] == ("open", None, "stream_closed")
+
+
+@pytest.mark.asyncio
+async def test_a_stream_cancelled_after_its_request_was_sent_records_why(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    first_chunk = asyncio.Event()
+
+    class HangingStream(ByteStream):
+        async def __anext__(self):
+            piece = next(self._pieces, None)
+            if piece is None:
+                await asyncio.Event().wait()
+            return piece
+
+    response = StubResponse()
+    response.content = HangingStream([_sse([_MESSAGE_START, _PARTIAL_TEXT])])
+    model, transport = _model(monkeypatch, [response])
+
+    async def consume():
+        async for _ in model.endpoint.stream(REQUEST):
+            first_chunk.set()
+
+    task = asyncio.create_task(consume())
+    await first_chunk.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    row = _attempts(path)[0]
+    assert row[2:] == ("open", None, "cancelled")

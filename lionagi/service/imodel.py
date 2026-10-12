@@ -311,6 +311,10 @@ class iModel:  # noqa: N801
         if captured is None:
             api_call._routing_scope = expected
         elif captured != expected:
+            # A caller may queue a prebuilt call before handing it over. A refused call
+            # must not stay queued, or this model's next invoke sends it.
+            self.executor.pile.pop(api_call.id, None)
+            self.executor.pending.exclude(api_call.id)
             raise AccountRoutingError(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT) from None
 
     def _is_routing_error(self, error: BaseException) -> bool:

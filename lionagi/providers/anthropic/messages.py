@@ -436,9 +436,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                 http_status=exc.http_status,
             ) from None
 
-        if first is not None:
-            yield first
         try:
+            if first is not None:
+                yield first
             async for chunk in stream:
                 yield chunk
         except (_RoutedNoRetryError, _RoutedRetryableError) as exc:
@@ -448,6 +448,10 @@ class AnthropicMessagesEndpoint(Endpoint):
                 attempt_id=exc.attempt_id,
                 http_status=exc.http_status,
             ) from None
+        finally:
+            # Closed early by its consumer, this generator closes the attempt too, so the
+            # attempt records how the stream ended now rather than when collected.
+            await stream.aclose()
 
     async def _routed_stream_attempt(
         self,
@@ -514,6 +518,8 @@ class AnthropicMessagesEndpoint(Endpoint):
         usage: dict[str, Any] = {}
         served_model = None
         request_id = None
+        settled = False
+        saw_error_event = False
 
         def finish_line(line: str) -> list[str]:
             text = line.rstrip("\r")
@@ -539,7 +545,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             return [stripped]
 
         async def emit_data(data: str):
-            nonlocal served_model, request_id
+            nonlocal served_model, request_id, settled, saw_error_event
             event = None
             try:
                 event = json.loads(data)
@@ -567,6 +573,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                         request_id if isinstance(request_id, str) else None,
                     )
                     await router.settle_stream_end(attempt, priced)
+                    settled = True
+                elif event.get("type") == "error":
+                    saw_error_event = True
             chunk = self._line_to_stream_chunk(data)
             if chunk is not None:
                 chunk.content = redact_value(chunk.content, attempt.key)
@@ -641,9 +650,21 @@ class AnthropicMessagesEndpoint(Endpoint):
                     event_data.clear()
                     async for chunk in emit_data(data):
                         yield chunk
+                if not settled:
+                    # The stream ended before message_stop, so its usage is incomplete.
+                    reason = "stream_error" if saw_error_event else "stream_truncated"
+                    await router.settle_stream_end(attempt, None, reason=reason)
+                    settled = True
         except get_cancelled_exc_class():
             if not request_entered:
                 await router.settle_not_sent(attempt)
+            elif not settled:
+                await router.settle_stream_end(attempt, None, reason="cancelled")
+            raise
+        except GeneratorExit:
+            # The consumer closed the stream before message_stop.
+            if not settled:
+                await router.settle_stream_end(attempt, None, reason="stream_closed")
             raise
         except AccountRoutingError:
             raise
@@ -690,6 +711,15 @@ class AnthropicMessagesEndpoint(Endpoint):
     ):
         request_dict = request if isinstance(request, dict) else request.model_dump()
         prompt_cache_control = request_dict.get("cache_control")
+        if self._account_routing_enabled() and request_dict.get("service_tier") not in (
+            None,
+            "standard_only",
+        ):
+            from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+            # The request model has no tier field, so the tier would be dropped and the call
+            # sent as standard_only. Routed calls are priced for standard_only alone.
+            raise AccountRoutingError(RouterErrorCode.UNSUPPORTED_PRICING)
         system = None
 
         if "messages" in request_dict and request_dict["messages"]:

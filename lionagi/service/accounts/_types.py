@@ -62,7 +62,8 @@ class AccountRoutingError(Exception):
 
     The message is built from those fields alone, so no provider text, request
     content or key material can reach it. Raise it ``from None`` where it replaces
-    another exception, so the replaced one's text is not chained either.
+    another exception, so a traceback does not print the replaced one. That exception
+    stays reachable as ``__context__``, so it must carry no key material either.
     """
 
     def __init__(

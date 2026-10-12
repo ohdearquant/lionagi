@@ -28,7 +28,11 @@ class _NonRetryableClientError(Exception):
 
 
 class _RoutedAttemptError(Exception):
-    """Sanitized private failure passed between the request and retry layers."""
+    """Private failure passed between the request and retry layers.
+
+    Its message holds only the code and validated ids. Raised ``from None``, it still
+    keeps the exception it replaced as ``__context__``.
+    """
 
     def __init__(
         self,
@@ -502,6 +506,9 @@ class Endpoint:
                     payload=payload,
                 )
             except AccountRoutingError as exc:
+                if not self.retry_config:
+                    raise
+                # call() unwraps this after its RetryConfig layer, which must not replay it.
                 raise _RoutedNoRetryError(
                     exc.code.value,
                     account=exc.account,
@@ -578,13 +585,23 @@ class Endpoint:
         scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
         payload, headers = self.create_payload(request, extra_headers, **kwargs)
 
-        async for chunk in self._stream_aiohttp(
+        stream = self._stream_aiohttp(
             payload=payload,
             headers=headers,
             **scope_kwargs,
             **kwargs,
-        ):
-            yield chunk
+        )
+        if not routed:
+            async for chunk in stream:
+                yield chunk
+            return
+        try:
+            async for chunk in stream:
+                yield chunk
+        finally:
+            # A consumer that stops early closes this generator. Close the routed attempt
+            # too, so it records how the stream ended now rather than when collected.
+            await stream.aclose()
 
     async def _stream_aiohttp(
         self,
