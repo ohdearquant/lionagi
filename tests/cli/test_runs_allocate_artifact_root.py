@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import lionagi.cli._runs as runs_mod
 from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli._runs import allocate_run
@@ -155,6 +157,35 @@ def test_path_resolved_run_preserves_execution_provenance(tmp_path, monkeypatch)
     assert manifest["mcp_config_searched_from"] == str(launch_dir.resolve())
     assert manifest["mcp_config_explicit"] is False
     assert manifest["mcp_config_reason"] is None
+
+
+def test_a_manifest_that_cannot_be_read_stops_the_write_instead_of_dropping_provenance(
+    tmp_path, monkeypatch
+):
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace"
+    launch_dir.mkdir()
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", runs_root)
+    resolution = McpResolution(
+        servers=None, reason="no_mcp_config_found", source=None, searched_from=launch_dir
+    )
+    run = allocate_run(run_id="unreadable-run")
+    run = run.with_execution_provenance(cwd=launch_dir, mcp_resolution=resolution)
+    reopened = checkpoint_mod._find_run_dir_by_id(run.run_id)
+    assert reopened is not None and reopened.cwd is None
+    before = run.manifest_path.read_bytes()
+
+    run.manifest_path.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            reopened.write_manifest({"status": "completed", "ended_at": 1.0})
+    finally:
+        run.manifest_path.chmod(0o644)
+
+    assert run.manifest_path.read_bytes() == before
 
 
 def test_manifest_provenance_survives_whole_file_live_persist_replacement(tmp_path, monkeypatch):

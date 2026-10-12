@@ -210,9 +210,11 @@ class RunDir:
                 }
             )
         else:
+            # A manifest that is gone or not JSON holds no provenance to keep; one
+            # that cannot be read may, so that error stops the write.
             try:
                 existing = self.read_manifest()
-            except (OSError, UnicodeError, json.JSONDecodeError):
+            except (FileNotFoundError, UnicodeError, json.JSONDecodeError):
                 existing = {}
             if isinstance(existing, dict):
                 for key in (
@@ -343,7 +345,8 @@ def allocate_run(
     save_dir: str | os.PathLike | None = None,
     run_id: str | None = None,
 ) -> RunDir:
-    """Allocate a run dir with its resolved execution/discovery provenance."""
+    """Allocate a run dir whose provenance is a placeholder (this directory, MCP
+    reason ``not_resolved``) until :meth:`RunDir.with_execution_provenance` binds it."""
     global _ALLOCATED_RUN_ID
 
     inherited_run_id = current_run_id()

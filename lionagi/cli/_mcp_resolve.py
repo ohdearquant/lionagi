@@ -20,6 +20,7 @@ __all__ = (
     "MCP_CONFIG_FILENAME",
     "McpConfigError",
     "McpResolution",
+    "SNAPSHOT_SEARCHED_FROM_KEY",
     "SNAPSHOT_SOURCE_KEY",
     "discover_mcp_config",
     "explicit_mcp_config_path",
@@ -33,6 +34,9 @@ MCP_CONFIG_FILENAME = ".mcp.json"
 # --mcp-config, the flag a caller names a file with, so without this key the set
 # a search found would reach the run as one the caller asked for.
 SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
+# Beside it, the directory that search began in. The run reading the snapshot was
+# started in another directory, so its own cannot stand in for this one.
+SNAPSHOT_SEARCHED_FROM_KEY = "lionagiSnapshotSearchedFrom"
 
 
 class McpConfigError(ValueError):
@@ -154,6 +158,14 @@ def explicit_mcp_config_path(explicit: str | Path, *, launch_dir: str | Path) ->
     return (Path(launch_dir).expanduser().resolve() / path).resolve()
 
 
+def _snapshot_path(data: dict[str, Any], key: str, path: Path) -> Path:
+    """A path a snapshot records, which its writer always makes absolute."""
+    value = data[key]
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        raise McpConfigError(f"{path}: {key!r} must be an absolute path, got {value!r}")
+    return Path(value)
+
+
 def resolve_spawn_mcp_servers(
     explicit: str | Path | None = None,
     *,
@@ -177,13 +189,16 @@ def resolve_spawn_mcp_servers(
         if not path.is_file():
             raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
         data = _read_config(path)
-        source = Path(data[SNAPSHOT_SOURCE_KEY]) if SNAPSHOT_SOURCE_KEY in data else path
+        if SNAPSHOT_SOURCE_KEY not in data:
+            return McpResolution(data["mcpServers"], None, path, searched_from, explicit=True)
+        # A snapshot written before the search directory was recorded falls back to this one.
         return McpResolution(
             data["mcpServers"],
             None,
-            source,
-            searched_from,
-            explicit=SNAPSHOT_SOURCE_KEY not in data,
+            _snapshot_path(data, SNAPSHOT_SOURCE_KEY, path),
+            _snapshot_path(data, SNAPSHOT_SEARCHED_FROM_KEY, path)
+            if SNAPSHOT_SEARCHED_FROM_KEY in data
+            else searched_from,
         )
 
     found = discover_mcp_config(searched_from)

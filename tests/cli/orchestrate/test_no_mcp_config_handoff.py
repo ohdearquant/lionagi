@@ -516,7 +516,9 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
 
     snapshot = tmp_path / "job" / "mcp.json"
     snapshot.parent.mkdir()
-    _write_mcp_server_snapshot(snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json")
+    _write_mcp_server_snapshot(
+        snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json", searched_from=tmp_run
+    )
 
     env = await _setup(no_mcp_config=False, mcp_config=str(snapshot))
     branch, _, _, _ = await build_worker_branch(
