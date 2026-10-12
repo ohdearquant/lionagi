@@ -1461,7 +1461,9 @@ export function EventsSection({
   projectedLanes?: SignalLaneSummary[];
 }) {
   const t = useTranslations("history.detail");
-  const derivedLaneSummaries = useMemo((): LaneSummary[] => {
+  const laneSummaries = useMemo((): LaneSummary[] => {
+    if (projectedLanes != null) return projectedLanes;
+
     const byOp = new Map<string, LaneSignal[]>();
     for (const ev of events) {
       if (!ev.op_id) continue;
@@ -1475,8 +1477,7 @@ export function EventsSection({
       lane: laneFor(kinds),
       count: kinds.length,
     }));
-  }, [events]);
-  const laneSummaries = projectedLanes ?? derivedLaneSummaries;
+  }, [events, projectedLanes]);
 
   const [renderCap, setRenderCap] = useState(renderStep);
   // A switch to a new (empty) run must reset the render window immediately,

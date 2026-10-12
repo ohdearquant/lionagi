@@ -166,6 +166,19 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _with_action_kind(
+    node_metadata: dict[str, Any] | None, action_kind: str | None
+) -> dict[str, Any] | None:
+    """Fold *action_kind* into *node_metadata* without disturbing its other keys.
+
+    The kind was passed to the spawn path and dropped before the row was
+    written, so the stored invocation could not say what it had launched.
+    """
+    if action_kind is None:
+        return node_metadata
+    return {**(node_metadata or {}), "action_kind": action_kind}
+
+
 async def launch_detached_argv(
     argv: list[str],
     *,
@@ -206,7 +219,7 @@ async def launch_detached_argv(
                     "prompt": prompt,
                     "started_at": now,
                     "status": "running",
-                    "node_metadata": node_metadata,
+                    "node_metadata": _with_action_kind(node_metadata, action_kind),
                 }
             )
 

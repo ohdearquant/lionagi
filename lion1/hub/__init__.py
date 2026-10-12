@@ -1,9 +1,9 @@
 """The hub: what every app of lion1 reaches for, versioned with the runtime.
 
 `hub.guidance(name, **fields)` is the prose a profile is given, one markdown file per role under
-`hub/guidance/`, so a change to what a model is told is a diff someone reads. `hub.tools` are the
+`lion1/hub/guidance/`, so a change to what a model is told is a diff someone reads. `hub.tools` are the
 handlers an app registers on an actor: the file readers, the bounded khive client. The runtime
-(`src/lion1/`) knows nothing of the hub; an app (`apps/`) composes the two.
+(`lion1/src/lion1/`) knows nothing of the hub; an app (`lion1/apps/`) composes the two.
 """
 
 from .guidance import guidance

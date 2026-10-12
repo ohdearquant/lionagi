@@ -161,7 +161,7 @@ reads, and every command sees the state the writes before it left. `OUT{}` waits
 and no effect ([[ADR-0002-the-run#^c1|ADR-0002/C1]]).
 
 The rule orders one run's commands, not transactions: a read-modify-write across two commands is not
-isolated, and two runs on one directory share nothing. The class is the author's word; A2's
+isolated, and two runs on one directory share nothing. The handler declares its effect class; A2's
 measurement is what checks it.
 
 ### C7: A bundled hook runs only code from outside the directory the model writes _(enforced: mechanical)_ ^c7

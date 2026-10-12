@@ -85,6 +85,9 @@ async def transition(
     guard = guard or {}
     patch = patch or {}
 
+    if any(value is None for value in guard.values()):
+        raise ValueError("transition(): guard values cannot be None")
+
     allowed_columns = _GUARD_PATCH_COLUMNS.get(request.entity_type, frozenset())
     for label, cols in (("guard", guard), ("patch", patch)):
         unknown = sorted(set(cols) - allowed_columns)

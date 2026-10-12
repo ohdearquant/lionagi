@@ -327,7 +327,24 @@ class iModel:  # noqa: N801
             return served_model
         return None
 
-    def _store_served_model(self, served_model: str | None) -> None:
+    def _store_served_model(
+        self,
+        api_call: APICalling | None,
+        served_model: str | None,
+    ) -> None:
+        """Record the provider's report on the call and on the model.
+
+        ``APICalling.metadata`` is the call-correlated evidence. The model-level
+        value reflects whichever call finished last, so under concurrency it is
+        never evidence about a particular call.
+        """
+        if api_call is not None:
+            # Hooks receive the mutable event. Re-establish this field at the
+            # finalization boundary so hook or caller metadata can never pass
+            # for provider-reported identity.
+            api_call.metadata.pop("served_model", None)
+            if served_model is not None:
+                api_call.metadata["served_model"] = served_model
         if served_model is None:
             self.provider_metadata.pop("served_model", None)
         else:
@@ -339,6 +356,7 @@ class iModel:  # noqa: N801
             kw["stream"] = True
             api_call = await self.create_event(**kw)
             await self.executor.append(api_call)
+        api_call.metadata.pop("served_model", None)
 
         if self.executor.processor is None or self.executor.processor.is_stopped():
             await self.executor.start()
@@ -362,7 +380,7 @@ class iModel:  # noqa: N801
                 except Exception as e:
                     raise ValueError(f"Failed to stream API call: {e}") from e
                 finally:
-                    self._store_served_model(served_model)
+                    self._store_served_model(api_call, served_model)
                     # Pop without yielding — yield-in-finally would swallow CancelledError
                     # during generator cleanup, breaking anyio.fail_after timeout enforcement.
                     self.executor.pile.pop(api_call.id, None)
@@ -381,7 +399,7 @@ class iModel:  # noqa: N801
             except Exception as e:
                 raise ValueError(f"Failed to stream API call: {e}") from e
             finally:
-                self._store_served_model(served_model)
+                self._store_served_model(api_call, served_model)
                 self.executor.pile.pop(api_call.id, None)
             if stream_error is not None:
                 raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
@@ -391,6 +409,7 @@ class iModel:  # noqa: N801
             if api_call is None:
                 kw.pop("stream", None)
                 api_call = await self.create_event(**kw)
+            api_call.metadata.pop("served_model", None)
 
             if self.executor.processor is None or self.executor.processor.is_stopped():
                 await self.executor.start()
@@ -413,18 +432,25 @@ class iModel:  # noqa: N801
 
             completed_call = self.executor.pile.pop(api_call.id)
             response = completed_call.response if completed_call else None
-            self._store_served_model(self._reported_served_model(response))
+            self._store_served_model(
+                completed_call,
+                self._reported_served_model(response),
+            )
             if response:
+                # An empty id never erases the last confirmed one: a call whose
+                # stream carried no id-bearing chunk returns the field empty,
+                # and storing that would start the next call in a new provider
+                # session instead of continuing this one.
                 if (
                     isinstance(self.endpoint, AgenticEndpoint)
                     and isinstance(response, dict)
-                    and "session_id" in response
+                    and response.get("session_id")
                 ):
                     self.endpoint.session_id = response["session_id"]
 
             return completed_call
         except Exception as e:
-            self._store_served_model(None)
+            self._store_served_model(api_call, None)
             raise ValueError(f"Failed to invoke API call: {e}") from e
 
     @property

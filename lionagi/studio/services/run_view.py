@@ -20,12 +20,45 @@ from lionagi.state.db import (
 )
 
 
-def _primary_session(sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Deterministic pick among 0+ sessions linked to one invocation — the
-    most recently created wins, id as a stable tiebreak."""
+def _grading_session(sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The one session a run's outcome is graded from, or None to fall through.
+
+    The rule, because "which of N sessions speaks for the run" is a decision and
+    not a detail: an occurrence has a session-level outcome only when *every*
+    linked session is terminal, and that outcome is the **least-trusted** of
+    them -- the session whose status maps to the highest exit code in the
+    shared table. Recency then id break ties among equally-trusted sessions.
+
+    Both halves are load-bearing. A fan-out links many sessions and a caller
+    asking "did this run succeed" is asking about all of them, so grading from
+    one representative session is sound only when that session is the one able
+    to turn the answer to no; picking any other lets six killed sessions report
+    ok because a seventh finished. And a run with a session still in flight has
+    not finished, so it has nothing terminal to say yet and the caller falls
+    through to the invocation and occurrence, which do know whether it is still
+    running.
+
+    Determinism was never the property in short supply here -- picking the
+    newest was already perfectly deterministic, and wrong. Representativeness
+    is what the callers need, and it is what this picks for.
+
+    A run with exactly one session grades identically to before; the behaviour
+    changes only where there is more than one session to disagree about.
+    """
+    from lionagi.cli._util import EXIT_CODE_BY_STATUS
+
     if not sessions:
         return None
-    return max(sessions, key=lambda s: (s.get("created_at") or 0, s.get("id") or ""))
+    if any(s.get("status") not in SESSION_TERMINAL_STATUSES for s in sessions):
+        return None
+    return max(
+        sessions,
+        key=lambda s: (
+            EXIT_CODE_BY_STATUS.get(s.get("status") or "", 1),
+            s.get("created_at") or 0,
+            s.get("id") or "",
+        ),
+    )
 
 
 def _artifact_paths(sessions: list[dict[str, Any]]) -> list[str]:
@@ -128,8 +161,8 @@ def build_outcome(
     column) or a string this module generated. Only the branch that produced a
     summary knows which it is, so a list surface cannot re-derive it downstream.
     """
-    primary = _primary_session(sessions)
-    if primary is not None and primary.get("status") in SESSION_TERMINAL_STATUSES:
+    primary = _grading_session(sessions)
+    if primary is not None:
         return _session_outcome(primary, _artifact_paths(sessions))
     if invocation is not None and invocation.get("status") in INVOCATION_TERMINAL_STATUSES:
         return _invocation_outcome(invocation)
@@ -179,8 +212,8 @@ def exit_code_for_view(
 
     if run is None:
         return EXIT_UNKNOWN
-    primary = _primary_session(sessions)
-    if primary is not None and primary.get("status") in SESSION_TERMINAL_STATUSES:
+    primary = _grading_session(sessions)
+    if primary is not None:
         return EXIT_CODE_BY_STATUS.get(primary["status"], 1)
     if invocation is not None and invocation.get("status") in INVOCATION_TERMINAL_STATUSES:
         return EXIT_CODE_BY_STATUS.get(invocation["status"], 1)

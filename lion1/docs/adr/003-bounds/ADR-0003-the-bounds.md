@@ -51,7 +51,7 @@ record ([[ADR-0007-the-record|ADR-0007]]). Source: `RunRequest` and the bound ch
 
 | #  | statement                                                                                                  | source                                                                                     | if false                                          |
 | -- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------- |
-| A1 | A model asks for more turns in good faith; a default that grants is trust the operator can afford.       | decided 2026-09-23; a human on call per extension is not realistic                         | D2's default `extend` must refuse, or ask a role  |
+| A1 | A model asks for more turns in good faith; a default that grants is trust the operator can afford.       | requiring a person to approve every extension would make normal use impractical           | D2's default `extend` must refuse, or ask a role  |
 | A2 | At a hundred turns the ask is rare once a turn carries several commands.                                  | the bench's runs settled well inside; no run near the cap has been measured                | C3's ask is the common path, and its cost matters |
 
 ## Claims

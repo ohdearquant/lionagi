@@ -325,6 +325,39 @@ async def test_fire_records_substituted_prompt_not_raw_template():
 
 
 @pytest.mark.asyncio
+async def test_fire_records_the_schedules_action_kind_on_the_invocation():
+    """The invocation row has to say what kind of action it launched.
+
+    The row was always written -- this call sits before every kind branch --
+    but it carried no kind, so `li monitor` labelled a command-kind fire
+    exactly like an agent one, and a fire that had happened read as a fire
+    that had not. The `invocations` table has no column for the kind,
+    so it rides node_metadata rather than a migration.
+    """
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(action_kind="command")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "probe.py"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await fire_with_claim(engine, schedule, "run-kind-001", trigger_context={})
+
+    svc.create_invocation.assert_awaited_once()
+    (invocation_payload,), _kwargs = svc.create_invocation.await_args
+    assert invocation_payload["node_metadata"] == {"action_kind": "command"}
+
+
+@pytest.mark.asyncio
 async def test_fire_records_empty_rendered_prompt_as_is_not_playbook_fallback():
     """A template that renders to "" (e.g. an empty trigger_context value) is
     still what build_argv actually sends the child — it must not collapse

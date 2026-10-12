@@ -7,7 +7,7 @@ folds the oldest results to placeholders. The run ends as a value the caller rea
 that could not be read is retried inside the run, told to the model and counted when it repeats,
 never an end. Scripted backends; runs offline.
 
-    uv run python examples/budgets_and_outcomes.py
+    cd lion1 && uv run python examples/budgets_and_outcomes.py
 """
 
 from __future__ import annotations

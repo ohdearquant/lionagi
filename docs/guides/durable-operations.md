@@ -66,10 +66,14 @@ Each CLI run owns a state directory:
 └── stream/
 ```
 
-`run.json` records the state and artifact roots. `branches/` contains resumable
-branch snapshots. `checkpoint.json` records flow progress. When `--save DIR`
-is present, worker and synthesis artifacts go to that directory; otherwise
-they live below the run's own `artifacts/` directory.
+`run.json` records the state and artifact roots. A failed run launched with
+`li agent` also records `error`, the reason for that run's failure, so a
+provider's refusal can be told apart from a crash without opening the state
+store. Operator runs record their failure reason on the Operator turn instead.
+`branches/` contains resumable branch snapshots. `checkpoint.json` records flow
+progress.
+When `--save DIR` is present, worker and synthesis artifacts go to that
+directory; otherwise they live below the run's own `artifacts/` directory.
 
 ## Resume after a process stops
 

@@ -1,10 +1,16 @@
 # lion1
 the LION runtime
 
+This project lives under `lion1/` in this repository. Run the commands below from the repository
+root, entering `lion1/` first. Project paths in prose are relative to `lion1/` unless explicitly
+prefixed with `lion1/` or written as a Markdown link.
+
 ## lion1
 
-`src/lion1/` is the runtime package: a model speaks in LNDL, handlers act, and the record remembers.
-The design records under `docs/adr/` are its specification, and the code cites them as `ADR-000N/Cn`.
+`lion1/src/lion1/` is the runtime package: a model speaks in LNDL, handlers act, and the record
+remembers.
+The design records under `lion1/docs/adr/` are its specification, and the code cites them as
+`ADR-000N/Cn`.
 
 Start with [docs/README.md](docs/README.md): what each module holds, the words the code uses, and the
 values each state field takes. The [examples](examples/README.md) take one idea per file, and all but
@@ -12,6 +18,7 @@ the live backend one run offline.
 
 Work on it with [uv](https://docs.astral.sh/uv/):
 
+    cd lion1
     uv sync
     uv run pytest -n 4
 

@@ -666,10 +666,18 @@ def test_agent_target_explicit_model_override_wins(agent_profile):
 
 
 def test_command_target_requires_allowlist(tmp_path, monkeypatch):
+    """Matched on the word "allow" until the refusal stopped saying "add it to the
+    allow-list", which was the sentence that made an env-var problem read as a
+    document problem. The env variable's own name is the durable thing to match:
+    it is what the reader has to act on, and it names the surface, not the prose.
+    """
     monkeypatch.delenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", raising=False)
     doc = parse_schedule_set(_every_manifest("1h", tmp_path))
-    with pytest.raises(ScheduleSetError, match="allow"):
+    with pytest.raises(ScheduleSetError, match="LIONAGI_SCHEDULER_COMMAND_ALLOWLIST") as exc:
         resolve_schedule_set(doc, tmp_path)
+    # This path runs in the author's shell, never in the daemon, so the refusal it
+    # raises is the one that has to say whose environment it read.
+    assert "environment of this process" in str(exc.value)
 
 
 def test_command_target_rejects_shell_style_string(tmp_path):

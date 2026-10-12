@@ -152,20 +152,138 @@ def test_missing_session_falls_back_to_invocation():
     }
 
 
-def test_multiple_sessions_picks_most_recently_created_as_primary():
+def test_multiple_sessions_grade_from_the_least_trusted_not_the_newest():
+    """The failure is the OLDER session, so recency and severity disagree.
+
+    A reducer that picks the newest reports this run ok; the run had a session
+    fail, so ok is the wrong answer. Ordering the fixture this way is what
+    makes the assertion about the rule rather than about the fixture.
+    """
     run = _run(status="completed", invocation_id="inv1")
     invocation = {"id": "inv1", "status": "completed"}
-    older = {"id": "sess-old", "status": "completed", "created_at": 1.0}
-    newer = {
-        "id": "sess-new",
+    older = {
+        "id": "sess-old",
         "status": "failed",
-        "created_at": 5.0,
-        "status_reason_summary": "retry attempt failed",
+        "created_at": 1.0,
+        "status_reason_summary": "first attempt failed",
     }
+    newer = {"id": "sess-new", "status": "completed", "created_at": 5.0}
     view = build_run_view(run, invocation, [older, newer])
     assert view["outcome"]["source"] == "session"
-    assert view["outcome"]["summary"] == "retry attempt failed"
+    assert view["outcome"]["summary"] == "first attempt failed"
     assert set(view["session_ids"]) == {"sess-old", "sess-new"}
+
+
+def test_one_finished_session_does_not_speak_for_six_killed_ones():
+    """Six sessions sigterm'd, the newest completed. Reporting ok here is the
+    silent green the reducer exists to prevent: the answer to "did this run
+    succeed" is no, and it is no six times over."""
+    run = _run(status="completed", exit_code=0, invocation_id="inv1")
+    invocation = {"id": "inv1", "status": "completed"}
+    killed = [
+        {
+            "id": f"sess-killed-{i}",
+            "status": "cancelled",
+            "created_at": float(i),
+            "status_reason_code": "run.cancelled.sigterm",
+            "status_reason_summary": "sigterm",
+        }
+        for i in range(6)
+    ]
+    survivor = {"id": "sess-ok", "status": "completed", "created_at": 99.0}
+    outcome = build_outcome(run, invocation, [*killed, survivor])
+    assert outcome["source"] == "session"
+    assert outcome["code"] == "run.cancelled.sigterm"
+    assert outcome["code"] != "run.completed.ok"
+    assert exit_code_for_view(run, invocation, [*killed, survivor]) == 143
+
+
+def test_completed_occurrence_is_still_graded_by_its_killed_session():
+    """The other direction, from a real occurrence: the schedule_run row said
+    completed with exit 0 and seven sessions attached, one of them sigterm'd.
+
+    Grading from the occurrence, or by majority, or by "most of it worked"
+    turns this ok and loses the kill. The occurrence's own status is not
+    evidence that every session it fanned out to survived.
+    """
+    run = _run(status="completed", exit_code=0, invocation_id="inv1")
+    invocation = {"id": "inv1", "status": "completed"}
+    finished = [
+        {
+            "id": f"sess-{i}",
+            "status": "completed",
+            "created_at": float(i),
+            "artifacts_path": f"/p/{i}",
+        }
+        for i in range(6)
+    ]
+    killed = {
+        "id": "sess-killed",
+        "status": "cancelled",
+        "created_at": 99.0,
+        "status_reason_code": "run.cancelled.sigterm",
+        "status_reason_summary": "unclassified",
+    }
+    outcome = build_outcome(run, invocation, [*finished, killed])
+    assert outcome == {
+        "code": "run.cancelled.sigterm",
+        "summary": "unclassified",
+        "source": "session",
+        "summary_reported": True,
+    }
+    assert exit_code_for_view(run, invocation, [*finished, killed]) == 143
+
+
+def test_a_session_still_in_flight_withholds_the_session_level_grade():
+    """One session finished, another is still running: the run is not over, so
+    the sessions have no terminal outcome to give and the caller falls through
+    to the surfaces that know it is still running. Grading the finished one
+    would report a live run as done."""
+    from lionagi.cli.status import EXIT_RUNNING
+
+    run = _run(status="running", exit_code=None, ended_at=None, invocation_id="inv1")
+    invocation = {"id": "inv1", "status": "running"}
+    done = {"id": "sess-done", "status": "completed", "created_at": 1.0}
+    inflight = {"id": "sess-live", "status": "running", "created_at": 2.0}
+    outcome = build_outcome(run, invocation, [done, inflight])
+    assert outcome["source"] != "session"
+    assert outcome["code"] == "running"
+    assert exit_code_for_view(run, invocation, [done, inflight]) == EXIT_RUNNING
+
+
+def test_single_session_runs_grade_exactly_as_before():
+    """The rule changes which session speaks for a run, so it can only change
+    an answer where there is more than one session. Pinned so a later widening
+    of the rule has to notice it is changing the common case."""
+    run = _run(status="completed", invocation_id="inv1")
+    invocation = {"id": "inv1", "status": "completed"}
+    for status, expected in (
+        ("completed", "run.completed.ok"),
+        ("completed_empty", "run.completed_empty.no_evidence"),
+        ("failed", "run.failed.failed"),
+        ("cancelled", "run.failed.cancelled"),
+    ):
+        session = {"id": "solo", "status": status, "created_at": 1.0}
+        assert build_outcome(run, invocation, [session])["code"] == expected
+
+
+def test_severity_order_is_the_shared_exit_code_table_not_a_second_one():
+    """completed < completed_empty/failed < timed_out < aborted < cancelled,
+    read off EXIT_CODE_BY_STATUS rather than restated here."""
+    from lionagi.cli._util import EXIT_CODE_BY_STATUS
+
+    run = _run(status="completed", invocation_id="inv1")
+    invocation = {"id": "inv1", "status": "completed"}
+    ranked = sorted(EXIT_CODE_BY_STATUS, key=lambda s: EXIT_CODE_BY_STATUS[s])
+    assert ranked[0] == "completed", ranked
+    for worse in ranked[1:]:
+        sessions = [
+            {"id": "clean", "status": "completed", "created_at": 99.0},
+            {"id": "worse", "status": worse, "created_at": 1.0},
+        ]
+        outcome = build_outcome(run, invocation, sessions)
+        assert outcome["code"] != "run.completed.ok", (worse, outcome)
+        assert exit_code_for_view(run, invocation, sessions) == EXIT_CODE_BY_STATUS[worse]
 
 
 def test_artifact_paths_deduped_and_ordered():

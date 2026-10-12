@@ -457,6 +457,13 @@ class OperatorCoordinator:
             )
             engine_turn = replace(
                 engine_turn,
+                # Hand the resolved PAIR through, which is what "the same pair to
+                # the store, the branch and the manifest" above means. It is
+                # recorded beside the caller's selection rather than over it: a
+                # turn that cleared its selection must still reach the engine
+                # with none, so `provider`/`model` stay as the caller left them.
+                resolved_provider=resolved_provider,
+                resolved_model=resolved_model,
                 provider_session_id=(
                     resumed_session_id if isinstance(resumed_session_id, str) else None
                 ),

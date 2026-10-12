@@ -3,6 +3,7 @@
 
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -28,6 +29,12 @@ from .tool_hooks import (
 logger = logging.getLogger(__name__)
 
 _QUALIFIED_MCP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# Bundle changes without a settings revision are rechecked at most once per minute.
+_PLUGIN_SHADOW_CACHE_SECONDS = 60.0
+
+
+def _plugin_shadow_cache_now() -> float:
+    return time.monotonic()
 
 
 def qualified_mcp_name(server_name: str, tool_name: str) -> str:
@@ -59,9 +66,14 @@ class ActionManager(Manager):
         self._tool_pre_hooks: list[ToolPreHook] = []
         self._tool_post_hooks: list[ToolPostHook] = []
         self._plugin_shadow_warned: set[tuple[str, str]] = set()
-        # Keyed by (PluginRegistry.snapshot_generation(), tool name) so a
-        # reset()/rebuild invalidates it structurally, not by size or TTL.
-        self._plugin_shadow_resolution_cache: dict[tuple[int, str], Any] = {}
+        # Keyed by (PluginRegistry.snapshot_generation(), tool name). Each
+        # value also carries the user-settings revision and a short deadline:
+        # enable/trust writes invalidate immediately, while bundle edits and
+        # cross-process writes with spoofed metadata are stale for at most one
+        # second. The local tool remains authoritative throughout.
+        self._plugin_shadow_resolution_cache: dict[
+            tuple[int, str], tuple[tuple[Any, ...] | None, float, Any]
+        ] = {}
 
         tools = []
         if args:
@@ -197,19 +209,27 @@ class ActionManager(Manager):
         plugin also declares *name* already in this manager's registry -- purely
         diagnostic, never raised. See docs/internals/core.md for the resolution
         caching and generation-invalidation contract."""
+        from lionagi.plugins._user_settings import user_settings_revision
         from lionagi.plugins.registry import PluginRegistry, PluginToolCollisionError
 
         if not PluginRegistry.list_plugins():
             return
         cache_key = (PluginRegistry.snapshot_generation(), name)
-        if cache_key in self._plugin_shadow_resolution_cache:
-            resolved = self._plugin_shadow_resolution_cache[cache_key]
+        settings_revision = user_settings_revision()
+        now = _plugin_shadow_cache_now()
+        cached = self._plugin_shadow_resolution_cache.get(cache_key)
+        if cached is not None and cached[0] == settings_revision and now < cached[1]:
+            resolved = cached[2]
         else:
             try:
                 resolved = PluginRegistry.resolve_tool_target(name)
             except PluginToolCollisionError:
                 resolved = None
-            self._plugin_shadow_resolution_cache[cache_key] = resolved
+            self._plugin_shadow_resolution_cache[cache_key] = (
+                settings_revision,
+                now + _PLUGIN_SHADOW_CACHE_SECONDS,
+                resolved,
+            )
         if resolved is None:
             return
         warn_key = (resolved.plugin_name, name)
@@ -349,7 +369,10 @@ class ActionManager(Manager):
     ) -> list[str]:
         registered_tools = []
 
-        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import (
+            MCPConnectionPool,
+            _attach_mcp_transport_probe,
+        )
 
         # Mint the recovery authorization once, bound to this call's
         # effective security, and thread it into every Tool created below.
@@ -425,7 +448,11 @@ class ActionManager(Manager):
             )
 
             client = await MCPConnectionPool.get_client(server_config, security=security)
-            tools = await client.list_tools()
+            try:
+                tools = await client.list_tools()
+            except Exception as exc:
+                _attach_mcp_transport_probe(exc, client)
+                raise
             advertised = {tool.name for tool in tools}
             registered_wire_names: set[str] = set()
             registration_errors: dict[str, Exception] = {}

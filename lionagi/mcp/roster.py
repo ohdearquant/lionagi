@@ -150,7 +150,16 @@ def _resolved_fields() -> tuple[str, ...]:
     (not a second hardcoded list, which could drift from it)."""
     from lionagi.cli._providers import AgentProfile, profile_config
 
-    return tuple(profile_config(AgentProfile(name="")))
+    # Both optional fields set, so the keys profile_config adds only when set are listed too.
+    return tuple(
+        profile_config(
+            AgentProfile(
+                name="",
+                contain_account_integrations=True,
+                account_connectors=("github",),
+            )
+        )
+    )
 
 
 def _parse_fields(fields: list[str]) -> tuple[set[str], tuple[str, ...] | None]:
@@ -200,7 +209,7 @@ def _profile_entry(
     if selected:
         entry.update({k: v for k, v in _placement(name).items() if k in selected})
     if resolved_fields is not None:
-        entry["resolved"] = {k: config[k] for k in resolved_fields}
+        entry["resolved"] = {k: config[k] for k in resolved_fields if k in config}
     return entry
 
 
