@@ -515,12 +515,16 @@ async def test_installed_chain_turns_a_synchronous_escalation_handler_into_an_er
     bash = branch.acts.registry["bash_tool"]
     with pytest.raises(GateDeniedError) as exc:
         await bash.preprocessor({"action": "run", "command": "deploy"})
+
+    async def await_value(value):
+        return await value
+
+    # The interpreter's wording for awaiting a bool differs between versions.
+    with pytest.raises(TypeError) as not_awaitable:
+        await await_value(True)
     assert exc.value.result.errored is True
     assert exc.value.result.control == "permission_check"
-    assert (
-        exc.value.result.reason
-        == "evaluator error: object bool can't be used in 'await' expression"
-    )
+    assert exc.value.result.reason == f"evaluator error: {not_awaitable.value}"
 
 
 # ── Omitted, empty and resolved policies ──────────────────────────────────
