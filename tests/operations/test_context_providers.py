@@ -48,6 +48,11 @@ class _DegradingProvider:
         return None
 
 
+class _RefusingProvider(_DegradingProvider):
+    name = "refusing"
+    degradation_reason = "op_refused:memory.recall"
+
+
 class _BadOutput:
     def __bool__(self):
         raise TypeError("provider output cannot be inspected")
@@ -199,6 +204,22 @@ async def test_gather_records_provider_owned_degradation_separately_from_empty_r
         }
     ]
     assert registry.stats["degraded_turns"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_counts_degraded_turn_once_and_logs_each_reason(caplog):
+    registry = ContextProviderRegistry()
+    registry.register(_DegradingProvider(), name="transport")
+    registry.register(_RefusingProvider())
+
+    report = await registry.gather(branch=None, instruction=None)
+
+    assert len(report.degraded) == 2
+    assert registry.stats["degraded_turns"] == 1
+    assert "transport_failure:ConnectionError" in caplog.text
+    assert "op_refused:memory.recall" in caplog.text
+    assert "transport" in caplog.text
+    assert "refusing" in caplog.text
 
 
 @pytest.mark.asyncio

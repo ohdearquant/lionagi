@@ -38,6 +38,13 @@ _VALID_CADENCE = ("first_turn", "every_turn")
 # never terminate the wrapper early and let trailing imperative text escape
 # into trusted context.
 _UNTRUSTED_CLOSE_RE = re.compile(r"</untrusted-context", re.IGNORECASE)
+_ERROR_PATH_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z]:\\|/)[^\s,;]+")
+_ERROR_CREDENTIAL_RE = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)"
+    r"\s*[:=]\s*[^,;\s]+"
+)
+_ERROR_BEARER_RE = re.compile(r"(?i)\bBearer\s+\S+")
+_MAX_ERROR_SUMMARY_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -85,7 +92,7 @@ class KhiveInjectionPolicy:
 
 
 async def _call_khive(ops: str, mcp_config: dict) -> Any:
-    """One MCP round-trip to khive's `request` tool. Lazy import: the mcp/fastmcp
+    """One MCP request to khive's `request` tool. Lazy import: the mcp/fastmcp
     transport is only touched here, never at module load."""
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
 
@@ -120,27 +127,29 @@ def _first_op_result(khive_response: Any) -> Any:
     if not isinstance(khive_response, dict):
         return None
     results = khive_response.get("results") or []
-    if not results or not isinstance(results[0], dict):
+    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
         return None
     return results[0].get("result")
 
 
-def _first_op_ok(khive_response: Any) -> bool:
+def _first_op_ok(khive_response: Any, *, allow_result_without_ok: bool = False) -> bool:
     """Whether khive's first op reported success.
 
     `request` answers rc 0 for a batch in which an op REFUSED: the refusal is
     ``results[0]["ok"] is False`` with an ``error`` beside it, and the envelope's
-    own ``status`` reads "partial". So a caller that only catches exceptions sees
-    a refused write exactly as it sees a written one. Anything that is not a
-    dict carrying a first op that says ``ok`` is treated as not-written, because
-    the alternative is counting an unparseable answer as a success.
+    own ``status`` reads "partial". Writes require an explicit ``ok: True``.
+    Read callers may accept a result without ``ok`` when the envelope has no
+    error field, for servers that omit the success flag on successful reads.
     """
     if not isinstance(khive_response, dict):
         return False
     results = khive_response.get("results") or []
-    if not results or not isinstance(results[0], dict):
+    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
         return False
-    return results[0].get("ok") is True
+    op = results[0]
+    if "ok" in op:
+        return op.get("ok") is True
+    return allow_result_without_ok and "result" in op and "error" not in op
 
 
 def _first_result_id(khive_response: Any) -> str | None:
@@ -157,25 +166,41 @@ def _first_op_error(khive_response: Any) -> str:
     Never empty. A refusal that names no reason is still a refusal, and the
     whole point of rendering it is that a reader can tell it from silence.
     khive states an op error as ``{"kind": ..., "message": ...}``; the message
-    is the part a reader can act on, and the rest is kept only when there is
-    no message to prefer.
+    is the useful summary. Whitespace is collapsed, paths and credential-like
+    values are redacted, and the result is capped at 200 characters.
     """
     if not isinstance(khive_response, dict):
         return "khive returned no readable envelope"
     results = khive_response.get("results") or []
+    if not isinstance(results, list):
+        return "khive returned no readable envelope"
     if results and isinstance(results[0], dict):
         error = results[0].get("error")
         if isinstance(error, dict):
             message = error.get("message")
             if message:
-                return str(message)
+                summary = _safe_error_summary(message)
+                if summary:
+                    return summary
         if error:
-            return str(error)
+            summary = _safe_error_summary(error)
+            if summary:
+                return summary
     return "khive refused without naming a reason"
 
 
+def _safe_error_summary(value: Any) -> str:
+    text = " ".join(str(value).split())
+    text = _ERROR_BEARER_RE.sub("Bearer [redacted]", text)
+    text = _ERROR_CREDENTIAL_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    text = _ERROR_PATH_RE.sub("[path]", text)
+    if len(text) > _MAX_ERROR_SUMMARY_CHARS:
+        text = f"{text[: _MAX_ERROR_SUMMARY_CHARS - 3].rstrip()}..."
+    return text
+
+
 def _render_unavailable(surface: str, khive_response: Any) -> str:
-    """The block that says a retrieval FAILED, as distinct from finding nothing.
+    """The block that says a retrieval FAILED, as distinct from an empty result.
 
     A refused op and an empty store both used to render as ``None``, and an
     absent section is all the reader ever saw. So a store outage read to the
@@ -201,7 +226,7 @@ def _render_recall(khive_response: Any) -> str | None:
     Fields are rendered when present rather than assumed: a store that does
     not stamp a record must still produce a bullet, not a ``[None]``.
     """
-    if not _first_op_ok(khive_response):
+    if not _first_op_ok(khive_response, allow_result_without_ok=True):
         return _render_unavailable("recall", khive_response)
 
     op_result = _first_op_result(khive_response)
@@ -233,7 +258,7 @@ def _render_recall(khive_response: Any) -> str | None:
 
 
 def _render_compose(khive_response: Any) -> str | None:
-    if not _first_op_ok(khive_response):
+    if not _first_op_ok(khive_response, allow_result_without_ok=True):
         return _render_unavailable("compose", khive_response)
     op_result = _first_op_result(khive_response)
     if not op_result:
@@ -272,15 +297,15 @@ def _truncate(text: str, max_tokens: int | None) -> str:
 
 
 def _extract_writeback_pairs(action_responses: list) -> list[dict]:
-    """FIFO-pair each tool error with the next response that SUCCEEDS after it.
+    """FIFO-pair each tool error with the next response carrying non-error output.
 
     Deliberately rule-based: no LLM summarization on the writeback path. The
-    price of that is that the pairing is positional and nothing more. The next
-    call to succeed may be the fix, or it may be a read of an unrelated file
-    that happened to come next, and this function cannot tell the two apart --
-    it compares no target, no argument and not even the tool name.
+    pairing is positional and nothing more. The next response with non-error
+    output may follow a fix, or it may be a read of an unrelated file; this
+    function cannot distinguish those cases because it compares no target,
+    argument, or tool name.
 
-    So the pair is named for what was actually observed. ``candidate_next_ok``
+    So the pair is named for what was actually observed. ``candidate_next_output``
     is a fact about ordering; ``resolved_by`` would have been a claim about
     causation, and the record it produced was written into the store as a
     lesson and recalled later as one.
@@ -290,16 +315,15 @@ def _extract_writeback_pairs(action_responses: list) -> list[dict]:
     whenever errors are suppressed, which is the default at every public entry
     and explicit in ``operate`` and ``ReAct`` -- and it returns the same shape
     for a tool that simply returned ``None``. The two are indistinguishable from
-    the response, so calling it an error would invent a failure and calling it a
-    success would claim the neighbour succeeded when it may have failed. Either
-    way the store would carry something nobody checked, which is the defect this
-    function exists to stop.
+    the response, so calling it an error would invent a failure and treating it
+    as the next non-error output would include an unknown response. Either way
+    the store would carry something nobody checked.
 
     The consequence is deliberate and worth stating plainly: **suppressed
     failures are invisible to writeback.** They are not paired, and they do not
-    close a pending pair -- it stays open for a response that really did
-    succeed. Making them visible needs ``act()`` to carry a failure marker the
-    response can be read by; it cannot be recovered here.
+    close a pending pair; it remains open for a later response with non-error
+    output. Making them visible needs ``act()`` to carry a failure marker that
+    can be read here.
     """
     pairs: list[dict] = []
     pending: list[dict] = []
@@ -322,13 +346,13 @@ def _extract_writeback_pairs(action_responses: list) -> list[dict]:
                 {
                     "function": err["function"],
                     "error": err["error"],
-                    "candidate_next_ok": function,
+                    "candidate_next_output": function,
                     "candidate_output": output,
                     # Named on the record rather than implied by the field
                     # names, so a reader of the STORE -- who never sees this
                     # function -- knows which rule produced the pairing and
                     # therefore how much it is worth.
-                    "pairing_rule": "fifo-next-successful-call",
+                    "pairing_rule": "fifo-next-non-error-output",
                 }
             )
     return pairs
@@ -427,11 +451,11 @@ class KhiveInjectionProvider:
             # by" Y is recalled later as a fact about what fixes X, and nothing
             # on this path ever checked that Y addressed the failure at all.
             content = (
-                f"tool '{pair['function']}' failed ({pair['error']!r}); the next tool call to "
-                f"succeed in the same turn was '{pair['candidate_next_ok']}', "
-                f"output={pair['candidate_output']!r}. Pairing rule "
-                f"'{pair['pairing_rule']}': positional only, unverified, and not a claim that "
-                f"the second call repaired the first."
+                "Positional pairing only; this does not establish that the later call repaired "
+                f"the error. The next call with a non-error output in the same turn was "
+                f"'{pair['candidate_next_output']}', output={pair['candidate_output']!r}, "
+                f"after tool '{pair['function']}' failed ({pair['error']!r}). Pairing rule "
+                f"'{pair['pairing_rule']}'."
             )
             ops = (
                 f"memory.remember(content={json.dumps(content)}, "
@@ -439,14 +463,14 @@ class KhiveInjectionProvider:
             )
             try:
                 response = await _call_khive(ops, self._mcp_config)
+                accepted = _first_op_ok(response)
             except Exception:
                 logger.warning("KhiveInjectionProvider writeback failed; skipping", exc_info=True)
                 return records_written
-            if not _first_op_ok(response):
+            if not accepted:
                 # Stops rather than continuing, matching the transport-failure
-                # path above: a refusal is normally a property of this pass --
-                # namespace, grant, store state -- so the remaining pairs would
-                # refuse identically and each would cost another round trip.
+                # path above: a refusal usually reflects namespace, grant, or
+                # store state, so the remaining pairs would likely be refused too.
                 logger.warning("KhiveInjectionProvider writeback refused by khive; not counted")
                 return records_written
             records_written += 1
@@ -478,6 +502,11 @@ class KhiveInjectionProvider:
         )
         result = await _call_khive(ops, self._mcp_config)
 
+        if not _first_op_ok(result, allow_result_without_ok=True):
+            reason = "op_refused:memory.recall"
+            self._degradation_reason.set(reason)
+            return _render_recall(result)
+
         first_id = _first_result_id(result)
         if first_id:
             fb_ops = (
@@ -486,15 +515,15 @@ class KhiveInjectionProvider:
                 f"served_by_profile_id={json.dumps(self.policy.profile_id)}{ns})"
             )
             try:
-                await _call_khive(fb_ops, self._mcp_config)
-            except Exception:
+                feedback_result = await _call_khive(fb_ops, self._mcp_config)
+            except Exception as exc:
                 logger.warning("KhiveInjectionProvider auto_feedback failed", exc_info=True)
-
-        if not _first_op_ok(result):
-            # Paired with the rendered block on purpose: the block tells the
-            # model, this tells the caller's degradation report. A failure that
-            # only one of them can see is the degradation nobody notices.
-            self._degradation_reason.set("op_refused:memory.recall")
+                reason = f"transport_failure:{type(exc).__name__}"
+                self._degradation_reason.set(reason)
+            else:
+                if not _first_op_ok(feedback_result):
+                    reason = "op_refused:brain.auto_feedback"
+                    self._degradation_reason.set(reason)
         return _render_recall(result)
 
     async def _maybe_compose(self, query: str) -> str | None:
@@ -504,6 +533,7 @@ class KhiveInjectionProvider:
         ns = _ns_kwarg(self.policy.namespace)
         ops = f"knowledge.compose(query={json.dumps(query)}, max_tokens={cp.max_tokens}{ns})"
         result = await _call_khive(ops, self._mcp_config)
-        if not _first_op_ok(result):
-            self._degradation_reason.set("op_refused:knowledge.compose")
+        if not _first_op_ok(result, allow_result_without_ok=True):
+            reason = "op_refused:knowledge.compose"
+            self._degradation_reason.set(reason)
         return _render_compose(result)

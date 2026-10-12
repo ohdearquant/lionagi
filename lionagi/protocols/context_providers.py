@@ -106,6 +106,7 @@ class ContextProviderRegistry:
                 reason = getattr(entry.provider, "degradation_reason", None)
                 if isinstance(reason, str) and reason:
                     report.degraded.append({"provider_name": entry.name, "reason": reason})
+                    logger.warning("context provider %r degraded: %s", entry.name, reason)
                 if text is not None and not isinstance(text, str):
                     raise TypeError("context provider output must be a string or None")
                 if not text:
@@ -141,7 +142,7 @@ class ContextProviderRegistry:
             self.stats["recall_turns"] += 1
         self.stats["blocks_injected"] += len(report.fired)
         self.stats["failed"] += len(report.failed)
-        self.stats["degraded_turns"] += len(report.degraded)
+        self.stats["degraded_turns"] += int(bool(report.degraded))
         return report
 
     async def gather_writeback(self, branch: Branch, action_responses: list) -> None:

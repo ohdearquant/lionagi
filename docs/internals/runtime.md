@@ -1387,12 +1387,14 @@ automatically, plus whatever `cell.env` explicitly allow-lists.
 Reference `ContextProvider` (ADR-0008): recalls/optionally composes from a khive daemon over
 the same MCP transport lionagi already uses for tool servers
 (`service.connections.mcp_wrapper`) — no new transport, and no khive/MCP import at module
-load, so the core import path stays clean without the `mcp` extra installed. Every recall
-emits `brain.auto_feedback` in the same round-trip with the policy's explicit `profile_id`
+load, so the core import path stays clean without the `mcp` extra installed. A successful recall
+with a record ID emits `brain.auto_feedback` in a separate request with the policy's explicit
+`profile_id`
 (khive's auto_feedback does no binding resolution, so an implicit/default profile
-mis-attributes the event). `writeback()` is a separate opt-in POST-turn hook — rule-based tool
-error/resolution pairs written to `memory.remember` at capped, low-provenance salience,
-invoked by the `operate()` Middle (not `provide()`), and it is NOT the nudge plane. Both
+mis-attributes the event). `writeback()` is a separate opt-in POST-turn hook — positional tool-error
+and next-output observations written to `memory.remember` at capped, low-provenance salience; they
+do not claim that the later call repaired the earlier error. The hook runs from
+the `operate()` Middle (not `provide()`), and it is NOT the nudge plane. Both
 `provide()` and `writeback()` fully swallow transport failures so a turn always proceeds.
 `provide()` also publishes a per-task `degradation_reason`; the registry copies it into the
 turn's `ProviderReport.degraded` list and increments the durable `degraded_turns` aggregate.
