@@ -11,7 +11,6 @@ import logging
 import math
 import os
 import statistics
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,7 @@ import psutil
 from lionagi._errors import EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
-from lionagi.ln.concurrency import CancelScope, move_on_after
+from lionagi.ln.concurrency import CancelScope, current_time, move_on_after
 from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
@@ -307,6 +306,21 @@ _CONTROL_UNSTAMPED = "unstamped"
 # firing once and giving up.
 _ESCALATION_LINK_RETRIES = 5
 _ESCALATION_LINK_RETRY_INTERVAL = 1.0
+
+# The grace period of a bounded drain of observer writes: added to the budget of a write that
+# has one of its own, the whole budget of one that has none (segment and control-log
+# metadata), and how long the writes it then cancels get to unwind.
+_DRAIN_GRACE_SECONDS = 2.0
+# How often, within that grace period, the drain repeats its cancel to an escalation link still
+# running. A link that catches one cancellation unwinds on a later one, as it did when an expired
+# cancel scope cancelled it again on every delivery, rather than being abandoned. The other writes
+# are store writes, which need only one cancel: they unwind once the statement in flight returns.
+# So they get that one and then the grace period; a further cancel would land in their cleanup,
+# where, on a store that does not finish a write cancelled more than once, it can leave the
+# write's pooled connection checked out. One cancelled while it holds SQLite's write lock can
+# leave that lock held after it has unwound, until a full cyclic garbage collection runs
+# (dropping the task is not enough), and writes after it wait out the busy timeout, then fail.
+_DRAIN_RECANCEL_SECONDS = 0.1
 
 # ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
 # Driven by ReactiveExecutor's on_op_complete hook, not a poll loop (which
@@ -821,6 +835,13 @@ class _ExecResult:
     # taken before the graph stopped changing, so anything arriving later is
     # misclassified by default, which is the failure this carries.
     checkpoint_skip_ids: set[str] = field(default_factory=set, repr=False)
+    # The execution engine's lifecycle observers remain attached when the
+    # same engine run is reused for synthesis.  Their async persistence work
+    # therefore has two production boundaries to drain: once after the worker
+    # DAG, and once after the later synthesis pass.  This callable closes over
+    # the observer-owned task queues and is intentionally absent on synthetic
+    # test results that never installed those observers.
+    drain_observer_writes: Any | None = field(default=None, repr=False)
 
 
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
@@ -1363,6 +1384,172 @@ async def _execute_dag(
     _segment_tasks: list = []
     _control_log_tasks: list = []
 
+    async def _drain_tasks_bounded(
+        tasks: list,
+        label: str,
+        budget: float,
+        scopes: list | None = None,
+        *,
+        recancel: bool = False,
+    ) -> None:
+        # A write that never returns must not hold teardown forever. Give in-flight writes
+        # *budget* seconds to land, then cancel the survivors once and give them the grace
+        # period to unwind; with *recancel*, cancel those still running again every
+        # _DRAIN_RECANCEL_SECONDS. Each wait is asyncio.wait under a deadline, which returns at
+        # the deadline whatever the tasks do and never cancels them itself, so a write that
+        # ignores its cancel is abandoned, not awaited.
+        # The budget's scope goes into *scopes*, so a caller can shorten it while it runs.
+        with move_on_after(budget) as scope:
+            if scopes is not None:
+                scopes.append(scope)
+            await _asyncio.wait(tasks)
+        survivors = [task for task in tasks if not task.done()]
+        if survivors:
+            for task in survivors:
+                task.cancel()
+            with move_on_after(_DRAIN_GRACE_SECONDS):
+                if recancel:
+                    while running := [task for task in survivors if not task.done()]:
+                        await _asyncio.wait(running, timeout=_DRAIN_RECANCEL_SECONDS)
+                        for task in running:
+                            task.cancel()
+                else:
+                    await _asyncio.wait(survivors)
+            abandoned = [task for task in survivors if not task.done()]
+            if abandoned:
+                _warn(
+                    f"abandoned {len(abandoned)} {label} task(s) "
+                    "still alive after cancellation grace period"
+                )
+        # A cancelled task is a lost write: the write body's own ``except Exception`` never
+        # sees CancelledError, so without this check nothing records that it never landed.
+        cancelled = [task for task in tasks if task.cancelled()]
+        if cancelled:
+            _warn(f"cancelled {len(cancelled)} {label} task(s) after timeout; write not durable")
+
+    async def _drain_observer_writes(
+        *,
+        cancellation_in_flight: bool = False,
+        in_flight_exc: BaseException | None = None,
+    ) -> None:
+        """Finish one snapshot of observer persistence work before its DB closes.
+
+        The queues stay live after this call because synthesis reuses the same
+        engine run and observer callbacks.  Taking and clearing a snapshot
+        makes the drain repeatable without re-reporting an earlier cancelled
+        task; work enqueued by a later phase remains visible to the next call.
+
+        *in_flight_exc* is the exception the caller is unwinding with, if any.
+        A cancellation that reaches the caller while the drain runs is held
+        until the drain ends and raised then, unless the caller was already
+        unwinding, in which case its own exception is raised instead.
+
+        A direct ``cancel()`` held this way stays counted on the task
+        (``Task.cancelling()``), also when *in_flight_exc* is raised in its
+        place. A caller that catches that exception and goes on running calls
+        ``uncancel()`` itself if it means to withdraw the request; the drain
+        does not withdraw a request it did not make.
+        """
+        from lionagi.state import engine as _state_engine
+
+        branch_status_tasks, _branch_status_tasks[:] = list(_branch_status_tasks), []
+        checkpoint_tasks, _checkpoint_tasks[:] = list(_checkpoint_tasks), []
+        segment_tasks, _segment_tasks[:] = list(_segment_tasks), []
+        control_log_tasks, _control_log_tasks[:] = list(_control_log_tasks), []
+        escalation_link_tasks, _escalation_link_tasks[:] = list(_escalation_link_tasks), []
+
+        # How long one store write may wait for the writer before it fails by itself.
+        write_wait = _state_engine.SQLITE_BUSY_TIMEOUT_MS / 1000
+        # Set once a cancellation reaches the caller during the drain; from then on the
+        # escalation links are under a cancellation too.
+        late_cancel: BaseException | None = None
+        link_scopes: list = []
+
+        async def _drain() -> None:
+            # Every wait here but the checkpoint one is bounded, so a write that never returns
+            # cannot hold this drain, or the flow's own timeout, forever. A write abandoned while
+            # it holds the store's write lock still holds it, and teardown's own writes wait for
+            # that lock. A write still queued for the store when its budget runs out (behind the
+            # store's write lock, or for a pooled connection) is cancelled with the rest and
+            # reported as not durable.
+            if branch_status_tasks:
+                # Run data: each write gets as long as a store write may wait for the writer, once
+                # for every store write of this drain still running, since each of those may hold
+                # the store's write lock ahead of it. Writes made outside this drain are not
+                # counted, so one queued behind them can still run out its budget.
+                running = sum(
+                    not task.done()
+                    for task in (
+                        *branch_status_tasks,
+                        *segment_tasks,
+                        *control_log_tasks,
+                        *escalation_link_tasks,
+                    )
+                )
+                await _drain_tasks_bounded(
+                    branch_status_tasks,
+                    "branch-status",
+                    running * write_wait + _DRAIN_GRACE_SECONDS,
+                )
+            if checkpoint_tasks:
+                # Not bounded, because it does not suspend: once a checkpoint write holds the
+                # writer's lock it is synchronous file I/O, so each task finishes when it runs.
+                # A stalled disk blocks the event loop itself there, which no bound could cut.
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*checkpoint_tasks, return_exceptions=True)
+            # Session metadata keeps the bound it had, the grace period to land and the grace
+            # period to unwind, so one queued behind a link on the write lock can be cut short.
+            if segment_tasks:
+                await _drain_tasks_bounded(segment_tasks, "segment-metadata", _DRAIN_GRACE_SECONDS)
+            if control_log_tasks:
+                await _drain_tasks_bounded(
+                    control_log_tasks, "control-log-metadata", _DRAIN_GRACE_SECONDS
+                )
+            if escalation_link_tasks:
+                # A link is attribution, not run data. Outside a cancellation it gets its whole
+                # retry budget, so that a late retry lands here rather than in a store teardown
+                # is about to close; under one it gets the grace period.
+                if cancellation_in_flight or late_cancel is not None:
+                    budget = _DRAIN_GRACE_SECONDS
+                else:
+                    budget = (
+                        (_ESCALATION_LINK_RETRIES - 1) * _ESCALATION_LINK_RETRY_INTERVAL
+                        + _ESCALATION_LINK_RETRIES * write_wait
+                        + _DRAIN_GRACE_SECONDS
+                    )
+                await _drain_tasks_bounded(
+                    escalation_link_tasks, "escalation-link", budget, link_scopes, recancel=True
+                )
+
+        # The drain runs as a task of its own, so a cancellation of this task, from a cancel
+        # scope or a direct cancel(), reaches only this await and not the drain.
+        drain = _asyncio.ensure_future(_drain())
+        try:
+            await _asyncio.shield(drain)
+        except _asyncio.CancelledError as exc:
+            late_cancel = exc
+            # Links already waiting out their retry budget get the grace period from now on.
+            deadline = current_time() + _DRAIN_GRACE_SECONDS
+            for scope in link_scopes:
+                scope.deadline = min(scope.deadline, deadline)
+            # Wait out the rest of the drain. The CancelScope stops a cancel scope from
+            # delivering its cancellation again on every pass; a further direct cancel() is
+            # absorbed here, and the first cancellation is raised below. A direct cancel()
+            # still counts on the task (Task.cancelling()) whichever exception is raised. So an
+            # asyncio.timeout() the caller entered before the cancel, whose own deadline then
+            # fires, lets its cancellation out as CancelledError instead of TimeoutError; one
+            # entered afterwards counts the cancel at entry and raises TimeoutError.
+            with CancelScope(shield=True):
+                while not drain.done():
+                    with contextlib.suppress(_asyncio.CancelledError):
+                        await _asyncio.shield(drain)
+        if not drain.cancelled() and drain.exception() is not None:
+            logger.warning("observer write drain failed", exc_info=drain.exception())
+        if late_cancel is not None:
+            if in_flight_exc is not None:
+                raise in_flight_exc from late_cancel
+            raise late_cancel
+
     # Restored spawns already consumed spawn budget and exist as completed/
     # failed work; both the budget below and spawn accounting must count them.
     restored_spawn_count = len(checkpoint_spawned_seed or [])
@@ -1878,7 +2065,7 @@ async def _execute_dag(
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
     _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
-    _dag_cancelled = False
+    _dag_exc: BaseException | None = None
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -1905,130 +2092,44 @@ async def _execute_dag(
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
             on_op_complete=_on_op_complete,
         )
-    except _asyncio.CancelledError:
-        _dag_cancelled = True
+    except BaseException as exc:
+        _dag_exc = exc
         raise
     finally:
-        _hb_task.cancel()
-        _ctl_task.cancel()
-        with contextlib.suppress(_asyncio.CancelledError):
-            await _hb_task
-        with contextlib.suppress(_asyncio.CancelledError):
-            await _ctl_task
-        if _exch_task is not None:
-            _exchange.stop()
-            with contextlib.suppress(_asyncio.CancelledError):
-                await _exch_task
-            # Route any final outbox sends left over after the last collect tick.
-            await _exchange.collect_all()
-
-        async def _drain_escalation_links_bounded() -> None:
-            # An escalation-link row is nice-to-have attribution, not run
-            # data — losing one to cancellation is acceptable, but a hung
-            # link write (stuck DB call) blocking teardown indefinitely is
-            # not. Give in-flight links a short grace period to land
-            # normally, then cancel whatever is left and wait for it to
-            # actually unwind before returning.
-            with contextlib.suppress(Exception), move_on_after(2):
-                await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
-            _survivors = [t for t in _escalation_link_tasks if not t.done()]
-            for _t in _survivors:
-                _t.cancel()
-            if _survivors:
-                # A survivor that itself swallows cancellation (or blocks in
-                # sync code) would otherwise hang this await forever — bound
-                # the wait too, and abandon whatever is still alive after it
-                # rather than let a single stuck link task block teardown.
-                with contextlib.suppress(Exception), move_on_after(2):
-                    await _asyncio.gather(*_survivors, return_exceptions=True)
-                _abandoned = [t for t in _survivors if not t.done()]
-                if _abandoned:
-                    _warn(
-                        f"abandoned {len(_abandoned)} escalation-link task(s) "
-                        "still alive after cancellation grace period"
-                    )
-
-        async def _drain_metadata_tasks_bounded(tasks: list, label: str) -> None:
-            # Same bounded grace/cancellation shape as
-            # _drain_escalation_links_bounded: a hung metadata write (stuck
-            # DB call) must not block teardown forever. Give in-flight
-            # writes a short grace period, then cancel whatever is left and
-            # wait for it to actually unwind before returning.
-            with contextlib.suppress(Exception), move_on_after(2):
-                await _asyncio.gather(*tasks, return_exceptions=True)
-            _survivors = [t for t in tasks if not t.done()]
-            for _t in _survivors:
-                _t.cancel()
-            if _survivors:
-                with contextlib.suppress(Exception), move_on_after(2):
-                    await _asyncio.gather(*_survivors, return_exceptions=True)
-                _abandoned = [t for t in _survivors if not t.done()]
-                if _abandoned:
-                    _warn(
-                        f"abandoned {len(_abandoned)} {label} task(s) "
-                        "still alive after cancellation grace period"
-                    )
-            # A task can finish cancelled either here or already during the
-            # first move_on_after(2) above (its timeout cancels the host
-            # task's gather() await, which cascades cancel() onto every
-            # not-yet-done child). Either way it's a lost write, not a
-            # success: the write body's own `except Exception` never sees
-            # CancelledError (a BaseException), so without this check the
-            # caller gets no record at all that the metadata never landed.
-            _cancelled = [t for t in tasks if t.cancelled()]
-            if _cancelled:
-                _warn(
-                    f"cancelled {len(_cancelled)} {label} task(s) after timeout; write not durable"
-                )
-
-        # Completion observers schedule persistence writes synchronously but the
-        # writes themselves are async. Drain them while the live DB is still open.
-        with CancelScope(shield=True):
-            if _branch_status_tasks:
-                with contextlib.suppress(Exception):
-                    await _asyncio.gather(*_branch_status_tasks, return_exceptions=True)
-            if _checkpoint_tasks:
-                with contextlib.suppress(Exception):
-                    await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
-            if _segment_tasks:
-                await _drain_metadata_tasks_bounded(_segment_tasks, "segment-metadata")
-            if _control_log_tasks:
-                await _drain_metadata_tasks_bounded(_control_log_tasks, "control-log-metadata")
-            if _escalation_link_tasks:
-                if _dag_cancelled:
-                    # Cancellation already landed while run_dag() was running,
-                    # so go straight to the bounded path.
-                    await _drain_escalation_links_bounded()
-                else:
-                    # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
-                    # (a few seconds worst case); draining here rather than
-                    # firing untracked keeps a late retry from writing into a
-                    # store teardown_persist is about to close.
-                    #
-                    # A cancellation can land on *this* task after run_dag()
-                    # already returned (the CancelScope shield above only
-                    # stops anyio-mediated cancellation, not a direct
-                    # cancel()), so _dag_cancelled stays False and this await
-                    # would otherwise absorb it. asyncio.shield lets this
-                    # await raise promptly instead of blocking on gather()
-                    # until every child settles (a link task that swallows or
-                    # outlives its own cancel would otherwise park this await
-                    # forever) — the children keep running in the background
-                    # for _drain_escalation_links_bounded() to finish off.
-                    # Re-raised below unless the try body already raised a
-                    # real exception, which must win over a cancellation that
-                    # only landed during this teardown drain.
-                    _in_flight_exc = sys.exc_info()[1]
-                    try:
-                        with contextlib.suppress(Exception):
-                            await _asyncio.shield(
-                                _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
-                            )
-                    except _asyncio.CancelledError as _late_cancel:
-                        await _drain_escalation_links_bounded()
-                        if _in_flight_exc is not None:
-                            raise _in_flight_exc from _late_cancel
-                        raise
+        # What the teardown ends with, if anything, and whether a cancellation is in flight.
+        _unwinding: BaseException | None = _dag_exc
+        _cancelled = isinstance(_dag_exc, _asyncio.CancelledError)
+        try:
+            _hb_task.cancel()
+            _ctl_task.cancel()
+            if _exch_task is not None:
+                _exchange.stop()
+            # Waited, not awaited: awaiting a cancelled task under suppress(CancelledError)
+            # would also swallow a cancellation of this task arriving meanwhile.
+            await _asyncio.wait({_hb_task, _ctl_task})
+            for _bg in (_hb_task, _ctl_task):
+                with contextlib.suppress(_asyncio.CancelledError):
+                    _bg.result()
+            if _exch_task is not None:
+                await _asyncio.wait({_exch_task})
+                with contextlib.suppress(_asyncio.CancelledError):
+                    _exch_task.result()
+                # Route any final outbox sends left over after the last collect tick.
+                await _exchange.collect_all()
+        except BaseException as exc:
+            _cancelled = _cancelled or isinstance(exc, _asyncio.CancelledError)
+            if _dag_exc is not None and isinstance(exc, _asyncio.CancelledError):
+                # As in the drain: a cancellation that lands while the run is already unwinding
+                # with its own exception is raised as that exception's cause, not in its place.
+                raise _dag_exc from exc
+            _unwinding = exc
+            raise
+        finally:
+            # Drained whatever the teardown above raised, so a failure there cannot skip it.
+            await _drain_observer_writes(
+                cancellation_in_flight=_cancelled,
+                in_flight_exc=_unwinding,
+            )
     t_exec_elapsed = time.monotonic() - t_exec
 
     _surface_dropped_spawns(env, list(dag_result.get("dropped_spawns") or []))
@@ -2298,6 +2399,7 @@ async def _execute_dag(
         escalated_agent_ids=escalated_agent_ids,
         engine_run=eng_run,
         checkpoint_skip_ids=checkpoint_skip_ids,
+        drain_observer_writes=_drain_observer_writes,
     )
 
 
@@ -2380,11 +2482,26 @@ async def _synthesize(
     # when it was built and has no branch it belongs to. Exclude it before
     # the pass rather than after: the observer fires during run_dag.
     exec_result.checkpoint_skip_ids.add(str(synth_node))
-    synth_result_raw = await exec_result.engine_run.run_dag(
-        synth_graph,
-        verbose=env.verbose,
-        skip_signal_ops=already_ran,
-    )
+    synth_exc: BaseException | None = None
+    try:
+        synth_result_raw = await exec_result.engine_run.run_dag(
+            synth_graph,
+            verbose=env.verbose,
+            skip_signal_ops=already_ran,
+        )
+    except BaseException as exc:
+        synth_exc = exc
+        raise
+    finally:
+        # Synthesis reuses the execution engine's lifecycle bridge, so its
+        # node signals enqueue work into the same observer-owned persistence
+        # queues.  Drain this second wave before finalization can close the
+        # live database, including when synthesis fails or is cancelled.
+        if exec_result.drain_observer_writes is not None:
+            await exec_result.drain_observer_writes(
+                cancellation_in_flight=isinstance(synth_exc, _asyncio.CancelledError),
+                in_flight_exc=synth_exc,
+            )
     t_synth_elapsed = time.monotonic() - t_synth
     synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)
     synthesis_result = {
