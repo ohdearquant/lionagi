@@ -8,6 +8,7 @@ and the no-shell safety path."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -810,7 +811,9 @@ async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.slow_timing
-async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_path: Path):
+async def test_cancelled_exec_handler_still_kills_its_child_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+):
     # Reproduces the race: TerminalCallbackRegistry's own move_on_after
     # budget is set far shorter than the exec handler's internal
     # asyncio.wait_for budget, so the OUTER scope wins and delivers
@@ -818,14 +821,20 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_pa
     # shape asyncio.TimeoutError would hit, but through a different
     # exception. The child (its own process group via start_new_session)
     # must still be dead by the time emit() returns, not orphaned alive.
-    pid_file = tmp_path / "pid.txt"
-    cmd = (
-        f"{shlex.quote(sys.executable)} -c "
-        '"import os, pathlib, sys, time; '
-        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
-        'time.sleep(30)" '
-        f"{shlex.quote(str(pid_file))}"
-    )
+    #
+    # The child's pid is read off the spawn, not written by the child: a
+    # child slow to start can be killed by the 0.3 s budget before it runs
+    # any code, and that is exactly the case this test must still check.
+    spawned: list[asyncio.subprocess.Process] = []
+    real_spawn = asyncio.create_subprocess_exec
+
+    async def recording_spawn(*args, **kwargs):
+        proc = await real_spawn(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_spawn)
+    cmd = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(30)"'
     resolved = resolve_notify_config(override=cmd).handler
     assert resolved is not None
     handler = build_handler(resolved)
@@ -837,15 +846,13 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_pa
     start = time.monotonic()
     await registry.emit(_envelope())  # must not raise
     elapsed = time.monotonic() - start
-    assert elapsed < 5.0  # bounded by the outer 0.3s budget, not the 30s sleep
 
-    # The child had time to write its pid before being killed.
-    for _ in range(50):
-        if pid_file.exists():
-            break
-        await asyncio.sleep(0.05)
-    assert pid_file.exists()
-    child_pid = int(pid_file.read_text())
+    pids = [proc.pid for proc in spawned]
+    assert len(pids) == 1, f"expected the handler to start one child, saw {pids}"
+    child_pid = pids[0]
+    # Not sooner than the 0.3 s budget, so the child did not simply exit on
+    # its own; well short of its 30 s sleep.
+    assert 0.3 <= elapsed < 5.0
 
     # aterminate_process_group's own SIGKILL + proc.wait() already ran
     # inside the shielded cleanup before emit() returned; give the OS a
@@ -858,6 +865,10 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_pa
             break
         await asyncio.sleep(0.05)
     else:
+        # Through the process handle, which checks the child has not been
+        # reaped before it signals, so the pid cannot have been reused.
+        with contextlib.suppress(ProcessLookupError):
+            spawned[0].kill()
         pytest.fail(f"child pid {child_pid} was still alive after cancellation cleanup")
 
 
