@@ -20,6 +20,7 @@ Pass `provider=` to `iModel()`, or let lionagi infer from the model name.
 | Anthropic | `"anthropic"` | — | `ANTHROPIC_API_KEY` | `messages` |
 | Google Gemini | `"gemini"` | `"gemini-api"` | `GEMINI_API_KEY` | `chat/completions` |
 | Ollama (local) | `"ollama"` | — | — (no key needed) | `chat/completions`, `embeddings`, `generate` |
+| Lattice (local) | `"lattice"` | — | — (no key needed) | `chat/completions`, `embeddings` |
 | NVIDIA NIM | `"nvidia_nim"` | `"nvidia"`, `"nim"` | `NVIDIA_NIM_API_KEY` | `chat/completions`, `embeddings` |
 | Perplexity | `"perplexity"` | — | `PERPLEXITY_API_KEY` | `chat/completions` |
 | Groq | `"groq"` | — | `GROQ_API_KEY` | `chat/completions`, `audio/transcriptions` |
@@ -46,6 +47,16 @@ model = li.iModel(
 
 DeepSeek's `reasoning_effort` field maps lionagi effort levels: `low`/`medium` → `"high"`,
 `xhigh` → `"max"`. DeepSeek native values (`low`, `medium`, `high`, `max`) pass through unchanged.
+
+Lattice is a local inference server started with `lattice serve`. lionagi calls it at
+`http://127.0.0.1:8080/v1` unless `base_url=` names another address, and `model` must be the id
+the server reports at `GET /v1/models`. The server refuses tool calling. Its requests also take
+`reasoning_budget`, `top_k`, `repetition_penalty`, and `lora`, an ordered list of resident
+adapters (`{"id": ..., "scale": ...}`).
+
+```python
+model = li.iModel(provider="lattice", model="qwen3.5-0.8b")
+```
 
 ## CLI / agentic providers
 
@@ -158,6 +169,10 @@ lionagi/providers/
 │   ├── chat.py
 │   ├── embed.py
 │   └── generate.py
+├── lattice/
+│   ├── _config.py
+│   ├── chat.py
+│   └── embed.py
 ├── nvidia_nim/
 │   ├── _config.py
 │   ├── chat.py
