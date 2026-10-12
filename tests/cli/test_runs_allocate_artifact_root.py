@@ -124,6 +124,39 @@ def test_allocate_run_records_resolved_cwd_and_mcp_discovery_provenance(tmp_path
     assert manifest["mcp_config_reason"] is None
 
 
+def test_path_resolved_run_preserves_execution_provenance(tmp_path, monkeypatch):
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace"
+    launch_dir.mkdir()
+    source = launch_dir / ".mcp.json"
+    source.write_text('{"mcpServers": {"tools": {}}}')
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", runs_root)
+    resolution = McpResolution(
+        servers={"tools": {}},
+        reason=None,
+        source=source,
+        searched_from=launch_dir,
+        explicit=False,
+    )
+
+    run = allocate_run(run_id="path-resolved-run")
+    run = run.with_execution_provenance(cwd=launch_dir, mcp_resolution=resolution)
+    reopened = checkpoint_mod._find_run_dir_by_id(run.run_id)
+    assert reopened is not None
+
+    reopened.write_manifest({"status": "completed", "ended_at": 1.0})
+
+    manifest = reopened.read_manifest()
+    assert manifest["cwd"] == str(launch_dir.resolve())
+    assert manifest["mcp_config_source"] == str(source.resolve())
+    assert manifest["mcp_config_searched_from"] == str(launch_dir.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_reason"] is None
+
+
 def test_manifest_provenance_survives_whole_file_live_persist_replacement(tmp_path, monkeypatch):
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     cwd = tmp_path / "workspace"

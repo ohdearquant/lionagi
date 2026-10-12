@@ -153,8 +153,9 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
     return {
         "id": s["id"],
         # ``id`` is the Session-projection identity accepted by every v1
-        # Studio route. ``run_id`` is raw, nullable CLI-run provenance and can
-        # be shared by multiple Sessions; never fabricate one from ``id``.
+        # Studio route. ``run_id`` is nullable CLI-run provenance and can be
+        # shared by multiple Sessions; never fabricate one from ``id``.
+        "session_id": s["id"],
         "run_id": s.get("run_id"),
         "name": s.get("name"),
         "playbook_name": s.get("playbook_name"),

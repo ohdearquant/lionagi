@@ -245,7 +245,6 @@
       "filteredHint": "Try a different kind or clear the search.",
       "clearFilters": "Clear filters",
       "createFirst": "Create your first",
-      "createWorkflow": "New Workflow",
       "createAgent": "New Agent",
       "allSkill": "No skills found.",
       "allSkillHint": "Add a SKILL.md under ~/.lionagi/skills/NAME/ to see it here.",

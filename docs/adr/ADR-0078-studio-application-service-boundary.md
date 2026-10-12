@@ -155,6 +155,7 @@ class RunQuery(ContractModel):
 
 class RunSummary(ContractModel):
     id: str
+    session_id: str
     run_id: str | None
     status: str
     effective_health: str | None
@@ -207,11 +208,12 @@ verdict. It is `None` for every terminal run. Consumers determine outcome from
 `status`, `status_reason_code`, and `status_reason_summary`; they must never use
 `effective_health == "healthy"` as a success predicate.
 
-`RunSummary.id` is the Session-projection identity accepted by the v1 detail,
-tag, file, control, stream, and signal routes. `run_id` is the raw nullable
-`sessions.run_id` link to CLI-run provenance. It can be absent or shared by
-several Sessions and is not the canonical Run identity proposed by ADR-0123;
-consumers must never substitute it for `id` when addressing a Session.
+`RunSummary.id` and `RunSummary.session_id` identify the Session projection
+accepted by the v1 detail, tag, file, control, stream, and signal routes.
+`RunSummary.run_id` is the raw nullable `sessions.run_id` link to CLI-run
+provenance. It can be absent or shared by several Sessions; consumers use
+`id` or `session_id` when addressing a Session. Other response contracts that
+name a Session key `run_id` retain that meaning.
 
 `262_144` bytes is the target default bounded preview (256 KiB), with a 1 MiB hard cap.
 It is a conservative UI responsiveness and memory bound, not a measured optimum; changing

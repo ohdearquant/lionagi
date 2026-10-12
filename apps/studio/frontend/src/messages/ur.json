@@ -243,7 +243,6 @@
       "filteredHint": "دوسری قسم آزمائیں یا تلاش صاف کریں۔",
       "clearFilters": "فلٹرز صاف کریں",
       "createFirst": "اپنا پہلا بنائیں",
-      "createWorkflow": "نیا ورک فلو",
       "createAgent": "نیا ایجنٹ",
       "allSkill": "کوئی سکل نہیں ملی۔",
       "allSkillHint": "یہاں دیکھنے کے لیے ~/.lionagi/skills/NAME/ کے تحت ایک SKILL.md شامل کریں۔",

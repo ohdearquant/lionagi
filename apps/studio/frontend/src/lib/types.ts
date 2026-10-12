@@ -78,6 +78,8 @@ export type ArtifactVerification = ArtifactVerificationResult | ArtifactVerifica
 export interface RunSummary {
   /** Session-projection identity used by Studio routes, controls, and row keys. */
   id: string;
+  /** Explicit Session identity for consumers that need the route key by name. */
+  session_id?: string;
   /** Nullable, non-unique CLI-run provenance; never use as Session identity. */
   run_id: string | null;
   name?: string | null;

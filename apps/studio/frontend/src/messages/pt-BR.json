@@ -243,7 +243,6 @@
       "filteredHint": "Tente outro tipo ou limpe a busca.",
       "clearFilters": "Limpar filtros",
       "createFirst": "Criar o primeiro",
-      "createWorkflow": "Novo fluxo de trabalho",
       "createAgent": "Novo agente",
       "allSkill": "Nenhuma skill encontrada.",
       "allSkillHint": "Adicione um SKILL.md em ~/.lionagi/skills/NAME/ para vê-la aqui.",

@@ -880,9 +880,9 @@ export function streamOperatorConversation(
           }
         }
       } catch (error) {
-        // close() is the only intentional abort. A liveness abort belongs to
-        // the retry path: the durable cursor lets the replacement daemon
-        // replay every frame committed while this stale stream was silent.
+        // close() or a fatal response or protocol error ends the loop. A
+        // liveness abort follows the retry path: the durable cursor lets the
+        // replacement daemon replay frames committed while this stream was silent.
         if (closed) break;
         reportConnectivityFailure();
         handlers.onError?.(

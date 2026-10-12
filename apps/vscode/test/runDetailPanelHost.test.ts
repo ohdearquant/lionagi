@@ -17,7 +17,7 @@ type OpenArgs = Parameters<typeof RunDetailPanel.open>;
 
 function failedRunNoInvocation(): Run {
   return {
-    run_id: "r-1",
+    run_id: "cli-r-1",
     id: "r-1",
     name: "failing run",
     playbook_name: null,
@@ -80,6 +80,7 @@ describe("RunDetailPanel run-detail reason banner (host)", () => {
       expect(reasonMsg?.summary).toBe("worker exited with code 1");
       expect(reasonMsg?.code).toBe("run.failed.exit_nonzero");
       expect(getRun).toHaveBeenCalledOnce();
+      expect(getRun).toHaveBeenCalledWith("r-1");
       // Run carried its own reason → the invocation fallback must never fire.
       expect(getInvocation).not.toHaveBeenCalled();
     } finally {
@@ -90,7 +91,7 @@ describe("RunDetailPanel run-detail reason banner (host)", () => {
 
 function liveRun(id: string): Run {
   return {
-    run_id: id,
+    run_id: `cli-${id}`,
     id,
     name: `live ${id}`,
     playbook_name: null,

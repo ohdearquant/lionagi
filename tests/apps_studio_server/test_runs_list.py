@@ -95,7 +95,10 @@ def test_runs_list_keeps_session_and_cli_run_identities_distinct(tmp_path, monke
     assert response.status_code == 200
     row = response.json()["runs"][0]
     assert row["id"] == session_id
+    assert row["session_id"] == session_id
     assert row["run_id"] == cli_run_id
+    assert client.get(f"/api/runs/{row['session_id']}").status_code == 200
+    assert client.get(f"/api/runs/{row['run_id']}").status_code == 404
 
 
 def test_runs_list_does_not_fabricate_cli_run_id_for_unlinked_session(tmp_path, monkeypatch):
@@ -109,6 +112,7 @@ def test_runs_list_does_not_fabricate_cli_run_id_for_unlinked_session(tmp_path, 
     assert response.status_code == 200
     row = response.json()["runs"][0]
     assert row["id"] == session_id
+    assert row["session_id"] == session_id
     assert row["run_id"] is None
 
 

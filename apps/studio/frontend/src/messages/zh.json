@@ -243,7 +243,6 @@
       "filteredHint": "换个类型试试，或清除搜索条件。",
       "clearFilters": "清除筛选条件",
       "createFirst": "创建你的第一个",
-      "createWorkflow": "新建工作流",
       "createAgent": "新建智能体",
       "allSkill": "未找到技能。",
       "allSkillHint": "在 ~/.lionagi/skills/NAME/ 下添加 SKILL.md 即可在此显示。",

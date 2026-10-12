@@ -177,10 +177,11 @@ def resolve_spawn_mcp_servers(
         if not path.is_file():
             raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
         data = _read_config(path)
+        source = Path(data[SNAPSHOT_SOURCE_KEY]) if SNAPSHOT_SOURCE_KEY in data else path
         return McpResolution(
             data["mcpServers"],
             None,
-            path,
+            source,
             searched_from,
             explicit=SNAPSHOT_SOURCE_KEY not in data,
         )

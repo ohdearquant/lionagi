@@ -9,6 +9,7 @@ import json
 import pytest
 
 from lionagi.cli._mcp_resolve import (
+    SNAPSHOT_SOURCE_KEY,
     McpConfigError,
     discover_mcp_config,
     resolve_spawn_mcp_servers,
@@ -80,6 +81,18 @@ def test_explicit_config_wins_over_discovery(tmp_path):
     named.write_text(json.dumps({"mcpServers": SERVERS}))
     resolution = resolve_spawn_mcp_servers(str(named), launch_dir=tmp_path)
     assert resolution.servers == SERVERS
+
+
+def test_snapshot_keeps_the_discovered_source_and_is_not_explicit(tmp_path):
+    source = _write_config(tmp_path)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"mcpServers": SERVERS, SNAPSHOT_SOURCE_KEY: str(source)}))
+
+    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path)
+
+    assert resolution.servers == SERVERS
+    assert resolution.source == source
+    assert resolution.explicit is False
 
 
 def test_config_without_servers_key_is_unusable_not_empty(tmp_path):

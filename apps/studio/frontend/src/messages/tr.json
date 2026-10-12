@@ -243,7 +243,6 @@
       "filteredHint": "başka bir tür dene veya aramayı temizle.",
       "clearFilters": "Filtreleri temizle",
       "createFirst": "ilkini oluştur",
-      "createWorkflow": "yeni iş akışı",
       "createAgent": "yeni ajan",
       "allSkill": "Skill bulunamadı.",
       "allSkillHint": "Burada görmek için ~/.lionagi/skills/NAME/ altına bir SKILL.md ekleyin.",

@@ -243,7 +243,6 @@
       "filteredHint": "جرّب نوعًا آخر أو امسح البحث.",
       "clearFilters": "مسح عوامل التصفية",
       "createFirst": "أنشئ أول",
-      "createWorkflow": "سير عمل جديد",
       "createAgent": "وكيل جديد",
       "allSkill": "لم يتم العثور على مهارات.",
       "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/NAME/ لتظهر هنا.",

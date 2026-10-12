@@ -220,6 +220,29 @@ describe("Library empty states", () => {
     expect(count("empty.createWorkflow")).toBe(0);
   });
 
+  it("can clear a search when a source is unavailable", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "alpha", model: "test-model" }] });
+    api.listMcpServers.mockRejectedValue(new Error("upstream 503"));
+    await renderLibrary({});
+
+    const input = container.querySelector("input") as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(async () => {
+      setValue?.call(input, "zzz");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(count("loadError")).toBe(2);
+    expect(button("empty.clearFilters")).toBeDefined();
+
+    await act(async () => button("empty.clearFilters")?.click());
+    await flush();
+
+    expect(count("alpha")).toBeGreaterThan(0);
+    expect(button("empty.clearFilters")).toBeUndefined();
+  });
+
   it("offers the create action on the All tab when every source fulfills empty", async () => {
     await renderLibrary({});
 

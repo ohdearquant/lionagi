@@ -47,6 +47,20 @@ describe("Operator client effects", () => {
     ).toEqual({ kind: "reject", rejectionCode: "invalid_params" });
   });
 
+  it("selects a session by session identity when CLI provenance is also present", () => {
+    expect(
+      planOperatorEffect({
+        id: "effect-1",
+        kind: "select",
+        space: "history",
+        selection: {
+          sessionId: "session-1",
+          runId: "20260829T120000-linked",
+        },
+      }),
+    ).toEqual({ kind: "navigate", to: "/fleet", search: { s: "session-1" } });
+  });
+
   it("maps a schedule prefill to the reviewed create form and rejects hidden forms", () => {
     expect(
       planOperatorEffect({

@@ -583,9 +583,16 @@ function LibraryPage() {
             glyph="▤"
             title={t("loadError")}
             action={
-              <Button size="sm" variant="secondary" onClick={reload}>
-                {tDaemon("retry")}
-              </Button>
+              <div className="flex items-center gap-2">
+                {isFiltered && (
+                  <Button size="sm" variant="secondary" onClick={() => setSearch("")}>
+                    {t("empty.clearFilters")}
+                  </Button>
+                )}
+                <Button size="sm" variant="secondary" onClick={reload}>
+                  {tDaemon("retry")}
+                </Button>
+              </div>
             }
             className="px-6 py-16"
           />

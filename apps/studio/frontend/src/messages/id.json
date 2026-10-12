@@ -243,7 +243,6 @@
       "filteredHint": "Coba jenis lain atau bersihkan pencarian.",
       "clearFilters": "Hapus filter",
       "createFirst": "Buat yang pertama",
-      "createWorkflow": "Alur kerja baru",
       "createAgent": "Agen baru",
       "allSkill": "Tidak ada skill ditemukan.",
       "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/NAME/ agar muncul di sini.",

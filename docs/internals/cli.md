@@ -100,7 +100,9 @@ submission found. A file carrying that key resolves as found (`McpResolution.exp
 so the set the submission found is not taken for one the caller named: the job-control policy
 under `_hand_mcp_servers` still applies to it, and a leg on a provider with no MCP transport is
 not refused for it the way it is for a named config. The key is read wherever the file is named,
-so a caller who names a copy of a snapshot gets it read as found too.
+so a caller who names a copy of a snapshot gets it read as found too. The resolution keeps the
+original path in `source`, which is the path persisted as `mcp_config_source`; the snapshot path
+is only the file the child reads.
 
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn

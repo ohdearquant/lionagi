@@ -34,7 +34,11 @@ const router = vi.hoisted(() => ({ navigate: vi.fn() }));
 
 vi.mock("@/lib/api", () => api);
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children }: { children?: React.ReactNode }) => <a href="/fleet">{children}</a>,
+  Link: ({ children, search }: { children?: React.ReactNode; search?: { s?: string } }) => (
+    <a data-selected-session={search?.s} href="/fleet">
+      {children}
+    </a>
+  ),
   useLocation: () => ({ pathname: "/", search: {} }),
   useNavigate: () => router.navigate,
 }));
@@ -176,6 +180,92 @@ describe("OperatorPanel", () => {
     ).not.toContain("studio:operator-token");
   });
 
+  it("links a run result using its session identity when CLI provenance is present", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Run details",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 2,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 1,
+          type: "tool_result",
+          payload: {
+            callId: "call-1",
+            ok: true,
+            result: {
+              id: "session-1",
+              sessionId: "session-1",
+              runId: "20260829T120000-linked",
+            },
+          },
+          createdAt: 1,
+        },
+      ],
+    });
+
+    await mount();
+
+    expect(
+      container.querySelector("[data-selected-session]")?.getAttribute("data-selected-session"),
+    ).toBe("session-1");
+  });
+
+  it("links a session when its result has no CLI run provenance", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Run details",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 2,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 1,
+          type: "tool_result",
+          payload: {
+            callId: "call-1",
+            ok: true,
+            result: { id: "session-2", sessionId: "session-2", runId: null },
+          },
+          createdAt: 1,
+        },
+      ],
+    });
+
+    await mount();
+
+    expect(
+      container.querySelector("[data-selected-session]")?.getAttribute("data-selected-session"),
+    ).toBe("session-2");
+  });
+
   it("reopens a fatal stream after a turn is durably accepted", async () => {
     window.localStorage.setItem("studio:operator-conversation", "conversation-1");
     api.listOperatorConversations.mockResolvedValue([
@@ -240,6 +330,10 @@ describe("OperatorPanel", () => {
     expect(api.submitOperatorTurn).toHaveBeenCalledOnce();
     expect(closers[0]).toHaveBeenCalledOnce();
     expect(subscriptions).toHaveLength(2);
+    await act(async () => {
+      subscriptions[1].onConnection?.("connecting");
+    });
+    expect(container.textContent).toContain("Connection lost — reload to continue.");
     await act(async () => {
       subscriptions[1].onConnection?.("open");
       subscriptions[1].onFrame({

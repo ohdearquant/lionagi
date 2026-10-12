@@ -131,6 +131,7 @@ async def test_get_run_returns_none_when_db_absent(patched_runs_svc):
 
 _REQUIRED_KEYS = {
     "id",
+    "session_id",
     "run_id",
     "state_root",
     "artifact_root",
@@ -203,6 +204,7 @@ async def test_get_run_maps_session_fields_correctly(patched_runs_svc):
     assert result is not None
     assert result["id"] == sid
     assert result["run_id"] is None
+    assert result["session_id"] == sid
     assert result["status"] == "failed"
     assert result["worker_name"] == "researcher"
     assert result["model"] == "openai/gpt-5"
@@ -225,6 +227,7 @@ async def test_get_run_keeps_session_and_cli_run_identities_distinct(patched_run
 
     assert result is not None
     assert result["id"] == session_id
+    assert result["session_id"] == session_id
     assert result["run_id"] == cli_run_id
 
 
@@ -348,6 +351,7 @@ def test_get_run_endpoint_returns_404_for_missing(tmp_path, monkeypatch):
 # requires from GET /api/runs/{id}. The detail route once dropped these (e.g.
 # invocation_id), which erased the failure-reason banner after a detail refresh.
 _RUN_CONTRACT_KEYS = {
+    "session_id",
     "run_id",
     "id",
     "name",

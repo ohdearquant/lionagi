@@ -173,7 +173,7 @@ function findRunId(value: unknown, depth = 0): string | null {
     return null;
   }
   const record = value as Record<string, unknown>;
-  for (const key of ["runId", "run_id", "sessionId", "session_id"]) {
+  for (const key of ["sessionId", "session_id", "runId", "run_id"]) {
     if (typeof record[key] === "string" && record[key]) return record[key];
   }
   for (const nested of Object.values(record)) {
@@ -1714,7 +1714,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         )}
 
         <footer className="shrink-0 border-t border-edge bg-surface-raised p-3">
-          {(actionError || (state.connectionState === "error" && state.error)) && (
+          {(actionError || state.error) && (
             <div className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure">
               <IconError size={12} className="mt-0.5 shrink-0" />
               <span className="min-w-0 flex-1 break-words">{actionError ?? state.error}</span>

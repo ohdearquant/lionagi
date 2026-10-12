@@ -263,6 +263,8 @@ Exact semantics:
 - List defaults to 100 rows, accepts 1–200, orders by `updated_at DESC`, and returns an
   empty list when the DB file does not exist.
 - Run compilation returns HTTP 202 with `{run_id, status}`; `run_id` is the Session id.
+  Run list and detail rows expose that identity as both `id` and `session_id`; their
+  `run_id` field is nullable CLI-run provenance and is not a route key.
   Missing definitions map to 404 and compile errors to structured 422 detail.
 - There is no append-only workflow version history in this contract.
 

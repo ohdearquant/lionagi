@@ -30,6 +30,7 @@ _KNOWN_TRUE_KEYS = {
     "truncated",
     "runId",
     "id",
+    "sessionId",
     "name",
     "playbookName",
     "agentName",
@@ -425,6 +426,7 @@ async def test_run_detail_happy_path(db_path):
     # one; ``id`` is the identity the tool was asked about.
     assert result["runId"] is None
     assert result["id"] == sid
+    assert result["sessionId"] == sid
     assert result["status"] == "completed"
     # A terminal run's vacuous "healthy" is dropped from the projection:
     # health is a liveness concept, and "healthy" beside a terminal status
@@ -453,6 +455,7 @@ async def test_run_detail_keeps_session_and_cli_run_identities_distinct(db_path)
 
     assert result["known"] is True
     assert result["id"] == sid
+    assert result["sessionId"] == sid
     assert result["runId"] == cli_run_id
 
 

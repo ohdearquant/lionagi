@@ -178,8 +178,9 @@ class RunDir:
         directory, then os.replace), so a concurrent reader observes either
         the previous manifest or the new one, never a truncated file. It is
         a whole-file replacement, not a merge: the caller owns the full
-        manifest contents, and two writers racing on one run still resolve
-        last-writer-wins.
+        lifecycle contents, and two writers racing on one run still resolve
+        last-writer-wins. A run reconstructed from its path preserves any
+        execution provenance already stored in the manifest.
         """
         ensure_lionagi_dir(self.state_root)
         payload = {
@@ -208,6 +209,21 @@ class RunDir:
                     "mcp_config_reason": self.mcp_config_reason,
                 }
             )
+        else:
+            try:
+                existing = self.read_manifest()
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                existing = {}
+            if isinstance(existing, dict):
+                for key in (
+                    "cwd",
+                    "mcp_config_source",
+                    "mcp_config_searched_from",
+                    "mcp_config_explicit",
+                    "mcp_config_reason",
+                ):
+                    if key in existing:
+                        payload[key] = existing[key]
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:

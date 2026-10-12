@@ -96,6 +96,7 @@ def _project(run: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     fields = {
         "runId": run.get("run_id"),
         "id": run.get("id"),
+        "sessionId": run.get("id"),
         "name": _scrub(run.get("name")),
         "playbookName": _scrub(run.get("playbook_name")),
         "agentName": _scrub(run.get("agent_name")),

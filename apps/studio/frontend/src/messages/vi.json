@@ -243,7 +243,6 @@
       "filteredHint": "thử loại khác hoặc xóa tìm kiếm.",
       "clearFilters": "Xóa bộ lọc",
       "createFirst": "tạo mục đầu tiên",
-      "createWorkflow": "quy trình làm việc mới",
       "createAgent": "tác nhân mới",
       "allSkill": "Không tìm thấy skill nào.",
       "allSkillHint": "Thêm SKILL.md vào ~/.lionagi/skills/NAME/ để hiển thị ở đây.",

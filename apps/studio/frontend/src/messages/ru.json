@@ -243,7 +243,6 @@
       "filteredHint": "Попробуйте другой тип или очистите поиск.",
       "clearFilters": "Сбросить фильтры",
       "createFirst": "Создать первый",
-      "createWorkflow": "Новый рабочий процесс",
       "createAgent": "Новый агент",
       "allSkill": "Навыки не найдены.",
       "allSkillHint": "Добавьте SKILL.md в ~/.lionagi/skills/NAME/, чтобы увидеть его здесь.",
