@@ -338,7 +338,15 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
         # /api/* paths stay 404 JSON here, not the SPA HTML shell.
         path = request.url.path
         if path.startswith("/api/") or path == "/api":
-            return JSONResponse({"detail": "Not Found"}, status_code=404)
+            # The API's own message, not a generic one. This handler is
+            # registered for the STATUS, so it also receives every deliberate
+            # HTTPException(404, detail=...) an API handler raises. Answering
+            # those with a hardcoded "Not Found" replaced "invalid path
+            # component" and "Show 'x' not found" with a string that says
+            # nothing -- and only when a frontend was mounted, so the suite,
+            # which runs API-only, could not see it and production got the
+            # degraded message.
+            return JSONResponse({"detail": getattr(exc, "detail", "Not Found")}, status_code=404)
         if request.method not in ("GET", "HEAD"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         return FileResponse(

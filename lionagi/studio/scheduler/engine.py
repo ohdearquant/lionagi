@@ -2215,6 +2215,12 @@ class SchedulerEngine:
                     ),
                     "started_at": now,
                     "status": "running",
+                    # The invocations table has no action_kind column, so the
+                    # kind rides node_metadata. Without it every fire reads as
+                    # the generic "invocation" in `li monitor`, which is what
+                    # made a command-kind fire look unrecorded: the row was
+                    # always written here, it just carried no kind.
+                    "node_metadata": {"action_kind": schedule.get("action_kind")},
                 }
             )
         except BaseException:

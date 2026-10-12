@@ -11,12 +11,13 @@
         "x-flag": "--no-chain"
       },
       "entity_type": {
-        "description": "Narrow the table to one kind of entity: session, invocation, show or play.",
+        "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action.",
         "enum": [
           "session",
           "invocation",
           "show",
-          "play"
+          "play",
+          "command"
         ],
         "type": "string",
         "x-aliases": [
