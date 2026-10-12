@@ -477,8 +477,10 @@ class OperatorCoordinator:
             started_at = time.time()
             # each write takes the run's manifest lock, which another writer of the run can hold: off
             # the event loop, so a held lock stalls this turn and not every turn the loop serves. The
-            # write is kept and shielded, and the terminal write below waits for it through any number
-            # of cancels, so `running` cannot land after the turn's terminal record
+            # write is kept, never cancelled by a wait on it, and the terminal write below waits for it
+            # through any number of cancels, so `running` cannot land after the turn's terminal record.
+            # asyncio.wait rather than shield: from Python 3.14 a shield whose waiter was cancelled
+            # logs the write's failure itself, and the cleanup below already logs it once
             opening_write = asyncio.ensure_future(
                 asyncio.to_thread(
                     run_dir.write_manifest,
@@ -494,7 +496,8 @@ class OperatorCoordinator:
                     },
                 )
             )
-            await asyncio.shield(opening_write)
+            await asyncio.wait((opening_write,))
+            opening_write.result()
             # Scripted/test engines may not call Branch.run themselves; the
             # canonical snapshot still exists before the run link is emitted.
             await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
@@ -715,7 +718,7 @@ class OperatorCoordinator:
                     # turn stopped waiting for is logged here, once
                     while not opening_write.done():
                         with suppress(asyncio.CancelledError, Exception):
-                            await asyncio.shield(opening_write)
+                            await asyncio.wait((opening_write,))
                     if not opening_write.cancelled():
                         failure = opening_write.exception()
                         if failure is not None and failure is not terminal_exc:
