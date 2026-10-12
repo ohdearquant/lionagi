@@ -10,10 +10,10 @@ edition = "2021"
 rust-version = "1.95"
 
 [workspace.dependencies]
-khive-types = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
-khive-storage = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
-khive-runtime = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
-kkernel = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
+khive-types = { git = "https://github.com/ohdearquant/khive", rev = "bf93d32d2035974f05472da4ec9603134e3dd257" }
+khive-storage = { git = "https://github.com/ohdearquant/khive", rev = "bf93d32d2035974f05472da4ec9603134e3dd257" }
+khive-runtime = { git = "https://github.com/ohdearquant/khive", rev = "bf93d32d2035974f05472da4ec9603134e3dd257" }
+kkernel = { git = "https://github.com/ohdearquant/khive", rev = "bf93d32d2035974f05472da4ec9603134e3dd257" }
 
 inventory = "0.3"
 async-trait = "0.1"
