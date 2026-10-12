@@ -16,6 +16,9 @@ from lionagi.service.hooks.hook_registry import HookRegistry
 from lionagi.service.hooks.hooked_event import HookedEvent
 from tests.service.hooks.conftest import FakeEvent, MyCancelled
 
+# The tests that drive their concurrent calls with asyncio.gather or asyncio tasks
+# run on asyncio only; the rest run on both backends.
+
 
 class ConcurrentTestEvent(HookedEvent):
     def __init__(self, invoke_delay=0.0, invoke_result="test_result"):
@@ -42,7 +45,7 @@ class ConcurrentTestEvent(HookedEvent):
 
 
 class TestParallelInvocations:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_parallel_hook_events_isolated(self, patch_cancellation):
         # Create separate registries for isolation
         async def hook1(ev, **kw):
@@ -101,7 +104,7 @@ class TestParallelInvocations:
         assert hook_event1._should_exit is False
         assert hook_event2._should_exit is False
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_parallel_hooked_events_isolated(self, patch_cancellation, patch_logger):
         async def pre_hook(ev, **kw):
             await anyio.sleep(0.01)
@@ -144,7 +147,7 @@ class TestParallelInvocations:
         # Check that all hooks were logged (2 hooks * 5 events = 10 log calls)
         assert len(patch_logger) == 10
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_parallel_registry_calls_independent(self, patch_cancellation):
         call_count = 0
 
@@ -211,7 +214,7 @@ class TestTimeoutBehavior:
 
             mock_fail_after.assert_called_once_with(1)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_concurrent_timeouts_independent(self, patch_cancellation):
         async def fast_hook(ev, **kw):
             await anyio.sleep(0.01)
@@ -257,7 +260,7 @@ class TestTimeoutBehavior:
 
 
 class TestNoDeadlocks:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     @pytest.mark.slow_timing
     async def test_nested_hook_calls_no_deadlock(self, patch_cancellation):
         hook_sleep = 0.01
@@ -340,7 +343,7 @@ class TestNoDeadlocks:
 
         return hook_events, results, elapsed
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_high_concurrency_no_resource_exhaustion(self, patch_cancellation):
         hook_events, results, _ = await self._run_high_concurrency_hooks()
 
@@ -354,7 +357,7 @@ class TestNoDeadlocks:
             assert hook_event.execution.status == EventStatus.COMPLETED
             assert hook_event.execution.response == "simple"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_high_concurrency_completes_under_ceiling(self, patch_cancellation):
         _, _, elapsed = await self._run_high_concurrency_hooks()
@@ -436,7 +439,7 @@ class TestPerformanceSmoke:
         # No call should be extremely slow
         assert max(call_times) < 0.5  # No call over 500ms
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_metadata_creation_is_correct(self, patch_cancellation):
         results, _ = await self._run_metadata_calls()
 
@@ -446,7 +449,7 @@ class TestPerformanceSmoke:
             assert meta["event_created_at"] == i * 1000.0
             assert meta["lion_class"] == "tests.service.hooks.conftest.FakeEvent"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_error_handling_results_are_correct(self, patch_cancellation):
         results, _ = await self._run_mixed_error_calls()
         # Check that we got expected mix of success/failure
@@ -456,14 +459,14 @@ class TestPerformanceSmoke:
         assert successes == 25  # Half should succeed
         assert failures == 25  # Half should fail
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_metadata_creation_under_ceiling(self, patch_cancellation):
         _, elapsed = await self._run_metadata_calls()
 
         assert elapsed < 1.0  # 100 calls in under 1 second
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_error_handling_under_ceiling(self, patch_cancellation):
         _, elapsed = await self._run_mixed_error_calls()

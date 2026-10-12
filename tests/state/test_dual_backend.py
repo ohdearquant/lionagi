@@ -19,6 +19,7 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.exc import IntegrityError
 
 from lionagi.state.db import SCHEMA_VERSION, StateDB
@@ -244,7 +245,7 @@ async def _run_parity_suite(db: StateDB) -> None:
 # SQLite leg (always runs)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sqlite_db():
     db = StateDB(":memory:")
     await db.open()

@@ -27,6 +27,9 @@ import pytest
 from lionagi.providers.openai.codex import CodexCLIEndpoint, CodexCodeRequest, stream_codex_cli
 from lionagi.service.types.stream_chunk import StreamChunk
 
+# These tests run on asyncio only: the codex CLI stream reads the event loop's
+# clock through asyncio.get_running_loop().
+
 
 def _request() -> CodexCodeRequest:
     return CodexCodeRequest(prompt="test", verbose_output=False)
@@ -73,7 +76,7 @@ FAILURES = [
 ]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 @pytest.mark.parametrize("events", FAILURES)
 async def test_a_failed_session_is_reported_exactly_once(events):
     chunks = await _endpoint_chunks(events)
@@ -85,7 +88,7 @@ async def test_a_failed_session_is_reported_exactly_once(events):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 @pytest.mark.parametrize("events", FAILURES)
 async def test_a_failed_session_says_so_on_the_flag_as_well_as_the_type(events):
     """A consumer keying on ``is_error`` must not have to know the type vocabulary."""
@@ -96,7 +99,7 @@ async def test_a_failed_session_says_so_on_the_flag_as_well_as_the_type(events):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 @pytest.mark.parametrize("events", FAILURES)
 async def test_the_parser_chunk_carries_the_flag_too(events):
     """The endpoint's guard means the parser's chunk is the one that survives, so
@@ -107,7 +110,7 @@ async def test_the_parser_chunk_carries_the_flag_too(events):
     assert errors[0].is_error is True, f"the surviving chunk reads as success: {errors[0]}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_benign_end_of_stream_still_reads_as_success():
     """The bare empty-error sentinel a resumed session ends with.
 
@@ -128,7 +131,7 @@ async def test_a_benign_end_of_stream_still_reads_as_success():
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_terminal_result_that_reports_failure_is_reported_by_the_endpoint():
     """The path where the endpoint's chunk is the only one there is.
 
@@ -152,7 +155,7 @@ async def test_a_terminal_result_that_reports_failure_is_reported_by_the_endpoin
     assert errors[0].content == "boom"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_healthy_session_yields_no_error_chunk_at_all():
     """The must-not-match arm: the guard must not be satisfiable by a version
     that stops emitting, and a healthy session is where that would show."""

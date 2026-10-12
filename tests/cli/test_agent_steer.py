@@ -33,6 +33,9 @@ from lionagi.cli.orchestrate._control import (
 from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.state.db import StateDB
 
+# These tests run on asyncio only: the agent CLI and the state store it writes
+# to (aiosqlite) are asyncio code.
+
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -109,7 +112,7 @@ class _RecordingBranch:
 # enqueue gate
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_enqueues_for_running_agent_session(temp_db_path, capsys):
     async with StateDB() as db:
         sid = await _make_agent_session(db)
@@ -121,7 +124,7 @@ async def test_msg_enqueues_for_running_agent_session(temp_db_path, capsys):
     assert pending[0]["payload"] == {"text": "redirect"}
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 @pytest.mark.parametrize("runner", [run_ctl_pause, run_ctl_resume])
 async def test_pause_resume_refused_for_agent_kind(temp_db_path, caplog, runner):
     async with StateDB() as db:
@@ -134,7 +137,7 @@ async def test_pause_resume_refused_for_agent_kind(temp_db_path, caplog, runner)
         assert await db.list_pending_session_controls(sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_refused_for_mirrored_agent_session(temp_db_path, caplog):
     """A mirrored Claude Code session is agent-kind and can read as running,
     but no lionagi runner owns it, so a steer could never be delivered."""
@@ -148,7 +151,7 @@ async def test_msg_refused_for_mirrored_agent_session(temp_db_path, caplog):
         assert await db.list_pending_session_controls(sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_refused_when_the_runner_does_not_drain_controls(temp_db_path, caplog):
     """An embedded runner persists through the same path as `li agent`: same
     invocation kind, same running status, and a run_id of its own. It has no
@@ -167,7 +170,7 @@ async def test_msg_refused_when_the_runner_does_not_drain_controls(temp_db_path,
         assert await db.list_pending_session_controls(sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_refused_when_the_session_never_declared_a_drain(temp_db_path, caplog):
     """Absence is a refusal, not a pass. A session row written before the
     declaration existed, or by a runner that forgot to make one, says nothing
@@ -206,7 +209,7 @@ async def test_msg_refused_when_the_session_never_declared_a_drain(temp_db_path,
         assert await db.list_pending_session_controls(sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_refused_for_terminal_agent_session(temp_db_path, capsys):
     async with StateDB() as db:
         sid = await _make_agent_session(db, status="completed")
@@ -219,7 +222,7 @@ async def test_msg_refused_for_terminal_agent_session(temp_db_path, capsys):
 # run-id addressing (the operator's actual handle for an agent leg)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_enqueues_by_run_id(temp_db_path):
     """The run id is what `li agent` prints back to the operator — it must
     resolve to the session it was stamped on, not just the session id."""
@@ -234,7 +237,7 @@ async def test_msg_enqueues_by_run_id(temp_db_path):
     assert pending[0]["payload"] == {"text": "redirect by run id"}
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_enqueues_by_run_id_prefix(temp_db_path):
     run_id = "20260801T020202-steerrun"
     async with StateDB() as db:
@@ -246,7 +249,7 @@ async def test_msg_enqueues_by_run_id_prefix(temp_db_path):
     assert [row["verb"] for row in pending] == ["message"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_by_run_id_picks_the_most_recently_updated_session(temp_db_path):
     """`run_id` carries no uniqueness constraint — `get_sessions_for_run`
     already documents that one run can persist more than one session. The
@@ -266,7 +269,7 @@ async def test_msg_by_run_id_picks_the_most_recently_updated_session(temp_db_pat
         assert await db.list_pending_session_controls(stale_sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_by_unmatched_run_id_fails_cleanly(temp_db_path, caplog):
     """An id that resolves nowhere — not a session, invocation, play, branch,
     or run — must fail with a clean refusal, not raise or silently pick."""
@@ -278,7 +281,7 @@ async def test_msg_by_unmatched_run_id_fails_cleanly(temp_db_path, caplog):
     assert "no session/invocation/play found" in caplog.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_by_ambiguous_run_id_prefix_raises(temp_db_path, caplog):
     """Two distinct run ids sharing a prefix must refuse, not silently pick
     one — the same guarantee `fetch_unique_row` gives every other id kind."""
@@ -291,7 +294,7 @@ async def test_msg_by_ambiguous_run_id_prefix_raises(temp_db_path, caplog):
     assert "ambiguous id prefix" in caplog.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_msg_by_full_session_id_unaffected_by_run_id_fallback(temp_db_path):
     """Control: resolving by the full session id (the pre-existing path) must
     keep working unchanged — this passes on both sides of the run-id fix."""
@@ -306,7 +309,7 @@ async def test_msg_by_full_session_id_unaffected_by_run_id_fallback(temp_db_path
 # turn-end drain
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_consumes_pending_steer_as_continuation(temp_db_path):
     async with StateDB() as db:
         sid = await _make_agent_session(db)
@@ -331,7 +334,7 @@ async def test_drain_consumes_pending_steer_as_continuation(temp_db_path):
         assert pending == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_joins_multiple_steers_into_one_turn(temp_db_path):
     async with StateDB() as db:
         sid = await _make_agent_session(db)
@@ -346,7 +349,7 @@ async def test_drain_joins_multiple_steers_into_one_turn(temp_db_path):
         assert instruction.index("first") < instruction.index("second")
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_catches_steer_enqueued_during_continuation(temp_db_path):
     async with StateDB() as db:
         sid = await _make_agent_session(db)
@@ -361,7 +364,7 @@ async def test_drain_catches_steer_enqueued_during_continuation(temp_db_path):
         assert await db.list_pending_session_controls(sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_noop_without_pending_steers(temp_db_path):
     async with StateDB() as db:
         sid = await _make_agent_session(db)
@@ -373,7 +376,7 @@ async def test_drain_noop_without_pending_steers(temp_db_path):
         assert branch.calls == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_stops_past_deadline_without_consuming(temp_db_path):
     async with StateDB() as db:
         sid = await _make_agent_session(db)
@@ -391,7 +394,7 @@ async def test_drain_stops_past_deadline_without_consuming(temp_db_path):
         assert len(await db.list_pending_session_controls(sid)) == 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_without_live_session_is_noop(temp_db_path):
     branch = _RecordingBranch()
     assert await _drain_pending_steers(None, branch, operate_kwargs={}, deadline=None) is None
@@ -402,7 +405,7 @@ async def test_drain_without_live_session_is_noop(temp_db_path):
 # terminal tombstone
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_tombstone_rejects_never_consumed_steer(temp_db_path):
     """Queued while the run was live, terminalized, then swept.
 
@@ -423,7 +426,7 @@ async def test_tombstone_rejects_never_consumed_steer(temp_db_path):
         assert "li agent -r" in row["result"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_tombstone_declines_to_sweep_a_session_that_is_still_running(temp_db_path, caplog):
     """The sweep's precondition, asserted rather than assumed.
 
@@ -446,7 +449,7 @@ async def test_tombstone_declines_to_sweep_a_session_that_is_still_running(temp_
         assert "not terminal" in caplog.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_tombstone_failure_logs_and_does_not_raise(temp_db_path, caplog):
     class _BrokenDB:
         async def get_session(self, _sid):
@@ -498,7 +501,7 @@ async def test_drain_returns_quietly_when_there_is_no_persistence_at_all(caplog)
 # at-most-once and the deadline boundary
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_claiming_a_control_twice_only_succeeds_once(temp_db_path):
     """The claim is a compare-and-set, so it is the thing that makes the drain
     at-most-once rather than the order the callers happen to run in."""
@@ -513,7 +516,7 @@ async def test_claiming_a_control_twice_only_succeeds_once(temp_db_path):
         )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_the_claim_comes_back_so_the_claimant_can_guard_its_own_finalize(temp_db_path):
     """The winner is handed the exact string it wrote. Rebuilding that string at
     the call site is how a guard stops matching the row it is supposed to guard,
@@ -532,7 +535,7 @@ async def test_the_claim_comes_back_so_the_claimant_can_guard_its_own_finalize(t
         assert (await db.get_session_control(cid))["result"] == "applied"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_leaves_an_already_applying_row_untouched(temp_db_path):
     """A row stamped `applying` is a drain that stopped between the stamp and
     the apply. Re-running it would deliver the same operator message twice, so
@@ -563,7 +566,7 @@ async def test_drain_leaves_an_already_applying_row_untouched(temp_db_path):
         assert [r["result"] for r in pending] == ["applying"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_does_not_jump_a_stuck_row_to_apply_the_one_behind_it(temp_db_path):
     """A steer stuck mid-apply holds the queue rather than being stepped over.
 
@@ -593,7 +596,7 @@ async def test_drain_does_not_jump_a_stuck_row_to_apply_the_one_behind_it(temp_d
         )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_second_drain_does_not_reapply_a_steer_the_first_is_mid_apply(temp_db_path):
     """Two consumers on one session, held at the boundary that matters: the
     first has claimed the row and is inside `operate`, the second drains then.
@@ -640,7 +643,7 @@ async def test_a_second_drain_does_not_reapply_a_steer_the_first_is_mid_apply(te
         assert len(calls) == 1, f"the steer was delivered {len(calls)} times, not once"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_drain_does_not_start_a_continuation_after_the_deadline(temp_db_path):
     """The deadline is checked before the queue read, and the read is I/O that
     can cross it. A continuation started afterwards runs work the caller's
@@ -682,7 +685,7 @@ async def test_drain_does_not_start_a_continuation_after_the_deadline(temp_db_pa
 # claim ownership: a claimed row belongs to its claimant
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_teardown_does_not_reject_a_steer_another_leg_is_mid_apply(temp_db_path):
     """Two legs on one session, held at the boundary the claim protocol exists for.
 
@@ -753,7 +756,7 @@ async def test_a_teardown_does_not_reject_a_steer_another_leg_is_mid_apply(temp_
         assert row["applied_at"] is not None
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_claim_carries_its_owner_and_the_time_it_was_taken(temp_db_path):
     """The claim is what an operator reads off a wedged queue, so it has to say
     who holds the row and since when. A bare 'applying' answers neither."""
@@ -771,7 +774,7 @@ async def test_a_claim_carries_its_owner_and_the_time_it_was_taken(temp_db_path)
         assert row["applied_at"] is None, "a claim is not an outcome"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_finalize_cannot_close_a_claim_it_does_not_hold(temp_db_path):
     """The token is checked at the write, not trusted from the caller.
 
@@ -800,7 +803,7 @@ async def test_a_finalize_cannot_close_a_claim_it_does_not_hold(temp_db_path):
         assert (await db.get_session_control(cid))["result"] == "applied"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_claim_whose_leg_died_stays_visible_rather_than_being_resolved(temp_db_path):
     """The wedge is the honest state and it is left standing deliberately.
 
@@ -840,7 +843,7 @@ async def test_a_claim_whose_leg_died_stays_visible_rather_than_being_resolved(t
 # enqueue against a run that is terminalizing
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_an_enqueue_that_loses_the_race_to_terminalization_is_refused(temp_db_path, caplog):
     """The caller-side status read and the insert are two statements.
 
@@ -967,7 +970,7 @@ async def test_the_runner_sweeps_after_it_terminalizes_not_before(
 # operator resolution of a wedged claim
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_an_operator_can_close_a_wedged_claim_and_the_claim_survives_in_the_record(
     temp_db_path, capsys
 ):
@@ -1004,7 +1007,7 @@ async def test_an_operator_can_close_a_wedged_claim_and_the_claim_survives_in_th
         assert await db.list_pending_session_controls(sid) == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_resolve_refuses_a_row_no_consumer_claimed(temp_db_path, caplog):
     """Refusing here is what keeps the verb from standing in for the teardown
     sweep. An unclaimed pending row has a truthful automatic outcome, and a
@@ -1028,7 +1031,7 @@ async def test_resolve_refuses_a_row_no_consumer_claimed(temp_db_path, caplog):
         assert row["applied_at"] is None
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_resolve_refuses_a_row_its_consumer_already_finalized(temp_db_path, caplog):
     """The consumer's own record outranks a later hand-written one: it was
     written by the only party that knew."""
@@ -1050,7 +1053,7 @@ async def test_resolve_refuses_a_row_its_consumer_already_finalized(temp_db_path
         assert (await db.get_session_control(cid))["result"] == "applied"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_the_terminal_header_does_not_say_never_landed_over_a_claimed_row(temp_db_path):
     """The header speaks for every row beneath it.
 
@@ -1081,7 +1084,7 @@ async def test_the_terminal_header_does_not_say_never_landed_over_a_claimed_row(
     assert "claimed by leg-a" in rendered
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_the_tombstone_cannot_reject_a_row_claimed_after_it_read_the_queue(temp_db_path):
     """The snapshot the sweep decides from is not the state it writes against.
 
@@ -1138,7 +1141,7 @@ async def test_the_tombstone_cannot_reject_a_row_claimed_after_it_read_the_queue
         assert (await db.get_session_control(cid))["result"] == "applied"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_hand_resolution_records_who_resolved_it(temp_db_path):
     """An operator action that records no operator is the wedge one level up.
 
@@ -1170,7 +1173,7 @@ async def test_a_hand_resolution_records_who_resolved_it(temp_db_path):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_hand_resolution_falls_back_to_the_os_account_not_a_placeholder(temp_db_path):
     """Without --by the record still names somebody real.
 
@@ -1198,7 +1201,7 @@ async def test_a_hand_resolution_falls_back_to_the_os_account_not_a_placeholder(
     assert getpass.getuser() in stored, f"no real identity was recorded: {stored!r}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_a_refused_finalize_after_delivery_is_reported_not_swallowed(temp_db_path, caplog):
     """Somebody resolves the row while the continuation turn is running.
 
@@ -1871,7 +1874,7 @@ async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
             await db.__aexit__(None, None, None)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_the_resolver_refuses_when_the_claim_changed_under_it(temp_db_path):
     """Only the compare-and-set can answer this one.
 

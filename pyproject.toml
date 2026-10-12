@@ -243,7 +243,13 @@ extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
 # ones that go through the wrapper script. A CLI flag beats addopts, so callers
 # that want restarts can still pass one.
 addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=0"
-asyncio_mode = "auto"
+# Strict, so that a test written for anyio (marked `anyio`, or taking the
+# `anyio_backend` fixture) runs on the backend it is parametrized with. Auto
+# mode hands every coroutine test to pytest-asyncio, which ran each [trio] case
+# on asyncio. Coroutine tests that carry neither mark are handed to
+# pytest-asyncio by tests/conftest.py, and async fixtures are declared with
+# pytest_asyncio.fixture.
+asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 python_files = ["test_*.py"]

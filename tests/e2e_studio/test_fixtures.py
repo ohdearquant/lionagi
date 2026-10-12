@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import StateDB
 
@@ -27,7 +28,7 @@ from .fixtures import (
 from .harness import _seed
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()

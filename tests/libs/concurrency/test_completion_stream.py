@@ -101,20 +101,33 @@ async def test_completion_stream_limit_none_allows_all_concurrent(
 async def test_completion_stream_early_break_exits_cleanly(anyio_backend):
     """Test breaking early exits the stream cleanly without consuming all results."""
     consumed = []
+    started = []
+    settled = []
 
     async def task(x):
-        await anyio.sleep(0.001)
-        return x
+        started.append(x)
+        try:
+            await anyio.sleep(0.001)
+            return x
+        finally:
+            settled.append(x)
 
-    async with CompletionStream([task(i) for i in range(20)], limit=5) as stream:
-        async for idx, result in stream:
-            consumed.append(result)
-            if idx == 0:
+    # Break after the first result, whichever task produced it: the finishing
+    # order is the backend's scheduling, not the task order.
+    with anyio.fail_after(5):
+        async with CompletionStream([task(i) for i in range(20)], limit=5) as stream:
+            async for _idx, result in stream:
+                consumed.append(result)
                 break
 
-    # Early break should have consumed only 1 result
     assert len(consumed) == 1
-    # Stream exits cleanly through __aexit__
+    # Leaving the block leaves no task behind: every task that started has
+    # returned or been cancelled by the time __aexit__ is done, and none starts
+    # or settles after it.
+    at_exit = (sorted(started), sorted(settled))
+    assert at_exit[1] == at_exit[0]
+    await anyio.sleep(0.05)
+    assert (sorted(started), sorted(settled)) == at_exit
 
 
 # Test removed - timing-dependent behavior hard to test reliably

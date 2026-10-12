@@ -13,12 +13,13 @@ from __future__ import annotations
 import time
 
 import pytest
+import pytest_asyncio
 
 from lionagi.cli._runs import _teardown_common, find_incomplete_session_for_run
 from lionagi.state.db import StateDB
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db(tmp_path):
     database = StateDB(tmp_path / "state.db")
     await database.open()

@@ -10,6 +10,7 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from lionagi.state.db import StateDB
@@ -163,7 +164,7 @@ class TestValidators:
 # StateDB.update_status() — schema migration + atomic writes
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()

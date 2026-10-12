@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import NO_CURSOR_CLAIM
 from tests._scheduler_claims import claim_holds, fire_with_claim, persisting_update_schedule
@@ -3099,7 +3100,7 @@ async def _seed_schedule(db, schedule: dict) -> None:
     )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def state_db():
     from lionagi.state.db import StateDB
 

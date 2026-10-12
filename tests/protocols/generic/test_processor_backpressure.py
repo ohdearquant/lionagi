@@ -10,6 +10,9 @@ import pytest
 from lionagi.protocols.generic.event import Event
 from lionagi.protocols.generic.processor import Processor
 
+# These tests run on asyncio only: Processor holds its events in an
+# asyncio.Queue.
+
 
 class DummyEvent(Event):
     """Minimal Event subclass for testing."""
@@ -34,7 +37,7 @@ class TestProcessorBackpressure:
         assert p.queue_full is False
         assert p.max_queue_size == 0
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_queue_full_with_limit(self):
         """queue_full reflects actual queue state."""
         p = DummyProcessor(
@@ -53,7 +56,7 @@ class TestProcessorBackpressure:
         await p.enqueue(e2)
         assert p.queue_full is True  # 2/2
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_try_enqueue_success(self):
         """try_enqueue returns True when queue has space."""
         p = DummyProcessor(
@@ -66,7 +69,7 @@ class TestProcessorBackpressure:
         assert p.try_enqueue(e) is True
         assert p.queue.qsize() == 1
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_try_enqueue_full(self):
         """try_enqueue returns False when queue is at capacity."""
         p = DummyProcessor(
@@ -84,7 +87,7 @@ class TestProcessorBackpressure:
         assert p.try_enqueue(e3) is False  # full
         assert p.queue.qsize() == 2
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_try_enqueue_after_dequeue(self):
         """After dequeuing, try_enqueue succeeds again."""
         p = DummyProcessor(
@@ -103,7 +106,7 @@ class TestProcessorBackpressure:
         assert p.queue_full is False
         assert p.try_enqueue(e2) is True
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_enqueue_blocks_when_full(self):
         """enqueue() blocks when queue is full, unblocks after dequeue."""
         p = DummyProcessor(

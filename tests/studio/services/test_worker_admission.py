@@ -17,6 +17,7 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
@@ -28,7 +29,7 @@ from lionagi.studio.scheduler.worker import claim_and_execute
 from lionagi.studio.services.task_applications import TaskApplication, submit_task
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()

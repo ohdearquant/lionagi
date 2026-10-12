@@ -13,6 +13,7 @@ import asyncio
 import json
 
 import pytest
+import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -63,7 +64,7 @@ def _completion(content: dict) -> dict:
     }
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def chat_server():
     servers = []
 

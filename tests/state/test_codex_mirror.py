@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.codex_mirror import (
     ID_FIELD,
@@ -61,7 +62,7 @@ def _records() -> list[dict]:
     ]
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db(tmp_path: Path):
     state = StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
     async with state:

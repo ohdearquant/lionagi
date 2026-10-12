@@ -16,6 +16,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from lionagi.state.db import SCHEMA_VERSION, StateDB
@@ -24,7 +25,7 @@ from tests._scheduler_claims import claim_and_advance
 # Fixtures
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     """Fresh in-memory StateDB for each test."""
     state = StateDB(":memory:")
