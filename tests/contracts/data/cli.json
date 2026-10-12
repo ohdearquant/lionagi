@@ -4578,7 +4578,7 @@
               "nargs": 0,
               "default": false,
               "choices": null,
-              "help": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless its declared behavior already matches, except for enablement."
+              "help": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless the member declares the row's behavior exactly, enablement included."
             },
             {
               "option_strings": [

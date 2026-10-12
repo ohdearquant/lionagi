@@ -52,7 +52,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
     return tmp_path
 
 
@@ -67,6 +67,8 @@ def _legacy_row(schedule_id: str, name: str, *, cwd: Path, **overrides) -> dict:
         "name": name,
         "trigger_type": "cron",
         "cron_expr": "0 2 * * *",
+        # No stored zone: the zone the scheduler recorded the row firing in.
+        "effective_timezone": "America/New_York",
         "action_kind": "agent",
         "action_agent": "reviewer",
         "action_prompt": "check things",
@@ -96,6 +98,44 @@ async def test_legacy_agent_row_converts_ready(temp_db_path, agent_profile):
     assert member.target.kind == "agent"
     assert member.target.profile == "reviewer"
     assert member.target.prompt == "check things"
+
+
+@pytest.mark.asyncio
+async def test_legacy_cron_row_exports_the_zone_the_scheduler_recorded(
+    temp_db_path, agent_profile, monkeypatch
+):
+    """The exporting process's zone is not the scheduler's; a row with no stored
+    zone fires in the zone the scheduler recorded, and only that may be exported."""
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("z1", "demo/berlin", cwd=agent_profile, effective_timezone="Europe/Berlin")
+        )
+        await db.create_schedule(
+            _legacy_row(
+                "z2",
+                "demo/stored",
+                cwd=agent_profile,
+                resolved_timezone="Asia/Tokyo",
+                effective_timezone="Europe/Berlin",
+            )
+        )
+        await db.create_schedule(
+            _legacy_row("z3", "demo/unrecorded", cwd=agent_profile, effective_timezone=None)
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    status = {line.qualified_name: line for line in lines}
+    assert status["demo/berlin"].status == "READY"
+    assert status["demo/stored"].status == "READY"
+    assert status["demo/unrecorded"].status == "BLOCKED"
+    assert "no scheduler has recorded the zone it fires in" in status["demo/unrecorded"].message
+    zones = {
+        name: member.trigger.cron.timezone for doc in docs for name, member in doc.schedules.items()
+    }
+    assert zones == {"berlin": "Europe/Berlin", "stored": "Asia/Tokyo"}
 
 
 @pytest.mark.asyncio

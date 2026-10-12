@@ -410,11 +410,13 @@ def _resolve_path(raw: str, manifest_dir: Path) -> Path:
     return p.resolve()
 
 
-def _resolve_agent_target(target: AgentTarget) -> dict[str, Any]:
+def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
     from lionagi.cli._providers import load_agent_profile
 
+    # The launched child reads its profile from its own working directory, so
+    # the profile recorded here is the one found from the execution root.
     try:
-        profile = load_agent_profile(target.profile)
+        profile = load_agent_profile(target.profile, cwd=cwd)
     except FileNotFoundError as exc:
         raise ValueError(f"target.agent profile {target.profile!r} does not exist: {exc}") from exc
 
@@ -497,9 +499,9 @@ def _resolve_command_target(target: CommandTarget) -> dict[str, Any]:
     return {"kind": "command", "executable": target.executable, "args": list(target.args)}
 
 
-def _resolve_target(target: Target, manifest_dir: Path) -> dict[str, Any]:
+def _resolve_target(target: Target, manifest_dir: Path, cwd: Path) -> dict[str, Any]:
     if isinstance(target, AgentTarget):
-        return _resolve_agent_target(target)
+        return _resolve_agent_target(target, cwd)
     if isinstance(target, FlowTarget):
         return _resolve_flow_target(target, manifest_dir)
     if isinstance(target, PlaybookTarget):
@@ -579,8 +581,6 @@ def _to_db_fields(
         "description": member.description,
         "notify_on": member.notify.on if member.notify else None,
         "notify_command": member.notify.command if member.notify else None,
-        "on_success": None,
-        "on_fail": None,
         # Cleared up-front so a re-apply that changes trigger/target kind
         # doesn't leave a stale value from the previous kind behind.
         "cron_expr": None,
@@ -649,8 +649,8 @@ def resolve_member(
 ) -> ResolvedMember:
     qualified_name = f"{'global' if is_global else project}/{name}"
     resolved_trigger = _resolve_trigger(member.trigger)
-    resolved_target = _resolve_target(member.target, manifest_dir)
     cwd = _resolve_cwd(member.execution, manifest_dir=manifest_dir, is_global=is_global)
+    resolved_target = _resolve_target(member.target, manifest_dir, cwd)
     resolved_project = member.execution.project or (None if is_global else project)
 
     resolved = {
@@ -702,9 +702,10 @@ async def create_quick_schedule(
     ``ScheduleSet`` member uses -- there is no second, forked validator.
 
     Persisted with ``managed_by='cli'`` and no ``owner_key``, so a later
-    ``ScheduleSet apply`` targeting the same qualified name still hits the
-    ownership-collision guard in ``build_plan()``. Raises ``ScheduleSetError``
-    (zero writes) on a resolution failure or a name collision.
+    ``ScheduleSet apply`` targeting the same qualified name stops at the
+    ownership check in ``build_plan()`` unless it runs with ``--adopt`` and
+    declares the row's behavior exactly. Raises ``ScheduleSetError`` (zero
+    writes) on a resolution failure or a name collision.
     """
     qualified_name = f"{project}/{name}" if project else name
     try:
@@ -778,10 +779,22 @@ class PlanEntry:
     claimed_owner_key: str | None = None
 
 
-_ADOPT_LIFECYCLE_FIELDS = frozenset({"enabled"})
 _ADOPT_DECLARATION_FIELDS = frozenset(
     {"spec_version", "authored_spec", "resolved_target", "resolved_digest"}
 )
+# Columns the scheduler reads that a declaration never writes. A row setting one
+# keeps that behavior after adoption and through every later apply while the
+# declaration does not show it, so adoption refuses such a row.
+_ADOPT_UNDECLARED_COLUMNS = (
+    "on_success",
+    "on_fail",
+    "action_extra_args",
+    "threshold_config",
+    "poll_interval_sec",
+)
+# The engine polls a github_poll row every poll_interval_sec, else interval_sec,
+# else this many seconds; a poll_interval_sec at this value changes nothing.
+_GITHUB_POLL_DEFAULT_SEC = 300
 _PROJECT_FLAG_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml"})
 
 
@@ -809,37 +822,6 @@ async def _adoption_execution_root(
     return ("path", resolved), resolved, str(root)
 
 
-def _agent_model_at(name: str, cwd: Path) -> str | None:
-    """Read the profile model from the directories visible to a child at *cwd*."""
-    from lionagi.cli import _providers
-
-    dirs: list[Path] = []
-    git_root = _find_git_root(cwd)
-    if git_root is not None:
-        candidate = git_root / ".lionagi"
-        if candidate.is_dir():
-            dirs.append(candidate)
-    for parent in (cwd, *cwd.parents):
-        candidate = parent / ".lionagi"
-        if candidate.is_dir() and candidate not in dirs:
-            dirs.append(candidate)
-    home_candidate = Path.home() / ".lionagi"
-    if home_candidate.is_dir() and home_candidate not in dirs:
-        dirs.append(home_candidate)
-
-    if "/" not in name:
-        for directory in dirs:
-            profile_path = _providers._resolve_profile_path(directory / "agents", name)
-            if profile_path is not None:
-                profile = _providers._parse_profile(name, profile_path.read_text())
-                return profile.model
-
-    plugin_path = _providers._resolve_plugin_profile_path(name)
-    if plugin_path is not None:
-        return _providers._parse_profile(name, plugin_path.read_text()).model
-    return None
-
-
 async def _adopt_model_pair(row: dict[str, Any], declared: Any) -> tuple[Any, Any]:
     current = row.get("action_model")
     if current or row.get("action_kind") != "agent" or not row.get("action_agent"):
@@ -847,8 +829,10 @@ async def _adopt_model_pair(row: dict[str, Any], declared: Any) -> tuple[Any, An
     root_key, root_path, _display = await _adoption_execution_root(row)
     if root_key[0] != "path" or root_path is None:
         return current, declared
+    from lionagi.cli._providers import load_agent_profile
+
     try:
-        current = _agent_model_at(row["action_agent"], Path(root_path)) or current
+        current = load_agent_profile(row["action_agent"], cwd=Path(root_path)).model or current
     except (FileNotFoundError, OSError, ValueError):
         pass
     return current, declared
@@ -898,13 +882,41 @@ async def _adopt_project_pair(
     return "; ".join(changed_row), "; ".join(changed_declared)
 
 
-def _adopt_timezone_pair(row: dict[str, Any], declared: Any) -> tuple[str, str]:
+def row_cron_timezone(row: dict[str, Any]) -> str | None:
+    """The zone a cron row fires in, as far as a process other than the scheduler can tell.
+
+    A stored zone is read the way the scheduler reads it. A row without one is
+    read in the scheduler daemon's default zone, which this process need not
+    share, so the zone the scheduler last recorded on the row stands for it.
+    None when the row stores no zone and no scheduler has recorded one.
+    """
+    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+
+    if row.get("resolved_timezone"):
+        return resolve_schedule_timezone(row).name
+    return row.get("effective_timezone") or None
+
+
+def _adopt_timezone_pair(row: dict[str, Any], declared: Any) -> tuple[str | None, str]:
     from lionagi.studio.scheduler.engine import resolve_schedule_timezone
 
     return (
-        resolve_schedule_timezone(row).name,
+        row_cron_timezone(row),
         resolve_schedule_timezone({**row, "resolved_timezone": declared}).name,
     )
+
+
+def _adopt_undeclared_values(row: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Columns from ``_ADOPT_UNDECLARED_COLUMNS`` the row sets, with their values."""
+    found: list[tuple[str, Any]] = []
+    for name in _ADOPT_UNDECLARED_COLUMNS:
+        value = row.get(name)
+        if name == "poll_interval_sec":
+            if value is not None and value != _GITHUB_POLL_DEFAULT_SEC:
+                found.append((name, value))
+        elif value:
+            found.append((name, value))
+    return found
 
 
 async def _adopt_spec_differences(
@@ -914,7 +926,7 @@ async def _adopt_spec_differences(
     declared_fields = _declared_columns(resolved)
     differences: list[tuple[str, Any, Any]] = []
     for name, declared in sorted(declared_fields.items()):
-        if name in _ADOPT_LIFECYCLE_FIELDS or name in _ADOPT_DECLARATION_FIELDS:
+        if name in _ADOPT_DECLARATION_FIELDS:
             continue
         if name == "resolved_timezone" and (
             row.get("trigger_type") == "cron" and declared_fields.get("trigger_type") == "cron"
@@ -951,24 +963,46 @@ async def _adopt_plan_entry(
             ),
         )
     differences = await _adopt_spec_differences(row, resolved)
+    undeclared = _adopt_undeclared_values(row)
+    target = resolved.resolved["target"]
+    play_args = target.get("args") if target.get("kind") == "playbook" else None
+    reasons: list[str] = []
     if differences:
         rendered = "; ".join(
             f"{name}: row={current!r} declared={declared!r}"
             for name, current, declared in differences
         )
-        timezone_note = (
-            " resolved_timezone compares the zone each side's cron is read in."
-            if any(name == "resolved_timezone" for name, _, _ in differences)
-            else ""
+        reasons.append(
+            f"the declared member differs from the existing row in {len(differences)} "
+            f"field(s) -- {rendered}; edit the member to match the row."
         )
+        timezone = next((d for d in differences if d[0] == "resolved_timezone"), None)
+        if timezone is not None:
+            reasons.append(
+                "resolved_timezone compares the zone each side's cron is read in; the row "
+                "stores no zone and no scheduler has recorded the zone it fires in, so start "
+                "the scheduler once to record it."
+                if timezone[1] is None
+                else "resolved_timezone compares the zone each side's cron is read in."
+            )
+    if undeclared:
+        rendered = "; ".join(f"{name}={value!r}" for name, value in undeclared)
+        reasons.append(
+            f"the row sets {rendered}, which a declaration cannot express; clear "
+            f"{'it' if len(undeclared) == 1 else 'them'} on the row first."
+        )
+    if play_args:
+        reasons.append(
+            f"the member declares playbook args {play_args!r}, which a scheduled play "
+            "launch does not pass; remove them from the member."
+        )
+    if reasons:
         return PlanEntry(
             qualified,
             "ERROR",
             detail=(
-                f"--adopt will not overwrite {row['name']}: the declared member differs "
-                f"from the existing row in {len(differences)} field(s) -- {rendered}."
-                f"{timezone_note} Edit the member to match the row, or rename the member "
-                "so the row is left alone."
+                f"--adopt will not overwrite {row['name']}: {' '.join(reasons)} Otherwise "
+                "rename the member so the row is left alone."
             ),
         )
     return PlanEntry(
@@ -1040,10 +1074,17 @@ async def build_plan(
             if adopt:
                 plan.append(await _adopt_plan_entry(existing_row, resolved, qualified, owner_key))
             else:
-                owner_desc = existing_row.get("owner_key") or (
+                other_owner = existing_row.get("owner_key")
+                owner_desc = other_owner or (
                     "a CLI quick-create"
                     if existing_row.get("managed_by") == "cli"
                     else "a legacy schedule"
+                )
+                # --adopt takes only unowned rows, so it is offered only for one.
+                remedy = (
+                    "; another set's row cannot be adopted"
+                    if other_owner
+                    else "; use --adopt to migrate it explicitly"
                 )
                 plan.append(
                     PlanEntry(
@@ -1051,7 +1092,7 @@ async def build_plan(
                         "ERROR",
                         detail=(
                             f"{qualified} is already owned by {owner_desc}, not by "
-                            f"{owner_key}; use --adopt to migrate it explicitly"
+                            f"{owner_key}{remedy}"
                         ),
                     )
                 )

@@ -1978,7 +1978,7 @@ def agent_profile_cwd(tmp_path, monkeypatch):
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
     return tmp_path
 
 
@@ -2080,7 +2080,8 @@ def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db
     result2 = run_schedule(args2)
     out2 = capsys.readouterr().out
     assert result2 == 0
-    assert "Applied atomically: 0 created, 0 adopted, 0 updated, 1 unchanged" in out2
+    assert "Applied atomically: 0 created, 0 updated, 1 unchanged" in out2
+    assert "adopt" not in out2
 
 
 def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
@@ -2099,9 +2100,10 @@ def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
             row = {
                 "id": "legacy00001",
                 "name": name,
-                "enabled": 0,
+                "enabled": 1,
                 "trigger_type": "cron",
                 "cron_expr": "0 2 * * *",
+                "effective_timezone": "America/New_York",
                 "action_kind": "agent",
                 "action_model": "anthropic/claude-sonnet-5",
                 "action_prompt": "check things",
@@ -2137,6 +2139,20 @@ def test_schedule_apply_adopt_dry_run_reports_existing_row(
     assert adopting == 0
     assert "ADOPT      demo/nightly-review  adopts existing row nightly-review" in out
     assert "Plan: 0 create, 1 adopt, 0 update" in out
+
+    as_json = run_schedule(
+        _parse_schedule_args(["apply", str(manifest), "--dry-run", "--adopt", "--json"])
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert as_json == 0
+    assert payload["plan"] == [
+        {
+            "name": "demo/nightly-review",
+            "action": "ADOPT",
+            "detail": None,
+            "adopted_from": "nightly-review",
+        }
+    ]
 
 
 def test_schedule_apply_without_adopt_names_the_required_flag(
@@ -2183,6 +2199,5 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
             "name": "demo/nightly-review",
             "action": "CREATE",
             "detail": None,
-            "adopted_from": None,
         }
     ]

@@ -1850,7 +1850,7 @@
           },
           "adopt": {
             "type": "boolean",
-            "description": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless its declared behavior already matches, except for enablement.",
+            "description": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless the member declares the row's behavior exactly, enablement included.",
             "default": false,
             "x-flag": "--adopt"
           },

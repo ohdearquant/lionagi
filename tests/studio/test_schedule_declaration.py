@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from lionagi.state.db import StateDB
 from lionagi.studio.services.schedule_declaration import (
     _ADOPT_DECLARATION_FIELDS,
-    _ADOPT_LIFECYCLE_FIELDS,
+    _ADOPT_UNDECLARED_COLUMNS,
     ScheduleSetDocument,
     ScheduleSetError,
     _adopt_spec_differences,
@@ -57,7 +57,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     (agents_dir / "no-model.md").write_text("Body only, no frontmatter model.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
     return tmp_path
 
 
@@ -1236,7 +1236,9 @@ async def test_apply_cross_owner_collision_is_an_error(temp_db_path, agent_profi
         )
         with pytest.raises(ScheduleSetError, match="owned by") as exc:
             await apply_schedule_set(db, doc, agent_profile)
-        assert "--adopt" in str(exc.value)
+        # --adopt refuses another set's row, so the error must not offer it.
+        assert "--adopt" not in str(exc.value)
+        assert "cannot be adopted" in str(exc.value)
 
         # Zero writes: the pre-existing row is untouched, no new one created.
         rows = await db.list_schedules()
@@ -1258,8 +1260,9 @@ async def test_apply_cli_quick_create_collision_is_an_error(temp_db_path, agent_
                 "managed_by": "cli",
             }
         )
-        with pytest.raises(ScheduleSetError):
+        with pytest.raises(ScheduleSetError) as exc:
             await apply_schedule_set(db, doc, agent_profile)
+        assert "use --adopt" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -1295,9 +1298,11 @@ def _legacy_adoption_row(name: str, *, cwd: Path, **overrides):
     row = {
         "id": "legacy00001",
         "name": name,
-        "enabled": 0,
+        "enabled": 1,
         "trigger_type": "cron",
         "cron_expr": "0 2 * * *",
+        # No stored zone: the zone the scheduler recorded the row firing in.
+        "effective_timezone": "America/New_York",
         "action_kind": "agent",
         "action_model": "anthropic/claude-sonnet-5",
         "action_prompt": "check things",
@@ -1398,15 +1403,31 @@ async def test_adopt_refusal_names_each_different_column(
         assert len(rows) == 1 and rows[0]["owner_key"] is None
 
 
+def _disabled_member_manifest(name: str, *, cwd: Path) -> str:
+    return _agent_manifest(name, cwd=cwd).replace(
+        "    trigger:\n", "    enabled: false\n    trigger:\n", 1
+    )
+
+
 @pytest.mark.asyncio
-async def test_adopt_sets_enablement_even_when_the_row_is_disabled(
+async def test_adopt_refuses_to_enable_a_disabled_row(
     temp_db_path, agent_profile, pinned_scheduler_tz
 ):
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
     async with StateDB() as db:
         await db.create_schedule(_legacy_adoption_row("nightly", cwd=agent_profile, enabled=0))
         plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
-        assert [entry.action for entry in plan] == ["ADOPT"]
+        assert [entry.action for entry in plan] == ["ERROR"]
+        assert "enabled: row=0 declared=1" in plan[0].detail
+        with pytest.raises(ScheduleSetError):
+            await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        row = await db.get_schedule_by_name("nightly")
+        assert row["enabled"] == 0 and row["owner_key"] is None
+
+        disabled = parse_schedule_set(_disabled_member_manifest("nightly", cwd=agent_profile))
+        await apply_schedule_set(db, disabled, agent_profile, adopt=True)
+        row = await db.get_schedule_by_name("demo/nightly")
+        assert row["enabled"] == 0 and row["owner_key"] == "demo/automation"
 
 
 @pytest.mark.asyncio
@@ -1482,9 +1503,9 @@ async def test_adoption_compares_each_column_it_writes(
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
     resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
     written = _declared_columns(resolved)
-    compared = sorted(set(written) - _ADOPT_LIFECYCLE_FIELDS - _ADOPT_DECLARATION_FIELDS)
+    compared = sorted(set(written) - _ADOPT_DECLARATION_FIELDS)
     assert compared
-    assert {"action_model", "action_project", "on_success", "resolved_timezone"} <= set(compared)
+    assert {"action_model", "action_project", "enabled", "resolved_timezone"} <= set(compared)
 
     async with StateDB() as db:
         await apply_schedule_set(db, doc, agent_profile)
@@ -1519,8 +1540,38 @@ async def test_adopt_resolves_an_unpinned_agent_model_from_its_execution_root(
     assert {"action_agent", "action_model"} <= names
 
 
+def test_a_declared_agent_records_the_profile_its_execution_root_sees(tmp_path, monkeypatch):
+    """The launched child reads its profile from the execution root, so the
+    declaration records that profile wherever the apply runs from."""
+    from lionagi._paths import find_lionagi_dirs
+    from lionagi.cli._providers import load_agent_profile
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    apply_dir, root = tmp_path / "apply", tmp_path / "root"
+    for directory, model, yolo in (
+        (apply_dir, "anthropic/apply-model", "false"),
+        (root, "anthropic/root-model", "true"),
+    ):
+        agents = directory / ".lionagi" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "reviewer.md").write_text(f"---\nmodel: {model}\nyolo: {yolo}\n---\nBody.\n")
+    assert find_lionagi_dirs(root) == [root / ".lionagi"]
+    assert load_agent_profile("reviewer", cwd=root).yolo is True
+
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=root))
+    seen = []
+    for applier in (apply_dir, root):
+        monkeypatch.chdir(applier)
+        resolved = resolve_schedule_set(doc, applier)["nightly"]
+        seen.append((resolved.db_fields["action_model"], resolved.resolved["target"]))
+    assert seen[0] == seen[1]
+    assert seen[0][0] == "anthropic/root-model"
+
+
 @pytest.mark.asyncio
-async def test_adopt_refuses_chained_actions_and_clears_them_on_success(
+async def test_adopt_refuses_chained_actions_until_they_are_cleared(
     temp_db_path, agent_profile, pinned_scheduler_tz
 ):
     doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
@@ -1555,15 +1606,176 @@ async def test_adopt_compares_cron_zones_by_the_fire_time(
         == []
     )
 
-    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "UTC")
     async with StateDB() as db:
         await db.create_schedule(row)
+        # The scheduler recorded Berlin; the declaration names New York.
+        await db.update_schedule("legacy00001", effective_timezone="Europe/Berlin")
         plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
         assert [entry.action for entry in plan] == ["ERROR"]
         detail = plan[0].detail
         assert "resolved_timezone" in detail
-        assert "UTC" in detail and "America/New_York" in detail
+        assert "Europe/Berlin" in detail and "America/New_York" in detail
         assert "zone each side's cron is read in" in detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_a_zoneless_row_in_the_zone_the_scheduler_recorded(
+    temp_db_path, agent_profile, monkeypatch, pinned_scheduler_tz
+):
+    """The scheduler daemon and the applying process can run in different zones;
+    a row with no stored zone fires in the daemon's, never the applier's."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+
+    # Applier in New York, scheduler recorded Berlin: refused although the
+    # applier's own zone matches the declaration.
+    berlin = _legacy_adoption_row("nightly", cwd=agent_profile, effective_timezone="Europe/Berlin")
+    differences = await _adopt_spec_differences(berlin, resolved)
+    assert ("resolved_timezone", "Europe/Berlin", "America/New_York") in differences
+
+    # Applier in UTC, scheduler recorded New York: the applier's zone is irrelevant.
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "UTC")
+    new_york = _legacy_adoption_row("nightly", cwd=agent_profile)
+    assert await _adopt_spec_differences(new_york, resolved) == []
+
+    # A stored zone wins over the recorded one, as it does at fire time.
+    stored = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        resolved_timezone="America/New_York",
+        effective_timezone="Europe/Berlin",
+    )
+    assert await _adopt_spec_differences(stored, resolved) == []
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_zoneless_row_no_scheduler_has_recorded(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, effective_timezone=None)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ERROR"]
+        assert "resolved_timezone: row=None declared='America/New_York'" in plan[0].detail
+        assert "no scheduler has recorded the zone it fires in" in plan[0].detail
+
+
+def _undeclared_value(column: str):
+    return {
+        "on_success": {"kind": "agent", "agent": "publisher", "prompt": "ship it"},
+        "on_fail": {"kind": "agent", "agent": "pager", "prompt": "page"},
+        "action_extra_args": ["extra"],
+        "threshold_config": {"metric": "failed_sessions", "op": "gt", "value": 3},
+        "poll_interval_sec": 60,
+    }[column]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", _ADOPT_UNDECLARED_COLUMNS)
+async def test_adopt_refuses_a_row_setting_a_column_no_declaration_writes(
+    temp_db_path, agent_profile, pinned_scheduler_tz, column
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    value = _undeclared_value(column)
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, **{column: value})
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ERROR"]
+        assert f"{column}={value!r}" in plan[0].detail
+        assert "which a declaration cannot express" in plan[0].detail
+        with pytest.raises(ScheduleSetError):
+            await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        assert (await db.get_schedule_by_name("nightly"))["owner_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_adopt_accepts_the_default_github_poll_interval(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, poll_interval_sec=300)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ADOPT"]
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_playbook_args_a_scheduled_launch_does_not_pass(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    manifest = f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+  project: demo
+schedules:
+  audit:
+    trigger:
+      every: 1h
+    target:
+      kind: playbook
+      name: health-audit
+      args:
+        depth: 2
+    execution:
+      cwd: {agent_profile}
+"""
+    doc = parse_schedule_set(manifest)
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "legacyplay01",
+                "name": "audit",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 3600,
+                "action_kind": "play",
+                "action_playbook": "health-audit",
+                "action_cwd": str(agent_profile),
+                "action_project": "demo",
+                "action_command_args": [],
+                "missed_fire_policy": "skip",
+                "overlap_policy": "skip",
+            }
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ERROR"]
+        assert "playbook args {'depth': 2}" in plan[0].detail
+
+        without_args = parse_schedule_set(manifest.replace("      args:\n        depth: 2\n", ""))
+        plan, _ = await build_plan(db, without_args, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ADOPT"]
+
+
+@pytest.mark.asyncio
+async def test_plain_reapply_keeps_chain_columns_set_outside_the_declaration(
+    temp_db_path, agent_profile
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    chain = {"kind": "agent", "agent": "reviewer", "prompt": "follow up"}
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, agent_profile)
+        row = await db.get_schedule_by_name("demo/nightly")
+        await db.update_schedule(row["id"], on_success=chain, on_fail=chain)
+
+        edited = parse_schedule_set(
+            _agent_manifest("nightly", cwd=agent_profile).replace(
+                'prompt: "check things"', 'prompt: "check things again"'
+            )
+        )
+        result = await apply_schedule_set(db, edited, agent_profile)
+        assert result.updated == 1
+        row = await db.get_schedule_by_name("demo/nightly")
+        assert row["action_prompt"] == "check things again"
+        assert row["on_success"] == chain and row["on_fail"] == chain
 
 
 @pytest.mark.asyncio

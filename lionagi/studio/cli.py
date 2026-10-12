@@ -1445,7 +1445,7 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
                             "name": e.qualified_name,
                             "action": e.action,
                             "detail": e.detail,
-                            "adopted_from": e.adopted_from,
+                            **({"adopted_from": e.adopted_from} if e.adopted_from else {}),
                         }
                         for e in plan
                     ],
@@ -1463,14 +1463,18 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
         updated = sum(1 for e in plan if e.action == "UPDATE")
         unchanged = sum(1 for e in plan if e.action == "UNCHANGED")
         disabled = sum(1 for e in plan if e.action == "DISABLE")
+        # The adopt count appears only when there is one, so output without
+        # --adopt reads as it did before adoption existed.
         if args.dry_run:
+            adopt_part = f"{adopted} adopt, " if adopted else ""
             print(
-                f"Plan: {created} create, {adopted} adopt, {updated} update, "
+                f"Plan: {created} create, {adopt_part}{updated} update, "
                 f"{unchanged} unchanged, {disabled} disable"
             )
         elif not has_errors:
+            adopt_part = f"{adopted} adopted, " if adopted else ""
             print(
-                f"Applied atomically: {created} created, {adopted} adopted, {updated} updated, "
+                f"Applied atomically: {created} created, {adopt_part}{updated} updated, "
                 f"{unchanged} unchanged, {disabled} disabled"
             )
     return 1 if has_errors else 0
@@ -2232,7 +2236,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         action="store_true",
         help=(
             "Take an existing unowned row into this set in place, keeping its id and history. "
-            "Refuses unless its declared behavior already matches, except for enablement."
+            "Refuses unless the member declares the row's behavior exactly, enablement included."
         ),
     )
     apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")

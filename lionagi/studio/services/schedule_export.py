@@ -36,6 +36,7 @@ from lionagi.studio.services.schedule_declaration import (
     Target,
     Trigger,
     resolve_member,
+    row_cron_timezone,
 )
 
 # managed_by is NULL for every row created before the declaration layer; the
@@ -177,11 +178,15 @@ def _convert_legacy_trigger(row: dict[str, Any]) -> Trigger:
         expr = row.get("cron_expr")
         if not expr:
             raise ValueError("trigger_type='cron' row has no cron_expr")
-        # Legacy rows without a stored zone are read in the scheduler's current
-        # default, so the exported declaration must preserve that fire time.
-        from lionagi.studio.scheduler.engine import resolve_schedule_timezone
-
-        tz = resolve_schedule_timezone(row).name
+        # A row without a stored zone fires in the scheduler daemon's default,
+        # which this process need not share; the declaration must carry the
+        # zone the row actually fires in, or nothing.
+        tz = row_cron_timezone(row)
+        if tz is None:
+            raise ValueError(
+                "trigger_type='cron' row stores no timezone and no scheduler has recorded "
+                "the zone it fires in; start the scheduler once so it records one"
+            )
         return Trigger(cron=CronTrigger(expression=expr, timezone=tz))
     if kind == "interval":
         secs = row.get("interval_sec")
