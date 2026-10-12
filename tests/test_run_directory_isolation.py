@@ -27,18 +27,28 @@ _REPO_ROOT = _TESTS_DIR.parent
 _PROBE_TEST = """
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from lionagi import _paths
 
 
 def test_report_bound_paths():
+    child_home = subprocess.run(
+        [sys.executable, "-c", "from pathlib import Path; print(Path.home())"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
     Path(os.environ["PROBE_RESULT"]).write_text(
         json.dumps(
             {
                 "lionagi_home": str(_paths.LIONAGI_HOME),
                 "runs_root": str(_paths.RUNS_ROOT),
                 "env_lionagi_home": os.environ["LIONAGI_HOME"],
+                "home": str(Path.home()),
+                "child_home": child_home,
             }
         )
     )
@@ -219,6 +229,26 @@ def test_preset_lionagi_home_does_not_become_the_suite_root(probe, tmp_path):
 
     # The caller's directory is not just unbound, it is untouched.
     assert list(caller_home.iterdir()) == []
+
+
+def test_the_callers_home_reaches_neither_the_suite_nor_its_children(probe, tmp_path):
+    """Discovery reads the user-level `.lionagi` through HOME, so the suite replaces it."""
+    caller_home = tmp_path / "caller-home"
+    (caller_home / ".lionagi" / "agents").mkdir(parents=True)
+
+    completed, bound = probe({"HOME": str(caller_home)})
+
+    assert completed.returncode == 0, (
+        f"probe pytest failed (rc={completed.returncode}):\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    assert bound, "probe produced no result file"
+    suite_home = Path(bound["home"])
+    assert suite_home != caller_home
+    assert Path(tempfile.gettempdir()).resolve() in suite_home.resolve().parents
+    # A child the suite starts inherits the replacement; it imports no conftest of its own.
+    assert Path(bound["child_home"]) == suite_home
+    assert list(caller_home.iterdir()) == [caller_home / ".lionagi"]
 
 
 def test_lionagi_test_home_is_the_deliberate_way_through(probe, tmp_path):
