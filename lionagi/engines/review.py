@@ -113,7 +113,7 @@ _MCP_REQUEST_TIMEOUT = 408  # httpx.codes.REQUEST_TIMEOUT, the SDK's timeout cod
 # stops recognising a dropped connection and the run fails loudly instead of
 # degrading, which is the safe direction to be wrong in.
 _MCP_CONNECTION_CLOSED_MESSAGE = "Connection closed"
-_MCP_TRANSPORT_PROBE_TIMEOUT_S = 1.0
+_MCP_TRANSPORT_PROBE_TIMEOUT_S = 5.0
 
 
 def _carries_only_the_sdks_own_fields(error: object) -> bool:

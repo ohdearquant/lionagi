@@ -134,6 +134,8 @@ def codex_unset_effort_default(
     model_part = (model or "").split("/", 1)[-1]
     if model_part not in _CODEX_KNOWN_EFFORT_MODELS:
         return None
+    if model_part in _CODEX_NO_MINIMAL_MODELS and global_effort == "minimal":
+        return None
     return _clamp_codex_effort(global_effort, model)
 
 

@@ -154,8 +154,7 @@ class ContextTool(LionTool):
             ``view`` is the active view with the collapsed messages removed and
             ``summary_at`` the position the assistant summary would take. The
             chat compiler requires the first model-facing turn to be an
-            Instruction when a system message is set, and keeps only the first
-            of two Instructions with no assistant turn between them.
+            Instruction when a system message is set.
             """
             roles: list[str] = []
             for i, uid in enumerate([*view, None]):
@@ -172,8 +171,6 @@ class ContextTool(LionTool):
                     roles.append("assistant")
             if msgs.system and roles and roles[0] == "assistant":
                 return "the active view would begin with an assistant response"
-            if any(a == b == "instruction" for a, b in zip(roles, roles[1:], strict=False)):
-                return "the active view would contain two instructions in a row"
             return None
 
         def _tokens(msg) -> int:

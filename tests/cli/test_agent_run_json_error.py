@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +18,21 @@ from tests.cli.test_agent_context_from import _wire_agent_stubs
 from tests.providers.test_claude_code_refusal import REFUSAL
 
 
+def test_durable_operations_scopes_manifest_error_to_agent_runs():
+    doc = Path(__file__).parents[2] / "docs/guides/durable-operations.md"
+    text = doc.read_text()
+    state_section = text.split("## Understand local state and artifacts", 1)[1]
+    state_section = state_section.split("## ", 1)[0]
+    state_section = " ".join(state_section.split())
+
+    assert "A failed run launched with `li agent` also records `error`" in state_section
+    assert (
+        "Operator runs record their failure reason on the Operator turn instead." in state_section
+    )
+
+
 def _run(monkeypatch, tmp_path) -> RunDir:
+    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
 
     run = RunDir(
@@ -25,6 +40,11 @@ def _run(monkeypatch, tmp_path) -> RunDir:
     )
     run.ensure_state_dirs()
     monkeypatch.setattr(agent_mod, "allocate_run", lambda: run)
+    process_markers = {"pid": 1, "pid_create_time": 1.0}
+    monkeypatch.setattr(
+        runs_mod, "current_pid_markers", lambda: dict(process_markers), raising=False
+    )
+    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(process_markers))
     return run
 
 
