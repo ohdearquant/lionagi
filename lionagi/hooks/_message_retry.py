@@ -25,6 +25,27 @@ class PendingMessageEvent:
     on_persisted: Callable[[], None] | None = None
 
 
+def _describe_failure(exc: Exception | None) -> tuple[Any, Exception | None]:
+    """What a retry warning says about *exc*, and the traceback it carries.
+
+    A refused writer lock is ordinary contention, so it is one line naming the
+    driver's error and no traceback; SQLAlchemy's own text for it spans lines.
+    Only *exc* and the driver error SQLAlchemy keeps on its ``orig`` are read:
+    an error that merely chains a refusal may be a different failure raised
+    while the refusal was handled. That one, any other failure, and one whose
+    text cannot be read keep their message and traceback.
+    """
+    try:
+        from lionagi.session.observer import _is_lock_refusal  # noqa: PLC0415
+
+        for node in (getattr(exc, "orig", None), exc):
+            if isinstance(node, BaseException) and _is_lock_refusal(node):
+                return " ".join(repr(node).split()), None
+    except Exception:  # noqa: BLE001 -- describing a failure must not become one
+        return exc, exc
+    return exc, exc
+
+
 class MessagePersistRetryQueue:
     """Preserve message order while retrying failed atomic persistence events."""
 
@@ -142,20 +163,23 @@ class MessagePersistRetryQueue:
         if state == self._state:
             return
         self._state = state
+        if state == "healthy":
+            self._logger.debug("live persist retries recovered for %s", self._owner)
+            return
+        reason, exc_info = _describe_failure(exc)
         if state == "retrying":
             self._logger.warning(
                 "live persist write failed for %s; event queued for ordered retry: %s",
                 self._owner,
-                exc,
-                exc_info=exc,
+                reason,
+                exc_info=exc_info,
             )
         elif state == "deferred":
             self._logger.warning(
                 "live persist retries deferred for %s after %d consecutive failures; "
-                "pending events will retry at teardown",
+                "pending events will retry at teardown: %s",
                 self._owner,
                 self._consecutive_failures,
-                exc_info=exc,
+                reason,
+                exc_info=exc_info,
             )
-        elif state == "healthy":
-            self._logger.debug("live persist retries recovered for %s", self._owner)

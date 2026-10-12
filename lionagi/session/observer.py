@@ -146,6 +146,16 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     return payload
 
 
+def _is_lock_refusal(exc: BaseException) -> bool:
+    """Whether *exc* itself, not anything it wraps or chains, is SQLite refusing the writer lock."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int) and code & 0xFF in _SQLITE_LOCK_CODES:
+        return True
+    return type(exc).__name__ == "OperationalError" and any(
+        marker in str(exc).lower() for marker in _SQLITE_LOCK_MESSAGES
+    )
+
+
 def _is_writer_lock_failure(exc: BaseException) -> bool:
     """Whether *exc* is SQLite refusing the writer lock, at any depth of wrapping.
 
@@ -158,12 +168,7 @@ def _is_writer_lock_failure(exc: BaseException) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        code = getattr(current, "sqlite_errorcode", None)
-        if isinstance(code, int) and code & 0xFF in _SQLITE_LOCK_CODES:
-            return True
-        if type(current).__name__ == "OperationalError" and any(
-            marker in str(current).lower() for marker in _SQLITE_LOCK_MESSAGES
-        ):
+        if _is_lock_refusal(current):
             return True
         for nested in (getattr(current, "orig", None), current.__cause__, current.__context__):
             if isinstance(nested, BaseException):
