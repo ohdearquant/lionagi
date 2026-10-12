@@ -1460,6 +1460,28 @@ async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
     assert branch_b.chat_model.endpoint.session_id == "session-abc"
 
 
+async def test_forward_mcp_explicit_path_undecodable_raises_configuration_error(tmp_path):
+    """A named config that is not valid UTF-8 makes `_forward_mcp_to_cli_request`
+    raise a configuration error that names the file, not a bare
+    UnicodeDecodeError. Called directly: through create_agent, `_load_mcp`
+    reads the same file first and raises there."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.agent.factory import _forward_mcp_to_cli_request
+    from lionagi.service.imodel import iModel
+    from lionagi.session.branch import Branch
+
+    bad_path = tmp_path / "undecodable.mcp.json"
+    bad_path.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+
+    config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
+    config.mcp_config_path = str(bad_path)
+
+    branch = Branch(chat_model=iModel(provider="claude_code", model="sonnet", api_key="dummy"))
+
+    with pytest.raises(ConfigurationError, match=str(bad_path)):
+        _forward_mcp_to_cli_request(branch, config)
+
+
 async def test_forward_mcp_explicit_path_read_failure_raises(tmp_path):
     """An explicit mcp_config_path that fails to read/parse is a configuration error, not a silent skip -- exercises `_forward_mcp_to_cli_request` directly rather than through create_agent, since island 1's `_load_mcp` would otherwise raise its own JSONDecodeError first and mask the intended regression."""
     from lionagi._errors import ConfigurationError

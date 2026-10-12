@@ -1637,12 +1637,14 @@ class MCPConnectionPool:
             raise FileNotFoundError(f"MCP config file not found: {path}")
 
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
             raise json.JSONDecodeError(
                 f"Invalid JSON in MCP config file: {e.msg}", e.doc, e.pos
             ) from e
+        except UnicodeDecodeError as e:
+            raise ValueError(f"MCP config file {config_path} is not valid UTF-8: {e}") from e
 
         if not isinstance(data, dict):
             raise ValueError("MCP config must be a JSON object")
