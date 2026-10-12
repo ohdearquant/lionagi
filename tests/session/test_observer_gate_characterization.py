@@ -11,6 +11,7 @@ when a gate, route or subscriber raises or the emitter is cancelled.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -62,8 +63,20 @@ class _RecordingDb:
         return len(self.rows)
 
 
+# Bounds a wait that only a deadlock or a swallowed cancellation would exhaust;
+# generous so a loaded host is never mistaken for either.
+_STALL_TIMEOUT = 10.0
+
+
 def _flow_ids(obs: SessionObserver) -> list:
     return [item.id for item in obs.flow.items]
+
+
+async def _cancelled_outcome(task: asyncio.Task) -> None:
+    """Wait (bounded) for a cancelled emitter task and re-raise its outcome."""
+    done, _ = await asyncio.wait({task}, timeout=_STALL_TIMEOUT)
+    assert task in done, "the cancelled emitter did not finish"
+    task.result()
 
 
 # gate runs first
@@ -100,11 +113,12 @@ async def test_async_gate_is_awaited_before_routes_and_subscribers():
         return True
 
     obs.gate(gate)
+    obs.route(lambda _p: order.append("route") or True, into="s")
     obs.observe(Noticed, handler=lambda _e, _c: order.append("subscriber"))
 
     await obs.emit(Noticed(note="x"))
 
-    assert order == ["gate-start", "gate-end", "subscriber"]
+    assert order == ["gate-start", "gate-end", "route", "subscriber"]
 
 
 async def test_gate_is_called_once_per_emit_with_the_unwrapped_payload():
@@ -121,7 +135,9 @@ async def test_gate_is_called_once_per_emit_with_the_unwrapped_payload():
     assert seen[1:] == ["wrapped", "raw string"]
 
 
-@pytest.mark.parametrize("verdict", [None, 0, "", False])
+@pytest.mark.parametrize(
+    "verdict", [None, 0, "", False], ids=["None", "zero", "empty-str", "False"]
+)
 async def test_falsy_gate_verdict_denies(verdict):
     obs = SessionObserver()
     fired: list = []
@@ -132,7 +148,9 @@ async def test_falsy_gate_verdict_denies(verdict):
     assert fired == []
 
 
-@pytest.mark.parametrize("verdict", [True, 1, "yes", object()])
+@pytest.mark.parametrize(
+    "verdict", [True, 1, "yes", object()], ids=["True", "one", "str", "object"]
+)
 async def test_truthy_gate_verdict_allows(verdict):
     obs = SessionObserver()
     fired: list = []
@@ -324,7 +342,55 @@ async def test_persistence_failure_is_swallowed_and_later_subscribers_still_run(
     obs.bind_db_persistence("sess-1", db=db)
     obs.observe(Signal, handler=lambda e, _c: "after")
 
-    assert await obs.emit(Signal(data="x")) == ["after", None]
+    async def later_async(_e, _c):
+        # Gathered beside the persistence call: an escaping store error would
+        # cancel this and replace the results below.
+        await asyncio.sleep(0)
+        return "after-async"
+
+    obs.observe(Signal, handler=later_async)
+
+    assert await obs.emit(Signal(data="x")) == ["after", None, "after-async"]
+
+
+async def test_unbound_persistence_skips_a_store_known_to_be_absent(monkeypatch):
+    import lionagi.state.db as state_db
+
+    opened: list = []
+    monkeypatch.setattr(state_db, "state_db_known_absent", lambda: True)
+    monkeypatch.setattr(state_db, "StateDB", lambda: opened.append(1))
+    obs = SessionObserver()
+    obs.bind_db_persistence("sess-1")
+
+    assert await obs.emit(Signal(data="x")) == [None]
+    assert opened == []
+
+
+async def test_unbound_persistence_opens_a_fresh_store_per_signal(monkeypatch):
+    import lionagi.state.db as state_db
+
+    db = _RecordingDb()
+    entered: list[str] = []
+
+    class _FreshStore:
+        async def __aenter__(self):
+            entered.append("enter")
+            return db
+
+        async def __aexit__(self, *exc):
+            entered.append("exit")
+
+    monkeypatch.setattr(state_db, "state_db_known_absent", lambda: False)
+    monkeypatch.setattr(state_db, "StateDB", _FreshStore)
+    obs = SessionObserver()
+    obs.bind_db_persistence("sess-1")
+
+    await obs.emit(Signal(data="x"))
+    await obs.emit(Signal(data="y"))
+
+    assert entered == ["enter", "exit", "enter", "exit"]
+    assert [r["session_id"] for r in db.rows] == ["sess-1", "sess-1"]
+    assert [r["payload"]["data"] for r in db.rows] == ["x", "y"]
 
 
 async def test_unbind_removes_persistence_but_not_other_subscribers():
@@ -378,7 +444,7 @@ async def test_returned_awaitables_are_gathered_concurrently():
     obs.observe(Noticed, handler=b)
 
     # sequential awaiting would deadlock: each waits for the other to start
-    results = await asyncio.wait_for(obs.emit(Noticed(note="x")), timeout=1.0)
+    results = await asyncio.wait_for(obs.emit(Noticed(note="x")), timeout=_STALL_TIMEOUT)
     assert results == ["a", "b"]
 
 
@@ -448,10 +514,40 @@ async def test_route_condition_raise_propagates_after_event_is_recorded():
     assert obs.stream("never") == []
 
 
-async def test_async_subscriber_raise_cancels_running_siblings_and_discards_sync_results():
+async def test_sync_subscriber_raise_drops_awaitables_collected_before_it_unawaited():
+    obs = SessionObserver()
+    ran: list[str] = []
+    collected: list = []
+
+    async def body():
+        ran.append("async-body")
+
+    def earlier_async(_event, _ctx):
+        coro = body()
+        collected.append(coro)
+        return coro
+
+    def boom(_event, _ctx):
+        raise LookupError("subscriber failed")
+
+    obs.observe(Noticed, handler=earlier_async)
+    obs.observe(Noticed, handler=boom)
+
+    with pytest.raises(LookupError, match="subscriber failed"):
+        await obs.emit(Noticed(note="x"))
+
+    try:
+        assert ran == []
+        assert inspect.getcoroutinestate(collected[0]) == inspect.CORO_CREATED
+    finally:
+        collected[0].close()
+
+
+async def test_async_subscriber_raise_cancels_running_siblings_after_sync_subscribers_ran():
     obs = SessionObserver()
     sibling_started = asyncio.Event()
     sibling_cancelled = asyncio.Event()
+    sync_calls: list = []
 
     async def failing(_event, _ctx):
         await sibling_started.wait()
@@ -464,15 +560,16 @@ async def test_async_subscriber_raise_cancels_running_siblings_and_discards_sync
         finally:
             sibling_cancelled.set()
 
-    obs.observe(Noticed, handler=lambda _e, _c: "sync-result")
+    obs.observe(Noticed, handler=lambda e, _c: sync_calls.append(e))
     obs.observe(Noticed, handler=failing)
     obs.observe(Noticed, handler=sibling)
     event = Noticed(note="x")
 
     with pytest.raises(ValueError, match="async failed"):
-        await asyncio.wait_for(obs.emit(event), timeout=1.0)
+        await asyncio.wait_for(obs.emit(event), timeout=_STALL_TIMEOUT)
 
     assert sibling_cancelled.is_set()
+    assert sync_calls == [event]
     assert _flow_ids(obs) == [event.id]
 
 
@@ -504,11 +601,11 @@ async def test_emitter_cancelled_while_gate_is_pending_records_nothing_and_dispa
 
     obs.gate(slow_gate)
     task = asyncio.create_task(obs.emit(Noticed(note="x")))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(started.wait(), timeout=_STALL_TIMEOUT)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await _cancelled_outcome(task)
     assert len(obs.flow.items) == 0  # cancellation is not read as a denial
     assert fired == []
 
@@ -538,11 +635,11 @@ async def test_emitter_cancelled_during_gather_keeps_event_in_flow_and_stream():
     obs.observe(Noticed, handler=slow)
     event = Noticed(note="x")
     task = asyncio.create_task(obs.emit(event))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(started.wait(), timeout=_STALL_TIMEOUT)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await _cancelled_outcome(task)
     assert _flow_ids(obs) == [event.id]
     assert [e.id for e in obs.stream("s")] == [event.id]
 
@@ -581,7 +678,9 @@ async def test_authorize_denial_appends_gate_denied_carrying_the_action():
     assert items[0].data is denied
 
 
-@pytest.mark.parametrize("raises", [RuntimeError("down"), ValueError("bad")])
+@pytest.mark.parametrize(
+    "raises", [RuntimeError("down"), ValueError("bad")], ids=["RuntimeError", "ValueError"]
+)
 async def test_authorize_raising_gate_denies_and_records_gate_denied(raises):
     obs = SessionObserver()
 
