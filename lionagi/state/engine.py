@@ -433,7 +433,9 @@ _REST_UNQUOTED = {**_REST_QUOTED, "<(": _REST, ">(": _REST, "(": _REST}
 _SHELL_OPENINGS = {**_REST_UNQUOTED, '"': "shell quoted", "${": "shell expansion"}
 _BASH_OPENINGS = {**_REST_UNQUOTED, '"': "bash quoted", "${": "bash expansion"}
 # in a `${..}` part zsh reads an unquoted `{` as opening a part to its own `}`, where
-# bash and dash end the part at the first `}`; the part is read zsh's way, the longer
+# bash and dash end the part at the first `}`; the part is read zsh's way, the longer.
+# The bash reading reads it that way too, so there it can mask past the `}` where bash
+# ends the word, never short of it
 _SHELL_EXPANSION_OPENINGS = {**_SHELL_OPENINGS, "{": "shell expansion"}
 _BASH_EXPANSION_OPENINGS = {**_BASH_OPENINGS, "{": "bash expansion"}
 # name: (stop pattern, part pattern, the reading each opening's part is read by). A

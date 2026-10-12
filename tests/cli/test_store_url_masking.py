@@ -474,6 +474,8 @@ def test_credentials_are_masked_inside_prose():
         ('PGPASSWORD="${PW:-"a } b"}" psql', "PGPASSWORD=*** psql"),
         ("PGPASSWORD=${PW:-\\} b} psql", "PGPASSWORD=*** psql"),
         ("PGPASSWORD=${PW:-a b", "PGPASSWORD=***"),
+        # found when its `${` starts on the last character of a 64-character search window
+        ("PGPASSWORD=" + "a" * 63 + "${PW:-a b} c psql", "PGPASSWORD=*** c psql"),
         # zsh reads an unquoted `{` in it as opening a part to its own `}`, where bash
         # and dash end at the first `}`: zsh's word is the longer
         ("PGPASSWORD=${PW:-{a} hunter 2} psql", "PGPASSWORD=*** psql"),
