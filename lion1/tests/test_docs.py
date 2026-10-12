@@ -1,5 +1,6 @@
-"""docs/README.md is the map of the runtime, kept in step with the code: every module of src/lion1 is in
-its table, each row of the value sets names a field whose type holds exactly the values the row lists
+"""lion1/docs/README.md is the map of the runtime, kept in step with the code: every module of
+lion1/src/lion1 is in its table, each row of the value sets names a field whose type holds exactly
+the values the row lists
 and every closed value set the runtime and the served actor declare has a row, the event kinds it
 names are the ones they emit, and every relative link on it and on the README resolves."""
 
@@ -58,24 +59,24 @@ def literals_in(source: str) -> list[tuple[str, ...]]:
 
 
 def sources() -> list[Path]:
-    """Every module of src/lion1 and hub/serve, a package's nested ones included."""
+    """Every module of lion1/src/lion1 and lion1/hub/serve, a package's nested ones included."""
     return sorted([*SRC.rglob("*.py"), *SERVE.rglob("*.py")])
 
 
 def module_name(path: Path) -> str:
-    """The dotted name a file of src/lion1 or hub/serve is imported by."""
+    """The dotted name a file of lion1/src/lion1 or lion1/hub/serve is imported by."""
     root, package = (SRC, "lion1") if path.is_relative_to(SRC) else (SERVE, "hub.serve")
     parts = path.relative_to(root).with_suffix("").parts
     return ".".join((package, *(parts[:-1] if parts[-1] == "__init__" else parts)))
 
 
 def literals() -> list[tuple[str, ...]]:
-    """Every `Literal[...]` written in src/lion1 and hub/serve, as its values in order."""
+    """Every `Literal[...]` written in lion1/src/lion1 and lion1/hub/serve, as its values in order."""
     return [v for path in sources() for v in literals_in(path.read_text())]
 
 
 def enums() -> list[tuple[str, ...]]:
-    """Every enum a module of src/lion1 or hub/serve defines, as its members in order."""
+    """Every enum a module of lion1/src/lion1 or lion1/hub/serve defines, as its members in order."""
     found = []
     for path in sources():
         name = module_name(path)

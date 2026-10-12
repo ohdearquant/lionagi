@@ -20,6 +20,16 @@ runs synchronously at the tail of every node's execution — the only
 race-free point for a caller's `inject()` against the task group's
 convergence; `cli/orchestrate/flow.py`'s team-round wakeup logic is wired here.
 
+A `higher_tier` escalation retry is spliced immediately after its emitter:
+the emitter points to the retry, and the retry takes over the emitter's former
+outgoing edges (including their conditions, labels, and properties). Existing
+dependents therefore wait for the retry and assemble context from its result,
+not from the result that requested escalation. A node that escalates again is
+spliced after the retry already standing in for it, so repeated retries form
+one chain (emitter, retry 1, retry 2, former successors) and a dependent always
+gates on the result of the node that precedes it in the graph. Other reactive
+spawns retain their ordinary dependent/independent behavior.
+
 **`flow.py`** gate-reject contract — a playbook-authored node opts into gate
 semantics by setting `operation.metadata["is_gate"] = True` (e.g. via
 `OperationGraphBuilder.add_operation(..., is_gate=True)`). Once that node
@@ -682,6 +692,18 @@ then only builds when `openai_compatible=True` is passed explicitly, or
 same signal a caller already needs to point the fallback at a real custom
 host. Anything else raises `ProviderNotFoundError` naming the requested
 provider and every provider currently registered.
+
+### ActionManager plugin-shadow diagnostics
+
+A registered local tool remains authoritative when a plugin declares the same
+name. `ActionManager` resolves that collision only for its warning and caches
+the answer per registry generation and tool name. The cache also records the
+user-settings revision, so trust and enable/disable writes invalidate it
+immediately even when no `PluginRegistry.reset()` occurs. Other same-generation
+mutations, including bundle edits and cross-process settings rewrites that
+deliberately preserve file metadata, are refreshed on a one-second monotonic
+deadline. That is the complete accepted staleness window for this diagnostic;
+it never affects tool routing or plugin activation.
 
 ### EndpointRegistry plugin revalidation
 

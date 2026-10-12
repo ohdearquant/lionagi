@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import contextvars
 import inspect
+import json
 import logging
 import math
 import os
@@ -178,6 +179,12 @@ class DependencyAwareExecutor:
         # rather than just "my parent was skipped".
         self._gate_rejections: dict[Any, dict[str, Any]] = {}
         self._skip_reasons: dict[Any, dict[str, Any]] = {}
+        # emitter op id -> the escalation retry that stands in for it on every
+        # downstream edge (ReactiveExecutor only; always empty otherwise). A
+        # dependent's incoming edge is resolved once, up front, so a retry
+        # spliced in later needs this to redirect that already-captured edge
+        # onto the node that actually produced the result.
+        self._escalation_replacement: dict[Any, Any] = {}
         self._op_start_times = {}
         # Identity bookkeeping so every started operation gets exactly one
         # terminal on_progress signal, whichever exit path it takes.
@@ -748,9 +755,16 @@ class DependencyAwareExecutor:
         # Snapshot before awaiting: iterating the live adjacency dict across
         # an await would raise RuntimeError if reactive injection attaches an
         # edge mid-wait. A dependency added after the snapshot is deferred
-        # to the next check.
-        incoming_edge_ids = tuple(self.graph.node_edge_mapping[operation.id]["in"])
-        if not incoming_edge_ids:
+        # to the next check. The edge objects are resolved here too, not
+        # per iteration: an escalation splice removes the emitter's original
+        # edges while this coroutine waits on an earlier edge's head, and a
+        # lookup of a removed id after that wait fails the dependent instead
+        # of falling through to the replacement chain below.
+        incoming_edges = tuple(
+            self.graph.internal_edges[edge_id]
+            for edge_id in self.graph.node_edge_mapping[operation.id]["in"]
+        )
+        if not incoming_edges:
             return True
 
         has_valid_path = False
@@ -761,22 +775,37 @@ class DependencyAwareExecutor:
         # first-listed valid edge wins" -- a node with a valid non-gate edge
         # listed before its rejected-gate edge must still be vetoed, so this
         # never exits early on `has_valid_path=True`.
-        for edge_id in incoming_edge_ids:
-            edge = self.graph.internal_edges[edge_id]
-            if edge.head in self.completion_events:
-                await self.completion_events[edge.head].wait()
+        for edge in incoming_edges:
+            head_id = edge.head
+            if head_id in self.completion_events:
+                await self.completion_events[head_id].wait()
 
-            upstream_reason = self._skip_reasons.get(edge.head) or self._gate_rejections.get(
-                edge.head
-            )
+            # An escalation retry can splice itself in as this edge's true
+            # upstream while this coroutine was waiting above: splice_after
+            # replaces the graph edge, but this loop already resolved `edge`
+            # from the pre-splice snapshot, so `edge.head` still names the
+            # escalated-away original. Follow the replacement chain (handles
+            # repeated escalations of the same node) so the gate/skip
+            # bookkeeping and condition evaluation below run against the node
+            # that actually produced the result. Stop if the chain would
+            # point back at `operation` itself: that means this edge *is*
+            # the retry's own new link from the emitter it replaced, which
+            # is a legitimate direct dependency, not a stale one -- resolving
+            # it here would make the retry wait on its own completion event.
+            while (
+                head_id in self._escalation_replacement
+                and self._escalation_replacement[head_id] != operation.id
+            ):
+                head_id = self._escalation_replacement[head_id]
+                if head_id in self.completion_events:
+                    await self.completion_events[head_id].wait()
+
+            upstream_reason = self._skip_reasons.get(head_id) or self._gate_rejections.get(head_id)
             if upstream_reason is not None:
                 gate_reason = gate_reason or upstream_reason
                 continue
 
-            if (
-                edge.head in self.skipped_operations
-                or edge.head in self._preterminal_failed_operations
-            ):
+            if head_id in self.skipped_operations or head_id in self._preterminal_failed_operations:
                 continue
 
             if has_valid_path:
@@ -785,7 +814,7 @@ class DependencyAwareExecutor:
                 # redundant condition evaluation.
                 continue
 
-            result_value = self.results.get(edge.head)
+            result_value = self.results.get(head_id)
             if result_value is not None and not isinstance(result_value, str | int | float | bool):
                 result_value = to_dict(result_value, recursive=True)
 
@@ -834,7 +863,22 @@ class DependencyAwareExecutor:
         predecessors = self._get_predecessors(operation)
         if predecessors:
             pred_ctx = Note()
+            replacements = self._escalation_replacement
             for pred in predecessors:
+                pred_id = pred.id
+                seen_predecessors = {pred_id}
+                while pred_id in replacements:
+                    replacement_id = replacements[pred_id]
+                    if (
+                        replacement_id == operation.id
+                        or replacement_id in seen_predecessors
+                        or replacement_id not in self.graph.internal_nodes
+                    ):
+                        break
+                    pred_id = replacement_id
+                    seen_predecessors.add(pred_id)
+                    pred = self.graph.internal_nodes[pred_id]
+
                 if (
                     pred.id in self.skipped_operations
                     or pred.id in self._preterminal_failed_operations
@@ -1047,6 +1091,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._running = False
         self._graph_lock = threading.Lock()
         self._seen_reqs: set[int] = set()
+        self._seen_escalations: set[tuple[Any, ...]] = set()
         self._spawned_ids: set[Any] = set()
         self._result_sink: Any = None
         self._escalated_ids: set[Any] = set()
@@ -1249,6 +1294,15 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         reason = getattr(req, "reason", "")
         emitter_id = emitter.id if emitter is not None else None
+        try:
+            context_key = json.dumps(context, sort_keys=True, separators=(",", ":"), default=repr)
+        except (TypeError, ValueError):
+            context_key = repr(context)
+        dedupe_key = (emitter_id, reason, urgency, route, context_key)
+        if dedupe_key in self._seen_escalations:
+            return
+        self._seen_escalations.add(dedupe_key)
+
         op_id = str(emitter_id) if emitter_id is not None else ""
         name = self._display_name(emitter)[0] if emitter is not None else ""
 
@@ -1273,8 +1327,30 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # addressable by their own stable operation identity.
             child.metadata["display_name"] = f"{name} escalation retry"
             child.metadata["reference_id"] = str(child.id)
-            if self._accept_node(child, emitter_id=emitter_id, independent=True):
+            # A node that escalates again is spliced after the retry that
+            # already stands in for it, so the retries form one chain
+            # (emitter -> retry 1 -> retry 2 -> former successors) and the
+            # replacement map stays a chain too. Splicing after the emitter
+            # a second time would put retry 2 between the emitter and retry
+            # 1 while the map pointed the emitter's dependents at retry 2:
+            # a dependent would then gate on retry 2's result although its
+            # predecessor in the graph is retry 1.
+            anchor_id = emitter_id
+            while anchor_id in self._escalation_replacement:
+                anchor_id = self._escalation_replacement[anchor_id]
+            if self._accept_node(
+                child,
+                emitter_id=anchor_id,
+                # The retry waits for the emitter to finish, and NodeSpawned
+                # reports that dependency. Its branch source is selected
+                # separately below.
+                independent=False,
+                splice_after_emitter=True,
+                base_branch=self.operation_branches.get(emitter_id),
+            ):
+                self._escalation_replacement[anchor_id] = child.id
                 self._escalated_ids.add(emitter_id)
+                self._tg.start_soon(self._run_tracked, child)
         elif route == "notify":
             # Soft help signal: NodeEscalated already fired above for
             # observability; the node is NOT marked escalated (it still
@@ -1373,6 +1449,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
         *,
         emitter_id: Any,
         independent: bool,
+        splice_after_emitter: bool = False,
+        base_branch: Any = None,
     ) -> bool:
         with self._graph_lock:
             if self._spawn_count >= self.max_spawn:
@@ -1391,15 +1469,23 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
             newly_added = self.graph.internal_nodes.get(child.id, None) is None
             if newly_added:
-                self.graph.add_node(child)
+                if splice_after_emitter:
+                    # An escalation retry replaces the emitter on every existing
+                    # downstream path: emitter -> retry -> former successors.
+                    # Graph.splice_after preserves each moved edge's condition,
+                    # label, and properties while adding the parent link.
+                    edges = self.graph.splice_after(emitter_id, child)
+                    edges[0].label = ["escalation"]
+                else:
+                    self.graph.add_node(child)
                 self.completion_events[child.id] = ConcurrencyEvent()
 
             edge = None
-            if not independent and emitter_id is not None:
+            if not splice_after_emitter and not independent and emitter_id is not None:
                 edge = Edge(head=emitter_id, tail=child.id, label=["spawn"])
                 self.graph.add_edge(edge)
 
-            if not self.graph.is_acyclic():
+            if not splice_after_emitter and not self.graph.is_acyclic():
                 if edge is not None:
                     self.graph.remove_edge(edge)
                 if newly_added:
@@ -1423,7 +1509,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # to node lifecycle signals.
             if emitter_id is not None and not independent:
                 child.metadata["parent_id"] = str(emitter_id)
-            self._assign_injected_branch(child, emitter_id, independent)
+            self._assign_injected_branch(
+                child,
+                emitter_id,
+                independent,
+                base_branch=base_branch,
+            )
             self._emit_node_spawned(child, emitter_id, independent)
             self._announce_queued(child)
         return True
@@ -1451,13 +1542,22 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         self._emit_best_effort(_factory)
 
-    def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:
+    def _assign_injected_branch(
+        self,
+        child: Operation,
+        emitter_id: Any,
+        independent: bool,
+        *,
+        base_branch: Any = None,
+    ) -> None:
         base = None
         if child.branch_id:
             try:
                 base = self.session.branches[child.branch_id]
             except Exception:
                 base = None
+        if base is None:
+            base = base_branch
         if base is None and not independent and emitter_id is not None:
             base = self.operation_branches.get(emitter_id)
         if base is None:

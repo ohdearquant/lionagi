@@ -6,11 +6,11 @@ actor to another, and the last script puts a real model behind the same loop. Ev
 last runs offline, with no key: where a model is needed, its turns are written in advance. Each one
 writes its rows through the khive binary (`kkernel`, on PATH), as the actor of a scratch directory.
 
-    uv run python examples/<file>.py
+    cd lion1 && uv run python examples/<file>.py
 
-The notebooks run in Jupyter from this repository's environment and are stored with their outputs
-cleared. `tests/test_examples.py` runs every script here: the scripted ones to their end, the live one
-with no key and no CLI, where it names what is missing and stops.
+The notebooks run in Jupyter from the `lion1/` environment and are stored with their outputs
+cleared. `lion1/tests/test_examples.py` runs every script here: the scripted ones to their end, the
+live one with no key and no CLI, where it names what is missing and stops.
 
 | file | pattern | the idea |
 |---|---|---|

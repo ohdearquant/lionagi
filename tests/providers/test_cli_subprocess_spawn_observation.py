@@ -630,7 +630,14 @@ class TestRequestModelsCarryThem:
         assert callable(req.on_spawn)
         dumped = req.model_dump()
         assert "env" not in dumped and "on_spawn" not in dumped
-        assert req.as_cmd_args() == CodexCodeRequest(prompt="hi").as_cmd_args()
+        # The baseline varies the env's CONTENT rather than dropping it. Setting
+        # `env` at all can legitimately change the argv, because it names the
+        # $CODEX_HOME the child reads and so whether a protective
+        # model_reasoning_effort must be emitted; what must never change the
+        # argv is what is IN it. A no-env baseline would be comparing against a
+        # different codex home.
+        assert req.as_cmd_args() == CodexCodeRequest(prompt="hi", env={"B": "2"}).as_cmd_args()
+        assert "1" not in req.as_cmd_args() and "A" not in req.as_cmd_args()
 
     def test_the_argv_baseline_is_a_real_comparison(self):
         """The two tests above assert an EXACT argv match against a request
@@ -642,6 +649,14 @@ class TestRequestModelsCarryThem:
 
         baseline = ClaudeCodeRequest(prompt="hi").as_cmd_args()
         assert baseline != ClaudeCodeRequest(prompt="hi", model="opus").as_cmd_args()
+
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        codex_baseline = CodexCodeRequest(prompt="hi", env={"B": "2"}).as_cmd_args()
+        assert (
+            codex_baseline
+            != CodexCodeRequest(prompt="hi", env={"B": "2"}, model="gpt-5.5").as_cmd_args()
+        )
 
     def test_neither_field_is_rendered_by_repr(self):
         """``exclude=True`` governs serialisation only. A complete child

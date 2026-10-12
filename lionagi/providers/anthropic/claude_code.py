@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from textwrap import shorten
@@ -34,6 +35,10 @@ from lionagi.providers._cli_subprocess import (
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
+from lionagi.providers._provider_errors import (
+    ProviderError,
+    classify_provider_error,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -53,6 +58,66 @@ except ImportError:
     _claude_tail_repair = None
 
 HAS_CLAUDE_CODE_CLI, CLAUDE_CLI = discover_cli("claude")
+
+
+def resolve_claude_cli() -> str | None:
+    """The claude binary to spawn, resolved now rather than at import.
+
+    The module-level constants freeze whatever was true when this module was
+    first imported. A long-lived process (an MCP bridge, a Studio daemon) that
+    imported while the CLI was missing — or before PATH/HOME were corrected —
+    would otherwise refuse every request for its whole lifetime. A successful
+    result is cached back onto the module constants so the spawn path stays a
+    plain lookup once it has resolved.
+
+    This function is the seam, and ``CLAUDE_CLI`` is only its cache: a test
+    that needs the CLI to look absent must patch THIS, because setting the
+    constant to None is precisely what triggers re-discovery.
+
+    A cached hit is NOT re-validated. If the binary is deleted or moved after
+    a successful resolve, the spawn fails loudly with the path in the error and
+    clears on restart — unlike the miss this function exists to fix, which was
+    silent and permanent. Re-validating every call would mean a stat (or a PATH
+    walk) per spawn and, more importantly, would break the cross-adapter
+    contract that stubs a nonexistent binary path onto each provider module
+    (``tests/providers/test_cli_adapter_error_conformance.py``): claude alone
+    would then need the real CLI installed to run those tests.
+
+    Two scope limits follow from that, and both are deliberate:
+
+    ``PATH`` wins over the fallback dirs *within one discovery*, not against a
+    warm cache. Once this has resolved, a later ``PATH`` change does not move
+    the answer for the life of the process — see the paragraph above for why
+    re-validation is not free.
+
+    Discovery reads the PARENT process environment, never a request's. A
+    ``ClaudeCodeRequest`` carries the complete environment for the CHILD, but
+    resolving the executable against a request-supplied ``PATH`` would let the
+    contents of a request decide which binary this process executes. The child
+    gets its environment; choosing the program does not belong to it.
+    """
+    global HAS_CLAUDE_CODE_CLI, CLAUDE_CLI
+    if CLAUDE_CLI:
+        return CLAUDE_CLI
+    HAS_CLAUDE_CODE_CLI, CLAUDE_CLI = discover_cli("claude")
+    return CLAUDE_CLI
+
+
+def claude_cli_search_locations() -> str:
+    """Where the claude lookup actually looked, for an unavailability message.
+
+    Shared by every caller that reports the CLI missing. Installs differ per
+    machine, so an error naming only "PATH and the fallback dirs" sends the
+    reader to check the wrong PATH — the one in their shell rather than the one
+    this process inherited.
+    """
+    from lionagi.providers._cli_subprocess import cli_fallback_bin_dirs
+
+    return (
+        f"not on PATH ({os.environ.get('PATH', '')!r}) and not in the fallback "
+        f"dirs ({', '.join(str(d) for d in cli_fallback_bin_dirs())})"
+    )
+
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("claude-cli")
@@ -558,25 +623,48 @@ ClaudeSession = CLISession
 async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
-    cmd = [CLAUDE_CLI, *request.as_cmd_args()]
-    # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
-    async with contextlib.aclosing(
-        ndjson_from_cli(
-            cmd,
-            cwd=workspace,
-            env=request.env,
-            tail_repair=_claude_tail_repair,
-            on_spawn=request.on_spawn,
-        )
-    ) as stream:
-        async for obj in stream:
-            yield obj
+    cmd = [resolve_claude_cli(), *request.as_cmd_args()]
+    # The CLI states a refusal (a session limit, say) on stdout as an error result and then exits
+    # nonzero with nothing on stderr; the exit alone would read as a crash, so the result it gave
+    # rides the raised error, classified.
+    refusal: dict | None = None
+    try:
+        # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
+        async with contextlib.aclosing(
+            ndjson_from_cli(
+                cmd,
+                cwd=workspace,
+                env=request.env,
+                tail_repair=_claude_tail_repair,
+                on_spawn=request.on_spawn,
+            )
+        ) as stream:
+            async for obj in stream:
+                if isinstance(obj, dict) and obj.get("type") == "result":
+                    refusal = obj if obj.get("is_error") else None
+                yield obj
+    except RuntimeError as exc:
+        if refusal is None or isinstance(exc, ProviderError):
+            raise
+        said = str(refusal.get("result") or "").strip() or "an error result with no text"
+        status = refusal.get("api_error_status")
+        if status is not None:
+            said = f"{said} (api_error_status {status})"
+        message = f"Claude Code said: {said}; {exc}"
+        # The status is the result's own field and decides quota; the text never does beside it.
+        raise classify_provider_error(message, status=status) from exc
 
 
 # --------------------------------------------------------------------------- SSE route
 async def stream_cc_cli_events(request: ClaudeCodeRequest):
-    if not CLAUDE_CLI:
-        raise RuntimeError("Claude CLI binary not found (npm i -g @anthropic-ai/claude-code)")
+    if not resolve_claude_cli():
+        # Name where we actually looked: installs differ per machine, so a
+        # package-manager prescription here invites installing a second copy.
+        raise RuntimeError(
+            f"Claude CLI binary 'claude' {claude_cli_search_locations()}. "
+            "Install the Claude Code CLI or start this process with a PATH "
+            "that reaches the existing install."
+        )
     async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
         async for obj in stream:
             yield obj
@@ -853,6 +941,7 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.duration_ms = obj.get("duration_ms")
                 session.duration_api_ms = obj.get("duration_api_ms")
                 session.is_error = obj.get("is_error", False)
+                session.error_status = obj.get("api_error_status")
 
                 # Terminal usage/cost/turns/duration — the only channel run.py
                 # reads provider-reported usage from.
@@ -961,6 +1050,12 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                             type="error",
                             content=item.result or "Claude Code session failed",
                             is_error=True,
+                            # the run classifies by this, ahead of the text (classify_provider_error)
+                            metadata=(
+                                {"error_status": item.error_status}
+                                if item.error_status is not None
+                                else {}
+                            ),
                         )
                     continue
                 yield item

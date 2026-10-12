@@ -425,27 +425,59 @@ def test_gated_plays_truncated_meta_json_is_reported_unavailable(shows_root: Pat
     assert entry["live_state"] == "unavailable"
 
 
-# Path traversal tests (Fix 1)
+# Path traversal behavior
 
 
 def test_path_traversal_encoded_dotdot_shows(patched_app):
-    """URL-encoded %2e%2e must not escape SHOWS_ROOT."""
+    """URL-encoded %2e%2e must not escape SHOWS_ROOT.
+
+    The detail string is asserted, not just the status. This is the one
+    traversal form that reaches the handler with the dots intact, so it is the
+    one that can show `safe_path_join` refused it -- and a bare 404 could not,
+    because the router answers 404 too and says so in the same field.
+    """
     r = patched_app.get("/api/shows/%2e%2e")
     assert r.status_code == 404
+    assert r.json()["detail"] == "invalid path component", (
+        "the guard did not reject this; something upstream answered instead"
+    )
 
 
 def test_path_traversal_encoded_slash_shows(patched_app):
-    """Encoded slash in topic must be rejected."""
+    """Encoded slash in topic must be rejected, and it is the router that does it.
+
+    `aaa%2Fbbb` decodes to a two-segment path, which no `/api/shows/{topic}`
+    route matches, so the rejection happens before any handler runs. That is a
+    real defence and it is worth pinning, but it is a different mechanism from
+    the test above and the assertion says which one it is -- otherwise a change
+    that let this reach the handler could still pass on the status alone.
+    """
     r = patched_app.get("/api/shows/aaa%2Fbbb")
     assert r.status_code == 404
+    assert r.json()["detail"] == "Not Found"
 
 
-def test_path_traversal_double_dotdot_shows(patched_app):
-    """Double dotdot segment must be rejected."""
-    r = patched_app.get("/api/shows/../../../etc")
-    # FastAPI normalises raw /.. to 404 before it reaches our code.
-    # Either way, must not be 200.
-    assert r.status_code == 404
+def test_a_traversal_component_is_refused_by_the_guard():
+    """Reject traversal components at the path guard.
+
+    HTTP clients normalize dot segments before sending a request, so pass the
+    raw components directly to `safe_path_join`. The guard must reject them
+    regardless of whether the frontend is mounted.
+    """
+    from fastapi import HTTPException
+
+    from lionagi.studio.services._path_safety import safe_path_join
+
+    root = Path("/srv/shows")
+    for component in ("../../../etc", "..", "../etc", "a/../../b", "/etc/passwd"):
+        with pytest.raises(HTTPException) as caught:
+            safe_path_join(root, component)
+        assert caught.value.status_code == 404, component
+        assert caught.value.detail == "invalid path component", component
+
+    # The must-match arm: an ordinary topic still resolves, so the loop above is
+    # not passing because the guard refuses everything.
+    assert safe_path_join(root, "my-show") == root / "my-show"
 
 
 async def test_watch_show_invalid_topic_yields_done(tmp_path, monkeypatch):
@@ -681,3 +713,72 @@ def test_import_shows_refuses_undeclared_play_status(tmp_path, monkeypatch):
             "but the play with an undeclared status was silently dropped -- "
             "the count is lying about what actually landed in the DB"
         )
+
+
+# The deployment that actually ships: frontend dist mounted.
+
+
+@pytest.fixture()
+def spa_mounted_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`patched_app`'s sibling, with a frontend dist so the SPA fallback is live.
+
+    Every other client in this file runs API-only, which is the configuration
+    the product does NOT ship. That gap is why a 404 handler that discarded the
+    API's own error detail went unseen: it can only misbehave when it is
+    installed, and it was never installed under test.
+
+    `monkeypatch.setenv`, deliberately, not a raw `os.environ` write -- this
+    variable is read at app construction and a raw write would survive teardown
+    into every later test in the same worker.
+    """
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
+
+    shows_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><html><body>shell</body></html>")
+    monkeypatch.setenv("LIONAGI_STUDIO_FRONTEND_DIST", str(dist))
+
+    from lionagi.studio.app import create_app
+
+    return TestClient(create_app(), base_url="http://127.0.0.1:8765")
+
+
+def test_api_error_detail_survives_with_the_spa_mounted(spa_mounted_app):
+    """The SPA fallback must not speak for the API.
+
+    It is registered on the 404 STATUS, so it receives every deliberate
+    `HTTPException(404, detail=...)` an API handler raises, not only unrouted
+    paths. Answering those with a hardcoded string replaced the guard's
+    "invalid path component" with "Not Found" -- in production only, since the
+    handler is not installed when no dist is configured.
+    """
+    r = spa_mounted_app.get("/api/shows/%2e%2e")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "invalid path component"
+
+    missing = spa_mounted_app.get("/api/shows/no-such-topic")
+    assert missing.status_code == 404
+    assert "no-such-topic" in missing.json()["detail"], missing.json()
+
+
+def test_a_client_route_still_gets_the_shell_with_the_spa_mounted(spa_mounted_app):
+    """Client routes continue to receive the application shell."""
+    r = spa_mounted_app.get("/some/client/side/route")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "shell" in r.text
+
+
+def test_bare_api_path_keeps_the_api_not_found_response(spa_mounted_app, monkeypatch):
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    r = spa_mounted_app.get("/api")
+
+    assert r.status_code == 404
+    assert r.json() == {"detail": "Not Found"}

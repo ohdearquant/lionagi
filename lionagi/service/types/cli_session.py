@@ -33,6 +33,8 @@ class CLISession:
     duration_ms: int | None = None
     duration_api_ms: int | None = None
     is_error: bool = False
+    # the HTTP status a provider reported beside a terminal error, when it reported one
+    error_status: Any = None
     summary: dict | None = None
     activity: dict | None = None
 

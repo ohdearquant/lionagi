@@ -31,9 +31,8 @@ from outside the process becomes one INPUT, a reply leaves as a `send` command t
 privilege admits ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]), and the notes carry state between runs
 ([[ADR-0007-the-record#^c5|ADR-0007/C5]]). The kernel owns the process: who the identity is, who
 starts and restarts it, and when it counts as alive. Here the agent only keeps two processes from
-acting as one identity. Source: `Agent` in `hub/agent/agent.py`, `Khive` in `hub/khive.py`, `build`
-and `agent_main` in `apps/cli/lion_cli/agent.py`, `examples/echo_agent.py`,
-`examples/bench_agent.py`.
+acting as one identity. Source: `Agent` in `hub/agent/agent.py`, `Khive` in `src/lion1/khive.py`,
+`build` and `agent_main` in `apps/cli/lion_cli/agent.py`, and `examples/bench_agent.py`.
 
 ## Definitions
 
@@ -207,10 +206,11 @@ task forever.
 
 ### D1: `Agent` over `Khive`, one khive call per operation from the agent's directory ^d1
 
-Serves C1, C2 and C4. `hub/khive.py` runs one `exec --strict --expect-actor` of the khive CLI per
-call, from the agent's directory; an inbox wait longer than 20 s is sliced, and an inbox read whose
-answer was lost is read once more, a write never. `hub/agent/agent.py` holds the wake, the gate, the
-caps, the cursor and `deliver`; `lion agent` builds one from the directory's `chores.toml`.
+Serves C1, C2 and C4. `src/lion1/khive.py` runs one `exec --strict --expect-actor` of the khive CLI
+per call, from the agent's directory; an inbox wait longer than 20 s is sliced, and an inbox read
+whose answer was lost is read once more, a write never. `hub/agent/agent.py` holds the wake, the
+gate, the caps, the cursor and `deliver`; `lion agent` builds one from the directory's
+`chores.toml`.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_wake_marks_mail_read_before_the_model_sees_it_answers_on_the_thread_and_leaves_a_cursor`,
@@ -345,12 +345,12 @@ probes that `gtd.transition` and `gtd.complete` refuse. `Gtd.load` refuses `work
   are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S11.
 - **S10**: A profile named `agent` would share the agent's own note file, since a profile's notes
   are filed by its name; nothing refuses the name.
-- **S11**: `scripts/serve_agent.sh`, the host supervisor's entry point, decides only whether to
-  start. It refuses with exit 0, so a supervisor that restarts on failure leaves the job down: a
-  checkout that is missing, dirty, unbuilt or not under git, a missing agent directory, an unusable
-  named token file, or a config without a readable actor and owner. Each refusal lands one line, in
-  `landing/serve-refusals.log` or else on standard error, saying whether the owner was told. A
-  failed git read exits 1, error kept, for a retry. It unsets `ANTHROPIC_API_KEY`.
+- **S11**: `scripts/serve_agent.sh` (absent here; untested), the host supervisor's entry point,
+  decides only whether to start. It refuses with exit 0, so a supervisor that restarts on failure
+  leaves the job down: a missing, dirty, unbuilt or non-git checkout, a missing agent directory, an
+  unusable named token file, or a config without a readable actor and owner. Each refusal lands one
+  line, in `landing/serve-refusals.log` or on stderr, saying whether the owner was told. A failed
+  git read exits 1, error kept, for a retry. It unsets `ANTHROPIC_API_KEY`.
 - **S12**: When the khive CLI exits non-zero, the client's error quotes each failed op's own error
   from standard output; with none, standard error without its warning and database lines, then the
   raw output, the last 600 characters kept. No test pins it.

@@ -446,8 +446,11 @@ the branch's active progression.
   when their clamped start is not before the end. `evict_action_results` treats zero or
   negative `keep_last` as keeping none.
 - `compact` defaults to `tool_io`, collapsing only action request/response messages;
-  `mode="all"` collapses the whole selected span except index 0. It inserts one assistant
-  summary message and excludes originals only from the active view.
+  `mode="all"` considers the whole selected span but keeps index 0 and the first active
+  Instruction as a model-grammar anchor. It inserts one assistant summary at the position
+  of the first message actually collapsed and excludes originals only from the active view.
+  Before anything changes, it refuses a result that would begin with an assistant response
+  or hold two Instructions in a row; nothing is added to the record on refusal.
 - `mode` and `scope` are unconstrained strings: only the exact `"tool_io"` value selects
   tool-only compaction, so any other mode string follows the all-message branch; only
   exact `scope="all"` selects the full record, and every other scope uses the active

@@ -575,6 +575,28 @@ async def run(
             _api_call_holder,
             idle_timeout=_idle_timeout,
         )
+        _stream_gen_closed = False
+
+        async def _close_stream_gen() -> None:
+            """Close once so call-final metadata exists before response persistence."""
+            nonlocal _stream_gen_closed
+            if _stream_gen_closed:
+                return
+            _stream_gen_closed = True
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await stream_gen.aclose()
+            except Exception as _close_exc:
+                logger.debug("run: stream_gen.aclose() raised during cleanup: %r", _close_exc)
+            except BaseException as _close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: aclose() raised %r while another exception was already "
+                    "propagating; suppressing the secondary cleanup failure",
+                    _close_exc,
+                )
+
         try:
             try:
                 async for chunk in stream_gen:
@@ -666,8 +688,15 @@ async def run(
                             if res := await _flush_response():
                                 yield res
                             content = chunk.content or "(empty error)"
-                            raise classify_provider_error(content)
+                            raise classify_provider_error(
+                                content, status=chunk.metadata.get("error_status")
+                            )
 
+                # A benign provider sentinel exits the loop before the wrapper
+                # naturally exhausts. Close it now: iModel stamps exact-call
+                # served-model evidence in its stream finally, and the final
+                # AssistantResponse below must serialize only after that stamp.
+                await _close_stream_gen()
                 if res := await _flush_response():
                     _final_api_call = _api_call_holder[0] if _api_call_holder else None
                     if _final_api_call is not None and hasattr(_final_api_call, "to_dict"):
@@ -702,19 +731,7 @@ async def run(
             # can raise CancelledError (a BaseException `except Exception` won't
             # catch) — preserve whatever exception is already propagating instead
             # of letting a secondary cleanup failure replace it.
-            _unwinding = sys.exc_info()[1] is not None
-            try:
-                await stream_gen.aclose()
-            except Exception as _close_exc:
-                logger.debug("run: stream_gen.aclose() raised during cleanup: %r", _close_exc)
-            except BaseException as _close_exc:
-                if not _unwinding:
-                    raise
-                logger.debug(
-                    "run: aclose() raised %r while another exception was already "
-                    "propagating; suppressing the secondary cleanup failure",
-                    _close_exc,
-                )
+            await _close_stream_gen()
             model.streaming_process_func = prev_stream_func
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir

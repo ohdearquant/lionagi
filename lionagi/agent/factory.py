@@ -96,6 +96,13 @@ async def create_agent(
 
         extra = {}
         effort = spec.effort or ms.effort
+        if not effort and provider == "codex":
+            # Unset is not "no opinion": codex would read the global config's
+            # effort, tuned for that config's own model, and 400 when it
+            # exceeds this one's ceiling. Same seam the CLI builders use.
+            from lionagi.service.providers import codex_unset_effort_default
+
+            effort = codex_unset_effort_default(model_name)
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
@@ -853,7 +860,13 @@ def _forward_mcp_to_cli_request(
 
     # Branch keeps a caller-supplied chat_model by reference; copy before
     # mutating config.kwargs to avoid cross-contaminating other branches.
-    branch.chat_model = branch.chat_model.copy(share_session=True, share_executor=True)
+    # The factory takes no parse model of its own, so the branch's parse model
+    # is its chat model (the same object, or the twin Branch builds from the
+    # same str or dict). Parse repair runs on it, so it moves to the copy too:
+    # otherwise a repair call starts the CLI without the forwarded server set.
+    forwarded = branch.chat_model.copy(share_session=True, share_executor=True)
+    branch.chat_model = forwarded
+    branch.parse_model = forwarded
     apply_forwarded_mcp_servers(
         branch.chat_model.endpoint.config.kwargs,
         servers,

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Workers are told where their output goes, and the run reports where it went."""
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,6 +159,10 @@ def _build_worker(
         built["spec"] = spec
         return _Branch(system=spec.extra_prompt, name=None)
 
+    def _fake_build_imodel(*a, **kw):
+        built["imodel_kwargs"] = kw
+        return imodel
+
     env = orch.OrchestrationEnv(
         run=SimpleNamespace(agent_artifact_dir=lambda aid: tmp_path / "artifacts" / aid),
         session=SimpleNamespace(include_branches=lambda b: None),
@@ -179,7 +184,7 @@ def _build_worker(
 
     mp = _pytest.MonkeyPatch()
     try:
-        mp.setattr(orch, "build_imodel_from_spec", lambda *a, **k: imodel)
+        mp.setattr(orch, "build_imodel_from_spec", _fake_build_imodel)
         mp.setattr(orch, "Branch", _Branch)
         mp.setattr(orch, "create_agent", _fake_create_agent)
         mp.setattr(orch, "_hand_mcp_servers", lambda *a, **k: None)
@@ -458,6 +463,53 @@ def test_a_missing_directory_is_reported_as_missing_not_as_nothing_written(tmp_p
     assert "produced nothing" not in caplog.text
 
 
+def test_an_invalid_recorded_path_does_not_stop_other_workers(tmp_path):
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "notes.md").write_text("x")
+    invalid = Path(f"{tmp_path / 'invalid'}\x00")
+
+    entries = collect_worker_artifacts(_env_with_dirs({"invalid": invalid, "good": good}))
+
+    assert entries[0]["status"] == "unreadable"
+    assert "ValueError" in entries[0]["error"]
+    assert entries[1]["status"] == "reported"
+    assert entries[1]["files"] == ["notes.md"]
+
+
+def test_a_path_below_a_file_is_reported_as_missing(tmp_path):
+    parent = tmp_path / "file"
+    parent.write_text("x")
+
+    entries = collect_worker_artifacts(_env_with_dirs({"a": parent / "child"}))
+
+    assert entries[0]["status"] == "missing"
+    assert "does not exist" in entries[0]["error"]
+
+
+def test_an_unreachable_child_directory_is_reported_as_unreadable(tmp_path, monkeypatch):
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    (root / "visible.md").write_text("x")
+    hidden = root / "hidden"
+    hidden.mkdir()
+    (hidden / "notes.md").write_text("x")
+    original_scandir = os.scandir
+
+    def restricted_scandir(path):
+        if Path(path) == hidden:
+            raise PermissionError("directory cannot be listed")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", restricted_scandir)
+
+    entries = collect_worker_artifacts(_env_with_dirs({"a": root}))
+
+    assert entries[0]["status"] == "unreadable"
+    assert "PermissionError" in entries[0]["error"]
+    assert entries[0]["files"] == []
+
+
 def test_a_worker_the_run_expected_but_never_registered_is_named_and_warned(tmp_path, caplog):
     """A worker launched without a directory must not read as a smaller run.
 
@@ -529,3 +581,48 @@ def test_report_is_emitted_and_recorded_by_finalize(tmp_path, monkeypatch, caplo
     by_id = {e["agent_id"]: e for e in extras["worker_artifacts"]}
     assert by_id["researcher"]["files"] == ["out.md"]
     assert by_id["critic"]["files"] == []
+
+
+def test_a_directory_the_run_cannot_reach_is_unreadable_not_missing(tmp_path):
+    """A row saying "I could not look" is not a row saying "it was removed".
+
+    The trigger is a directory whose PARENT cannot be traversed, not one that
+    is merely mode 000 itself: a locked directory is still stat-able, because
+    that only needs the traverse bit on its parent.
+
+    The probe used to sit outside the try, and it went wrong differently on
+    either side of 3.14. On 3.13 and below `exists()` raises here, and nothing
+    caught it, so one unreachable worker directory took down the whole harvest
+    including every other worker's row. On 3.14 it answers False instead, so
+    the row read `missing` with an error naming a deletion that never happened
+    for a directory sitting right there. Both are now `unreadable`, which is
+    the status this function already carried for exactly this case.
+    """
+
+    locked = tmp_path / "locked"
+    (locked / "child").mkdir(parents=True)
+    (locked / "child" / "notes.md").write_text("x")
+    locked.chmod(0o000)
+    try:
+        try:
+            (locked / "child").stat()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("the 0o000 mode does not bind for this process")
+
+        entries = collect_worker_artifacts(_env_with_dirs({"a": locked / "child"}))
+
+        assert entries[0]["status"] == "unreadable"
+        assert "does not exist" not in (entries[0]["error"] or "")
+        assert "PermissionError" in entries[0]["error"]
+    finally:
+        locked.chmod(0o755)
+
+
+def test_a_genuinely_absent_directory_is_still_missing(tmp_path):
+    """The must-match control: the fix must not turn every absent row unreadable."""
+
+    entries = collect_worker_artifacts(_env_with_dirs({"a": tmp_path / "never-created"}))
+    assert entries[0]["status"] == "missing"
+    assert "does not exist" in entries[0]["error"]

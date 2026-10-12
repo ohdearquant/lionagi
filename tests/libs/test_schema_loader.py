@@ -372,3 +372,114 @@ def test_allof_merge():
     inst = cls(combined={"a": "hello", "b": 42})
     assert inst.combined.a == "hello"
     assert inst.combined.b == 42
+
+
+@pytest.mark.parametrize("reverse_definitions", [False, True])
+def test_colliding_sanitized_definition_names_keep_distinct_node_models(reverse_definitions):
+    definitions = [
+        (
+            "A-B",
+            {
+                "type": "object",
+                "properties": {"dashed": {"type": "string"}},
+                "required": ["dashed"],
+            },
+        ),
+        (
+            "AB",
+            {
+                "type": "object",
+                "properties": {"plain": {"type": "integer"}},
+                "required": ["plain"],
+            },
+        ),
+    ]
+    if reverse_definitions:
+        definitions.reverse()
+    schema = {
+        "type": "object",
+        "$defs": dict(definitions),
+        "properties": {
+            "dashed": {"$ref": "#/$defs/A-B"},
+            "dashed_again": {"$ref": "#/$defs/A-B"},
+            "plain": {"$ref": "#/$defs/AB"},
+        },
+        "required": ["dashed", "dashed_again", "plain"],
+    }
+
+    model = load_pydantic_model_from_schema(schema, "CollisionRoot")
+    dashed = model.model_fields["dashed"].annotation
+    dashed_again = model.model_fields["dashed_again"].annotation
+    plain = model.model_fields["plain"].annotation
+
+    assert dashed is dashed_again
+    assert dashed is not plain
+    assert set(dashed.model_fields) == {"dashed"}
+    assert set(plain.model_fields) == {"plain"}
+    value = model(
+        dashed={"dashed": "left"},
+        dashed_again={"dashed": "right"},
+        plain={"plain": 1},
+    )
+    assert value.dashed.dashed == "left"
+    assert value.plain.plain == 1
+
+    generated = model.model_json_schema()
+    shapes = {
+        frozenset(node["properties"])
+        for node in generated.get("$defs", {}).values()
+        if isinstance(node, dict) and isinstance(node.get("properties"), dict)
+    }
+    assert {frozenset({"dashed"}), frozenset({"plain"})} <= shapes
+
+
+def test_colliding_definition_cannot_shadow_the_requested_root_model():
+    schema = {
+        "type": "object",
+        "$defs": {
+            "A-B": {
+                "type": "object",
+                "properties": {"definition_only": {"type": "string"}},
+            }
+        },
+        "properties": {"root_only": {"type": "integer"}},
+        "required": ["root_only"],
+    }
+
+    model = load_pydantic_model_from_schema(schema, "AB")
+
+    assert model.__name__ == "AB"
+    assert set(model.model_fields) == {"root_only"}
+    assert model(root_only=7).root_only == 7
+
+
+def test_invalid_definition_names_falling_back_to_dynamic_model_do_not_cross_wire():
+    schema = {
+        "type": "object",
+        "$defs": {
+            "123": {
+                "type": "object",
+                "properties": {"numeric": {"type": "string"}},
+                "required": ["numeric"],
+            },
+            "!!!": {
+                "type": "object",
+                "properties": {"punctuation": {"type": "integer"}},
+                "required": ["punctuation"],
+            },
+        },
+        "properties": {
+            "numeric": {"$ref": "#/$defs/123"},
+            "punctuation": {"$ref": "#/$defs/!!!"},
+        },
+        "required": ["numeric", "punctuation"],
+    }
+
+    model = load_pydantic_model_from_schema(schema, "FallbackRoot")
+    numeric = model.model_fields["numeric"].annotation
+    punctuation = model.model_fields["punctuation"].annotation
+
+    assert numeric.__name__ == punctuation.__name__ == "DynamicModel"
+    assert numeric is not punctuation
+    assert set(numeric.model_fields) == {"numeric"}
+    assert set(punctuation.model_fields) == {"punctuation"}

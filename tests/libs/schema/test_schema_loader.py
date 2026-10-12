@@ -31,3 +31,29 @@ def test_schema_loader_resolves_refs_and_additional_properties():
 
     assert instance.address.city == "NYC"
     assert instance.tags == {"tier": "gold"}
+
+
+def test_allof_reference_reuses_the_referenced_model():
+    schema = {
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+            }
+        },
+        "type": "object",
+        "properties": {
+            "left": {
+                "allOf": [{"$ref": "#/$defs/Item"}],
+                "description": "Left item",
+            },
+            "right": {
+                "allOf": [{"$ref": "#/$defs/Item"}],
+                "description": "Right item",
+            },
+        },
+    }
+
+    Model = load_pydantic_model_from_schema(schema, "Pair")
+
+    assert Model.model_fields["left"].annotation is Model.model_fields["right"].annotation

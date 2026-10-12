@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 from xml.parsers.expat import ExpatError
 
 from lion1.actor import reported_cost
-from lion1.khive import Khive, KhiveError, lit
+from lion1.khive import Khive, KhiveError, actor_name, lit
 from lion1.store import KhiveNoteStore, Store
 
 __all__ = (
@@ -74,11 +74,11 @@ _STYLE = (
     "</style>"
 )
 
-# the line `serve` prints after each wake (hub/agent/agent.py); the tail after ` wake ` is optional so
+# the line `serve` prints after each wake (lion1/hub/agent/agent.py); the tail after ` wake ` is optional so
 # a wake line of another shape (a failed wake, a field printed as None) still matches and is kept whole.
 # The context the last turn stood in, and the sessions the backend started over from a folded view
 # during the burst, follow when any: both optional and each printed on its own (`_line` in
-# hub/agent/agent.py), so an older line without them still matches; the tasks of the queue the wake
+# lion1/hub/agent/agent.py), so an older line without them still matches; the tasks of the queue the wake
 # presented follow the same way, and so does the count of calls of unknown cost beside the dollars.
 # The phone app parses the `log` event's lines with this same pattern.
 _WAKE = re.compile(
@@ -186,8 +186,9 @@ class Resident:
 
 def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
     """The registry: `[area.<name>]` tables with `chair` and `desks`. A missing file is no
-    areas, said by the caller; a table missing `chair` raises with the name, and so does an area
-    that lists one directory twice, since two rows of one directory are one agent named twice."""
+    areas, said by the caller; a table missing `chair`, or whose chair is not an actor's name
+    (`actor_name`), raises with the name, and so does an area that lists one directory twice, since
+    two rows of one directory are one agent named twice."""
     path = Path(path)
     if not path.exists():
         return []
@@ -206,7 +207,7 @@ def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
         for i, a in enumerate(desks):
             if Path(a) in [Path(b) for b in desks[:i]]:
                 raise ValueError(f"areas.toml: [area.{name}] desks lists {a} twice")
-        out.append(Area(name, str(t["chair"]), desks))
+        out.append(Area(name, actor_name(t["chair"], f"areas.toml: [area.{name}] chair"), desks))
     return out
 
 
@@ -245,10 +246,14 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
     cfg_path = d / "chores.toml"
     try:
         cfg = tomllib.loads(cfg_path.read_text())
-        actor, model = str(cfg.get("actor", "?")), str(cfg.get("model", "?"))
+        model = str(cfg.get("model", "?"))
         role = "desk" if "desk" in cfg else "chores"
+        if "actor" in cfg:
+            actor = actor_name(cfg["actor"], f"{cfg_path}: actor")
     except (OSError, tomllib.TOMLDecodeError) as e:
         problem.append(f"chores.toml: {e}")
+    except ValueError as e:
+        problem.append(str(e))
     try:
         serving, pid = _held(d / "agent.pid")
     except OSError as e:  # one resident's unreadable lock is its own problem, not the whole table's
@@ -475,7 +480,7 @@ def wake_table(directory: str) -> dict:
 
 def waiting_mail(directory: str) -> list[dict] | None:
     """The mail a `[wake]` rule deferred, kept under the `deferred` note until the batch window
-    opens (hub/agent/agent.py `_triage` keeps each whole, stamped `deferred_at`/`deferred_ts`): who
+    opens (lion1/hub/agent/agent.py `_triage` keeps each whole, stamped `deferred_at`/`deferred_ts`): who
     sent it, the subject and when it was deferred, the body left in the note. No note yet is no mail
     waiting; notes that cannot be read are None, never a count of zero."""
     try:
@@ -592,8 +597,13 @@ def identity(directory: Path | str) -> tuple[str, Khive] | None:
     cfg = d / ".khive" / "config.toml"
     if not cfg.exists():
         return None
-    actor = (tomllib.loads(cfg.read_text()).get("actor") or {}).get("id")
-    return (str(actor), Khive(d, str(actor))) if actor else None
+    actor = tomllib.loads(cfg.read_text()).get("actor") or {}
+    if not isinstance(actor, dict):
+        raise ValueError(f"{cfg}: [actor] is a {type(actor).__name__}, not a table")
+    if "id" not in actor:
+        return None
+    actor_id = actor_name(actor["id"], f"{cfg}: [actor] id")
+    return actor_id, Khive(d, actor_id)
 
 
 async def talk(khive: Khive, actor: str, limit: int = 50) -> list[dict]:

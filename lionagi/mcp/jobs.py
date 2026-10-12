@@ -1103,20 +1103,32 @@ def _resolve_submitter_identity(cwd: str) -> str:
     return actor
 
 
+# Used when an explicit sender cannot be resolved from an available submitting directory.
+# Omitting the sender skips this validation only; submission and notice delivery can still fail
+# for other reasons. A mismatch names the resolved actor because that is the sender to use.
+_NOTIFY_SENDER_FALLBACK = (
+    "omit notify_sender to continue without an explicit sender; "
+    "the submission carries no explicit sender"
+)
+
+
 def _validate_notify_sender(sender: str | None, submit_cwd: str | None) -> None:
     """Refuse an explicit sender that the submitting directory cannot sign as."""
     if not sender:
         return
     if submit_cwd is None:
         raise NotifySenderResolutionError(
-            f"cannot validate notify_sender {sender!r}: the submitting directory is unavailable"
+            f"cannot validate notify_sender {sender!r}: the submitting directory is "
+            "unavailable; this server cannot submit with an explicit sender from a removed "
+            "directory, and a terminal notice is not sent unless "
+            "LIONAGI_MCP_NOTIFY_CWD names a directory"
         )
     try:
         actual = _resolve_submitter_identity(submit_cwd)
     except NotifySenderResolutionError as exc:
         raise NotifySenderResolutionError(
             f"cannot validate notify_sender {sender!r} from submitting directory "
-            f"{submit_cwd!r}: {exc}"
+            f"{submit_cwd!r}: {exc}; {_NOTIFY_SENDER_FALLBACK}"
         ) from exc
     if actual != sender:
         raise NotifySenderMismatchError(
