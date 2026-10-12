@@ -3,7 +3,7 @@ from contextlib import nullcontext
 import anyio
 import pytest
 
-from lionagi.ln.concurrency import bounded_map, fail_after, gather, race, retry
+from lionagi.ln.concurrency import bounded_map, fail_after, gather, move_on_after, race, retry
 
 
 @pytest.fixture
@@ -328,6 +328,26 @@ async def test_retry_deadline_capped_by_parent(anyio_backend, monkeypatch: pytes
 
     assert calls["n"] == 1
     assert sleep_calls == [0.01]
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_ending_at_the_enclosing_deadline_is_left_to_that_scope(
+    anyio_backend,
+):
+    # retry sleeps out its backoff in a scope with the enclosing deadline, so
+    # both expire together. The enclosing scope cancels the backoff sleep, as it
+    # would cancel any sleep in its body, and the last ValueError is not raised
+    # in its place.
+    async def fails():
+        raise ValueError("boom")
+
+    with move_on_after(0.2) as outer:
+        await retry(fails, attempts=100, base_delay=1.0, jitter=0, retry_on=(ValueError,))
+    assert outer.cancelled_caught is True
+
+    with pytest.raises(TimeoutError):
+        with fail_after(0.2):
+            await retry(fails, attempts=100, base_delay=1.0, jitter=0, retry_on=(ValueError,))
 
 
 @pytest.mark.anyio

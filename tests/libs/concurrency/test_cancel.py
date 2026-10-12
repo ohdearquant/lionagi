@@ -89,10 +89,21 @@ async def test_move_on_at_future_and_past(anyio_backend):
 async def test_effective_deadline_inside_fail_at(anyio_backend):
     deadline = anyio.current_time() + 0.2  # Increased for CI stability
     with move_on_after(0.4):  # ensure outer has more time
-        with fail_at(deadline):
+        with fail_at(deadline) as scope:
             d = effective_deadline()
             assert d is not None
-            assert d == pytest.approx(deadline)
+            # The deadline given, not a later one recomputed from a second clock read.
+            assert d == deadline
+            assert scope.deadline == deadline
+
+
+@pytest.mark.anyio
+async def test_move_on_at_keeps_the_deadline_it_was_given(anyio_backend):
+    deadline = anyio.current_time() + 0.2
+    with move_on_after(0.4):
+        with move_on_at(deadline) as scope:
+            assert effective_deadline() == deadline
+            assert scope.deadline == deadline
 
 
 @pytest.mark.anyio
@@ -227,3 +238,26 @@ async def test_move_on_at_none_completes_successfully(anyio_backend):
         completed = True
     assert completed is True
     assert scope.cancelled_caught is False
+
+
+@pytest.mark.anyio
+async def test_absolute_deadline_scopes_read_nan_as_passed(anyio_backend):
+    with pytest.raises(TimeoutError):
+        with fail_at(float("nan")):
+            await anyio.sleep(1)
+    with move_on_at(float("nan")) as scope:
+        await anyio.sleep(1)
+    assert scope.cancelled_caught is True
+
+
+@pytest.mark.anyio
+async def test_fail_at_leaves_an_enclosing_cancellation_at_the_same_deadline_to_its_scope(
+    anyio_backend,
+):
+    # Both scopes expire together. The cancellation is the enclosing scope's,
+    # so fail_at does not turn it into TimeoutError.
+    deadline = anyio.current_time() + 0.01
+    with move_on_at(deadline) as outer:
+        with fail_at(deadline):
+            await anyio.sleep(1)
+    assert outer.cancelled_caught is True

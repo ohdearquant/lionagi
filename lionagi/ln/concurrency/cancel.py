@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -56,10 +57,13 @@ def fail_at(deadline: float | None) -> Iterator[CancelScope]:
         with CancelScope() as scope:
             yield scope
         return
-    now = anyio.current_time()
-    seconds = max(0.0, deadline - now)
-    with fail_after(seconds) as scope:
+    # The deadline goes on the scope itself, not through a duration: converting
+    # it for fail_after reads the clock a second time, which moves the deadline
+    # later by however long passed between the two reads.
+    with CancelScope(deadline=_scope_deadline(deadline)) as scope:
         yield scope
+    if scope.cancelled_caught and anyio.current_time() >= scope.deadline:
+        raise TimeoutError
 
 
 @contextmanager
@@ -70,10 +74,14 @@ def move_on_at(deadline: float | None) -> Iterator[CancelScope]:
         with CancelScope() as scope:
             yield scope
         return
-    now = anyio.current_time()
-    seconds = max(0.0, deadline - now)
-    with anyio.move_on_after(seconds) as scope:
+    with CancelScope(deadline=_scope_deadline(deadline)) as scope:
         yield scope
+
+
+def _scope_deadline(deadline: float) -> float:
+    # NaN compares false against every time: on asyncio a scope given it never
+    # expires, and trio refuses it. It is read as a deadline already passed.
+    return anyio.current_time() if math.isnan(deadline) else deadline
 
 
 def effective_deadline() -> float | None:
