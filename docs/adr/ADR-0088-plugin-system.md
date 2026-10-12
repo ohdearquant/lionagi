@@ -1,12 +1,59 @@
 # ADR-0088: Plugin system (directory-bundle manifest with lazy activation)
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-11 (see Amendment 1)
 - **Kind**: Aspirational
 - **Area**: substrates
 - **Date**: 2026-07-12
 - **Relations**: builds on ADR-0047 (hook mechanism scopes) and ADR-0048 (external
   hook contract — a plugin's hook block is delivered through it, including its D7
   trust gate); none superseded
+
+## Amendment 1 (2026-10-11) — the account home's `.lionagi` is user-level only
+
+D1 describes discovery as "project `.lionagi/` first, then `~/.lionagi/`". The
+project half walks every ancestor of the working directory, so from a checkout
+below the account's home it reached the account's own `.lionagi` as a project
+directory whatever `HOME` said. A test run that redirected `HOME` still loaded the
+real profiles, MCP configuration and settings. The same holds for the two sibling
+lookups, the MCP configuration path and `settings.yaml`.
+
+Decision:
+
+> User discovery uses the current HOME/.lionagi; LIONAGI_HOME continues to select
+> run storage. Project discovery excludes the account home's .lionagi, including
+> aliases and git-root candidates; other ancestor order remains unchanged,
+> followed by the user root. MCP and settings share this exclusion while retaining
+> their existing trust, stopping, and merge rules. Bare project .mcp.json remains
+> trust-gated; account-home bare files require explicit selection. Tests set a
+> temporary HOME before imports and pass it to subprocesses. No discovery-specific
+> setting is added. The account home is global-only. When the account home cannot
+> be identified, no exclusion applies and discovery behaves as before; it never
+> raises and never substitutes HOME for the account home.
+
+How it reads in the code:
+
+- The account home is the one the password database names for the process's
+  user, never `HOME`, and directories are compared by identity, so a symlinked
+  path or a symlinked `.lionagi` naming the same directory is excluded too
+  (`lionagi/_paths.py`: `is_account_home`, `is_account_lionagi_dir`).
+- The MCP lookup still stops at the first `.lionagi` directory on the way up,
+  the excluded one included, so excluding it never reaches a farther file. The
+  settings lookup still takes the nearest `settings.yaml`; when that file is the
+  account's own it adds no project layer and the search ends there.
+- `tests/conftest.py` replaces `HOME` with a temporary directory before anything
+  imports lionagi, beside the existing `LIONAGI_HOME` redirect.
+
+Two changes in behaviour, named:
+
+1. Under the account's real `HOME`, its `.lionagi` moves from its ancestor
+   position to the user-level position at the end of the list. A `.lionagi` in a
+   directory above the account home now comes before it.
+2. A bare `.mcp.json` in the account home is no longer read as project
+   configuration. Naming it as the explicit MCP path still selects it, and a bare
+   `.mcp.json` in any other trusted project directory is read as before.
+
+The user-level trust records of D5 and the plugin settings of D7 stay in
+`~/.lionagi/settings.yaml`, read through `HOME` as before.
 
 ## Context
 

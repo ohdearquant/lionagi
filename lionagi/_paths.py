@@ -13,10 +13,64 @@ __all__ = (
     "RUNS_ROOT",
     "ensure_lionagi_dir",
     "find_lionagi_dirs",
+    "is_account_home",
+    "is_account_lionagi_dir",
 )
 
 LIONAGI_HOME: Path = Path(os.environ.get("LIONAGI_HOME", Path.home() / ".lionagi")).expanduser()
 RUNS_ROOT: Path = LIONAGI_HOME / "runs"
+
+
+def _account_home() -> Path | None:
+    """The home directory the password database names for this process's user.
+
+    Read independently of ``$HOME`` on purpose: the user-level `.lionagi` is
+    found through ``$HOME``, and the project walks below must recognise the
+    account's own directory even when ``$HOME`` points somewhere else. None
+    where there is no password database (Windows), no entry for the uid (a
+    container, say), or an entry whose home is empty or relative; the walks then
+    exclude nothing, as before this rule existed. Never ``$HOME`` in its place:
+    that is the value being isolated.
+    """
+    try:
+        import pwd
+    except ImportError:
+        return None
+    try:
+        pw_dir = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        return None
+    # An empty home reads as `Path(".")`, the working directory, which would make the
+    # project's own `.lionagi` look like the account's and drop it from the walk.
+    if not isinstance(pw_dir, str) or not os.path.isabs(pw_dir):
+        return None
+    return Path(pw_dir)
+
+
+def _same_directory(path: Path, other: Path) -> bool:
+    # Identity, not spelling: a symlinked parent, a symlinked `.lionagi` or a
+    # case variant on a case-insensitive volume all name the same directory.
+    try:
+        return os.path.samefile(path, other)
+    except OSError:
+        return False
+
+
+def is_account_home(directory: Path) -> bool:
+    """Whether *directory* is the account's own home directory, by any spelling."""
+    home = _account_home()
+    return home is not None and _same_directory(directory, home)
+
+
+def is_account_lionagi_dir(directory: Path) -> bool:
+    """Whether *directory* is the account home's own `.lionagi`, by any spelling.
+
+    That directory is user-level configuration. It is found through ``$HOME``
+    as the user-level candidate, never as a project directory on the way up
+    from the working directory, so redirecting ``$HOME`` keeps it out.
+    """
+    home = _account_home()
+    return home is not None and _same_directory(directory, home / ".lionagi")
 
 
 def _find_git_root(cwd: Path) -> Path | None:
@@ -39,6 +93,12 @@ def _find_git_root(cwd: Path) -> Path | None:
 def find_lionagi_dirs() -> list[Path]:
     """Find `.lionagi/` dirs: git root, then cwd and its parents, then `~/.lionagi/`.
 
+    The account home's own `.lionagi` is never a project directory, at the git
+    root or on the walk up; it comes last only as the user-level candidate,
+    ``Path.home() / ".lionagi"``. That is ``$HOME``'s when ``$HOME`` is set (an
+    empty ``$HOME`` resolves to ``/``), and the password database's home only
+    when ``$HOME`` is unset.
+
     Uncached: every call re-resolves the git root and re-checks the paths, so
     the result always reflects the current cwd and git context.
     """
@@ -49,12 +109,12 @@ def find_lionagi_dirs() -> list[Path]:
     git_root = _find_git_root(cwd)
     if git_root is not None:
         candidate = git_root / ".lionagi"
-        if candidate.is_dir():
+        if candidate.is_dir() and not is_account_lionagi_dir(candidate):
             dirs.append(candidate)
 
     for parent in [cwd, *cwd.parents]:
         candidate = parent / ".lionagi"
-        if candidate.is_dir() and candidate not in dirs:
+        if candidate.is_dir() and candidate not in dirs and not is_account_lionagi_dir(candidate):
             dirs.append(candidate)
 
     home_candidate = home / ".lionagi"

@@ -114,6 +114,17 @@ cleaned up — so it exists for a case that actually wants the suite pointed at
 a specific, inspectable directory. When neither is a concern, the suite
 allocates a temp directory and registers its removal with `atexit`.
 
+`HOME` is replaced the same way, unconditionally and before any import, with a
+temporary directory of its own. Discovery reads the user-level `.lionagi`
+(agent profiles, MCP configuration, `settings.yaml`) through `HOME` on every
+call, so a run that kept the developer's `HOME` would hand any test that builds
+a profiled agent the real directory. Child processes the suite starts inherit
+the replacement. The account's own `.lionagi` stays out of the project walks
+whatever `HOME` says (ADR-0088 Amendment 1), so the two together keep a test
+from reading it from a checkout below the home directory too.
+`test_the_callers_home_reaches_neither_the_suite_nor_its_children` in
+`tests/test_run_directory_isolation.py` checks the replacement from outside.
+
 Cleanup runs after pytest has already reported the session's result, so a
 failure there has nowhere left to be an assertion. `_remove_test_home`
 therefore never raises: it catches `OSError` and `RecursionError` (the latter
