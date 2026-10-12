@@ -612,11 +612,34 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
     monkeypatch.setattr(kill_mod, "_kill_one", fake_kill_one)
 
     result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
-    assert result == {"status": "identity_mismatch", "id": run_id, "signal": "identity_mismatch"}
+    assert result == {"status": "not_stopped", "id": run_id, "signal": "identity_mismatch"}
 
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
         assert row["status"] == "running"
+
+
+async def test_execute_cancel_command_reports_an_imported_row_that_was_not_stopped(
+    tmp_path, monkeypatch
+):
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="running", pid=None)
+        await db.execute("UPDATE sessions SET source_kind = 'imported_fs' WHERE id = ?", (run_id,))
+
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
+
+    assert result == {
+        "status": "not_stopped",
+        "id": run_id,
+        "signal": "imported_no_process",
+    }
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+    assert row["status"] == "running"
 
 
 async def test_execute_cancel_command_terminalized_during_approval_is_not_cancelled(
@@ -710,7 +733,7 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
     assert decision["status"] == "succeeded"  # the executor ran without raising
     assert result == {
         "cancelled": False,
-        "status": "identity_mismatch",
+        "status": "not_stopped",
         "id": run_id,
         "signal": "identity_mismatch",
         "run_untouched": True,

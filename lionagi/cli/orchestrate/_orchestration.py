@@ -947,6 +947,76 @@ def _resolve_worker_model_spec(
     return w_model, w_profile, w_cfg
 
 
+def _warn_worker_config_collision(
+    env: OrchestrationEnv,
+    role: str,
+    *,
+    model_override: str | None,
+    system_prompt_override: str | None,
+    modes: list[str] | None,
+    profile: AgentProfile | None,
+    pack_config: Any,
+) -> None:
+    """Disclose the setting-by-setting precedence for a split worker config."""
+    if env.bare or profile is None or pack_config is None:
+        return
+
+    if model_override:
+        model_source = "worker override"
+    elif pack_config.model:
+        model_source = "pack"
+    elif profile.model:
+        model_source = "profile"
+    else:
+        # `profile` is never None here (guarded above), so the profile branch
+        # of `_resolve_worker_model_spec` always matches when neither an
+        # override nor a pack model is set. A profile whose `model` is falsy
+        # resolves to the role name itself, not to the orchestration default --
+        # that fallback is unreachable on this path. "No effective model" rather
+        # than "no model declared": `model: ""` parses through and is falsy, so
+        # the field can be present and still contribute nothing.
+        model_source = "profile (no effective model; role name used as spec)"
+
+    if env.effort:
+        effort_source = "orchestration override"
+    elif profile.effort:
+        effort_source = "profile"
+    elif pack_config.effort:
+        effort_source = "pack"
+    else:
+        effort_source = "provider default"
+
+    if modes:
+        modes_source = (
+            "task override validated by pack" if pack_config.modes_allow else "task override"
+        )
+    else:
+        modes_source = "pack"
+    if system_prompt_override is not None:
+        prompt_source = "worker override"
+    elif profile.raw_body:
+        prompt_source = "profile"
+    elif _is_casts_role(role):
+        prompt_source = "cast role with pack policy"
+    else:
+        prompt_source = "generic worker"
+
+    pack_name = getattr(env.pack, "name", "default")
+    message = (
+        f"worker role {role!r} matches both cast pack {pack_name!r} and agent profile "
+        f"{profile.name!r}; resolved sources: model={model_source}, effort={effort_source}, "
+        f"modes={modes_source}, prompt={prompt_source}"
+    )
+    reported = getattr(env, "_reported_worker_config_collisions", None)
+    if reported is None:
+        reported = set()
+        env._reported_worker_config_collisions = reported
+    if message in reported:
+        return
+    reported.add(message)
+    warn(message)
+
+
 def worker_is_cli(
     env: OrchestrationEnv,
     role: str,
@@ -1029,6 +1099,16 @@ async def build_worker_branch(
     w_fast = env.fast
     if not env.bare and w_profile and w_profile.fast_mode:
         w_fast = True
+
+    _warn_worker_config_collision(
+        env,
+        role,
+        model_override=model_override,
+        system_prompt_override=system_prompt_override,
+        modes=modes,
+        profile=w_profile,
+        pack_config=w_cfg,
+    )
 
     w_imodel = build_imodel_from_spec(
         w_model,
@@ -1780,6 +1860,12 @@ async def setup_orchestration_persist(
             exc_info=True,
         )
         _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
+        # It records no process to stop, so its run id is no `li kill` handle: say so now, with the
+        # pid, rather than leave the operator to find out at kill time (ADR-0104 Amendment 2).
+        warn(
+            f"run {run.run_id if run is not None else '(no run id)'}: persistence setup returned no "
+            f"session, and its run id is no `li kill` handle; its process is pid {os.getpid()}"
+        )
         if db is not None:
             try:
                 await db.close()
