@@ -156,24 +156,24 @@ def _is_lock_refusal(exc: BaseException) -> bool:
     )
 
 
-def _is_writer_lock_failure(exc: BaseException) -> bool:
-    """Whether *exc* is SQLite refusing the writer lock, at any depth of wrapping.
-
-    SQLAlchemy keeps the driver's error on ``orig``; other wrappers chain it.
-    """
-    pending: list[BaseException] = [exc]
+def _writer_lock_refusal(exc: BaseException) -> BaseException | None:
+    """Return the driver error for a writer-lock refusal, if one is wrapped by *exc*."""
+    chain: list[BaseException] = []
     seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
+    current: BaseException | None = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
         seen.add(id(current))
+        chain.append(current)
+        current = getattr(current, "orig", None)
+    for current in reversed(chain):
         if _is_lock_refusal(current):
-            return True
-        for nested in (getattr(current, "orig", None), current.__cause__, current.__context__):
-            if isinstance(nested, BaseException):
-                pending.append(nested)
-    return False
+            return current
+    return None
+
+
+def _is_writer_lock_failure(exc: BaseException) -> bool:
+    """Whether *exc* or its wrapped driver error is a writer-lock refusal."""
+    return _writer_lock_refusal(exc) is not None
 
 
 @dataclass(slots=True)
@@ -434,108 +434,105 @@ class SessionObserver(Observer):
         state = _SignalPersistState(session_id)
         self._persist = state
 
-        async def _persist(event: Any, _ctx: Any = None) -> None:
+        def _persist(event: Any, _ctx: Any = None) -> Any:
             from lionagi.session.signal import Signal  # noqa: PLC0415
 
             sig = event if isinstance(event, Signal) else None
             if sig is None:
                 return
-            # Counted before any of the signal's own code runs: a field getter or repr can
-            # raise, or reach unbind and read the count, and this signal is in it then.
+            # Count at dispatch so an unbind sees handlers whose coroutines have not started.
             state.in_flight += 1
-            trying = False
-            try:
-                # Unknown objects fall back to repr, MessageAdded stores a compact ref and
-                # oversized payloads are capped. A signal whose fields or payload still
-                # cannot be read (a getter or repr that raises) is counted like a failed
-                # write, opens no skip window, and the emit goes on.
+
+            async def _persist_signal() -> None:
+                trying = False
                 try:
-                    kind = type(sig).__name__
-                    op_id = getattr(sig, "op_id", "") or ""
-                    ts = time.time()
-                    payload = _sanitize_signal_payload(sig)
-                except Exception:  # noqa: BLE001 — persistence never breaks the session bus
-                    state.dropped += 1
-                    return
+                    # Unknown objects fall back to repr, MessageAdded stores a compact ref and
+                    # oversized payloads are capped. A signal whose fields or payload still
+                    # cannot be read (a getter or repr that raises) is counted like a failed
+                    # write, opens no skip window, and the emit goes on.
+                    try:
+                        kind = type(sig).__name__
+                        op_id = getattr(sig, "op_id", "") or ""
+                        ts = time.time()
+                        payload = _sanitize_signal_payload(sig)
+                    except Exception:  # noqa: BLE001 — persistence never breaks the session bus
+                        state.dropped += 1
+                        return
 
-                admission = state.admit()
-                if admission is None:
-                    state.dropped += 1
-                    return
-                trying = admission == "try"
+                    admission = state.admit()
+                    if admission is None:
+                        state.dropped += 1
+                        return
+                    trying = admission == "try"
 
-                async with state.lock:
-                    if not trying:
-                        # Read again once the lock is held: a write that queued behind one
-                        # the store refused finds the window that refusal opened.
-                        admission = state.admit()
-                        if admission is None:
-                            state.dropped += 1
-                            return
-                        trying = admission == "try"
-                    if _bound_db is not None:
-                        # Fast path: reuse the caller's already-open connection.
-                        await _bound_db.insert_session_signal(
-                            session_id=session_id,
-                            kind=kind,
-                            op_id=op_id,
-                            ts=ts,
-                            payload=payload,
-                        )
-                    else:
-                        # Fallback: open a fresh connection (standalone / test use).
-                        from lionagi.state.db import (  # noqa: PLC0415
-                            StateDB,
-                            state_db_known_absent,
-                        )
-
-                        if state_db_known_absent():
-                            # No store to write to: nothing is written or counted.
-                            return
-                        async with StateDB() as _db:
-                            await _db.insert_session_signal(
+                    async with state.lock:
+                        if not trying:
+                            # Read again once the lock is held: a write that queued behind one
+                            # the store refused finds the window that refusal opened.
+                            admission = state.admit()
+                            if admission is None:
+                                state.dropped += 1
+                                return
+                            trying = admission == "try"
+                        if _bound_db is not None:
+                            # Fast path: reuse the caller's already-open connection.
+                            await _bound_db.insert_session_signal(
                                 session_id=session_id,
                                 kind=kind,
                                 op_id=op_id,
                                 ts=ts,
                                 payload=payload,
                             )
-            except Exception as exc:  # noqa: BLE001 — persistence never breaks the session bus
-                # Counted as dropped only once the error is classified and logged: classifying it
-                # and formatting the warning can call its str or repr, which can reach unbind and
-                # read the count, and the signal is in it already, as in flight. An error raised
-                # there is not the store's answer, so it goes no further: one the classifier cannot
-                # read opens no window, and a log handler that fails loses only the warning, the
-                # window being open by then.
-                try:
-                    if _is_writer_lock_failure(exc):
-                        opening = state.skip_until is None
-                        state.skip_until = time.monotonic() + _PERSIST_SKIP_WINDOW_SECONDS
-                        if opening:
-                            logger.warning(
-                                "signal persistence for session %s paused for %.0fs: the state "
-                                "store refused the writer lock (%r); signals emitted meanwhile "
-                                "are dropped and counted",
-                                session_id,
-                                _PERSIST_SKIP_WINDOW_SECONDS,
-                                getattr(exc, "orig", None) or exc,
+                        else:
+                            # Fallback: open a fresh connection (standalone / test use).
+                            from lionagi.state.db import (  # noqa: PLC0415
+                                StateDB,
+                                state_db_known_absent,
                             )
-                except Exception:  # noqa: BLE001, S110 — persistence never breaks the session bus
-                    pass
-                finally:
+
+                            if state_db_known_absent():
+                                # No store to write to: nothing is written or counted.
+                                return
+                            async with StateDB() as _db:
+                                await _db.insert_session_signal(
+                                    session_id=session_id,
+                                    kind=kind,
+                                    op_id=op_id,
+                                    ts=ts,
+                                    payload=payload,
+                                )
+                except Exception as exc:  # noqa: BLE001 — persistence never breaks the session bus
+                    # The signal is already in flight while its error is classified and logged.
+                    try:
+                        refusal = _writer_lock_refusal(exc)
+                        if refusal is not None:
+                            opening = state.skip_until is None
+                            state.skip_until = time.monotonic() + _PERSIST_SKIP_WINDOW_SECONDS
+                            if opening:
+                                logger.warning(
+                                    "signal persistence for session %s paused for %.0fs: the state "
+                                    "store refused the writer lock (%r); signals emitted meanwhile "
+                                    "are dropped and counted",
+                                    session_id,
+                                    _PERSIST_SKIP_WINDOW_SECONDS,
+                                    refusal,
+                                )
+                    except Exception:  # noqa: BLE001, S110 — persistence never breaks the session bus
+                        pass
+                    finally:
+                        state.dropped += 1
+                except BaseException:
+                    # Cancellation leaves the write unconfirmed, even if it committed first.
                     state.dropped += 1
-            except BaseException:
-                # Cancelled or interrupted before the write is known to have landed:
-                # counted, then re-raised. A write whose row committed just before the
-                # cancellation reached it is counted too.
-                state.dropped += 1
-                raise
-            else:
-                state.skip_until = None
-            finally:
-                state.in_flight -= 1
-                if trying:
-                    state.try_in_flight = False
+                    raise
+                else:
+                    state.skip_until = None
+                finally:
+                    state.in_flight -= 1
+                    if trying:
+                        state.try_in_flight = False
+
+            return _persist_signal()
 
         from lionagi.session.signal import Signal  # noqa: PLC0415
 

@@ -462,8 +462,8 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
     An end written afterwards classifies exactly as it always did, and the id
     is no longer reported as stopped without one. Here the first end was this
     server's own inference (no writer had reported one yet); the hook
-    arriving afterwards does not supersede that inference — D5 keeps the
-    first recorded end, including the reaper's own `indeterminate` — but its
+    arriving afterwards does not supersede that inference — the first
+    recorded end, including the reaper's `indeterminate`, remains — but its
     late report is visible beside the latch, and its own delivery attempt
     still went ahead. See `docs/internals/mcp.md#status-response-contract`.
     """

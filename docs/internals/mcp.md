@@ -258,8 +258,8 @@ Inconclusive (settle nothing about death):
 
 - `identity_confirmed` — start times match
 - `identity_confirmed_by_marker` — two live reads agreed with each other and
-  both mismatched the record's start time, but the process's own identity
-  marker names this run — see below. Alive; the record's own `pid_create_time`
+  both mismatched the record's start time, but the marker inherited from this
+  run names it — see below. Alive; the record's own `pid_create_time`
   is what's suspect, not the process.
 - `identity_not_recorded` — record captured no start time
 - `identity_unusable` — recorded start time can't be compared against (bool,
@@ -282,13 +282,8 @@ Inconclusive (settle nothing about death):
   no probe was made at all
 - `no_record` — live pid with no record to identify it against
 
-**Confirming a `pid_recycled` mismatch.** A single read landing outside
-`CREATE_TIME_TOLERANCE` is not, by itself, evidence of a different process —
-under high load one kernel-tick read can miss tolerance for the *same*
-process (observed: host load average ~108, a live process's create-time read
-mismatching its own recorded value; the mechanism behind that one stray read
-is not established — the response is the second read and the marker check
-below, not a claim about why the first read missed). `_run_process_liveness()`
+**Confirming a `pid_recycled` mismatch.** A single read outside
+`CREATE_TIME_TOLERANCE` is inconclusive. `_run_process_liveness()`
 takes a second fresh read (`_process_create_time` again, not reused from the
 first) before concluding anything from a mismatch:
 
@@ -301,8 +296,8 @@ first) before concluding anything from a mismatch:
 Two live reads agreeing with each other, both mismatching the record, is
 proof the two reads agree — not proof the record's own single spawn-time read
 was the accurate one. Before `pid_recycled` is concluded from that agreement,
-the process's own identity marker (planted in its environment at spawn,
-`config.JOB_MARKER_ENV_VAR`) is read, then bracketed the same way `kill()`
+the marker inherited from this run's process (`config.JOB_MARKER_ENV_VAR`) is
+read, then bracketed the same way `kill()`
 brackets its own marker read: a third create-time probe must still equal the
 first two, or the finding is `identity_unstable` rather than anything drawn
 from the marker.
@@ -321,7 +316,7 @@ job's own `pid_create_time`), `tolerance` (`CREATE_TIME_TOLERANCE` at the time
 of the reap), `observed_at`, `observer` (`_server_identity()` — which server
 process concluded this, since more than one may read the same job directory),
 and `marker` (the foreign run id a `pid_recycled` conclusion read from the
-process's own marker, `None` for every other finding). Threaded from
+marker inherited by the process at that pid, `None` otherwise). Threaded from
 `ProcessLiveness`'s own fields rather than re-probed under the lock, so the
 evidence describes the actual observation that triggered the reap. Every key
 here is validated against a fixed allow-list before the lock is taken — an

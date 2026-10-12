@@ -624,9 +624,9 @@ def test_status_reports_a_reused_pid_as_not_this_runs_process(
 
     Two agreeing live reads that both mismatch the record only prove the two
     reads agree with each other, not that the record's own spawn-time read
-    was accurate — `_run_process_liveness` settles that from the process's
-    own identity marker before concluding `pid_recycled`, so this scenario
-    also has to name a marker: one that belongs to a different run.
+    was accurate — `_run_process_liveness` checks the marker inherited from
+    the run's process tree before concluding `pid_recycled`, so this scenario
+    also has to name a marker inherited from a different run.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))

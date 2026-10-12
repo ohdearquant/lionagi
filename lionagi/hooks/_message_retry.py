@@ -30,17 +30,17 @@ def _describe_failure(exc: Exception | None) -> tuple[Any, Exception | None]:
 
     A refused writer lock is ordinary contention, so it is one line naming the
     driver's error and no traceback; SQLAlchemy's own text for it spans lines.
-    Only *exc* and the driver error SQLAlchemy keeps on its ``orig`` are read:
-    an error that merely chains a refusal may be a different failure raised
-    while the refusal was handled. That one, any other failure, and one whose
-    text cannot be read keep their message and traceback.
+    The observer's driver-error classifier is shared here, so an error raised
+    while handling a refusal keeps its message and traceback in both paths.
+    Any other failure, and one whose text cannot be read, keeps its traceback.
     """
     try:
-        from lionagi.session.observer import _is_lock_refusal  # noqa: PLC0415
+        from lionagi.session.observer import _writer_lock_refusal  # noqa: PLC0415
 
-        for node in (getattr(exc, "orig", None), exc):
-            if isinstance(node, BaseException) and _is_lock_refusal(node):
-                return " ".join(repr(node).split()), None
+        if isinstance(exc, BaseException):
+            refusal = _writer_lock_refusal(exc)
+            if refusal is not None:
+                return " ".join(repr(refusal).split()), None
     except Exception:  # noqa: BLE001 -- describing a failure must not become one
         return exc, exc
     return exc, exc

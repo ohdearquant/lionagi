@@ -85,7 +85,7 @@ def _pid_recycled(monkeypatch) -> None:
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))
     # Two agreeing mismatching reads only conclude `pid_recycled` once the
-    # process's own marker names a different run; a foreign marker here is
+    # inherited marker names a different run; a foreign marker here is
     # what makes that positive.
     monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run-id"))
 
@@ -472,8 +472,8 @@ def test_a_delivery_result_never_rolls_terminal_fields_backward(sandbox, monkeyp
 def test_a_hook_arriving_after_a_reap_leaves_the_latch_and_records_the_report(
     sandbox, monkeypatch, no_delivery
 ):
-    """The child's own hook, running late, is the owner reporting in — but D5
-    is first-writer-wins for terminal fields, including the reap's own
+    """The child's own hook, running late, is the owner reporting in — but the
+    first recorded terminal state remains authoritative, including the reap's
     `indeterminate`: the hook's report does not replace it. What it leaves is
     a `late_report` beside the untouched latch, so the contradiction between
     what the reaper concluded and what the run's own process reported stays
@@ -552,6 +552,39 @@ def test_a_lifecycle_end_arriving_after_a_reap_leaves_the_latch_and_records_the_
     assert st["late_report"] == late_report
 
 
+def test_a_lifecycle_report_with_a_non_string_status_is_sanitized_after_a_reap(
+    sandbox, monkeypatch, no_delivery
+):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    jobs.status(rid)
+
+    updated = jobs._cache_lifecycle_end(
+        jobs._read_job(rid),
+        {
+            "terminal": True,
+            "status": ["completed"],
+            "ended_at": _SPAWNED_AT + 30,
+            "reason_code": "killed_by_operator",
+        },
+    )
+
+    assert updated["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert updated["late_report"]["status"] == "unknown"
+    assert updated["late_report"]["outcome"] == "failed"
+
+
+def test_a_terminal_record_with_a_non_string_status_is_sanitized(sandbox, monkeypatch, no_delivery):
+    _pid_absent(monkeypatch)
+    rid = _stranded(status=["completed"], finished_at="2026-07-27T00:00:00+00:00")
+
+    st = jobs.status(rid)
+
+    assert st["status"] == "unknown"
+    assert st["terminal"] is True
+    assert st["outcome"] == "failed"
+
+
 # --- confirmation read before a pid_recycled reap ------------------------------
 
 
@@ -617,7 +650,7 @@ def test_two_agreeing_mismatched_reads_with_a_foreign_marker_are_pid_recycled(
     """(b) Two live reads agreeing with each other, both mismatching the
     record, are proof the two reads agree — not proof the single spawn-time
     read the record carries was the accurate one. `pid_recycled` is concluded
-    only once the process's own marker names a *different* run.
+    only once the marker inherited from another run names a *different* run.
     """
     rid = _stranded()
     _agreeing_mismatch_with_marker(monkeypatch, marker=("found", "some-other-run-id"))
@@ -632,13 +665,13 @@ def test_two_agreeing_mismatched_reads_with_a_foreign_marker_are_pid_recycled(
     assert st["terminal_evidence"]["marker"] == "some-other-run-id"
 
 
-def test_two_agreeing_mismatched_reads_confirmed_by_this_runs_own_marker_stay_alive(
+def test_two_agreeing_mismatched_reads_confirmed_by_this_runs_marker_stay_alive(
     sandbox, monkeypatch, no_delivery
 ):
     """(a) The same two agreeing, record-mismatching reads — but the
-    process's own marker names *this* run. That confirms the process is this
-    run's; what's suspect is the record's own recorded start time, not the
-    process. Nothing is reaped.
+    marker inherited from this run names it. That confirms the process at this
+    pid descends from this run; what's suspect is the record's own recorded
+    start time. Nothing is reaped.
     """
     rid = _stranded()
     _agreeing_mismatch_with_marker(monkeypatch, marker=("found", rid))

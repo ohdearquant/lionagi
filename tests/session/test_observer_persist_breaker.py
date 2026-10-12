@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import lionagi.ln.concurrency as concurrency_mod
 import lionagi.session.observer as observer_mod
 from lionagi.session.observer import SessionObserver
 from lionagi.session.signal import NodeStarted
@@ -232,6 +233,30 @@ class _FailsOnce:
             raise self.error
 
 
+def _failure_during_lock_recovery() -> Exception:
+    try:
+        raise sqlite3.OperationalError("database is locked")
+    except sqlite3.OperationalError:
+        try:
+            raise RuntimeError("write recovery failed")
+        except RuntimeError as exc:
+            return exc
+
+
+async def test_a_failure_during_lock_recovery_does_not_open_a_skip_window(caplog):
+    db = _FailsOnce(_failure_during_lock_recovery())
+    observer = SessionObserver()
+    observer.bind_db_persistence(SESSION_ID, db=db)
+
+    with caplog.at_level(logging.WARNING):
+        await observer.emit(NodeStarted(op_id="failed", name="step"))
+        await observer.emit(NodeStarted(op_id="next", name="step"))
+
+    assert db.attempts == ["failed", "next"]
+    assert observer.persist_dropped == 1
+    assert _observer_warnings(caplog) == []
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -401,6 +426,34 @@ async def test_writes_in_flight_at_unbind_are_in_the_count_read_then(fails):
     assert at_unbind == 2
     assert db.attempts == ["writing", "queued"]
     assert observer.persist_dropped == (2 if fails else 0)
+
+
+async def test_a_dispatched_write_is_counted_before_unbind(monkeypatch):
+    db = _HeldThenFinishes(fails=True)
+    observer = SessionObserver()
+    observer.bind_db_persistence(SESSION_ID, db=db)
+    dispatched = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def _wait_before_handlers(*handlers):
+        dispatched.set()
+        await resume.wait()
+        return await asyncio.gather(*handlers)
+
+    monkeypatch.setattr(concurrency_mod, "gather", _wait_before_handlers)
+    emitting = asyncio.create_task(observer.emit(NodeStarted(op_id="queued", name="step")))
+    await asyncio.wait_for(dispatched.wait(), 5)
+    observer.unbind_db_persistence()
+    at_unbind = observer.persist_dropped
+
+    resume.set()
+    await asyncio.wait_for(db.holding.wait(), 5)
+    db.release.set()
+    await asyncio.wait_for(emitting, 5)
+
+    assert at_unbind == 1
+    assert db.attempts == ["queued"]
+    assert observer.persist_dropped == 1
 
 
 class _Unrepresentable:

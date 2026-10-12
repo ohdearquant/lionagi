@@ -162,22 +162,16 @@ CONCLUSIVE_FINDINGS = frozenset(
     {FINDING_PID_ABSENT, FINDING_DISAPPEARED_DURING_PROBE, FINDING_PID_RECYCLED}
 )
 
-# A mismatch between one live read and the recorded start time is not enough
-# to call a process gone: a live run has been reaped on one mismatching read
-# while every later read of the same pid returned the recorded value exactly
-# (observed on a heavily loaded host under high load; the mechanism behind that
-# one stray read is not established). This finding names that
-# unsettled state — two live reads that could not be made to agree with each
-# other — and is deliberately absent from CONCLUSIVE_FINDINGS: a case this
-# ambiguous must never admit a reap, only ever by explicit addition above,
-# never by exclusion from this set.
+# A single mismatch between a live read and the recorded start time is not
+# enough to call a process gone. Two live reads must agree before the marker
+# check below can establish that another process now holds the pid.
 FINDING_IDENTITY_UNSTABLE = "identity_unstable"
 
 # Two live reads agreeing with each other, both mismatching the recorded start
 # time, prove the two reads agree — not that the single spawn-time read the
 # record carries was the accurate one. Before that is read as `pid_recycled`,
-# the process's own identity marker (planted in its environment at spawn,
-# `config.JOB_MARKER_ENV_VAR`) is consulted. `identity_confirmed_by_marker`
+# the marker inherited from this run's process (`config.JOB_MARKER_ENV_VAR`)
+# is consulted. `identity_confirmed_by_marker`
 # is what a match against this run's own id produces: alive, not reaped, and
 # the record's own `pid_create_time` is the one worth treating as suspect.
 # `identity_unconfirmed` is a marker read that could not rule anything in or
@@ -909,6 +903,11 @@ class NotifySenderResolutionError(RuntimeError):
     """The submitting directory's actor could not be resolved for admission."""
 
 
+def _status_text(value: Any) -> str:
+    """Keep open status values intact while replacing malformed values safely."""
+    return value if isinstance(value, str) else "unknown"
+
+
 def _outcome_for(status: Any) -> str:
     """How a terminal run came out, from the status the CLI recorded.
 
@@ -916,9 +915,9 @@ def _outcome_for(status: Any) -> str:
     whether it ended. An unrecognized status classifies as failure — a stale
     success list would otherwise read a timeout back as a success.
     """
-    if status in _SUCCEEDED_STATUSES:
+    if isinstance(status, str) and status in _SUCCEEDED_STATUSES:
         return "succeeded"
-    if status in _CANCELLED_STATUSES:
+    if isinstance(status, str) and status in _CANCELLED_STATUSES:
         return "cancelled"
     return "failed"
 
@@ -951,7 +950,7 @@ def _derive(
             "possibly_orphaned": False,
         }
 
-    recorded = job.get("status", "unknown")
+    recorded = _status_text(job.get("status", "unknown"))
     spawn_state = job.get("spawn_state")
 
     if spawn_state == "failed":
@@ -989,7 +988,7 @@ def _derive(
     # Process gone (or never there), sidecar records no end. The lifecycle
     # store is the only place `li kill` records an end (it writes nothing here).
     if lifecycle is not None and lifecycle.get("terminal"):
-        lifecycle_status = lifecycle.get("status", recorded)
+        lifecycle_status = _status_text(lifecycle.get("status", recorded))
         return {
             "status": lifecycle_status,
             "terminal": True,
@@ -1459,8 +1458,8 @@ def _cache_lifecycle_end(
     is not an error (it's a cache; the next observation just asks again); the
     in-memory record is returned either way so this call is what classifies.
 
-    D5 is first-writer-wins for every terminal field, including an orphan
-    reap's `indeterminate` (`terminal_source == mcp_orphan_reaper`): a
+    The first recorded terminal state remains authoritative, including an
+    orphan reap's `indeterminate` (`terminal_source == mcp_orphan_reaper`): a
     lifecycle end reported here after a reap has already latched does not
     replace it — reached by a different race than `mark_terminal`'s own late
     report, this read started before the reap and lost the lock to it. What
@@ -1476,7 +1475,7 @@ def _cache_lifecycle_end(
     # that does not leaves the same gap the reaper has, and the same substituted
     # value: now, standing in for a moment nobody recorded.
     observed_end = _iso_from_epoch(ended)
-    status = lifecycle.get("status", job.get("status"))
+    status = _status_text(lifecycle.get("status", job.get("status")))
     reason_code = lifecycle.get("reason_code")
     fields = {
         "status": status,
@@ -1523,6 +1522,7 @@ def _note_late_report(
     """
     if _LATE_REPORT_FIELD in record:
         return
+    status = _status_text(status)
     record[_LATE_REPORT_FIELD] = {
         "source": source,
         "status": status,
@@ -1567,9 +1567,9 @@ class ProcessLiveness:
     create-time read this conclusion turned on (None where no live read was
     the deciding fact, e.g. `pid_absent`) — carried so a reap can put it in
     the terminal evidence without re-probing under the lock. ``marker`` is the
-    foreign run id a `pid_recycled` conclusion read from the process's own
-    identity marker (None otherwise) — carried the same way, so the evidence
-    behind a recycled-pid reap names the run that actually holds the pid.
+    foreign run id a `pid_recycled` conclusion read from the marker inherited
+    by the process at this pid (None otherwise) — carried the same way, so the
+    evidence behind a recycled-pid reap names the run the process descends from.
     """
 
     alive: bool
@@ -1659,7 +1659,7 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> Proces
     # record, does a live process actually hold the pid — and that proves only
     # that the two live reads agree with each other, not that the single
     # spawn-time read the record carries was the accurate one. Identity is
-    # settled from a third source, the process's own marker, before anything
+    # settled from a third source, the marker inherited from the run, before anything
     # is reaped on it.
     second_state, second_created = _process_create_time(asked)
     if second_state == "gone":
@@ -2785,14 +2785,15 @@ def mark_terminal(run_id: str, cli_status: str, *, reason_code: str | None = Non
     The one apparent exception is an end this server inferred rather than one
     anybody reported (`terminal_source == mcp_orphan_reaper`, from a liveness
     probe that read the process as conclusively gone). This call is the run's
-    own process saying it did not end when the reaper concluded that — but D5
-    keeps the first recorded end regardless of who wrote it, including the
+    own process saying it did not end when the reaper concluded that — but the
+    first recorded end remains in place regardless of who wrote it, including the
     reaper's own `indeterminate`, so this does not replace the reap the way it
     once did. What it does instead is leave a record of itself beside the
     latch: the first such late report is kept in `late_report`, so the
     contradiction is visible without moving anything the reap already wrote.
     A second late report is dropped, same as the latch itself.
     """
+    cli_status = _status_text(cli_status)
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None:
