@@ -781,7 +781,7 @@ async def _run_agent(
                     launch_dir=launched["launch_dir"],
                     disabled=disabled,
                 )
-            except (McpConfigError, UnicodeDecodeError) as exc:
+            except McpConfigError as exc:
                 # Only a named file is refused; a search that finds nothing usable
                 # says so in the resolution instead.
                 raise McpConfigError(

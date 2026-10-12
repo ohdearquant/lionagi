@@ -121,11 +121,15 @@ def _read_config(path: Path) -> dict[str, Any]:
     """The config object at *path*, its ``mcpServers`` checked as
     :func:`_read_servers` documents."""
     try:
-        raw = path.read_text()
+        raw = path.read_bytes()
     except OSError as exc:
         raise McpConfigError(f"could not read {path}: {exc}") from exc
     try:
-        data = json.loads(raw, parse_constant=_reject_json_constant)
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise McpConfigError(f"{path} is not valid UTF-8: {exc}") from exc
+    try:
+        data = json.loads(text, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:
         raise McpConfigError(f"{path} is not valid JSON: {exc}") from exc
     except ValueError as exc:

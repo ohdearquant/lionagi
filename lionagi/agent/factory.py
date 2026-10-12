@@ -823,8 +823,8 @@ def _forward_mcp_to_cli_request(
         from pathlib import Path
 
         try:
-            data = json.loads(Path(mcp_path).read_text())
-        except (OSError, json.JSONDecodeError) as exc:
+            data = json.loads(Path(mcp_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             import logging
 
             logging.getLogger(__name__).warning(

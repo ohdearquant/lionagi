@@ -414,6 +414,26 @@ class TestActionManagerMCPNaming:
         assert manager.registry == {}
 
     @pytest.mark.asyncio
+    async def test_load_mcp_config_undecodable_file_is_a_value_error_naming_it(self, tmp_path):
+        config = tmp_path / ".mcp.json"
+        config.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+
+        with pytest.raises(ValueError, match=str(config)) as raised:
+            await ActionManager().load_mcp_config(str(config))
+
+        assert not isinstance(raised.value, UnicodeDecodeError)
+
+    @pytest.mark.asyncio
+    async def test_load_mcp_tools_undecodable_config_is_a_value_error_naming_it(self, tmp_path):
+        config = tmp_path / ".mcp.json"
+        config.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+
+        with pytest.raises(ValueError, match=str(config)) as raised:
+            await load_mcp_tools(config_path=str(config))
+
+        assert not isinstance(raised.value, UnicodeDecodeError)
+
+    @pytest.mark.asyncio
     async def test_load_mcp_config_propagates_server_failure(self):
         manager = ActionManager()
         manager.register_mcp_server = AsyncMock(side_effect=RuntimeError("incomplete tools"))

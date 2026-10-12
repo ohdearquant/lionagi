@@ -74,6 +74,15 @@ class TestMCPConnectionPoolLoadConfig:
                 with pytest.raises(ValueError, match="mcpServers must be a dictionary"):
                     MCPConnectionPool.load_config(".mcp.json")
 
+    def test_undecodable_config_raises_value_error_naming_the_path(self, tmp_path):
+        config = tmp_path / ".mcp.json"
+        config.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+
+        with pytest.raises(ValueError, match=str(config)) as raised:
+            MCPConnectionPool.load_config(str(config))
+
+        assert not isinstance(raised.value, UnicodeDecodeError)
+
     def test_load_config_success(self):
         MCPConnectionPool._configs = {}  # Reset configs
 
