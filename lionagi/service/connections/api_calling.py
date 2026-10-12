@@ -52,6 +52,16 @@ class APICalling(HookedEvent):
     )
 
     _routing_scope: object | None = PrivateAttr(default=None)
+    # Set when a model refuses to send this call for another routing scope. The
+    # call may already sit in a processor queue that the refusal cannot reach,
+    # so the send itself refuses it.
+    _routing_refused: bool = PrivateAttr(default=False)
+
+    def _refuse_if_routing_refused(self) -> None:
+        if self._routing_refused:
+            from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+            raise AccountRoutingError(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT)
 
     @model_validator(mode="after")
     def _validate_streaming(self) -> Self:
@@ -116,6 +126,7 @@ class APICalling(HookedEvent):
         return None
 
     async def _core_invoke(self):
+        self._refuse_if_routing_refused()
         scope_kwargs = (
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )
@@ -129,6 +140,7 @@ class APICalling(HookedEvent):
         )
 
     async def _core_stream(self):
+        self._refuse_if_routing_refused()
         scope_kwargs = (
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )

@@ -16,6 +16,13 @@ from ._config import AnthropicConfigs
 
 __all__ = ("CreateMessageRequest", "AnthropicMessagesEndpoint")
 
+# Delta fields a consumer joins across the events of one content block.
+_JOINED_DELTA_FIELDS = {
+    "text_delta": "text",
+    "thinking_delta": "thinking",
+    "input_json_delta": "partial_json",
+}
+
 
 class TextContentBlock(BaseModel):
     type: Literal["text"] = "text"
@@ -471,6 +478,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         from lionagi.service.accounts._pricing import price_usage
         from lionagi.service.accounts._router import (
             StreamingSecretRedactor,
+            StreamingTextRedactor,
             get_router,
             redact_value,
             validate_routed_request,
@@ -512,6 +520,11 @@ class AnthropicMessagesEndpoint(Endpoint):
         response = None
         request_entered = False
         redactor = StreamingSecretRedactor(attempt.key)
+        # The byte redactor sees the JSON framing between two deltas, so a key split
+        # across them reaches a consumer that joins their text. Each block's delta text
+        # runs through its own redactor before its chunk is built, so the chunk and its
+        # raw event agree; the held rest is sent as one more delta when the block ends.
+        delta_redactors: dict[tuple[Any, str], StreamingTextRedactor] = {}
         decoder = codecs.getincrementaldecoder("utf-8")()
         pending = ""
         event_data: list[str] = []
@@ -544,6 +557,25 @@ class AnthropicMessagesEndpoint(Endpoint):
                 return [data, stripped]
             return [stripped]
 
+        def block_of(event: dict) -> Any:
+            index = event.get("index")
+            return index if isinstance(index, int) else None
+
+        def release_held(keys: list[tuple[Any, str]]) -> list:
+            released = []
+            for block, delta_type in keys:
+                rest = delta_redactors.pop((block, delta_type)).feed("", final=True)
+                if not rest:
+                    continue
+                field = _JOINED_DELTA_FIELDS[delta_type]
+                event = {
+                    "type": "content_block_delta",
+                    "index": block,
+                    "delta": {"type": delta_type, field: rest},
+                }
+                released.append(self._line_to_stream_chunk(json.dumps(event)))
+            return released
+
         async def emit_data(data: str):
             nonlocal served_model, request_id, settled, saw_error_event
             event = None
@@ -564,6 +596,24 @@ class AnthropicMessagesEndpoint(Endpoint):
                     delta_usage = event.get("usage")
                     if isinstance(delta_usage, dict):
                         usage.update(delta_usage)
+                elif event.get("type") == "content_block_delta":
+                    delta = event.get("delta")
+                    delta_type = delta.get("type") if isinstance(delta, dict) else None
+                    field = (
+                        _JOINED_DELTA_FIELDS.get(delta_type)
+                        if isinstance(delta_type, str)
+                        else None
+                    )
+                    if field is not None and isinstance(delta.get(field), str):
+                        delta_redactor = delta_redactors.setdefault(
+                            (block_of(event), delta_type), StreamingTextRedactor(attempt.key)
+                        )
+                        delta[field] = delta_redactor.feed(delta[field])
+                        data = json.dumps(event)
+                elif event.get("type") == "content_block_stop":
+                    block = block_of(event)
+                    for held in release_held([key for key in delta_redactors if key[0] == block]):
+                        yield held
                 elif event.get("type") == "message_stop":
                     priced = price_usage(
                         router.revision,
@@ -650,6 +700,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                     event_data.clear()
                     async for chunk in emit_data(data):
                         yield chunk
+                for held in release_held(list(delta_redactors)):
+                    yield held
                 if not settled:
                     # The stream ended before message_stop, so its usage is incomplete.
                     reason = "stream_error" if saw_error_event else "stream_truncated"

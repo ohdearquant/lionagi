@@ -30,8 +30,8 @@ class _NonRetryableClientError(Exception):
 class _RoutedAttemptError(Exception):
     """Private failure passed between the request and retry layers.
 
-    Its message holds only the code and validated ids. Raised ``from None``, it still
-    keeps the exception it replaced as ``__context__``.
+    Its message holds only the code; the account, attempt id and status are attributes.
+    Raised ``from None``, it still keeps the exception it replaced as ``__context__``.
     """
 
     def __init__(

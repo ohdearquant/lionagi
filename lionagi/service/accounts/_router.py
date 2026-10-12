@@ -205,6 +205,10 @@ def validate_routed_request(
     if body_kwargs is not None:
         if set(body_kwargs) != {"json"}:
             raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
+    # Routed calls are priced for the standard tier alone; a tier given as a call
+    # keyword is refused like one given in the request body.
+    if any(isinstance(name, str) and name.lower() == "service_tier" for name in request_kwargs):
+        raise _refuse(RouterErrorCode.UNSUPPORTED_PRICING)
 
 
 def get_router() -> AccountRouter:
@@ -264,6 +268,27 @@ def redact_value(value: Any, key: SecretStr) -> Any:
             for name, item in value.items()
         }
     return value
+
+
+class StreamingTextRedactor:
+    """Masks a key split across decoded text pieces that a consumer joins.
+
+    Each piece is held back by the key's length less one, so a key that
+    continues in the next piece is replaced before either half is emitted.
+    """
+
+    def __init__(self, key: SecretStr) -> None:
+        self._secret = key.get_secret_value()
+        self._tail = ""
+
+    def feed(self, text: str, *, final: bool = False) -> str:
+        data = (self._tail + text).replace(self._secret, "[REDACTED]")
+        if final:
+            self._tail = ""
+            return data
+        safe_length = max(0, len(data) - len(self._secret) + 1)
+        output, self._tail = data[:safe_length], data[safe_length:]
+        return output
 
 
 class StreamingSecretRedactor:

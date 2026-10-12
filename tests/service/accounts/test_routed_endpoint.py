@@ -461,8 +461,12 @@ async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_pat
         "index": 0,
         "delta": {"type": "text_delta", "text": "first chunk"},
     }
+    # Text is held until its block ends, so the block closes before the failure;
+    # text still held when a stream fails is dropped, like the byte redactor's tail.
+    stop = {"type": "content_block_stop", "index": 0}
     pieces = [
         b"data: " + json.dumps(first).encode() + b"\n\n",
+        b"data: " + json.dumps(stop).encode() + b"\n\n",
         b" " * 40,
         ClientError("offline"),
     ]
@@ -700,8 +704,8 @@ def test_the_stream_redactor_masks_a_key_that_straddles_its_cut():
     from lionagi.service.accounts._router import StreamingSecretRedactor
 
     redactor = StreamingSecretRedactor(SecretStr(CANARY))
-    # One feed holding the whole key, ending two bytes past it: the held tail is the
-    # key's length minus one, so the cut falls inside the key.
+    # One feed holding the whole key, ending two bytes past it. A tail of the key's
+    # length minus one, cut before replacing, would split the key and neither part match.
     out = redactor.feed(b"ab" + CANARY.encode() + b"cd") + redactor.feed(b"", final=True)
     assert out == b"ab[REDACTED]cd"
 
@@ -710,6 +714,131 @@ def test_the_stream_redactor_masks_a_key_that_straddles_its_cut():
     out = redactor.feed(b"ab" + key[:5]) + redactor.feed(key[5:] + b"cd")
     out += redactor.feed(b"", final=True)
     assert out == b"ab[REDACTED]cd"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_call_already_in_the_processor_queue_is_never_sent(monkeypatch, tmp_path):
+    from lionagi.protocols.generic.event import EventStatus
+
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    queued_request = {**REQUEST, "messages": [{"role": "user", "content": "queued elsewhere"}]}
+    with _branch_routing_context(uuid4(), model):
+        queued = await model.create_event(**queued_request)
+    # Deferred by the processor before the hand-over, out of the refusal's reach.
+    await model.executor.start()
+    await model.executor.processor.enqueue(queued)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.invoke(api_call=queued)
+    assert caught.value.code is RouterErrorCode.ACCOUNT_CONFIG_CONFLICT
+
+    await model.executor.processor.process()
+    assert transport.calls == []
+    assert queued.status is EventStatus.FAILED
+
+
+@pytest.mark.parametrize("path_kind", ["call", "stream"])
+@pytest.mark.asyncio
+async def test_a_service_tier_given_as_a_call_keyword_is_refused_before_any_reservation(
+    monkeypatch, tmp_path, path_kind
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if path_kind == "call":
+            await model.endpoint.call(REQUEST, service_tier="priority")
+        else:
+            async for _ in model.endpoint.stream(REQUEST, service_tier="priority"):
+                pass
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+def test_the_text_redactor_masks_a_key_split_across_pieces():
+    from pydantic import SecretStr
+
+    from lionagi.service.accounts._router import StreamingTextRedactor
+
+    redactor = StreamingTextRedactor(SecretStr(CANARY))
+    out = redactor.feed("ab" + CANARY[:5]) + redactor.feed(CANARY[5:] + "cd")
+    out += redactor.feed("", final=True)
+    assert out == "ab[REDACTED]cd"
+
+
+def _delta(delta_type: str, field: str, text: str) -> dict:
+    return {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": delta_type, field: text},
+    }
+
+
+def _raw_delta_text(chunks, field: str) -> str:
+    joined = ""
+    for chunk in chunks:
+        raw = (chunk.metadata or {}).get("raw")
+        if isinstance(raw, dict) and raw.get("type") == "content_block_delta":
+            joined += raw.get("delta", {}).get(field) or ""
+    return joined
+
+
+@pytest.mark.parametrize(
+    ("block", "delta_type", "field", "chunk_type"),
+    [
+        ({"type": "text", "text": ""}, "text_delta", "text", "text"),
+        ({"type": "thinking", "thinking": ""}, "thinking_delta", "thinking", "thinking"),
+        (
+            {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}},
+            "input_json_delta",
+            "partial_json",
+            None,
+        ),
+    ],
+    ids=["text", "thinking", "tool_input"],
+)
+@pytest.mark.parametrize("block_ends", [True, False])
+@pytest.mark.asyncio
+async def test_a_key_split_across_two_deltas_never_reaches_the_joined_text(
+    monkeypatch, tmp_path, block, delta_type, field, chunk_type, block_ends
+):
+    _install_accounts(monkeypatch, tmp_path)
+    events = [
+        _MESSAGE_START,
+        {"type": "content_block_start", "index": 0, "content_block": block},
+        _delta(delta_type, field, "ab" + CANARY[:5]),
+        _delta(delta_type, field, CANARY[5:] + "cd"),
+    ]
+    if block_ends:
+        events += [
+            {"type": "content_block_stop", "index": 0},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 4},
+            },
+            {"type": "message_stop"},
+        ]
+    # One piece per event, so each delta arrives in its own read.
+    model, transport = _model(
+        monkeypatch, [StubResponse(pieces=[_sse([event]) for event in events])]
+    )
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    # A consumer may join the chunk text or the raw events' delta text; neither
+    # holds the key, and the held rest arrives before the block's stop event.
+    assert _raw_delta_text(chunks, field) == "ab[REDACTED]cd"
+    if chunk_type is not None:
+        joined = "".join(chunk.content or "" for chunk in chunks if chunk.type == chunk_type)
+        assert joined == "ab[REDACTED]cd"
+    assert all(CANARY not in repr(chunk) for chunk in chunks)
+    if block_ends:
+        kinds = [(chunk.metadata or {}).get("raw", {}).get("type") for chunk in chunks]
+        last_delta = max(i for i, kind in enumerate(kinds) if kind == "content_block_delta")
+        assert last_delta < kinds.index("content_block_stop")
 
 
 @pytest.mark.parametrize(
