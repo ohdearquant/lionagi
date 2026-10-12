@@ -966,6 +966,8 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
 | `yolo` | Auto-approve tool calls |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
+| `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`). Default `false` |
+| `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `timeout` | Default hard timeout in seconds |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |

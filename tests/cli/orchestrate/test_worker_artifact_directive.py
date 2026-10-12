@@ -159,6 +159,10 @@ def _build_worker(
         built["spec"] = spec
         return _Branch(system=spec.extra_prompt, name=None)
 
+    def _fake_build_imodel(*a, **kw):
+        built["imodel_kwargs"] = kw
+        return imodel
+
     env = orch.OrchestrationEnv(
         run=SimpleNamespace(agent_artifact_dir=lambda aid: tmp_path / "artifacts" / aid),
         session=SimpleNamespace(include_branches=lambda b: None),
@@ -180,7 +184,7 @@ def _build_worker(
 
     mp = _pytest.MonkeyPatch()
     try:
-        mp.setattr(orch, "build_imodel_from_spec", lambda *a, **k: imodel)
+        mp.setattr(orch, "build_imodel_from_spec", _fake_build_imodel)
         mp.setattr(orch, "Branch", _Branch)
         mp.setattr(orch, "create_agent", _fake_create_agent)
         mp.setattr(orch, "_hand_mcp_servers", lambda *a, **k: None)

@@ -709,13 +709,22 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     cli_branch = SimpleNamespace(
         chat_model=SimpleNamespace(
             is_cli=True,
-            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
+            endpoint=SimpleNamespace(
+                config=SimpleNamespace(
+                    kwargs={
+                        "contain_account_integrations": True,
+                        "account_connectors": ["github"],
+                    }
+                )
+            ),
         )
     )
     spawn_branch_setup(operation, cli_branch)
 
     expected_dir = env.run.agent_artifact_dir("spawn-1")
     assert cli_branch.chat_model.endpoint.config.kwargs["repo"] == expected_dir
+    assert "account_connectors" not in cli_branch.chat_model.endpoint.config.kwargs
+    assert cli_branch.chat_model.endpoint.config.kwargs["contain_account_integrations"] is True
     assert expected_dir.exists()
 
     assert env.worker_artifact_dirs["spawn-1"] == expected_dir

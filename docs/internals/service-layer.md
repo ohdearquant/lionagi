@@ -118,3 +118,13 @@ its own exclusion because none of them share code:
   from, so it's free to say what it's withholding — which is exactly what a
   developer staring at a traceback or a debugger needs, when they're asking
   why an environment variable wasn't applied.
+
+`AUTHORIZATION_KWARG_NAMES` (`account_connectors`) is kept out of the first
+two channels the same way, for a different reason: it is a grant, not a
+secret. It lets a codex request reach the signed-in account's app connectors,
+and it belongs to the role the call runs under, so a branch restored from a
+snapshot or a run record must not carry it into a caller under another role.
+`Endpoint.from_dict()` also drops it from a stored row's `kwargs`, since a row
+written by an older version or by another writer may still hold it. A caller
+whose role names connectors hands them again. `repr` shows the names as they
+are, because they are not secret.

@@ -49,6 +49,7 @@ from ._providers import (
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
+    _add_codex_account_integration_kwargs,
     _clamp_claude_effort,
     _clamp_codex_effort,
     add_common_cli_args,
@@ -711,6 +712,11 @@ async def _run_agent(
                 "for this run"
             )
 
+    # A codex leg's account integrations follow its role; with no role, or one that sets
+    # neither field, the leg's argv is what it was before these fields existed.
+    account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
+    contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".
     profile_role_extra = (getattr(profile, "extra", None) or {}) if profile else {}
@@ -854,6 +860,8 @@ async def _run_agent(
             bypass,
             mcp_servers=mcp_resolution.servers,
             mcp_exclusive=mcp_resolution.declared_empty,
+            account_connectors=account_connectors,
+            contain_account_integrations=contain_account_integrations,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
         # Two spawn shapes hand the set over in two different places, so the
@@ -994,6 +1002,13 @@ async def _run_agent(
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+        # The stored row never carries a connector grant; its containment value also belongs
+        # to the previous role, so both settings come from the current role.
+        if provider == "codex":
+            cfg.pop("contain_account_integrations", None)
+            _add_codex_account_integration_kwargs(
+                cfg, account_connectors, contain_account_integrations
+            )
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
         # not the caller's directory. Which providers can be given a set, and
