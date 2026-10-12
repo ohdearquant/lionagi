@@ -11,6 +11,7 @@ MARKETPLACE_DIR="$REPO_ROOT/marketplace"
 NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
 QUARANTINE_SCRIPT="$REPO_ROOT/scripts/quarantine.py"
 PY_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_python_hygiene.py"
+COVERAGE_CHECK_SCRIPT="$REPO_ROOT/scripts/check_suite_coverage.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -23,6 +24,30 @@ _require() {
 # ---------------------------------------------------------------------------
 # Python
 # ---------------------------------------------------------------------------
+
+# A pytest run can end before it reaches every collected test and still print a
+# summary that reads like a whole suite: at a restart limit of 0 a crashed xdist
+# worker takes the whole session down with it, and --maxfail stops the session
+# at its cap. Neither says how much was left unrun, so every lane below writes a
+# JUnit report and refuses when any collected test ID has no result.
+_junit_report_path() {
+  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
+    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
+    echo "$PYTEST_JUNIT_XML"
+  else
+    mktemp "${TMPDIR:-/tmp}/ci-junit-XXXXXX"
+  fi
+}
+
+_discard_temporary_junit() {
+  [ "$1" = "${PYTEST_JUNIT_XML:-}" ] || rm -f "$1"
+}
+
+_check_suite_coverage() {
+  local junit="$1" markexpr="$2"
+  shift 2
+  uv run python "$COVERAGE_CHECK_SCRIPT" --junit "$junit" -m "$markexpr" "$@"
+}
 
 lint-python() {
   # One list for both steps, or a directory added later reaches one of them and
@@ -57,44 +82,57 @@ fmt-python() {
 # Override with PYTEST_MARKEXPR=performance (or "") to run them locally.
 test-python() {
   echo "==> pytest"
-  # --max-worker-restart=0: a hard-crashed xdist worker ("node down") otherwise
-  # wedges the session for ~15 minutes before the job dies with no test name;
-  # failing fast prints "crashed while running <nodeid>" instead.
-  local report_args=()
-  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
-    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
-    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
-  fi
+  # --max-worker-restart: a crashed xdist worker still prints "crashed while
+  # running <nodeid>" whatever this limit is, but at 0 xdist shuts every other
+  # worker down with it, and the run then ends wherever it had got to while its
+  # summary counts still read like a whole suite, with thousands of collected
+  # tests left unrun; at 4 xdist may retry crashed workers, but the run can
+  # still stop with tests missing after its restart limit is exhausted.
+  # The risk it buys is the one this was 0 for -- a replacement that is never
+  # scheduled leaves the controller blocked with no test name -- seen only on
+  # small target sets, never on the full suite; MAX_WORKER_RESTART=0 is the way
+  # back for a job that hits it. The coverage check below is what makes an
+  # early end loud either way by checking distinct test IDs.
+  local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
   [ ${#targets[@]} -gt 0 ] || targets=(tests/)
+  local junit
+  junit="$(_junit_report_path)"
+  local rc=0
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-3}" \
-    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
-    -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
+    -m "$markexpr" \
     --disable-warnings \
-    "${report_args[@]}" \
-    "${targets[@]}"
+    -o junit_family=legacy --junitxml="$junit" \
+    "${targets[@]}" || rc=$?
+  _check_suite_coverage "$junit" "$markexpr" "${targets[@]}" || rc=1
+  _discard_temporary_junit "$junit"
+  return $rc
 }
 
 test-python-cov() {
   echo "==> pytest with coverage"
-  local report_args=()
-  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
-    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
-    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
-  fi
+  # --max-worker-restart and the coverage check: see test-python.
+  local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
   [ ${#targets[@]} -gt 0 ] || targets=(tests/)
+  local junit
+  junit="$(_junit_report_path)"
+  local rc=0
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-1}" \
-    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
-    -m "${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
+    -m "$markexpr" \
     --disable-warnings \
     --cov=lionagi --cov-report=xml --cov-report=term \
-    "${report_args[@]}" \
-    "${targets[@]}"
+    -o junit_family=legacy --junitxml="$junit" \
+    "${targets[@]}" || rc=$?
+  _check_suite_coverage "$junit" "$markexpr" "${targets[@]}" || rc=1
+  _discard_temporary_junit "$junit"
+  return $rc
 }
 
 test-python-quarantine() {
@@ -106,19 +144,21 @@ test-python-quarantine() {
     return 0
   fi
 
-  local report_args=()
-  if [ -n "${PYTEST_JUNIT_XML:-}" ]; then
-    mkdir -p "$(dirname "$PYTEST_JUNIT_XML")"
-    report_args=(-o junit_family=legacy --junitxml="$PYTEST_JUNIT_XML")
-  fi
+  # --max-worker-restart and the coverage check: see test-python.
+  local junit
+  junit="$(_junit_report_path)"
+  local rc=0
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-0}" \
-    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
     -m flaky_quarantine \
     --disable-warnings \
-    "${report_args[@]}" \
-    tests/
+    -o junit_family=legacy --junitxml="$junit" \
+    tests/ || rc=$?
+  _check_suite_coverage "$junit" "flaky_quarantine" tests/ || rc=1
+  _discard_temporary_junit "$junit"
+  return $rc
 }
 
 # ---------------------------------------------------------------------------

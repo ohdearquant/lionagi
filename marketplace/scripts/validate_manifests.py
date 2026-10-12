@@ -2,6 +2,8 @@
 """Validate marketplace manifests — checks required fields, SKILL.md presence,
 per-plugin plugin.json files, duplicate names/sources, and stub mcpServer entries."""
 
+from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path

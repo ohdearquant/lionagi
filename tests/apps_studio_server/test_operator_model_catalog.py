@@ -625,7 +625,12 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     # before it ever reached the provider -- a generic early RuntimeError would
     # pass while proving nothing -- so the positive fact is asserted after:
     # branch construction was reached, and it saw the selected Codex pair.
+    # With no codex binary the turn stops before the CLI would start, so the
+    # test never runs the real codex installed on the machine.
+    import lionagi.providers.openai.codex as codex_mod
     import lionagi.studio.operator.engine as engine_mod
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
 
     built: list[tuple[str, str]] = []
     real_build = engine_mod.build_operator_branch
