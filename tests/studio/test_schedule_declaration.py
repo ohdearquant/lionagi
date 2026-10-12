@@ -22,6 +22,7 @@ from lionagi.studio.services.schedule_declaration import (
     _ADOPT_UNDECLARED_COLUMNS,
     ScheduleSetDocument,
     ScheduleSetError,
+    _adopt_comparable,
     _adopt_spec_differences,
     _declared_columns,
     apply_schedule_set,
@@ -57,7 +58,21 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     (agents_dir / "no-model.md").write_text("Body only, no frontmatter model.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
+
+    def find_dirs(cwd=None):
+        # The nearest .lionagi at or above the directory searched from, as the
+        # real finder walks, kept inside tmp_path so no real directory is read.
+        start = Path.cwd() if cwd is None else Path(cwd)
+        if not start.is_relative_to(tmp_path):
+            return [agents_dir.parent]
+        for directory in (start, *start.parents):
+            if (directory / ".lionagi").is_dir():
+                return [directory / ".lionagi"]
+            if directory == tmp_path:
+                break
+        return []
+
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", find_dirs)
     return tmp_path
 
 
@@ -1674,7 +1689,10 @@ def _undeclared_value(column: str):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("column", _ADOPT_UNDECLARED_COLUMNS)
+@pytest.mark.parametrize(
+    "column",
+    ["on_success", "on_fail", "action_extra_args", "threshold_config", "poll_interval_sec"],
+)
 async def test_adopt_refuses_a_row_setting_a_column_no_declaration_writes(
     temp_db_path, agent_profile, pinned_scheduler_tz, column
 ):
@@ -1691,6 +1709,184 @@ async def test_adopt_refuses_a_row_setting_a_column_no_declaration_writes(
         with pytest.raises(ScheduleSetError):
             await apply_schedule_set(db, doc, agent_profile, adopt=True)
         assert (await db.get_schedule_by_name("nightly"))["owner_key"] is None
+
+
+def test_the_undeclared_column_list_is_the_one_the_refusal_test_names():
+    assert set(_ADOPT_UNDECLARED_COLUMNS) == {
+        "on_success",
+        "on_fail",
+        "action_extra_args",
+        "threshold_config",
+        "poll_interval_sec",
+    }
+
+
+def test_a_profile_model_the_launch_refuses_is_refused_at_declaration(agent_profile):
+    agents = agent_profile / ".lionagi" / "agents"
+    (agents / "wide.md").write_text("---\nmodel: anthropic/claude-sonnet-5[1m]\n---\nBody.\n")
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        "profile: reviewer", "profile: wide"
+    )
+    with pytest.raises(ScheduleSetError) as excinfo:
+        resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
+    ((name, message),) = excinfo.value.errors
+    assert name == "nightly"
+    assert "'anthropic/claude-sonnet-5[1m]' (from profile 'wide')" in message
+    assert "cannot be passed to a scheduled launch" in message
+
+    pinned = manifest.replace(
+        'prompt: "check things"', 'prompt: "check things"\n      model: anthropic/claude-sonnet-5'
+    )
+    resolved = resolve_schedule_set(parse_schedule_set(pinned), agent_profile)["nightly"]
+    assert resolved.db_fields["action_model"] == "anthropic/claude-sonnet-5"
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_recorded_zone_this_process_does_not_share(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A zone-less row fires in whichever scheduler runs it; the recorded zone may
+    be from a scheduler that has stopped, so adoption needs this process to agree."""
+    berlin_member = _agent_manifest("nightly", cwd=agent_profile).replace(
+        "America/New_York", "Europe/Berlin"
+    )
+    doc = parse_schedule_set(berlin_member)
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, effective_timezone="Europe/Berlin")
+        )
+        assert (
+            await _adopt_spec_differences(
+                await db.get_schedule_by_name("nightly"),
+                resolve_schedule_set(doc, agent_profile)["nightly"],
+            )
+            == []
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ERROR"]
+        detail = plan[0].detail
+        assert "last recorded 'Europe/Berlin'" in detail
+        assert "reads the scheduler zone as 'America/New_York'" in detail
+        assert "edit the member to match the row" not in detail
+
+        # The same row recorded in this process's zone adopts.
+        await db.update_schedule("legacy00001", effective_timezone="America/New_York")
+        plan, _ = await build_plan(
+            db,
+            parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile)),
+            agent_profile,
+            adopt=True,
+        )
+        assert [entry.action for entry in plan] == ["ADOPT"]
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_zone_is_not_offered_as_a_member_edit(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, effective_timezone=None)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert "edit the member to match the row" not in plan[0].detail
+        assert "start the scheduler once to record it" in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_row_written_between_planning_and_commit(
+    temp_db_path, agent_profile, monkeypatch, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    chain = {"kind": "agent", "agent": "publisher", "prompt": "ship it"}
+    async with StateDB() as db:
+        await db.create_schedule(_legacy_adoption_row("nightly", cwd=agent_profile))
+        real_apply = db.apply_schedule_set
+
+        async def chain_written_first(**kwargs):
+            await db.update_schedule("legacy00001", on_success=chain)
+            return await real_apply(**kwargs)
+
+        monkeypatch.setattr(db, "apply_schedule_set", chain_written_first)
+        with pytest.raises(ScheduleSetError, match="changed while this apply was planning"):
+            await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        row = await db.get_schedule_by_name("nightly")
+        assert row["owner_key"] is None
+        assert row["on_success"] == chain
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_an_unpinned_model_at_the_execution_root_not_the_apply_directory(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    root = agent_profile / "root"
+    (root / ".lionagi" / "agents").mkdir(parents=True)
+    (root / ".lionagi" / "agents" / "reviewer.md").write_text(
+        "---\nmodel: anthropic/root-model\n---\nBody.\n"
+    )
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=root))
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    assert resolved.db_fields["action_model"] == "anthropic/root-model"
+
+    unpinned = _legacy_adoption_row("nightly", cwd=root, action_model=None)
+    assert await _adopt_spec_differences(unpinned, resolved) == []
+    # The apply directory's own profile names another model.
+    pinned_elsewhere = _legacy_adoption_row(
+        "nightly", cwd=root, action_model="anthropic/claude-sonnet-5"
+    )
+    assert ("action_model", "anthropic/claude-sonnet-5", "anthropic/root-model") in (
+        await _adopt_spec_differences(pinned_elsewhere, resolved)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reapply_that_changes_the_stored_model_says_so(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    from lionagi.studio.cli import _fmt_plan_line
+
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, agent_profile)
+        (agent_profile / ".lionagi" / "agents" / "reviewer.md").write_text(
+            "---\nmodel: anthropic/claude-sonnet-5-5\n---\nBody.\n"
+        )
+        plan, _ = await build_plan(db, doc, agent_profile)
+    (entry,) = plan
+    assert entry.action == "UPDATE"
+    assert entry.model_change == ("anthropic/claude-sonnet-5", "anthropic/claude-sonnet-5-5")
+    assert _fmt_plan_line(entry, "demo/automation") == (
+        "UPDATE     demo/nightly  model=anthropic/claude-sonnet-5 -> anthropic/claude-sonnet-5-5"
+    )
+
+
+def test_columns_the_scheduler_reads_alike_compare_alike():
+    github = {"trigger_type": "github_poll", "poll_interval_sec": None}
+    assert _adopt_comparable("interval_sec", github, 300) == _adopt_comparable(
+        "interval_sec", github, None
+    )
+    assert _adopt_comparable("interval_sec", github, 60) != _adopt_comparable(
+        "interval_sec", github, None
+    )
+    interval = {"trigger_type": "interval"}
+    assert _adopt_comparable("interval_sec", interval, 300) != _adopt_comparable(
+        "interval_sec", interval, None
+    )
+    assert _adopt_comparable("notify_on", {}, []) == _adopt_comparable("notify_on", {}, None)
+    assert _adopt_comparable("notify_on", {}, ["failed"]) != _adopt_comparable(
+        "notify_on", {}, None
+    )
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_an_empty_notify_list_as_no_notification(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    row = _legacy_adoption_row("nightly", cwd=agent_profile, notify_on=[])
+    assert await _adopt_spec_differences(row, resolved) == []
 
 
 @pytest.mark.asyncio
@@ -1876,7 +2072,7 @@ async def test_apply_that_loses_an_ownership_claim_rolls_back_its_creates(
             return await real_apply(**kwargs)
 
         monkeypatch.setattr(db, "apply_schedule_set", competing_apply)
-        with pytest.raises(ScheduleSetError, match="claimed by another apply"):
+        with pytest.raises(ScheduleSetError, match="changed while this apply was planning"):
             await apply_schedule_set(db, doc, agent_profile, adopt=True)
         assert raced is True
         rows = await db.list_schedules()

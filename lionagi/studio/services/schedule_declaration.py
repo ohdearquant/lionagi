@@ -426,6 +426,19 @@ def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
             f"target.agent profile {target.profile!r} has no default model and target.model "
             "was not set -- a v1 schedule must resolve to a concrete model at declaration time"
         )
+    # The stored model is passed to the launched child as its model argument, and
+    # the launch refuses one outside the model identifier character set. A row
+    # holding such a model would fail at every fire, so refuse it here instead.
+    from lionagi.studio.scheduler.subprocess import _validate_action_model
+
+    try:
+        _validate_action_model(resolved_model)
+    except ValueError as exc:
+        source = "target.model" if target.model else f"profile {target.profile!r}"
+        raise ValueError(
+            f"target.agent model {resolved_model!r} (from {source}) cannot be passed to a "
+            f"scheduled launch: {exc} Set target.model to a model the launch accepts."
+        ) from exc
     profile_digest = _digest_of(
         {
             "model": profile.model,
@@ -777,6 +790,11 @@ class PlanEntry:
     existing_id: str | None = None
     adopted_from: str | None = None
     claimed_owner_key: str | None = None
+    # The row's updated_at when adoption compared it: every schedule write moves
+    # it, so the commit refuses a row written to after the comparison.
+    claimed_updated_at: float | None = None
+    # (stored, declared) action_model when an UPDATE changes it.
+    model_change: tuple[str | None, str | None] | None = None
 
 
 _ADOPT_DECLARATION_FIELDS = frozenset(
@@ -869,6 +887,8 @@ async def _adopt_project_pair(
             project, _source = detect_project(Path(root[1]))
         except (OSError, RuntimeError, ValueError):
             return ("unknown",), "project could not be detected from the execution root"
+        if not project:
+            return ("project", project), "no project detected from the execution root"
         return ("project", project), f"detected project {project!r}"
 
     row_project = await project_effect(row, row_root)
@@ -904,6 +924,37 @@ def _adopt_timezone_pair(row: dict[str, Any], declared: Any) -> tuple[str | None
         row_cron_timezone(row),
         resolve_schedule_timezone({**row, "resolved_timezone": declared}).name,
     )
+
+
+def _adopt_unconfirmed_recorded_zone(row: dict[str, Any]) -> tuple[str, str] | None:
+    """(recorded, local) when a zone-less row's recorded zone is not this process's scheduler zone.
+
+    A row without a stored zone fires in the zone of whichever scheduler runs it.
+    The zone the scheduler recorded may be from a run that has since stopped, and
+    this process may be configured differently from the scheduler, so adoption
+    pins a zone only when both say the same one.
+    """
+    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+
+    recorded = row.get("effective_timezone")
+    if row.get("resolved_timezone") or not recorded:
+        return None
+    local = resolve_schedule_timezone({"id": row.get("id")}).name
+    if recorded == local:
+        return None
+    return recorded, local
+
+
+def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
+    """A column value as the scheduler acts on it, for columns where two stored values act alike."""
+    if name == "notify_on":
+        # No notification is registered for an empty list or for none.
+        return value or None
+    if name == "interval_sec" and schedule.get("trigger_type") == "github_poll":
+        from lionagi.studio.scheduler.engine import resolve_schedule_cadence_seconds
+
+        return resolve_schedule_cadence_seconds({**schedule, "interval_sec": value})
+    return value
 
 
 def _adopt_undeclared_values(row: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -945,8 +996,11 @@ async def _adopt_spec_differences(
             if pair is not None:
                 differences.append((name, *pair))
             continue
-        if row.get(name) != declared:
-            differences.append((name, row.get(name), declared))
+        current = row.get(name)
+        if _adopt_comparable(name, row, current) != _adopt_comparable(
+            name, {**row, **declared_fields}, declared
+        ):
+            differences.append((name, current, declared))
     return differences
 
 
@@ -972,9 +1026,11 @@ async def _adopt_plan_entry(
             f"{name}: row={current!r} declared={declared!r}"
             for name, current, declared in differences
         )
+        # A zone nobody has recorded is not one the member can be edited to match.
+        editable = [d for d in differences if not (d[0] == "resolved_timezone" and d[1] is None)]
         reasons.append(
             f"the declared member differs from the existing row in {len(differences)} "
-            f"field(s) -- {rendered}; edit the member to match the row."
+            f"field(s) -- {rendered}" + ("; edit the member to match the row." if editable else ".")
         )
         timezone = next((d for d in differences if d[0] == "resolved_timezone"), None)
         if timezone is not None:
@@ -985,6 +1041,21 @@ async def _adopt_plan_entry(
                 if timezone[1] is None
                 else "resolved_timezone compares the zone each side's cron is read in."
             )
+    unconfirmed_zone = (
+        _adopt_unconfirmed_recorded_zone(row)
+        if row.get("trigger_type") == "cron"
+        and _declared_columns(resolved).get("trigger_type") == "cron"
+        else None
+    )
+    if unconfirmed_zone is not None:
+        recorded, local = unconfirmed_zone
+        reasons.append(
+            f"the row stores no zone, so it fires in the zone of the scheduler that runs it; "
+            f"the scheduler last recorded {recorded!r} and this process reads the scheduler "
+            f"zone as {local!r}. Adoption stores a zone only when the two agree: run the apply "
+            f"with LIONAGI_SCHEDULER_TZ set to the scheduler's zone, or start the scheduler so "
+            f"it records its zone again."
+        )
     if undeclared:
         rendered = "; ".join(f"{name}={value!r}" for name, value in undeclared)
         reasons.append(
@@ -1012,6 +1083,7 @@ async def _adopt_plan_entry(
         existing_id=row["id"],
         adopted_from=row["name"] if row["name"] != qualified else None,
         claimed_owner_key=row.get("owner_key"),
+        claimed_updated_at=row.get("updated_at"),
     )
 
 
@@ -1111,6 +1183,10 @@ async def build_plan(
                 )
             )
         else:
+            # The model is read from the profile the execution root sees, so an
+            # update can change it without the member changing; the plan says so.
+            stored_model = existing_row.get("action_model")
+            declared_model = _declared_columns(resolved).get("action_model")
             plan.append(
                 PlanEntry(
                     qualified,
@@ -1118,6 +1194,9 @@ async def build_plan(
                     resolved=resolved,
                     existing_id=existing_row["id"],
                     claimed_owner_key=existing_row.get("owner_key"),
+                    model_change=(
+                        (stored_model, declared_model) if stored_model != declared_model else None
+                    ),
                 )
             )
 
@@ -1161,6 +1240,7 @@ async def apply_schedule_set(
     updates: list[tuple[str, dict[str, Any]]] = []
     disables: list[str] = []
     claims: dict[str, str | None] = {}
+    updated_at_claims: dict[str, float] = {}
 
     for entry in plan:
         if entry.action == "CREATE":
@@ -1186,6 +1266,8 @@ async def apply_schedule_set(
             if fields.get("trigger_type") == "at" and (fields.get("next_fire_at") or 0.0) <= now:
                 fields.pop("next_fire_at", None)
             claims[entry.existing_id] = entry.claimed_owner_key
+            if entry.claimed_updated_at is not None:
+                updated_at_claims[entry.existing_id] = entry.claimed_updated_at
             if entry.action == "ADOPT":
                 fields.update(
                     {
@@ -1205,14 +1287,15 @@ async def apply_schedule_set(
             updates=updates,
             disables=disables,
             expect_owner_keys=claims,
+            expect_updated_at=updated_at_claims,
         )
     except ScheduleOwnershipConflictError as exc:
         raise ScheduleSetError(
             [
                 (
                     names_by_id.get(schedule_id, schedule_id),
-                    f"schedule row {schedule_id} was claimed by another apply while this "
-                    f"one was planning (expected owner_key {claims.get(schedule_id)!r}); "
+                    f"schedule row {schedule_id} changed while this apply was planning "
+                    f"(planned against owner_key {claims.get(schedule_id)!r}); "
                     "nothing was written -- re-run to plan against the row as it stands now",
                 )
                 for schedule_id in exc.schedule_ids

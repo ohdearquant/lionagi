@@ -2201,3 +2201,22 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
             "detail": None,
         }
     ]
+
+
+def test_schedule_apply_refusal_names_each_row_once(
+    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+):
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(
+        agent_profile_cwd,
+        on_success={"kind": "agent", "agent": "publisher", "prompt": "ship it"},
+    )
+
+    result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
+    err = capsys.readouterr().err
+    assert result == 1
+    assert "INVALID  demo/nightly-review  " in err
+    assert "demo/demo/" not in err

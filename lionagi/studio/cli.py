@@ -1351,7 +1351,13 @@ def _cmd_validate_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+                # Plan errors carry the qualified name; resolution errors the member name.
+                label = (
+                    name
+                    if name.startswith(f"{doc.metadata.project}/")
+                    else f"{doc.metadata.project}/{name}"
+                )
+                print(f"INVALID  {label}  {message}", file=sys.stderr)
         return 1
 
     if args.as_json:
@@ -1383,6 +1389,9 @@ def _fmt_plan_line(entry, set_ref: str) -> str:
         extra = f"  model={model}" if model else ""
         return f"CREATE     {e.qualified_name}{extra}  cwd={cwd}"
     if e.action == "UPDATE":
+        if e.model_change is not None:
+            stored, declared = e.model_change
+            return f"UPDATE     {e.qualified_name}  model={stored} -> {declared}"
         return f"UPDATE     {e.qualified_name}"
     if e.action == "ADOPT":
         origin = (
@@ -1430,7 +1439,13 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+                # Plan errors carry the qualified name; resolution errors the member name.
+                label = (
+                    name
+                    if name.startswith(f"{doc.metadata.project}/")
+                    else f"{doc.metadata.project}/{name}"
+                )
+                print(f"INVALID  {label}  {message}", file=sys.stderr)
         return 1
 
     has_errors = any(e.action == "ERROR" for e in plan)
@@ -1446,6 +1461,16 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
                             "action": e.action,
                             "detail": e.detail,
                             **({"adopted_from": e.adopted_from} if e.adopted_from else {}),
+                            **(
+                                {
+                                    "model_change": {
+                                        "from": e.model_change[0],
+                                        "to": e.model_change[1],
+                                    }
+                                }
+                                if e.model_change is not None
+                                else {}
+                            ),
                         }
                         for e in plan
                     ],
