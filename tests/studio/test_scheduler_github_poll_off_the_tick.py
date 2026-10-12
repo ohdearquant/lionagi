@@ -48,6 +48,14 @@ def _engine(schedules: list[dict]) -> SchedulerEngine:
     return engine
 
 
+async def _pass_finished(engine: SchedulerEngine, sid: str) -> None:
+    # A pass that never waits can finish, and leave the table, before the tick that started it returns.
+    task = engine._github_tick_tasks.get(sid)
+    if task is not None:
+        await asyncio.wait_for(task, timeout=2.0)
+    assert sid not in engine._github_tick_tasks
+
+
 @pytest.mark.asyncio
 async def test_tick_returns_while_a_github_poll_pass_is_still_running():
     engine = _engine([_github_schedule("gh-1")])
@@ -98,11 +106,13 @@ async def test_one_schedules_running_pass_does_not_hold_up_another_schedule():
 
     with patch.object(engine, "_tick_github", new=pass_):
         await asyncio.wait_for(engine._tick(), timeout=2.0)
-        await asyncio.wait_for(engine._github_tick_tasks["gh-2"], timeout=2.0)
+        await _pass_finished(engine, "gh-2")
         assert passes == ["gh-1", "gh-2"]
+        assert not engine._github_tick_tasks["gh-1"].done()
         await asyncio.wait_for(engine._tick(), timeout=2.0)
-        await asyncio.wait_for(engine._github_tick_tasks["gh-2"], timeout=2.0)
+        await _pass_finished(engine, "gh-2")
         assert passes == ["gh-1", "gh-2", "gh-2"]
+        assert not engine._github_tick_tasks["gh-1"].done()
         release.set()
         await asyncio.wait_for(engine._github_tick_tasks["gh-1"], timeout=2.0)
         assert not engine._github_tick_tasks
