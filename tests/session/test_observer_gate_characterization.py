@@ -37,10 +37,29 @@ class _RecordingDb:
         self.rows: list[dict] = []
         self.fail = fail
 
-    async def insert_session_signal(self, **row) -> None:
+    # The real StateDB.insert_session_signal signature, so a call the real store
+    # would refuse with TypeError is refused here too, not recorded.
+    async def insert_session_signal(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        op_id: str = "",
+        ts: float,
+        payload: dict,
+    ) -> int:
         if self.fail:
             raise RuntimeError("db down")
-        self.rows.append(row)
+        self.rows.append(
+            {
+                "session_id": session_id,
+                "kind": kind,
+                "op_id": op_id,
+                "ts": ts,
+                "payload": payload,
+            }
+        )
+        return len(self.rows)
 
 
 def _flow_ids(obs: SessionObserver) -> list:
@@ -596,10 +615,16 @@ async def test_authorize_denial_is_not_routed_dispatched_or_persisted():
     obs.bind_db_persistence("sess-1", db=db)
     obs.observe(GateDenied, handler=lambda e, _c: subscriber_calls.append(e))
     obs.route(lambda p: route_calls.append(p) or True, into="s")
-    obs.gate(lambda _a: False)
+    gate_calls: list = []
+    obs.gate(lambda a: gate_calls.append(a) or False)
+    action = _Action("x")
 
-    assert await obs.authorize(_Action("x")) is False
+    assert await obs.authorize(action) is False
 
+    # One gate call, on the action: a denial sent through emit() would be
+    # gated a second time, and this deny-all gate would then hide it from the
+    # route, the subscriber and the db below.
+    assert gate_calls == [action]
     assert len(obs.by_type(GateDenied)) == 1
     assert subscriber_calls == []
     assert route_calls == []
