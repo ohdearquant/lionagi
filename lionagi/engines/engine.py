@@ -794,14 +794,19 @@ class EngineRun:
         # stuck child several times and spend the whole budget on it. Bounded
         # because a task spawning on every sweep would otherwise loop forever,
         # and reaching the cap is logged rather than swallowed.
-        attempted = {id(item.process) for item in processes}
+        #
+        # Each attempted handle is held, not just its id. A reaped entry is
+        # pruned from the map, and once nothing holds its handle a new spawn can
+        # be given the same address; a bare id would then read the newcomer as
+        # already attempted and leave it running.
+        attempted = {id(item.process): item.process for item in processes}
         for _ in range(_CANCEL_RESCAN_PASSES):
             stragglers = [
                 item for item in self._live_cli_processes() if id(item.process) not in attempted
             ]
             if not stragglers:
                 break
-            attempted.update(id(item.process) for item in stragglers)
+            attempted.update((id(item.process), item.process) for item in stragglers)
             late_reaped, late_abandoned = await self._reap_cli_processes(stragglers)
             processes_reaped += late_reaped
             processes_abandoned += late_abandoned
