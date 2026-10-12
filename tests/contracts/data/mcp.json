@@ -1032,9 +1032,10 @@
               "session",
               "invocation",
               "show",
-              "play"
+              "play",
+              "command"
             ],
-            "description": "Narrow the table to one kind of entity: session, invocation, show or play.",
+            "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action.",
             "x-flag": "--type",
             "x-aliases": [
               "-t"
