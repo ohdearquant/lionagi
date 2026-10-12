@@ -7,6 +7,20 @@
 - **Date**: 2026-10-12
 - **Relations**: extends ADR-0027; follows ADR-0119 and ADR-0125 D1 and D8 (carries lion1 ADR-0024 and lion1 ADR-0028 by concept); keeps ADR-0029 D4's retry classes; preserves the boundaries of ADR-0028, ADR-0030 and ADR-0043
 
+## Requirements
+
+The request this record answers, and where each part is carried:
+
+- **R1**: run Anthropic Messages calls on several API keys, each an organization
+  with its own monthly credit, and spend that credit deliberately. Carried here:
+  D1, D3, D5.
+- **R2**: read a key from the process environment, then `.env`, then the
+  configured secret lookup. Carried here: D2.
+- **R3**: design prompt-cache placement, with Claude Code's placement as the
+  reference (lion1 ADR-0028 S10 and A1). Not carried here: carried by ADR-0127
+  (to be proposed), under ADR-0027 D4's rule that a provider adapter owns its
+  request grammar. The CLI-account half of lion1 ADR-0024 is out of scope (P4).
+
 ## Context
 
 **P1 — One provider credential cannot distribute a workload over named budgets.**
@@ -33,8 +47,12 @@ attempt that might have reached the provider.
 their models (`lionagi/session/branch.py:533`). Binding a credential on that
 shared endpoint would couple independent conversations. Switching accounts per
 call would instead disrupt cache reuse. The Claude API isolates caches by
-workspace, including between organizations; different keys need not represent
-different caches ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)).
+workspace, so keys of different organizations never share a cache
+([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)).
+The setup this record was written against is lion1 ADR-0028 A4: six keys in six
+organizations, measured on 2026-10-09 as six rate-limit sets with their own reset
+clocks, so six caches. There every account switch starts a conversation's cache
+again, which is why D3 binds a conversation to one account for its whole life.
 
 **P4 — The design exists in lion1, outside the library.** lion1 ADR-0024 (accounts and the pick)
 and lion1 ADR-0028 (the Messages backend and API-key accounts) built an account pool in lion1's
@@ -60,7 +78,7 @@ environments) stays out of scope.
 | Errors and compatibility | D6: same-account retries, explicit uncertainty, unchanged unconfigured path. |
 
 Out of scope: CLI/OAuth accounts and child credential injection (a different
-transport under ADR-0030); provider cache placement (existing request semantics);
+transport under ADR-0030); provider cache placement (R3, carried by ADR-0127);
 distributed budgeting across machines (requires a shared authority); provider
 invoice synchronization, credit-expiry discovery and account provisioning
 (require separate credentials or user interfaces); general lifecycle changes to
@@ -92,7 +110,9 @@ ANTHROPIC_ACCOUNTS='[{"name":"primary","key_env":"ANTHROPIC_PRIMARY_KEY","budget
   array, duplicate names/references or unknown account fields is a configuration
   error; invalid configuration never means an empty pool.
 - Names match `[a-z][a-z0-9_-]{0,31}`. References match
-  `[A-Z_][A-Z0-9_]{0,63}`. Both reject credential-shaped text, including `sk-ant`
+  `[A-Za-z_][A-Za-z0-9_]{0,63}`, the existing secret lookup's name rule
+  (`lionagi/providers/_secret_resolution.py:41`) with a length bound, so a lookup
+  item named in lower case is referenced as itself (D2). Both reject credential-shaped text, including `sk-ant`
   case-insensitively, without echoing rejected values. Budgets are finite positive
   decimal USD strings with at most nine fractional digits, representable as signed
   64-bit nanodollars; booleans and floating-point inputs are rejected.
@@ -133,6 +153,10 @@ declaration, never a dumpable environment dictionary. For each physical attempt:
    machinery. A present empty/bare assignment is invalid, not a lookup miss.
 3. Otherwise use the existing `resolve_secret_lookup_config` and its argv runner
    for **that name only**, provided it is in `secrets.lookup.names`.
+
+The reference is one name used unchanged at every step: the environment variable,
+the `.env` key and the lookup's `{name}` argument. It is never case-folded or
+mapped, so a lookup item keeps its own name and the account declares that name.
 
 Factor a one-name helper from `lionagi/providers/_secret_resolution.py`; retain
 the CLI fill helpers' behavior. They currently validate global-only argv/names,
