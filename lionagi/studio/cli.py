@@ -1384,6 +1384,11 @@ def _fmt_plan_line(entry, set_ref: str) -> str:
         return f"CREATE     {e.qualified_name}{extra}  cwd={cwd}"
     if e.action == "UPDATE":
         return f"UPDATE     {e.qualified_name}"
+    if e.action == "ADOPT":
+        origin = (
+            f"  adopts existing row {e.adopted_from}" if e.adopted_from else "  adopts existing row"
+        )
+        return f"ADOPT      {e.qualified_name}{origin}"
     if e.action == "UNCHANGED":
         return f"UNCHANGED  {e.qualified_name}"
     if e.action == "DISABLE":
@@ -1436,7 +1441,12 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
                     "dry_run": bool(args.dry_run),
                     "set": set_ref,
                     "plan": [
-                        {"name": e.qualified_name, "action": e.action, "detail": e.detail}
+                        {
+                            "name": e.qualified_name,
+                            "action": e.action,
+                            "detail": e.detail,
+                            "adopted_from": e.adopted_from,
+                        }
                         for e in plan
                     ],
                 },
@@ -1449,16 +1459,18 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
             stream = sys.stderr if entry.action == "ERROR" else sys.stdout
             print(_fmt_plan_line(entry, set_ref), file=stream)
         created = sum(1 for e in plan if e.action == "CREATE")
+        adopted = sum(1 for e in plan if e.action == "ADOPT")
         updated = sum(1 for e in plan if e.action == "UPDATE")
         unchanged = sum(1 for e in plan if e.action == "UNCHANGED")
         disabled = sum(1 for e in plan if e.action == "DISABLE")
         if args.dry_run:
             print(
-                f"Plan: {created} create, {updated} update, {unchanged} unchanged, {disabled} disable"
+                f"Plan: {created} create, {adopted} adopt, {updated} update, "
+                f"{unchanged} unchanged, {disabled} disable"
             )
         elif not has_errors:
             print(
-                f"Applied atomically: {created} created, {updated} updated, "
+                f"Applied atomically: {created} created, {adopted} adopted, {updated} updated, "
                 f"{unchanged} unchanged, {disabled} disabled"
             )
     return 1 if has_errors else 0
@@ -2218,7 +2230,10 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     apply_p.add_argument(
         "--adopt",
         action="store_true",
-        help="Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+        help=(
+            "Take an existing unowned row into this set in place, keeping its id and history. "
+            "Refuses unless its declared behavior already matches, except for enablement."
+        ),
     )
     apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 

@@ -8,6 +8,7 @@ every property the fire-time engine would otherwise have to guess at (cwd,
 timezone, agent model, flow/playbook content, command allowlist membership).
 Applying a set reconciles it against the rows it owns -- CREATE / UPDATE /
 UNCHANGED / DISABLE -- atomically: any invalid member means zero writes.
+Unowned rows whose declared behavior already matches can be adopted in place.
 """
 
 from __future__ import annotations
@@ -27,7 +28,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
-from lionagi.state.db import INVOCATION_TERMINAL_STATUSES, StateDB
+from lionagi.state.db import (
+    INVOCATION_TERMINAL_STATUSES,
+    ScheduleOwnershipConflictError,
+    StateDB,
+)
 
 SPEC_VERSION = "lionagi.io/v1alpha1"
 SPEC_KIND = "ScheduleSet"
@@ -574,6 +579,8 @@ def _to_db_fields(
         "description": member.description,
         "notify_on": member.notify.on if member.notify else None,
         "notify_command": member.notify.command if member.notify else None,
+        "on_success": None,
+        "on_fail": None,
         # Cleared up-front so a re-apply that changes trigger/target kind
         # doesn't leave a stale value from the previous kind behind.
         "cron_expr": None,
@@ -670,6 +677,18 @@ def resolve_member(
     )
 
 
+def _declared_columns(resolved: ResolvedMember) -> dict[str, Any]:
+    """Every schedule column written for a resolved declaration member."""
+    return {
+        "spec_version": SPEC_VERSION,
+        "authored_spec": resolved.authored,
+        "resolved_target": resolved.resolved,
+        "resolved_digest": resolved.digest,
+        "resolved_timezone": resolved.timezone,
+        **resolved.db_fields,
+    }
+
+
 async def create_quick_schedule(
     db: StateDB,
     name: str,
@@ -710,16 +729,11 @@ async def create_quick_schedule(
     row = {
         "id": schedule_id,
         "name": qualified_name,
-        "spec_version": SPEC_VERSION,
         "managed_by": "cli",
         "owner_key": None,
-        "authored_spec": resolved.authored,
-        "resolved_target": resolved.resolved,
-        "resolved_digest": resolved.digest,
-        "resolved_timezone": resolved.timezone,
         "created_at": now,
         "updated_at": now,
-        **resolved.db_fields,
+        **_declared_columns(resolved),
     }
     await db.create_schedule(row)
     resolved.qualified_name = qualified_name
@@ -756,18 +770,235 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
 @dataclass
 class PlanEntry:
     qualified_name: str
-    action: str  # CREATE | UPDATE | UNCHANGED | DISABLE | ERROR
+    action: str  # CREATE | UPDATE | UNCHANGED | DISABLE | ADOPT | ERROR
     detail: str | None = None
     resolved: ResolvedMember | None = None
     existing_id: str | None = None
+    adopted_from: str | None = None
+    claimed_owner_key: str | None = None
 
 
-ADOPT_NOT_SUPPORTED_MESSAGE = (
-    "--adopt is not yet supported: migrating a same-named row from another "
-    "owner (another ScheduleSet or a CLI quick-create) into this set "
-    "requires an explicit adoption path that does not exist yet. Rename "
-    "the member or resolve the ownership conflict out of band."
+_ADOPT_LIFECYCLE_FIELDS = frozenset({"enabled"})
+_ADOPT_DECLARATION_FIELDS = frozenset(
+    {"spec_version", "authored_spec", "resolved_target", "resolved_digest"}
 )
+_PROJECT_FLAG_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml"})
+
+
+def _is_adoptable(row: dict[str, Any]) -> bool:
+    """Only rows without an owner may be taken into a declaration set."""
+    return row.get("owner_key") is None
+
+
+async def _adoption_execution_root(
+    schedule: dict[str, Any],
+) -> tuple[tuple[str, ...], str | None, str]:
+    """Resolve the root a schedule subprocess would inherit from the engine."""
+    from lionagi.studio.scheduler.engine import (
+        SchedulerCwdInheritRefusedError,
+        _resolve_action_cwd,
+    )
+
+    try:
+        root = await _resolve_action_cwd(schedule)
+    except SchedulerCwdInheritRefusedError as exc:
+        return ("refused",), None, f"refuses to spawn for configured root {exc.configured_root!r}"
+    if root is None:
+        return ("daemon-cwd",), None, "inherits the scheduler working directory"
+    resolved = str(Path(root).resolve())
+    return ("path", resolved), resolved, str(root)
+
+
+def _agent_model_at(name: str, cwd: Path) -> str | None:
+    """Read the profile model from the directories visible to a child at *cwd*."""
+    from lionagi.cli import _providers
+
+    dirs: list[Path] = []
+    git_root = _find_git_root(cwd)
+    if git_root is not None:
+        candidate = git_root / ".lionagi"
+        if candidate.is_dir():
+            dirs.append(candidate)
+    for parent in (cwd, *cwd.parents):
+        candidate = parent / ".lionagi"
+        if candidate.is_dir() and candidate not in dirs:
+            dirs.append(candidate)
+    home_candidate = Path.home() / ".lionagi"
+    if home_candidate.is_dir() and home_candidate not in dirs:
+        dirs.append(home_candidate)
+
+    if "/" not in name:
+        for directory in dirs:
+            profile_path = _providers._resolve_profile_path(directory / "agents", name)
+            if profile_path is not None:
+                profile = _providers._parse_profile(name, profile_path.read_text())
+                return profile.model
+
+    plugin_path = _providers._resolve_plugin_profile_path(name)
+    if plugin_path is not None:
+        return _providers._parse_profile(name, plugin_path.read_text()).model
+    return None
+
+
+async def _adopt_model_pair(row: dict[str, Any], declared: Any) -> tuple[Any, Any]:
+    current = row.get("action_model")
+    if current or row.get("action_kind") != "agent" or not row.get("action_agent"):
+        return current, declared
+    root_key, root_path, _display = await _adoption_execution_root(row)
+    if root_key[0] != "path" or root_path is None:
+        return current, declared
+    try:
+        current = _agent_model_at(row["action_agent"], Path(root_path)) or current
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+    return current, declared
+
+
+async def _adopt_project_pair(
+    row: dict[str, Any], declared_fields: dict[str, Any]
+) -> tuple[Any, Any] | None:
+    declared_row = {**row, **declared_fields}
+    row_root = await _adoption_execution_root(row)
+    declared_root = await _adoption_execution_root(declared_row)
+    changed_row: list[str] = []
+    changed_declared: list[str] = []
+
+    if row_root[0] != declared_root[0]:
+        changed_row.append(f"execution root {row_root[2]!r}")
+        changed_declared.append(f"execution root {declared_root[2]!r}")
+
+    async def project_effect(
+        schedule: dict[str, Any], root: tuple[tuple[str, ...], str | None, str]
+    ) -> tuple[tuple[str, ...], str]:
+        if schedule.get("action_kind") not in _PROJECT_FLAG_ACTION_KINDS:
+            return ("unused",), "no project argument is passed"
+        if root[0][0] == "refused":
+            return ("not-launched",), "the action does not launch"
+        project = schedule.get("action_project")
+        if project:
+            return ("project", str(project)), f"explicit project {project!r}"
+        if root[1] is None:
+            return ("unknown",), "project detected from the scheduler working directory"
+        try:
+            from lionagi.cli._project import detect_project
+
+            project, _source = detect_project(Path(root[1]))
+        except (OSError, RuntimeError, ValueError):
+            return ("unknown",), "project could not be detected from the execution root"
+        return ("project", project), f"detected project {project!r}"
+
+    row_project = await project_effect(row, row_root)
+    declared_project = await project_effect(declared_row, declared_root)
+    if row_project[0] != declared_project[0]:
+        changed_row.append(f"run project {row_project[1]}")
+        changed_declared.append(f"run project {declared_project[1]}")
+
+    if not changed_row:
+        return None
+    return "; ".join(changed_row), "; ".join(changed_declared)
+
+
+def _adopt_timezone_pair(row: dict[str, Any], declared: Any) -> tuple[str, str]:
+    from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+
+    return (
+        resolve_schedule_timezone(row).name,
+        resolve_schedule_timezone({**row, "resolved_timezone": declared}).name,
+    )
+
+
+async def _adopt_spec_differences(
+    row: dict[str, Any], resolved: ResolvedMember
+) -> list[tuple[str, Any, Any]]:
+    """Declared columns whose behavior or stored value differs on the row."""
+    declared_fields = _declared_columns(resolved)
+    differences: list[tuple[str, Any, Any]] = []
+    for name, declared in sorted(declared_fields.items()):
+        if name in _ADOPT_LIFECYCLE_FIELDS or name in _ADOPT_DECLARATION_FIELDS:
+            continue
+        if name == "resolved_timezone" and (
+            row.get("trigger_type") == "cron" and declared_fields.get("trigger_type") == "cron"
+        ):
+            current, adopted = _adopt_timezone_pair(row, declared)
+            if current != adopted:
+                differences.append((name, current, adopted))
+            continue
+        if name == "action_model":
+            current, adopted = await _adopt_model_pair(row, declared)
+            if current != adopted:
+                differences.append((name, current, adopted))
+            continue
+        if name == "action_project":
+            pair = await _adopt_project_pair(row, declared_fields)
+            if pair is not None:
+                differences.append((name, *pair))
+            continue
+        if row.get(name) != declared:
+            differences.append((name, row.get(name), declared))
+    return differences
+
+
+async def _adopt_plan_entry(
+    row: dict[str, Any], resolved: ResolvedMember, qualified: str, owner_key: str
+) -> PlanEntry:
+    if not _is_adoptable(row):
+        return PlanEntry(
+            qualified,
+            "ERROR",
+            detail=(
+                f"{row['name']} is owned by ScheduleSet {row['owner_key']!r}; "
+                f"--adopt only accepts rows with no owner_key, so it will not move this row"
+            ),
+        )
+    differences = await _adopt_spec_differences(row, resolved)
+    if differences:
+        rendered = "; ".join(
+            f"{name}: row={current!r} declared={declared!r}"
+            for name, current, declared in differences
+        )
+        timezone_note = (
+            " resolved_timezone compares the zone each side's cron is read in."
+            if any(name == "resolved_timezone" for name, _, _ in differences)
+            else ""
+        )
+        return PlanEntry(
+            qualified,
+            "ERROR",
+            detail=(
+                f"--adopt will not overwrite {row['name']}: the declared member differs "
+                f"from the existing row in {len(differences)} field(s) -- {rendered}."
+                f"{timezone_note} Edit the member to match the row, or rename the member "
+                "so the row is left alone."
+            ),
+        )
+    return PlanEntry(
+        qualified,
+        "ADOPT",
+        resolved=resolved,
+        existing_id=row["id"],
+        adopted_from=row["name"] if row["name"] != qualified else None,
+        claimed_owner_key=row.get("owner_key"),
+    )
+
+
+def _refuse_shared_rows(plan: list[PlanEntry]) -> None:
+    claimants: dict[str, list[int]] = {}
+    for index, entry in enumerate(plan):
+        if entry.existing_id is not None:
+            claimants.setdefault(entry.existing_id, []).append(index)
+    for schedule_id, indexes in claimants.items():
+        if len(indexes) < 2:
+            continue
+        names = sorted(plan[index].qualified_name for index in indexes)
+        for index in indexes:
+            plan[index] = PlanEntry(
+                plan[index].qualified_name,
+                "ERROR",
+                detail=(
+                    f"schedule row {schedule_id} is claimed by {len(indexes)} members of this "
+                    f"set ({', '.join(names)}); one row cannot back more than one member"
+                ),
+            )
 
 
 async def build_plan(
@@ -795,11 +1026,19 @@ async def build_plan(
         seen_qualified.add(qualified)
         existing_row = await db.get_schedule_by_name(qualified)
         if existing_row is None:
-            plan.append(PlanEntry(qualified, "CREATE", resolved=resolved))
+            candidate = (
+                await db.get_schedule_by_name(resolved.member_name)
+                if adopt and resolved.member_name != qualified
+                else None
+            )
+            if candidate is None:
+                plan.append(PlanEntry(qualified, "CREATE", resolved=resolved))
+                continue
+            plan.append(await _adopt_plan_entry(candidate, resolved, qualified, owner_key))
             continue
         if existing_row.get("owner_key") != owner_key:
             if adopt:
-                plan.append(PlanEntry(qualified, "ERROR", detail=ADOPT_NOT_SUPPORTED_MESSAGE))
+                plan.append(await _adopt_plan_entry(existing_row, resolved, qualified, owner_key))
             else:
                 owner_desc = existing_row.get("owner_key") or (
                     "a CLI quick-create"
@@ -822,12 +1061,26 @@ async def build_plan(
         enabled_matches = existing_row.get("enabled") == resolved.db_fields.get("enabled")
         if existing_row.get("resolved_digest") == resolved.digest and enabled_matches:
             plan.append(
-                PlanEntry(qualified, "UNCHANGED", resolved=resolved, existing_id=existing_row["id"])
+                PlanEntry(
+                    qualified,
+                    "UNCHANGED",
+                    resolved=resolved,
+                    existing_id=existing_row["id"],
+                    claimed_owner_key=existing_row.get("owner_key"),
+                )
             )
         else:
             plan.append(
-                PlanEntry(qualified, "UPDATE", resolved=resolved, existing_id=existing_row["id"])
+                PlanEntry(
+                    qualified,
+                    "UPDATE",
+                    resolved=resolved,
+                    existing_id=existing_row["id"],
+                    claimed_owner_key=existing_row.get("owner_key"),
+                )
             )
+
+    _refuse_shared_rows(plan)
 
     for name, row in existing_owned.items():
         if name not in seen_qualified:
@@ -843,6 +1096,7 @@ class ApplyResult:
     updated: int
     unchanged: int
     disabled: int
+    adopted: int = 0
 
 
 async def apply_schedule_set(
@@ -865,6 +1119,7 @@ async def apply_schedule_set(
     creates: list[dict[str, Any]] = []
     updates: list[tuple[str, dict[str, Any]]] = []
     disables: list[str] = []
+    claims: dict[str, str | None] = {}
 
     for entry in plan:
         if entry.action == "CREATE":
@@ -873,44 +1128,55 @@ async def apply_schedule_set(
                 {
                     "id": uuid.uuid4().hex[:12],
                     "name": entry.qualified_name,
-                    "spec_version": SPEC_VERSION,
                     "managed_by": "declaration",
                     "owner_key": owner_key,
-                    "authored_spec": resolved.authored,
-                    "resolved_target": resolved.resolved,
-                    "resolved_digest": resolved.digest,
-                    "resolved_timezone": resolved.timezone,
                     "created_at": now,
                     "updated_at": now,
-                    **resolved.db_fields,
+                    **_declared_columns(resolved),
                 }
             )
-        elif entry.action == "UPDATE":
+        elif entry.action in ("UPDATE", "ADOPT"):
             resolved = entry.resolved
-            fields = dict(resolved.db_fields)
+            fields = _declared_columns(resolved)
             # An instant that has passed cannot recur, so writing the declared
             # epoch back would run the schedule after the moment it named. A
             # re-apply happens for unrelated reasons: an edited sibling, a
             # member re-enabled after omission. Moving it forward still lands.
             if fields.get("trigger_type") == "at" and (fields.get("next_fire_at") or 0.0) <= now:
                 fields.pop("next_fire_at", None)
-            updates.append(
-                (
-                    entry.existing_id,
+            claims[entry.existing_id] = entry.claimed_owner_key
+            if entry.action == "ADOPT":
+                fields.update(
                     {
-                        "spec_version": SPEC_VERSION,
-                        "authored_spec": resolved.authored,
-                        "resolved_target": resolved.resolved,
-                        "resolved_digest": resolved.digest,
-                        "resolved_timezone": resolved.timezone,
-                        **fields,
-                    },
+                        "name": entry.qualified_name,
+                        "owner_key": owner_key,
+                        "managed_by": "declaration",
+                    }
                 )
-            )
+            updates.append((entry.existing_id, fields))
         elif entry.action == "DISABLE":
             disables.append(entry.existing_id)
 
-    await db.apply_schedule_set(creates=creates, updates=updates, disables=disables)
+    names_by_id = {entry.existing_id: entry.qualified_name for entry in plan if entry.existing_id}
+    try:
+        await db.apply_schedule_set(
+            creates=creates,
+            updates=updates,
+            disables=disables,
+            expect_owner_keys=claims,
+        )
+    except ScheduleOwnershipConflictError as exc:
+        raise ScheduleSetError(
+            [
+                (
+                    names_by_id.get(schedule_id, schedule_id),
+                    f"schedule row {schedule_id} was claimed by another apply while this "
+                    f"one was planning (expected owner_key {claims.get(schedule_id)!r}); "
+                    "nothing was written -- re-run to plan against the row as it stands now",
+                )
+                for schedule_id in exc.schedule_ids
+            ]
+        ) from exc
 
     return ApplyResult(
         plan=plan,
@@ -918,4 +1184,5 @@ async def apply_schedule_set(
         updated=sum(1 for e in plan if e.action == "UPDATE"),
         unchanged=sum(1 for e in plan if e.action == "UNCHANGED"),
         disabled=sum(1 for e in plan if e.action == "DISABLE"),
+        adopted=sum(1 for e in plan if e.action == "ADOPT"),
     )

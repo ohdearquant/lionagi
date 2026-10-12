@@ -20,7 +20,11 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 import yaml
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedule_declaration import apply_schedule_set, parse_schedule_set
+from lionagi.studio.services.schedule_declaration import (
+    apply_schedule_set,
+    build_plan,
+    parse_schedule_set,
+)
 from lionagi.studio.services.schedule_export import (
     build_managed_export_document,
     convert_legacy_rows,
@@ -294,6 +298,106 @@ async def test_legacy_export_round_trips_to_a_fresh_db(tmp_path, monkeypatch, ag
     assert resolved_target["profile"] == "reviewer"
     assert resolved_target["prompt"] == "check things"
     assert resolved_target["model"] == "anthropic/claude-sonnet-5"
+
+
+@pytest.mark.asyncio
+async def test_legacy_export_apply_adopts_supported_rows_in_place(
+    temp_db_path, tmp_path, monkeypatch, agent_profile
+):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    config = agent_profile / ".lionagi" / "config.toml"
+    config.write_text('[project]\nname = "demo"\n')
+    rows = [
+        _legacy_row(
+            "adopt-agent",
+            "demo/agent",
+            cwd=agent_profile,
+            action_project=None,
+            action_model=None,
+        ),
+        _legacy_row(
+            "adopt-command",
+            "demo/command",
+            cwd=agent_profile,
+            action_project=None,
+            trigger_type="cron",
+            cron_expr="15 3 * * *",
+            action_kind="command",
+            action_agent=None,
+            action_prompt=None,
+            action_command="refresh-index",
+            action_command_args=["--safe"],
+        ),
+        _legacy_row(
+            "adopt-playbook",
+            "demo/playbook",
+            cwd=agent_profile,
+            action_project="demo",
+            resolved_timezone="Europe/Berlin",
+            action_kind="play",
+            action_agent=None,
+            action_prompt=None,
+            action_playbook="health-audit",
+            action_playbook_args={},
+        ),
+        _legacy_row(
+            "adopt-flow",
+            "demo/flow",
+            cwd=agent_profile,
+            action_project=None,
+            action_model=None,
+            action_kind="flow_yaml",
+            action_agent=None,
+            action_prompt=None,
+            action_flow_yaml="workers: 2\n",
+        ),
+    ]
+
+    async with StateDB() as db:
+        for row in rows:
+            await db.create_schedule(row)
+            await db.create_schedule_run(
+                {
+                    "id": f"run-{row['id']}",
+                    "schedule_id": row["id"],
+                    "trigger_context": {},
+                    "action_kind": row["action_kind"],
+                    "action_args": [],
+                    "status": "completed",
+                    "chain_depth": 0,
+                    "fired_at": 1_800_000_000.0,
+                }
+            )
+        original_runs = {row["id"]: await db.list_schedule_runs(row["id"]) for row in rows}
+        original_ids = {row["name"]: row["id"] for row in rows}
+        legacy_rows = await db.list_schedules()
+        documents, report = convert_legacy_rows(
+            legacy_rows,
+            flows_dir=agent_profile / "exported-flows",
+            manifest_dir=agent_profile,
+        )
+        assert [line.status for line in report] == ["READY"] * len(rows)
+        assert len(documents) == 1
+        document = parse_schedule_set(dump_schedule_set_yaml(documents[0]))
+
+        plan, _ = await build_plan(db, document, agent_profile, adopt=True)
+        assert len(plan) == len(rows)
+        assert {entry.action for entry in plan} == {"ADOPT"}
+        result = await apply_schedule_set(db, document, agent_profile, adopt=True)
+        assert result.adopted == len(rows)
+
+        adopted_rows = await db.list_schedules()
+        assert len(adopted_rows) == len(rows)
+        owner_key = f"{document.metadata.project}/{document.metadata.name}"
+        assert {row["owner_key"] for row in adopted_rows} == {owner_key}
+        assert {row["id"] for row in adopted_rows} == set(original_ids.values())
+        for row in rows:
+            assert await db.list_schedule_runs(row["id"]) == original_runs[row["id"]]
+
+        second_plan, _ = await build_plan(db, document, agent_profile)
+        assert len(second_plan) == len(rows)
+        assert {entry.action for entry in second_plan} == {"UNCHANGED"}
 
 
 # Default export — authored_spec round-trip incl. quoted notify "on"

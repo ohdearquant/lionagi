@@ -2080,7 +2080,93 @@ def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db
     result2 = run_schedule(args2)
     out2 = capsys.readouterr().out
     assert result2 == 0
-    assert "Applied atomically: 0 created, 0 updated, 1 unchanged" in out2
+    assert "Applied atomically: 0 created, 0 adopted, 0 updated, 1 unchanged" in out2
+
+
+def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    profile_name = next(
+        path.stem
+        for path in (cwd / ".lionagi" / "agents").glob("*.md")
+        if "model:" in path.read_text()
+    )
+
+    async def _seed():
+        async with StateDB() as db:
+            row = {
+                "id": "legacy00001",
+                "name": name,
+                "enabled": 0,
+                "trigger_type": "cron",
+                "cron_expr": "0 2 * * *",
+                "action_kind": "agent",
+                "action_model": "anthropic/claude-sonnet-5",
+                "action_prompt": "check things",
+                "action_agent": profile_name,
+                "action_cwd": str(cwd),
+                "action_project": "demo",
+                "action_command_args": [],
+                "missed_fire_policy": "skip",
+                "overlap_policy": "skip",
+            }
+            row.update(overrides)
+            await db.create_schedule(row)
+
+    asyncio.run(_seed())
+
+
+def test_schedule_apply_adopt_dry_run_reports_existing_row(
+    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+):
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd)
+
+    plain = run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run"]))
+    out = capsys.readouterr().out
+    assert plain == 0
+    assert "CREATE" in out and "ADOPT" not in out
+
+    adopting = run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run", "--adopt"]))
+    out = capsys.readouterr().out
+    assert adopting == 0
+    assert "ADOPT      demo/nightly-review  adopts existing row nightly-review" in out
+    assert "Plan: 0 create, 1 adopt, 0 update" in out
+
+
+def test_schedule_apply_without_adopt_names_the_required_flag(
+    agent_profile_cwd, temp_state_db, capsys
+):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd, name="demo/nightly-review")
+
+    result = run_schedule(_parse_schedule_args(["apply", str(manifest)]))
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "--adopt" in captured.err
+
+
+def test_schedule_apply_adopt_refusal_reports_the_changed_column(
+    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+):
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
+
+    result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "cron_expr" in captured.err
+    assert "17 4 * * *" in captured.err and "0 2 * * *" in captured.err
 
 
 def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
@@ -2092,4 +2178,11 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
     payload = json.loads(capsys.readouterr().out)
     assert result == 0
     assert payload["dry_run"] is True
-    assert payload["plan"] == [{"name": "demo/nightly-review", "action": "CREATE", "detail": None}]
+    assert payload["plan"] == [
+        {
+            "name": "demo/nightly-review",
+            "action": "CREATE",
+            "detail": None,
+            "adopted_from": None,
+        }
+    ]

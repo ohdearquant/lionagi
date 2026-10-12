@@ -4578,7 +4578,7 @@
               "nargs": 0,
               "default": false,
               "choices": null,
-              "help": "Migrate a same-named row owned by another set/quick-create into this set. Not yet supported."
+              "help": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless its declared behavior already matches, except for enablement."
             },
             {
               "option_strings": [

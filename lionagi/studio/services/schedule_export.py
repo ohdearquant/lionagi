@@ -177,9 +177,11 @@ def _convert_legacy_trigger(row: dict[str, Any]) -> Trigger:
         expr = row.get("cron_expr")
         if not expr:
             raise ValueError("trigger_type='cron' row has no cron_expr")
-        # Legacy rows never persisted a timezone (that field is new with the
-        # declaration layer); UTC is the documented default for conversion.
-        tz = row.get("resolved_timezone") or "UTC"
+        # Legacy rows without a stored zone are read in the scheduler's current
+        # default, so the exported declaration must preserve that fire time.
+        from lionagi.studio.scheduler.engine import resolve_schedule_timezone
+
+        tz = resolve_schedule_timezone(row).name
         return Trigger(cron=CronTrigger(expression=expr, timezone=tz))
     if kind == "interval":
         secs = row.get("interval_sec")
