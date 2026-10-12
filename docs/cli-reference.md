@@ -522,8 +522,9 @@ li monitor --project myproject  # filter sessions by project
 | `-p, --project` | none | Filter sessions by project name |
 
 A session detail view includes a `khive injection` block when an opted-in profile recorded
-non-zero recall, injection, failure, or writeback counters. The block contains aggregate counts,
-not injected source text.
+non-zero recall, injection, failure, degradation, or writeback counters. `degraded_turns`
+distinguishes a provider-contained transport failure from a successful recall that returned no
+context. The block contains aggregate counts, not injected source text.
 
 For scripts, use a waiter instead of scraping the watch display:
 

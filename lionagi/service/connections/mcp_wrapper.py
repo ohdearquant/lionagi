@@ -1772,8 +1772,12 @@ class MCPConnectionPool:
 
         try:
             from fastmcp import Client as FastMCPClient
-        except ImportError:
-            raise ImportError("FastMCP not installed. Run: pip install fastmcp") from None
+        except ImportError as exc:
+            raise ImportError(
+                "FastMCP could not be imported. Install LionAGI with the `mcp` extra "
+                "(`pip install 'lionagi[mcp]'`) if it is absent; the chained exception "
+                "contains the actual import failure."
+            ) from exc
 
         if "url" in config:
             client = FastMCPClient(config["url"])

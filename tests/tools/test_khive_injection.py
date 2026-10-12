@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for KhiveInjectionProvider (ADR-0008): query construction, cadence
-gating, the recall+auto_feedback round-trip, failure containment, writeback
+gating, the recall and auto_feedback request flow, failure containment, writeback
 extraction, and module-load purity. The khive MCP transport is fully mocked —
 no live daemon required."""
 
+import asyncio
 import contextlib
 import json
 import re
@@ -15,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lionagi.operations.fields import ActionResponseModel
+from lionagi.protocols.context_providers import ContextProviderRegistry
 from lionagi.tools.khive_injection import (
     ComposePolicy,
     KhiveInjectionPolicy,
@@ -22,6 +24,7 @@ from lionagi.tools.khive_injection import (
     RecallPolicy,
     WritebackPolicy,
     _extract_writeback_pairs,
+    _first_op_error,
 )
 
 
@@ -63,6 +66,34 @@ def _khive_recall_response(result_id="abc123", content="a prior lesson"):
                 }
             ],
             "summary": {"total": 1, "succeeded": 1, "failed": 0},
+        }
+    )
+
+
+def _khive_remember_response(ok=True, record_id="mem-1"):
+    """What khive actually answers a one-op `memory.remember`.
+
+    `{"results": []}` is not a shape khive produces for a request that carried
+    an op, and a fixture using it cannot tell a written record from a refused
+    one -- which is why a refused write counted as written for as long as it did.
+    """
+    op = (
+        {"ok": True, "tool": "memory.remember", "result": {"id": record_id, "kind": "memory"}}
+        if ok
+        else {
+            "ok": False,
+            "tool": "memory.remember",
+            "error": {
+                "kind": "runtime_error",
+                "message": "invalid input: namespace is not writable",
+            },
+        }
+    )
+    return json.dumps(
+        {
+            "results": [op],
+            "summary": {"total": 1, "succeeded": 1 if ok else 0, "failed": 0 if ok else 1},
+            "status": "success" if ok else "partial",
         }
     )
 
@@ -210,6 +241,195 @@ async def test_no_auto_feedback_when_recall_empty(patched_transport):
     assert not any(op.startswith("brain.auto_feedback(") for op in ops_calls)
 
 
+def _khive_refused_response(tool="memory.recall", message="namespace is not readable"):
+    """What khive answers when the op itself refuses.
+
+    rc is 0 and the envelope is well formed: the refusal lives in the op, as
+    ``ok: False`` with an ``error`` beside it, and the envelope's own status
+    reads "partial". Nothing above the op can see it.
+    """
+    return json.dumps(
+        {
+            "results": [
+                {"ok": False, "tool": tool, "error": {"kind": "runtime_error", "message": message}}
+            ],
+            "summary": {"total": 1, "succeeded": 0, "failed": 1},
+            "status": "partial",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_recall_does_not_read_as_an_empty_store(patched_transport):
+    """The reader sees an absent section for both, so a refusal used to say
+    'there is nothing on record' -- a positive claim about the world drawn from
+    the absence of an answer about it."""
+    patched_transport.return_value = _mcp_result(
+        _khive_refused_response(message="namespace is not readable")
+    )
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    assert "khive recall unavailable" in text
+    # The store's own words, so the reader is told what failed rather than that
+    # something did.
+    assert "namespace is not readable" in text
+    # The caller's degradation report learns it too. A failure only one of the
+    # two surfaces can see is the degradation nobody notices.
+    assert provider.degradation_reason == "op_refused:memory.recall"
+
+
+@pytest.mark.asyncio
+async def test_recall_result_without_status_is_used(patched_transport):
+    async def _by_op(_client, payload):
+        if payload["ops"].startswith("brain.auto_feedback("):
+            return _mcp_result(
+                json.dumps({"results": [{"ok": True, "result": {"accepted": True}}]})
+            )
+        return _mcp_result(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "tool": "memory.recall",
+                            "result": [{"id": "prior-id", "content": "a prior lesson"}],
+                        }
+                    ]
+                }
+            )
+        )
+
+    patched_transport.side_effect = _by_op
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    assert "a prior lesson" in text
+    assert provider.degradation_reason is None
+
+
+@pytest.mark.asyncio
+async def test_compose_result_without_status_is_used(patched_transport):
+    async def _by_op(_client, payload):
+        ops = payload["ops"]
+        if ops.startswith("brain.auto_feedback("):
+            return _mcp_result(
+                json.dumps({"results": [{"ok": True, "result": {"accepted": True}}]})
+            )
+        if ops.startswith("knowledge.compose("):
+            return _mcp_result(
+                json.dumps({"results": [{"tool": "knowledge.compose", "result": "corpus frame"}]})
+            )
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _by_op
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            compose=ComposePolicy(enabled=True, max_tokens=2000),
+        )
+    )
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    assert "a prior lesson" in text
+    assert "corpus frame" in text
+    assert provider.degradation_reason is None
+
+
+@pytest.mark.asyncio
+async def test_refused_recall_result_does_not_submit_feedback(patched_transport):
+    response = json.loads(_khive_refused_response())
+    response["results"][0]["result"] = [{"id": "refused-id", "content": "ignored"}]
+    patched_transport.return_value = _mcp_result(json.dumps(response))
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    ops_calls = [call.args[1]["ops"] for call in patched_transport.call_args_list]
+    assert any(op.startswith("memory.recall(") for op in ops_calls)
+    assert not any(op.startswith("brain.auto_feedback(") for op in ops_calls)
+
+
+def test_refusal_summary_is_single_line_bounded_and_redacted():
+    sample_value = "sample-" + "value"
+    bearer_value = "sample-" + "bearer"
+    message = (
+        f"first line\n/var/lib/example/state.db api_key={sample_value} "
+        f"Bearer {bearer_value} "
+        f"Authorization: Bearer {bearer_value} " + "x" * 3000
+    )
+
+    summary = _first_op_error(
+        {"results": [{"error": {"kind": "runtime_error", "message": message}}]}
+    )
+
+    assert len(summary) <= 200
+    assert "\n" not in summary
+    assert "/var/lib/example/state.db" not in summary
+    assert sample_value not in summary
+    assert bearer_value not in summary
+    assert "[path]" in summary
+    assert "api_key=[redacted]" in summary
+    assert "Bearer [redacted]" in summary
+    assert _first_op_error(None) == "khive returned no readable envelope"
+    assert _first_op_error({"results": 5}) == "khive returned no readable envelope"
+    assert _first_op_error({"results": [{"error": {}}]}) == (
+        "khive refused without naming a reason"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_clean_empty_recall_still_renders_nothing(patched_transport):
+    """An empty successful recall still produces no unavailable message."""
+    patched_transport.return_value = _mcp_result(
+        json.dumps({"results": [{"ok": True, "tool": "memory.recall", "result": []}]})
+    )
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is None
+    assert provider.degradation_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_compose_is_reported_on_its_own_surface(patched_transport):
+    """compose renders through the same two-line path, so it carried the same
+    defect. Its own name in the block and in the reason, or a reader cannot
+    tell which of the two retrievals went down."""
+
+    def _by_op(_client, payload):
+        ops = payload["ops"]
+        if ops.startswith("knowledge.compose("):
+            return _mcp_result(
+                _khive_refused_response(tool="knowledge.compose", message="no frame")
+            )
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _by_op
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            compose=ComposePolicy(enabled=True, max_tokens=2000),
+        )
+    )
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    # The recall half still lands: a failure on one surface does not take the
+    # other one with it.
+    assert "khive recall" in text and "a prior lesson" in text
+    assert "khive compose unavailable" in text
+    assert "no frame" in text
+    assert provider.degradation_reason == "op_refused:knowledge.compose"
+
+
 @pytest.mark.asyncio
 async def test_transport_failure_returns_none_turn_proceeds():
     policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
@@ -223,6 +443,27 @@ async def test_transport_failure_returns_none_turn_proceeds():
         text = await provider.provide(branch, _FakeInstruction("hello"))
 
     assert text is None
+    assert provider.degradation_reason == "transport_failure:RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_successful_empty_recall_clears_prior_transport_degradation(patched_transport):
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(last_response=None)
+
+    with patch(
+        "lionagi.service.connections.mcp_wrapper.MCPConnectionPool.get_client",
+        AsyncMock(side_effect=ConnectionError("offline")),
+    ):
+        await provider.provide(branch, _FakeInstruction("hello"))
+    assert provider.degradation_reason == "transport_failure:ConnectionError"
+
+    patched_transport.return_value = _mcp_result(
+        {"results": [{"ok": True, "tool": "memory.recall", "result": []}]}
+    )
+    assert await provider.provide(branch, _FakeInstruction("hello")) is None
+    assert provider.degradation_reason is None
 
 
 @pytest.mark.asyncio
@@ -241,6 +482,60 @@ async def test_auto_feedback_failure_does_not_fail_the_turn(patched_transport):
 
     assert text is not None
     assert "a prior lesson" in text
+    assert provider.degradation_reason == "transport_failure:RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_refused_auto_feedback_is_reported(patched_transport):
+    async def _by_op(_client, payload):
+        if payload["ops"].startswith("brain.auto_feedback("):
+            return _mcp_result(
+                _khive_refused_response(
+                    tool="brain.auto_feedback", message="feedback is not permitted"
+                )
+            )
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _by_op
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction("hello"))
+
+    assert text is not None
+    assert "a prior lesson" in text
+    assert provider.degradation_reason == "op_refused:brain.auto_feedback"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_provides_keep_degradation_reasons_separate(patched_transport):
+    first_recall_started = asyncio.Event()
+    release_first_recall = asyncio.Event()
+
+    async def _by_op(_client, payload):
+        ops = payload["ops"]
+        if ops.startswith("memory.recall(") and "task=first" in ops:
+            first_recall_started.set()
+            await release_first_recall.wait()
+            return _mcp_result(_khive_refused_response())
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _by_op
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="implementer-recall-v1"))
+
+    async def _provide(task):
+        text = await provider.provide(_FakeBranch(last_response=None), _FakeInstruction(task))
+        return text, provider.degradation_reason
+
+    first = asyncio.create_task(_provide("first"))
+    await first_recall_started.wait()
+    second_text, second_reason = await _provide("second")
+    release_first_recall.set()
+    first_text, first_reason = await first
+
+    assert second_text is not None and "a prior lesson" in second_text
+    assert second_reason is None
+    assert first_text is not None and "khive recall unavailable" in first_text
+    assert first_reason == "op_refused:memory.recall"
 
 
 @pytest.mark.asyncio
@@ -423,7 +718,7 @@ async def test_namespace_threaded_through_recall_compose_and_auto_feedback(patch
 
 @pytest.mark.asyncio
 async def test_namespace_threaded_through_writeback(patched_transport):
-    patched_transport.return_value = _mcp_result(json.dumps({"results": [], "summary": {}}))
+    patched_transport.return_value = _mcp_result(_khive_remember_response())
     policy = KhiveInjectionPolicy(
         profile_id="implementer-recall-v1",
         namespace="bench-m2",
@@ -468,7 +763,7 @@ async def test_no_namespace_kwarg_when_unpinned(patched_transport):
 
 @pytest.mark.asyncio
 async def test_no_namespace_kwarg_in_unpinned_writeback(patched_transport):
-    patched_transport.return_value = _mcp_result(json.dumps({"results": [], "summary": {}}))
+    patched_transport.return_value = _mcp_result(_khive_remember_response())
     policy = KhiveInjectionPolicy(
         profile_id="implementer-recall-v1",
         writeback=WritebackPolicy(enabled=True),
@@ -488,7 +783,7 @@ def _resp(function, output):
     return ActionResponseModel(function=function, arguments={}, output=output)
 
 
-def test_extract_writeback_pairs_matches_error_then_resolution():
+def test_extract_writeback_pairs_matches_error_then_next_non_error_output():
     responses = [
         _resp("bash", {"error": "permission denied"}),
         _resp("bash", {"stdout": "ok now"}),
@@ -499,8 +794,138 @@ def test_extract_writeback_pairs_matches_error_then_resolution():
     assert len(pairs) == 1
     assert pairs[0]["function"] == "bash"
     assert pairs[0]["error"] == "permission denied"
-    assert pairs[0]["resolved_by"] == "bash"
-    assert pairs[0]["resolution_output"] == {"stdout": "ok now"}
+    # Named for the ordering that was observed. Even here, where the two calls
+    # are the same tool and the pairing is probably right, the function checked
+    # nothing that makes it right.
+    assert pairs[0]["candidate_next_output"] == "bash"
+    assert pairs[0]["candidate_output"] == {"stdout": "ok now"}
+    assert pairs[0]["pairing_rule"] == "fifo-next-non-error-output"
+    assert "resolved_by" not in pairs[0]
+
+
+def test_a_suppressed_failure_is_not_named_as_the_call_that_succeeded():
+    """A response with no output cannot stand in for a successful result.
+
+    It must not close the pending pair or create a new one. The real result
+    after it is selected, while a later no-output response remains excluded.
+    """
+    responses = [
+        _resp("edit", {"error": "file not found: a.py"}),
+        _resp("bash", None),
+        _resp("read", {"content": "contents of b.py"}),
+        _resp("write", None),
+        _resp("inspect", {"content": "current state"}),
+    ]
+
+    pairs = _extract_writeback_pairs(responses)
+
+    assert len(pairs) == 1
+    # The result with content, not either response with no output.
+    assert pairs[0]["candidate_next_output"] == "read"
+    assert pairs[0]["candidate_output"] == {"content": "contents of b.py"}
+    # The original error remains paired with the later observed result.
+    assert pairs[0]["function"] == "edit"
+    assert pairs[0]["error"] == "file not found: a.py"
+
+
+@pytest.mark.asyncio
+async def test_writeback_describes_the_next_non_error_output_first(patched_transport):
+    patched_transport.return_value = _mcp_result(_khive_remember_response())
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
+    )
+
+    written = await provider.writeback(
+        _FakeBranch(last_response=None),
+        [
+            _resp("edit", {"error": "file not found"}),
+            _resp("write", None),
+            _resp("read", {"content": "current contents"}),
+        ],
+    )
+
+    ops = patched_transport.call_args_list[0].args[1]["ops"]
+    caveat = (
+        "Positional pairing only; this does not establish that the later call repaired the error."
+    )
+    assert written == 1
+    assert caveat in ops
+    assert "The next call with a non-error output" in ops
+    assert ops.index(caveat) < ops.index("The next call with a non-error output")
+    assert "the next tool call to succeed" not in ops
+
+
+def test_a_suppressed_failure_is_not_recorded_as_the_failure_either():
+    """A response without output cannot create an error or result record."""
+    responses = [
+        _resp("bash", None),
+        _resp("read", {"content": "contents of b.py"}),
+    ]
+
+    assert _extract_writeback_pairs(responses) == []
+
+    # A response with an explicit error still produces a paired record.
+    assert (
+        len(
+            _extract_writeback_pairs(
+                [
+                    _resp("bash", {"error": "permission denied"}),
+                    _resp("read", {"content": "contents of b.py"}),
+                ]
+            )
+        )
+        == 1
+    )
+
+
+def test_an_unrelated_next_call_is_paired_as_a_candidate_not_a_resolution():
+    """A later read is paired by order even when it concerns another file."""
+    responses = [
+        _resp("edit", {"error": "file not found: a.py"}),
+        _resp("read", {"content": "contents of b.py"}),
+    ]
+
+    pairs = _extract_writeback_pairs(responses)
+
+    assert len(pairs) == 1
+    assert pairs[0]["candidate_next_output"] == "read"
+    assert "resolved_by" not in pairs[0]
+
+
+@pytest.mark.asyncio
+async def test_the_stored_record_does_not_claim_the_second_call_repaired_the_first(
+    patched_transport,
+):
+    """The store is where the claim would have escaped. Nothing downstream
+    re-derives a remembered sentence, so the sentence has to be true on its own."""
+    patched_transport.return_value = _mcp_result(_khive_remember_response())
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
+    )
+
+    written = await provider.writeback(
+        _FakeBranch(last_response=None),
+        [
+            _resp("edit", {"error": "file not found: a.py"}),
+            _resp("read", {"content": "contents of b.py"}),
+        ],
+    )
+
+    assert written == 1
+    ops = patched_transport.call_args_list[0].args[1]["ops"]
+    assert "resolved by" not in ops
+    assert "The next call with a non-error output" in ops
+    assert "fifo-next-non-error-output" in ops
+    assert "does not establish that the later call repaired the error" in ops
+    # The record still carries both calls and the error.
+    assert "file not found: a.py" in ops
+    assert "'read'" in ops
 
 
 def test_extract_writeback_pairs_ignores_unresolved_error():
@@ -530,7 +955,7 @@ async def test_writeback_off_by_default_never_calls_transport(patched_transport)
 
 @pytest.mark.asyncio
 async def test_writeback_writes_capped_salience_and_tags(patched_transport):
-    patched_transport.return_value = _mcp_result(json.dumps({"results": [], "summary": {}}))
+    patched_transport.return_value = _mcp_result(_khive_remember_response())
     policy = KhiveInjectionPolicy(
         profile_id="implementer-recall-v1",
         writeback=WritebackPolicy(enabled=True, salience_cap=0.3, tags=("agent:implementer",)),
@@ -577,6 +1002,27 @@ async def test_writeback_transport_failure_contained(patched_transport):
     records_written = await provider.writeback(branch, responses)  # must not raise
 
     assert records_written == 0
+
+
+@pytest.mark.asyncio
+async def test_writeback_malformed_result_is_contained(patched_transport):
+    patched_transport.return_value = _mcp_result(json.dumps({"results": 5}))
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
+    )
+
+    registry = ContextProviderRegistry()
+    registry.register(provider)
+    await registry.gather_writeback(
+        _FakeBranch(last_response=None),
+        [_resp("edit", {"error": "file not found"}), _resp("read", {"content": "current"})],
+    )
+
+    assert registry.stats["writeback_records"] == 0
+    assert registry.stats["writeback_failed"] == 0
 
 
 class _TransportImportBlocker:
@@ -763,3 +1209,108 @@ async def test_no_profile_header_when_the_response_does_not_agree_on_one(patched
 
     assert "# khive recall\n" in text
     assert "served by" not in text
+
+
+@pytest.mark.asyncio
+async def test_writeback_does_not_count_a_write_khive_refused(patched_transport):
+    """A refused op is rc 0 with `ok: False`, so only the envelope can tell.
+
+    The transport raises nothing here: khive answered, and its answer was no.
+    Counting it as written reports records the store does not hold, and the
+    count is what the caller uses to decide whether the lesson was kept.
+    """
+
+    patched_transport.return_value = _mcp_result(_khive_remember_response(ok=False))
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        writeback=WritebackPolicy(enabled=True),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(name="implementer")
+    responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
+
+    records_written = await provider.writeback(branch, responses)
+
+    # The call went out -- this is not the no-pairs or disabled path.
+    assert patched_transport.called
+    assert records_written == 0
+
+
+@pytest.mark.asyncio
+async def test_writeback_counts_a_write_khive_accepted(patched_transport):
+    """The accepted write uses the same path and fixture shape with ok True.
+
+    Without it the refusal assertion would pass against a writeback that counted
+    nothing under any answer.
+    """
+
+    patched_transport.return_value = _mcp_result(_khive_remember_response(ok=True))
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        writeback=WritebackPolicy(enabled=True),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(name="implementer")
+    responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
+
+    records_written = await provider.writeback(branch, responses)
+
+    assert patched_transport.called
+    assert records_written == 1
+
+
+@pytest.mark.asyncio
+async def test_writeback_requires_explicit_success_status(patched_transport):
+    patched_transport.return_value = _mcp_result(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "tool": "memory.remember",
+                        "result": {"id": "mem-1", "kind": "memory"},
+                    }
+                ]
+            }
+        )
+    )
+    provider = KhiveInjectionProvider(
+        KhiveInjectionPolicy(
+            profile_id="implementer-recall-v1",
+            writeback=WritebackPolicy(enabled=True),
+        )
+    )
+
+    written = await provider.writeback(
+        _FakeBranch(name="implementer"),
+        [_resp("edit", {"error": "failed"}), _resp("read", {"content": "current"})],
+    )
+
+    assert written == 0
+
+
+@pytest.mark.asyncio
+async def test_writeback_stops_at_the_first_refusal(patched_transport):
+    """Two pairs, refused on the first: one request, nothing counted.
+
+    Pins the stop rather than leaving it to be re-litigated as a bug: the
+    remaining pairs would refuse identically and each would cost another call.
+    """
+
+    patched_transport.return_value = _mcp_result(_khive_remember_response(ok=False))
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        writeback=WritebackPolicy(enabled=True),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(name="implementer")
+    responses = [
+        _resp("bash", {"error": "boom"}),
+        _resp("bash", {"stdout": "fixed"}),
+        _resp("editor", {"error": "nope"}),
+        _resp("editor", {"stdout": "fixed too"}),
+    ]
+
+    records_written = await provider.writeback(branch, responses)
+
+    assert records_written == 0
+    assert patched_transport.call_count == 1

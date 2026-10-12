@@ -92,6 +92,7 @@ _KHIVE_INJECTION_COUNTERS = (
     "recall_turns",
     "blocks_injected",
     "failed",
+    "degraded_turns",
     "writeback_records",
     "writeback_failed",
 )

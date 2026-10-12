@@ -1237,6 +1237,7 @@ def test_finalize_merges_summed_khive_injection_stats(
             "recall_turns": 6,
             "blocks_injected": 3,
             "failed": 1,
+            "degraded_turns": 0,
             "writeback_records": 5,
             "writeback_failed": 2,
         },
