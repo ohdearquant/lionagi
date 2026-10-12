@@ -176,7 +176,7 @@ refuses the wake until the owner forgets it (C9): no run opens, and the batch is
 with the run named.
 
 - `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`
-- `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`
+- `test_a_wake_with_no_last_run_continues_nothing`
 - `test_each_wake_stores_only_its_own_entries_and_replays_the_whole_chain`
 - `test_a_reader_wake_continuing_an_acting_run_cannot_send_whatever_its_history_holds`
 - `test_a_cursor_naming_a_run_the_store_does_not_hold_refuses_the_wake_and_names_the_run`
@@ -309,7 +309,8 @@ readers ADR-0025 C4 keeps. ADR-0013 D3 and the ADR-0019 liveness line say so.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`,
-  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`,
+  `test_a_wake_with_no_last_run_continues_nothing`, `hub/agent/agent.py` reads prior history from
+  the store and has no checkpoint-file read path,
   `test_a_wake_whose_run_raised_leaves_the_run_it_continued_for_the_next_wake`, C6's three more and
   C9's two,
   `test_a_history_the_store_never_answered_propagates_and_is_neither_refused_nor_forgotten`;

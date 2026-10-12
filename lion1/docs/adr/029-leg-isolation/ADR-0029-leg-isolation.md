@@ -247,7 +247,7 @@ calls, including code blocked outside the runtime's turn loop.
 Quota exhaustion records failure; it never presents a truncated report or incomplete row as whole.
 Retention preserves identity, manifest, run state and export receipts for authorized read-back, then
 purges owned data and records that deletion. It grants no worker mailbox. Dollar accounting follows
-ADR-0003 C5/D5; unknown cost is not zero or a substitute for a wall deadline.
+ADR-0016 S2; unknown cost is not zero or a substitute for a wall deadline.
 
 ## Decisions
 
@@ -267,9 +267,9 @@ actor-name prefix. Refuse conflicting duplicate admissions.
 
 Serves C1 and C2. `cast(actor_dir, workspace, ...)` and `console(workspace, actor_dir=..., ...)`
 take distinct paths in isolated mode. The private `Khive` uses `actor_dir` as cwd and its frozen
-absolute config. Select the binary using ADR-0025 D13, then pin its resolved path and digest.
-Disable ambient hook and instruction discovery for isolated runs; explicit admitted prompt bytes
-replace it. Keep generic console behavior separately scoped.
+absolute config. Select the binary, then pin its resolved path and digest. Disable ambient hook and
+instruction discovery for isolated runs; explicit admitted prompt bytes replace it. Keep generic
+console behavior separately scoped.
 
 - **Landing evidence**: owed (S2): `test_leg_paths_are_disjoint`,
   `test_leg_ignores_hostile_workspace_config`, `test_leg_launch_uses_frozen_inputs`,
@@ -290,10 +290,10 @@ image. Record the staged bytes and omissions so qualification compares the same 
 ### D4: One local VM for runtime tools ^d4
 
 Serves C3 and C4. Use the `Tree` interface through a qualified guest tree and `Sandbox` for the
-first supported mode. Reuse file and code handler semantics, including ADR-0011 D6's read grant. Add
-safe in-guest traversal and search; current resolve-then-open behavior is insufficient under
-mutation. Do not run host `LocalTree` over a guest-writable mount. No remote adapter is admitted by
-class membership alone.
+first supported mode. Reuse ADR-0011 D2's file and code handler semantics. Add safe in-guest
+traversal and search; current resolve-then-open behavior is insufficient under mutation. Do not run
+host `LocalTree` over a guest-writable mount. No remote adapter is admitted by class membership
+alone.
 
 - **Landing evidence**: owed (S4): `test_leg_readers_observe_shell_writes`,
   `test_leg_reader_search_resists_symlink_races`, `test_leg_read_grant_has_no_edit`,
@@ -426,9 +426,9 @@ result readers distinguish expired evidence from an unknown run.
 - **S5**: C5 and D5 are owed. A host backend remains trusted code holding account access. Live
   probes establish evidence for a fixed configuration, not safety against malicious CLI binaries or
   every future model behavior.
-- **S6**: C6 and D6 are owed. Injection-enabled profiles need the explicit injection-off override of
-  ADR-0026 C10/D8 for both task profiles. Full injection parity and a store gateway are outside the
-  initial implementation.
+- **S6**: C6 and D6 are owed. Injection-enabled profiles need an explicit injection-off override for
+  both task profiles. Full injection parity and a store gateway are outside the initial
+  implementation.
 - **S7**: C7 and D7 are owed. No supplied code establishes deny-all local networking. If it cannot
   be enforced and probed, the local shell mode remains unavailable; a remote service is an operator
   resource decision, not an automatic fallback.

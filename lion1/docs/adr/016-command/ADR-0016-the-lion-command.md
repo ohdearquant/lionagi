@@ -131,8 +131,10 @@ closing line.
 ### C5: What the command leaves alone _(enforced: process)_ ^c5
 
 `lion agent` supervises nothing: a served agent is the process that runs it, and its restarts belong
-to whatever started it; `scripts/serve_agent.sh` execs the command, so the job's pid is the agent's.
-A restart from `lion areas` asks launchd (ADR-0017).
+to whatever started it. This tree has no host supervisor entry point; the CLI reads the `--model` in
+an agent directory's one launchd plist `ProgramArguments` (`apps/cli/lion_cli/daemon.py`), which
+wins over the agent's file, and writes no plist. A restart from `lion areas` asks launchd
+(ADR-0017).
 
 Only a wake, a chat and `lion account probe` call a model; `--check`, `--ticks`, `--arm`, `--stats`,
 `lion areas`, `lion context` and the other `lion account` forms make no model call. The command

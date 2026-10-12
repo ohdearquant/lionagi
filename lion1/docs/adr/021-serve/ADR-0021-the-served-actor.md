@@ -154,8 +154,8 @@ Stop wakes a waiting run, whose wait answers false, and cancels an awaited call;
 settle, and the run ends `Stopped` at its next turn unless it ended first.
 
 Cancel cancels the task: an abort with no outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). The
-terminal commit follows the last reap ([[ADR-0020-the-experience|ADR-0020]]), so a cancel during
-that reap is before it (S20). A cancel with an interrupt is the cancel
+terminal commit follows the last reap ([[ADR-0006-the-notification|ADR-0006/S6]]), so a cancel
+during that reap is before it (S20). A cancel with an interrupt is the cancel
 ([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
 
 ### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical)_ ^c7

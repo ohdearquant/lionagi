@@ -227,10 +227,8 @@ store once under `io_timeout`; the hits and the receipt are held on the run for 
 carries its receipt; a cancellation in that phase is re-raised after `_deliver`. Nothing of this
 runs for a profile with no `experience`.
 
-- **Landing evidence**: `tests/test_actor_experience.py`:
-  `test_the_recall_reads_the_first_new_input_once_queued_and_resumed_runs_included`,
-  `test_a_run_with_no_turn_records_a_skipped_recall_and_its_observation`,
-  `test_each_of_the_four_outcomes_persists_after_the_reap_and_an_abort_does_not`.
+- **Landing evidence**: no current actor-level test covers experience recall or persistence;
+  `src/lion1/actor.py` has no experience recall or persist path.
 
 ### D3: `_notify`: the `experience:` section on the first turn, counted before the first call ^d3
 
@@ -239,10 +237,8 @@ kept:`, writes the receipt into the entry's `meta["experience"]`, and includes t
 estimate the context check reads. A lesson is escaped onto its lines; a hit that would cross
 `max_chars` is left out whole and counted.
 
-- **Landing evidence**: `tests/test_actor_experience.py`:
-  `test_the_first_backend_call_sees_the_hits_and_the_role_prompt_is_unchanged`,
-  `test_the_recall_block_is_counted_before_the_first_call`,
-  `test_a_hostile_lesson_cannot_forge_a_notification_frame`.
+- **Landing evidence**: no current actor-level test covers an experience block in the first
+  notification; the current `_notify` path has no experience block.
 
 ### D4: `experience.lesson(text, used_ids=[])` as a default handler, admitted only under an opted-in profile ^d4
 
@@ -253,12 +249,8 @@ sequence from the captured request; `OUT{}` does not wait for an unsettled one, 
 model wants kept is awaited in an earlier turn or pointed at. Its first docstring line and field
 descriptions, all the guidance shows, carry these rules.
 
-- **Landing evidence**: `tests/test_actor_experience.py`:
-  `test_the_last_ok_proposal_by_sequence_is_the_lesson`,
-  `test_used_ids_name_only_what_this_run_was_shown`,
-  `test_a_hook_rewrite_keeps_the_entered_request_as_provenance`,
-  `test_out_cancels_an_unawaited_proposal_and_nothing_of_it_persists`,
-  `test_the_lesson_guidance_shows_a_whole_first_sentence_and_the_limits_the_handler_holds_it_to`.
+- **Landing evidence**: no current actor-level test covers lesson settlement, claimed ids or lesson
+  guidance.
 
 ### D5: The terminal phase: commit, persist, closure, emit, deliver ^d5
 
@@ -267,11 +259,8 @@ persist attempt, one closure with the receipt, the two events emitted after thei
 `_deliver`, then any cancellation re-raised. The `except BaseException` arm keeps today's shape for
 aborts before the terminal commit.
 
-- **Landing evidence**: `tests/test_actor_experience.py`:
-  `test_record_and_bus_receipts_agree_with_bus_keep_zero`,
-  `test_a_refused_or_unknown_persist_keeps_the_outcome`,
-  `test_a_cancel_before_the_terminal_commit_aborts_without_a_persist`,
-  `test_a_cancel_during_the_persist_closes_delivers_then_re_raises`.
+- **Landing evidence**: no current actor-level test covers experience persistence, receipts or
+  cancellation in the terminal phase.
 
 ### D6: Spend and model fields from the run's own counts ^d6
 
@@ -279,22 +268,21 @@ Serves C6. Beside the `Reply` reading in `run`, the loop counts the calls that r
 the calls that did not; the record carries the sum, both counts and a `complete` flag. The model is
 `Experience.model` or none; no backend is asked.
 
-- **Landing evidence**: `tests/test_actor_experience.py`:
-  `test_missing_and_partial_costs_are_unknown_and_a_reported_zero_is_known`,
-  `test_an_unnamed_model_and_version_stay_none`.
+- **Landing evidence**: no current actor-level test covers populating experience records from
+  measured costs or model names.
 
 ### D7: The example, its mutation control, and the hub adapter as a later record ^d7
 
-Serves C10 and C1. `examples/experience_twice.py` runs one ask twice on a scripted backend with a
-`FileExperienceStore` reopened between runs; `tests/test_experience_example.py` reads the second
-run's record, bus and first backend call, then repeats with the store write removed and with the
-file deleted. `hub/experience.py` (`KhiveExperienceStore` over `src/lion1/khive.py`) lands under its
-own record once it proves scope filtering before `k` and idempotency over an ambiguous write.
+Serves C10 and C1. In the withdrawn design, `examples/experience_twice.py` ran one ask twice on a
+scripted backend with a `FileExperienceStore` reopened between runs, and
+`tests/test_experience_example.py` read the second run's record, bus and first backend call, then
+repeated without the store write and without the file. Both are absent here. `hub/experience.py`
+holds the record and the memory and file stores. The hub adapter over the store client, also absent,
+was to land under its own record once it proved scope filtering before `k` and idempotency over an
+ambiguous write.
 
-- **Landing evidence**: `tests/test_experience_example.py`:
-  `test_the_second_run_recalls_the_first_runs_lesson_on_record_bus_and_call`,
-  `test_removing_only_the_persist_recalls_nothing`,
-  `test_a_reopened_empty_store_recalls_nothing_from_the_actors_memory`.
+- **Landing evidence**: no current integration test demonstrates cross-run recall or the example's
+  mutation controls. `tests/test_experience.py` covers the standalone record and stores.
 
 ## Alternatives
 
@@ -310,23 +298,21 @@ own record once it proves scope filtering before `k` and idempotency over an amb
 
 ## Consequences
 
-- **S1**: D1 to D7 landed with the tests they name. C1 is also pinned by
-  `test_a_profile_without_experience_runs_as_it_did_and_offers_no_lesson` and
-  `test_nothing_under_lionagi_imports_hub_or_a_khive_client`, and C2's failed recall by
-  `test_a_failed_recall_is_a_receipt_and_the_run_goes_on`. Each of these turned a named test red:
-  deleting the file store's write, the store's scope filter, the block's count in the view estimate
-  or the cancel's catch at the store call, and emitting the recall event before its entry. C9's two
-  writers are threads with a store each over one file, not two processes.
+- **S1**: The core's provider boundary is pinned by
+  `test_nothing_under_lionagi_imports_hub_or_a_khive_client`; no current actor-level test covers
+  profile opt-in or a failed recall. The actor integration described by D2 to D6 and the cross-run
+  example and adapter described by D7 are absent from this tree.
 - **S2**: The terminal phase amends [[ADR-0002-the-run#^c4|ADR-0002/C4]] and
   [[ADR-0006-the-notification#^c1|ADR-0006/C1]]: after the reap a cancellation no longer aborts the
   run; it is re-raised after the closure and the delivery with the outcome kept. ADR-0006/C2 gains
-  the `experience:` lines. Both amendments land with D5 and D3, in the same change.
-- **S3**: The store and the record are two failure domains: a process killed between the store's
-  acknowledgement and the closure leaves a stored record whose run has no closure. Nothing promises
-  exactly-once delivery or recovery across a kill; a replay of the same id is the only idempotency.
-  A cancel during the store call leaves the closure written, its receipt `unknown`, and the answer
-  delivered, then is re-raised; neither step awaits, so no cancel lands between them, and a slow
-  store is not waited for (`test_a_cancel_during_the_persist_closes_delivers_then_re_raises`).
+  the `experience:` lines. In the withdrawn design, both amendments were to land with D5 and D3, in
+  the same change.
+- **S3**: In the withdrawn design, the store and the record were two failure domains: a process
+  killed between the store's acknowledgement and the closure left a stored record whose run had no
+  closure. The design promised no exactly-once delivery or recovery across a kill; replay of the
+  same id was its only idempotency. A cancel during the store call left the closure written, its
+  receipt `unknown`, and the answer delivered before re-raising. These paths have no current
+  implementation or test in this tree.
 - **S4**: The product claim, that the same model inside the loop solves a task class faster and more
   often than the same model alone, is not made here. It needs paired, held-out trials on frozen
   stores with the same served model, tools and budgets, and an external grade. The arms are four:

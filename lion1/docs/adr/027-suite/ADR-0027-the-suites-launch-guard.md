@@ -49,7 +49,7 @@ starts. S1 to S9 state its limits. Source: `tests/conftest.py`, `apps/cli/tests/
 
 | # | statement | source | if false |
 | - | --------- | ------ | -------- |
-| A1 | Every program the suites start through `subprocess` or asyncio starts inside the seam, on each supported interpreter. | `Lib/subprocess.py` and `Lib/asyncio/unix_events.py`, read at 3.11.16, 3.12.14, 3.13.15 and 3.14.7 | a launch skips the seam, and the asyncio and plain-launch tests turn red on that interpreter |
+| A1 | Every program the suites start through `subprocess` or asyncio starts inside the seam, on each supported interpreter. | CPython's `Lib/subprocess.py` and `Lib/asyncio/unix_events.py`, read at 3.11.16, 3.12.14, 3.13.15 and 3.14.7 | a launch skips the seam, and the asyncio and plain-launch tests turn red on that interpreter |
 | A2 | A shell text with none of the constructs D3 refuses starts only programs that its words name. | the measurements in the comments beside the scan in `tests/conftest.py`, made with bash and `sh` | a construct joins D3's whole-text refusals |
 | A3 | The suite writes its stand-ins under the base directory of `tmp_path_factory`. | `kkernel_stub` in `tests/conftest.py`, and the `kkernel` scripts `tests/test_khive_client.py` writes under `tmp_path` | a stand-in written elsewhere reads as the real program and needs a declaration, which also lets the real program start in that test |
 
