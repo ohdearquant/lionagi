@@ -242,16 +242,12 @@ taken, each row through `entry_of`, refused unless it folds to the view taken. O
 record is refused. The replay checks content: a row's text and a result's fields, its value aside.
 
 - **Landing evidence**: `tests/test_checkpoint.py`:
-  `test_concurrent_saves_each_land_and_latest_names_one_of_them`,
-  `test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view`,
-  `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`,
-  `test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`,
-  `test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named`, the
-  long-value test; `tests/test_chat.py`:
-  `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`;
-  `tests/test_khive_context.py` (historical tests for the file-based design):
-  `test_assert_ignored_reads_gits_two_answers_and_refuses_when_git_cannot_answer`,
-  `test_the_guard_refuses_a_folder_git_would_commit_and_a_checkpoint_saved_past_it_stays_untracked`.
+  `test_a_take_refuses_a_why_or_a_kind_outside_its_lists_and_a_nameless_actor`,
+  `test_listed_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`,
+  `test_a_long_var_is_its_name_size_and_where_it_loads_from`; `tests/test_chat.py`:
+  `test_a_log_read_back_as_history_resumes_the_view_the_run_last_showed`,
+  `test_a_write_cut_inside_a_character_is_a_torn_last_row`. The file-based save, its rewrite and
+  concurrent-save cases and its Git-ignore guard left with that design and have no test here.
 
 ### D2: `hub/backend/claude_code/checkpoint.py`: the session's take and restore, one function per place it keeps state ^d2
 
@@ -296,11 +292,11 @@ it points at changed after it, or its rollout fails (S17).
   `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
   `test_the_context_routes_answer_for_a_registered_desk_only`,
   `test_the_served_context_routes_sit_behind_the_same_gates`,
-  `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`; `tests/test_context.py`:
-  `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`,
+  `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`,
+  `test_the_status_is_stale_when_the_transcript_holds_an_exchange_the_store_does_not`,
   `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`,
-  `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`,
-  `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`.
+  `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`. No test
+  remains for a take refused by a git-ignored destination.
 
 ### D4: The resident's arm, retired ^d4
 
@@ -309,8 +305,7 @@ run stopped, wrote its record beside it, and replayed both in its next process. 
 [[ADR-0026-the-submission|ADR-0026]] C6 its wake continues its last run from the store and takes
 none: `hub/agent/agent.py` holds no take and no restore.
 
-- **Landing evidence**: `tests/test_agent.py`:
-  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`.
+- **Landing evidence**: `tests/test_agent.py`: `test_a_wake_with_no_last_run_continues_nothing`.
 
 ### D5: `hub/backend/codex/checkpoint.py` in the backend package, beside the sources both sessions share ^d5
 
@@ -371,11 +366,12 @@ later name first on a tie. A `--transcript` whose first row is a `session_meta` 
 - **S2**: The statusline's per-session file and the hook ring are written outside the code, by the
   statusline command and the prompt hook a Claude Code install configures; without them the figure
   reads "not known" and the person's words come from the transcript.
-- **S3**: `save`, `load` and the restore refuse a reason or a kind outside their lists and name the
-  value: a file edited to hold another kind does not load, and a restore leaves no value out unsaid.
-  The kind checked is a named value's; `source.kind` is on no list: the restore renders a resident's
-  and a Codex session's by it, and `to_history` refuses any other. Pinned by
-  `test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value` and
+- **S3**: The run's `take` and `listed` checks, and the restore, refuse a reason or a kind outside
+  their lists and name the value; a restore leaves no value out unsaid. The kind checked is a named
+  value's; `source.kind` is on no list: the restore renders a resident's and a Codex session's by
+  it, and `to_history` refuses any other. Pinned by
+  `test_a_take_refuses_a_why_or_a_kind_outside_its_lists_and_a_nameless_actor`,
+  `test_listed_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`, and
   `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`.
 - **S4**: The lanes are the actor's active khive tasks, the threads its unread mail awaits a reply
   on, each named by its newest unread message, and the open pull requests the gh account authored in
@@ -387,9 +383,8 @@ later name first on a tie. A `--transcript` whose first row is a `session_meta` 
   and `status` show is the directory's newest, whichever arm took it. A Claude Code checkpoint taken
   in a resident's directory, the only kind of directory the `/api/context/` routes reach, becomes
   the latest; the resident reads none since [[ADR-0026-the-submission|ADR-0026]] C6, so it costs the
-  resident nothing. Pinned by
-  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`, whose decoy
-  checkpoint replays and is never read.
+  resident nothing. Pinned by `test_a_wake_with_no_last_run_continues_nothing`, which confirms a
+  wake with no prior run leaves the directory unchanged.
 
 - **S6**: `hub/backend/claude_code/checkpoint.py` reads fixed places under the home directory:
   Claude Code's project directory, the hook ring, the typing log and the statusline's files; where

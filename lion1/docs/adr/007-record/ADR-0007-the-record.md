@@ -175,10 +175,10 @@ folds case as Unicode does and returns each hit's first 120 characters as its pr
 size, run and version. A store the profile brings (`Profile.notes`) replaces the actor's for every
 run of that profile.
 
-`test_a_memory_store_counts_every_write_and_an_empty_overwrite_keeps_the_key` pins the empty
-overwrite on the memory store, whose put the file store calls, and
-`test_a_profile_that_brings_its_own_note_store_writes_its_notes_there` the brought store; no test
-pins the 120-character cut.
+`test_a_note_store_counts_every_write_and_an_empty_overwrite_keeps_the_key` pins the empty overwrite
+and version increase on the current note store.
+`test_a_profile_that_brings_its_own_note_store_writes_its_notes_there` pins the brought store; no
+test pins the 120-character cut.
 
 ### C8: The first notification names the notes already kept _(enforced: mechanical)_ ^c8
 
@@ -260,11 +260,9 @@ cut at 60. An exception, from the store or a note's rendering, is escaped onto t
 or said to be unprintable. A resumed chat is a new run and is told again.
 
 - **Landing evidence**: `tests/test_notes.py`:
-  `test_the_first_notice_names_the_notes_already_kept_and_later_ones_do_not`,
-  `test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store` and
-  `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises`.
-  Controls: dropping the block, the catch, the sort, the plain string, the quoting, either cut, the
-  escaping or the inner catch, or skipping a resumed run, fails a test.
+  `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises` pins the
+  sort, the quoting and a store that raises. No current test pins the turn-1 gate, the ten-note cap
+  or that later notices omit the line.
 
 ### D6: `find` folds case, and `_note_find` cuts the preview ^d6
 
@@ -276,10 +274,10 @@ profile brings answers for itself. `_note_find` slices each value's text at 120 
 
 - **Landing evidence**:
   `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`,
-  `test_find_reads_a_structured_value_as_its_json_text_with_accents_kept_and_a_date_as_text`,
-  `test_find_falls_back_to_the_values_own_text_where_json_cannot_render_it`,
+  `test_find_reads_a_structured_value_as_its_json_text_and_a_date_is_refused`,
   `test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json`,
-  `test_note_find_and_note_list_render_a_value_that_refers_to_itself`.
+  `test_note_find_and_note_list_render_a_value_that_refers_to_itself`. This tree has no current test
+  of a fallback when JSON cannot render a note value.
 
 ### D7: A note declared into a store the loader refuses ends the run ^d7
 
@@ -291,12 +289,10 @@ and goes on (C8). The note commands reach the loader too and fail as Results
 ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). The model cannot repair the file, and a write over
 it would clobber it.
 
-- **Landing evidence**:
-  `test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error`; a
-  program assignment:
-  `test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on`; the
-  notification:
-  `test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store`.
+- **Landing evidence**: `tests/test_notes.py`:
+  `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises` pins the
+  notice of an unreadable store and the run going on. No current test pins a refused tag declaration
+  ending the run, or a refused assignment recorded not written.
 
 ## Alternatives
 
