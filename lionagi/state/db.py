@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -537,6 +538,36 @@ async def _restore_foreign_keys(conn, driver) -> None:
         await shield(conn.invalidate)
 
 
+def _cancellation_wins(cm_func):
+    """Keep a cancelled body cancelled when ending the connection then fails.
+
+    A second cancel can interrupt SQLAlchemy while it discards a connection the
+    first cancel broke, before the connection is marked invalid. The rollback or
+    close that ends the block then reaches a driver that has already stopped and
+    raises, and that error would replace the cancellation: the caller would see a
+    failed read or write rather than a cancelled one.
+    """
+
+    @functools.wraps(cm_func)
+    @asynccontextmanager
+    async def wrapper(*args, **kwargs):
+        cancelled_exc = get_cancelled_exc_class()
+        cancel: BaseException | None = None
+        try:
+            async with cm_func(*args, **kwargs) as value:
+                try:
+                    yield value
+                except cancelled_exc as exc:
+                    cancel = exc
+                    raise
+        except Exception:
+            if cancel is None:
+                raise
+            raise cancel  # noqa: B904 -- the cleanup error did not cause the cancel; it stays as __context__
+
+    return wrapper
+
+
 _log = logging.getLogger(__name__)
 
 
@@ -681,12 +712,14 @@ class StateDB:
 
     # Internal connection helpers
 
+    @_cancellation_wins
     @asynccontextmanager
     async def _read(self):
         async with self._engine.connect() as conn:
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
             yield conn
 
+    @_cancellation_wins
     @asynccontextmanager
     async def read_snapshot(self):
         """Yield one non-blocking, repeatable read snapshot.
@@ -726,6 +759,7 @@ class StateDB:
         async with self._read() as conn:
             yield conn
 
+    @_cancellation_wins
     @asynccontextmanager
     async def _tx(self):
         if self.dialect == "sqlite":
