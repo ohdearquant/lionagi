@@ -478,7 +478,7 @@ def test_a_traversal_component_is_refused_by_the_guard():
     """
     from fastapi import HTTPException
 
-    from lionagi.studio.services._helpers import safe_path_join
+    from lionagi.studio.services._path_safety import safe_path_join
 
     root = Path("/srv/shows")
     for component in ("../../../etc", "..", "../etc", "a/../../b", "/etc/passwd"):
@@ -759,7 +759,7 @@ def spa_mounted_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.Monkey
 
     from lionagi.studio.app import create_app
 
-    return TestClient(create_app(_legacy_unscoped_test_mode=True), base_url="http://127.0.0.1:8765")
+    return TestClient(create_app(), base_url="http://127.0.0.1:8765")
 
 
 def test_api_error_detail_survives_with_the_spa_mounted(spa_mounted_app):
