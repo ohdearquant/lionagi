@@ -1409,28 +1409,36 @@ def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     for agent_id, adir in registered.items():
         entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
         adir = Path(adir)
-        # `stat` rather than `exists()`: on Python 3.14 `exists()` answers
-        # False for a directory it cannot stat instead of raising, which would
-        # report an unreadable directory as "missing" with an error naming the
-        # wrong cause, and on older interpreters it raises and would abort the
-        # whole harvest. This function carries a distinct "unreadable" status
-        # for exactly that case.
+        # `stat` distinguishes an absent path from one that cannot be inspected.
         try:
             adir.stat()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             entry["status"] = "missing"
             entry["error"] = "the directory recorded for this worker does not exist"
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             entry["status"] = "unreadable"
             entry["error"] = f"{type(exc).__name__}: {exc}"
         else:
             try:
-                files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
-            except OSError as exc:
+                files: list[str] = []
+                scan_error: OSError | None = None
+
+                def record_scan_error(error: OSError) -> None:
+                    nonlocal scan_error
+                    if scan_error is None:
+                        scan_error = error
+
+                for directory, _, names in os.walk(adir, onerror=record_scan_error):
+                    for name in names:
+                        path = Path(directory) / name
+                        if path.is_file():
+                            files.append(str(path.relative_to(adir)))
+                if scan_error is not None:
+                    raise scan_error
+                entry["files"] = sorted(files)
+            except (OSError, ValueError) as exc:
                 entry["status"] = "unreadable"
                 entry["error"] = f"{type(exc).__name__}: {exc}"
-            else:
-                entry["files"] = files
         entries.append(entry)
 
     for agent_id in getattr(env, "expected_worker_ids", None) or ():

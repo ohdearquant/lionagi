@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Workers are told where their output goes, and the run reports where it went."""
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -456,6 +457,53 @@ def test_a_missing_directory_is_reported_as_missing_not_as_nothing_written(tmp_p
         _emit_worker_artifact_report(entries)
     assert "a: MISSING" in caplog.text
     assert "produced nothing" not in caplog.text
+
+
+def test_an_invalid_recorded_path_does_not_stop_other_workers(tmp_path):
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "notes.md").write_text("x")
+    invalid = Path(f"{tmp_path / 'invalid'}\x00")
+
+    entries = collect_worker_artifacts(_env_with_dirs({"invalid": invalid, "good": good}))
+
+    assert entries[0]["status"] == "unreadable"
+    assert "ValueError" in entries[0]["error"]
+    assert entries[1]["status"] == "reported"
+    assert entries[1]["files"] == ["notes.md"]
+
+
+def test_a_path_below_a_file_is_reported_as_missing(tmp_path):
+    parent = tmp_path / "file"
+    parent.write_text("x")
+
+    entries = collect_worker_artifacts(_env_with_dirs({"a": parent / "child"}))
+
+    assert entries[0]["status"] == "missing"
+    assert "does not exist" in entries[0]["error"]
+
+
+def test_an_unreachable_child_directory_is_reported_as_unreadable(tmp_path, monkeypatch):
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    (root / "visible.md").write_text("x")
+    hidden = root / "hidden"
+    hidden.mkdir()
+    (hidden / "notes.md").write_text("x")
+    original_scandir = os.scandir
+
+    def restricted_scandir(path):
+        if Path(path) == hidden:
+            raise PermissionError("directory cannot be listed")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", restricted_scandir)
+
+    entries = collect_worker_artifacts(_env_with_dirs({"a": root}))
+
+    assert entries[0]["status"] == "unreadable"
+    assert "PermissionError" in entries[0]["error"]
+    assert entries[0]["files"] == []
 
 
 def test_a_worker_the_run_expected_but_never_registered_is_named_and_warned(tmp_path, caplog):

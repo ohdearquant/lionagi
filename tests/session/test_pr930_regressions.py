@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.cli.skill as skill_module
 from lionagi.cli._logging import _LazyStderrHandler
 from lionagi.cli._providers import _clamp_claude_effort
 from lionagi.cli.main import _handle_play_shortcut
@@ -55,6 +56,23 @@ def _real_repository_with_worktree(tmp_path: Path) -> tuple[Path, Path]:
 
 
 class TestSkillSymlinkContainment:
+    def test_a_symlink_loop_returns_a_path_error(self, monkeypatch, tmp_path: Path):
+        root = tmp_path / "skills"
+        root.symlink_to(root)
+        candidate = root / "loop" / "SKILL.md"
+        monkeypatch.setattr(skill_module, "_skills_root", lambda: root)
+        original_is_file = Path.is_file
+
+        def candidate_exists(path: Path) -> bool:
+            return True if path == candidate else original_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", candidate_exists)
+
+        path, err = resolve_skill_path("loop")
+
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
     def test_rejects_skill_md_symlink_pointing_outside_root(self, monkeypatch, tmp_path: Path):
         """A SKILL.md inside the skills root that is itself a symlink to
         an arbitrary file must be rejected before read_text() follows it.
@@ -176,6 +194,43 @@ class TestSkillSymlinkContainment:
         monkeypatch.setenv("HOME", str(home))
 
         path, err = resolve_skill_path("leak")
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
+    def test_rejects_links_outside_a_non_symlink_skills_root(self, monkeypatch, tmp_path: Path):
+        home = tmp_path / "home"
+        _make_repository(home)
+        shared = home / "shared" / "SKILL.md"
+        shared.parent.mkdir()
+        shared.write_text("---\nname: shared\n---\nbody")
+        skills = home / ".lionagi" / "skills" / "linked"
+        skills.mkdir(parents=True)
+        (skills / "SKILL.md").symlink_to(shared)
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("linked")
+
+        assert path is None
+        assert err is not None and "symlink escape" in err
+
+    def test_rejects_skill_links_into_a_nested_repository(self, monkeypatch, tmp_path: Path):
+        repo = tmp_path / "repo"
+        _make_repository(repo)
+        nested = repo / "nested"
+        _make_repository(nested)
+        skill = nested / "marketplace" / "skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: linked\n---\nbody")
+        skills = repo / "resources" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "linked").symlink_to(skill)
+        home = tmp_path / "home"
+        (home / ".lionagi").mkdir(parents=True)
+        (home / ".lionagi" / "skills").symlink_to(skills)
+        monkeypatch.setenv("HOME", str(home))
+
+        path, err = resolve_skill_path("linked")
+
         assert path is None
         assert err is not None and "symlink escape" in err
 
@@ -301,6 +356,13 @@ class TestPointerReads:
         pointer = tmp_path / "commondir"
         pointer.write_text("../.git\nignored second line\n")
         assert self._read_within(pointer) == "../.git"
+
+    def test_a_regular_pointer_reads_without_a_nonblocking_flag(self, monkeypatch, tmp_path: Path):
+        pointer = tmp_path / "commondir"
+        pointer.write_text("../.git\n")
+        monkeypatch.delattr(os, "O_NONBLOCK")
+
+        assert _first_line(pointer) == "../.git"
 
     def test_a_fifo_at_a_pointer_path_returns_empty_rather_than_blocking(self, tmp_path: Path):
         """A FIFO with no writer blocks a plain open until one appears, which would stop a skill

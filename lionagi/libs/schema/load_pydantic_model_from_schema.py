@@ -138,8 +138,11 @@ def _schema_to_type(
             return Union[tuple(py_types)]  # type: ignore[return-value]
 
     if "allOf" in prop_schema:
+        items = prop_schema["allOf"]
+        if len(items) == 1 and "$ref" in items[0]:
+            return _schema_to_type(items[0], prop_name, root_schema, models_cache, parent_name)
         merged: dict[str, Any] = {}
-        for sub in prop_schema["allOf"]:
+        for sub in items:
             if "$ref" in sub:
                 sub = _resolve_ref(sub["$ref"], root_schema)
             merged = _deep_merge(merged, sub)

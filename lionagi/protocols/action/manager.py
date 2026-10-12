@@ -29,7 +29,8 @@ from .tool_hooks import (
 logger = logging.getLogger(__name__)
 
 _QUALIFIED_MCP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-_PLUGIN_SHADOW_CACHE_SECONDS = 1.0
+# Bundle changes without a settings revision are rechecked at most once per minute.
+_PLUGIN_SHADOW_CACHE_SECONDS = 60.0
 
 
 def _plugin_shadow_cache_now() -> float:

@@ -338,6 +338,27 @@ class TestBuiltinToolCollisionDiagnostic:
         assert "greeter" in caplog.text
         assert "greet" in caplog.text
 
+    def test_trust_write_refreshes_a_cached_local_tool_check(self, write_plugin, caplog):
+        import logging
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        PluginRegistry.reset()
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            manager.match_tool({"function": "greet", "arguments": {}})
+            assert "greeter" not in caplog.text
+
+            _trust("p1")
+            result = manager.match_tool({"function": "greet", "arguments": {}})
+
+        assert result.func_tool.func_callable is greet
+        assert "greeter" in caplog.text
+
     def test_no_diagnostic_when_no_plugin_declares_the_same_name(self, write_plugin, caplog):
         """A non-colliding local tool call must not spuriously warn."""
         import logging
@@ -440,10 +461,10 @@ class TestBuiltinToolCollisionDiagnostic:
         assert second.func_tool.func_callable is greet
         assert "plugin-one" in caplog.text
 
-    def test_bundle_mutation_staleness_is_bounded_without_reset(
+    def test_bundle_change_staleness_is_bounded_without_reset(
         self, write_plugin, caplog, monkeypatch
     ):
-        """Non-settings mutations refresh after the documented one-second window."""
+        """Bundle changes outside settings refresh after the documented minute window."""
 
         import logging
 
@@ -471,10 +492,10 @@ class TestBuiltinToolCollisionDiagnostic:
         with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
             manager.match_tool({"function": "greet", "arguments": {}})
             (peer / "tools" / "impl.py").write_text("def b():\n    return 'changed'\n")
-            clock[0] = 10.5
+            clock[0] = 10 + manager_mod._PLUGIN_SHADOW_CACHE_SECONDS - 0.5
             manager.match_tool({"function": "greet", "arguments": {}})
             assert "plugin-one" not in caplog.text
-            clock[0] = 11.0
+            clock[0] += 0.5
             manager.match_tool({"function": "greet", "arguments": {}})
 
         assert "plugin-one" in caplog.text
@@ -483,19 +504,21 @@ class TestBuiltinToolCollisionDiagnostic:
 class TestShadowResolutionCacheCost:
     """A registered-tool hit against `match_tool` must not pay for a fresh
     plugin-manifest rescan (`PluginRegistry.resolve_tool_target`) on every
-    call once any plugin is trusted -- only once per stable cache window --
-    repeated rescans were a real disk-I/O regression."""
+    call once any plugin is trusted -- only once per stable cache window."""
 
-    def test_repeated_hits_within_a_generation_resolve_the_plugin_registry_once(
+    def test_repeated_hits_over_ten_seconds_resolve_the_plugin_registry_once(
         self, write_plugin, monkeypatch
     ):
         import lionagi.plugins.registry as registry_mod
+        import lionagi.protocols.action.manager as manager_mod
 
         def greet():
             return "local"
 
         manager = ActionManager()
         manager.register_tool(greet)
+        clock = [0.0]
+        monkeypatch.setattr(manager_mod, "_plugin_shadow_cache_now", lambda: clock[0])
 
         _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
         _trust("p1")
@@ -514,9 +537,10 @@ class TestShadowResolutionCacheCost:
             classmethod(counting_resolve_tool_target),
         )
 
-        for _ in range(5):
+        for _ in range(1000):
             result = manager.match_tool({"function": "greet", "arguments": {}})
             assert result.func_tool.func_callable is greet
+            clock[0] += 0.01
 
         assert len(calls) == 1
 
