@@ -195,7 +195,10 @@ async def test_a_run_id_another_invocation_now_records_is_left_to_it(
         path.write_text(json.dumps({"run_id": RUN_ID, **_degraded(proc.pid)}))
         other = {"run_id": RUN_ID, **_degraded(leg.pid)}
         if other_process == "the same pid, another start time":
+            # Linux counts start times in clock ticks, so the leg started just before this process
+            # can carry the very same one; offset it so the start time is another by construction.
             other["pid"] = proc.pid
+            other["pid_create_time"] = _markers(proc.pid)["pid_create_time"] + 1.0
         elif other_process == "another pid, the same start time":
             other["pid_create_time"] = _markers(proc.pid)["pid_create_time"]
         Path(str(path) + ".next").write_text(json.dumps(other))

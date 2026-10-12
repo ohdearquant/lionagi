@@ -1262,7 +1262,7 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Entity id to kill: session_id / invocation_id / play_id / show_id. "
             "Accepts a full UUID, or an id prefix, which is refused when it "
-            "matches more than one row rather than resolved to one of them. A "
+            "matches more than one row rather than resolved to one of them. "
             "A run_id can reach a degraded run when persistence setup failed. It "
             "stops the process only when run.json records a process identity. "
             "`li agent` writes that identity and prints its run id when it starts. "
