@@ -1320,13 +1320,21 @@ describe("history/RunDetail.tsx — operation lane escalation presentation", () 
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
-    const rows = [sig({ id: "raw", kind: "NodeFailed", op_id: "op-raw", payload: {} })];
+    const rows = [
+      sig({ id: "raw-1", kind: "NodeFailed", op_id: "op-raw", payload: {} }),
+      sig({ id: "raw-2", kind: "NodeFailed", op_id: "op-raw", payload: {} }),
+      sig({ id: "raw-3", kind: "NodeFailed", op_id: "op-raw", payload: {} }),
+    ];
+    // With a render window of one row the section reads the array only through
+    // `length` and `slice`; `slice` runs on the plain array, so any other read of
+    // the raw events (iteration, an index, forEach, map, ...) is a lane scan.
     const events = new Proxy(rows, {
-      get(target, property, receiver) {
-        if (property === Symbol.iterator) {
-          throw new Error("projected lanes must bypass the raw-event lane scan");
-        }
-        return Reflect.get(target, property, receiver);
+      get(target, property) {
+        if (property === "length") return target.length;
+        if (property === "slice") return (start?: number, end?: number) => target.slice(start, end);
+        throw new Error(
+          `projected lanes must bypass the raw-event lane scan (read ${String(property)})`,
+        );
       },
     });
 
@@ -1337,6 +1345,7 @@ describe("history/RunDetail.tsx — operation lane escalation presentation", () 
             <EventsSection
               live={false}
               events={events}
+              renderStep={1}
               projectedLanes={[{ op_id: "op-projected", lane: "succeeded", count: 10 }]}
             />
           </IntlProvider>,
@@ -1344,6 +1353,67 @@ describe("history/RunDetail.tsx — operation lane escalation presentation", () 
       });
 
       expect(container.textContent).toContain("op-projectedsucceeded×10");
+      expect(container.textContent).not.toContain("op-rawfailed");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("follows a new lane projection when the events are unchanged", async () => {
+    const { EventsSection } = await import("./RunDetail");
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const events = [sig({ id: "raw", kind: "NodeStarted", op_id: "op-raw", payload: {} })];
+    const renderWith = (
+      projectedLanes: { op_id: string; lane: "running" | "succeeded"; count: number }[],
+    ) =>
+      act(() => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <EventsSection live={false} events={events} projectedLanes={projectedLanes} />
+          </IntlProvider>,
+        );
+      });
+
+    try {
+      renderWith([{ op_id: "op-a", lane: "running", count: 1 }]);
+      expect(container.textContent).toContain("op-arunning×1");
+      renderWith([{ op_id: "op-b", lane: "succeeded", count: 2 }]);
+      expect(container.textContent).toContain("op-bsucceeded×2");
+      expect(container.textContent).not.toContain("op-arunning×1");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("derives lanes from the events when the projection is null", async () => {
+    const { EventsSection } = await import("./RunDetail");
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const events = [sig({ id: "raw", kind: "NodeFailed", op_id: "op-raw", payload: {} })];
+
+    try {
+      act(() => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <EventsSection
+              live={false}
+              events={events}
+              projectedLanes={null as unknown as undefined}
+            />
+          </IntlProvider>,
+        );
+      });
+
+      expect(container.textContent).toContain("op-rawfailed×1");
     } finally {
       act(() => root.unmount());
       container.remove();

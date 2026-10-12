@@ -1462,7 +1462,7 @@ export function EventsSection({
 }) {
   const t = useTranslations("history.detail");
   const laneSummaries = useMemo((): LaneSummary[] => {
-    if (projectedLanes !== undefined) return projectedLanes;
+    if (projectedLanes != null) return projectedLanes;
 
     const byOp = new Map<string, LaneSignal[]>();
     for (const ev of events) {
