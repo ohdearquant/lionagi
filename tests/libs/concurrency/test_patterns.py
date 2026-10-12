@@ -77,16 +77,19 @@ async def test_bounded_map_raises_and_cancels_others(anyio_backend):
 
 @pytest.mark.anyio
 async def test_race_multiple_exceptions_vs_success(anyio_backend):
+    # The errors are due long after the result, and race() cancels them when it
+    # returns. Deadlines a millisecond apart can expire in the same pass of the
+    # event loop, and trio runs the woken tasks in no fixed order.
     async def err1():
-        await anyio.sleep(0.005)
+        await anyio.sleep(5)
         raise RuntimeError("e1")
 
     async def err2():
-        await anyio.sleep(0.006)
+        await anyio.sleep(6)
         raise ValueError("e2")
 
     async def ok():
-        await anyio.sleep(0.004)
+        await anyio.sleep(0)
         return "ok"
 
     assert await race(err1(), ok(), err2()) == "ok"
@@ -245,7 +248,7 @@ async def test_race_first_failure_propagates(anyio_backend):
 
     async def slow_success():
         try:
-            await anyio.sleep(0.05)
+            await anyio.sleep(5)
             return "success"
         except BaseException:
             cancelled.append("slow_success")
@@ -253,7 +256,7 @@ async def test_race_first_failure_propagates(anyio_backend):
 
     async def slower_success():
         try:
-            await anyio.sleep(0.1)
+            await anyio.sleep(10)
             return "also_success"
         except BaseException:
             cancelled.append("slower_success")
@@ -272,16 +275,19 @@ async def test_race_first_failure_propagates(anyio_backend):
 
 @pytest.mark.anyio
 async def test_race_all_failures_returns_first(anyio_backend):
+    # The later failures are due long after the first, so which one comes first
+    # does not depend on the order in which a backend wakes tasks whose
+    # deadlines expired together.
     async def fail1():
-        await anyio.sleep(0.01)
+        await anyio.sleep(0)
         raise ValueError("first")
 
     async def fail2():
-        await anyio.sleep(0.02)
+        await anyio.sleep(5)
         raise RuntimeError("second")
 
     async def fail3():
-        await anyio.sleep(0.03)
+        await anyio.sleep(6)
         raise TypeError("third")
 
     with pytest.raises(ValueError) as exc_info:

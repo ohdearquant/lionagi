@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -213,7 +214,7 @@ ALL_TABLES = {
 }
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sqlite_meta_engine(tmp_path):
     """AsyncEngine pointing at a fresh SQLite file for MetaData.create_all."""
     db_file = tmp_path / "meta_test.db"

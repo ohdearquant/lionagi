@@ -1,11 +1,11 @@
 """Tests for alcall and bcall functions."""
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, call, patch
 
 import anyio
 import pytest
+from anyio.lowlevel import checkpoint
 from pydantic import BaseModel
 
 from lionagi.ln import AlcallParams, BcallParams, alcall, bcall
@@ -13,7 +13,7 @@ from lionagi.ln.concurrency import BaseExceptionGroup
 
 
 async def async_func(x: int, add: int = 0) -> int:
-    await asyncio.sleep(0)
+    await checkpoint()
     return x + add
 
 
@@ -22,7 +22,7 @@ def sync_func(x: int, add: int = 0) -> int:
 
 
 async def async_func_with_error(x: int) -> int:
-    await asyncio.sleep(0)
+    await checkpoint()
     if x == 3:
         raise ValueError("mock error")
     return x
@@ -501,7 +501,8 @@ class TestReturnExceptions:
         assert type(results[0]) is asyncio.CancelledError
         assert results[0].args == ("nested-child-cancel",)
 
-    @pytest.mark.anyio
+    # asyncio only: drives the cancellation with asyncio tasks and events.
+    @pytest.mark.asyncio
     async def test_default_path_failure_cancels_running_siblings(self):
         import asyncio
 
@@ -524,7 +525,8 @@ class TestReturnExceptions:
             await alcall([0, 1], work)
         assert peer_cancelled.is_set()
 
-    @pytest.mark.anyio
+    # asyncio only: drives the cancellation with asyncio tasks and events.
+    @pytest.mark.asyncio
     async def test_default_path_child_self_cancel_matches_task_group_shape(self):
         import asyncio
 
@@ -547,7 +549,8 @@ class TestReturnExceptions:
         assert peer_cancelled.is_set()
         assert all(isinstance(r, asyncio.CancelledError) for r in results)
 
-    @pytest.mark.anyio
+    # asyncio only: drives the cancellation with asyncio tasks and events.
+    @pytest.mark.asyncio
     async def test_default_path_external_cancellation_propagates(self):
         import asyncio
 

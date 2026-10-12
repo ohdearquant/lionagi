@@ -46,6 +46,7 @@ if "lionagi._paths" in sys.modules:
         "LIONAGI_HOME; the run directory used by this session is not isolated."
     )
 
+import inspect
 import json
 import types
 
@@ -65,6 +66,32 @@ def pytest_collection_modifyitems(items):
     """Apply quarantine markers from the checked-in exact-nodeid manifest."""
 
     apply_quarantine_markers(items, _QUARANTINE, pytest.mark.flaky_quarantine)
+
+
+def pytest_pycollect_makeitem(collector, name, obj):
+    """Mark every coroutine test not written for anyio as an asyncio test.
+
+    pytest-asyncio runs in strict mode (see pyproject.toml), so it only takes
+    tests that carry its marker, and anyio's plugin keeps the ones marked
+    ``anyio`` or taking ``anyio_backend`` as an argument. This marks the rest
+    before the test item is built, the same way anyio's plugin attaches its
+    fixture, so that no coroutine test is left without a runner. A test that
+    reaches ``anyio_backend`` only through another fixture is not seen here and
+    is marked asyncio; mark such a test ``anyio``.
+    """
+    if not collector.istestfunction(obj, name):
+        return
+    func = obj.hypothesis.inner_test if hasattr(obj, "hypothesis") else obj
+    if not inspect.iscoroutinefunction(func):
+        return
+    own_marks = {mark.name for mark in getattr(obj, "pytestmark", ())}
+    if own_marks & {"anyio", "asyncio"}:
+        return
+    if collector.get_closest_marker("anyio") or collector.get_closest_marker("asyncio"):
+        return
+    if "anyio_backend" in inspect.signature(func).parameters:
+        return
+    pytest.mark.asyncio(obj)
 
 
 @pytest.fixture(autouse=True)

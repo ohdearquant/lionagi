@@ -9,6 +9,7 @@ import weakref
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 from lionagi._errors import ItemNotFoundError, ValidationError
 from lionagi.protocols.generic.element import ID, Element
@@ -467,7 +468,7 @@ def test_pile_with_abc():
         Pile(collections=[AbstractElement()])
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_sample_pile():
     return Pile([Node(content=i) for i in range(5)])
 

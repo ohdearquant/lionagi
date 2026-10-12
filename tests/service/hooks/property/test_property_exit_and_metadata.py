@@ -12,6 +12,10 @@ from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
 from tests.service.hooks.conftest import MyCancelled
 
+# The hypothesis tests here run on asyncio only. anyio's pytest plugin wraps a hypothesis
+# test's inner function once, with the runner of the first backend it meets, and later
+# cases reuse that wrapper, so a [trio] case would run on asyncio.
+
 
 @pytest.fixture(autouse=True)
 def patch_cancel(monkeypatch):
@@ -47,7 +51,7 @@ class TestExitPropagationInvariants:
             ]
         ),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_normal_completion_always_no_exit(self, exit_policy, hook_type):
         """Property: Normal completion always sets should_exit=False regardless of exit policy."""
 
@@ -80,7 +84,7 @@ class TestExitPropagationInvariants:
             ]
         ),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_cancellation_always_exits_true(self, exit_policy, hook_type):
         """Property: Cancellation always sets should_exit=True regardless of exit policy."""
 
@@ -111,7 +115,7 @@ class TestExitPropagationInvariants:
             ]
         ),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_pre_hook_exceptions_respect_exit_policy(self, exit_policy, hook_type):
         """Property: Pre-hook non-cancellation exceptions respect exit policy."""
 
@@ -134,7 +138,7 @@ class TestExitPropagationInvariants:
         assert status == EventStatus.CANCELLED  # Pre-hooks use CANCELLED
 
     @given(exit_policy=st.booleans())
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_post_hook_exceptions_respect_exit_policy(self, exit_policy):
         """Property: Post-hook non-cancellation exceptions respect exit policy and use ABORTED."""
 
@@ -158,7 +162,7 @@ class TestExitPropagationInvariants:
         exit_policy=st.booleans(),
         chunk_type=st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_stream_handler_exceptions_respect_exit_policy(self, exit_policy, chunk_type):
         """Property: Stream handler exceptions respect exit policy."""
 
@@ -192,7 +196,7 @@ class TestMetadataInvariants:
             ]
         ),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_metadata_mirrors_event_attributes(self, event_id, created_at, hook_type):
         """Property: Metadata exactly mirrors event attributes for invocation hooks."""
 
@@ -236,7 +240,7 @@ class TestMetadataInvariants:
             allow_infinity=False,
         ),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_metadata_consistency_across_hook_types(self, event_id, created_at):
         """Property: Metadata is consistent across different hook types for same event."""
 
@@ -264,7 +268,7 @@ class TestSyncAsyncVariability:
         exit_policy=st.booleans(),
         return_value=st.text(min_size=1, max_size=20),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_sync_async_hooks_equivalent_results(self, exit_policy, return_value):
         """Property: Sync and async hooks produce identical results."""
 
@@ -296,7 +300,7 @@ class TestSyncAsyncVariability:
         chunk_type=st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
         chunk_data=st.text(min_size=0, max_size=50),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_sync_async_stream_handlers_equivalent(self, exit_policy, chunk_type, chunk_data):
         """Property: Sync and async stream handlers produce identical results."""
 
@@ -336,7 +340,7 @@ class TestExceptionVariability:
             ]
         ),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_exception_message_preserved(self, error_message, exit_policy, hook_type):
         """Property: Exception messages are preserved in results."""
 
@@ -375,7 +379,7 @@ class TestExceptionVariability:
         ),
         exit_policy=st.booleans(),
     )
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_custom_parameters_forwarded(self, custom_params, exit_policy):
         """Property: Custom parameters are correctly forwarded to hooks."""
         captured_params = {}

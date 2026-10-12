@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from lionagi.dispatch import enqueue_dispatch, get_dispatch
@@ -213,7 +214,7 @@ def _actual_edges(entity_type: str) -> tuple[_ExpectedEdge, ...]:
     )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db(tmp_path) -> AsyncIterator[StateDB]:
     state = StateDB(tmp_path / "state.db")
     await state.open()

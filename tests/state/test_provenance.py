@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import StateDB
 from lionagi.state.provenance import (
@@ -18,7 +19,7 @@ from lionagi.state.provenance import (
 )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()

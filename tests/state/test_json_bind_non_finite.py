@@ -10,6 +10,7 @@ import json
 import math
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.exc import StatementError
 
@@ -19,7 +20,7 @@ from lionagi.state.engine import _dumps_with_uuid
 NON_FINITE = [float("inf"), float("-inf"), float("nan")]
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db(tmp_path):
     state = StateDB(tmp_path / "state.db")
     await state.open()

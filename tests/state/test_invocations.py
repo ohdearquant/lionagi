@@ -14,11 +14,12 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import _INVOCATION_STATUSES, StateDB
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()

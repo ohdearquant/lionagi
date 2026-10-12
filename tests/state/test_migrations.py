@@ -15,6 +15,7 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
+import pytest_asyncio
 
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS
 
@@ -130,7 +131,7 @@ def _open_state_db_worker(
 # Old-schema fixture
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def old_schema_db():
     """In-memory DB with bare-minimum columns simulating a pre-migration schema."""
     async with aiosqlite.connect(":memory:") as db:
