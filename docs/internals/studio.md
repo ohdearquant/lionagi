@@ -241,6 +241,14 @@ between `build_argv()` and this function gives a revoked
 
 ## lionagi/studio/services/runs.py
 
+**Run identity projection** — list and detail rows keep `id` equal to the
+backing Session ID, which is the value accepted by every v1 Studio run and
+Session route. `run_id` carries the raw nullable `sessions.run_id` correlation
+to a CLI run. It is provenance only: multiple Sessions can share it, and an
+unlinked Session reports JSON `null` rather than fabricating a second copy of
+its Session ID. This is intentionally narrower than ADR-0123's future
+canonical Run model.
+
 **`_open_regular_file_no_follow`** — `resolve_workspace_path` only validates
 at check time; nothing stops the target being replaced with a symlink before
 a later path-based `open()` follows it out of the artifact root (CWE-367/59).

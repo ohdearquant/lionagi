@@ -60,6 +60,7 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    RunDir,
     allocate_run,
     find_branch,
     load_last_branch,
@@ -1065,6 +1066,12 @@ async def _run_agent(
         prompt = preamble + prompt
 
     run = allocate_run()
+    if isinstance(run, RunDir):
+        run = run.with_execution_provenance(
+            cwd=cwd or os.getcwd(),
+            mcp_resolution=mcp_resolution,
+            mcp_disabled=no_mcp_config,
+        )
     branch_id = str(branch.id)
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
     run_manifest = {

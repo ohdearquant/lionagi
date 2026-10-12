@@ -66,8 +66,10 @@ Each CLI run owns a state directory:
 └── stream/
 ```
 
-`run.json` records the state and artifact roots. `branches/` contains resumable
-branch snapshots. `checkpoint.json` records flow progress. When `--save DIR`
+`run.json` records the state and artifact roots, the resolved execution `cwd`,
+and MCP discovery provenance (`mcp_config_source` is explicitly `null` when no
+source file was selected). `branches/` contains resumable branch snapshots.
+`checkpoint.json` records flow progress. When `--save DIR`
 is present, worker and synthesis artifacts go to that directory; otherwise
 they live below the run's own `artifacts/` directory.
 

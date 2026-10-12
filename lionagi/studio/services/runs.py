@@ -151,8 +151,11 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         # The dashboard maps a live-but-quiet UNRESPONSIVE run onto "stuck".
         effective_health = health.value
     return {
-        "run_id": s["id"],
         "id": s["id"],
+        # ``id`` is the Session-projection identity accepted by every v1
+        # Studio route. ``run_id`` is raw, nullable CLI-run provenance and can
+        # be shared by multiple Sessions; never fabricate one from ``id``.
+        "run_id": s.get("run_id"),
         "name": s.get("name"),
         "playbook_name": s.get("playbook_name"),
         "agent_name": s.get("agent_name"),

@@ -95,11 +95,13 @@ async def seed_session(
     total_cost_usd: float | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    run_id: str | None = None,
 ) -> None:
     prog_id = f"{session_id}-prog"
     fields: dict[str, Any] = {
         "id": session_id,
         "progression_id": prog_id,
+        "run_id": run_id,
         "name": name or f"run-{session_id}",
         "playbook_name": playbook_name,
         "agent_name": agent_name,
@@ -419,7 +421,9 @@ async def test_run_detail_happy_path(db_path):
     assert result["known"] is True
     assert result["source"] == "store"
     assert result["truncated"] is False
-    assert result["runId"] == sid
+    # ``runId`` is CLI-run provenance and this session was not started by
+    # one; ``id`` is the identity the tool was asked about.
+    assert result["runId"] is None
     assert result["id"] == sid
     assert result["status"] == "completed"
     # A terminal run's vacuous "healthy" is dropped from the projection:
@@ -436,6 +440,20 @@ async def test_run_detail_happy_path(db_path):
 
 
 # ── Mandatory arm: readable-absent (store opened fine, no such run) ─────────
+
+
+async def test_run_detail_keeps_session_and_cli_run_identities_distinct(db_path):
+    from lionagi.studio.operator.run_detail import run_detail
+
+    sid = str(uuid.uuid4())
+    cli_run_id = "20260829T120000-linked"
+    await seed_session(db_path, session_id=sid, run_id=cli_run_id)
+
+    result = await run_detail({"run_id": sid})
+
+    assert result["known"] is True
+    assert result["id"] == sid
+    assert result["runId"] == cli_run_id
 
 
 async def test_run_detail_readable_absent(db_path):

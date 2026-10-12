@@ -15,8 +15,10 @@ _classify_phantom coverage).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import lionagi.cli._runs as runs_mod
+from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli._runs import allocate_run
 
 
@@ -90,6 +92,80 @@ def test_allocate_run_writes_running_placeholder_manifest(tmp_path, monkeypatch)
     assert manifest["status"] == "running"
     assert manifest["started_at"] > 0
     assert manifest["ended_at"] is None
+
+
+def test_allocate_run_records_resolved_cwd_and_mcp_discovery_provenance(tmp_path, monkeypatch):
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace" / "nested"
+    launch_dir.mkdir(parents=True)
+    config_path = tmp_path / "workspace" / ".mcp.json"
+    config_path.write_text('{"mcpServers": {"tools": {}}}')
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.chdir(tmp_path)
+    resolution = McpResolution(
+        servers={"tools": {}},
+        reason=None,
+        source=config_path,
+        searched_from=launch_dir,
+        explicit=False,
+    )
+
+    run = allocate_run(run_id="provenance-run")
+    run = run.with_execution_provenance(
+        cwd=Path("workspace") / "nested" / "..",
+        mcp_resolution=resolution,
+    )
+
+    manifest = run.read_manifest()
+    assert manifest["cwd"] == str((tmp_path / "workspace").resolve())
+    assert manifest["mcp_config_source"] == str(config_path.resolve())
+    assert manifest["mcp_config_searched_from"] == str(launch_dir.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_reason"] is None
+
+
+def test_manifest_provenance_survives_whole_file_live_persist_replacement(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    resolution = McpResolution(
+        servers=None,
+        reason="no_mcp_config_found",
+        source=None,
+        searched_from=cwd,
+    )
+    run = allocate_run(run_id="replace-provenance")
+    run = run.with_execution_provenance(cwd=cwd, mcp_resolution=resolution)
+
+    run.write_manifest({"status": "completed", "ended_at": 1.0})
+
+    manifest = run.read_manifest()
+    assert manifest["cwd"] == str(cwd.resolve())
+    assert manifest["mcp_config_source"] is None
+    assert manifest["mcp_config_searched_from"] == str(cwd.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_reason"] == "no_mcp_config_found"
+
+
+def test_allocate_run_records_explicit_mcp_disable_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    resolution = McpResolution(
+        servers=None,
+        reason=None,
+        source=None,
+        searched_from=tmp_path,
+    )
+
+    run = allocate_run(run_id="mcp-disabled")
+    run = run.with_execution_provenance(
+        cwd=tmp_path,
+        mcp_resolution=resolution,
+        mcp_disabled=True,
+    )
+
+    manifest = run.read_manifest()
+    assert manifest["mcp_config_source"] is None
+    assert manifest["mcp_config_reason"] == "mcp_disabled_by_caller"
 
 
 def test_write_manifest_replaces_rather_than_merges(tmp_path, monkeypatch):

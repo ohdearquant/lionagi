@@ -35,6 +35,7 @@ async def seed_session(
     artifact_verification_json: dict | None = None,
     node_metadata: dict | None = None,
     invocation_kind: str = "agent",
+    run_id: str | None = None,
 ) -> None:
     prog_id = f"{session_id}-prog"
     async with StateDB(db_path) as db:
@@ -55,6 +56,7 @@ async def seed_session(
                 "node_metadata": node_metadata,
                 "invocation_kind": invocation_kind,
                 "source_kind": "live",
+                "run_id": run_id,
             }
         )
 
@@ -128,6 +130,7 @@ async def test_get_run_returns_none_when_db_absent(patched_runs_svc):
 
 
 _REQUIRED_KEYS = {
+    "id",
     "run_id",
     "state_root",
     "artifact_root",
@@ -198,7 +201,8 @@ async def test_get_run_maps_session_fields_correctly(patched_runs_svc):
     result = await svc.get_run(sid)
 
     assert result is not None
-    assert result["run_id"] == sid
+    assert result["id"] == sid
+    assert result["run_id"] is None
     assert result["status"] == "failed"
     assert result["worker_name"] == "researcher"
     assert result["model"] == "openai/gpt-5"
@@ -209,6 +213,19 @@ async def test_get_run_maps_session_fields_correctly(patched_runs_svc):
     assert result["cwd"] is None
     assert result["manifest"] == {}
     assert result["task"] == ""
+
+
+async def test_get_run_keeps_session_and_cli_run_identities_distinct(patched_runs_svc):
+    svc, db_path = patched_runs_svc
+    session_id = str(uuid.uuid4())
+    cli_run_id = "20260829T120000-linked"
+    await seed_session(db_path, session_id=session_id, run_id=cli_run_id)
+
+    result = await svc.get_run(session_id)
+
+    assert result is not None
+    assert result["id"] == session_id
+    assert result["run_id"] == cli_run_id
 
 
 # Test 5 — step_count matches branch count; steps list is populated

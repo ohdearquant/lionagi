@@ -155,11 +155,18 @@ async def test_orchestration_manifest_tracks_start_and_terminal_status(
 ):
     from lionagi.cli._runs import RunDir
 
+    resolved_cwd = (tmp_path / "workspace").resolve()
+    resolved_cwd.mkdir()
     env = _minimal_env()
     env.run = RunDir(
         run_id="orchestration-run",
         state_root=tmp_path / "state",
         artifact_root=tmp_path / "artifacts",
+        cwd=resolved_cwd,
+        mcp_config_source=None,
+        mcp_config_searched_from=resolved_cwd,
+        mcp_config_explicit=False,
+        mcp_config_reason="no_mcp_config_found",
     )
     env.run.ensure_state_dirs()
     env.run.ensure_artifact_root()
@@ -178,12 +185,22 @@ async def test_orchestration_manifest_tracks_start_and_terminal_status(
     assert started["provider"] == "codex"
     assert started["status"] == "running"
     assert started["ended_at"] is None
+    assert started["cwd"] == str(resolved_cwd)
+    assert started["mcp_config_source"] is None
+    assert started["mcp_config_searched_from"] == str(resolved_cwd)
+    assert started["mcp_config_explicit"] is False
+    assert started["mcp_config_reason"] == "no_mcp_config_found"
 
     await stop_live_persist(env, status="completed")
 
     completed = env.run.read_manifest()
     assert completed["status"] == "completed"
     assert completed["ended_at"] >= completed["started_at"]
+    assert completed["cwd"] == str(resolved_cwd)
+    assert completed["mcp_config_source"] is None
+    assert completed["mcp_config_searched_from"] == str(resolved_cwd)
+    assert completed["mcp_config_explicit"] is False
+    assert completed["mcp_config_reason"] == "no_mcp_config_found"
 
 
 # start_live_persist: failure path closes the DB

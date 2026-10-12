@@ -847,6 +847,12 @@ async def setup_orchestration(
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
     run = allocate_run(save_dir=save_dir)
+    if isinstance(run, RunDir):
+        run = run.with_execution_provenance(
+            cwd=cwd or os.getcwd(),
+            mcp_resolution=mcp_resolution,
+            mcp_disabled=no_mcp_config,
+        )
     run.ensure_artifact_root()
 
     orc_log_config = DataLoggerConfig(auto_save_on_exit=False)

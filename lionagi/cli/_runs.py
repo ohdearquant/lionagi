@@ -12,7 +12,7 @@ import tempfile
 import time
 import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -27,6 +27,7 @@ from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
     from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpResolution
     from lionagi.state.db import StateDB
 
 __all__ = (
@@ -110,6 +111,11 @@ class RunDir:
     run_id: str
     state_root: Path
     artifact_root: Path
+    cwd: Path | None = None
+    mcp_config_source: Path | None = None
+    mcp_config_searched_from: Path | None = None
+    mcp_config_explicit: bool | None = None
+    mcp_config_reason: str | None = None
 
     # ── Path helpers ────────────────────────────────────────────────
 
@@ -182,12 +188,61 @@ class RunDir:
             "artifact_root": str(self.artifact_root),
             **data,
         }
+        if self.cwd is not None:
+            # Execution context is allocation-owned provenance. Whole-file
+            # writers replace lifecycle data throughout a live run, but must
+            # not erase or redefine the directory and MCP discovery facts that
+            # determined the run's tool surface.
+            payload.update(
+                {
+                    "cwd": str(self.cwd),
+                    "mcp_config_source": (
+                        str(self.mcp_config_source) if self.mcp_config_source else None
+                    ),
+                    "mcp_config_searched_from": (
+                        str(self.mcp_config_searched_from)
+                        if self.mcp_config_searched_from
+                        else None
+                    ),
+                    "mcp_config_explicit": self.mcp_config_explicit,
+                    "mcp_config_reason": self.mcp_config_reason,
+                }
+            )
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
         if not self.manifest_path.exists():
             return {}
         return json.loads(self.manifest_path.read_text())
+
+    def with_execution_provenance(
+        self,
+        *,
+        cwd: str | os.PathLike,
+        mcp_resolution: McpResolution,
+        mcp_disabled: bool = False,
+    ) -> RunDir:
+        """Return this run with resolved execution context bound to future writes.
+
+        ``allocate_run`` writes the running placeholder immediately. CLI call
+        sites then bind the submit-time MCP result before their first live
+        persistence write; rewrite that placeholder too so even an early
+        failure leaves the same provenance as later lifecycle snapshots.
+        """
+        resolved_cwd = Path(cwd).expanduser().resolve()
+        source = mcp_resolution.source
+        updated = replace(
+            self,
+            cwd=resolved_cwd,
+            mcp_config_source=source.expanduser().resolve() if source else None,
+            mcp_config_searched_from=mcp_resolution.searched_from.expanduser().resolve(),
+            mcp_config_explicit=mcp_resolution.explicit,
+            mcp_config_reason=("mcp_disabled_by_caller" if mcp_disabled else mcp_resolution.reason),
+        )
+        manifest = self.read_manifest()
+        if manifest:
+            updated.write_manifest(manifest)
+        return updated
 
     # ── Notify-outcome I/O (separate from the manifest; see notify_settings.py) ──
 
@@ -272,7 +327,7 @@ def allocate_run(
     save_dir: str | os.PathLike | None = None,
     run_id: str | None = None,
 ) -> RunDir:
-    """Allocate a run dir, consuming an inherited run id as a one-hop handoff."""
+    """Allocate a run dir with its resolved execution/discovery provenance."""
     global _ALLOCATED_RUN_ID
 
     inherited_run_id = current_run_id()
@@ -287,7 +342,13 @@ def allocate_run(
     else:
         artifact_root = state_root / "artifacts"
 
-    run = RunDir(run_id=rid, state_root=state_root, artifact_root=artifact_root)
+    run = RunDir(
+        run_id=rid,
+        state_root=state_root,
+        artifact_root=artifact_root,
+        cwd=Path.cwd().resolve(),
+        mcp_config_reason="not_resolved",
+    )
     run.ensure_state_dirs()
     run.ensure_artifact_root()
     # From here on there is durable state on disk under this run id, so a later
@@ -413,15 +474,41 @@ def list_runs(limit: int | None = None) -> list[RunDir]:
     for d in dirs:
         manifest_path = d / "run.json"
         artifact_root = d / "artifacts"
+        manifest: dict[str, Any] = {}
         if manifest_path.exists():
             try:
-                m = json.loads(manifest_path.read_text())
-                art = m.get("artifact_root")
+                loaded = json.loads(manifest_path.read_text())
+                manifest = loaded if isinstance(loaded, dict) else {}
+                art = manifest.get("artifact_root")
                 if art:
                     artifact_root = Path(art)
             except (OSError, json.JSONDecodeError):
                 pass
-        out.append(RunDir(run_id=d.name, state_root=d, artifact_root=artifact_root))
+        cwd = manifest.get("cwd")
+        mcp_source = manifest.get("mcp_config_source")
+        mcp_searched_from = manifest.get("mcp_config_searched_from")
+        out.append(
+            RunDir(
+                run_id=d.name,
+                state_root=d,
+                artifact_root=artifact_root,
+                cwd=Path(cwd) if isinstance(cwd, str) else None,
+                mcp_config_source=Path(mcp_source) if isinstance(mcp_source, str) else None,
+                mcp_config_searched_from=(
+                    Path(mcp_searched_from) if isinstance(mcp_searched_from, str) else None
+                ),
+                mcp_config_explicit=(
+                    manifest.get("mcp_config_explicit")
+                    if isinstance(manifest.get("mcp_config_explicit"), bool)
+                    else None
+                ),
+                mcp_config_reason=(
+                    manifest.get("mcp_config_reason")
+                    if isinstance(manifest.get("mcp_config_reason"), str)
+                    else None
+                ),
+            )
+        )
     return out
 
 
