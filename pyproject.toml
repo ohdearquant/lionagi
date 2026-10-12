@@ -234,15 +234,21 @@ extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
 ]
 
 [tool.pytest.ini_options]
-# --max-worker-restart=0 belongs here rather than only in scripts/ci.sh: when a
-# worker crashes, xdist's default is to restart it, and the replacement is not
-# always scheduled -- the run then blocks in the controller's read() with no
-# timeout that can see it, because pytest-timeout is scoped to test bodies and
-# the controller is not inside one. Failing fast instead names the crashed test.
-# Here it reaches every caller that discovers this config, rather than only the
-# ones that go through the wrapper script. A CLI flag beats addopts, so callers
-# that want restarts can still pass one.
-addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=0"
+# --max-worker-restart belongs here rather than only in scripts/ci.sh, so that it
+# reaches every caller that discovers this config and not only the ones that go
+# through the wrapper script. A CLI flag beats addopts, so a caller that wants a
+# different limit can still pass one.
+#
+# It was 0 because a replacement worker is not always scheduled, and the run then
+# blocks in the controller's read() with no timeout able to see it. What that
+# missed is the cost of the alternative: at 0, xdist shuts every worker down at
+# the first crash, so the run ends there and prints counts that read like a whole
+# suite, with thousands of collected tests left unrun and nothing in the output
+# saying so; at 4 the crashed worker is replaced and the run finishes. A job that
+# hits the blocked-controller case sets MAX_WORKER_RESTART=0 (scripts/ci.sh) or
+# passes --max-worker-restart=0. scripts/ci.sh refuses on the executed-vs-
+# collected count; a caller who runs pytest directly gets no such disclosure.
+addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=4"
 # Strict, so that a test written for anyio (marked `anyio`, or taking the
 # `anyio_backend` fixture) runs on the backend it is parametrized with. Auto
 # mode hands every coroutine test to pytest-asyncio, which ran each [trio] case
