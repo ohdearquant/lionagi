@@ -276,8 +276,8 @@ profile brings answers for itself. `_note_find` slices each value's text at 120 
   `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`,
   `test_find_reads_a_structured_value_as_its_json_text_and_a_date_is_refused`,
   `test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json`,
-  `test_note_find_and_note_list_render_a_value_that_refers_to_itself`. This tree has no current test
-  of a fallback when JSON cannot render a note value.
+  `test_note_find_and_note_list_render_a_value_that_refers_to_itself`. The last pins that a value
+  JSON cannot render still renders through `_text`'s fallback; no test pins the fallback's text.
 
 ### D7: A note declared into a store the loader refuses ends the run ^d7
 
@@ -292,7 +292,7 @@ it would clobber it.
 - **Landing evidence**: `tests/test_notes.py`:
   `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises` pins the
   notice of an unreadable store and the run going on. No current test pins a refused tag declaration
-  ending the run, or a refused assignment recorded not written.
+  ending the run, or an assignment into a loader-refused store recorded not written.
 
 ## Alternatives
 

@@ -273,9 +273,13 @@ the calls that did not; the record carries the sum, both counts and a `complete`
 
 ### D7: The example, its mutation control, and the hub adapter as a later record ^d7
 
-Serves C10 and C1. The withdrawn two-run example and its mutation-control test are absent from this
-tree. `hub/experience.py` holds the record and the memory and file stores; the hub adapter is not in
-this tree.
+Serves C10 and C1. In the withdrawn design, `examples/experience_twice.py` ran one ask twice on a
+scripted backend with a `FileExperienceStore` reopened between runs, and
+`tests/test_experience_example.py` read the second run's record, bus and first backend call, then
+repeated without the store write and without the file. Both are absent here. `hub/experience.py`
+holds the record and the memory and file stores. The hub adapter over the store client, also absent,
+was to land under its own record once it proved scope filtering before `k` and idempotency over an
+ambiguous write.
 
 - **Landing evidence**: no current integration test demonstrates cross-run recall or the example's
   mutation controls. `tests/test_experience.py` covers the standalone record and stores.
@@ -301,7 +305,8 @@ this tree.
 - **S2**: The terminal phase amends [[ADR-0002-the-run#^c4|ADR-0002/C4]] and
   [[ADR-0006-the-notification#^c1|ADR-0006/C1]]: after the reap a cancellation no longer aborts the
   run; it is re-raised after the closure and the delivery with the outcome kept. ADR-0006/C2 gains
-  the `experience:` lines. Both amendments land with D5 and D3, in the same change.
+  the `experience:` lines. In the withdrawn design, both amendments were to land with D5 and D3, in
+  the same change.
 - **S3**: In the withdrawn design, the store and the record were two failure domains: a process
   killed between the store's acknowledgement and the closure left a stored record whose run had no
   closure. The design promised no exactly-once delivery or recovery across a kill; replay of the

@@ -345,8 +345,12 @@ probes that `gtd.transition` and `gtd.complete` refuse. `Gtd.load` refuses `work
   are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S11.
 - **S10**: A profile named `agent` would share the agent's own note file, since a profile's notes
   are filed by its name; nothing refuses the name.
-- **S11**: The host supervisor entry point is absent from this tree. No current source here pins its
-  exit status, refusal log or environment handling.
+- **S11**: `scripts/serve_agent.sh` (absent here; untested), the host supervisor's entry point,
+  decides only whether to start. It refuses with exit 0, so a supervisor that restarts on failure
+  leaves the job down: a missing, dirty, unbuilt or non-git checkout, a missing agent directory, an
+  unusable named token file, or a config without a readable actor and owner. Each refusal lands one
+  line, in `landing/serve-refusals.log` or on stderr, saying whether the owner was told. A failed
+  git read exits 1, error kept, for a retry. It unsets `ANTHROPIC_API_KEY`.
 - **S12**: When the khive CLI exits non-zero, the client's error quotes each failed op's own error
   from standard output; with none, standard error without its warning and database lines, then the
   raw output, the last 600 characters kept. No test pins it.

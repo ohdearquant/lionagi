@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the transcript and rollout scans, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, both transports, the status's staleness to the take's fraction of a second, the PreCompact hook, and a Codex session's take and restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, and the agent no longer checkpoints, its wake continuing its last run by ADR-0026 C6; and now superseded for the harness session too: its checkpoint is computed from the store, each session's exchanges its message rows (ADR-0025 C4), the take appending only those past the count the store holds and the restore folding them back, so the file-written checkpoint of C1, C3, C6, D1 and D3 is gone, its `save`, `load`, `to_history` and `.khive/context/` files removed, the claims below standing as the record of that earlier file-based design)
+liveness: operating (the transcript and rollout scans, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, both transports, the PreCompact hook, and a Codex session's take and restore are pinned by tests; superseded for runs of this runtime by ADR-0025 S2: a run with a store takes no checkpoint and restores by replaying its session, and the agent no longer checkpoints, its wake continuing its last run by ADR-0026 C6; and now superseded for the harness session too: its checkpoint is computed from the store, each session's exchanges its message rows (ADR-0025 C4), the take appending only those past the count the store holds and the restore folding them back, so the file-written checkpoint of C1, C3, C6, D1 and D3 is gone, its `save`, `load`, `to_history` and `.khive/context/` files removed, the claims below standing as the record of that earlier file-based design)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -247,7 +247,8 @@ record is refused. The replay checks content: a row's text and a result's fields
   `test_a_long_var_is_its_name_size_and_where_it_loads_from`; `tests/test_chat.py`:
   `test_a_log_read_back_as_history_resumes_the_view_the_run_last_showed`,
   `test_a_write_cut_inside_a_character_is_a_torn_last_row`. The file-based save, its rewrite and
-  concurrent-save cases and its Git-ignore guard left with that design and have no test here.
+  concurrent-save cases and its Git-ignore guard left with that design and have no test here;
+  `save`, `load` and `to_history` left with it too.
 
 ### D2: `hub/backend/claude_code/checkpoint.py`: the session's take and restore, one function per place it keeps state ^d2
 
@@ -369,7 +370,7 @@ later name first on a tie. A `--transcript` whose first row is a `session_meta` 
 - **S3**: The run's `take` and `listed` checks, and the restore, refuse a reason or a kind outside
   their lists and name the value; a restore leaves no value out unsaid. The kind checked is a named
   value's; `source.kind` is on no list: the restore renders a resident's and a Codex session's by
-  it, and `to_history` refuses any other. Pinned by
+  it, and in the earlier design `to_history` refused any other. Pinned by
   `test_a_take_refuses_a_why_or_a_kind_outside_its_lists_and_a_nameless_actor`,
   `test_listed_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`, and
   `test_the_restore_refuses_a_why_or_a_kind_off_the_lists_and_names_the_value`.
