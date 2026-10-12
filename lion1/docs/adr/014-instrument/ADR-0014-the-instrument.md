@@ -419,7 +419,7 @@ leader alone; a second `EPERM` and any other error raise. A drain whose grace ex
   case-blind and unpadded, when its content names that pull request. A file that cannot be read
   stays a candidate; if it is the newest, it is reported unreadable and fails the control. Each
   verdict is its own candidate, so two that differ only in the repo's case are both read; the newest
-  by mtime, then round, then the greatest path is the verdict, in any listing order
+  by mtime, then `round_no`, then the greatest path is the verdict, in any listing order
   (`test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates`,
   `test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order`,
   `test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number`,

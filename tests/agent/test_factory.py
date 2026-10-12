@@ -1482,6 +1482,70 @@ async def test_forward_mcp_explicit_path_undecodable_raises_configuration_error(
         _forward_mcp_to_cli_request(branch, config)
 
 
+async def test_forward_mcp_parse_model_follows_the_copy(tmp_path):
+    """The forwarded MCP set lands on a copy of the caller's model; the branch's parse model, which was
+    that caller's model, moves to the copy with it, so a parse repair runs with the branch's listed
+    servers and no others, as its chat calls do, and the caller's model stays untouched."""
+    from lionagi.service.imodel import iModel
+
+    mcp_path = _write_mcp_config(
+        tmp_path,
+        {"khive": {"command": "kkernel"}, "other": {"command": "other-mcp"}},
+    )
+    caller = iModel(provider="claude_code", model="sonnet", api_key="dummy")
+    config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
+    config.mcp_config_path = mcp_path
+    config.mcp_servers = ["khive"]
+
+    branch = await create_agent(config, load_settings=False, chat_model=caller)
+
+    assert branch.parse_model is branch.chat_model
+    assert branch.parse_model.endpoint.config.kwargs.get("mcp_servers") == {
+        "khive": {"command": "kkernel"}
+    }
+    # The list makes the set exclusive. Without the strict flag the CLI also loads the servers it
+    # discovers itself, which is what a repair on the caller's model did.
+    assert branch.parse_model.endpoint.config.kwargs.get("strict_mcp_config") is True
+    assert "mcp_servers" not in caller.endpoint.config.kwargs
+    assert "strict_mcp_config" not in caller.endpoint.config.kwargs
+
+
+@pytest.mark.parametrize("model_kind", ["string", "dict"])
+async def test_forwarded_mcp_reaches_parse_requests_after_clone(tmp_path, monkeypatch, model_kind):
+    """A cloned branch's parse request keeps the server set it was given."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from lionagi.service.imodel import iModel
+
+    config = AgentSpec.compose("implementer", model="claude_code/sonnet")
+    config.mcp_servers = ["sample"]
+    servers = {"sample": {"command": "example-mcp"}}
+    chat_model = (
+        "claude_code/sonnet"
+        if model_kind == "string"
+        else iModel(provider="claude_code", model="sonnet").to_dict()
+    )
+
+    branch = await create_agent(
+        config,
+        load_settings=False,
+        chat_model=chat_model,
+        resolved_mcp_servers=servers,
+    )
+    clone = branch.clone()
+
+    assert branch.parse_model is branch.chat_model
+    assert clone.parse_model is clone.chat_model
+    assert clone.parse_model is not branch.parse_model
+
+    payload, _ = clone.parse_model.endpoint.create_payload({"prompt": "hi"})
+    request = payload["request"]
+    assert request.strict_mcp_config is True
+    assert request.mcp_servers == servers
+    args = request.as_cmd_args()
+    assert "--strict-mcp-config" in args
+    assert json.loads(args[args.index("--mcp-config") + 1]) == {"mcpServers": servers}
+
+
 async def test_forward_mcp_explicit_path_read_failure_raises(tmp_path):
     """An explicit mcp_config_path that fails to read/parse is a configuration error, not a silent skip -- exercises `_forward_mcp_to_cli_request` directly rather than through create_agent, since island 1's `_load_mcp` would otherwise raise its own JSONDecodeError first and mask the intended regression."""
     from lionagi._errors import ConfigurationError

@@ -17,6 +17,8 @@ rule exists to prevent.
 from __future__ import annotations
 
 import faulthandler
+import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -171,3 +173,242 @@ def test_a_real_arm_writes_real_stacks(tmp_path, monkeypatch):
     assert "Thread" in content or "File " in content, (
         f"the armed timer produced no stack text within the window: {content[:200]!r}"
     )
+
+
+def _git_dir(root: Path) -> Path:
+    """A `.git` carrying what git's own discovery looks for."""
+    entry = root / ".git"
+    (entry / "objects").mkdir(parents=True)
+    (entry / "refs").mkdir()
+    (entry / "HEAD").write_text("ref: refs/heads/main\n")
+    return entry
+
+
+def test_an_abandoned_git_init_is_not_a_checkout(tmp_path):
+    """Incomplete `.git` directories do not identify a checkout.
+
+    An interrupted initialization may leave `hooks` and `info` but omit the
+    entries Git uses to recognize a repository. Paths below that directory
+    must remain available for ordinary files.
+    """
+    entry = tmp_path / ".git"
+    (entry / "hooks").mkdir(parents=True)
+    (entry / "info").mkdir()
+
+    assert td._inside_a_git_tree(tmp_path) is None
+    assert td._inside_a_git_tree(tmp_path / "runs" / "deep") is None
+
+
+def test_a_real_checkout_is_still_found(tmp_path):
+    """The direction that must not regress: missing a tree is how dumps get committed.
+
+    A real ``git init``, not the hand-built layout. Every other test here builds
+    `.git` out of the same three names the predicate looks for, which can only
+    show that the code accepts what the code expects. This one asks git.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
+
+    assert td._inside_a_git_tree(tmp_path) == tmp_path
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    assert td._inside_a_git_tree(nested) == tmp_path
+
+
+def test_the_hand_built_layout_carries_what_git_init_carries(tmp_path):
+    """Closes the circularity in the helper the negative tests are built on.
+
+    `_git_dir` is what `test_a_partial_git_directory_is_not_a_checkout` removes
+    entries from. If it ever drifts from what a real repository looks like,
+    those tests keep passing while asserting things about a shape that does not
+    occur. Checked against git's own output rather than restated here.
+    """
+    real = tmp_path / "real"
+    subprocess.run(["git", "init", "-q", str(real)], check=True, capture_output=True)
+    synthetic = _git_dir(tmp_path / "synthetic")
+
+    for name in ("HEAD", "objects", "refs"):
+        produced = real / ".git" / name
+        assert produced.exists(), f"git init produced no {name}; the predicate is checking for it"
+        assert (synthetic / name).exists(), f"the helper produced no {name}"
+        assert produced.is_dir() == (synthetic / name).is_dir(), f"{name} differs in kind"
+
+
+def test_a_git_file_is_a_checkout(tmp_path):
+    """A linked worktree and a submodule both record their git dir in a `.git` FILE.
+
+    Requiring a directory would read both as external, which is the expensive
+    mistake: this suite runs from a linked worktree often enough that the
+    positive control above depends on this branch.
+    """
+    (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/elsewhere/.git/worktrees/wt\n")
+
+    assert td._inside_a_git_tree(tmp_path) == tmp_path
+
+
+def test_a_partial_git_directory_is_not_a_checkout(tmp_path):
+    """Each required entry is load-bearing, not decoration on the first one."""
+    for missing in ("HEAD", "objects", "refs"):
+        root = tmp_path / f"without-{missing}"
+        root.mkdir()
+        entry = _git_dir(root)
+        target = entry / missing
+        if target.is_dir():
+            target.rmdir()
+        else:
+            target.unlink()
+
+        assert td._inside_a_git_tree(root) is None, (
+            f"a .git missing {missing} was read as a checkout"
+        )
+
+
+@pytest.fixture
+def unreadable_git(tmp_path):
+    """A `.git` directory that can be seen but not entered.
+
+    Restored in teardown unconditionally: a mode-000 directory left behind
+    makes pytest's own tmp cleanup fail, which reports as an error in an
+    unrelated test.
+
+    The mode is asserted rather than assumed, because `chmod` does not bind a
+    privileged runner: as root the entry is still readable, every test built on
+    this fixture then measures an ordinary empty directory, and each one reports
+    the wrong thing rather than nothing. Skipping says which case was not
+    covered; a green run on a root runner does not.
+    """
+    entry = tmp_path / ".git"
+    entry.mkdir()
+    entry.chmod(0o000)
+    try:
+        try:
+            (entry / "probe").stat()
+        except PermissionError:
+            pass
+        except OSError:
+            pytest.skip("chmod does not bind this runner, so nothing here is unreadable")
+        else:
+            pytest.skip("chmod does not bind this runner, so nothing here is unreadable")
+        yield tmp_path
+    finally:
+        entry.chmod(0o755)
+
+
+def test_an_unreadable_git_entry_resolves_as_a_checkout_rather_than_raising(unreadable_git):
+    """Undecidable has to answer, and answer on the safe side.
+
+    Descending into `.git` raises where noticing it did not, so the refusal is
+    reached through an error rather than through a negative answer. Refusing a
+    safe path is cheap; raising out of this function is not, since the daemon
+    calls it while arming.
+
+    Runs the interpreter's real behaviour, which is why it cannot stand alone:
+    on 3.10 through 3.13 it exercises the PermissionError path, and on 3.14 it
+    exercises the changed one. The test below covers whichever of those this
+    runner is not.
+    """
+    assert td._inside_a_git_tree(unreadable_git) == unreadable_git
+
+
+def _forbid_pathlib_probes(monkeypatch) -> None:
+    """Make consulting `is_file`/`is_dir` a test failure rather than a no-op.
+
+    An earlier version of these two tests patched both probes to return False,
+    imitating 3.14, and asserted the refusal held. That patch was inert: the
+    classification uses `stat` and `stat.S_IS*` and never calls either probe,
+    so the tests passed identically with the patch removed and named a
+    mechanism that was not running. A test that simulates a condition the code
+    under test cannot observe reports on nothing.
+
+    Raising instead of returning False inverts it into an assertion that holds
+    its ground: the fix's whole content is that the classification asks `stat`,
+    which raises for a path it cannot read on every supported version, rather
+    than a probe that answers False on 3.14. Reintroducing such a probe fails
+    here by name.
+    """
+
+    def _forbidden(self, *args, **kwargs):
+        raise AssertionError(
+            "the git-tree classification consulted a pathlib probe; those "
+            "answer False for an unreadable path on 3.14 instead of raising, "
+            "which is the fall-through this guard was rewritten to avoid"
+        )
+
+    monkeypatch.setattr(Path, "is_file", _forbidden)
+    monkeypatch.setattr(Path, "is_dir", _forbidden)
+
+
+def test_the_refusal_does_not_rest_on_probes_that_can_answer_false(unreadable_git, monkeypatch):
+    """The version this runner is not on, made reachable on the one it is.
+
+    Python 3.14 changed `Path.is_file`/`is_dir` to answer False for a path they
+    cannot read rather than raise. Measured: 3.10 through 3.13 raise
+    PermissionError, 3.14 returns False. `requires-python` carries no ceiling,
+    so a 3.14 install is a supported one, and under it a guard written around
+    the raising behaviour stops refusing precisely where it cannot tell -- a
+    fall-through that looks exactly like a clean negative answer.
+
+    Rather than imitate that answer, which this code cannot see, the probes are
+    made fatal: the refusal below has to arrive without either of them, on
+    whichever interpreter runs the suite.
+    """
+    _forbid_pathlib_probes(monkeypatch)
+
+    assert td._inside_a_git_tree(unreadable_git) == unreadable_git
+
+
+def test_a_real_checkout_is_still_found_without_those_probes(tmp_path, monkeypatch):
+    """The must-match control for the test above.
+
+    Refusing everything would satisfy it, so the same run has to still
+    recognise a readable checkout, and still decline the directory above it.
+    This is what keeps the fix from being "return the candidate more often".
+    """
+    entry = tmp_path / ".git"
+    (entry / "objects").mkdir(parents=True)
+    (entry / "refs").mkdir()
+    (entry / "HEAD").write_text("ref: refs/heads/main\n")
+    _forbid_pathlib_probes(monkeypatch)
+
+    assert td._inside_a_git_tree(tmp_path / "sub" / "deep") == tmp_path
+    assert td._inside_a_git_tree(tmp_path.parent) is None
+
+
+def test_an_unreadable_ancestor_does_not_take_down_arming(unreadable_git, monkeypatch, spy, capsys):
+    """The consequence the classification exists to prevent, asserted end to end."""
+    monkeypatch.setenv(td._ENV_PATH, str(unreadable_git / "dump.txt"))
+
+    assert td.arm_traceback_dump() is False
+    assert spy == []
+    err = capsys.readouterr().err
+    assert "not armed" in err and "git tree" in err, err
+
+
+def test_a_head_that_is_a_directory_is_not_a_checkout(tmp_path):
+    """git requires HEAD to be a file; `exists()` cannot tell the two apart."""
+    entry = tmp_path / ".git"
+    (entry / "objects").mkdir(parents=True)
+    (entry / "refs").mkdir()
+    (entry / "HEAD").mkdir()
+
+    assert td._inside_a_git_tree(tmp_path) is None
+
+
+def test_a_non_directory_git_entry_is_fail_closed(tmp_path):
+    make_fifo = getattr(os, "mkfifo", None)
+    if make_fifo is None:
+        pytest.skip("FIFO creation is unavailable on this platform")
+    make_fifo(tmp_path / ".git")
+
+    assert td._inside_a_git_tree(tmp_path) == tmp_path
+
+
+def test_a_head_symlink_to_a_missing_ref_is_a_checkout(tmp_path):
+    entry = _git_dir(tmp_path)
+    head = entry / "HEAD"
+    head.unlink()
+    try:
+        head.symlink_to("refs/heads/missing")
+    except (NotImplementedError, OSError):
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    assert td._inside_a_git_tree(tmp_path) == tmp_path

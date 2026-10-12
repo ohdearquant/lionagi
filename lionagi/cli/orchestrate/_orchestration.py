@@ -839,6 +839,10 @@ async def setup_orchestration(
         effort_override=effort,
         theme=theme,
         fast=fast,
+        account_connectors=tuple(getattr(orc_profile, "account_connectors", None) or ()),
+        contain_account_integrations=bool(
+            getattr(orc_profile, "contain_account_integrations", False)
+        ),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -1034,6 +1038,13 @@ async def build_worker_branch(
         effort_override=w_effort,
         theme=env.theme,
         fast=w_fast,
+        # The role's settings, as for its other fields; a bare worker has no role.
+        account_connectors=(
+            tuple(getattr(w_profile, "account_connectors", None) or ()) if not env.bare else ()
+        ),
+        contain_account_integrations=bool(
+            not env.bare and getattr(w_profile, "contain_account_integrations", False)
+        ),
     )
     worker_mcp_servers = getattr(env, "mcp_servers", None)
     _hand_mcp_servers(
@@ -1409,17 +1420,36 @@ def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     for agent_id, adir in registered.items():
         entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
         adir = Path(adir)
-        if not adir.exists():
+        # `stat` distinguishes an absent path from one that cannot be inspected.
+        try:
+            adir.stat()
+        except (FileNotFoundError, NotADirectoryError):
             entry["status"] = "missing"
             entry["error"] = "the directory recorded for this worker does not exist"
+        except (OSError, ValueError) as exc:
+            entry["status"] = "unreadable"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
         else:
             try:
-                files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
-            except OSError as exc:
+                files: list[str] = []
+                scan_error: OSError | None = None
+
+                def record_scan_error(error: OSError) -> None:
+                    nonlocal scan_error
+                    if scan_error is None:
+                        scan_error = error
+
+                for directory, _, names in os.walk(adir, onerror=record_scan_error):
+                    for name in names:
+                        path = Path(directory) / name
+                        if path.is_file():
+                            files.append(str(path.relative_to(adir)))
+                if scan_error is not None:
+                    raise scan_error
+                entry["files"] = sorted(files)
+            except (OSError, ValueError) as exc:
                 entry["status"] = "unreadable"
                 entry["error"] = f"{type(exc).__name__}: {exc}"
-            else:
-                entry["files"] = files
         entries.append(entry)
 
     for agent_id in getattr(env, "expected_worker_ids", None) or ():
@@ -1499,6 +1529,7 @@ def finalize_orchestration(
         "recall_turns": 0,
         "blocks_injected": 0,
         "failed": 0,
+        "degraded_turns": 0,
         "writeback_records": 0,
         "writeback_failed": 0,
     }

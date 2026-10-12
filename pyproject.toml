@@ -24,6 +24,7 @@ dependencies = [
     "pydantic>=2.8.0",
     "pydantic-settings>=2.8.0",
     "toml>=0.10.2",
+    "tomli>=2.0.1; python_version < '3.11'",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
     "aiosqlite>=0.21.0",

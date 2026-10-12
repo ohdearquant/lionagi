@@ -472,13 +472,19 @@ def resolve_run_reason(
             None,
         )
     if exception is not None:
-        if isinstance(exception, ProviderError):
+        # iModel re-raises every stream failure as a ValueError, so a provider's typed
+        # error (a CLI's quota refusal, say) reaches here as that error's cause.
+        cause, seen = exception, set()
+        while cause is not None and not isinstance(cause, ProviderError) and id(cause) not in seen:
+            seen.add(id(cause))
+            cause = cause.__cause__
+        if isinstance(cause, ProviderError):
             code = (
                 RunReasons.FAILED_PROVIDER_RETRYABLE
-                if exception.retryable
+                if cause.retryable
                 else RunReasons.FAILED_PROVIDER_NONRETRYABLE
             )
-            return code, f"{type(exception).__name__}: {exception}", None
+            return code, f"{type(cause).__name__}: {cause}", None
         return RunReasons.FAILED_EXCEPTION, f"{type(exception).__name__}: {exception}", None
     return RunReasons.FAILED_EXCEPTION, "Run failed.", None
 
@@ -532,6 +538,7 @@ async def _teardown_common(
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
+    reason_out: dict | None = None,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
@@ -856,6 +863,12 @@ async def _teardown_common(
                 }
             ]
 
+    if reason_out is not None:
+        # The outcome this teardown decided for its own run, whether or not the write below
+        # lands: a row already terminal, or a write that loses its compare-and-set, keeps the
+        # status and reason another run left on it (a resume reuses the session row).
+        reason_out["terminal_reason"] = (final_status, final_reason_summary)
+
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
     # Snapshot of status observed at the start of this teardown; used only as the
@@ -995,6 +1008,7 @@ async def teardown_persist(
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,
+            reason_out=ctx,
         )
 
         from lionagi.hooks import unroute_message_persistence

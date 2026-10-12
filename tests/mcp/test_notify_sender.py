@@ -6,6 +6,7 @@ resolve an identity from whatever directory the run happened to work in."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 import pytest
@@ -141,6 +142,32 @@ def test_submit_without_a_sender_does_not_require_identity_resolution(monkeypatc
     assert record["submit_cwd"] == str(submit_dir)
 
 
+def test_submit_without_a_sender_is_allowed_when_its_directory_is_unavailable(
+    monkeypatch, tmp_path
+):
+    _submit_sandbox(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_submit_cwd", lambda: None)
+
+    def should_not_resolve(_cwd):
+        raise AssertionError("an omitted notify_sender must not resolve an identity")
+
+    class Spawned:
+        pid = 999_999
+
+    spawned: list = []
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", should_not_resolve)
+    monkeypatch.setattr(
+        jobs.subprocess, "Popen", lambda *args, **kwargs: spawned.append(args) or Spawned()
+    )
+
+    handle = jobs.submit("agent", [], prompt="work", no_mcp_config=True)
+    record = jobs._read_job(handle["run_id"])
+
+    assert spawned
+    assert record["notify_sender"] is None
+    assert record["submit_cwd"] is None
+
+
 def test_submit_accepts_the_actor_resolved_from_the_submitting_directory(monkeypatch, tmp_path):
     submit_dir = _submit_sandbox(monkeypatch, tmp_path)
 
@@ -187,14 +214,7 @@ def _job(monkeypatch, tmp_path):
 def test_no_delivery_runs_when_the_template_needs_a_sender_and_none_was_given(
     monkeypatch, tmp_path
 ):
-    """A command that asks who the notice is from cannot be run without an answer.
-
-    Substituting an empty string hands the delivery tool a blank where an
-    identity belongs, and a tool that accepts it — or resolves a sender of its
-    own — signs the notice with the wrong seat. Nothing is spawned; the reason
-    is recorded, so job_status shows a notifier that could not deliver rather
-    than the silence of one never asked.
-    """
+    """A notice requiring a sender records why delivery was not attempted."""
     rid = _job(monkeypatch, tmp_path)
     spawned: list = []
     monkeypatch.setattr(
@@ -283,3 +303,108 @@ class _Completed:
 
     def kill(self) -> None:
         pass
+
+
+def test_a_resolver_error_explains_omitting_the_sender(monkeypatch, tmp_path):
+    def fail_resolution(_cwd):
+        raise jobs.NotifySenderResolutionError("identity resolution timed out")
+
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", fail_resolution)
+
+    with pytest.raises(jobs.NotifySenderResolutionError) as caught:
+        jobs._validate_notify_sender("agent:someone", str(tmp_path))
+
+    message = str(caught.value)
+    assert "omit notify_sender to continue without an explicit sender" in message, message
+    assert "the submission carries no explicit sender" in message, message
+    assert "identity resolution timed out" in message
+    assert "whatever notice" not in message
+    assert "not sent at all" not in message
+    assert "agent:someone" in message
+
+
+def test_an_unavailable_submitting_directory_explains_the_submission_limit():
+    with pytest.raises(jobs.NotifySenderResolutionError) as caught:
+        jobs._validate_notify_sender("agent:someone", None)
+
+    message = str(caught.value)
+    assert "this server cannot submit with an explicit sender from a removed directory" in message
+    assert (
+        "a terminal notice is not sent unless LIONAGI_MCP_NOTIFY_CWD names a directory" in message
+    )
+    assert "omit notify_sender" not in message
+
+
+def test_a_mismatch_keeps_its_own_wording(monkeypatch, tmp_path):
+    """A mismatch names the resolved actor and the option that matches it."""
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:actual")
+
+    with pytest.raises(jobs.NotifySenderMismatchError) as caught:
+        jobs._validate_notify_sender("agent:requested", str(tmp_path))
+
+    message = str(caught.value)
+    assert message == (
+        "notify_sender 'agent:requested' does not match actor 'agent:actual' resolved from "
+        f"submitting directory {str(tmp_path)!r}; use 'agent:actual' or omit notify_sender"
+    )
+
+
+def test_the_fallback_does_not_promise_delivery_when_notifications_are_off(
+    monkeypatch, tmp_path, plugin_home
+):
+    """An omitted sender does not guarantee a configured notification."""
+    assert os.environ["HOME"] == str(plugin_home)
+    _job(monkeypatch, tmp_path)
+    assert "LIONAGI_MCP_NOTIFY_COMMAND" not in os.environ
+    monkeypatch.setattr(
+        _notify_hook.subprocess,
+        "Popen",
+        lambda *a, **k: pytest.fail("nothing is configured; nothing may be spawned"),
+    )
+
+    without = _notify_hook.deliver_terminal_notice("run-1", {}, "completed")
+    with_sender = _notify_hook.deliver_terminal_notice(
+        "run-1", {}, "completed", sender="agent:someone"
+    )
+
+    assert without == {"attempted": False}
+    assert with_sender == without, "the sender does not change this result"
+
+    def fail_resolution(_cwd):
+        raise jobs.NotifySenderResolutionError("identity resolution timed out")
+
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", fail_resolution)
+    with pytest.raises(jobs.NotifySenderResolutionError) as caught:
+        jobs._validate_notify_sender("agent:someone", str(tmp_path))
+    message = str(caught.value)
+
+    assert "the submission carries no explicit sender" in message, message
+    assert "whatever notice" not in message, message
+    assert "not sent at all" not in message, message
+
+
+def test_environment_sender_fills_a_template_without_a_submit_sender(monkeypatch, tmp_path):
+    """The process-wide sender can fill a command's ``{sender}`` placeholder."""
+    rid = _job(monkeypatch, tmp_path)
+    spawned: list = []
+    monkeypatch.setattr(
+        _notify_hook.subprocess, "Popen", lambda *a, **k: spawned.append(a) or _Completed()
+    )
+    monkeypatch.setenv("LIONAGI_MCP_NOTIFY_SENDER", "agent:from-the-environment")
+
+    rc = _notify_hook.main(
+        [
+            "--run-id",
+            rid,
+            "--status",
+            "completed",
+            "--command",
+            '["notify", "--from", "{sender}", "--to", "seat-b"]',
+        ]
+    )
+
+    assert rc == 0
+    assert spawned, "a sender from the environment fills {sender}, so the notice does go out"
+    assert "agent:from-the-environment" in str(spawned), (
+        "the environment sender must be substituted into the command"
+    )

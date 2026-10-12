@@ -94,6 +94,21 @@ class _IdentityKey:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class _ValueEqualityKey:
+    """Hashable wrapper that always delegates comparison to the wrapped value."""
+
+    value: Hashable
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _ValueEqualityKey):
+            return NotImplemented
+        return bool(self.value == other.value)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class _StructuralKey:
     """Detached value key plus non-semantic safety and ordering metadata."""
 
@@ -292,7 +307,13 @@ def _is_msgspec_struct(value: Any) -> bool:
     )
 
 
-def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
+def _project(
+    value: Any,
+    path: str,
+    active: set[int],
+    *,
+    value_semantics: bool = False,
+) -> _StructuralKey:
     value_type = type(value)
 
     if value is None:
@@ -317,11 +338,26 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
     if value_type is int:
         return _StructuralKey((_INT, value), True, True, _frame(b"i", _encode_int(value)))
     if value_type is float:
-        encoded = struct.pack(">d", value)
-        return _StructuralKey((_FLOAT, encoded), True, True, _frame(b"f", encoded))
+        if not value_semantics:
+            encoded = struct.pack(">d", value)
+            return _StructuralKey((_FLOAT, encoded), True, True, _frame(b"f", encoded))
+        sort_value = 0.0 if value == 0.0 else value
+        sort_token = struct.pack(">d", sort_value)
+        return _StructuralKey(
+            (_FLOAT, _ValueEqualityKey(value)), True, True, _frame(b"f", sort_token)
+        )
     if value_type is complex:
-        encoded = struct.pack(">dd", value.real, value.imag)
-        return _StructuralKey((_COMPLEX, encoded), True, True, _frame(b"c", encoded))
+        if not value_semantics:
+            encoded = struct.pack(">dd", value.real, value.imag)
+            return _StructuralKey((_COMPLEX, encoded), True, True, _frame(b"c", encoded))
+        sort_value = complex(
+            0.0 if value.real == 0.0 else value.real,
+            0.0 if value.imag == 0.0 else value.imag,
+        )
+        sort_token = struct.pack(">dd", sort_value.real, sort_value.imag)
+        return _StructuralKey(
+            (_COMPLEX, _ValueEqualityKey(value)), True, True, _frame(b"c", sort_token)
+        )
     if value_type is str:
         return _StructuralKey((_STR, value), True, True, _frame(b"s", _encode_text(value)))
     if value_type is bytes:
@@ -338,7 +374,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         )
 
     if isinstance(value, Enum):
-        projected = _project(value.value, f"{path}.value", active)
+        projected = _project(value.value, f"{path}.value", active, value_semantics=value_semantics)
         type_key = _IdentityKey(value_type)
         return _StructuralKey(
             (_ENUM, type_key, projected.value),
@@ -389,7 +425,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         if origin is Callable and raw_arguments and isinstance(raw_arguments[0], list):
             raw_arguments = (tuple(raw_arguments[0]), *raw_arguments[1:])
         arguments = tuple(
-            _project(argument, f"{path}.args[{index}]", active)
+            _project(argument, f"{path}.args[{index}]", active, value_semantics=value_semantics)
             for index, argument in enumerate(raw_arguments)
         )
         combined = _combine(
@@ -408,13 +444,17 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             ),
         )
 
-    if value_type is dict:
+    if value_type is dict or (value_semantics and isinstance(value, dict)):
         identity = _enter(value, path, active)
         try:
             entries: list[tuple[_StructuralKey, _StructuralKey]] = []
             for index, (key, item) in enumerate(value.items()):
-                key_projection = _project(key, f"{path}.keys[{index}]", active)
-                value_projection = _project(item, f"{path}.values[{index}]", active)
+                key_projection = _project(
+                    key, f"{path}.keys[{index}]", active, value_semantics=value_semantics
+                )
+                value_projection = _project(
+                    item, f"{path}.values[{index}]", active, value_semantics=value_semantics
+                )
                 entries.append((key_projection, value_projection))
             ordered = _ordered_mapping_entries(entries, path)
             unsafe = next(
@@ -437,13 +477,14 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         finally:
             active.remove(identity)
 
-    if value_type is list or value_type is tuple:
+    if value_type in (list, tuple) or (value_semantics and isinstance(value, list | tuple)):
         identity = _enter(value, path, active)
         try:
             children = tuple(
-                _project(item, f"{path}[{index}]", active) for index, item in enumerate(value)
+                _project(item, f"{path}[{index}]", active, value_semantics=value_semantics)
+                for index, item in enumerate(value)
             )
-            marker = _LIST if value_type is list else _TUPLE
+            marker = _LIST if isinstance(value, list) else _TUPLE
             combined = _combine(marker, children, b"l" if marker == _LIST else b"t")
             if marker == _LIST:
                 return dataclasses.replace(
@@ -457,14 +498,17 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         finally:
             active.remove(identity)
 
-    if value_type is set or value_type is frozenset:
+    if value_type in (set, frozenset) or (value_semantics and isinstance(value, set | frozenset)):
         identity = _enter(value, path, active)
         try:
             children = _unordered(
-                [_project(item, f"{path}[{index}]", active) for index, item in enumerate(value)],
+                [
+                    _project(item, f"{path}[{index}]", active, value_semantics=value_semantics)
+                    for index, item in enumerate(value)
+                ],
                 path,
             )
-            marker = _SET if value_type is set else _FROZENSET
+            marker = _SET if isinstance(value, set) else _FROZENSET
             combined = _combine(marker, children, b"u" if marker == _SET else b"v")
             if marker == _SET:
                 return dataclasses.replace(
@@ -480,7 +524,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         identity_key = _IdentityKey(value)
-        cached = _stable_dataclass_keys.get(identity_key)
+        cached = None if value_semantics else _stable_dataclass_keys.get(identity_key)
         if cached is not None:
             return cached
         identity = _enter(value, path, active)
@@ -491,6 +535,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                     getattr(value, field_info.name),
                     f"{path}.{field_info.name}",
                     active,
+                    value_semantics=value_semantics,
                 )
                 for field_info in fields
             )
@@ -519,6 +564,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                     result.cache_stable
                     and result._weight <= _MAX_CACHED_WEIGHT
                     and identity_key.holds_weakly
+                    and not value_semantics
                 ):
                     _stable_dataclass_keys.put(identity_key, result)
                 return result
@@ -537,7 +583,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         identity = _enter(value, path, active)
         try:
             dumped = typing.cast(Any, value).model_dump(mode="python")
-            projected = _project(dumped, path, active)
+            projected = _project(dumped, path, active, value_semantics=value_semantics)
             return _StructuralKey(
                 (_PYDANTIC, _IdentityKey(value_type), projected.value),
                 cache_stable=False,
@@ -559,7 +605,9 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         try:
             import msgspec
 
-            projected = _project(msgspec.to_builtins(value), path, active)
+            projected = _project(
+                msgspec.to_builtins(value), path, active, value_semantics=value_semantics
+            )
             return _StructuralKey(
                 (_MSGSPEC, _IdentityKey(value_type), projected.value),
                 projected.cache_stable,
@@ -599,6 +647,14 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             _unsafe_type=value_type,
         )
 
+    if value_semantics:
+        type_key = _IdentityKey(value_type)
+        return _StructuralKey(
+            (_OPAQUE, type_key, _ValueEqualityKey(value)),
+            cache_stable=False,
+            hash_safe=True,
+            _sort_token=_frame(b"o", _identity_token(value_type), _encode_int(hash(value))),
+        )
     identity = _IdentityKey(value)
     return _StructuralKey(
         (_OPAQUE, identity),
@@ -619,6 +675,11 @@ def _enter(value: Any, path: str, active: set[int]) -> int:
 def _structural_key(value: Any) -> _StructuralKey:
     """Return a detached, type-sensitive runtime value key."""
     return _project(value, "$", set())
+
+
+def _dataclass_structural_key(value: Any) -> _StructuralKey:
+    """Return a field-value key that preserves Python value equality."""
+    return _project(value, "$", set(), value_semantics=True)
 
 
 def _try_stable_cache_key(value: Any) -> _StructuralKey | None:

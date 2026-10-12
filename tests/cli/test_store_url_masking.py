@@ -245,11 +245,48 @@ def test_a_password_key_between_the_users_password_and_the_host_is_masked_with_b
         "x@",
         "u:p@",
         "a:b!",
+        "password=",
+        " password='",
+        ' password="\\',
+        " password=\\",
+        "password",
+        "a-",
+        "password=''x",
+        "password='a'\"b",
+        " password=a'",
+        " password=a$'",
+        ' password=a"',
+        " password=a'b c",
+        " password=$'\\",
+        'password=a"',
+        " password='a\\'b",
+        # a key inside every value, each value opening a quote the last one closes
+        "password='",
+        'password="',
+        "password=$'",
+        "password=\\'",
+        "&PGPASSWORD='",
+        # and each value opening a part the next one opens inside, or one read to the
+        # end of the text
+        'password="$(',
+        "password=${",
+        'password="${',
+        "password=$( (",
+        "password=<(",
+        "password=(",
+        'password="${ ',
+        "password=${PW:-<(",
+        "password=${PW:-{",
+        # values that end well before the next space, of which there is none
+        "password='a';",
+        "password=''x;",
     ],
 )
 def test_masking_time_grows_with_the_length_of_the_text(unit):
-    # each reading scans the text once and looks positions up, so a long or repetitive
-    # message cannot stall a log call: 200,000 characters of these take milliseconds
+    # each reading scans the text once and looks positions up, and a value starting inside
+    # another, outside its quotes and escapes, is not read again, so a long or repetitive
+    # message cannot stall a log call:
+    # 200,000 characters of these take a fraction of a second
     from lionagi.state.engine import mask_credentials, mask_db_url
 
     text = "postgresql://u@h/db" + unit * (200_000 // len(unit))
@@ -257,6 +294,20 @@ def test_masking_time_grows_with_the_length_of_the_text(unit):
         start = time.perf_counter()
         mask(text)
         assert time.perf_counter() - start < 5, (mask.__name__, unit)
+
+
+def test_values_opened_inside_each_other_and_closed_are_not_read_again():
+    # each value starts inside the one before it and, past its own `}`, comes to text
+    # the outer value's reading has passed: it ends where that reading did instead of
+    # reading on, so 500,000 characters take about a second, not half a minute
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    pairs = 500_000 // len("password=${}")
+    text = "password=${" * pairs + "}" * pairs
+    for mask in (mask_credentials, mask_db_url):
+        start = time.perf_counter()
+        assert mask(text) == "password=***", mask.__name__
+        assert time.perf_counter() - start < 5, mask.__name__
 
 
 def test_a_query_password_ending_where_the_users_password_begins_is_masked_with_it():
@@ -306,6 +357,233 @@ def test_credentials_are_masked_inside_prose():
     assert (
         mask_credentials("open postgresql://u:pw@h/db for alice@example.com")
         == "open postgresql://u:***@h/db for alice@example.com"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        # a keyword/value connection string, as libpq takes one
+        (
+            "could not connect: host=db user=u password=pw123 dbname=x",
+            "could not connect: host=db user=u password=*** dbname=x",
+        ),
+        (
+            "could not connect: password = pw123 host=db",
+            "could not connect: password = *** host=db",
+        ),
+        ("could not connect: PASSWORD=pw123", "could not connect: PASSWORD=***"),
+        # a key ending in `password`: an environment variable or a flag
+        ("PGPASSWORD=pw123 psql -h db", "PGPASSWORD=*** psql -h db"),
+        ("started with --db-password=pw123", "started with --db-password=***"),
+        # libpq's reading: quoted, to the first `'` a backslash does not escape;
+        # unquoted, to the first whitespace a backslash does not escape
+        ("host=db password='a\\'b c' dbname=x", "host=db password=*** dbname=x"),
+        ("host=db password=pa\\ ss dbname=x", "host=db password=*** dbname=x"),
+        ("connect(password=pw123) failed", "connect(password=*** failed"),
+        # a shell's: a quoted part joins the word, a `'..'` part has no escapes, and
+        # a `".."` or `$'..'` part ends at a closing quote no backslash escapes
+        ("PGPASSWORD=ab'cd ef'gh psql", "PGPASSWORD=*** psql"),
+        ('PGPASSWORD=QZ"XK YY" psql', "PGPASSWORD=*** psql"),
+        ("PGPASSWORD='a\\'b'c d' psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=$'ab cd' psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=$'a\\'b c' psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=x$'a\\'b c' psql", "PGPASSWORD=*** psql"),
+        # a shell without `$'..'` quoting reads `$` as a character, then `'\\'` and `' y'`
+        ("PGPASSWORD=$'\\'' y' psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD='ab'cd psql -h db", "PGPASSWORD=*** psql -h db"),
+        ("password=''cd psql", "password=*** psql"),
+        ('connect(host="db", password="pa ss")', 'connect(host="db", password=***'),
+        ("password=it's and the dog's bowl", "password=*** bowl"),
+        # a quote never closed runs to the end of the text, and so does a `\'` that
+        # a shell reads as the closing quote, which makes the last `'` an opening one
+        ("host=db password='pa ss dbname=x", "host=db password=***"),
+        ("host=db password='pa ss\\'x' dbname=x", "host=db password=***"),
+        # a shell does not split on a carriage return, form feed or vertical tab
+        ("PGPASSWORD=ab\rcd psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=ab\x0ccd\x0bef psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD='ab'c\rd psql", "PGPASSWORD=*** psql"),
+        # past the longest reading the mask goes on to the next space, tab or line feed
+        ("PGPASSWORD='ab'; psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD='ab',x psql", "PGPASSWORD=*** psql"),
+        ("connect(password='ab', host='h')", "connect(password=*** host='h')"),
+        ("[password='ab'] {password='ab'}", "[password=*** {password=***"),
+        ('connect(password="ab"cd) failed', "connect(password=*** failed"),
+        ("password=abc\\", "password=***"),
+        # whitespace after the `=` is passed over, as libpq passes it over
+        ("password= pw123", "password= ***"),
+        # the readings are ASCII, so a no-break or other Unicode space is part of
+        # the value
+        ("host=db password=pa\xa0ss dbname=x", "host=db password=*** dbname=x"),
+        ("host=db password=pa\x1fss\x85x dbname=x", "host=db password=*** dbname=x"),
+        ("password=\xa0pw123 dbname=x", "password=*** dbname=x"),
+        # a key standing inside another key's value is read as well
+        ("password=ab;password='c d' x", "password=*** x"),
+        ("PGPASSWORD=x;PGPASSWORD=y;PGPASSWORD='c d' z", "PGPASSWORD=*** z"),
+        # from its own start, even inside a quoted part: a shell reads `x' tail` as `x`
+        # and a quote never closed
+        ("password='password=x' tail", "password=***"),
+        # a Python string literal is read none of these ways: Python joins `'a' 'b c'` into
+        # one string, and only `'a'` is masked; it keeps the backslash in `r'a\'b c'`, which
+        # is masked only up to its space
+        ("connect(password='a' 'b c')", "connect(password=*** 'b c')"),
+        ("connect(password=r'a\\'b c')", "connect(password=*** c')"),
+        # a backtick part runs to the next backtick a backslash does not escape
+        ("PGPASSWORD=`cat pwfile` psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=`echo a\\` b` psql", "PGPASSWORD=*** psql"),
+        # where a `$(` or `$[` part ends only a shell's command grammar finds, so it runs
+        # to the end of the text, whatever it holds
+        ("PGPASSWORD=$(cat pwfile) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(echo ')' \\) \"x)\" b)c psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(echo `x)` b) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(echo a b", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(echo a)'b c' psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(printf $'\\') tail", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(echo $(date) b) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$( (echo a b) ) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$((1 + 2)) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(case x in x) echo hunter2;; esac) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$(true # )\necho hunter2) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=$[ 1234 + 1 ] psql", "PGPASSWORD=***"),
+        # and so do bash's `${ ..; }` and `${| ..; }`, a `<(` or `>(` part, and in the
+        # word itself whatever an unquoted `(` opens: zsh's `=(..)`, a glob's `@(..)`
+        ("PGPASSWORD=${ echo hunter 2; } psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=${| REPLY=hunter; } psql", "PGPASSWORD=***"),
+        ("--db-password=<(echo hunter 2) psql", "--db-password=***"),
+        ("PGPASSWORD=a>(cat) b", "PGPASSWORD=***"),
+        ("PGPASSWORD=${PW:-<(echo } hunter2)} psql", "PGPASSWORD=***"),
+        ("PGPASSWORD==(echo hunter 2) psql", "PGPASSWORD=***"),
+        ("PGPASSWORD=@(hunter 2) psql", "PGPASSWORD=***"),
+        # and bash reads a `<(` in a `${..}` part inside a `".."` part as one too
+        ('PGPASSWORD="${PW:-<(a}" b', "PGPASSWORD=***"),
+        ('PGPASSWORD="${PW:-<(echo a}" hunter 2)" x)}" psql', "PGPASSWORD=***"),
+        # a `(` in a `${..}` part, and a `<(` in a `".."` part, are plain characters
+        ("PGPASSWORD=${PW:-(a} b", "PGPASSWORD=*** b"),
+        ('PGPASSWORD="<(echo a" b', "PGPASSWORD=*** b"),
+        # a `".."` part reads a `$(`, `$[` or `${ ` inside it the same way, a `${` and a
+        # backtick part as parts, and a `'` or `$'` as plain characters
+        ('PGPASSWORD="$(echo "hunter 2")" psql', "PGPASSWORD=***"),
+        ('PGPASSWORD="$[ 1234 + 1 ]" psql', "PGPASSWORD=***"),
+        ('PGPASSWORD="${ echo hunter 2; }" psql', "PGPASSWORD=***"),
+        ('PGPASSWORD="a`echo "b c"`d" psql', "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=\"a'b\" c' psql", "PGPASSWORD=*** c' psql"),
+        ("PGPASSWORD=\"$'a\" b' psql", "PGPASSWORD=*** b' psql"),
+        # a `${` part runs to the `}` that closes it, neither escaped nor quoted
+        ("PGPASSWORD=${PW:-a b} psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=${PW:-'a}b c'} psql", "PGPASSWORD=*** psql"),
+        ('PGPASSWORD="${PW:-"a } b"}" psql', "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=${PW:-\\} b} psql", "PGPASSWORD=*** psql"),
+        ("PGPASSWORD=${PW:-a b", "PGPASSWORD=***"),
+        # found when its `${` starts on the last character of a 64-character search window
+        ("PGPASSWORD=" + "a" * 63 + "${PW:-a b} c psql", "PGPASSWORD=*** c psql"),
+        # zsh reads an unquoted `{` in it as opening a part to its own `}`, where bash
+        # and dash end at the first `}`: zsh's word is the longer
+        ("PGPASSWORD=${PW:-{a} hunter 2} psql", "PGPASSWORD=*** psql"),
+        # inside a `".."` part bash reads a `'` in it as a quote, where other shells
+        # read a plain character: here bash's word is the longer
+        ('PGPASSWORD="${PW:-\'a}"b c\'}" psql', "PGPASSWORD=*** psql"),
+        # and here the other shells', whose `"` inside opens a quote never closed
+        ('PGPASSWORD="${PW:-\'"\'}" b" psql', "PGPASSWORD=***"),
+    ],
+)
+def test_a_password_written_as_a_keyword_is_masked(text, masked):
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    assert mask_credentials(text) == masked
+    assert mask_db_url(text) == masked
+    assert mask_credentials(masked) == masked
+
+
+@pytest.mark.parametrize("operator", list("|&;)<>"))
+def test_a_shell_word_ends_at_an_unquoted_operator(operator):
+    # what follows the operator is another word, here a quoted command or file name; only
+    # libpq's reading, which runs to whitespace, takes in its first part
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    text = f"PGPASSWORD=pw{operator}'a b' c"
+    assert mask_credentials(text) == "PGPASSWORD=*** b' c"
+    assert mask_db_url(text) == "PGPASSWORD=*** b' c"
+
+
+def test_an_unquoted_parenthesis_runs_to_the_end_of_the_text():
+    # in a word an unquoted `(` is a syntax error or opens a part whose end only a shell's
+    # command grammar finds, so what follows it is masked too
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    text = "PGPASSWORD=pw('a b' c"
+    assert mask_credentials(text) == "PGPASSWORD=***"
+    assert mask_db_url(text) == "PGPASSWORD=***"
+
+
+def test_a_key_after_an_ampersand_is_read_as_a_shell_reads_it_too():
+    # after a `&` the key is a query parameter or follows a shell's `&`, so it is read as a
+    # shell reads it as well, to the next `&` too, where a query parameter's value ends
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    assert mask_credentials("PGPASSWORD=x&PGPASSWORD='c d' psql") == "PGPASSWORD=*** psql"
+    # a URL given alone has a query value masked to the next `&`, whatever it holds
+    assert mask_db_url("PGPASSWORD=x&PGPASSWORD='c d' psql") == "PGPASSWORD=***"
+    text = "open x?a=1&password='p w'&b=2 failed"
+    for mask in (mask_credentials, mask_db_url):
+        assert mask(text) == "open x?a=1&password=***&b=2 failed"
+        assert mask(mask(text)) == mask(text)
+    # but the shell's reading goes no further than the next `&`: a quote never closed
+    # does not take in the parameters after it, and a value holding a quoted or escaped
+    # `&` is masked only up to that `&`
+    url = "postgresql://u@h/db?x=1&password=it's&sslmode=require"
+    assert mask_db_url(url) == "postgresql://u@h/db?x=1&password=***&sslmode=require"
+    assert mask_credentials(f"open {url} failed") == (
+        "open postgresql://u@h/db?x=1&password=***&sslmode=require failed"
+    )
+    for mask in (mask_credentials, mask_db_url):
+        assert mask("x&password='a&b'&c=d") == "x&password=***&b'&c=d"
+        assert mask("x&password=a\\&b c") == "x&password=***&b c"
+
+
+@pytest.mark.parametrize(
+    "untouched",
+    [
+        "the password was rejected",
+        "passwords=3",
+        "password_file=/etc/pw host=db",
+        "password=",
+        "password=''",
+        'password=""',
+        "connect(password='')",
+        "postgresql://u@h/db?password=&sslmode=require",
+    ],
+)
+def test_a_password_keyword_with_no_value_or_a_longer_key_is_left_alone(untouched):
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    assert mask_credentials(untouched) == untouched
+    assert mask_db_url(untouched) == untouched
+
+
+def test_a_query_password_keeps_its_own_end():
+    # after `?` or `&` the key is a query parameter, whose value ends at the next `&`
+    from lionagi.state.engine import mask_credentials
+
+    assert (
+        mask_credentials("open postgresql://u@h/db?password=pw&sslmode=require failed")
+        == "open postgresql://u@h/db?password=***&sslmode=require failed"
+    )
+
+
+def test_a_query_key_ending_in_password_is_masked_as_the_keyword_is():
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    url = "postgresql://u@h/db?db_password=pw123&sslmode=require"
+    assert mask_db_url(url) == "postgresql://u@h/db?db_password=***&sslmode=require"
+    assert mask_credentials(f"open {url} failed") == (
+        "open postgresql://u@h/db?db_password=***&sslmode=require failed"
+    )
+    # a longer key is not a password
+    hint = "postgresql://u@h/db?password_hint=x&sslmode=require"
+    assert mask_db_url(hint) == hint
+    # in prose the value ends at ASCII whitespace, so a no-break space stays inside it
+    assert mask_credentials("open postgresql://u@h/db?db_password=ab\xa0cd failed") == (
+        "open postgresql://u@h/db?db_password=*** failed"
     )
 
 

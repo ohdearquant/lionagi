@@ -140,6 +140,20 @@ class Redacted:
     __str__ = __repr__
 
 
+def reveal_redacted(value):
+    """The value inside a ``Redacted`` wrapper, or the value unchanged.
+
+    ``redact_runtime_fields_in_place`` runs at the TOP of every model-level
+    ``mode="before"`` validator, so any validator after the first one sees the
+    wrapper where the caller passed a mapping. ``Redacted`` is deliberately not
+    a mapping, so a reader that forgets this gets a silent miss rather than an
+    error — a validator asking ``isinstance(env, Mapping)`` simply decides the
+    caller supplied nothing. Code that needs to READ such a field goes through
+    here; nothing revealed this way may be printed, logged, or serialized.
+    """
+    return value.reveal() if isinstance(value, Redacted) else value
+
+
 def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """Reject a malformed environment without quoting anything out of it.
 
@@ -1098,11 +1112,28 @@ def build_declarative_cli_args(model_instance: Any) -> list[str]:
     return args
 
 
+def cli_fallback_bin_dirs() -> tuple[Path, ...]:
+    """Dirs probed, in order, when PATH lookup fails. Detached servers (MCP
+    bridges, launchd jobs) inherit their launcher's PATH, which routinely
+    lacks the per-user install dirs the CLIs actually live in; PATH still wins
+    when it resolves, so a user's explicit override is never shadowed.
+    Computed at call time: ``Path.home()`` follows the live environment."""
+    return (
+        Path.home() / ".local" / "bin",
+        Path("/usr/local/bin"),
+        Path("/opt/homebrew/bin"),
+    )
+
+
 def discover_cli(binary: str) -> tuple[bool, str | None]:
-    """Return (available, resolved_path_or_name) for a CLI binary discovered on PATH."""
+    """Return (available, resolved_path) for a CLI binary, from PATH first, then cli_fallback_bin_dirs()."""
     candidate = shutil.which(binary) or binary
     if shutil.which(candidate):
         return True, candidate
+    for bin_dir in cli_fallback_bin_dirs():
+        fallback = bin_dir / binary
+        if fallback.is_file() and os.access(fallback, os.X_OK):
+            return True, str(fallback)
     return False, None
 
 

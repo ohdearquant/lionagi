@@ -19,10 +19,10 @@ tags:
 
 ## Context
 
-This record serves the author's instruction of 2026-10-04. The runtime's state goes into the store,
-as a hard dependency. A run, its messages and its model calls are rows the store owns, read by id,
-never embedded, and a call row repeats no input. The file-backed note store goes. A run restores by
-replaying its session in full, so no checkpoint is taken for it.
+The runtime's state goes into the store as a hard dependency. A run, its messages and its model
+calls are rows the store owns, read by id, never embedded, and a call row repeats no input. The
+file-backed note store goes. A run restores by replaying its session in full, so no checkpoint is
+taken for it.
 
 Today a run's record lives in the process ([[ADR-0007-the-record|ADR-0007]]), a checkpoint writes a
 folded view of it to a directory ([[ADR-0019-the-checkpoint|ADR-0019]]), and the agent keeps its
@@ -342,7 +342,7 @@ differing prompt, or refuses a changed transcript.
 
 | approach | rejected because |
 | -------- | ---------------- |
-| Writing into the store's own session pack tables | they are another pack's schema and its mirror's; a column change there breaks this runtime, and the author keeps the store untouched |
+| Writing into the store's own session pack tables | they are another pack's schema and its mirror's; a column change there couples this runtime to that pack's schema |
 | The whole transcript as one note per run | nothing can read one turn, search one message or resume from the middle |
 | Keeping the checkpoint as a kind | a session replays in full, so a folded copy is a second source that can disagree with the first (C3) |
 | Call figures on the assistant message | a refused or limited call has no assistant message, and would have no row (C2) |

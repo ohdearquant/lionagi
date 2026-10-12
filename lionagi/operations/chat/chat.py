@@ -84,7 +84,13 @@ async def chat(
 
     # Surface API errors before trying to parse a null response
     if api_call.status == EventStatus.FAILED:
-        raise ExecutionError(f"API call failed: {api_call.execution.error}")
+        cause = api_call.execution.error
+        error = ExecutionError(f"API call failed: {cause}")
+        if isinstance(cause, BaseException):
+            # Preserve the original exception so callers can classify the failure by type.
+            raise error from cause
+        # Recorded only as text: no cause, and an exception the caller is handling stays the context.
+        raise error
 
     if return_ins_res_message:
         return ins, AssistantResponse.from_response(

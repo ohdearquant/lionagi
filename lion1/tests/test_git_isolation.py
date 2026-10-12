@@ -1,4 +1,5 @@
-"""The bench tests' git (`tests/_git.py`) leaves out the git variables of the process running the tests."""
+"""The bench tests' git (`lion1/tests/_git.py`) leaves out the git variables of the process
+running the tests."""
 
 import os
 import subprocess

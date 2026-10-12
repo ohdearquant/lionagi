@@ -1,6 +1,6 @@
 """The probe, the pick and `lion account probe` (ADR-0024/D4, D5, D8). The CLIs are scripts each test
 writes in its own directory: each reads a plan by the account it runs for and appends every call to a
-file. No test reaches a provider, the keychain (`security` is the script of tests/test_accounts.py) or a
+file. No test reaches a provider, the keychain (`security` is the script of lion1/tests/test_accounts.py) or a
 person's Codex home, and every token is made up."""
 
 import contextlib

@@ -37,6 +37,16 @@ else:
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
+# The provider layer reads $CODEX_HOME (global codex config and config
+# profiles). Tests must never see the developer's real ~/.codex OR an
+# externally exported CODEX_HOME: a machine-local model_reasoning_effort would
+# change what the builders emit for an effort-less codex spawn, so the
+# replacement is unconditional. Tests that need a config write into this
+# directory or monkeypatch CODEX_HOME themselves.
+_TEST_CODEX_HOME = tempfile.mkdtemp(prefix="lionagi-tests-codex-")
+os.environ["CODEX_HOME"] = _TEST_CODEX_HOME
+atexit.register(_remove_test_home, _TEST_CODEX_HOME)
+
 # Discovery reads the user-level `.lionagi` (profiles, MCP config, settings)
 # through $HOME on every call, so a run that keeps the developer's HOME hands
 # any test that builds a profiled agent the real directory. The replacement is
@@ -245,6 +255,33 @@ def write_plugin(plugin_home):
         return bundle
 
     return _write
+
+
+@pytest.fixture(autouse=True)
+def _contain_the_frontend_dist_variable(monkeypatch: pytest.MonkeyPatch):
+    """Stop the CLI's frontend-dist path from following every later test.
+
+    ``studio/cli.py`` sets ``LIONAGI_STUDIO_FRONTEND_DIST`` directly in
+    ``os.environ`` on the production start path -- correctly, since the app
+    reads it at import to decide whether to mount the SPA. But a test that
+    drives that path leaves the variable set for every later test in the same
+    worker, and those tests then build an app with the SPA mounted without
+    asking for one.
+
+    The failures that causes do not look like leakage. The SPA's 404 handler
+    answers unrouted paths with the shell at 200, and mounting it registers an
+    extra route, so what shows up is a traversal assertion getting 200 instead
+    of 404 in one file and a route-count baseline off by one in another --
+    both far from the test that actually set the variable, and both dependent
+    on execution order, so neither reproduces when its own file is run alone.
+
+    This removes an inherited value before each test. If the name was already
+    absent, ``delenv`` records no original value to restore, so a later raw
+    write to ``os.environ`` must be cleaned up by that test. Tests that want
+    the SPA mounted should use ``monkeypatch.setenv`` so teardown restores the
+    prior value.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
 
 
 @pytest.fixture(autouse=True)

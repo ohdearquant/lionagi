@@ -5798,7 +5798,7 @@
         "admin"
       ],
       "summary": null,
-      "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
+      "description": "Whether a query against the store will actually return, and whether the\nscheduler is still advancing.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.admin",
@@ -6733,7 +6733,7 @@
             "admin"
           ],
           "summary": "Readiness",
-          "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
+          "description": "Whether a query against the store will actually return, and whether the\nscheduler is still advancing.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
           "parameters": [
             {
               "name": "timeout_ms",

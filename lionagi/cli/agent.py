@@ -49,6 +49,7 @@ from ._providers import (
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
+    _add_codex_account_integration_kwargs,
     _clamp_claude_effort,
     _clamp_codex_effort,
     add_common_cli_args,
@@ -92,6 +93,7 @@ _KHIVE_INJECTION_COUNTERS = (
     "recall_turns",
     "blocks_injected",
     "failed",
+    "degraded_turns",
     "writeback_records",
     "writeback_failed",
 )
@@ -710,6 +712,11 @@ async def _run_agent(
                 "for this run"
             )
 
+    # A codex leg's account integrations follow its role; with no role, or one that sets
+    # neither field, the leg's argv is what it was before these fields existed.
+    account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
+    contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".
     profile_role_extra = (getattr(profile, "extra", None) or {}) if profile else {}
@@ -853,6 +860,8 @@ async def _run_agent(
             bypass,
             mcp_servers=mcp_resolution.servers,
             mcp_exclusive=mcp_resolution.declared_empty,
+            account_connectors=account_connectors,
+            contain_account_integrations=contain_account_integrations,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
         # Two spawn shapes hand the set over in two different places, so the
@@ -955,6 +964,16 @@ async def _run_agent(
 
                 warn(f"resume model override: {old_model} → {model}")
             cfg["model"] = model
+            if model != old_model and effort is None:
+                # The persisted effort was clamped for the OLD model; the new
+                # one has its own ceiling, so re-clamp instead of replaying a
+                # value that model may reject (a sol-derived 'ultra' is a 400
+                # on a spark resume).
+                from lionagi.service.providers import reclamp_effort_for_model
+
+                kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+                if kwarg and cfg.get(kwarg) is not None:
+                    cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
         if verbose:
             cfg["verbose_output"] = True
         if theme is not None:
@@ -983,6 +1002,13 @@ async def _run_agent(
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+        # The stored row never carries a connector grant; its containment value also belongs
+        # to the previous role, so both settings come from the current role.
+        if provider == "codex":
+            cfg.pop("contain_account_integrations", None)
+            _add_codex_account_integration_kwargs(
+                cfg, account_connectors, contain_account_integrations
+            )
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
         # not the caller's directory. Which providers can be given a set, and
@@ -1390,6 +1416,29 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if _terminal_status == "failed":
+                # The reason teardown decided for this run, so a reader of the run directory
+                # alone can tell a provider's refusal from a crash. A failure teardown decides
+                # (a missing required artifact, a failed operation) raises nothing here, and the
+                # session row is not a reliable record of it: a resume reuses the row, and one
+                # whose reopen or terminal write missed still carries an earlier run's reason. The
+                # exception speaks for a run teardown decided nothing for.
+                _decided = (live or {}).get("terminal_reason")
+                _error = _decided[1] if _decided and _decided[0] == _terminal_status else None
+                if _decided and _decided[0] != _terminal_status:
+                    # Teardown writes only the outcome it decided, so a row reading another one
+                    # was ended by another writer: a concurrent run of the session, or the state
+                    # doctor sweeping it as stale. The error names this run's outcome and leaves
+                    # the other writer's reason on the row.
+                    _error = (
+                        f"The session row reads {_terminal_status}, which this run's teardown "
+                        f"did not write; this run's own outcome was {_decided[0]}."
+                    )
+                if _error is None and _terminal_exc is not None:
+                    _, _error, _ = resolve_run_reason(
+                        status=_terminal_status, exception=_terminal_exc
+                    )
+                run_manifest["error"] = _error or "The run failed; no reason was recorded for it."
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
             # Only when an exception is on its way out, because then this is
@@ -1421,6 +1470,11 @@ async def _run_agent(
         _terminal_status = "failed"
         run_manifest["status"] = _terminal_status
         run_manifest["ended_at"] = time.time()
+        # Failed only now, after teardown wrote run.json, so the reason is written here.
+        run_manifest["error"] = (
+            "Resume produced an empty stream; the session may have expired "
+            f"(resume target: {resume or 'last'})."
+        )
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)
 

@@ -13,9 +13,9 @@ Code runs `claude -p` with tools off. `claude` resumes one CLI session per run a
 the view gained; `session` is the same shape under its own name. `claude-oneshot` is one fresh
 `claude -p` call per turn, the whole view sent as a transcript each time.
 
-    uv run python examples/backends.py --backend openrouter [--model deepseek/deepseek-v4.1-flash]
-    uv run python examples/backends.py --backend codex [--model gpt-6-luna]
-    uv run python examples/backends.py --backend claude | session | claude-oneshot
+    cd lion1 && uv run python examples/backends.py --backend openrouter [--model deepseek/deepseek-v4.1-flash]
+    cd lion1 && uv run python examples/backends.py --backend codex [--model gpt-6-luna]
+    cd lion1 && uv run python examples/backends.py --backend claude | session | claude-oneshot
 """
 
 from __future__ import annotations

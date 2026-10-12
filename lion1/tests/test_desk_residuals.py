@@ -189,7 +189,6 @@ def test_unread_row_is_not_skipped_when_chair_marks_a_previous_page_read(tmp_pat
         "oldest_still_unread": rows[0].get("status", "unread"),
         "ops": reader.ops,
     }
-    print("EVIDENCE", json.dumps(evidence))
     assert "m-00" in pending(agent), evidence
 
 
@@ -225,7 +224,6 @@ def test_ambiguous_delivery_is_not_automatically_sent_again_on_the_next_watch(tm
         "ledger_rows": len(desk.rows()),
         "counted_thread_sends": agent.state.get("threads").value if agent.state.get("threads") else {},
     }
-    print("EVIDENCE", json.dumps(evidence))
     assert len(inner.sent) == 1, evidence
 
 
@@ -247,7 +245,6 @@ def test_a_landed_reply_settles_only_the_obligation_whose_key_it_carries(tmp_pat
     asyncio.run(scenario())
     replies = {r["msg"]: message_of(r["reply"], server) for r in desk.rows()}
     evidence = {"deliveries": len(server.sent), "replies": replies, "pending": sorted(pending(agent))}
-    print("EVIDENCE", json.dumps(evidence))
     assert replies == {"m-second": 1}, evidence
     assert "send" in pending(agent)["m-first"] and len(server.sent) == 1, evidence
     by_key = sends_by_key(wire)
@@ -280,7 +277,6 @@ def test_each_unresolved_send_is_settled_by_its_own_key_and_by_no_other_message(
         "settled": settled,
         "pending": sorted(pending(agent)),
     }
-    print("EVIDENCE", json.dumps(evidence))
     assert settled.get("m-second") == (1, "replayed"), evidence
     assert [s["subject"] for s in server.sent] == ["Re: second", "Re: first"], (
         evidence
@@ -318,7 +314,6 @@ def test_an_older_own_message_on_the_thread_never_settles_an_unresolved_send(tmp
 
     asyncio.run(scenario())
     evidence = {"skew": skew, "rows": desk.rows(), "pending": sorted(pending(agent)), "errors": agent.errors}
-    print("EVIDENCE", json.dumps(evidence, default=str))
     assert desk.rows() == [] and "send" in pending(agent)["m-first"] and server.sent == [], evidence
 
 
@@ -363,7 +358,6 @@ def test_lost_receipts_settled_by_replay_never_carry_a_thread_past_its_hop_cap(t
     rows = [(r["msg"], r["class"], r.get("settled")) for r in desk.rows()]
     evidence = {"deliveries": len(server.sent), "threads": hops(agent), "unsettled": unsettled, "said": said}
     evidence.update(rows=rows, pending=sorted(pending(agent)))
-    print("EVIDENCE", json.dumps(evidence))
     assert len(server.sent) == 2 and hops(agent) == {TID: 2}, evidence
     assert unsettled == [{TID: 1}, {TID: 2}, {TID: 2}], evidence
     assert said[2] == M2_REFUSED, evidence  # refused with the hop reason: the chair's to leave
@@ -391,7 +385,6 @@ def test_unknown_first_attempts_hold_their_hops_so_the_cap_refuses_before_transp
     rows = [(r["msg"], r["class"], r.get("settled")) for r in desk.rows()]
     evidence = {"said": said, "before_discovery": before, "sent": [s["subject"] for s in server.sent]}
     evidence.update(threads=hops(agent), rows=rows)
-    print("EVIDENCE", json.dumps(evidence))
     assert said[2] == M2_REFUSED, evidence
     assert f"desk:{SELF}:m-2:answered" not in before["keys"] and before["threads"] == {TID: 2}, evidence
     assert [s["subject"] for s in server.sent] == ["Re: q0", "Re: q1"] and hops(agent) == {TID: 2}, evidence
@@ -439,7 +432,6 @@ def test_a_key_is_charged_once_through_a_repeated_settlement_and_a_restart(tmp_p
     rows = [(r["msg"], r["class"], r.get("settled")) for r in desk.rows()]
     evidence = {"counted": counted, "deliveries": len(server.sent), "rows": rows, "sends_after": again}
     evidence["pending"] = sorted(pending(agent))
-    print("EVIDENCE", json.dumps(evidence))
     assert counted == [{TID: 1}] * 3, evidence
     assert len(server.sent) == 1 and rows == [("m-first", "answered", "replayed")], evidence
     assert again == 0 and pending(agent) == {}, evidence
@@ -460,7 +452,6 @@ def test_a_send_refused_at_the_hop_cap_reserves_nothing_and_is_refused_again(tmp
     third = f"desk:{SELF}:m-2:answered"
     evidence = {"said": said, "deliveries": len(server.sent), "threads": hops(agent)}
     evidence.update(charged=charged_keys(agent), keys=list(sends_by_key(wire)))
-    print("EVIDENCE", json.dumps(evidence))
     assert said[2:] == [M2_REFUSED, M2_REFUSED] and len(server.sent) == 2, evidence
     assert third not in sends_by_key(wire) and third not in charged_keys(agent), evidence
     assert hops(agent) == {TID: 2}, evidence
@@ -481,7 +472,6 @@ def test_a_refusal_at_the_transport_gives_back_the_hop_it_was_charged(tmp_path):
     said = asyncio.run(scenario())
     evidence = {"said": said, "sent": [s["subject"] for s in server.sent], "threads": hops(agent)}
     evidence["charged"] = charged_keys(agent)
-    print("EVIDENCE", json.dumps(evidence))
     assert said[0].startswith("AgentError: m-0: reply not sent:"), evidence
     assert [s["subject"] for s in server.sent] == ["Re: q1", "Re: q2"] and hops(agent) == {TID: 2}, evidence
     assert f"desk:{SELF}:m-0:answered" not in charged_keys(agent), evidence
@@ -505,7 +495,6 @@ def hour_of(tmp_path, fates: dict[str, list[str]], scenario) -> tuple[list[str],
     ledger = [(r["msg"], r["class"], r.get("why") or r.get("settled")) for r in desk.rows()]
     evidence = {"said": said, "sent": [s["subject"] for s in server.sent], "ledger": ledger}
     evidence["pending"] = sorted(pending(agent))
-    print("EVIDENCE", json.dumps(evidence))
     return said, ledger, evidence, sends_by_key(wire)
 
 
@@ -640,7 +629,6 @@ def one_turn_at_cap_one(tmp_path, fates: dict[str, list[str]]) -> dict:
     evidence = {"entered": probe.entered, "results": results, "outcome": type(run.outcome).__name__}
     evidence.update(before_discovery=before, **seen(), hourly=desk._answered_last_hour())
     evidence["keys"] = sorted(k for k in sends_by_key(wire) if k)
-    print("EVIDENCE", json.dumps(evidence))
     return evidence
 
 
@@ -690,7 +678,6 @@ def clarify_second_after(tmp_path, first_fate: str, leave_first: bool = False) -
     said = asyncio.run(scenario())
     evidence = {"sent": [s["subject"] for s in server.sent], "said": said, "pending": pending(agent)}
     evidence["ledger"] = [(r["msg"], r["class"]) for r in desk.rows()]
-    print("EVIDENCE", json.dumps(evidence))
     return said, evidence
 
 
@@ -746,9 +733,8 @@ def test_unresolved_sends_never_take_the_page_a_new_request_needs(tmp_path):
     notices, listing = asyncio.run(scenario())
     parts = listing.split("\n\n")
     evidence = {"notices": notices, "head": parts[0], "first": parts[1][:60], "parts": len(parts)}
-    print("EVIDENCE", json.dumps(evidence))
     assert parts[0].startswith(f"sweep: 1 new message(s) for {OWNER}; answer"), evidence
-    assert parts[1].startswith("[msg m-new from lambda:a"), evidence
+    assert parts[1].startswith("[msg m-new from agent-d"), evidence
     assert sum("delivery unresolved" in p for p in parts[2:]) == 20 and len(parts) == 22, evidence
     assert server.sent == [] and desk._accept(run, None) is not None, evidence  # m-new still owes a row
 
@@ -829,7 +815,6 @@ def test_two_discoveries_at_once_send_one_escalation_and_write_one_row(tmp_path)
         "pending": sorted(pending(agent)),
     }
     evidence["escalations"] = desk._spent(("escalated",), desk_module._midnight())
-    print("EVIDENCE", json.dumps(evidence))
     assert rows == [("m-now", "escalated", None)], evidence
     assert requests == [f"desk:{SELF}:m-now:escalated"] and evidence["sent"] == 1, evidence
     assert evidence["escalations"] == 1 and evidence["pending"] == [], evidence
@@ -864,7 +849,6 @@ def test_two_discoveries_replaying_one_lost_answer_write_one_row_and_spend_one_h
         "pending": sorted(pending(agent)),
     }
     evidence["hourly"] = desk._answered_last_hour()
-    print("EVIDENCE", json.dumps(evidence))
     assert rows == [("m-q", "answered", "replayed")], evidence
     assert requests == [f"desk:{SELF}:m-q:answered"] and evidence["sent"] == 1, evidence
     assert evidence["hourly"] == 1 and evidence["pending"] == [], evidence
@@ -924,7 +908,6 @@ def test_an_escalation_whose_request_was_never_recorded_is_escalated_by_the_next
         "pending": sorted(pending(agent)),
         "errors": agent.errors,
     }
-    print("EVIDENCE", json.dumps(evidence))
     assert agent.state.failed == 1, evidence  # the fault was injected
     assert raised is not None and cursor is None, evidence
     assert evidence["escalations"] == [(OWNER, f"[NOW] {STEWARD}: now", None)], evidence
@@ -958,13 +941,13 @@ def test_a_verdict_task_whose_request_was_never_recorded_is_filed_by_the_next_di
     """A verdict notice from a sender in `verdict_from` is filed as a task by code; the write that
     records the task's request fails before the store is asked. The discovery fails before its cursor
     moves, and the next one triages the notice again and files it, once."""
-    notice = inbox_row("daemon:review", "verdict o/r#7", "APPROVE", "m-v", "t-v", at="2026-09-22T10:00:04Z")
+    notice = inbox_row("source-agent", "verdict o/r#7", "APPROVE", "m-v", "t-v", at="2026-09-22T10:00:04Z")
     inner, reader = FakeKhive(), FakeReader(notice)
     reader.threads["t-v"] = [notice]
     desk, chores, agent = build(
         tmp_path, Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF})), reader, []
     )
-    desk.verdicts, desk.verdict_from = FreshVerdict(), ("daemon:review",)
+    desk.verdicts, desk.verdict_from = FreshVerdict(), ("source-agent",)
     agent.state = LostIntent(agent.state, "assign")
     agent.state.put("desk_since", LIVE, run="-", seq=0)
     raised, cursor = watch_twice(desk, agent)
@@ -976,7 +959,6 @@ def test_a_verdict_task_whose_request_was_never_recorded_is_filed_by_the_next_di
         "pending": sorted(pending(agent)),
         "errors": agent.errors,
     }
-    print("EVIDENCE", json.dumps(evidence))
     assert agent.state.failed == 1, evidence
     assert raised is not None and cursor is None, evidence
     assert evidence["tasks"] == [f"desk:{SELF}:m-v:task"], evidence
@@ -1024,7 +1006,6 @@ def test_a_discovery_that_read_older_mail_and_finished_last_never_moves_the_curs
         "pending": sorted(pending(agent)),
         "reads": reader.calls,
     }
-    print("EVIDENCE", json.dumps(evidence))
     assert committed == after(newer["created_at"]) and reader.calls == 2, evidence
     assert evidence["after_first"] == committed, evidence
     assert evidence["pending"] == ["m-new", "m-old"], evidence
@@ -1049,7 +1030,6 @@ def test_a_torn_last_ledger_line_is_no_row_and_the_next_row_replaces_it(tmp_path
     desk._row("m-new", pending(agent)["m-new"], "left", why="notice", run="-")
     evidence["after_row"] = [r["msg"] for r in desk.rows()]
     evidence["text"] = desk.ledger.read_text()
-    print("EVIDENCE", json.dumps(evidence))
     assert evidence["pending"] == ["m-new"] and evidence["rows"] == ["m-good"], evidence
     assert evidence["after_row"] == ["m-good", "m-new"] and torn not in evidence["text"], evidence
     assert evidence["text"].endswith("\n") and evidence["text"].count("\n") == 2, evidence

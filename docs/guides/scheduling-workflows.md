@@ -31,10 +31,13 @@ li schedule create agent nightly-review \
 
 # A command every 15 minutes (the executable goes after a trailing --).
 # Command actions are security-gated: the executable name must appear in
-# LIONAGI_SCHEDULER_COMMAND_ALLOWLIST (comma-separated) in the daemon's
-# environment, must be a bare PATH-resolvable name (no path separators),
-# and arguments must be positional — tokens starting with '-' are rejected.
-li schedule create command refresh-index --every 15m -- refresh-index nightly
+# LIONAGI_SCHEDULER_COMMAND_ALLOWLIST (comma-separated), must be a bare
+# PATH-resolvable name (no path separators), and arguments must be positional
+# — tokens starting with '-' are rejected. Two environments read that variable,
+# not one: the daemon's gates the spawn, and YOUR shell's gates the command
+# below, because every path that accepts a command target re-checks it in its
+# own process. Unset in your shell, it allows nothing and this refuses.
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule create command refresh-index --every 15m -- refresh-index nightly
 
 # A flow document fired once at an absolute instant
 li schedule create flow release-pipeline \
@@ -98,10 +101,14 @@ schedules:
 Validate without touching the database, preview the reconciliation, then apply:
 
 ```bash
-li schedule validate schedules.yaml
-li schedule apply schedules.yaml --dry-run
-li schedule apply schedules.yaml
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule validate schedules.yaml
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule apply schedules.yaml --dry-run
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule apply schedules.yaml
 ```
+
+The prefix is needed because each of these validates the command allow-list in its
+OWN environment, so a set with a command target needs the variable here and not
+only in the daemon. A set with no command target does not need it at all.
 
 Notes:
 

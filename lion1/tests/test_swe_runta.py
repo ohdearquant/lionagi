@@ -19,7 +19,7 @@ from tests.test_swe_run_set import _args, _main, _one
 
 pytestmark = pytest.mark.usefixtures("bench_store")
 
-# --- bench/swe/sandbox.py: testbed over Runta ---------------------------------------------
+# --- lion1/bench/swe/sandbox.py: testbed over Runta ---------------------------------------------
 
 
 def test_testbed_runta_gives_a_runta_box_with_the_testbed_shape():
@@ -78,7 +78,7 @@ def test_runta_image_builds_from_the_rows_image_when_none_is_found(monkeypatch):
     assert built == [("swe-needs-build-1", "FROM base:2\n", "x86_64")]
 
 
-# --- bench/swe/run_set.py: --where runta --------------------------------------------------
+# --- lion1/bench/swe/run_set.py: --where runta --------------------------------------------------
 
 
 def test_the_cli_parser_accepts_where_runta():

@@ -30,12 +30,13 @@ from hub.agent.chores import (
     sender_of,
     verbs,
 )
+from hub.agent.desk import Desk
 from lion1 import Actor, Kind, Message
 from lion1.khive import LOST, KhiveError
 from tests.lionfake import store as fresh_store
 from tests.test_agent import own
 
-OWNER, STEWARD, SELF = "lambda:x", "lambda:owner", "lambda:x:agent"
+OWNER, STEWARD, SELF = "agent-a", "agent-c", "agent-a:agent"
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 
 
@@ -480,8 +481,7 @@ def test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_a
     text = khive.sent[2]["content"]
     assert "instrument dead: 3 consecutive run(s) without an answer since" in text and "NOT-MEASURED" in text
     assert any(
-        "instrument dead after 3 unanswered run(s), told ['lambda:x', 'lambda:owner']" in r
-        for r in results(run)
+        "instrument dead after 3 unanswered run(s), told ['agent-a', 'agent-c']" in r for r in results(run)
     )
     asyncio.run(agent.wake())  # the fourth: told once, not again
     assert len(khive.sent) == 4 and agent.state.get("dead_told").value == ["disk"]
@@ -639,16 +639,48 @@ def test_an_escalation_the_steward_did_not_receive_is_sent_at_the_next_run_thoug
 
 
 def test_the_model_may_not_name_an_asker_outside_the_trusted_set(tmp_path):
-    khive = FakeKhive(mail(OWNER, "check disk for lambda:stranger"))
+    khive = FakeKhive(mail(OWNER, "check disk for agent-g"))
     chores, agent = build(
         tmp_path,
         khive,
-        ['<lact c1>check(chore="disk", asker="lambda:stranger", thread="t9")</lact>', DONE],
+        ['<lact c1>check(chore="disk", asker="agent-g", thread="t9")</lact>', DONE],
         disk=Probe("disk", full()),
     )
     run = asyncio.run(agent.wake())
     assert khive.sent == [] and chores.rows() == []
-    assert any("lambda:stranger is not a sender this agent works for" in r for r in results(run))
+    assert any("agent-g is not a sender this agent works for" in r for r in results(run))
+
+
+@pytest.mark.parametrize(
+    ("agents", "answers"),
+    [((), False), (("agent-b",), True)],
+    ids=["empty-agent-list", "listed-agent"],
+)
+def test_record_checks_answer_only_askers_admitted_by_the_desks_agents(tmp_path, agents, answers):
+    sender = "agent-b"
+    khive = FakeKhive(mail(sender, "record this question"))
+    probe = Probe("record", full(findings=(), evidence="0 rows", population="records", predicate="words"))
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [f'<lact c1>check(chore="record", asker="{sender}", thread="{THREAD}")</lact>', DONE],
+        record=probe,
+    )
+    chores.trusted |= {sender}
+
+    class Reader:
+        async def exec(self, ops):
+            return [{"messages": []}]
+
+    agent.desk = Desk(agent, chores, Reader(), tmp_path / "desk.jsonl", agents=agents)
+    run = asyncio.run(agent.wake())
+
+    assert bool(probe.args) is answers
+    assert bool(khive.sent) is answers
+    if answers:
+        assert khive.sent[0]["to"] == sender
+    else:
+        assert any("record answers only senders admitted by [desk] agents" in r for r in results(run))
 
 
 def test_the_answer_to_an_ask_goes_on_the_asks_thread_whatever_the_model_wrote(tmp_path):
@@ -669,21 +701,21 @@ def test_the_answer_to_an_ask_goes_on_the_asks_thread_whatever_the_model_wrote(t
 
 def test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs(tmp_path):
     khive = FakeKhive(
-        mail("lambda:stranger", "check disk now"),
+        mail("agent-g", "check disk now"),
         mail(SELF, "tick: disk", mid="b2c3d4e5"),
-        mail("lambda:other", "tick: disk", mid="c3d4e5f6"),
+        mail("otto", "tick: disk", mid="c3d4e5f6"),
     )
     chores, agent = build(tmp_path, khive, [CHECK, DONE], disk=Probe("disk", full()))
     assert asyncio.run(agent.wake()) is None  # the stranger's mail: read, noted, no run, no model call
     assert agent.backend.calls == [] and khive.sent == []
     cursor = agent.state.get("cursor").value
-    assert cursor["dropped"] == [{"id": "a1b2c3d4", "from": "lambda:stranger"}] and "dropped_at" in cursor
+    assert cursor["dropped"] == [{"id": "a1b2c3d4", "from": "agent-g"}] and "dropped_at" in cursor
     agent.batch = 2
     run = asyncio.run(agent.wake())  # a mixed batch runs the tick alone and notes the drop beside it
     assert run is not None and len(chores.rows()) == 1
     cursor = agent.state.get("cursor").value
     assert cursor["mail"] == ["b2c3d4e5"]
-    assert cursor["dropped"] == [{"id": "c3d4e5f6", "from": "lambda:other"}]
+    assert cursor["dropped"] == [{"id": "c3d4e5f6", "from": "otto"}]
     assert chores.trusted == frozenset({OWNER, STEWARD, SELF})
 
 
@@ -1694,7 +1726,7 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
             "id": "ev2",
             "content": "tick: disk",
             "status": "missed",
-            "properties": {"created_by_actor": "lambda:other"},
+            "properties": {"created_by_actor": "otto"},
         },
         {"id": "ev3", "content": "tick: disk", "status": "fired", "properties": {"created_by_actor": SELF}},
     ]
@@ -1713,7 +1745,7 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
     assert [s["to"] for s in khive.sent] == [OWNER] and "#7 red" in khive.sent[0]["content"]
     assert rows[1]["caught_up"] == [
         "tick: pr (fired at 2026-09-21T03:04:09Z): missed, ran now: pr: reported, 1 finding(s), "
-        "sent to ['lambda:x']"
+        "sent to ['agent-a']"
     ]
     assert any("missed ticks run: [" in r and "tick: pr (fired" in r for r in results(run))
     asyncio.run(agent.wake())
@@ -1936,7 +1968,7 @@ def test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore(tmp_path):
 def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):
     noise = [
         {"id": f"n{i}", "content": "tick: disk", "status": status, "properties": {"created_by_actor": actor}}
-        for i, (actor, status) in enumerate([("lambda:other", "missed"), (SELF, "fired")] * 100)
+        for i, (actor, status) in enumerate([("otto", "missed"), (SELF, "fired")] * 100)
     ]
     late = [
         {"id": "ev9", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}},
@@ -1961,7 +1993,7 @@ def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_ro
 
 def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_path):
     # another agent's "tick: digest" sits in the same namespace's agenda: not this actor's, created anyway
-    khive = FakeKhive(agenda=["tick: disk", "unrelated reminder", ("tick: digest", "lambda:other:agent")])
+    khive = FakeKhive(agenda=["tick: disk", "unrelated reminder", ("tick: digest", "otto:agent")])
     chores, _ = build(
         tmp_path,
         khive,
@@ -2014,7 +2046,7 @@ def test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_o
             ("tick: w", SELF, "pending"),  # names no firing
             ("tick: m", SELF, "pending", "soon"),  # names no instant
             ("tick: old", SELF, "cancelled", "2026-09-01T00:00:00Z"),  # not pending: its firing is not coming
-            ("tick: other", "lambda:other:agent", "pending", "2026-09-01T00:00:00Z"),  # not this actor's
+            ("tick: other", "otto:agent", "pending", "2026-09-01T00:00:00Z"),  # not this actor's
         ]
     )
     chores, agent = build(
@@ -2562,7 +2594,7 @@ def test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead(
 def agenda_rows(count: int, base: float, ticks: dict[int, tuple]) -> list[tuple]:
     """`count` pending reminders of another actor, one second apart from `base`, with this actor's ticks
     (index -> (chore, repeat)) in place of them, each made a minute before its firing."""
-    rows = [(f"other: {i}", "lambda:other:agent", "pending", iso(base + i)) for i in range(count)]
+    rows = [(f"other: {i}", "otto:agent", "pending", iso(base + i)) for i in range(count)]
     for i, (chore, repeat) in ticks.items():
         rows[i] = pending(chore, base + i, repeat, base + i - 60)
     return rows
@@ -2633,7 +2665,7 @@ def test_a_full_page_of_rows_at_one_instant_stalls_the_read_which_ends_there_and
     # `from` is inclusive: 300 rows at one instant answer the same 200 to the read from their instant, so
     # the second page brings no new row, the read ends there, two pages not 25, and the tick behind them
     # is out of its reach
-    rows = [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    rows = [(f"other: {i}", "otto:agent", "pending", iso(base)) for i in range(300)]
     khive = FakeKhive(agenda=[*rows, pending("disk", base + 600, "every:30m", base + 540)])
     khive.paged = True
     chores, agent = build(
@@ -2663,7 +2695,7 @@ def test_a_stalled_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_
     # the tick's row read first gives base; a second row of it, whose history admits base less an hour,
     # sits past 300 rows at the first row's instant, which the read from that instant answers again
     rows = [pending("disk", base, "every:30m", base - 60)]
-    rows += [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    rows += [(f"other: {i}", "otto:agent", "pending", iso(base)) for i in range(300)]
     khive = FakeKhive(agenda=[*rows, pending("disk", base + 3600, "every:30m", base - 3660)])
     khive.paged = True
     chores, agent = build(tmp_path, khive, [], disk=Probe("disk", full()))
@@ -2739,7 +2771,7 @@ def test_a_short_read_seeing_a_tick_row_naming_no_instant_drops_the_first_due_on
     base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
     # the row naming no instant sorts first and is read; 300 rows at one instant behind it stall the read
     rows = [("tick: w", SELF, "pending", "1 hour")]
-    rows += [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    rows += [(f"other: {i}", "otto:agent", "pending", iso(base)) for i in range(300)]
     khive = FakeKhive(agenda=rows)
     khive.paged = True
     chores, agent = build(tmp_path, khive, [], w=Probe("w", full(), every="weekly"))
@@ -2810,16 +2842,14 @@ def test_the_chores_profile_names_each_chore_with_its_direction_and_question_and
     )
     chores_p, reader = chores.profiles()
     assert chores_p.specs == frozenset({"check", "digest", "aged"}) and reader.specs == frozenset()
-    assert chores_p.name == "chores" and "You are the long-running agent of lambda:x" in chores_p.system
+    assert chores_p.name == "chores" and "You are the long-running agent of agent-a" in chores_p.system
     assert (
         "  disk: probes disk [over-report] (every every:30m); answers: what the probe was pointed at"
         in chores_p.system
     )
     assert "  ask: probes ask [over-report] (on ask); answers: what the probe" in chores_p.system
     agent.actor.check(chores_p)
-    assert (
-        sender_of({"properties": {"from_actor": "lambda:owner"}}) == "lambda:owner" and sender_of({}) == "?"
-    )
+    assert sender_of({"properties": {"from_actor": "agent-c"}}) == "agent-c" and sender_of({}) == "?"
 
 
 def test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build(tmp_path):
@@ -2840,7 +2870,7 @@ def test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build(tm
 def test_the_bounded_client_refuses_every_verb_but_the_read_list_and_every_outside_recipient():
     inner = FakeKhive()
     k = Bounded(inner, recipients=frozenset({OWNER, STEWARD}))
-    ops = '[gtd.tasks(status="inbox", assignee="x"), comm.probe(actor="lambda:x", stale_minutes=20)]'
+    ops = '[gtd.tasks(status="inbox", assignee="x"), comm.probe(actor="agent-a", stale_minutes=20)]'
     assert verbs(ops) == ["gtd.tasks", "comm.probe"]
     assert verbs('comm.read(id="x", note="run gtd.complete(id=1) now")') == [
         "comm.read"
@@ -2872,7 +2902,7 @@ def test_the_bounded_client_fails_closed_on_a_call_it_cannot_name_and_on_mail_as
     with pytest.raises(AgentError, match="3 call\\(s\\) in the op, 1 verb"):  # every paren group counts
         asyncio.run(k.exec('[gtd.tasks(assignee="x"), (gtd.complete)(id="a")]'))
     with pytest.raises(AgentError, match=r"\['comm.send'\] are not verbs the agent may call"):
-        asyncio.run(k.exec('comm.send(to="lambda:stranger", content="probe", subject="probe")'))
+        asyncio.run(k.exec('comm.send(to="agent-g", content="probe", subject="probe")'))
     assert inner.ops == [] and inner.sent == []
 
 
@@ -2952,8 +2982,7 @@ def test_the_one_gtd_write_is_composed_by_code_and_the_model_may_not_compose_it_
         assign(title='say "hi"', namespace=OWNER, tags=["desk", "from:a"], idempotency_key="k1")
     )
     assert inner.ops == [
-        'gtd.assign(title="say \\"hi\\"", namespace="lambda:x", tags=["desk", "from:a"], '
-        'idempotency_key="k1")'
+        'gtd.assign(title="say \\"hi\\"", namespace="agent-a", tags=["desk", "from:a"], idempotency_key="k1")'
     ]
     assert row == {"id": "7a5c0001", "full_id": "7a5c0001-0000-4000-8000-000000000000", "replayed": False}
     assert "gtd.assign" not in k.allowed
@@ -2978,3 +3007,22 @@ def test_evidence_is_capped_in_the_message_and_the_row_and_says_so(tmp_path):
     assert row["evidence"].endswith("[evidence capped: 100 of 5000 chars]")
     assert row["population"] == "targets under the root" and row["predicate"] == "size > 20 GiB"
     assert Check(chore="disk").args == {} and Digest().day is None
+
+
+def test_record_refuses_every_asker_when_the_agent_has_no_desk(tmp_path):
+    sender = "agent-b"
+    khive = FakeKhive(mail(sender, "record this question"))
+    probe = Probe("record", full(findings=(), evidence="0 rows", population="records", predicate="words"))
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [f'<lact c1>check(chore="record", asker="{sender}", thread="{THREAD}")</lact>', DONE],
+        record=probe,
+    )
+    chores.trusted |= {sender}
+    assert getattr(agent, "desk", None) is None
+
+    run = asyncio.run(agent.wake())
+
+    assert not probe.args and khive.sent == []
+    assert any("[desk] agents, and this agent has no desk" in r for r in results(run))

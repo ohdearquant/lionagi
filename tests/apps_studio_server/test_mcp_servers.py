@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -283,6 +284,142 @@ def test_remove_existing_returns_true(tmp_path, monkeypatch):
 def test_enable_disable_nonexistent_returns_none(tmp_path, monkeypatch):
     _point_registry_at(tmp_path, monkeypatch)
     assert mcp_mod.set_enabled("nope", False) is None
+
+
+# A registry that exists but cannot be read is never treated as empty.
+
+UNREADABLE_REGISTRIES = {
+    "truncated": b'{"servers": {"kept": {"config": {"command": "x"}',
+    "not UTF-8": b'{"servers": {"kept": {"config": {"command": "\xff"}}}}',
+    "not an object": b'[{"servers": {"kept": {}}}]',
+    # a save writes `servers` alone, so any other entry would be lost
+    "the shape of a .mcp.json": b'{"mcpServers": {"kept": {"command": "x"}}}',
+    "an entry beside servers": b'{"servers": {"kept": {"config": {"command": "x"}}}, "v": 1}',
+    "an entry beside servers: null": b'{"servers": null, "v": 1}',
+    "servers not an object": b'{"servers": ["kept"]}',
+    "servers false": b'{"servers": false}',
+    "servers zero": b'{"servers": 0}',
+    "servers empty string": b'{"servers": ""}',
+    "servers empty list": b'{"servers": []}',
+    "server not an object": b'{"servers": {"kept": 5}}',
+    "a good server, then one not an object": (
+        b'{"servers": {"good": {"config": {"command": "x"}}, "kept": 5}}'
+    ),
+    "a server not an object, then a good one": (
+        b'{"servers": {"kept": 5, "good": {"config": {"command": "x"}}}}'
+    ),
+    "a server not an object between two good ones": (
+        b'{"servers": {"a": {"config": {"command": "x"}}, "kept": 5,'
+        b' "c": {"config": {"command": "x"}}}}'
+    ),
+    "a server not an object, third of five": (
+        b'{"servers": {"a": {"config": {}}, "b": {"config": {}}, "kept": 5,'
+        b' "d": {"config": {}}, "e": {"config": {}}}}'
+    ),
+    "server without config": b'{"servers": {"kept": {"enabled": true}}}',
+    "config not an object": b'{"servers": {"kept": {"config": ["x"]}}}',
+    # a parse keeps a repeated key's last value, so a save would drop the first
+    "servers written twice, the second null": (
+        b'{"servers": {"kept": {"config": {"command": "x"}}}, "servers": null}'
+    ),
+    "a server written twice": (
+        b'{"servers": {"kept": {"config": {"command": "x"}}, "kept": {"config": {"command": "y"}}}}'
+    ),
+    "a key in a config written twice": (
+        b'{"servers": {"kept": {"config": {"command": "x", "command": "y"}}}}'
+    ),
+    "a field of a server written twice": (
+        b'{"servers": {"kept": {"enabled": true, "enabled": false, "config": {"command": "x"}}}}'
+    ),
+    "a key in an object inside a config written twice": (
+        b'{"servers": {"kept": {"config": {"command": "x", "env": {"A": "1", "A": "2"}}}}}'
+    ),
+    "a key in an object in a config's args written twice": (
+        b'{"servers": {"kept": {"config": {"command": "x", "args": [{"a": "1", "a": "2"}]}}}}'
+    ),
+    "a key in an object in a config's alwaysAllow written twice": (
+        b'{"servers": {"kept": {"config": {"command": "x", "alwaysAllow": [{"t": "1", "t": "2"}]}}}}'
+    ),
+    "a key in a server's last check written twice": (
+        b'{"servers": {"kept": {"config": {"command": "x"},'
+        b' "last_check": {"ok": true, "ok": false}}}}'
+    ),
+    "servers written twice, both null": b'{"servers": null, "servers": null}',
+    # Both parse limits: past them the parser raises ValueError or RecursionError,
+    # not JSONDecodeError; past either limit, the registry is refused.
+    "an integer too long to convert": b"[" + b"1" * 5000 + b"]",
+    "nested too deep": b"[" * 100_000 + b"]" * 100_000,
+}
+
+
+@pytest.mark.parametrize("content", UNREADABLE_REGISTRIES.values(), ids=UNREADABLE_REGISTRIES)
+def test_an_unreadable_registry_is_refused_by_every_read_and_change(tmp_path, monkeypatch, content):
+    registry_path, synced_path = _point_registry_at(tmp_path, monkeypatch)
+    registry_path.write_bytes(content)
+
+    refused = [
+        lambda: mcp_mod.register_server("newserver", STDIO_CONFIG),
+        mcp_mod.list_servers,
+        lambda: mcp_mod.get_server("kept"),
+        lambda: mcp_mod.update_server("kept", {"args": []}),
+        lambda: mcp_mod.set_enabled("kept", False),
+        lambda: mcp_mod.remove_server("kept"),
+        lambda: asyncio.run(mcp_mod.check_server_connection("kept")),
+        lambda: asyncio.run(mcp_mod.validate_config("kept", STDIO_CONFIG)),
+    ]
+    for call in refused:
+        with pytest.raises(mcp_mod.McpRegistryUnreadableError, match="mcp_servers.json"):
+            call()
+
+    assert registry_path.read_bytes() == content
+    assert not synced_path.exists()
+
+
+def test_a_registry_that_is_not_utf8_is_reported_without_its_bytes(tmp_path, monkeypatch, caplog):
+    # the codec's own message quotes the byte it could not decode
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    registry_path.write_bytes(UNREADABLE_REGISTRIES["not UTF-8"])
+    caplog.set_level(logging.WARNING, logger="lionagi.studio.services._io")
+
+    with pytest.raises(mcp_mod.McpRegistryUnreadableError) as refused:
+        mcp_mod.list_servers()
+
+    for reported in (str(refused.value), caplog.text):
+        assert "the file is not UTF-8" in reported
+        assert "0xff" not in reported and "position" not in reported
+
+
+@pytest.mark.parametrize("content", [None, "null", "{}", '{"servers": null}'])
+def test_a_missing_or_empty_registry_reads_as_no_servers(tmp_path, monkeypatch, content):
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    if content is not None:
+        registry_path.write_text(content)
+
+    assert mcp_mod.list_servers() == []
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+    assert [s["name"] for s in mcp_mod.list_servers()] == ["myserver"]
+
+
+@pytest.mark.parametrize("kind", ["truncated", "not UTF-8", "server not an object"])
+def test_the_routes_answer_an_unreadable_registry_with_503(tmp_path, monkeypatch, kind):
+    from fastapi.testclient import TestClient
+
+    import lionagi.studio.app as app_mod
+
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    content = UNREADABLE_REGISTRIES[kind]
+    registry_path.write_bytes(content)
+    client = TestClient(
+        app_mod.create_app(), raise_server_exceptions=False, base_url="http://127.0.0.1:8765"
+    )
+
+    listed = client.get("/api/mcp/servers/")
+    registered = client.post("/api/mcp/servers/", json={"name": "newserver", **STDIO_CONFIG})
+
+    for response in (listed, registered):
+        assert response.status_code == 503, response.text
+        assert "cannot read the MCP server registry" in response.json()["detail"]
+    assert registry_path.read_bytes() == content
 
 
 # Secret handling — never returned raw, never written to the synced file

@@ -7881,12 +7881,13 @@
               "nargs": null,
               "default": null,
               "choices": [
+                "command",
                 "invocation",
                 "play",
                 "session",
                 "show"
               ],
-              "help": "Narrow the table to one kind of entity: session, invocation, show or play."
+              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action."
             },
             {
               "option_strings": [
@@ -8026,12 +8027,13 @@
               "nargs": null,
               "default": null,
               "choices": [
+                "command",
                 "invocation",
                 "play",
                 "session",
                 "show"
               ],
-              "help": "Narrow the table to one kind of entity: session, invocation, show or play."
+              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action."
             },
             {
               "option_strings": [

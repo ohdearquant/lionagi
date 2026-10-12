@@ -96,6 +96,27 @@ class TestLaunchHappyPath:
         assert "invocation_id" in data
         assert data["action_kind"] == "agent"
 
+    def test_launch_persists_the_action_kind_on_the_invocation(self, tmp_path, monkeypatch):
+        """The kind reached the spawn and was dropped before the row was written.
+
+        `li monitor` then had nothing to label the row with, so an on-demand
+        launch read as the generic "invocation" exactly like a scheduled fire.
+        The invocations table has no column for the kind, so it rides
+        node_metadata.
+        """
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hello"},
+        )
+        assert resp.status_code == 202, resp.text
+
+        mock_db.create_invocation.assert_awaited_once()
+        (payload,), _kwargs = mock_db.create_invocation.await_args
+        assert payload["node_metadata"]["action_kind"] == "agent"
+
     def test_launch_flow_returns_202(self, tmp_path, monkeypatch):
         """POST /api/launches with action_kind=flow must return 202."""
         _stub_db_and_spawn(monkeypatch)

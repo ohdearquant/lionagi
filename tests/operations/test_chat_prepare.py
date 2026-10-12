@@ -10,7 +10,9 @@ from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages.assistant_response import AssistantResponseContent
 from lionagi.protocols.messages.instruction import InstructionContent
+from lionagi.providers.openai.codex import CodexCodeRequest
 from lionagi.session.branch import Branch
+from lionagi.tools.context.context import ContextTool
 
 # _prepare_run_kwargs merges consecutive AssistantResponse messages
 
@@ -57,6 +59,61 @@ def test_prepare_run_kwargs_kw_contains_messages_key():
 
     assert "messages" in kw
     assert isinstance(kw["messages"], list)
+
+
+async def test_prepare_run_kwargs_accepts_compaction_of_earliest_instruction():
+    branch = Branch(system="System policy")
+    branch.msgs.add_message(instruction="old task")
+    branch.msgs.add_message(assistant_response="old analysis")
+    branch.msgs.add_message(instruction="current task")
+    branch.msgs.add_message(assistant_response="current analysis")
+
+    context_tool = ContextTool().bind(branch).func_callable
+    compacted = await context_tool(
+        action="compact",
+        start=1,
+        end=3,
+        mode="all",
+        summary="The earlier task and response were superseded.",
+    )
+
+    assert compacted["success"] is True
+    _ins, kwargs = _prepare_run_kwargs(branch, "follow up", ChatParam())
+    assert "old task" in kwargs["messages"][0]["content"]
+    assert "CONTEXT COMPACTION" in kwargs["messages"][1]["content"]
+    assert "current task" in kwargs["messages"][2]["content"]
+    prompt = CodexCodeRequest.model_validate({"messages": kwargs["messages"]}).prompt
+    positions = [
+        prompt.index("old task"),
+        prompt.index("CONTEXT COMPACTION"),
+        prompt.index("current task"),
+        prompt.index("follow up"),
+    ]
+    assert positions == sorted(positions)
+
+
+async def test_prepare_run_kwargs_accepts_default_compaction_starting_on_an_instruction():
+    """The default mode keeps instructions; its summary must not land ahead of one."""
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
+
+    branch = Branch(system="System policy")
+    branch.msgs.add_message(instruction="read the file")
+    branch.msgs.add_message(assistant_response="reading it")
+    request = ActionRequest(content={"function": "read_file", "arguments": {"path": "f.py"}})
+    branch.msgs.messages.include(request)
+    branch.msgs.progression.include(request.id)
+    response = ActionResponse(content={"function": "read_file", "arguments": {}, "output": "X"})
+    branch.msgs.messages.include(response)
+    branch.msgs.progression.include(response.id)
+
+    context_tool = ContextTool().bind(branch).func_callable
+    compacted = await context_tool(
+        action="compact", start=1, summary="f.py read; nothing to change."
+    )
+
+    assert compacted["success"] is True
+    _ins, kwargs = _prepare_run_kwargs(branch, "follow up", ChatParam())
+    assert "read the file" in kwargs["messages"][0]["content"]
 
 
 def test_prepare_run_kwargs_raises_when_real_instruction_renders_empty(monkeypatch):
