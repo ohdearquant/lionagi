@@ -13,6 +13,7 @@ can select it, and a failed fire shows its rc and its tail.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -139,6 +140,19 @@ async def test_type_command_selects_only_command_kind_invocations(
     assert agent_id[:16] in unnarrowed
 
 
+async def test_failed_command_fire_is_listed_with_since(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        failed_id = await _make_invocation(
+            db, skill="scheduled:failed-probe", status="failed", action_kind="command"
+        )
+
+    recent = await _run_table(since=time.time() - 3600, entity_type="command", project=None)
+    running_only = await _run_table(since=None, entity_type="command", project=None)
+
+    assert failed_id[:16] in recent
+    assert failed_id[:16] not in running_only
+
+
 async def test_failed_command_fire_detail_carries_rc_and_the_stderr_tail(
     temp_db_path: Path,
 ) -> None:
@@ -220,3 +234,67 @@ async def test_successful_command_fire_detail_shows_rc_zero_and_no_tail(
     assert "kind:          command" in detail
     assert "exit_code:  0" in detail
     assert "stderr tail" not in detail
+
+
+def test_invocation_action_kind_uses_a_supported_label() -> None:
+    from lionagi.cli.monitor import _invocation_to_row
+
+    alias = _invocation_to_row(
+        {"id": "inv-alias", "status": "running", "node_metadata": {"action_kind": "playbook"}}
+    )
+    unknown = _invocation_to_row(
+        {"id": "inv-unknown", "status": "running", "node_metadata": {"action_kind": "weird"}}
+    )
+
+    assert alias["type"] == "play"
+    assert unknown["type"] == "invocation"
+
+
+async def test_setup_refusal_detail_uses_its_reason_code() -> None:
+    class ScheduleRunDB:
+        async def fetch_all(self, query: str, params: tuple[str, ...]) -> list[dict]:
+            if "FROM schedule_runs" in query:
+                return [
+                    {
+                        "id": "run-setup-refusal",
+                        "action_kind": "weird",
+                        "exit_code": None,
+                        "error_detail": "PermissionError: scheduler setup refused",
+                        "status_reason_code": RunReasons.FAILED_EXCEPTION,
+                    }
+                ]
+            return []
+
+    detail = await _detail_invocation(
+        ScheduleRunDB(),
+        {
+            "id": "inv-setup-refusal",
+            "status": "failed",
+            "status_reason_code": RunReasons.FAILED_EXCEPTION,
+        },
+    )
+
+    assert f"reason_code: {RunReasons.FAILED_EXCEPTION}" in detail
+    assert "    kind:       invocation" in detail
+    assert "stderr tail" not in detail
+    assert "PermissionError: scheduler setup refused" in detail
+
+
+def test_machine_command_filter_includes_the_invocation_action_kind(
+    temp_db_path: Path,
+) -> None:
+    async def create_invocation() -> str:
+        async with StateDB() as db:
+            return await _make_invocation(
+                db, skill="scheduled:machine-probe", action_kind="command"
+            )
+
+    invocation_id = asyncio.run(create_invocation())
+
+    from lionagi.cli.monitor import machine_result
+
+    result = machine_result(["--type", "command"])
+    assert result["filters"]["type"] == "command"
+    entity = next(item for item in result["entities"]["value"] if item["id"] == invocation_id)
+    assert entity["kind"] == "invocation"
+    assert entity["action_kind"] == "command"

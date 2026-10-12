@@ -255,10 +255,11 @@ def _contain_the_frontend_dist_variable(monkeypatch: pytest.MonkeyPatch):
     both far from the test that actually set the variable, and both dependent
     on execution order, so neither reproduces when its own file is run alone.
 
-    ``delenv`` rather than a save/restore pair: registering the name with
-    monkeypatch is what makes teardown undo a later raw write, which is the
-    whole problem here. Tests that want the SPA mounted set it themselves and
-    are unaffected -- this runs first, they set it after.
+    This removes an inherited value before each test. If the name was already
+    absent, ``delenv`` records no original value to restore, so a later raw
+    write to ``os.environ`` must be cleaned up by that test. Tests that want
+    the SPA mounted should use ``monkeypatch.setenv`` so teardown restores the
+    prior value.
     """
     monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
 

@@ -37,7 +37,7 @@ li schedule create agent nightly-review \
 # not one: the daemon's gates the spawn, and YOUR shell's gates the command
 # below, because every path that accepts a command target re-checks it in its
 # own process. Unset in your shell, it allows nothing and this refuses.
-li schedule create command refresh-index --every 15m -- refresh-index nightly
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule create command refresh-index --every 15m -- refresh-index nightly
 
 # A flow document fired once at an absolute instant
 li schedule create flow release-pipeline \
