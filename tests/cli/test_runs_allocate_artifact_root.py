@@ -15,6 +15,7 @@ _classify_phantom coverage).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -325,3 +326,39 @@ def test_write_manifest_is_atomic_no_reader_sees_a_partial_file(tmp_path, monkey
     assert json.loads(run.manifest_path.read_text())["iteration"] == 59
     # The temp file is never left behind.
     assert not list(run.state_root.glob("*.tmp"))
+
+
+def test_binding_provenance_holds_the_manifest_lock_across_its_read_and_rewrite(
+    tmp_path, monkeypatch
+):
+    """Another invocation sharing the run id writes run.json under its lock; a
+    rebind that read outside the lock could overwrite that write with stale data."""
+    fcntl = pytest.importorskip("fcntl")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="rebind-under-lock")
+    resolution = McpResolution(
+        servers=None, reason="no_mcp_config_found", source=None, searched_from=tmp_path
+    )
+    held_at_read = []
+    actual_read = runs_mod.RunDir.read_manifest
+
+    def observe_read(self):
+        fd = os.open(self.state_root / ".run.json.lock", os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held_at_read.append(True)
+        else:
+            held_at_read.append(False)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+        return actual_read(self)
+
+    monkeypatch.setattr(runs_mod.RunDir, "read_manifest", observe_read)
+    rebound = run.with_execution_provenance(cwd=tmp_path, mcp_resolution=resolution)
+
+    assert held_at_read == [True]
+    assert json.loads(rebound.manifest_path.read_text())["mcp_config_reason"] == (
+        "no_mcp_config_found"
+    )

@@ -1254,6 +1254,7 @@ def test_finalize_merges_summed_khive_injection_stats(
             "recall_turns": 6,
             "blocks_injected": 3,
             "failed": 1,
+            "degraded_turns": 0,
             "writeback_records": 5,
             "writeback_failed": 2,
         },
@@ -4503,16 +4504,20 @@ async def test_execute_dag_records_control_log_write_failure_when_update_session
     ), "a raising control-log write must be logged, not silently dropped"
 
 
+@pytest.mark.parametrize("absorbs_cancel", [False, True])
 async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    absorbs_cancel: bool,
 ):
     """The same drain, but ``update_session()`` hangs instead of raising.
     Before the fix, the finally block's plain ``gather()`` over the
     control-log tasks had no bound: a hung write meant ``_execute_dag`` never
     returned, teardown never ran, and the live database stayed open forever.
     The drain must now give the write a grace period, then cancel and
-    abandon it -- completing in bounded time and recording that it did."""
+    abandon it -- completing in bounded time and recording that it did.
+    With *absorbs_cancel* the write catches its cancel and goes on waiting,
+    so the drain stops waiting for it when the grace period ends."""
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -4553,13 +4558,24 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
     # Same reason as the raising variant: the control-log write is an atomic
     # merge, so that is the call that has to hang for the drain to be exercised.
     real_merge = ctx["db"].merge_session_node_metadata
+    release = asyncio.Event()
+
+    cancels: list[int] = []  # cancels each call of the write took
 
     async def _hanging_merge(session_id, patch):
         write_started.set()
+        cancels.append(0)
+        call = len(cancels) - 1
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
+            cancels[call] += 1
             write_cancelled.set()
+            while absorbs_cancel and not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancels[call] += 1
             raise
 
     monkeypatch.setattr(ctx["db"], "list_pending_session_controls", _list_pending)
@@ -4607,20 +4623,32 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
         execute_task.cancel()
 
         start = asyncio.get_event_loop().time()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(execute_task, timeout=8)
+        # asyncio.wait rather than wait_for, which on its timeout would wait for the task it
+        # cancels, so a drain that waits on the write without a bound fails here instead of hanging
+        await asyncio.wait({execute_task}, timeout=8)
         elapsed = asyncio.get_event_loop().time() - start
 
     try:
-        assert elapsed < 6, f"teardown took {elapsed}s -- the control-log drain is unbounded again"
+        assert execute_task.done() and elapsed < 6, (
+            f"teardown took {elapsed}s -- the control-log drain is unbounded again"
+        )
+        assert execute_task.cancelled()
         assert write_cancelled.is_set(), (
             "the hung control-log write must be cancelled during teardown, not left running"
         )
-        assert any("cancelled" in w and "control-log-metadata" in w for w in warnings), (
+        assert cancels[:1] == [1], f"a store write is cancelled once, not again: {cancels!r}"
+        recorded = (
+            "abandoned 1 control-log-metadata task(s)"
+            if absorbs_cancel
+            else "cancelled 1 control-log-metadata task(s)"
+        )
+        assert any(recorded in w for w in warnings), (
             "a cancelled-after-timeout metadata write must be recorded through the "
             f"caller-visible warning sink, not dropped silently; got {warnings!r}"
         )
     finally:
+        release.set()
+        await asyncio.wait({execute_task}, timeout=8)
         # _teardown_common's final metadata write also reaches the db whenever
         # extras is non-empty, which it is here (the control log): once through
         # update_session() and once through merge_session_node_metadata(). Neither

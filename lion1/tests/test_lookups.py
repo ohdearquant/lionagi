@@ -269,20 +269,19 @@ def test_decisions_keep_text_hits_only_and_the_positive_search_is_the_control():
             [hit("e1", "example PR#12", "both")],
         ]
     )
-    dec = Decisions(khive, positive="lambda:owner")
+    dec = Decisions(khive, positive="agent-c")
     out = asyncio.run(dec.run({"query": "build queue timeouts"}))
-    assert out.control and out.count == 2 and out.positive == "'lambda:owner' found as example PR#12"
+    assert out.control and out.count == 2 and out.positive == "'agent-c' found as example PR#12"
     assert out.findings == (
         "decision d1 (2026-09-22T10:00): build queue: timeouts by code: decided 2026-09-22",
         "insight i1 (2026-09-22T10:00): build queue insight",
     )
-    assert (
-        "decision: 2 returned, 1 by text" in out.evidence
-        and "positive 'lambda:owner' (entity): 1 by text" in (out.evidence)
+    assert "decision: 2 returned, 1 by text" in out.evidence and "positive 'agent-c' (entity): 1 by text" in (
+        out.evidence
     )
     (ops,) = khive.ops
     assert ops.startswith('[search(query="build queue timeouts", kind="decision", limit=5), ')
-    assert ops.endswith('search(query="lambda:owner", kind="entity", limit=1)]')
+    assert ops.endswith('search(query="agent-c", kind="entity", limit=1)]')
     khive.pages[2] = [hit("e1", "example PR#12", "vector")]  # the positive came back by vector only
     out = asyncio.run(dec.run({"query": "build queue timeouts"}))
     assert not out.control and out.positive == ""
@@ -296,7 +295,7 @@ def test_record_unions_its_parts_and_one_failed_part_fails_the_control(tmp_path)
     assert out.positive == "o/r resolved as o/r; 2 file(s) read, first ADR-0020-the-box.md"
     assert out.evidence.startswith("[issues]\no/r issue list") and "[adrs]\n2 ADR file(s)" in out.evidence
     assert rec.tail == TAIL and rec.every is None and rec.empty_expected is False
-    assert rec.senders == ("lambda:",) and rec.lead == "the record holds these, one may settle it:"
+    assert rec.agents_only is True and rec.lead == "the record holds these, one may settle it:"
     sh.set("repo view", (1, "", "no gh"))
     out = asyncio.run(rec.run({"query": "build queue timeouts"}))
     assert not out.control and out.count == 1  # the ADR hit is still there; the answer is not complete
@@ -307,7 +306,7 @@ def test_record_unions_its_parts_and_one_failed_part_fails_the_control(tmp_path)
 def test_the_desk_answers_a_record_ask_with_the_tail_and_leaves_one_the_record_does_not_carry(tmp_path):
     ask = inbox_row(ASKER, "bug?", "the build queue refuses a live branch, known?", "m-r1", "t-r1")
     miss = inbox_row(ASKER, "another", "does the agent fold its context?", "m-r2", "t-r2")
-    outsider = inbox_row("daemon:review", "bug?", "is the live branch refusal known?", "m-r3", "t-r3")
+    outsider = inbox_row("local", "bug?", "is the live branch refusal known?", "m-r3", "t-r3")
     khive = FakeKhive(mail(SELF, "tick: sweep"))
     found = full(
         findings=("[adrs] ADR-0023 The build queue (signed): C1",),
@@ -318,7 +317,7 @@ def test_the_desk_answers_a_record_ask_with_the_tail_and_leaves_one_the_record_d
     )
     none = full(findings=(), evidence="0 rows", population="records", predicate="words", count=0)
     probe = Probe("record", found, none, found, every=None)
-    probe.tail, probe.lead, probe.senders = TAIL, Record.lead, Record.senders
+    probe.tail, probe.lead, probe.agents_only = TAIL, Record.lead, Record.agents_only
     probe.empty_expected = False
     desk, chores, agent = build(
         tmp_path,
@@ -348,7 +347,7 @@ def test_the_desk_answers_a_record_ask_with_the_tail_and_leaves_one_the_record_d
         ("m-r2", "left"),
         ("m-r3", "left"),
     ]
-    assert rows[2]["why"] == "sender: record answers lambda:* senders only"  # no reply to an outsider
+    assert rows[2]["why"] == "sender: record answers the senders [desk] agents names only"  # no outsider
     # the chair still hears of the answered report: the digest lists it with its pointer
     day = rows[0]["at"][:10]
     t = time.time() + 2  # the brief's window ends at the clock's second; the three rows are inside it
@@ -362,7 +361,7 @@ def test_the_desk_answers_a_record_ask_with_the_tail_and_leaves_one_the_record_d
         f"desk answered m-r1 from {ASKER} 'bug?' with record on thread t-r1: "
         "[adrs] ADR-0023 The build queue (signed): C1",
         f"left {rows[1]['why']}: m-r2 from {ASKER} 'another'",
-        "left sender: record answers lambda:* senders only: m-r3 from daemon:review 'bug?'",
+        "left sender: record answers the senders [desk] agents names only: m-r3 from local 'bug?'",
     ]
     assert desk.summary(day) == f"desk {day}: 3 message(s) read, 1 answered, 2 left (instrument 1, sender 1)"
     digest = asyncio.run(chores.digest(day, run))

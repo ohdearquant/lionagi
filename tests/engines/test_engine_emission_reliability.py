@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import anyio
@@ -15,9 +16,12 @@ from lionagi.engines.review import (
     DimensionClean,
     IssueFound,
     ReviewEngine,
+    ReviewVerdict,
     _is_all_isolated_failure,
+    _is_all_isolated_failure_after_probe,
 )
 from lionagi.ln.concurrency._compat import ExceptionGroup
+from lionagi.protocols.action.manager import ActionManager
 from lionagi.providers._provider_errors import (
     ProviderAuthError,
     ProviderContextError,
@@ -139,6 +143,35 @@ def _mcp_error(message: str) -> BaseException:
     from mcp.types import ErrorData
 
     return McpError(ErrorData(code=-32000, message=message))
+
+
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+@pytest.mark.asyncio
+async def test_a_live_mcp_transport_can_answer_a_ping_taking_over_one_second(monkeypatch) -> None:
+    from lionagi.engines import review as review_mod
+
+    error = _mcp_error("Connection closed")
+    simulated_ping_seconds = 1.1
+    timeouts = []
+
+    @contextmanager
+    def simulated_timeout(seconds):
+        timeouts.append(seconds)
+        yield
+        if seconds < simulated_ping_seconds:
+            raise TimeoutError
+
+    async def ping() -> bool:
+        return True
+
+    monkeypatch.setattr(review_mod.anyio, "fail_after", simulated_timeout)
+    setattr(error, "_lionagi_mcp_transport_probe", ping)
+
+    isolated = await _is_all_isolated_failure_after_probe(error)
+
+    assert timeouts == [review_mod._MCP_TRANSPORT_PROBE_TIMEOUT_S]
+    assert timeouts[0] >= simulated_ping_seconds
+    assert isolated is False
 
 
 @pytest.mark.asyncio
@@ -399,6 +432,163 @@ async def test_the_sdks_own_transport_failures_are_still_recognised(failure: str
                 task_group.cancel_scope.cancel()
 
     assert _is_all_isolated_failure(caught.value) is True
+
+
+class _InMemoryMcpClient:
+    """FastMCP-shaped adapter over the SDK session used by the pool boundary."""
+
+    def __init__(self, session) -> None:
+        self._session = session
+
+    async def list_tools(self):
+        return (await self._session.list_tools()).tools
+
+    async def call_tool(self, name: str, arguments: dict):
+        return await self._session.call_tool(name, arguments)
+
+    async def ping(self) -> bool:
+        await self._session.send_ping()
+        return True
+
+
+class _McpBoundaryReview(ReviewEngine):
+    def __init__(self, entrypoint: str) -> None:
+        super().__init__(dimensions=("security",), verify_clean=False)
+        self._entrypoint = entrypoint
+
+    async def _review_dimension(self, run, artifact: str, dimension: str) -> None:
+        config = {"command": "in-memory-test-server"}
+        if self._entrypoint == "registration":
+            await ActionManager().register_mcp_server(config)
+            return
+
+        from lionagi.service.connections.mcp_wrapper import create_mcp_tool
+
+        await create_mcp_tool(config, "test_tool")()
+
+
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["registration", "tool-call"])
+@pytest.mark.parametrize(
+    ("transport_stays_open", "isolated"),
+    [(True, False), (False, True)],
+    ids=["server-sent-bare-error", "genuine-connection-drop"],
+)
+async def test_bare_connection_closed_payload_uses_live_transport_evidence(
+    monkeypatch, entrypoint: str, transport_stays_open: bool, isolated: bool
+) -> None:
+    """The byte-identical payload is attributed from the transport, not guessed from text."""
+    from mcp.client.session import ClientSession
+    from mcp.shared.exceptions import McpError
+    from mcp.shared.memory import create_client_server_memory_streams
+    from mcp.shared.message import SessionMessage
+    from mcp.types import ErrorData, JSONRPCError, JSONRPCMessage, JSONRPCResponse
+
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+    async with create_client_server_memory_streams() as (
+        (client_read, client_write),
+        (server_read, server_write),
+    ):
+        async with ClientSession(client_read, client_write) as session:
+            client = _InMemoryMcpClient(session)
+
+            async def get_client(*args, **kwargs):
+                return client
+
+            monkeypatch.setattr(MCPConnectionPool, "get_client", get_client)
+            monkeypatch.setattr(MCPConnectionPool, "_get_reconnect_client", get_client)
+
+            async with anyio.create_task_group() as task_group:
+
+                async def serve() -> None:
+                    async for incoming in server_read:
+                        request = incoming.message.root
+                        failing_method = (
+                            "tools/list" if entrypoint == "registration" else "tools/call"
+                        )
+                        if request.method == failing_method:
+                            if not transport_stays_open:
+                                await server_write.aclose()
+                                return
+                            await server_write.send(
+                                SessionMessage(
+                                    JSONRPCMessage(
+                                        JSONRPCError(
+                                            jsonrpc="2.0",
+                                            id=request.id,
+                                            error=ErrorData(
+                                                code=-32000,
+                                                message="Connection closed",
+                                            ),
+                                        )
+                                    )
+                                )
+                            )
+                        elif request.method == "ping":
+                            await server_write.send(
+                                SessionMessage(
+                                    JSONRPCMessage(
+                                        JSONRPCResponse(
+                                            jsonrpc="2.0",
+                                            id=request.id,
+                                            result={},
+                                        )
+                                    )
+                                )
+                            )
+                            return
+
+                task_group.start_soon(serve)
+                engine = _McpBoundaryReview(entrypoint)
+                run = engine.new_run()
+
+                if isolated:
+                    await engine._review_dimension_isolated(run, "artifact", "security")
+                    assert run._emission_failures == ["review-security (McpError)"]
+                else:
+                    with pytest.raises(McpError):
+                        await engine._review_dimension_isolated(run, "artifact", "security")
+                    assert run._emission_failures == []
+
+                task_group.cancel_scope.cancel()
+
+
+class _EveryDimensionTransportFailedReview(ReviewEngine):
+    def __init__(self) -> None:
+        super().__init__(dimensions=("correctness", "security"), verify_clean=False)
+        self.failure = anyio.ClosedResourceError("one dead transport")
+        self.verdict_called = False
+
+    async def _review_dimension(self, run, artifact: str, dimension: str) -> None:
+        raise self.failure
+
+    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...]) -> str:
+        self.verdict_called = True
+        await run.emit(
+            ReviewVerdict(
+                verdict="APPROVE",
+                rationale="unsafe verdict over no evidence",
+                blocking=[],
+            )
+        )
+        return "unsafe verdict over no evidence"
+
+
+@pytest.mark.asyncio
+async def test_every_dimension_failing_from_one_transport_emits_no_verdict() -> None:
+    engine = _EveryDimensionTransportFailedReview()
+
+    result = await engine.run("artifact")
+
+    assert engine.verdict_called is False
+    assert result.events_by_type(ReviewVerdict) == []
+    assert result.degraded is True
+    assert sorted(result.skipped) == [
+        "review-correctness (ClosedResourceError)",
+        "review-security (ClosedResourceError)",
+    ]
 
 
 # ---------------------------------------------------------------------------

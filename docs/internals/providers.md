@@ -197,6 +197,19 @@ ceiling to a different model's profile. Caller-supplied `config_overrides`
 still win over the profile's, since an override at the call site is an
 explicit instruction and the profile is only a default sitting in a file.
 
+Both reads use the codex home the *child* will use. A request whose `env`
+replaces the child environment names its own `CODEX_HOME` (or `HOME`), and the
+profile and config read are the ones that environment names; a `~` in that
+`CODEX_HOME` expands against the same environment's `HOME`, and an environment
+naming neither falls back to the OS account's home, as codex itself does.
+
+When the caller sets no effort, the request emits the global config's
+`model_reasoning_effort` clamped to the resolved model
+(`codex_unset_effort_default`). Otherwise codex would apply the global value
+unclamped, and a value above the model's ceiling is rejected by the API. A
+profile that pins `model_reasoning_effort` keeps its pin, and a model the
+ceiling tables don't know gets nothing emitted.
+
 ## Codex c override TOML serialization
 
 **`providers/openai/codex.py`**

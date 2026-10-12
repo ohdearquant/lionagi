@@ -506,9 +506,9 @@ li monitor                      # table of all running entities
 li monitor <id>                 # detail view for one run/play/agent/invocation
 li monitor --watch              # live-refresh table
 li monitor --watch <id>         # live-refresh detail view
-li monitor --since 1h           # entities updated in the last hour
+li monitor --since 1h           # entities updated in the last hour, including terminal rows
 li monitor --type session       # filter table by entity type
-li monitor --type command       # command actions only; the detail view carries rc and the stderr tail
+li monitor --type command --since 1h  # recent command actions, including failed fires
 li monitor --project myproject  # filter sessions by project
 ```
 
@@ -517,13 +517,14 @@ li monitor --project myproject  # filter sessions by project
 | `id` | none | Entity ID or prefix; omit for the table view |
 | `-w, --watch` | false | Live-refresh every `--refresh` seconds |
 | `--refresh SECS` | 2 | Refresh interval for `--watch` |
-| `--since WINDOW` | all | Time window: `30m`, `1h`, `2d` |
+| `--since WINDOW` | active entities only | Time window: `30m`, `1h`, `2d`; includes terminal rows updated in the window |
 | `-t, --type` | none | One of `session`, `invocation`, `show`, `play`, `command`. `command` narrows to invocations launched as a command action |
 | `-p, --project` | none | Filter sessions by project name |
 
 A session detail view includes a `khive injection` block when an opted-in profile recorded
-non-zero recall, injection, failure, or writeback counters. The block contains aggregate counts,
-not injected source text.
+non-zero recall, injection, failure, degradation, or writeback counters. `degraded_turns`
+distinguishes a provider-contained transport failure from a successful recall that returned no
+context. The block contains aggregate counts, not injected source text.
 
 For scripts, use a waiter instead of scraping the watch display:
 
@@ -965,6 +966,8 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
 | `yolo` | Auto-approve tool calls |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
+| `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`). Default `false` |
+| `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `timeout` | Default hard timeout in seconds |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from lionagi.service.resilience import CircuitBreaker, RetryConfig, retry_with_backoff
 from lionagi.service.types.stream_chunk import StreamChunk
 
-from .endpoint_config import EndpointConfig
+from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
 
@@ -631,6 +631,18 @@ class Endpoint:
         if circuit_breaker:
             circuit_breaker = CircuitBreaker(**circuit_breaker)
         if config:
+            # The config never writes a grant down, but this reads a stored row
+            # as it stands: one written by an older version, or by any other
+            # writer, may still carry it. A grant belongs to the role of the
+            # caller restoring the row, who hands it again if the role names it.
+            kwargs = config.get("kwargs")
+            if isinstance(kwargs, dict):
+                config = {
+                    **config,
+                    "kwargs": {
+                        k: v for k, v in kwargs.items() if k not in AUTHORIZATION_KWARG_NAMES
+                    },
+                }
             config = EndpointConfig(**config)
 
         return cls(

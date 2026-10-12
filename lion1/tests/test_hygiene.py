@@ -1,5 +1,4 @@
-"""The tree carries no review labels: a finding's number, its round, the review that found it and the
-file a test was ported from belong to the review. A test keeps the explanation and drops the label."""
+"""Tracked files carry no temporary audit markers; the detector reports each marker's file and line."""
 
 import re
 import subprocess
@@ -46,7 +45,7 @@ def test_a_labelled_line_in_a_tracked_file_is_found(tmp_path):
 
 
 def test_no_tracked_file_carries_a_review_label():
-    me = Path(__file__).resolve().relative_to(ROOT).as_posix()  # its own fixture lines are labels
+    me = Path(__file__).resolve().relative_to(ROOT).as_posix()  # its marker examples exercise the detector
     count, hits = labelled(ROOT, frozenset({me}))
     assert count > 50, count  # the listing read the tree
     assert hits == []

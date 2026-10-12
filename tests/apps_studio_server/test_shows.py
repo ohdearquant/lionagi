@@ -425,7 +425,7 @@ def test_gated_plays_truncated_meta_json_is_reported_unavailable(shows_root: Pat
     assert entry["live_state"] == "unavailable"
 
 
-# Path traversal tests (Fix 1)
+# Path traversal behavior
 
 
 def test_path_traversal_encoded_dotdot_shows(patched_app):
@@ -458,23 +458,11 @@ def test_path_traversal_encoded_slash_shows(patched_app):
 
 
 def test_a_traversal_component_is_refused_by_the_guard():
-    """Dot segments are resolved by the client, so this is asserted at the guard.
+    """Reject traversal components at the path guard.
 
-    The previous version of this sent `/api/shows/../../../etc` through the test
-    client and asserted 404. That assertion was about httpx, not about this
-    application: the client resolves the dot segments before the request is
-    sent, so the server receives a plain `GET /etc` and never sees the topic at
-    all. Measured -- the request arrives with path `/etc`.
-
-    Which makes the old 404 mean only "nothing is routed at /etc", and that is
-    conditional on deployment. With a frontend dist mounted, the SPA fallback
-    answers any non-`/api/` path with the shell at 200, so the test failed
-    whenever a sibling test had set LIONAGI_STUDIO_FRONTEND_DIST earlier in the
-    same worker. It was asserting a property that only holds in API-only mode,
-    which is not how the product ships.
-
-    `safe_path_join` is where the property actually lives, and it holds whether
-    or not a frontend is mounted.
+    HTTP clients normalize dot segments before sending a request, so pass the
+    raw components directly to `safe_path_join`. The guard must reject them
+    regardless of whether the frontend is mounted.
     """
     from fastapi import HTTPException
 
@@ -781,8 +769,16 @@ def test_api_error_detail_survives_with_the_spa_mounted(spa_mounted_app):
 
 
 def test_a_client_route_still_gets_the_shell_with_the_spa_mounted(spa_mounted_app):
-    """The must-not-break arm: the fallback still exists to serve the SPA."""
+    """Client routes continue to receive the application shell."""
     r = spa_mounted_app.get("/some/client/side/route")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert "shell" in r.text
+
+
+def test_bare_api_path_keeps_the_api_not_found_response(spa_mounted_app, monkeypatch):
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    r = spa_mounted_app.get("/api")
+
+    assert r.status_code == 404
+    assert r.json() == {"detail": "Not Found"}

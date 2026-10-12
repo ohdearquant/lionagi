@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -192,13 +193,10 @@ def _validate_command_allowlisted(command: str) -> None:
     actual spawn time, since the environment variable can change between
     schedule creation and fire.
 
-    Those call sites run in DIFFERENT PROCESSES with different environments,
-    which is why the refusal says whose environment it read. The declaration
-    path runs in the author's shell, where this variable is normally unset; the
-    spawn path runs inside the scheduler daemon, which sets it. Measured cost of
-    not saying so: a refusal naming the document's ``action_command`` field
-    reads as "your declaration is wrong", and a correct declaration sat
-    unapplied for six days.
+    The declaration and spawn checks can run in processes with different
+    environments. The declaration path checks its caller's environment; the
+    spawn path checks the scheduler daemon's environment. The refusal identifies
+    the process whose configuration it read.
     """
     allowlist = _command_allowlist()
     if command in allowlist:
@@ -216,8 +214,9 @@ def _validate_command_allowlisted(command: str) -> None:
         f"(pid {os.getpid()}). That is a property of the process running this check, not of the "
         "document being checked: the scheduler daemon reads the same variable from its OWN "
         "environment and checks again at spawn time, so an empty value here says nothing about "
-        "what the daemon will permit. To run this command with it permitted: "
-        f"{_COMMAND_ALLOWLIST_ENV}={permitted} <your command>"
+        "what the daemon will permit. Set this variable in the scheduler daemon's "
+        "environment and restart the scheduler daemon to permit the command: "
+        f"{_COMMAND_ALLOWLIST_ENV}={shlex.quote(permitted)}"
     )
 
 

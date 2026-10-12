@@ -38,11 +38,12 @@ from urllib.parse import urlparse
 import anyio
 from fastapi import Body, HTTPException
 
+from lionagi._errors import LionError
 from lionagi._paths import LIONAGI_HOME
 from lionagi.libs.path_safety import validate_bare_name
 
 from ..registry import studio_route
-from ._io import read_json_file as _read_json
+from ._io import read_json_file_checked as _read_json_checked
 
 _log = logging.getLogger(__name__)
 
@@ -60,6 +61,22 @@ class McpServerError(ValueError):
 
 class DuplicateServerError(McpServerError):
     """Raised by register_server() when the name is already registered."""
+
+
+class McpRegistryUnreadableError(LionError):
+    """The registry file exists but cannot be read as a registry.
+
+    Every read of the registry, and every change that reaches it, raises it
+    rather than treat the file as empty, which would list no servers and let
+    the next registration save one entry over all of them. A missing file, one
+    holding only ``null`` or ``{}``, or one whose only entry is ``servers``,
+    written once and holding ``null``, has nothing to lose and reads as empty;
+    one holding any other entry is refused, since a save writes ``servers``
+    alone, and so is one that writes a key twice in one object, which a parse
+    reads as its last value. Studio answers it with 503.
+    """
+
+    default_status_code = 503
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +98,32 @@ _REGISTRY_WRITE_LOCK = threading.RLock()
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
-    data = _read_json(_REGISTRY_PATH) if _REGISTRY_PATH.exists() else None
-    if not data or not isinstance(data.get("servers"), dict):
+    # a key written twice would be read as its last value, and a save would drop the first
+    read = _read_json_checked(_REGISTRY_PATH, unique_keys=True)
+    data = read.value
+    if not read.available:
+        problem = read.error
+    elif data is None:
         return {}
-    return data["servers"]
+    elif not isinstance(data, dict):
+        problem = "the file is not a JSON object"
+    elif data.keys() - {"servers"}:
+        problem = "it holds an entry other than 'servers', which a save would drop"
+    elif data.get("servers") is None:
+        return {}
+    elif not isinstance(data["servers"], dict):
+        problem = "its 'servers' entry is not a JSON object"
+    elif any(
+        not isinstance(entry, dict) or not isinstance(entry.get("config"), dict)
+        for entry in data["servers"].values()
+    ):
+        problem = "a server entry is not a JSON object holding a 'config' object"
+    else:
+        return data["servers"]
+    raise McpRegistryUnreadableError(
+        f"cannot read the MCP server registry at {_REGISTRY_PATH} ({problem}); "
+        "it is left unchanged until it is repaired or moved aside"
+    )
 
 
 def _write_private(path: Path, content: str) -> None:

@@ -32,6 +32,7 @@ from lionagi.providers._cli_subprocess import (
     print_readable,
     raise_if_env_is_not_a_string_map,
     resolve_cli_workspace,
+    reveal_redacted,
     validate_message_prompt,
 )
 from lionagi.providers._cli_subprocess import (
@@ -45,11 +46,16 @@ from lionagi.utils import to_dict
 
 from ._config import CodexConfigs
 
+try:
+    import tomllib as _tomllib
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
+    # (`toml` 0.10 does not normalize whitespace around dotted key parts)
+    import tomli as _tomllib  # type: ignore[no-redef]
+
 HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("codex-cli")
-
 
 # --------------------------------------------------------------------------- types
 CodexSandboxMode = Literal[
@@ -84,6 +90,12 @@ CODEX_REASONING_EFFORTS: tuple[str, ...] = (
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 
+# The integrations Codex attaches from the signed-in account rather than from
+# a config file: its app connectors and its plugins. They come with the auth
+# store, so no `mcp_servers` override reaches them, and an app connector acts
+# as the account (a GitHub merge, a sent mail, a record in a hosted store).
+_ACCOUNT_INTEGRATION_FEATURES = ("apps", "plugins")
+
 
 # --------------------------------------------------------------------------- -c value serialization
 # codex's `-c key=value` parses `value` as TOML; a JSON-style dump is not
@@ -108,6 +120,22 @@ def _toml_scalar(value: str | int | float | bool) -> str:
     # strip the synthetic key so only the literal remains.
     dumped = toml.dumps({"x": value})
     return dumped[len("x = ") :].rstrip("\n")
+
+
+def _override_key_path(key: str) -> list[str]:
+    """The parts of a `-c key=value` override's key, read as the TOML dotted
+    key the CLI reads it as: a quoted part loses its quotes and its escapes, so
+    `features."\\u0061pps"` names the same switch as `features.apps`. A key
+    TOML cannot read is refused here, by name, rather than handed to the CLI."""
+    try:
+        table: Any = _tomllib.loads(f"{key} = 1")
+        path: list[str] = []
+        while isinstance(table, dict):
+            ((part, table),) = table.items()
+            path.append(part)
+    except Exception as e:
+        raise ValueError(f"config override key {key!r} is not a TOML key: {e}") from None
+    return path
 
 
 def _toml_key(key: str) -> str:
@@ -344,6 +372,28 @@ class CodexCodeRequest(BaseModel):
         description="Feature flags to disable",
         json_schema_extra=_cli("--disable", 71, "repeat"),
     )
+    contain_account_integrations: bool = Field(
+        default=False,
+        description=(
+            "Turn the signed-in account's `apps` and `plugins` features off "
+            "(`--disable apps --disable plugins`) and drop either from "
+            "`enable_features` and from `features` entries in `config_overrides`. "
+            "Off by default: the request reaches whatever the account and the "
+            "config give it. Lifted by naming `account_connectors`."
+        ),
+    )
+    account_connectors: list[str] | None = Field(
+        default=None,
+        description=(
+            "The signed-in account's app connectors this request is for. A grant: "
+            "never written down with the endpoint's config, so a restored branch "
+            "runs without it until its caller hands it again. Codex has no switch "
+            "for one connector, so naming any leaves both features as the account "
+            "and config set them, even under `contain_account_integrations`: the "
+            "request then reaches every connector the account has, and the names "
+            "record what it is for. A blank or non-string name is refused."
+        ),
+    )
 
     # ── reasoning (order 75, emitted as -c overrides) ───────────
     reasoning_effort: str | None = Field(
@@ -385,13 +435,20 @@ class CodexCodeRequest(BaseModel):
         from the validator below, before the effort clamp, since the clamp's
         ceilings are keyed on the model. See
         docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
+
+        The lookup is done against the CHILD's environment: when a request
+        carries a replacement `env`, the profile that decides which model runs
+        lives in the codex home that env names. Resolving against ours would
+        read a profile file the child never opens and put a different model on
+        the command line.
         """
         from ._codex_profile import resolve_codex_config_profile
 
         model = values.get("model")
         if not isinstance(model, str) or not model:
             return values
-        resolved = resolve_codex_config_profile(model)
+        env = reveal_redacted(values.get("env"))
+        resolved = resolve_codex_config_profile(model, env if isinstance(env, Mapping) else None)
         if resolved is None:
             return values
         profile_model, profile_overrides = resolved
@@ -413,8 +470,20 @@ class CodexCodeRequest(BaseModel):
         `values` omits `model` when the caller relies on the field default
         (Pydantic v2 applies defaults after `mode="before"` validators), so
         fall back to the field's own default.
+
+        An UNSET `reasoning_effort` is resolved here too, and this is the only
+        place that closes it for every caller: omitting the flag does not mean
+        "no effort", it means the codex CLI reads `model_reasoning_effort` from
+        the global config — a value the user tuned for whichever model they run
+        by hand, applied to a model whose ceiling may be lower. Every other
+        construction seam (CLI builders, agent factory, Studio operator, a bare
+        `Branch()`) reaches the CLI through this request model, so the fix
+        belongs here rather than at each of them.
         """
-        from lionagi.service.providers import _clamp_codex_effort
+        from lionagi.service.providers import (
+            _clamp_codex_effort,
+            codex_unset_effort_default,
+        )
 
         values = cls._resolve_config_profile(values)
 
@@ -423,6 +492,24 @@ class CodexCodeRequest(BaseModel):
             effort = values.get(key)
             if isinstance(effort, str):
                 values[key] = _clamp_codex_effort(effort, model)
+
+        # `is None`, not `not isinstance(..., str)`: only an ABSENT or null
+        # effort is unset. A non-string is malformed input; it falls through
+        # to the field's own `str | None` validation, which rejects it, rather
+        # than being replaced by the derived default.
+        if values.get("reasoning_effort") is None:
+            # The child's own environment decides which config codex reads, and
+            # `env` replaces that environment wholesale when it is set. By this
+            # point an earlier before-validator has wrapped it for redaction,
+            # so it must be revealed to be read at all.
+            env = reveal_redacted(values.get("env"))
+            derived = codex_unset_effort_default(
+                model,
+                values.get("config_overrides"),
+                env if isinstance(env, Mapping) else None,
+            )
+            if derived is not None:
+                values["reasoning_effort"] = derived
         return values
 
     # ── images & config (special-cased) ───────────────────────────
@@ -441,6 +528,20 @@ class CodexCodeRequest(BaseModel):
     cli_include_summary: bool = Field(default=False, exclude=True)
 
     # ── validators ────────────────────────────────────────────────
+
+    @field_validator("account_connectors", mode="before")
+    @classmethod
+    def _validate_account_connectors(cls, v):
+        # Any name at all lifts the containment, so a value that does not read
+        # as names is refused here, as the agent profile refuses it, rather than
+        # taken as a grant.
+        if v is None:
+            return None
+        if not isinstance(v, list | tuple) or any(
+            not isinstance(name, str) or not name.strip() for name in v
+        ):
+            raise ValueError("account_connectors must be a list of connector names")
+        return list(dict.fromkeys(name.strip() for name in v))
 
     @field_validator("add_dir", mode="before")
     def _norm_add_dir(cls, v):
@@ -585,7 +686,23 @@ class CodexCodeRequest(BaseModel):
         for image in self.images:
             args.extend(["-i", image])
 
+        containing = self._contains_account_integrations()
         for key, value in self.config_overrides.items():
+            # Containment removes overrides under `features.apps` and
+            # `features.plugins`, plus those keys from an inline `features`
+            # table. Config profiles can contribute either form alongside the
+            # caller. Drop them here rather than relying on flag order.
+            if containing:
+                path = _override_key_path(key)
+                if path[0] == "features":
+                    if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
+                        continue
+                    if len(path) == 1 and isinstance(value, Mapping):
+                        value = {
+                            k: v for k, v in value.items() if k not in _ACCOUNT_INTEGRATION_FEATURES
+                        }
+                        if not value:
+                            continue
             args.extend(["-c", f"{key}={toml_override_value(value)}"])
 
         # Working directory (always emit)
@@ -598,8 +715,24 @@ class CodexCodeRequest(BaseModel):
 
         return args
 
+    def _contains_account_integrations(self) -> bool:
+        return self.contain_account_integrations and not self.account_connectors
+
     def _build_declarative_args(self) -> list[str]:
-        return build_declarative_cli_args(self)
+        if not self._contains_account_integrations():
+            return build_declarative_cli_args(self)
+        disabled = list(self.disable_features or ())
+        settled = self.model_copy(
+            update={
+                "enable_features": [
+                    f for f in self.enable_features or () if f not in _ACCOUNT_INTEGRATION_FEATURES
+                ]
+                or None,
+                "disable_features": disabled
+                + [f for f in _ACCOUNT_INTEGRATION_FEATURES if f not in disabled],
+            }
+        )
+        return build_declarative_cli_args(settled)
 
 
 CodexSession = CLISession

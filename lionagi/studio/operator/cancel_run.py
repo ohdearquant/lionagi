@@ -413,7 +413,7 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     invocation is reaped exactly the way ``li kill --recursive`` does,
     rather than orphaned when the parent session goes terminal.
     """
-    from lionagi.cli.kill import _kill_one, _list_running_children
+    from lionagi.cli.kill import _NOT_STOPPED_SIGNALS, _kill_one, _list_running_children
     from lionagi.state.db import StateDB
 
     run_id = command.get("session_id")
@@ -460,11 +460,10 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             row_dict,
             user_reason=user_reason,
         )
-        if outcome["signal"] == "identity_mismatch":
-            # _kill_one() returns without calling _persist_cancel for an
-            # identity mismatch -- nothing was written. Report that directly
-            # rather than re-reading a row that is guaranteed unchanged.
-            return {"status": "identity_mismatch", "id": run_id, "signal": outcome["signal"]}
+        if outcome["signal"] in _NOT_STOPPED_SIGNALS:
+            # _kill_one() leaves the row unchanged when it cannot stop the
+            # process. Preserve that distinction from an already-terminal row.
+            return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"]}
 
         # `_persist_cancel` guards its write on the row still being 'running'
         # at persist time (lionagi/cli/kill.py) -- a race that lets the run

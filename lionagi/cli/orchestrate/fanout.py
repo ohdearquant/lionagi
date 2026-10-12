@@ -101,6 +101,7 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv):
     # build_worker_branch hands it to a worker: as the whole set.
     worker_servers = getattr(env, "mcp_servers", None)
     chat_model = env.orc_branch.chat_model.copy()
+    chat_model.endpoint.config.kwargs.pop("account_connectors", None)
     _hand_mcp_servers(
         chat_model,
         worker_servers,

@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from lionagi import _paths
 from lionagi.cli._mcp_resolve import (
     SNAPSHOT_SEARCHED_FROM_KEY,
     SNAPSHOT_SOURCE_KEY,
@@ -30,6 +31,23 @@ def test_discovery_walks_up_from_the_launch_directory(tmp_path):
     deep = tmp_path / "a" / "b"
     deep.mkdir(parents=True)
     assert discover_mcp_config(deep) == tmp_path / ".mcp.json"
+
+
+def test_account_home_bare_config_is_not_discovered(tmp_path, monkeypatch):
+    account_home = tmp_path / "acct"
+    launch_dir = account_home / "work" / "repo"
+    launch_dir.mkdir(parents=True)
+    safe_home = tmp_path / "safe"
+    safe_home.mkdir()
+    _write_config(account_home, {"bare": {"command": "bare"}})
+    monkeypatch.setattr(_paths, "_account_home", lambda: account_home)
+    monkeypatch.setenv("HOME", str(safe_home))
+
+    resolution = resolve_spawn_mcp_servers(launch_dir=launch_dir)
+
+    assert resolution.servers is None
+    assert resolution.reason == "no_mcp_config_found"
+    assert resolution.source is None
 
 
 def test_servers_are_read_from_the_launch_dir_not_the_target_cwd(tmp_path):

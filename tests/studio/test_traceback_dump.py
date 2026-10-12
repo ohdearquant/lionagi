@@ -17,6 +17,7 @@ rule exists to prevent.
 from __future__ import annotations
 
 import faulthandler
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -184,13 +185,11 @@ def _git_dir(root: Path) -> Path:
 
 
 def test_an_abandoned_git_init_is_not_a_checkout(tmp_path):
-    """The shape a shared directory actually collects, and the one that bit us.
+    """Incomplete `.git` directories do not identify a checkout.
 
-    An interrupted `git init` leaves a `.git` holding empty `hooks` and `info`
-    and nothing else. Git refuses to read it as a repository, so a guard that
-    accepts it refuses every path underneath on behalf of a checkout that does
-    not exist. One of these in a system temp directory is enough to make every
-    test that writes below it fail for a reason nowhere near the failure.
+    An interrupted initialization may leave `hooks` and `info` but omit the
+    entries Git uses to recognize a repository. Paths below that directory
+    must remain available for ordinary files.
     """
     entry = tmp_path / ".git"
     (entry / "hooks").mkdir(parents=True)
@@ -392,3 +391,24 @@ def test_a_head_that_is_a_directory_is_not_a_checkout(tmp_path):
     (entry / "HEAD").mkdir()
 
     assert td._inside_a_git_tree(tmp_path) is None
+
+
+def test_a_non_directory_git_entry_is_fail_closed(tmp_path):
+    make_fifo = getattr(os, "mkfifo", None)
+    if make_fifo is None:
+        pytest.skip("FIFO creation is unavailable on this platform")
+    make_fifo(tmp_path / ".git")
+
+    assert td._inside_a_git_tree(tmp_path) == tmp_path
+
+
+def test_a_head_symlink_to_a_missing_ref_is_a_checkout(tmp_path):
+    entry = _git_dir(tmp_path)
+    head = entry / "HEAD"
+    head.unlink()
+    try:
+        head.symlink_to("refs/heads/missing")
+    except (NotImplementedError, OSError):
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    assert td._inside_a_git_tree(tmp_path) == tmp_path

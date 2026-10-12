@@ -30,8 +30,26 @@ def test_error_log_masks_database_url_password(caplog, capsys):
     assert "dbuser:***@db.example.test/lionagi" in captured.err
 
 
+def test_error_log_masks_a_password_given_as_a_keyword(caplog, capsys):
+    # Synthetic credential, as a keyword/value connection string writes it.
+    planted = "example-log-planted-value"
+    logger = logging.getLogger("lionagi.cli.error")
+    logger.handlers.clear()
+    logger.propagate = False
+    configure_cli_logging(verbose=False)
+    logger.addHandler(caplog.handler)
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        log_error(f"could not connect: host=db.example.test password={planted} dbname=lionagi")
+
+    captured = capsys.readouterr()
+    assert planted not in caplog.text
+    assert planted not in captured.out + captured.err
+    assert "host=db.example.test password=*** dbname=lionagi" in captured.err
+
+
 class _UnreadableStore:
-    """A store whose error text carries a password the masker does not match."""
+    """A store whose error text carries a password outside any URL."""
 
     def __init__(self, *args, **kwargs):
         pass
@@ -67,8 +85,10 @@ async def test_an_unreadable_definition_store_is_logged_by_error_class_only(
     monkeypatch.setattr(db_mod, "StateDB", _UnreadableStore)
     name, *args = read
     with caplog.at_level(logging.WARNING, logger="lionagi.studio"):
-        with pytest.raises(definitions.HistoryUnavailableError):
+        with pytest.raises(definitions.HistoryUnavailableError) as raised:
             await getattr(definitions, name)(*args)
 
     assert f"{logged}: RuntimeError" in caplog.text
     assert "example-store-secret" not in caplog.text
+    # the error carries the store's own text, masked, to whatever reports it
+    assert str(raised.value) == "could not connect: host=db.example.test password=***"

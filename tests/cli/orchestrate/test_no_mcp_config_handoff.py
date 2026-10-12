@@ -572,6 +572,31 @@ async def test_a_codex_synthesis_branch_drops_the_orchestrators_job_control(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(tmp_run, codex_home):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    codex_home.write_config({})
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
+    orchestrator_kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    orchestrator_kwargs["contain_account_integrations"] = True
+    orchestrator_kwargs["account_connectors"] = ["github"]
+
+    branch = await _fresh_synthesis_branch(env)
+    synthesis_kwargs = branch.chat_model.endpoint.config.kwargs
+    event = await branch.chat_model.create_event(prompt="hi")
+    request = event.payload["request"]
+    args = request.as_cmd_args()
+    disabled_features = {args[i + 1] for i in range(len(args) - 1) if args[i] == "--disable"}
+
+    assert "account_connectors" not in synthesis_kwargs
+    assert synthesis_kwargs["contain_account_integrations"] is True
+    assert isinstance(request, CodexCodeRequest)
+    assert {"apps", "plugins"} <= disabled_features
+    assert orchestrator_kwargs["account_connectors"] == ["github"]
+
+
+@pytest.mark.asyncio
 async def test_a_casts_worker_is_told_which_servers_were_withheld(tmp_run):
     (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _CONTROL_AND_KNOWLEDGE}))
     env = await _setup(no_mcp_config=False)

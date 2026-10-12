@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lionagi._paths import is_account_home
+
 __all__ = (
     "MCP_CONFIG_FILENAME",
     "McpConfigError",
@@ -94,7 +96,7 @@ def discover_mcp_config(start: str | Path) -> Path | None:
     current = Path(start).expanduser().resolve()
     for directory in (current, *current.parents):
         candidate = directory / MCP_CONFIG_FILENAME
-        if candidate.is_file():
+        if candidate.is_file() and not is_account_home(directory):
             return candidate
     return None
 

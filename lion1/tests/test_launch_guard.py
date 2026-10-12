@@ -1,8 +1,8 @@
 """The suite refuses a test's launch of a khive binary or a provider CLI unless the test declares it, or the
-program is a stand-in the test wrote under the session's temporary directory. The guard is the seam
-tests/conftest.py takes on `subprocess.Popen._execute_child` as it is imported, bound to the running test by
-the autouse fixture `_refuse_undeclared_cli_launches`. Each program here is a script named like the real one
-that leaves a file behind when it runs, so a refusal shows as the file never appearing."""
+program is a stand-in the test wrote under the session's temporary directory. The guard is the seam in
+`lion1/tests/conftest.py` that wraps `subprocess.Popen._execute_child` when imported, bound to the running
+test by the autouse fixture `_refuse_undeclared_cli_launches`. Each program here is a script named like
+the real one that leaves a file behind when it runs, so a refusal shows as the file never appearing."""
 
 import ast
 import asyncio
@@ -2105,7 +2105,7 @@ def test_the_source_check_passes_what_stays_on_subprocess(source):
 
 
 def test_the_census_boundary_is_named_calls_as_written():
-    # the line the census holds (docs/adr/027-suite): a launch in text the code builds while it runs is
+    # the line the census holds (lion1/docs/adr/027-suite): a launch in text the code builds while it runs is
     # caught when a call the census names evaluates it, and passes when an evaluator it does not name
     # does, here `functools.singledispatch` registering a function by its annotation. A change to the
     # census that moves the line either way turns this red, and the record moves with it

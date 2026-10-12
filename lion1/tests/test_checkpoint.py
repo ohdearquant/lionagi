@@ -1,7 +1,7 @@
 """The checkpoint (ADR-0019): named state plus a folded view, computed with no model call from what the
 store holds, never written as a file. The take is pure and checks the kinds and whys it is handed. A
-run of this runtime takes none: its rows are the store's (`tests/test_store.py`). The Claude Code
-session's take and restore are in `tests/test_claude_code_checkpoint.py`."""
+run of this runtime takes none: its rows are the store's (`lion1/tests/test_store.py`). The Claude Code
+session's take and restore are in `lion1/tests/test_claude_code_checkpoint.py`."""
 
 import dataclasses
 import json

@@ -65,6 +65,21 @@ class TestResolveSkillPath:
         assert err is None
         assert str(p) == str(target)
 
+    def test_allows_a_skill_file_link_within_a_non_repository_root(self, monkeypatch, tmp_path):
+        skills_dir = tmp_path / ".lionagi" / "skills"
+        target = skills_dir / "shared" / "body.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("body\n")
+        linked = skills_dir / "foo"
+        linked.mkdir()
+        (linked / "SKILL.md").symlink_to("../shared/body.md")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        path, err = resolve_skill_path("foo")
+
+        assert err is None
+        assert path == linked / "SKILL.md"
+
 
 class TestListSkillNames:
     def test_empty_when_no_dir(self, monkeypatch, tmp_path):

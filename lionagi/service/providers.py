@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 __all__ = (
@@ -20,8 +21,10 @@ __all__ = (
     "PROVIDER_YOLO_KWARGS",
     "PROVIDERS_EFFORT_VIA_MODEL_NAME",
     "PROVIDERS_NO_EFFORT",
+    "codex_unset_effort_default",
     "normalize_effort",
     "parse_model_spec",
+    "reclamp_effort_for_model",
     "split_effort_suffix",
 )
 
@@ -48,8 +51,11 @@ def normalize_effort(effort: str | None) -> str | None:
 
 
 # Codex reasoning-effort ceilings are model-dependent (source: codex CLI's live model
-# list for gpt-5.6, the provider's model pages for gpt-6); unrecognized (future) models
-# pass through unclamped. See docs/internals/runtime.md.
+# list for gpt-5.6, the provider's model pages for gpt-6). The sets are hand-typed:
+# when codex ships a model, someone adds it here or it is treated as unknown. For an
+# unknown model an EXPLICIT effort passes through unclamped (the caller asked for it),
+# while codex_unset_effort_default emits nothing, since no ceiling knowledge means no
+# guessing. See docs/internals/runtime.md.
 _CODEX_ULTRA_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra"})
 _CODEX_MAX_ONLY_MODELS = frozenset(
     {"gpt-5.6-luna", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}
@@ -65,6 +71,10 @@ _CODEX_XHIGH_CEILING_MODELS = frozenset(
         "codex-auto-review",
     }
 )
+# Models whose effort ceiling the tables above actually know.
+_CODEX_KNOWN_EFFORT_MODELS = (
+    _CODEX_ULTRA_MODELS | _CODEX_MAX_ONLY_MODELS | _CODEX_XHIGH_CEILING_MODELS
+)
 
 
 def _clamp_codex_effort(effort: str, model: str | None) -> str:
@@ -76,6 +86,73 @@ def _clamp_codex_effort(effort: str, model: str | None) -> str:
         return "xhigh"
     if effort == "ultra" and model_part in _CODEX_MAX_ONLY_MODELS:
         return "max"
+    return effort
+
+
+def codex_unset_effort_default(
+    model: str,
+    profile_overrides: dict | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Effort to emit for a codex request whose caller set none.
+
+    With no explicit override the codex CLI falls back to the global config's
+    ``model_reasoning_effort``, a value tuned for the config's own default
+    model rather than the model this request resolved, and an over-ceiling
+    value is rejected by the API (a global ``ultra`` reaching
+    gpt-5.3-codex-spark, whose ceiling is ``xhigh``). Emitting that same global
+    value pre-clamped keeps the intended depth while staying inside the
+    resolved model's vocabulary. A profile that pins ``model_reasoning_effort``
+    keeps its pin; no global value means codex's own built-in default applies.
+
+    Ceilings come from the hand-typed tables above, and a model they don't know
+    gets nothing emitted. For an unknown or custom (``model_providers``) model
+    this returns None, so the child reads the global value unclamped and an
+    over-ceiling setting is rejected exactly as it was before. This protects the
+    models it knows, not every model. Guessing a ceiling would be worse: it
+    would silently downgrade a model legitimately capable of the configured
+    depth. The table is the boundary of the guarantee, and widening the
+    guarantee means widening the table.
+
+    Every seam that builds a codex request from an unset effort routes through
+    here: the CLI builders, the Studio operator path, and the generic agent
+    factory. A seam that skips it silently reinstates the defect.
+
+    ``env`` is the environment the spawned codex process will run under, when
+    the caller knows it. A request may carry a complete replacement
+    environment, and the config codex reads is the one THAT environment names:
+    resolving against our own would clamp against a file the child never opens
+    while leaving unclamped the one it does.
+    """
+    if profile_overrides and "model_reasoning_effort" in profile_overrides:
+        return None
+    from lionagi.providers.openai._codex_profile import global_codex_reasoning_effort
+
+    global_effort = normalize_effort(global_codex_reasoning_effort(env))
+    if global_effort is None:
+        return None
+    model_part = (model or "").split("/", 1)[-1]
+    if model_part not in _CODEX_KNOWN_EFFORT_MODELS:
+        return None
+    if model_part in _CODEX_NO_MINIMAL_MODELS and global_effort == "minimal":
+        return None
+    return _clamp_codex_effort(global_effort, model)
+
+
+def reclamp_effort_for_model(provider: str, effort: str | None, model: str | None) -> str | None:
+    """Re-clamp an effort that was resolved against a DIFFERENT model.
+
+    A persisted effort carries the ceiling of the model it was resolved for;
+    replaying it onto another model can exceed that model's ceiling (an
+    ``ultra`` resolved for gpt-5.6-sol replayed on gpt-5.3-codex-spark).
+    Callers that swap a model under an existing effort re-clamp here.
+    """
+    if effort is None:
+        return None
+    if provider == "codex":
+        return _clamp_codex_effort(effort, model)
+    if provider in _CLAUDE_PROVIDER_NAMES:
+        return _clamp_claude_effort(effort, model or "")
     return effort
 
 

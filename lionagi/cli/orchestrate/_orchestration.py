@@ -839,6 +839,10 @@ async def setup_orchestration(
         effort_override=effort,
         theme=theme,
         fast=fast,
+        account_connectors=tuple(getattr(orc_profile, "account_connectors", None) or ()),
+        contain_account_integrations=bool(
+            getattr(orc_profile, "contain_account_integrations", False)
+        ),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -949,6 +953,76 @@ def _resolve_worker_model_spec(
     return w_model, w_profile, w_cfg
 
 
+def _warn_worker_config_collision(
+    env: OrchestrationEnv,
+    role: str,
+    *,
+    model_override: str | None,
+    system_prompt_override: str | None,
+    modes: list[str] | None,
+    profile: AgentProfile | None,
+    pack_config: Any,
+) -> None:
+    """Disclose the setting-by-setting precedence for a split worker config."""
+    if env.bare or profile is None or pack_config is None:
+        return
+
+    if model_override:
+        model_source = "worker override"
+    elif pack_config.model:
+        model_source = "pack"
+    elif profile.model:
+        model_source = "profile"
+    else:
+        # `profile` is never None here (guarded above), so the profile branch
+        # of `_resolve_worker_model_spec` always matches when neither an
+        # override nor a pack model is set. A profile whose `model` is falsy
+        # resolves to the role name itself, not to the orchestration default --
+        # that fallback is unreachable on this path. "No effective model" rather
+        # than "no model declared": `model: ""` parses through and is falsy, so
+        # the field can be present and still contribute nothing.
+        model_source = "profile (no effective model; role name used as spec)"
+
+    if env.effort:
+        effort_source = "orchestration override"
+    elif profile.effort:
+        effort_source = "profile"
+    elif pack_config.effort:
+        effort_source = "pack"
+    else:
+        effort_source = "provider default"
+
+    if modes:
+        modes_source = (
+            "task override validated by pack" if pack_config.modes_allow else "task override"
+        )
+    else:
+        modes_source = "pack"
+    if system_prompt_override is not None:
+        prompt_source = "worker override"
+    elif profile.raw_body:
+        prompt_source = "profile"
+    elif _is_casts_role(role):
+        prompt_source = "cast role with pack policy"
+    else:
+        prompt_source = "generic worker"
+
+    pack_name = getattr(env.pack, "name", "default")
+    message = (
+        f"worker role {role!r} matches both cast pack {pack_name!r} and agent profile "
+        f"{profile.name!r}; resolved sources: model={model_source}, effort={effort_source}, "
+        f"modes={modes_source}, prompt={prompt_source}"
+    )
+    reported = getattr(env, "_reported_worker_config_collisions", None)
+    if reported is None:
+        reported = set()
+        env._reported_worker_config_collisions = reported
+    if message in reported:
+        return
+    reported.add(message)
+    warn(message)
+
+
 def worker_is_cli(
     env: OrchestrationEnv,
     role: str,
@@ -1032,6 +1106,16 @@ async def build_worker_branch(
     if not env.bare and w_profile and w_profile.fast_mode:
         w_fast = True
 
+    _warn_worker_config_collision(
+        env,
+        role,
+        model_override=model_override,
+        system_prompt_override=system_prompt_override,
+        modes=modes,
+        profile=w_profile,
+        pack_config=w_cfg,
+    )
+
     w_imodel = build_imodel_from_spec(
         w_model,
         yolo=w_yolo,
@@ -1040,6 +1124,13 @@ async def build_worker_branch(
         effort_override=w_effort,
         theme=env.theme,
         fast=w_fast,
+        # The role's settings, as for its other fields; a bare worker has no role.
+        account_connectors=(
+            tuple(getattr(w_profile, "account_connectors", None) or ()) if not env.bare else ()
+        ),
+        contain_account_integrations=bool(
+            not env.bare and getattr(w_profile, "contain_account_integrations", False)
+        ),
     )
     worker_mcp_servers = getattr(env, "mcp_servers", None)
     _hand_mcp_servers(
@@ -1415,17 +1506,36 @@ def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     for agent_id, adir in registered.items():
         entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
         adir = Path(adir)
-        if not adir.exists():
+        # `stat` distinguishes an absent path from one that cannot be inspected.
+        try:
+            adir.stat()
+        except (FileNotFoundError, NotADirectoryError):
             entry["status"] = "missing"
             entry["error"] = "the directory recorded for this worker does not exist"
+        except (OSError, ValueError) as exc:
+            entry["status"] = "unreadable"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
         else:
             try:
-                files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
-            except OSError as exc:
+                files: list[str] = []
+                scan_error: OSError | None = None
+
+                def record_scan_error(error: OSError) -> None:
+                    nonlocal scan_error
+                    if scan_error is None:
+                        scan_error = error
+
+                for directory, _, names in os.walk(adir, onerror=record_scan_error):
+                    for name in names:
+                        path = Path(directory) / name
+                        if path.is_file():
+                            files.append(str(path.relative_to(adir)))
+                if scan_error is not None:
+                    raise scan_error
+                entry["files"] = sorted(files)
+            except (OSError, ValueError) as exc:
                 entry["status"] = "unreadable"
                 entry["error"] = f"{type(exc).__name__}: {exc}"
-            else:
-                entry["files"] = files
         entries.append(entry)
 
     for agent_id in getattr(env, "expected_worker_ids", None) or ():
@@ -1505,6 +1615,7 @@ def finalize_orchestration(
         "recall_turns": 0,
         "blocks_injected": 0,
         "failed": 0,
+        "degraded_turns": 0,
         "writeback_records": 0,
         "writeback_failed": 0,
     }
@@ -1755,6 +1866,12 @@ async def setup_orchestration_persist(
             exc_info=True,
         )
         _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
+        # It records no process to stop, so its run id is no `li kill` handle: say so now, with the
+        # pid, rather than leave the operator to find out at kill time (ADR-0104 Amendment 2).
+        warn(
+            f"run {run.run_id if run is not None else '(no run id)'}: persistence setup returned no "
+            f"session, and its run id is no `li kill` handle; its process is pid {os.getpid()}"
+        )
         if db is not None:
             try:
                 await db.close()

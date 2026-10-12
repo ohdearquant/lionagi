@@ -64,46 +64,34 @@ def _inside_a_git_tree(path: Path) -> Path | None:
     failure would have to resolve as "not a checkout" -- the wrong direction
     for a guard whose expensive mistake is missing a tree, not inventing one.
 
-    An entry this function cannot READ resolves as a checkout. Descending into
-    ``.git`` can fail where merely noticing it could not, so every probe here is
-    a ``stat`` whose ``PermissionError`` reaches the handler below. Unreadable
-    means undecidable, and of the three ways to be wrong here -- refuse a safe
-    path, miss a real tree, or raise out of a function the daemon calls while
-    arming -- refusing is the cheap one and raising is the one that takes the
-    process with it. ``is_file``/``is_dir`` cannot carry that rule across
-    interpreters: on 3.14 they answer False rather than raise, which is a
-    fall-through wearing a negative answer's clothes.
+    An unreadable candidate is treated as inside a checkout. The function uses
+    ``lstat`` to classify ``.git`` and ``HEAD`` without
+    following links; checking ``objects`` and ``refs`` can still fail when the
+    directory is unreadable, and that error reaches the handler below.
+    Unreadable means undecidable, so the function refuses the path rather than
+    overlook a tree or raise out of the daemon's startup path.
     """
     for candidate in (path, *path.parents):
         entry = candidate / ".git"
         try:
-            # One ``stat`` per ancestor, read for its type, rather than
+            # One ``lstat`` per ancestor, read for its type, rather than
             # ``is_file()`` then ``is_dir()``. The common case by far is a path
             # with no checkout above it, and that case walks to the filesystem
             # root: paying two probes per level there doubled the syscalls this
             # function costs against the single ``exists()`` it replaced.
-            mode = entry.stat().st_mode
-            if stat.S_ISREG(mode):
-                return candidate
+            mode = entry.lstat().st_mode
             if not stat.S_ISDIR(mode):
-                continue
-            # ``stat``, not ``is_file``/``is_dir``, and the reason is the whole
-            # point of the arm below. On Python 3.14 those two answer False for
-            # a path they cannot read instead of raising, so a ``.git`` that can
-            # be seen but not entered stops reaching the fail-closed handler and
-            # falls through to the next ancestor -- the guard quietly stops
-            # refusing exactly where it cannot tell, which is the one case it
-            # exists for. ``requires-python`` has no ceiling, so that
-            # interpreter installs this today. Measured: 3.10 through 3.13 raise
-            # PermissionError here, 3.14 returns False.
+                return candidate
+            # Explicit ``stat`` calls preserve filesystem errors for the
+            # handler below. ``Path.is_file`` and ``Path.is_dir`` can turn an
+            # unreadable entry into False, which would overlook a tree this
+            # guard cannot inspect.
             #
-            # The type check itself is unchanged in meaning. git requires HEAD
-            # to be a file, and a directory named HEAD is one of the shapes it
-            # refuses; an entry that is simply missing still raises
-            # FileNotFoundError, which the handler below already reads as "no
-            # checkout here".
+            # Git accepts HEAD as a file or symlink. A directory named HEAD is
+            # not a checkout; a missing entry is handled below as no checkout.
+            head_mode = (entry / "HEAD").lstat().st_mode
             if (
-                stat.S_ISREG((entry / "HEAD").stat().st_mode)
+                (stat.S_ISREG(head_mode) or stat.S_ISLNK(head_mode))
                 and stat.S_ISDIR((entry / "objects").stat().st_mode)
                 and stat.S_ISDIR((entry / "refs").stat().st_mode)
             ):

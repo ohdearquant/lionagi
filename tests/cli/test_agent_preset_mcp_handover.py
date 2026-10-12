@@ -299,10 +299,16 @@ async def test_preset_leg_gets_the_submitted_servers_not_the_target_directory(sp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
-async def test_explicit_mcp_config_beats_a_config_at_the_target_directory(spawn, tmp_path, model):
+async def test_explicit_mcp_config_beats_a_config_at_the_target_directory(
+    spawn, tmp_path, model, codex_home
+):
     """--mcp-config names the set; a config sitting at --cwd does not win."""
     from lionagi.cli.agent import _run_agent
 
+    # A named set on codex disables every server codex declares on its own, read from its
+    # config; with no config there it asks the `codex` binary. A config with no servers
+    # keeps the test off the binary.
+    codex_home.write_config({})
     named = _write_mcp_config(tmp_path / "named", {"named": {"command": "named-server"}})
     _write_mcp_config(spawn.target_dir, NEARBY)
 

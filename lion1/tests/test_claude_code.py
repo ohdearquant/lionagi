@@ -328,7 +328,7 @@ def _cli(tmp_path, name: str, stdout: str, rc: int, stderr: str = "") -> str:
 
 
 def test_failed_envelope_is_preserved(tmp_path):
-    # the Codex half is tests/test_codex.py's
+    # the Codex half is lion1/tests/test_codex.py's
     refused = _cli(tmp_path, "refused", REFUSAL, 1)
     for backend, call in (
         (claude_code.ClaudeCode(cli=refused), [Message("user", "go")]),

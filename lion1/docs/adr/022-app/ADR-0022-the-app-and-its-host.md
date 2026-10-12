@@ -19,30 +19,19 @@ tags:
 
 ## Context
 
-This record serves the author's requests of 2026-10-04:
-
-- 07:25:30: not good enough; rebuild the app, as asked before
-- 07:30:45: "needs attention" means the author's attention
-- 07:31:38: a quick-reply feature
-- 07:32:12: too intrusive
-- 08:02:09: more consistent design across add-model, plugin, add-tool and similar pages
-- 08:09:12: usable first
-- 08:13:17: everything here is long-running
-- 08:14:36: configuration, rarely used, belongs in Settings
-- 08:15:21: never show an API key
-- 08:23:08: consistent header heights across pages
-- 11:38:27: dynamic page layout, box sizes for example
+The first release is a usable Mac client for one host. It supports long-running operations, keeps
+infrequent configuration in Settings, hides API keys, and uses consistent, adaptive page layouts.
+Attention indicators identify work that needs the app user's attention. Quick reply is out of scope
+as too intrusive. The app's first consumer is the served actor (ADR-0021).
 
 The residents already serve from their directories, and the areas server reads, holds, wakes and
 restarts them ([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). This record fixes the first usable release
 over them: a Mac app on one host, the host's `/v2` routes, and what each reads and writes.
 
-The author's 08:09:12 puts a usable release first, so this record defers five instructions of that
-morning to later records. They are the desk served through the actor (07:34:15, S17), the subagent
-tool (07:45:44, S16), provider keys and limits in settings (08:05:56 and 08:10:21, S15), the plugin
-as the smallest unit, with marketplaces (08:19:00, S13), and per-agent shell control (08:20:37,
-S14). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in `apps/cli/lion_cli/areas.py`, `hub/areas.py`,
-`apps/mac/`.
+This record defers the desk served through the actor (S17), the subagent tool (S16), provider keys
+and limits in Settings (S15), the plugin as the smallest unit, with marketplaces (S13), and
+per-agent shell control (S14). Source: `apps/cli/lion_cli/daemon.py`, `_v2` in
+`apps/cli/lion_cli/areas.py`, `hub/areas.py`, `apps/mac/`.
 
 ## Definitions
 

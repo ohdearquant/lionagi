@@ -459,8 +459,13 @@ async def test_wait_still_waits_for_a_running_id_beside_a_stopped_one(sandbox, m
 async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monkeypatch):
     """Dropping a stopped id from the wait says nothing about the record.
 
-    An end written afterwards by either writer classifies exactly as it always
-    did, and the id is no longer reported as stopped without one.
+    An end written afterwards classifies exactly as it always did, and the id
+    is no longer reported as stopped without one. Here the first end was this
+    server's own inference (no writer had reported one yet); the hook
+    arriving afterwards does not supersede that inference — the first
+    recorded end, including the reaper's `indeterminate`, remains — but its
+    late report is visible beside the latch, and its own delivery attempt
+    still went ahead. See `docs/internals/mcp.md#status-response-contract`.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     rid = jobs.new_run_id()
@@ -470,7 +475,6 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
     assert ended["stopped_without_end"] == []
     assert ended["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
 
-    # A hook arriving afterwards cannot replace an end that is already recorded.
     jobs.mark_terminal(rid, "completed")
     res = await jobs.wait([rid], max_wait=0, poll_interval=1)
 
@@ -480,6 +484,10 @@ async def test_a_stopped_run_that_later_records_an_end_is_terminal(sandbox, monk
     assert res["runs"][0]["terminal"] is True
     assert res["runs"][0]["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert res["runs"][0]["possibly_orphaned"] is False
+    late_report = jobs._read_job(rid)["late_report"]
+    assert late_report["source"] == "hook"
+    assert late_report["status"] == "completed"
+    assert late_report["outcome"] == "succeeded"
 
 
 async def test_wait_snapshot_of_a_stopped_run_is_still_a_snapshot(sandbox, monkeypatch):
@@ -515,10 +523,14 @@ async def test_wait_does_not_hold_the_window_open_for_a_reused_pid(sandbox, monk
     wait observes through status, so a liveness answer taken from whatever holds
     the number keeps the run in ``pending`` for the whole window and leaves
     ``stopped_without_end`` empty — the caller waits out its budget on a run that
-    already ended, and is told nothing about why.
+    already ended, and is told nothing about why. Two agreeing live reads that
+    both mismatch the record only prove the reads agree with each other; a
+    marker naming a different run is what makes the pid-recycled conclusion
+    positive.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", 1_700_005_000.0))
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run-id"))
     rid = jobs.new_run_id()
     _record(rid, pid=4242, pid_create_time=1_700_000_000.0, pgid=4242)
 

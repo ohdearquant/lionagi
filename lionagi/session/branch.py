@@ -531,11 +531,12 @@ class Branch(Element, Relational):
             list(self._action_manager.registry.values()) if self._action_manager.registry else None
         )
         chat_model = self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
-        parse_model = (
-            self.parse_model.copy()
-            if (self.parse_model is not self.chat_model and self.parse_model.is_cli)
-            else self.parse_model
-        )
+        # one model serving both keeps doing so in the clone: handing on the original's object would
+        # have the clone's parse calls continue, and overwrite, the original's provider session
+        if self.parse_model is self.chat_model:
+            parse_model = chat_model
+        else:
+            parse_model = self.parse_model.copy() if self.parse_model.is_cli else self.parse_model
 
         branch_clone = Branch(
             system=system,

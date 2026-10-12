@@ -852,14 +852,14 @@ async def test_legacy_row_with_project_not_matching_bare_name_disclosed_in_repor
 
 
 @pytest.mark.asyncio
-async def test_legacy_row_with_project_not_matching_qualified_name_disclosed_in_report(
-    temp_db_path, agent_profile
+async def test_legacy_row_with_conflicting_project_preserves_qualified_name_on_apply(
+    temp_db_path, agent_profile, tmp_path, monkeypatch
 ):
-    """A row whose ``name`` already carries a *different* prefix than its
-    stored ``action_project`` must disclose the resulting double
-    qualification (``"{action_project}/{name}"``), not report READY with no
-    caveat -- the pre-fix code never checked that the name actually started
-    with ``f"{action_project}/"`` before trusting it verbatim."""
+    """A conflicting execution project must not override name namespace.
+
+    The export groups by the stored name's prefix and preserves its identity
+    on apply, while retaining ``action_project`` as the execution project.
+    """
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("mp2", "foo/nightly", cwd=agent_profile, action_project="demo")
@@ -869,11 +869,23 @@ async def test_legacy_row_with_project_not_matching_qualified_name_disclosed_in_
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
     assert [line.status for line in lines] == ["READY"]
-    assert lines[0].message is not None
-    assert "demo/foo/nightly" in lines[0].message
     doc = docs[0]
-    assert doc.metadata.project == "demo"
-    assert "foo/nightly" in doc.schedules
+    assert doc.metadata.project == "foo"
+    assert "nightly" in doc.schedules
+    assert doc.schedules["nightly"].execution.project == "demo"
+    assert "execution project 'demo' differs from name namespace 'foo'" in (lines[0].message or "")
+    assert "re-applies as" not in (lines[0].message or "")
+
+    fresh_db = tmp_path / "fresh.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    async with StateDB() as db:
+        result = await apply_schedule_set(db, doc, agent_profile)
+        exact = await db.get_schedule_by_name("foo/nightly")
+        guessed = await db.get_schedule_by_name("demo/foo/nightly")
+    assert result.created == 1
+    assert exact is not None
+    assert exact["action_project"] == "demo"
+    assert guessed is None
 
 
 # GitHub cadence fallback and sibling-file collisions

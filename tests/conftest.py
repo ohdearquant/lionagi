@@ -37,6 +37,26 @@ else:
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
+# The provider layer reads $CODEX_HOME (global codex config and config
+# profiles). Tests must never see the developer's real ~/.codex OR an
+# externally exported CODEX_HOME: a machine-local model_reasoning_effort would
+# change what the builders emit for an effort-less codex spawn, so the
+# replacement is unconditional. Tests that need a config write into this
+# directory or monkeypatch CODEX_HOME themselves.
+_TEST_CODEX_HOME = tempfile.mkdtemp(prefix="lionagi-tests-codex-")
+os.environ["CODEX_HOME"] = _TEST_CODEX_HOME
+atexit.register(_remove_test_home, _TEST_CODEX_HOME)
+
+# Discovery reads the user-level `.lionagi` (profiles, MCP config, settings)
+# through $HOME on every call, so a run that keeps the developer's HOME hands
+# any test that builds a profiled agent the real directory. The replacement is
+# unconditional, made before anything imports lionagi, and inherited by every
+# child process the suite starts. Tests that need a user-level directory write
+# into this one or monkeypatch HOME themselves.
+_TEST_USER_HOME = os.path.realpath(tempfile.mkdtemp(prefix="lionagi-tests-home-"))
+os.environ["HOME"] = _TEST_USER_HOME
+atexit.register(_remove_test_home, _TEST_USER_HOME)
+
 if "lionagi._paths" in sys.modules:
     # The constants are already bound to the old value, so the redirect above
     # did nothing and every run-directory write in this session lands in the
@@ -255,10 +275,11 @@ def _contain_the_frontend_dist_variable(monkeypatch: pytest.MonkeyPatch):
     both far from the test that actually set the variable, and both dependent
     on execution order, so neither reproduces when its own file is run alone.
 
-    ``delenv`` rather than a save/restore pair: registering the name with
-    monkeypatch is what makes teardown undo a later raw write, which is the
-    whole problem here. Tests that want the SPA mounted set it themselves and
-    are unaffected -- this runs first, they set it after.
+    This removes an inherited value before each test. If the name was already
+    absent, ``delenv`` records no original value to restore, so a later raw
+    write to ``os.environ`` must be cleaned up by that test. Tests that want
+    the SPA mounted should use ``monkeypatch.setenv`` so teardown restores the
+    prior value.
     """
     monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
 

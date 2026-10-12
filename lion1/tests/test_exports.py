@@ -1,4 +1,4 @@
-"""Every module under src/lion1/ declares what it exports: `__all__`, a tuple, right below the imports,
+"""Every module under lion1/src/lion1/ declares what it exports: `__all__`, a tuple, right below the imports,
 naming every public top-level name in source order and nothing else; a name not for export starts
 with `_`. A package `__init__` re-exports in the same shape, each name bound by one of its imports."""
 
