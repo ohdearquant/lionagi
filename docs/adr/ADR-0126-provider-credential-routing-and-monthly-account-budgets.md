@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-12)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
