@@ -3155,6 +3155,7 @@ dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tiktoken" },
     { name = "toml" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.optional-dependencies]
@@ -3327,6 +3328,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'studio'", specifier = ">=1.3.1" },
     { name = "tiktoken", specifier = ">=0.10.0" },
     { name = "toml", specifier = ">=0.10.2" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
     { name = "uvicorn", marker = "extra == 'sandbox'", specifier = ">=0.34.0" },
     { name = "uvicorn", marker = "extra == 'studio'", specifier = ">=0.34" },
     { name = "xmltodict", marker = "extra == 'xml'", specifier = ">=0.12.0" },

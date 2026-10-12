@@ -839,6 +839,10 @@ async def setup_orchestration(
         effort_override=effort,
         theme=theme,
         fast=fast,
+        account_connectors=tuple(getattr(orc_profile, "account_connectors", None) or ()),
+        contain_account_integrations=bool(
+            getattr(orc_profile, "contain_account_integrations", False)
+        ),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -1034,6 +1038,13 @@ async def build_worker_branch(
         effort_override=w_effort,
         theme=env.theme,
         fast=w_fast,
+        # The role's settings, as for its other fields; a bare worker has no role.
+        account_connectors=(
+            tuple(getattr(w_profile, "account_connectors", None) or ()) if not env.bare else ()
+        ),
+        contain_account_integrations=bool(
+            not env.bare and getattr(w_profile, "contain_account_integrations", False)
+        ),
     )
     worker_mcp_servers = getattr(env, "mcp_servers", None)
     _hand_mcp_servers(
