@@ -773,6 +773,25 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
     yield {"type": "done"}
 
 
+#: The most of one tool result this provider keeps, in characters. The CLI's event can carry
+#: about a million characters of a single command's output, and every turn here sends the
+#: branch's rendered history as its input, which the CLI refuses past 1,048,576 characters, so
+#: one uncut search result would leave no room for the next turn.
+CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
+
+
+def _bounded_tool_output(output: Any) -> Any:
+    """Keep the head and tail of an oversized text result and say what was cut, so the model
+    reading it on the next turn knows the result is partial and can narrow the command."""
+    if not isinstance(output, str) or len(output) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+        return output
+    half = CODEX_TOOL_OUTPUT_MAX_CHARS // 2
+    return (
+        f"{output[:half]}\n[output truncated: {len(output) - 2 * half:,} of {len(output):,} "
+        f"characters omitted here]\n{output[-half:]}"
+    )
+
+
 def _pp_text(text: str, theme: str = "light") -> None:
     txt = f"""
     > 🟢 Codex:
@@ -896,7 +915,7 @@ async def stream_codex_cli(
                 elif item_type == "command_execution":
                     item_id = item.get("id", "")
                     command = item.get("command", "")
-                    output = item.get("aggregated_output", "")
+                    output = _bounded_tool_output(item.get("aggregated_output", ""))
                     exit_code = item.get("exit_code")
                     status = item.get("status", "")
                     is_error = status == "failed" or (exit_code is not None and exit_code != 0)
@@ -983,7 +1002,9 @@ async def stream_codex_cli(
                 elif item_type == "function_call_output":
                     tr = {
                         "tool_use_id": item.get("call_id", item.get("id", "")),
-                        "content": item.get("output", item.get("content", "")),
+                        "content": _bounded_tool_output(
+                            item.get("output", item.get("content", ""))
+                        ),
                         "is_error": item.get("is_error", False),
                     }
                     session.tool_results.append(tr)
