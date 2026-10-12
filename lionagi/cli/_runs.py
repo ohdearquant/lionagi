@@ -1114,14 +1114,6 @@ async def teardown_persist(
                 **_usage,
             )
 
-        # Detach signal persistence so the observer handler cannot fire after
-        # teardown (the db handle is about to be closed in the finally block).
-        if session_obj is not None:
-            try:
-                session_obj.observer.unbind_db_persistence()
-            except Exception as _exc:  # noqa: BLE001
-                _log.debug("signal persist unbind failed: %s", _exc)
-
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
@@ -1144,9 +1136,19 @@ async def teardown_persist(
         # explicit unknown outcome instead of a guess.
         return "unknown"
     finally:
+        _session_obj = ctx.get("session")
+        # Detach signal persistence on every path, so the observer handler cannot
+        # fire after the db handle closes below, and hand back how many signals it
+        # could not confirm it wrote, writes still in flight included (run.json reads
+        # it from ctx).
+        if _session_obj is not None:
+            try:
+                _session_obj.observer.unbind_db_persistence()
+                ctx["signal_persist_dropped"] = _session_obj.observer.persist_dropped
+            except Exception as _exc:  # noqa: BLE001
+                _log.debug("signal persist unbind failed: %s", _exc)
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.
-        _session_obj = ctx.get("session")
         if _session_obj is not None:
             for _b in [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]:
                 if _b is None:

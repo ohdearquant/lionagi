@@ -1431,6 +1431,10 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if live and "signal_persist_dropped" in live:
+                # Signals this run's persistence could not confirm it wrote, 0 included; the field is
+                # absent when teardown had no session of this run to unbind.
+                run_manifest["signal_persist_dropped"] = live["signal_persist_dropped"]
             if _terminal_status == "failed":
                 # The reason teardown decided for this run, so a reader of the run directory
                 # alone can tell a provider's refusal from a crash. A failure teardown decides
