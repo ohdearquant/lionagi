@@ -779,6 +779,18 @@ whole file or the other. The lock is never held across a network probe — a
 connection attempt can run for seconds, and blocking every save behind it
 would trade a lost write for a frozen UI.
 
+**Unreadable registry** — A missing registry, one holding `null` or `{}`, or
+one whose only entry is `servers`, written once and holding `null`, reads as no
+servers: it has nothing to lose. Any other registry that cannot be read, is not
+UTF-8, does not parse, writes a key twice in one object (a parse keeps the last
+value alone), is not a JSON object, holds an entry other than `servers` (a save
+writes `servers` alone), holds a `servers` entry that is not an object, or
+holds a server entry that is not an object with an object `config` raises
+`McpRegistryUnreadableError` from every read and every change that reaches the
+registry, and the routes answer 503 naming the file. Reading it as empty would
+list no servers, and the next registration would save one entry over all of
+them.
+
 **Secrets** — `_write_private` writes atomically via `mkstemp` (always
 `0600` regardless of umask) + `os.replace`, then an explicit `chmod 0600` to
 repair files created by an older code path that used `write_text` and
