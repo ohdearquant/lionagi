@@ -64,7 +64,7 @@ class EndpointConfig(BaseModel):
     auth_type: AUTH_TYPES = "bearer"
     default_headers: dict = {}
     request_options: B | None = None
-    api_key: str | SecretStr | None = Field(None, exclude=True)
+    api_key: str | SecretStr | None = Field(None, exclude=True, repr=False)
     timeout: int = 300
     max_retries: int = 3
     # A retried POST to a non-idempotent creation endpoint (image generation,
