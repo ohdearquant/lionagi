@@ -50,16 +50,20 @@ def _first_line(path: Path) -> str:
 
 
 def _is_git_dir(git: Path) -> bool:
-    """git's own shape test for a repository directory: HEAD and refs/, with
-    objects/ either here or, for a linked worktree's private gitdir, in the
-    common directory its ``commondir`` file names (that gitdir has no objects/
-    of its own, so requiring one here rejects every linked worktree)."""
-    if not (git.is_dir() and (git / "HEAD").is_file() and (git / "refs").is_dir()):
+    """git's own shape test for a repository directory: HEAD here, with objects/
+    and refs/ either here or, for a linked worktree's private gitdir, in the
+    common directory its ``commondir`` file names. That gitdir has no objects/
+    of its own, and older git gives it no refs/ either, so requiring either
+    one here rejects linked worktrees."""
+    if not (git.is_dir() and (git / "HEAD").is_file()):
         return False
-    if (git / "objects").is_dir():
+    if (git / "objects").is_dir() and (git / "refs").is_dir():
         return True
     common = _first_line(git / "commondir")
-    return bool(common) and (git / common).resolve().joinpath("objects").is_dir()
+    if not common:
+        return False
+    shared = (git / common).resolve()
+    return (shared / "objects").is_dir() and (shared / "refs").is_dir()
 
 
 def _is_repository(directory: Path) -> bool:

@@ -777,9 +777,10 @@ named `SKILL.md` and must stay under the nearest git working tree containing the
 root, or under the root itself when no repository contains it. Blocks the disclosure vector where
 a `SKILL.md` is itself a symlink to an arbitrary file on disk, while a skills root that is a
 symlink into a repository whose skill directories link to sibling trees of that repository still
-resolves. A repository is recognised by git's own shape (a `.git` directory with `HEAD`, `refs/`
-and `objects/`, or a gitfile naming one); pointer files are read only when the open descriptor is
-a regular file, so a FIFO or device at that path cannot block the lookup.
+resolves. A repository is recognised by git's own shape (a `.git` directory with `HEAD`, and
+`refs/` and `objects/` there or in the directory its `commondir` names, or a gitfile naming one);
+pointer files are read only when the open descriptor is a regular file, so a FIFO or device at
+that path cannot block the lookup.
 
 ## `stats.py` — aggregate run stats
 

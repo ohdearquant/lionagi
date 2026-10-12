@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -222,6 +223,19 @@ class TestSkillSymlinkContainment:
         assert err is None
         assert path is not None
 
+    def test_a_linked_worktree_without_private_refs_is_still_the_anchor(self, tmp_path: Path):
+        """Older git writes a linked worktree's private gitdir with HEAD and commondir but no
+        refs/; git reads refs/ and objects/ from the common directory, and so must the anchor."""
+        repo, worktree = _real_repository_with_worktree(tmp_path)
+        private = repo / ".git" / "worktrees" / "wt"
+        if (private / "refs").exists():
+            shutil.rmtree(private / "refs")
+        assert not (private / "refs").exists() and not (private / "objects").exists()
+        skills = worktree / "resources" / "skills"
+        skills.mkdir(parents=True)
+
+        assert _containment_anchor(skills.resolve()) == worktree.resolve()
+
     def test_rejects_skill_symlinked_out_of_a_linked_worktree(self, monkeypatch, tmp_path: Path):
         """The anchor is the worktree, not an ancestor of it: a skill pointing
         into the main checkout beside it is still an escape.
@@ -310,8 +324,8 @@ class TestPointerReads:
         assert self._read_within(pointer) == ""
 
     def test_a_repository_whose_commondir_is_a_fifo_is_not_an_anchor(self, tmp_path: Path):
-        """The reachable path: `_is_git_dir` consults `commondir` only for a gitdir with no
-        `objects/` of its own, which is exactly a linked worktree's shape."""
+        """The reachable path: `_is_git_dir` consults `commondir` only for a gitdir without its
+        own `objects/` and `refs/`, which is exactly a linked worktree's shape."""
         git = tmp_path / "anchor" / ".git"
         (git / "refs").mkdir(parents=True)
         (git / "HEAD").write_text("ref: refs/heads/main\n")
