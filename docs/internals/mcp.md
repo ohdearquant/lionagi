@@ -329,8 +329,8 @@ directly without an `evidence` argument (a test, e.g.) still gets the bounded
 A record already reaper-terminal keeps that end even when a *later* call's own
 fresh probe confirms the process's identity (`status()` only reaps a record
 that isn't terminal yet) — see `reap_contradicted_by_fresh_probe` in
-#status-response-contract for how that contradiction is surfaced rather than
-left for a reader to notice two fields disagree.
+[status-response-contract](#status-response-contract) for how that contradiction
+is surfaced rather than left for a reader to notice two fields disagree.
 
 #### status-response-contract
 
