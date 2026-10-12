@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+from contextlib import nullcontext
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -24,6 +25,20 @@ from .hooks import (
 )
 from .rate_limited_processor import RateLimitedAPIExecutor
 from .types import StreamChunk
+
+
+def _branch_routing_context(branch_id: UUID, imodel: iModel):
+    if not _endpoint_routing_enabled(imodel.endpoint):
+        return nullcontext()
+    from .accounts._scope import routing_scope
+    from .accounts._types import Scope
+
+    return routing_scope(Scope("branch", branch_id, "anthropic"))
+
+
+def _endpoint_routing_enabled(endpoint) -> bool:
+    check = getattr(endpoint, "_account_routing_enabled", None)
+    return bool(check and check())
 
 
 def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
@@ -269,7 +284,7 @@ class iModel:  # noqa: N801
         payload, headers = self.endpoint.create_payload(request=kwargs)
         cache_control = kwargs.pop("cache_control", False)
 
-        return APICalling(
+        api_call = APICalling(
             payload=payload,
             headers=headers,
             endpoint=self.endpoint,
@@ -277,6 +292,33 @@ class iModel:  # noqa: N801
             cache_control=cache_control,
             include_token_usage_to_model=include_token_usage_to_model,
         )
+        self._capture_routing_scope(api_call)
+        return api_call
+
+    def _expected_routing_scope(self):
+        from .accounts._scope import current_scope
+        from .accounts._types import Scope
+
+        return current_scope() or Scope("imodel", self.id, "anthropic")
+
+    def _capture_routing_scope(self, api_call: APICalling) -> None:
+        if not _endpoint_routing_enabled(self.endpoint):
+            return
+        from .accounts._types import AccountRoutingError, RouterErrorCode
+
+        expected = self._expected_routing_scope()
+        captured = api_call._routing_scope
+        if captured is None:
+            api_call._routing_scope = expected
+        elif captured != expected:
+            raise AccountRoutingError(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT) from None
+
+    def _is_routing_error(self, error: BaseException) -> bool:
+        if not _endpoint_routing_enabled(self.endpoint):
+            return False
+        from .accounts._types import AccountRoutingError
+
+        return isinstance(error, AccountRoutingError)
 
     async def process_chunk(self, chunk) -> Any:
         """Process a streaming data chunk. Override for custom handling."""
@@ -355,7 +397,10 @@ class iModel:  # noqa: N801
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
+            self._capture_routing_scope(api_call)
             await self.executor.append(api_call)
+        else:
+            self._capture_routing_scope(api_call)
         api_call.metadata.pop("served_model", None)
 
         if self.executor.processor is None or self.executor.processor.is_stopped():
@@ -378,6 +423,8 @@ class iModel:  # noqa: N801
                     # surface it after iteration so the caller sees the error.
                     stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
+                    if self._is_routing_error(e):
+                        raise
                     raise ValueError(f"Failed to stream API call: {e}") from e
                 finally:
                     self._store_served_model(api_call, served_model)
@@ -385,6 +432,8 @@ class iModel:  # noqa: N801
                     # during generator cleanup, breaking anyio.fail_after timeout enforcement.
                     self.executor.pile.pop(api_call.id, None)
                 if stream_error is not None:
+                    if self._is_routing_error(stream_error):
+                        raise stream_error from None
                     raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         else:
             stream_error = None
@@ -397,11 +446,15 @@ class iModel:  # noqa: N801
                     yield result if result is not None else i
                 stream_error = _terminal_stream_error(api_call)
             except Exception as e:
+                if self._is_routing_error(e):
+                    raise
                 raise ValueError(f"Failed to stream API call: {e}") from e
             finally:
                 self._store_served_model(api_call, served_model)
                 self.executor.pile.pop(api_call.id, None)
             if stream_error is not None:
+                if self._is_routing_error(stream_error):
+                    raise stream_error from None
                 raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
@@ -409,6 +462,7 @@ class iModel:  # noqa: N801
             if api_call is None:
                 kw.pop("stream", None)
                 api_call = await self.create_event(**kw)
+            self._capture_routing_scope(api_call)
             api_call.metadata.pop("served_model", None)
 
             if self.executor.processor is None or self.executor.processor.is_stopped():
@@ -450,6 +504,8 @@ class iModel:  # noqa: N801
 
             return completed_call
         except Exception as e:
+            if self._is_routing_error(e):
+                raise
             self._store_served_model(api_call, None)
             raise ValueError(f"Failed to invoke API call: {e}") from e
 

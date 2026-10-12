@@ -81,6 +81,12 @@ class EndpointConfig(BaseModel):
     allow_local_network: bool = False
     serialize_by_alias: bool = False
     _api_key: str | None = PrivateAttr(None)
+    _api_key_explicit: bool = PrivateAttr(default=False)
+
+    def __init__(self, **data: Any) -> None:
+        api_key_explicit = "api_key" in data
+        super().__init__(**data)
+        self._api_key_explicit = api_key_explicit
 
     @model_validator(mode="before")
     def _validate_kwargs(cls, data: dict):
@@ -199,6 +205,8 @@ class EndpointConfig(BaseModel):
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+                if key == "api_key":
+                    self._api_key_explicit = True
             else:
                 self.kwargs[key] = value
 

@@ -135,6 +135,7 @@ async def _stream_with_liveness(
     max_attempts: int = 2,
     *,
     idle_timeout: float | None = None,
+    branch=None,
 ) -> AsyncGenerator:
     """Enforce first-output and between-chunk worker liveness windows.
 
@@ -145,8 +146,16 @@ async def _stream_with_liveness(
     liveness_timeout = liveness_timeout if liveness_timeout and liveness_timeout > 0 else None
     idle_timeout = idle_timeout if idle_timeout and idle_timeout > 0 else None
 
+    async def create_scoped_event():
+        if branch is None:
+            return await model.create_event(**kw)
+        from lionagi.service.imodel import _branch_routing_context
+
+        with _branch_routing_context(branch.id, model):
+            return await model.create_event(**kw)
+
     if liveness_timeout is None and idle_timeout is None:
-        api_call = await model.create_event(**kw)
+        api_call = await create_scoped_event()
         api_call_holder.append(api_call)
         await model.executor.append(api_call)
         agen = _stream_with_deadline(model, api_call, stream_deadline)
@@ -178,7 +187,7 @@ async def _stream_with_liveness(
     # Once any chunk is yielded, the idle path below always fails immediately.
     attempts = max_attempts if liveness_timeout is not None else 1
     for attempt in range(attempts):
-        api_call = await model.create_event(**kw)
+        api_call = await create_scoped_event()
         await model.executor.append(api_call)
         if api_call_holder:
             api_call_holder[0] = api_call
@@ -574,6 +583,7 @@ async def run(
             _liveness_timeout,
             _api_call_holder,
             idle_timeout=_idle_timeout,
+            branch=branch,
         )
         _stream_gen_closed = False
 

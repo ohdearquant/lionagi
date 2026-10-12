@@ -27,6 +27,32 @@ class _NonRetryableClientError(Exception):
         self.original = original
 
 
+class _RoutedAttemptError(Exception):
+    """Sanitized private failure passed between the request and retry layers."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        account: str | None = None,
+        attempt_id: Any = None,
+        http_status: int | None = None,
+    ) -> None:
+        self.code = code
+        self.account = account
+        self.attempt_id = attempt_id
+        self.http_status = http_status
+        super().__init__(code)
+
+
+class _RoutedRetryableError(_RoutedAttemptError):
+    pass
+
+
+class _RoutedNoRetryError(_RoutedAttemptError):
+    pass
+
+
 def _error_in_body(payload: Any, body: Any) -> Any:
     """The provider error a successful reply to a chat request carries instead of a result.
 
@@ -57,6 +83,7 @@ __all__ = ("Endpoint",)
 class Endpoint:
     is_cli: ClassVar[bool] = False
     transport_arg_keys: ClassVar[tuple[str, ...]] = ()
+    _account_routing_provider: ClassVar[str | None] = None
 
     def __init__(
         self,
@@ -84,6 +111,7 @@ class Endpoint:
         self.config = _config
         self.circuit_breaker = circuit_breaker
         self.retry_config = retry_config
+        self._direct_account_scope_id = None
 
         logger.debug(
             f"Initialized Endpoint with provider={self.config.provider}, "
@@ -125,16 +153,28 @@ class Endpoint:
         extra_headers: dict | None = None,
         **kwargs,
     ):
-        headers = HeaderFactory.get_header(
-            auth_type=self.config.auth_type,
-            content_type=self.config.content_type,
-            api_key=self.config._api_key,
-            default_headers=self.config.default_headers,
-        )
+        routed = self._account_routing_enabled()
+        if routed:
+            headers = HeaderFactory.get_header(
+                auth_type="none",
+                content_type=self.config.content_type,
+                default_headers=self.config.default_headers,
+            )
+        else:
+            headers = HeaderFactory.get_header(
+                auth_type=self.config.auth_type,
+                content_type=self.config.content_type,
+                api_key=self.config._api_key,
+                default_headers=self.config.default_headers,
+            )
         if extra_headers:
             headers.update(extra_headers)
 
         request = request if isinstance(request, dict) else request.model_dump(exclude_none=True)
+        if routed and ("api_key" in request or "api_key" in kwargs):
+            from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+            raise AccountRoutingError(RouterErrorCode.CREDENTIAL_CONFLICT) from None
 
         payload = self.config.kwargs.copy()
         payload.update(request)
@@ -175,7 +215,45 @@ class Endpoint:
             }
             payload = {k: v for k, v in payload.items() if k not in non_api_params}
 
+        if routed:
+            from lionagi.service.accounts._router import validate_routed_request
+
+            validate_routed_request(
+                self,
+                headers,
+                request_kwargs={},
+                payload=payload,
+            )
         return (payload, headers)
+
+    def _account_routing_enabled(self) -> bool:
+        if self._account_routing_provider != "anthropic":
+            return False
+        from lionagi.config import settings
+
+        return bool(settings.ANTHROPIC_ACCOUNTS)
+
+    def _account_scope(self, supplied_scope: Any = None) -> Any:
+        if supplied_scope is not None:
+            return supplied_scope
+        from uuid import uuid4
+
+        from lionagi.service.accounts._types import Scope
+
+        if self._direct_account_scope_id is None:
+            self._direct_account_scope_id = uuid4()
+        return Scope("endpoint", self._direct_account_scope_id, "anthropic")
+
+    @staticmethod
+    def _public_routed_failure(exc: _RoutedAttemptError) -> Exception:
+        from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+        return AccountRoutingError(
+            RouterErrorCode(exc.code),
+            account=exc.account,
+            attempt_id=exc.attempt_id,
+            http_status=exc.http_status,
+        )
 
     def _assert_ssrf_safe_url(self) -> None:
         """Raise PermissionError if full_url resolves to a blocked address."""
@@ -200,8 +278,14 @@ class Endpoint:
         request: dict | BaseModel,
         cache_control: bool = False,
         skip_payload_creation: bool = False,
+        _routing_scope: Any = None,
         **kwargs,
     ):
+        routed = self._account_routing_enabled()
+        # Only a routed call hands the scope down: an unrouted endpoint's _call never
+        # receives a keyword its signature may not take.
+        scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
+        use_cache = cache_control and not routed
         extra_headers = kwargs.pop("extra_headers", None)
 
         payload, headers = None, None
@@ -237,22 +321,43 @@ class Endpoint:
                     *retry_kwargs.get("exclude_exceptions", ()),
                     _NonRetryableClientError,
                 )
+                if routed:
+                    retry_kwargs["exclude_exceptions"] = (
+                        *retry_kwargs["exclude_exceptions"],
+                        _RoutedNoRetryError,
+                    )
+                    retry_kwargs["retry_exceptions"] = (
+                        *retry_kwargs["retry_exceptions"],
+                        _RoutedRetryableError,
+                    )
                 try:
                     return await retry_with_backoff(self._call, p, h, **kw, **retry_kwargs)
                 except _NonRetryableClientError as exc:
                     raise exc.original from exc.__cause__
+                except _RoutedAttemptError as exc:
+                    raise self._public_routed_failure(exc) from None
 
         if self.circuit_breaker:
             if self.retry_config:
-                if not cache_control:
-                    return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
-            else:
-                if not cache_control:
+                if not use_cache:
                     return await self.circuit_breaker.execute(
-                        self._call, payload, headers, **kwargs
+                        call_func,
+                        payload,
+                        headers,
+                        **scope_kwargs,
+                        **kwargs,
+                    )
+            else:
+                if not use_cache:
+                    return await self.circuit_breaker.execute(
+                        self._call,
+                        payload,
+                        headers,
+                        **scope_kwargs,
+                        **kwargs,
                     )
 
-        if cache_control:
+        if use_cache:
             from aiocache import cached
 
             from lionagi.config import settings
@@ -273,9 +378,19 @@ class Endpoint:
             return await _cached_call(payload, headers, **kwargs)
 
         if self.retry_config:
-            return await call_func(payload, headers, **kwargs)
+            return await call_func(
+                payload,
+                headers,
+                **scope_kwargs,
+                **kwargs,
+            )
 
-        return await self._call(payload, headers, **kwargs)
+        return await self._call(
+            payload,
+            headers,
+            **scope_kwargs,
+            **kwargs,
+        )
 
     def _can_retry(self) -> bool:
         """Whether more than one request attempt can occur for this endpoint.
@@ -285,6 +400,84 @@ class Endpoint:
             return self.retry_config.max_retries > 0
         return self.config.max_retries > 1
 
+    async def _request_attempt(
+        self,
+        *,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        body_kwargs: dict[str, Any],
+        request_kwargs: dict[str, Any],
+        response_mode: Literal["json", "bytes"],
+        error_context: str,
+        _routing_scope: Any = None,
+    ) -> Any:
+        import aiohttp
+
+        async with self._create_http_session() as session:
+            response = None
+            try:
+                response = await session.request(
+                    method=self.config.method,
+                    url=self.config.full_url,
+                    headers=headers,
+                    **body_kwargs,
+                    **request_kwargs,
+                )
+
+                if response.status == 429 or response.status >= 500:
+                    response.raise_for_status()
+                elif response.status != 200:
+                    try:
+                        error_body = await response.json()
+                        error_message = (
+                            f"{error_context} failed with status {response.status}: {error_body}"
+                        )
+                    except Exception:
+                        error_message = f"{error_context} failed with status {response.status}"
+
+                    original = aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=response.status,
+                        message=error_message,
+                        headers=response.headers,
+                    )
+                    # 4xx (non-429): wrap in sentinel so the native retry layer
+                    # gives up immediately, preserving the original error on __cause__.
+                    raise _NonRetryableClientError(original) from original
+
+                if response_mode == "bytes":
+                    return await response.read()
+                body = await response.json()
+                error = _error_in_body(payload, body)
+                if error is None:
+                    return body
+
+                # Some OpenAI-compatible gateways answer a refused request with
+                # HTTP 200 and an error object in place of a result. Fail it the
+                # way the status it names would have failed.
+                code = error.get("code") if isinstance(error, dict) else None
+                status = (
+                    code
+                    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
+                    else response.status
+                )
+                original = aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=status,
+                    message=f"{error_context} failed with status {status}: {body}",
+                    headers=response.headers,
+                )
+                if status == 429 or status >= 500:
+                    raise original
+                raise _NonRetryableClientError(original) from original
+            finally:
+                # Ensure response is properly released if coroutine is cancelled between retries.
+                # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
+                if response is not None and not response.closed:
+                    response.release()
+
     async def _call_aiohttp(
         self,
         payload: dict[str, Any],
@@ -293,8 +486,29 @@ class Endpoint:
         request_body_factory: Callable[[], dict[str, Any]] | None = None,
         response_mode: Literal["json", "bytes"] = "json",
         error_context: str = "Request",
+        _routing_scope: Any = None,
         **request_kwargs: Any,
     ) -> Any:
+        routed = self._account_routing_enabled()
+        if routed:
+            from lionagi.service.accounts._router import validate_routed_request
+            from lionagi.service.accounts._types import AccountRoutingError
+
+            try:
+                validate_routed_request(
+                    self,
+                    headers,
+                    request_kwargs=request_kwargs,
+                    payload=payload,
+                )
+            except AccountRoutingError as exc:
+                raise _RoutedNoRetryError(
+                    exc.code.value,
+                    account=exc.account,
+                    attempt_id=exc.attempt_id,
+                    http_status=exc.http_status,
+                ) from None
+            _routing_scope = self._account_scope(_routing_scope)
         self._assert_ssrf_safe_url()
 
         import aiohttp
@@ -307,77 +521,22 @@ class Endpoint:
             body_kwargs = build_body()
             collision = set(body_kwargs) & set(request_kwargs)
             if collision:
+                if routed:
+                    from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+                    raise AccountRoutingError(RouterErrorCode.CREDENTIAL_CONFLICT) from None
                 raise ValueError(
                     f"request_body_factory and request_kwargs both supply {sorted(collision)}"
                 )
-
-            async with self._create_http_session() as session:
-                response = None
-                try:
-                    response = await session.request(
-                        method=self.config.method,
-                        url=self.config.full_url,
-                        headers=headers,
-                        **body_kwargs,
-                        **request_kwargs,
-                    )
-
-                    if response.status == 429 or response.status >= 500:
-                        response.raise_for_status()
-                    elif response.status != 200:
-                        try:
-                            error_body = await response.json()
-                            error_message = (
-                                f"{error_context} failed with status "
-                                f"{response.status}: {error_body}"
-                            )
-                        except Exception:
-                            error_message = f"{error_context} failed with status {response.status}"
-
-                        original = aiohttp.ClientResponseError(
-                            request_info=response.request_info,
-                            history=response.history,
-                            status=response.status,
-                            message=error_message,
-                            headers=response.headers,
-                        )
-                        # 4xx (non-429): wrap in sentinel so the native retry layer
-                        # gives up immediately, preserving the original error on __cause__.
-                        raise _NonRetryableClientError(original) from original
-
-                    if response_mode == "bytes":
-                        return await response.read()
-                    body = await response.json()
-                    error = _error_in_body(payload, body)
-                    if error is None:
-                        return body
-
-                    # Some OpenAI-compatible gateways answer a refused request with
-                    # HTTP 200 and an error object in place of a result. Fail it the
-                    # way the status it names would have failed.
-                    code = error.get("code") if isinstance(error, dict) else None
-                    status = (
-                        code
-                        if isinstance(code, int)
-                        and not isinstance(code, bool)
-                        and 400 <= code < 600
-                        else response.status
-                    )
-                    original = aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=status,
-                        message=f"{error_context} failed with status {status}: {body}",
-                        headers=response.headers,
-                    )
-                    if status == 429 or status >= 500:
-                        raise original
-                    raise _NonRetryableClientError(original) from original
-                finally:
-                    # Ensure response is properly released if coroutine is cancelled between retries.
-                    # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
-                    if response is not None and not response.closed:
-                        response.release()
+            return await self._request_attempt(
+                payload=payload,
+                headers=headers,
+                body_kwargs=body_kwargs,
+                request_kwargs=request_kwargs,
+                response_mode=response_mode,
+                error_context=error_context,
+                _routing_scope=_routing_scope,
+            )
 
         # When retry_config is set, call() already wraps this in retry_with_backoff and
         # owns the sentinel unwrap — just run the raw request and let it propagate.
@@ -386,11 +545,16 @@ class Endpoint:
 
         # No RetryConfig: native path excludes the 4xx sentinel so it gives up immediately.
         # max_retries is a total-attempt cap; retry_with_backoff runs +1 attempts, so subtract one.
+        retry_exceptions = (aiohttp.ClientError, asyncio.TimeoutError)
+        excluded_exceptions: tuple[type[Exception], ...] = (_NonRetryableClientError,)
+        if routed:
+            retry_exceptions = (*retry_exceptions, _RoutedRetryableError)
+            excluded_exceptions = (*excluded_exceptions, _RoutedNoRetryError)
         try:
             return await retry_with_backoff(
                 _make_request,
-                retry_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
-                exclude_exceptions=(_NonRetryableClientError,),
+                retry_exceptions=retry_exceptions,
+                exclude_exceptions=excluded_exceptions,
                 max_retries=max(0, self.config.max_retries - 1),
                 base_delay=1.0,
                 max_delay=60.0,
@@ -400,19 +564,36 @@ class Endpoint:
             )
         except _NonRetryableClientError as exc:
             raise exc.original from exc.__cause__
+        except _RoutedAttemptError as exc:
+            raise self._public_routed_failure(exc) from None
 
     async def stream(
         self,
         request: dict | BaseModel,
         extra_headers: dict | None = None,
+        _routing_scope: Any = None,
         **kwargs,
     ):
+        routed = self._account_routing_enabled()
+        scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
         payload, headers = self.create_payload(request, extra_headers, **kwargs)
 
-        async for chunk in self._stream_aiohttp(payload=payload, headers=headers, **kwargs):
+        async for chunk in self._stream_aiohttp(
+            payload=payload,
+            headers=headers,
+            **scope_kwargs,
+            **kwargs,
+        ):
             yield chunk
 
-    async def _stream_aiohttp(self, payload: dict, headers: dict, **kwargs):
+    async def _stream_aiohttp(
+        self,
+        payload: dict,
+        headers: dict,
+        *,
+        _routing_scope: Any = None,
+        **kwargs,
+    ):
         self._assert_ssrf_safe_url()
 
         payload["stream"] = True
