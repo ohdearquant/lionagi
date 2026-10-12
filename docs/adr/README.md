@@ -143,6 +143,8 @@ its area block.
   request admission, deadline, and resilience policy
 - [ADR-0030](ADR-0030-agentic-provider-adapter-boundary.md) — Agentic provider-adapter boundary
 - 0031-0032 — unused (intentional gaps)
+- [ADR-0126](ADR-0126-provider-credential-routing-and-monthly-account-budgets.md) — Provider
+  credential routing and monthly account budgets (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 
