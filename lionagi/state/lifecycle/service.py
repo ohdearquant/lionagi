@@ -389,29 +389,6 @@ class SQLAlchemyLifecycleService:
                     transition_id=None,
                 )
 
-            if override_admin_event:
-                await conn.execute(
-                    text(
-                        "INSERT INTO admin_events "
-                        "(id, created_at, action, target_id, details, actor) "
-                        "VALUES (:id, :created_at, :action, :target_id, :details, :actor)"
-                    ).bindparams(bindparam("details", type_=JSON)),
-                    {
-                        "id": uuid.uuid4().hex[:12],
-                        "created_at": now,
-                        "action": "status_transition_override",
-                        "target_id": command.entity_id,
-                        "details": {
-                            "entity_type": command.entity_type,
-                            "previous_status": previous_status,
-                            "new_status": command.to_status,
-                            "reason_code": command.reason.code,
-                            "justification": command.override.justification,
-                        },
-                        "actor": command.override.actor,
-                    },
-                )
-
             for col, expected in extra_guard.items():
                 if row[col] != expected:
                     return TransitionOutcome(
@@ -512,6 +489,33 @@ class SQLAlchemyLifecycleService:
                     transition_id=None,
                 )
 
+            # An override event describes a transition that actually landed.
+            # Keep it after every guard and the guarded UPDATE so a conflict
+            # cannot commit a false-positive audit record.
+            if override_admin_event:
+                assert command.override is not None
+                await conn.execute(
+                    text(
+                        "INSERT INTO admin_events "
+                        "(id, created_at, action, target_id, details, actor) "
+                        "VALUES (:id, :created_at, :action, :target_id, :details, :actor)"
+                    ).bindparams(bindparam("details", type_=JSON)),
+                    {
+                        "id": uuid.uuid4().hex[:12],
+                        "created_at": now,
+                        "action": "status_transition_override",
+                        "target_id": command.entity_id,
+                        "details": {
+                            "entity_type": command.entity_type,
+                            "previous_status": previous_status,
+                            "new_status": command.to_status,
+                            "reason_code": command.reason.code,
+                            "justification": command.override.justification,
+                        },
+                        "actor": command.override.actor,
+                    },
+                )
+
         if (
             transition_id is not None
             and previous_status != command.to_status
@@ -572,9 +576,12 @@ class SQLAlchemyLifecycleService:
             where_clauses.append("updated_at = :expected_version")
             params["expected_version"] = command.expected_version
         for i, (col, expected) in enumerate(extra_guard.items()):
-            key = f"guard_{i}"
-            where_clauses.append(f"{col} = :{key}")
-            params[key] = expected
+            if expected is None:
+                where_clauses.append(f"{col} IS NULL")
+            else:
+                key = f"guard_{i}"
+                where_clauses.append(f"{col} = :{key}")
+                params[key] = expected
         for col, value in command.patch.items():
             key = f"patch_{col}"
             set_clauses.append(f"{col} = :{key}")

@@ -229,7 +229,8 @@ async def test_managed_entity_creations_write_initial_lifecycle_history(db: Stat
                 await conn.execute(
                     text(
                         "SELECT entity_type, entity_id, previous_status, status "
-                        f"FROM status_transitions WHERE entity_id IN ({placeholders})"
+                        f"FROM status_transitions WHERE entity_id IN ({placeholders}) "
+                        "AND previous_status IS NULL"
                     ),
                     params,
                 )

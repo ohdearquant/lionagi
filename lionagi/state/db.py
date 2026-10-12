@@ -50,6 +50,9 @@ from lionagi.state.lifecycle.models import (
 from lionagi.state.lifecycle.models import (
     ReasonRecord as _ReasonRecord,
 )
+from lionagi.state.lifecycle.models import (
+    TransitionCommand as _TransitionCommand,
+)
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
 from lionagi.state.reasons import LEGACY_IMPORTED as _LEGACY_IMPORTED
 from lionagi.state.reasons import (
@@ -3986,17 +3989,28 @@ class StateDB:
     ) -> bool:
         """Tombstone an undispatched orphan and insert its replacement in one transaction."""
         run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
-        now = time.time()
         async with self._tx() as conn:
-            result = await conn.execute(
-                text(
-                    "UPDATE schedule_runs SET status = 'failed', updated_at = :now "
-                    "WHERE id = :orphan_id AND status = :expected_status "
-                    "AND dispatched_at IS NULL"
+            transition_id = await self._lifecycle_service()._write(  # noqa: SLF001
+                conn,
+                "schedule_runs",
+                _TransitionCommand(
+                    entity_type="schedule_run",
+                    entity_id=orphan_id,
+                    to_status="failed",
+                    reason=_ReasonRecord(
+                        code=_RunReasons.FAILED_NEVER_DISPATCHED,
+                        summary="undispatched schedule run replaced during recovery",
+                    ),
+                    actor=_ActorRecord(
+                        type="scheduler",
+                        id="tombstone_and_replace_schedule_run",
+                    ),
                 ),
-                {"now": now, "orphan_id": orphan_id, "expected_status": expected_orphan_status},
+                previous_status=expected_orphan_status,
+                now=time.time(),
+                extra_guard={"dispatched_at": None},
             )
-            if result.rowcount == 0:
+            if transition_id is None:
                 return False
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(

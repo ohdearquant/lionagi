@@ -575,8 +575,20 @@ async def test_tombstone_and_replace_schedule_run_is_atomic(tmp_path):
         replacement = await db.get_schedule_run("run-replacement")
     assert applied is True
     assert orphan["status"] == "failed"
+    assert orphan["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
     assert replacement["status"] == "running"
     assert replacement["dispatched_at"] is None
+
+    async with StateDB(db_path) as db:
+        transitions = await db.fetch_all(
+            "SELECT previous_status, status, reason_code FROM status_transitions "
+            "WHERE entity_type = ? AND entity_id = ? ORDER BY created_at",
+            ("schedule_run", "run-orphan"),
+        )
+    assert [(row["previous_status"], row["status"], row["reason_code"]) for row in transitions] == [
+        (None, "running", RunReasons.STARTED_OK),
+        ("running", "failed", RunReasons.FAILED_NEVER_DISPATCHED),
+    ]
 
 
 @pytest.mark.asyncio
