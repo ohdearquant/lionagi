@@ -1,4 +1,5 @@
-"""Readiness reports the scheduler beside the store probe, not folded into it."""
+# SPDX-License-Identifier: Apache-2.0
+"""Readiness reflects both the store probe and scheduler state."""
 
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ async def _healthy_probe(*, timeout_ms: int) -> dict:
 
 @pytest.mark.asyncio
 async def test_readiness_reports_a_stalled_scheduler_beside_a_healthy_store(monkeypatch) -> None:
-    """The store answering is not the scheduler firing, and this endpoint said healthy for hours."""
+    """A stalled scheduler makes readiness unhealthy even when the store answers."""
     monkeypatch.setattr(admin_svc, "store_probe", _healthy_probe)
     stalled = {
         "ready": False,
@@ -28,9 +29,8 @@ async def test_readiness_reports_a_stalled_scheduler_beside_a_healthy_store(monk
 
     result = await admin_svc.readiness_route(timeout_ms=100)
 
-    # Everything the store probe measured still says healthy. Only the new field dissents.
-    assert result["status"] == "healthy"
-    assert result["detail"] == "bounded read passed"
+    assert result["status"] == "unhealthy"
+    assert "scheduler" in result["detail"]
     assert result["scheduler"] == stalled
 
 

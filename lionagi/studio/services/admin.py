@@ -1409,12 +1409,11 @@ async def readiness_route(
     from lionagi.studio.scheduler.engine import scheduler
 
     result = await store_probe(timeout_ms=timeout_ms)
-    # Reported as its own field rather than folded into the store probe. The probe
-    # answers whether the store responds; this answers whether the scheduler is
-    # still advancing. They are different questions, and widening the probe's
-    # meaning to cover a subject it does not measure is what made a stalled
-    # scheduler read healthy.
-    result["scheduler"] = scheduler.health()
+    scheduler_report = scheduler.health()
+    result["scheduler"] = scheduler_report
+    if result["status"] == "healthy" and not scheduler_report["ready"]:
+        result["status"] = "unhealthy"
+        result["detail"] = f"{result['detail']}; scheduler not ready: {scheduler_report['detail']}"
     return result
 
 

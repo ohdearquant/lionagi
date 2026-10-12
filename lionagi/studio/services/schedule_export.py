@@ -132,11 +132,23 @@ def _rename_note(original_name: str, reconstructed_name: str) -> str | None:
     )
 
 
+def _project_namespace_note(row: dict[str, Any]) -> str | None:
+    project = row.get("action_project")
+    name = row["name"]
+    if not project or "/" not in name:
+        return None
+    namespace = name.split("/", 1)[0]
+    if project == namespace:
+        return None
+    return f"execution project {project!r} differs from name namespace {namespace!r}"
+
+
 def _ready_note(row: dict[str, Any], member: ScheduleMember, reconstructed_name: str) -> str | None:
     notes = [
         n
         for n in (
             _rename_note(row["name"], reconstructed_name),
+            _project_namespace_note(row),
             _flow_portability_note(member),
             _absolute_cwd_note(member),
         )

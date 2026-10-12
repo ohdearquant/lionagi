@@ -873,6 +873,7 @@ async def test_legacy_row_with_conflicting_project_preserves_qualified_name_on_a
     assert doc.metadata.project == "foo"
     assert "nightly" in doc.schedules
     assert doc.schedules["nightly"].execution.project == "demo"
+    assert "execution project 'demo' differs from name namespace 'foo'" in (lines[0].message or "")
     assert "re-applies as" not in (lines[0].message or "")
 
     fresh_db = tmp_path / "fresh.db"

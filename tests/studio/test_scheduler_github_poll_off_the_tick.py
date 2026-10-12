@@ -49,7 +49,7 @@ def _engine(schedules: list[dict]) -> SchedulerEngine:
 
 
 async def _pass_finished(engine: SchedulerEngine, sid: str) -> None:
-    # A pass that never waits can finish, and leave the table, before the tick that started it returns.
+    # A pass that does not wait can finish before its starting tick returns.
     task = engine._github_tick_tasks.get(sid)
     if task is not None:
         await asyncio.wait_for(task, timeout=2.0)

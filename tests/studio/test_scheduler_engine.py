@@ -1955,7 +1955,7 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(
         # tracked background task, not awaited here — same as production).
         await engine._recompute_armed_cron_schedules()
         await engine._check_missed_fires()
-        await engine._tick()
+        await asyncio.wait_for(engine._tick(), timeout=5)
         if engine._fire_tasks:
             await asyncio.gather(*engine._fire_tasks)
 
@@ -2051,7 +2051,7 @@ async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monke
     ):
         await engine._recompute_armed_cron_schedules()
         await engine._check_missed_fires()
-        await engine._tick()
+        await asyncio.wait_for(engine._tick(), timeout=5)
         if engine._fire_tasks:
             await asyncio.gather(*engine._fire_tasks)
 
@@ -3908,7 +3908,8 @@ async def test_a_stop_starts_no_later_pass_when_a_pass_cleanup_replaces_its_canc
 async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_skips_the_delay(
     monkeypatch,
 ):
-    """Absorbing a cancel and returning early let a stream of them drive the tick in a tight loop."""
+    """Absorbing a cancel and returning early let repeated cancels
+    drive the tick in a tight loop."""
     from lionagi.studio.scheduler import engine as engine_mod
 
     ticks: list = []
@@ -3934,7 +3935,7 @@ async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_ski
 @pytest.mark.parametrize("death", ("returns", "raises"))
 @pytest.mark.asyncio
 async def test_a_tick_loop_that_ends_while_running_is_replaced(monkeypatch, death):
-    """The process staying up is not the scheduler staying up: any end that is not stop() restarts."""
+    """A loop that ends unexpectedly is restarted even while its process remains up."""
     ticks: list = []
     engine = await _supervised_engine(monkeypatch, ticks)
     calls: list = []
@@ -4082,7 +4083,7 @@ async def test_a_scheduler_that_has_stopped_advancing_reports_stalled(monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_tick_that_raises_does_not_count_as_advancing(monkeypatch):
-    """A tick that raised fired nothing, so stamping it would report progress that did not happen."""
+    """A tick that raised fired nothing, so stamping it would report false progress."""
     ticks: list = []
     engine = await _supervised_engine(monkeypatch, ticks)
 
@@ -4145,6 +4146,101 @@ async def test_a_scheduler_that_never_completes_a_tick_stops_being_ready(monkeyp
         assert "no tick has completed" in report["detail"]
     finally:
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_tick_with_every_schedule_write_failing_does_not_stamp_progress(monkeypatch):
+    """A pass whose schedule updates all fail must not count as scheduler progress."""
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    now = time.time()
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[
+            _minimal_schedule(id="interval-1", trigger_type="interval", next_fire_at=None),
+            _minimal_schedule(id="interval-2", trigger_type="interval", next_fire_at=None),
+        ]
+    )
+    svc.update_schedule = AsyncMock(side_effect=RuntimeError("store write failed"))
+    engine = engine_mod.SchedulerEngine(svc=svc)
+    engine._last_reaper_run = now
+    engine._last_checkpoint_run = now
+    engine._started_at = now - engine_mod._TICK_STALL_AFTER - 1
+    engine._task = asyncio.current_task()
+    engine._deliver_due_dispatches = AsyncMock()
+    engine._maybe_start_prune = MagicMock()
+    engine._maybe_start_worker_pass = MagicMock()
+    engine._compute_next_fire = MagicMock(return_value=now + 60)
+    engine._effective_timezone_fields = MagicMock(return_value={})
+    engine._run_startup_recovery = AsyncMock()
+
+    async def stop_after_tick() -> None:
+        assert engine.health()["ready"] is False
+        engine._stopping = True
+
+    monkeypatch.setattr(engine, "_sleep_between_ticks", stop_after_tick)
+
+    await engine._tick_loop()
+
+    assert svc.update_schedule.await_count == 2
+    assert engine._last_tick_completed_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_scheduler_is_not_reported_ready(monkeypatch):
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    await engine.start()
+    await _until(lambda: engine._last_tick_completed_at is not None)
+    await engine.stop()
+
+    report = engine.health()
+    assert report["status"] == "stopped"
+    assert report["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_github_pass_past_the_threshold_makes_the_scheduler_unready(monkeypatch):
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    clock = [1000.0]
+
+    class FakeClock:
+        @staticmethod
+        def time() -> float:
+            return clock[0]
+
+    monkeypatch.setattr(engine_mod, "time", FakeClock())
+    engine = engine_mod.SchedulerEngine(svc=_make_svc())
+    engine._task = asyncio.current_task()
+    engine._started_at = clock[0] - 10
+    engine._last_tick_completed_at = clock[0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stalled_pass(schedule: dict, now: float) -> None:
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(engine, "_tick_github", stalled_pass)
+    engine._start_github_tick(
+        _minimal_schedule(id="github-1", trigger_type="github_poll"), clock[0]
+    )
+    task = engine._github_tick_tasks["github-1"]
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        clock[0] += engine_mod._TICK_STALL_AFTER + 1
+        engine._last_tick_completed_at = clock[0]
+
+        report = engine.health()
+
+        assert report["ready"] is False
+        assert "github" in report["detail"].lower()
+    finally:
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
 
 
 @pytest.mark.asyncio
@@ -4292,7 +4388,7 @@ async def test_a_restarting_tick_loop_does_not_refresh_the_startup_deadline(monk
 
 @pytest.mark.asyncio
 async def test_a_scheduler_that_was_never_started_does_not_block_readiness(monkeypatch):
-    """A host that runs no scheduler is not failing to schedule; calling it unready is a self-inflicted outage."""
+    """A host that runs no scheduler is not failing to schedule."""
     ticks: list = []
     engine = await _supervised_engine(monkeypatch, ticks)
     report = engine.health()

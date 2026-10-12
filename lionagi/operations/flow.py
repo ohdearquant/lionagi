@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import contextvars
 import inspect
+import json
 import logging
 import math
 import os
@@ -862,7 +863,22 @@ class DependencyAwareExecutor:
         predecessors = self._get_predecessors(operation)
         if predecessors:
             pred_ctx = Note()
+            replacements = self._escalation_replacement
             for pred in predecessors:
+                pred_id = pred.id
+                seen_predecessors = {pred_id}
+                while pred_id in replacements:
+                    replacement_id = replacements[pred_id]
+                    if (
+                        replacement_id == operation.id
+                        or replacement_id in seen_predecessors
+                        or replacement_id not in self.graph.internal_nodes
+                    ):
+                        break
+                    pred_id = replacement_id
+                    seen_predecessors.add(pred_id)
+                    pred = self.graph.internal_nodes[pred_id]
+
                 if (
                     pred.id in self.skipped_operations
                     or pred.id in self._preterminal_failed_operations
@@ -1075,6 +1091,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._running = False
         self._graph_lock = threading.Lock()
         self._seen_reqs: set[int] = set()
+        self._seen_escalations: set[tuple[Any, ...]] = set()
         self._spawned_ids: set[Any] = set()
         self._result_sink: Any = None
         self._escalated_ids: set[Any] = set()
@@ -1277,6 +1294,15 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         reason = getattr(req, "reason", "")
         emitter_id = emitter.id if emitter is not None else None
+        try:
+            context_key = json.dumps(context, sort_keys=True, separators=(",", ":"), default=repr)
+        except (TypeError, ValueError):
+            context_key = repr(context)
+        dedupe_key = (emitter_id, reason, urgency, route, context_key)
+        if dedupe_key in self._seen_escalations:
+            return
+        self._seen_escalations.add(dedupe_key)
+
         op_id = str(emitter_id) if emitter_id is not None else ""
         name = self._display_name(emitter)[0] if emitter is not None else ""
 
@@ -1315,16 +1341,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
             if self._accept_node(
                 child,
                 emitter_id=anchor_id,
-                # Graph dependency only, and under splice_after_emitter not
-                # even that: the retry's place in the graph comes entirely
-                # from the splice. It stays False because it is also what the
-                # NodeSpawned receipt reports, and the retry is not
-                # independent of the emitter -- it inherits the emitter's
-                # branch, which is what bounds its authority to the emitter's
-                # own. Reporting True here would describe a clean branch the
-                # retry does not get.
+                # The retry waits for the emitter to finish, and NodeSpawned
+                # reports that dependency. Its branch source is selected
+                # separately below.
                 independent=False,
                 splice_after_emitter=True,
+                base_branch=self.operation_branches.get(emitter_id),
             ):
                 self._escalation_replacement[anchor_id] = child.id
                 self._escalated_ids.add(emitter_id)
@@ -1428,6 +1450,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         emitter_id: Any,
         independent: bool,
         splice_after_emitter: bool = False,
+        base_branch: Any = None,
     ) -> bool:
         with self._graph_lock:
             if self._spawn_count >= self.max_spawn:
@@ -1486,7 +1509,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # to node lifecycle signals.
             if emitter_id is not None and not independent:
                 child.metadata["parent_id"] = str(emitter_id)
-            self._assign_injected_branch(child, emitter_id, independent)
+            self._assign_injected_branch(
+                child,
+                emitter_id,
+                independent,
+                base_branch=base_branch,
+            )
             self._emit_node_spawned(child, emitter_id, independent)
             self._announce_queued(child)
         return True
@@ -1514,13 +1542,22 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         self._emit_best_effort(_factory)
 
-    def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:
+    def _assign_injected_branch(
+        self,
+        child: Operation,
+        emitter_id: Any,
+        independent: bool,
+        *,
+        base_branch: Any = None,
+    ) -> None:
         base = None
         if child.branch_id:
             try:
                 base = self.session.branches[child.branch_id]
             except Exception:
                 base = None
+        if base is None:
+            base = base_branch
         if base is None and not independent and emitter_id is not None:
             base = self.operation_branches.get(emitter_id)
         if base is None:

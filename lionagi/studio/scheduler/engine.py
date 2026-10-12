@@ -55,11 +55,8 @@ _TICK_RESTART_BACKOFF = (1.0, 2.0, 5.0, 15.0, 30.0)
 # How long stop() waits for a cancelled recovery pass to unwind before it closes the state
 # service anyway, so a recovery cleanup that never returns holds the shutdown this long at most.
 _RECOVERY_UNWIND_SECONDS = 10.0
-# How long since the last completed tick before the scheduler is reported stalled.
-# Deliberately many intervals rather than two: a tick under load legitimately runs long,
-# and this gates readiness, so a false stall is a self-inflicted outage. Ten intervals is
-# still an order of magnitude inside the observed failure, where nothing advanced for 35
-# minutes while the daemon answered every request it was asked.
+# Ten intervals allow a slow tick to finish without keeping a scheduler ready
+# indefinitely when it has stopped advancing.
 _TICK_STALL_AFTER = _TICK_INTERVAL * 10  # seconds
 # Throttles deferred-capacity skipped-run records to one per schedule per this
 # many deferrals, so sustained saturation doesn't spam schedule_runs.
@@ -377,9 +374,10 @@ class SchedulerEngine:
         self._lifecycle_lock = asyncio.Lock()
         self._fire_tasks: set[asyncio.Task] = set()
         # One tracked poll-and-fire task per github_poll schedule. Its fires are awaited inside the
-        # poll loop (the cursor advances per committed event), so the loop lasts as long as the
-        # slowest action it dispatched; run inside the tick, it made every other schedule wait for it.
+        # poll loop, which advances the cursor per committed event, so a pass lasts as long as the
+        # slowest action it dispatched; it runs off the tick so later ticks continue meanwhile.
         self._github_tick_tasks: dict[str, asyncio.Task] = {}
+        self._github_tick_started_at: dict[str, float] = {}
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
         # Starts unresolved rather than at 0.0, which would make a prune due on the first tick. It
@@ -438,21 +436,8 @@ class SchedulerEngine:
             await self._backfill_action_cwd()
             await self._stamp_effective_timezones()
             await self._recompute_armed_cron_schedules()
-            # Every field health() reads to describe *this* run is cleared together,
-            # immediately before the loop is spawned, so that adding a fifth one and
-            # not clearing it is visibly an omission. Clearing here rather than at the
-            # top of start() is deliberate: the previous run's tick task is still the
-            # one self._task names until the line below, so its done-callback can
-            # still fire during the awaits above and re-stamp these. Last write wins,
-            # and it should be this one.
-            #
-            # Without this a stop/start in one process lets the new run answer with
-            # the old run's evidence. A stale _last_tick_completed_at is the worst of
-            # them: it lets a loop that has never completed a tick report itself as
-            # advancing, which is the precise failure this readiness check exists to
-            # catch. A stale _last_tick_loop_failure is the mirror case, and it also
-            # contradicts the counter reset beside it, since zero restarts reported
-            # next to the failure that caused one cannot both be true.
+            # Reset health fields after startup preparation, immediately before
+            # creating the loop, so they describe the run being launched.
             self._tick_loop_restarts = 0
             self._last_tick_loop_failure = None
             self._last_tick_completed_at = None
@@ -531,6 +516,17 @@ class SchedulerEngine:
             ),
         }
         if self._task is None:
+            if self._started_at is not None:
+                report["ready"] = False
+                if self._lifecycle_lock.locked() and self._stopping:
+                    report["status"] = "stopping"
+                    report["detail"] = "scheduler is shutting down"
+                elif self._lifecycle_lock.locked():
+                    report["status"] = "starting"
+                    report["detail"] = "scheduler startup is in progress"
+                else:
+                    report["status"] = "stopped"
+                    report["detail"] = "scheduler stopped after starting in this process"
             return report
         if self._stopping:
             report["status"] = "stopping"
@@ -565,7 +561,8 @@ class SchedulerEngine:
             else:
                 report["detail"] = "scheduler started; no tick has completed yet"
             return report
-        age = max(0.0, time.time() - last)
+        now = time.time()
+        age = max(0.0, now - last)
         report["seconds_since_last_tick"] = round(age, 1)
         if age > _TICK_STALL_AFTER:
             report["ready"] = False
@@ -575,6 +572,19 @@ class SchedulerEngine:
                 f"(interval {_TICK_INTERVAL}s, stall threshold {_TICK_STALL_AFTER}s)"
             )
             return report
+        for sid, task in self._github_tick_tasks.items():
+            started_at = self._github_tick_started_at.get(sid)
+            if task.done() or started_at is None:
+                continue
+            pass_age = max(0.0, now - started_at)
+            if pass_age > _TICK_STALL_AFTER:
+                report["ready"] = False
+                report["status"] = "stalled"
+                report["detail"] = (
+                    f"github_poll pass for schedule {sid} has run for {pass_age:.0f}s "
+                    f"(stall threshold {_TICK_STALL_AFTER}s)"
+                )
+                return report
         report["status"] = "healthy"
         report["detail"] = f"last scheduler tick completed {age:.0f}s ago"
         return report
@@ -751,6 +761,7 @@ class SchedulerEngine:
                     gt.cancel()
                 await asyncio.gather(*self._github_tick_tasks.values(), return_exceptions=True)
                 self._github_tick_tasks.clear()
+                self._github_tick_started_at.clear()
             if self._fire_tasks:
                 for ft in list(self._fire_tasks):
                     ft.cancel()
@@ -1395,6 +1406,8 @@ class SchedulerEngine:
 
         schedules = await self._svc.list_schedules(enabled=True)
 
+        failed_schedules = 0
+        last_schedule_error: Exception | None = None
         for s in schedules:
             try:
                 if s["trigger_type"] == "github_poll":
@@ -1411,8 +1424,15 @@ class SchedulerEngine:
                                 next_fire_at=next_at,
                                 **self._effective_timezone_fields(s),
                             )
-            except Exception:
+            except Exception as exc:
+                failed_schedules += 1
+                last_schedule_error = exc
                 _log.exception("Error evaluating schedule %s", s.get("name"))
+
+        if schedules and failed_schedules == len(schedules):
+            raise RuntimeError("every enabled schedule failed during evaluation") from (
+                last_schedule_error
+            )
 
     def _start_github_tick(self, schedule: dict, now: float) -> None:
         """Run this schedule's poll-and-fire pass as a tracked task, one at a time per schedule.
@@ -1433,11 +1453,13 @@ class SchedulerEngine:
             return
         task = asyncio.create_task(self._tick_github_guarded(schedule, now))
         self._github_tick_tasks[sid] = task
+        self._github_tick_started_at[sid] = time.time()
         task.add_done_callback(lambda done, sid=sid: self._discard_github_tick(sid, done))
 
     def _discard_github_tick(self, sid: str, done: asyncio.Task) -> None:
         if self._github_tick_tasks.get(sid) is done:
             del self._github_tick_tasks[sid]
+            self._github_tick_started_at.pop(sid, None)
 
     async def _tick_github_guarded(self, schedule: dict, now: float) -> None:
         try:

@@ -12,16 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import Any
 
 import pytest
 
 from lionagi.casts.emission import EscalationRequest, SpawnRequest
-from lionagi.operations import Operation, flow
+from lionagi.operations import Operation
+from lionagi.operations import flow as _flow
 from lionagi.operations.builder import OperationGraphBuilder
+from lionagi.operations.flow import DependencyAwareExecutor, ReactiveExecutor
 from lionagi.operations.node import create_operation
 from lionagi.protocols._concepts import Condition
 from lionagi.protocols.graph.edge import Edge
+from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 from lionagi.session.signal import NodeEscalated, NodeSpawned
@@ -35,6 +39,24 @@ def _session(**ops):
     for name, fn in ops.items():
         session.register_operation(name, fn)
     return session
+
+
+async def _run_flow(*args, timeout: float = 5.0, **kwargs):
+    return await asyncio.wait_for(_flow(*args, **kwargs), timeout=timeout)
+
+
+flow = _run_flow
+
+
+@pytest.mark.asyncio
+async def test_flow_helper_enforces_deadline(monkeypatch):
+    async def wait_forever(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(sys.modules[__name__], "_flow", wait_forever)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await _run_flow(timeout=0.01)
 
 
 # higher_tier: re-spawns the op
@@ -226,6 +248,54 @@ async def test_escalation_retry_inherits_the_emitter_branch_not_the_session_defa
     assert "emitter_only_tool" in retry_branch.tools
 
 
+def test_injected_branch_base_is_explicit_and_independent_of_dependency_order():
+    session = _session()
+    graph = Graph()
+    emitter = create_operation("operate", parameters={"instruction": "initial"})
+    child = create_operation("operate", parameters={"instruction": "follow up"})
+    graph.add_node(emitter)
+    graph.add_node(child)
+
+    emitter_branch = Branch(name="emitter-branch")
+    session.include_branches(emitter_branch)
+    executor = ReactiveExecutor(session=session, graph=graph)
+    executor.operation_branches[emitter.id] = emitter_branch
+
+    executor._assign_injected_branch(
+        child,
+        emitter.id,
+        independent=True,
+        base_branch=emitter_branch,
+    )
+
+    child_branch = session.branches[child.branch_id]
+    assert child_branch is not emitter_branch
+    assert child_branch.metadata["clone_from"] is emitter_branch
+
+
+def test_prepared_context_uses_the_final_replacement_result():
+    session = _session()
+    graph = Graph()
+    emitter = create_operation("operate", parameters={"instruction": "initial"})
+    retry_one = create_operation("operate", parameters={"instruction": "retry one"})
+    retry_two = create_operation("operate", parameters={"instruction": "retry two"})
+    injected = create_operation("operate", parameters={"instruction": "injected"})
+    for operation in (emitter, retry_one, retry_two, injected):
+        graph.add_node(operation)
+    graph.add_edge(Edge(head=emitter.id, tail=injected.id))
+
+    executor = DependencyAwareExecutor(session=session, graph=graph)
+    executor._escalation_replacement[emitter.id] = retry_one.id
+    executor._escalation_replacement[retry_one.id] = retry_two.id
+    executor.results[emitter.id] = EscalationRequest(reason="blocked")
+    executor.results[retry_one.id] = EscalationRequest(reason="still blocked")
+    executor.results[retry_two.id] = "retry answer"
+
+    executor._prepare_operation(injected)
+
+    assert injected.parameters["context"] == {f"{retry_two.id}_result": "retry answer"}
+
+
 @pytest.mark.asyncio
 async def test_escalation_higher_tier_emits_node_escalated_signal():
     """NodeEscalated is emitted on the session bus when higher_tier routing fires."""
@@ -310,8 +380,14 @@ async def test_repeated_escalations_have_unique_retrievable_identity():
         if instruction.startswith("[escalation]"):
             return "completed after retry"
         return [
-            EscalationRequest(reason="try specialist", context={"route": "higher_tier"}),
-            EscalationRequest(reason="try expert", context={"route": "higher_tier"}),
+            EscalationRequest(
+                reason="try specialist",
+                context={"route": "higher_tier", "request": {"depth": 1}},
+            ),
+            EscalationRequest(
+                reason="try specialist",
+                context={"request": {"depth": 2}, "route": "higher_tier"},
+            ),
         ]
 
     session = _session(cheap=cheap)
@@ -363,7 +439,14 @@ async def test_escalation_splice_does_not_fail_a_dependent_waiting_on_another_up
     emitter_id = builder.add_operation("cheap", node_id="cheap", depends_on=[], instruction="x")
     downstream_id = builder.add_operation("downstream", node_id="downstream", depends_on=[])
     graph = builder.get_graph()
-    graph.add_edge(Edge(head=slow_id, tail=downstream_id, label=["depends_on"]))
+    graph.add_edge(
+        Edge(
+            head=slow_id,
+            tail=downstream_id,
+            condition=_ResultEquals("unused path"),
+            label=["depends_on"],
+        )
+    )
     graph.add_edge(Edge(head=emitter_id, tail=downstream_id, condition=_ResultEquals("retry")))
 
     result = await flow(session, graph, reactive=True)
@@ -526,6 +609,40 @@ async def test_escalation_request_deduplicated():
 
     # NodeEscalated fires at most once per unique EscalationRequest object
     assert len(escalated_signals) <= 1
+
+
+@pytest.mark.asyncio
+async def test_equivalent_escalation_requests_seen_on_bus_and_result_run_once():
+    async def emitter(instruction: str = "", **kw):
+        if instruction.startswith("[escalation]"):
+            return "completed"
+        await session.emit(
+            EscalationRequest(
+                reason="needs help",
+                urgency="blocked",
+                context={"route": "higher_tier", "options": ["first", "second"]},
+            )
+        )
+        return EscalationRequest(
+            reason="needs help",
+            urgency="blocked",
+            context={"options": ["first", "second"], "route": "higher_tier"},
+        )
+
+    session = _session(emitter=emitter)
+    builder = OperationGraphBuilder()
+    emitter_id = builder.add_operation("emitter", instruction="initial")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True)
+
+    retries = [
+        node
+        for node in graph.internal_nodes.values()
+        if isinstance(node, Operation) and node.metadata.get("escalated_from") == str(emitter_id)
+    ]
+    assert len(retries) == 1
+    assert result["spawned_operations"] == 1
 
 
 # NodeEscalated.escalation_request is stored in a named field, not Signal.data
