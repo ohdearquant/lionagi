@@ -248,20 +248,94 @@ Conclusive (positive observation this run's process is gone):
 
 - `pid_absent` — pid askable, held no live process
 - `disappeared_during_probe` — held one at the liveness probe, none at the
-  creation-time probe
+  creation-time probe (also reached from a `pid_recycled` mismatch whose
+  confirmation read finds the process gone — see below)
 - `pid_recycled` — a live process holds the number but started at a different
-  time than recorded, so it's a different process
+  time than recorded, so it's a different process — reached only after two
+  independent live reads confirm this, not one (see below)
 
 Inconclusive (settle nothing about death):
 
 - `identity_confirmed` — start times match
+- `identity_confirmed_by_marker` — two live reads agreed with each other and
+  both mismatched the record's start time, but the process's own identity
+  marker names this run — see below. Alive; the record's own `pid_create_time`
+  is what's suspect, not the process.
 - `identity_not_recorded` — record captured no start time
 - `identity_unusable` — recorded start time can't be compared against (bool,
   NaN, or an unbounded JSON integer — the same three values `kill()` refuses)
 - `identity_unreadable` — identity probe errored
+- `identity_unstable` — a live read mismatched the record, but a second fresh
+  read did not reproduce the first (or the bracketing re-read after a marker
+  consultation did not reproduce the two live reads that came before it):
+  two live reads of the same process must compare exactly equal
+  (`ln/_proc.py`'s own invariant), so a mismatch between them means the probe
+  itself is unreliable right now, not that a different process holds the pid.
+  Never in `CONCLUSIVE_FINDINGS` — an unstable probe must never admit a reap.
+- `identity_unconfirmed` — two live reads agreed with each other and both
+  mismatched the record, but the process's marker read could not rule
+  anything in or out (an unreadable environment, or a `found` reply carrying
+  no value — a platform may return that for a protected process without it
+  meaning the marker is genuinely absent, see `process_marker`'s own
+  docstring). Never conclusive.
 - `unusable_pid` — record's pid isn't a number the OS can be asked about, so
   no probe was made at all
 - `no_record` — live pid with no record to identify it against
+
+**Confirming a `pid_recycled` mismatch.** A single read landing outside
+`CREATE_TIME_TOLERANCE` is not, by itself, evidence of a different process —
+under high load one kernel-tick read can miss tolerance for the *same*
+process (observed: host load average ~108, a live process's create-time read
+mismatching its own recorded value; the mechanism behind that one stray read
+is not established — the response is the second read and the marker check
+below, not a claim about why the first read missed). `_run_process_liveness()`
+takes a second fresh read (`_process_create_time` again, not reused from the
+first) before concluding anything from a mismatch:
+
+| first read | second read | conclusion |
+|---|---|---|
+| mismatch | `gone` | `disappeared_during_probe` (process exited between the two probes) |
+| mismatch | matches first read, still mismatches record | consult the marker (below) |
+| mismatch | disagrees with the first read (or errored) | `identity_unstable` — `alive=True`, `conclusion="unknown"`, never reaps |
+
+Two live reads agreeing with each other, both mismatching the record, is
+proof the two reads agree — not proof the record's own single spawn-time read
+was the accurate one. Before `pid_recycled` is concluded from that agreement,
+the process's own identity marker (planted in its environment at spawn,
+`config.JOB_MARKER_ENV_VAR`) is read, then bracketed the same way `kill()`
+brackets its own marker read: a third create-time probe must still equal the
+first two, or the finding is `identity_unstable` rather than anything drawn
+from the marker.
+
+| marker read | bracket re-read | conclusion |
+|---|---|---|
+| names this run | matches the two prior reads | `identity_confirmed_by_marker` — alive, never reaps |
+| names a different run | matches the two prior reads | `pid_recycled` |
+| unreadable, or `found` with no value | matches the two prior reads | `identity_unconfirmed` — never reaps |
+| (any) | does not match | `identity_unstable` — never reaps |
+
+`reap_orphan()`'s `terminal_evidence` records what a conclusion was based on,
+not just the finding: `observed_create_time` (the live read that decided it,
+`None` where no live read was the deciding fact), `recorded_create_time` (the
+job's own `pid_create_time`), `tolerance` (`CREATE_TIME_TOLERANCE` at the time
+of the reap), `observed_at`, `observer` (`_server_identity()` — which server
+process concluded this, since more than one may read the same job directory),
+and `marker` (the foreign run id a `pid_recycled` conclusion read from the
+process's own marker, `None` for every other finding). Threaded from
+`ProcessLiveness`'s own fields rather than re-probed under the lock, so the
+evidence describes the actual observation that triggered the reap. Every key
+here is validated against a fixed allow-list before the lock is taken — an
+unknown key, a wrongly shaped value, or an attempt to set `kind`/`finding`
+raises `ValueError` and writes nothing; a caller invoking `reap_orphan()`
+directly without an `evidence` argument (a test, e.g.) still gets the bounded
+`{kind, finding}` shape this always carried — the richer evidence is what
+`status()`'s own reap path supplies.
+
+A record already reaper-terminal keeps that end even when a *later* call's own
+fresh probe confirms the process's identity (`status()` only reaps a record
+that isn't terminal yet) — see `reap_contradicted_by_fresh_probe` in
+#status-response-contract for how that contradiction is surfaced rather than
+left for a reader to notice two fields disagree.
 
 #### status-response-contract
 
@@ -288,7 +362,31 @@ Inconclusive (settle nothing about death):
 - `terminal_source` says what wrote the end (`cli_terminal_hook` /
   `lifecycle_cache` / `spawn_failure` / `mcp_orphan_reaper` / null for
   pre-field records); `terminal_evidence` carries bounded evidence for an end
-  nobody reported.
+  nobody reported — see #liveness-findings for its keys. Terminal is
+  first-writer-wins, full stop: a hook or lifecycle end that arrives after a
+  reaper end does **not** replace it, including the reaper's own
+  `indeterminate` — `reap_orphan`'s own admission likewise refuses to overwrite
+  an existing end from the other direction, whoever wrote it. What a late
+  report can still do is leave a record of itself beside the untouched latch:
+  the first such report is kept in `late_report` — `{source: "hook"|
+  "lifecycle", status, outcome, reason_code, reported_at}` — bounded to what it
+  reported, with a second late report dropped rather than overwriting the
+  first.
+- `reap_contradicted_by_fresh_probe` is true when the record is
+  reaper-terminal (`terminal_source == mcp_orphan_reaper`) and *this call's*
+  own fresh liveness probe reads `identity_confirmed` — the process is
+  demonstrably still this run's, contradicting the earlier reap. `status()`
+  only reaps a record that isn't terminal yet, so this can be true without the
+  reap being overwritten by this call; it names the contradiction rather than
+  leaving a reader to notice `terminal`/`alive`/`liveness_conclusion`
+  disagreeing with `terminal_source`. False whenever `job` is absent or the
+  end came from anything other than the reaper.
+- `reap_contradicted_by_owner_report` is the same contradiction reached the
+  other way: true when the record is reaper-terminal and a `late_report` is
+  present — the run's actual owner (the hook or the lifecycle store) reported
+  in after the reap had already latched. `late_report` (null when absent)
+  carries what it reported; both fields exist so a reader never has to notice
+  two writers disagreeing by diffing them itself.
 - `notify_delivery` is null only while `terminal` is false. A terminal run with
   no configured notifier reports `{"attempted": false}`. Delivery writes an
   attempted/unknown object before launching the notifier and replaces it with
