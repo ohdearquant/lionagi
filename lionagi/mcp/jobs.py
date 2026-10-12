@@ -1074,16 +1074,12 @@ def _resolve_submitter_identity(cwd: str) -> str:
     return actor
 
 
-# Said by both unresolvable paths below, and only by those. A caller who cannot be
-# validated is one step from a submission that works: an unreachable resolver refuses the
-# sender, never the run. The mismatch message instead names the actor to use, because there a
-# signed option still exists. Neither clause promises a notice: whether one is sent is decided
-# by the run's notify configuration (`_notify_hook`), and LIONAGI_MCP_NOTIFY_SENDER can still
-# supply the sender a `{sender}` template needs.
+# Used when an explicit sender cannot be resolved from an available submitting directory.
+# Omitting the sender skips this validation only; submission and notice delivery can still fail
+# for other reasons. A mismatch names the resolved actor because that is the sender to use.
 _NOTIFY_SENDER_FALLBACK = (
-    "omit notify_sender to submit without sender attestation; whatever notice this "
-    "run's configuration sends then goes unsigned, or is not sent at all if that "
-    "command interpolates {sender} and LIONAGI_MCP_NOTIFY_SENDER supplies none"
+    "omit notify_sender to continue without an explicit sender; "
+    "the submission carries no explicit sender"
 )
 
 
@@ -1094,7 +1090,9 @@ def _validate_notify_sender(sender: str | None, submit_cwd: str | None) -> None:
     if submit_cwd is None:
         raise NotifySenderResolutionError(
             f"cannot validate notify_sender {sender!r}: the submitting directory is "
-            f"unavailable; {_NOTIFY_SENDER_FALLBACK}"
+            "unavailable; this server cannot submit with an explicit sender from a removed "
+            "directory, and a terminal notice is not sent unless "
+            "LIONAGI_MCP_NOTIFY_CWD names a directory"
         )
     try:
         actual = _resolve_submitter_identity(submit_cwd)

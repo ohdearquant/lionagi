@@ -142,6 +142,32 @@ def test_submit_without_a_sender_does_not_require_identity_resolution(monkeypatc
     assert record["submit_cwd"] == str(submit_dir)
 
 
+def test_submit_without_a_sender_is_allowed_when_its_directory_is_unavailable(
+    monkeypatch, tmp_path
+):
+    _submit_sandbox(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_submit_cwd", lambda: None)
+
+    def should_not_resolve(_cwd):
+        raise AssertionError("an omitted notify_sender must not resolve an identity")
+
+    class Spawned:
+        pid = 999_999
+
+    spawned: list = []
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", should_not_resolve)
+    monkeypatch.setattr(
+        jobs.subprocess, "Popen", lambda *args, **kwargs: spawned.append(args) or Spawned()
+    )
+
+    handle = jobs.submit("agent", [], prompt="work", no_mcp_config=True)
+    record = jobs._read_job(handle["run_id"])
+
+    assert spawned
+    assert record["notify_sender"] is None
+    assert record["submit_cwd"] is None
+
+
 def test_submit_accepts_the_actor_resolved_from_the_submitting_directory(monkeypatch, tmp_path):
     submit_dir = _submit_sandbox(monkeypatch, tmp_path)
 
@@ -188,14 +214,7 @@ def _job(monkeypatch, tmp_path):
 def test_no_delivery_runs_when_the_template_needs_a_sender_and_none_was_given(
     monkeypatch, tmp_path
 ):
-    """A command that asks who the notice is from cannot be run without an answer.
-
-    Substituting an empty string hands the delivery tool a blank where an
-    identity belongs, and a tool that accepts it — or resolves a sender of its
-    own — signs the notice with the wrong seat. Nothing is spawned; the reason
-    is recorded, so job_status shows a notifier that could not deliver rather
-    than the silence of one never asked.
-    """
+    """A notice requiring a sender records why delivery was not attempted."""
     rid = _job(monkeypatch, tmp_path)
     spawned: list = []
     monkeypatch.setattr(
@@ -286,125 +305,56 @@ class _Completed:
         pass
 
 
-def test_an_unreachable_resolver_names_the_fallback_that_works(monkeypatch, tmp_path):
-    """The refusal has to say which door is still open.
+def test_a_resolver_error_explains_omitting_the_sender(monkeypatch, tmp_path):
+    def fail_resolution(_cwd):
+        raise jobs.NotifySenderResolutionError("identity resolution timed out")
 
-    An unreachable resolver refuses the SENDER, not the run: dropping
-    `notify_sender` submits normally, because validation is skipped when there
-    is nothing to validate. Without that sentence the caller reads `unavailable`
-    as "spawning is down" and stops, which is a wrong-cause diagnosis produced by
-    a correct refusal.
-    """
-
-    def unreachable(_cwd):
-        raise jobs.NotifySenderResolutionError("could not launch kkernel: [Errno 2]")
-
-    monkeypatch.setattr(jobs, "_resolve_submitter_identity", unreachable)
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", fail_resolution)
 
     with pytest.raises(jobs.NotifySenderResolutionError) as caught:
         jobs._validate_notify_sender("agent:someone", str(tmp_path))
 
     message = str(caught.value)
-    assert "omit notify_sender" in message, message
-    assert "could not launch kkernel" in message, "the underlying cause must survive"
+    assert "omit notify_sender to continue without an explicit sender" in message, message
+    assert "the submission carries no explicit sender" in message, message
+    assert "identity resolution timed out" in message
+    assert "whatever notice" not in message
+    assert "not sent at all" not in message
     assert "agent:someone" in message
 
 
-def test_an_unavailable_submitting_directory_names_it_too():
-    """The other unresolvable path. Both or neither -- one of two is a trap."""
+def test_an_unavailable_submitting_directory_explains_the_submission_limit():
     with pytest.raises(jobs.NotifySenderResolutionError) as caught:
         jobs._validate_notify_sender("agent:someone", None)
 
-    assert "omit notify_sender" in str(caught.value)
+    message = str(caught.value)
+    assert "this server cannot submit with an explicit sender from a removed directory" in message
+    assert (
+        "a terminal notice is not sent unless LIONAGI_MCP_NOTIFY_CWD names a directory" in message
+    )
+    assert "omit notify_sender" not in message
 
 
 def test_a_mismatch_keeps_its_own_wording(monkeypatch, tmp_path):
-    """The must-not-match arm: the unsigned fallback belongs to the outage paths only.
-
-    A mismatch is a claim about identity, not an outage, and the caller still
-    has a SIGNED option -- so that message names the actor to use, and it
-    already mentions omitting the field. What it must not grow is the *unsigned
-    run* sentence, which would read as "ask for less and it goes through": the
-    wrong lesson to draw from a refusal about identity.
-    """
+    """A mismatch names the resolved actor and the option that matches it."""
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:actual")
 
     with pytest.raises(jobs.NotifySenderMismatchError) as caught:
         jobs._validate_notify_sender("agent:requested", str(tmp_path))
 
     message = str(caught.value)
-    assert jobs._NOTIFY_SENDER_FALLBACK not in message, message
-    assert "without sender attestation" not in message, message
-    assert "agent:actual" in message
-
-
-def test_the_fallback_does_not_promise_a_notice_the_run_may_not_get(monkeypatch, tmp_path):
-    """The advice and the delivery path have to agree, and they did not.
-
-    Dropping `notify_sender` is sound advice about the SUBMISSION: validation is
-    skipped when there is nothing to validate, and the run goes through. It was
-    stated as sound advice about the NOTICE too, and there it is false whenever
-    the configured command interpolates `{sender}` -- that template is refused
-    outright with no sender, so the run is submitted and its completion notice
-    never arrives. A refusal the caller can see, traded for a silence they cannot.
-
-    The delivery half is asserted alongside the wording, and re-runs the hook to
-    do it, because that is what keeps the wording assertion honest: if the
-    refusal in the delivery path is ever dropped, this goes red on the first
-    assert instead of leaving behind a qualification that no longer qualifies.
-
-    Read off the raised error rather than off the module constant, because the
-    constant is not what any caller sees. A wording assertion that passes on a
-    string no longer reaching the message is exactly the shape this test exists
-    to refuse.
-    """
-    rid = _job(monkeypatch, tmp_path)
-    spawned: list = []
-    monkeypatch.setattr(
-        _notify_hook.subprocess, "Popen", lambda *a, **k: spawned.append(a) or _Completed()
+    assert message == (
+        "notify_sender 'agent:requested' does not match actor 'agent:actual' resolved from "
+        f"submitting directory {str(tmp_path)!r}; use 'agent:actual' or omit notify_sender"
     )
 
-    rc = _notify_hook.main(
-        [
-            "--run-id",
-            rid,
-            "--status",
-            "completed",
-            "--command",
-            '["notify", "--from", "{sender}", "--to", "seat-b"]',
-        ]
-    )
 
-    assert rc == 0
-    assert spawned == [], "the sender-less run really does go unnotified under this template"
-
-    with pytest.raises(jobs.NotifySenderResolutionError) as caught:
-        jobs._validate_notify_sender("agent:someone", None)
-    message = str(caught.value)
-
-    assert "or is not sent at all" in message, message
-    assert "{sender}" in message, "the condition has to name what triggers it"
-
-
-def test_the_fallback_promises_nothing_where_the_notifier_is_simply_off(monkeypatch, tmp_path):
-    """The row the conditional clause does not cover, and must not have to.
-
-    With no notify command configured at all, nothing is delivered -- and the
-    sender is not why. Supplying one produces the same `attempted: False`, so
-    this is the notifier being off rather than the advice costing the caller
-    anything. Both are asserted: it is the pair that shows the omission is not
-    the cause, and one of them alone would read as another suppression case.
-
-    What the wording therefore may not do is assert a notice, because in this
-    configuration there is none to assert. Speaking of whatever notice the
-    configuration sends claims nothing here and stays exact where a notice does
-    go out, which is why the fix is a weaker sentence rather than a longer one
-    enumerating configurations the caller already knows about.
-    """
+def test_the_fallback_does_not_promise_delivery_when_notifications_are_off(
+    monkeypatch, tmp_path, plugin_home
+):
+    """An omitted sender does not guarantee a configured notification."""
+    assert os.environ["HOME"] == str(plugin_home)
     _job(monkeypatch, tmp_path)
-    # Asserted rather than assumed: `_job` clears this as a side effect, and a
-    # premise held by somebody else's helper is one refactor from making this
-    # test measure a configured notifier while still passing.
     assert "LIONAGI_MCP_NOTIFY_COMMAND" not in os.environ
     monkeypatch.setattr(
         _notify_hook.subprocess,
@@ -418,30 +368,23 @@ def test_the_fallback_promises_nothing_where_the_notifier_is_simply_off(monkeypa
     )
 
     assert without == {"attempted": False}
-    assert with_sender == without, "the sender is not what decides this row"
+    assert with_sender == without, "the sender does not change this result"
 
+    def fail_resolution(_cwd):
+        raise jobs.NotifySenderResolutionError("identity resolution timed out")
+
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", fail_resolution)
     with pytest.raises(jobs.NotifySenderResolutionError) as caught:
-        jobs._validate_notify_sender("agent:someone", None)
+        jobs._validate_notify_sender("agent:someone", str(tmp_path))
     message = str(caught.value)
 
-    assert "the run then notifies" not in message, message
-    assert "whatever notice" in message, message
+    assert "the submission carries no explicit sender" in message, message
+    assert "whatever notice" not in message, message
+    assert "not sent at all" not in message, message
 
 
-def test_the_conditional_clause_names_the_environment_that_lifts_it(monkeypatch, tmp_path):
-    """The row that made the unqualified sentence false.
-
-    `notify_sender` is not the only way a sender reaches the notifier:
-    LIONAGI_MCP_NOTIFY_SENDER feeds the same field. So a `{sender}` template is
-    substituted and sent even when the submission carried no sender, and the
-    advice saying such a notice "is not sent at all" was simply wrong wherever
-    that variable is set -- wrong in a sentence a person reads while deciding
-    what to do, which is the kind that survives.
-
-    The delivery half is asserted first and reads the spawned argv rather than
-    the fact of spawning, because a notice sent with the placeholder left
-    unsubstituted would satisfy a bare "did it spawn" and mean the opposite.
-    """
+def test_environment_sender_fills_a_template_without_a_submit_sender(monkeypatch, tmp_path):
+    """The process-wide sender can fill a command's ``{sender}`` placeholder."""
     rid = _job(monkeypatch, tmp_path)
     spawned: list = []
     monkeypatch.setattr(
@@ -463,11 +406,5 @@ def test_the_conditional_clause_names_the_environment_that_lifts_it(monkeypatch,
     assert rc == 0
     assert spawned, "a sender from the environment fills {sender}, so the notice does go out"
     assert "agent:from-the-environment" in str(spawned), (
-        "the environment sender has to be substituted, not merely not-refused"
+        "the environment sender must be substituted into the command"
     )
-
-    with pytest.raises(jobs.NotifySenderResolutionError) as caught:
-        jobs._validate_notify_sender("agent:someone", None)
-    message = str(caught.value)
-
-    assert "LIONAGI_MCP_NOTIFY_SENDER supplies none" in message, message
