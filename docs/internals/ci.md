@@ -119,9 +119,12 @@ temporary directory of its own. Discovery reads the user-level `.lionagi`
 (agent profiles, MCP configuration, `settings.yaml`) through `HOME` on every
 call, so a run that kept the developer's `HOME` would hand any test that builds
 a profiled agent the real directory. Child processes the suite starts inherit
-the replacement. The account's own `.lionagi` stays out of the project walks
-whatever `HOME` says (ADR-0088 Amendment 1), so the two together keep a test
-from reading it from a checkout below the home directory too.
+the replacement. When the password database identifies the account home,
+project walks exclude its `.lionagi` regardless of `HOME` (ADR-0088 Amendment 1),
+and spawned MCP discovery skips a bare `.mcp.json` there. If the account home
+cannot be identified, that exclusion is unavailable. Together with the `HOME`
+replacement, these checks keep tests from loading account-level configuration
+from a checkout below the account home.
 `test_the_callers_home_reaches_neither_the_suite_nor_its_children` in
 `tests/test_run_directory_isolation.py` checks the replacement from outside.
 

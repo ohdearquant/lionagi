@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from lionagi._paths import _find_git_root
+from lionagi._paths import _find_git_root, is_account_lionagi_dir
 
 _SOURCE_CONFIG_TOML = "config_toml"
 _SOURCE_GLOBAL_OVERRIDE = "global_override"
@@ -42,6 +42,8 @@ def _from_config_toml(cwd: Path) -> tuple[str | None, str | None]:
     for parent in [cwd, *cwd.parents]:
         candidate = parent / ".lionagi" / "config.toml"
         if candidate.is_file():
+            if is_account_lionagi_dir(candidate.parent):
+                continue
             name = _read_project_from_toml(candidate)
             if name:
                 return (name, _SOURCE_CONFIG_TOML)

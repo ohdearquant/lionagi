@@ -65,9 +65,10 @@ def is_account_home(directory: Path) -> bool:
 def is_account_lionagi_dir(directory: Path) -> bool:
     """Whether *directory* is the account home's own `.lionagi`, by any spelling.
 
-    That directory is user-level configuration. It is found through ``$HOME``
-    as the user-level candidate, never as a project directory on the way up
-    from the working directory, so redirecting ``$HOME`` keeps it out.
+    When the password database identifies the account home, project discovery
+    excludes this directory regardless of ``$HOME``. The user-level candidate
+    itself follows ``Path.home()``. If the account home cannot be identified,
+    no project-directory exclusion applies.
     """
     home = _account_home()
     return home is not None and _same_directory(directory, home / ".lionagi")
@@ -93,11 +94,11 @@ def _find_git_root(cwd: Path) -> Path | None:
 def find_lionagi_dirs() -> list[Path]:
     """Find `.lionagi/` dirs: git root, then cwd and its parents, then `~/.lionagi/`.
 
-    The account home's own `.lionagi` is never a project directory, at the git
-    root or on the walk up; it comes last only as the user-level candidate,
-    ``Path.home() / ".lionagi"``. That is ``$HOME``'s when ``$HOME`` is set (an
-    empty ``$HOME`` resolves to ``/``), and the password database's home only
-    when ``$HOME`` is unset.
+    When the password database identifies the account home, its `.lionagi` is
+    excluded from project candidates at the git root and on the ancestor walk.
+    The separate user-level candidate follows ``Path.home() / ".lionagi"``.
+    If the account home cannot be identified, no project-directory exclusion
+    applies and the walk retains its prior behavior.
 
     Uncached: every call re-resolves the git root and re-checks the paths, so
     the result always reflects the current cwd and git context.

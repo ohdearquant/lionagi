@@ -26,9 +26,11 @@ Decision:
 > their existing trust, stopping, and merge rules. Bare project .mcp.json remains
 > trust-gated; account-home bare files require explicit selection. Tests set a
 > temporary HOME before imports and pass it to subprocesses. No discovery-specific
-> setting is added. The account home is global-only. When the account home cannot
-> be identified, no exclusion applies and discovery behaves as before; it never
-> raises and never substitutes HOME for the account home.
+> setting is added. The account home's `.lionagi` is a user-level candidate only
+> when selected through `Path.home()`; a redirected `HOME` does not make it a
+> project fallback. When the account home cannot be identified, no exclusion
+> applies and discovery behaves as before; it never raises and never substitutes
+> `HOME` for the account home.
 
 How it reads in the code:
 
@@ -43,7 +45,7 @@ How it reads in the code:
 - `tests/conftest.py` replaces `HOME` with a temporary directory before anything
   imports lionagi, beside the existing `LIONAGI_HOME` redirect.
 
-Two changes in behaviour, named:
+Four changes in behaviour, named:
 
 1. Under the account's real `HOME`, its `.lionagi` moves from its ancestor
    position to the user-level position at the end of the list. A `.lionagi` in a
@@ -51,6 +53,13 @@ Two changes in behaviour, named:
 2. A bare `.mcp.json` in the account home is no longer read as project
    configuration. Naming it as the explicit MCP path still selects it, and a bare
    `.mcp.json` in any other trusted project directory is read as before.
+3. When `HOME` names the account home, its `settings.yaml` is read once as the
+   global layer, without also merging it as project settings. This avoids
+   duplicating list values during the merge.
+4. When `HOME` points elsewhere and the password database identifies the account
+   home, its `.lionagi` is excluded from project discovery and does not provide
+   profiles, MCP configuration or settings as a fallback. The user-level
+   candidate continues to follow `HOME`.
 
 The user-level trust records of D5 and the plugin settings of D7 stay in
 `~/.lionagi/settings.yaml`, read through `HOME` as before.

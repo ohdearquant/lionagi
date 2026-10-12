@@ -20,8 +20,6 @@ from lionagi.agent import settings as settings_mod
 from lionagi.agent.factory import _resolve_mcp_path
 from lionagi.agent.settings import load_settings
 
-_UNPATCHED_ACCOUNT_HOME = _paths._account_home
-
 
 def _lionagi(root: Path, *, mcp: bool = False, settings: str | None = None) -> Path:
     directory = root / ".lionagi"
@@ -33,13 +31,20 @@ def _lionagi(root: Path, *, mcp: bool = False, settings: str | None = None) -> P
     return directory
 
 
-def _git_init(directory: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(directory)], check=True)
+def _stub_git_root(monkeypatch, root: Path, cwd: Path, *, returncode: int = 0) -> None:
+    def _run(args, **kwargs):
+        assert args == ["git", "rev-parse", "--show-toplevel"]
+        assert kwargs["cwd"] == str(cwd)
+        stdout = f"{root}\n" if returncode == 0 else ""
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(_paths.subprocess, "run", _run)
 
 
 @pytest.fixture
 def layout(tmp_path, monkeypatch):
     """top/ holds acct/ (the account home), which holds work/repo/; HOME is safe/."""
+    account_home_lookup = _paths._account_home
     root = tmp_path.resolve()
     top = root / "top"
     acct = top / "acct"
@@ -51,7 +56,15 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(_paths, "_account_home", lambda: acct)
     monkeypatch.setenv("HOME", str(safe))
     monkeypatch.chdir(repo)
-    return SimpleNamespace(root=root, top=top, acct=acct, work=work, repo=repo, safe=safe)
+    return SimpleNamespace(
+        root=root,
+        top=top,
+        acct=acct,
+        work=work,
+        repo=repo,
+        safe=safe,
+        account_home_lookup=account_home_lookup,
+    )
 
 
 @pytest.fixture
@@ -77,14 +90,34 @@ def _mcp(**spec) -> str | None:
     )
 
 
-@pytest.mark.skipif(not hasattr(os, "getuid"), reason="no password database on this platform")
-def test_the_account_home_comes_from_the_password_database_not_from_home():
+def _password_database_home() -> Path:
     import pwd
 
-    expected = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        pytest.skip("no password entry for uid")
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="no password database on this platform")
+def test_the_account_home_comes_from_the_password_database_not_from_home():
+    expected = _password_database_home()
     assert _paths._account_home() == expected
     # The suite runs under a HOME of its own, so the two must differ here.
     assert Path.home() != expected
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="no password database on this platform")
+def test_password_database_home_skips_when_uid_is_missing(monkeypatch):
+    import pwd
+
+    def _no_entry(uid):
+        raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+    monkeypatch.setattr(pwd, "getpwuid", _no_entry)
+
+    with pytest.raises(pytest.skip.Exception, match="no password entry for uid"):
+        _password_database_home()
 
 
 @pytest.mark.parametrize(
@@ -114,7 +147,7 @@ def test_an_unidentified_account_home_excludes_nothing(layout, monkeypatch, fail
         pw_dir = {"an empty home": "", "no home": None, "a relative home": "acct"}[failure]
         monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=pw_dir))
         monkeypatch.chdir(layout.acct)
-    monkeypatch.setattr(_paths, "_account_home", _UNPATCHED_ACCOUNT_HOME)
+    monkeypatch.setattr(_paths, "_account_home", layout.account_home_lookup)
     acct_dir = _lionagi(layout.acct)
     top_dir = _lionagi(layout.top)
     (layout.acct / ".mcp.json").write_text("{}")
@@ -149,10 +182,11 @@ def test_without_a_user_directory_the_account_one_is_still_not_found(layout, ope
     assert opened_settings == []
 
 
-def test_an_account_home_that_is_the_git_root_adds_no_project_directory(layout):
-    _git_init(layout.acct)
+def test_an_account_home_that_is_the_git_root_adds_no_project_directory(layout, monkeypatch):
+    _stub_git_root(monkeypatch, layout.acct, layout.repo)
     _lionagi(layout.acct)
 
+    assert _paths._find_git_root(layout.repo) == layout.acct
     assert _found(layout) == []
 
 
@@ -164,6 +198,16 @@ def test_the_account_home_is_recognised_by_identity_not_spelling(layout, monkeyp
     monkeypatch.setattr(_paths, "_account_home", lambda: alias)
 
     assert acct_dir not in _found(layout)
+
+
+def test_account_directories_are_recognised_by_case_variant(layout):
+    _lionagi(layout.acct)
+    home_variant = layout.acct.with_name(layout.acct.name.swapcase())
+    if home_variant == layout.acct or not home_variant.is_dir():
+        pytest.skip("filesystem does not resolve case variants to the same directory")
+
+    assert _paths.is_account_home(home_variant)
+    assert _paths.is_account_lionagi_dir(home_variant / ".LIONAGI")
 
 
 def test_a_project_lionagi_that_links_to_the_account_one_is_excluded(layout):
@@ -187,16 +231,26 @@ def test_the_user_level_directory_follows_home_not_lionagi_home(layout, monkeypa
 
 def test_under_the_real_home_the_account_lionagi_comes_once_and_last(layout, monkeypatch):
     monkeypatch.setenv("HOME", str(layout.acct))
-    _git_init(layout.repo)
     repo_dir = _lionagi(layout.repo)
     work_dir = _lionagi(layout.work)
     acct_dir = _lionagi(layout.acct)
     top_dir = _lionagi(layout.top)
     (layout.repo / "pkg").mkdir()
     monkeypatch.chdir(layout.repo / "pkg")
+    _stub_git_root(monkeypatch, layout.repo, layout.repo / "pkg")
+
+    assert _paths._find_git_root(Path.cwd()) == layout.repo
 
     # A directory above the account home now precedes it: the account's own is user-level.
     assert _found(layout) == [repo_dir, work_dir, top_dir, acct_dir]
+
+
+def test_under_the_real_home_global_settings_are_loaded_once(layout, monkeypatch, opened_settings):
+    account_dir = _lionagi(layout.acct, settings="items:\n  - x\n")
+    monkeypatch.setenv("HOME", str(layout.acct))
+
+    assert load_settings(include_project=True) == {"items": ["x"]}
+    assert opened_settings == [account_dir / "settings.yaml"]
 
 
 def test_the_account_lionagi_still_ends_the_mcp_walk(layout):
