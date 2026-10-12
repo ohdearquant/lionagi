@@ -20,7 +20,7 @@ _FLAGS = ("--permission-mode", "--dangerously-skip-permissions")
 
 def _permission_flags(req: ClaudeCodeRequest) -> list[str]:
     args = req.as_cmd_args()
-    found = [a for a in args if a in _FLAGS]
+    found = [a for a in args if a in _FLAGS or a.startswith("--permission-mode=")]
     if found == ["--permission-mode"]:
         return ["--permission-mode", args[args.index("--permission-mode") + 1]]
     return found
@@ -28,6 +28,14 @@ def _permission_flags(req: ClaudeCodeRequest) -> list[str]:
 
 def test_a_request_that_names_no_mode_passes_no_permission_flag():
     assert _permission_flags(ClaudeCodeRequest(prompt="hi")) == []
+
+
+def test_an_inline_permission_mode_is_detected():
+    class RequestWithInlineMode:
+        def as_cmd_args(self):
+            return ["exec", "--permission-mode=default"]
+
+    assert _permission_flags(RequestWithInlineMode()) == ["--permission-mode=default"]
 
 
 @pytest.mark.parametrize(

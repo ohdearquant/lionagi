@@ -104,13 +104,20 @@ _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 
 
-def _refuse_a_turn_input_past_the_cli_limit(prompt: str) -> None:
+def _refuse_oversized_cli_inputs(prompt: str, system_prompt: str | None = None) -> None:
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
         raise ValueError(
             f"the Codex turn input is {len(prompt):,} characters, past the CLI's limit of "
-            f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A resumed session sends its whole transcript as "
+            f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A long branch sends its rendered history as "
             "the input: start a new session and hand it the earlier result as a file."
         )
+    if system_prompt is not None:
+        system_prompt_bytes = len(system_prompt.encode("utf-8"))
+        if system_prompt_bytes >= CODEX_MAX_TURN_INPUT_CHARS:
+            raise ValueError(
+                f"the Codex system prompt is {system_prompt_bytes:,} bytes, too large to pass "
+                "as a command-line argument"
+            )
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
@@ -537,9 +544,8 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _refuse_a_turn_input_past_the_cli_limit(self):
-        # A branch resumed from its snapshot sends every stored message, joined, as this one
-        # input, so a long session grows past the limit; refused here, before any process starts.
-        _refuse_a_turn_input_past_the_cli_limit(self.prompt)
+        # A long branch sends its rendered history with every turn, which can exceed the limit.
+        _refuse_oversized_cli_inputs(self.prompt, self.system_prompt)
         return self
 
     @model_validator(mode="after")
@@ -670,9 +676,8 @@ CodexSession = CLISession
 async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
-    # The request's validator refuses this already, but model_copy(update=...) skips validation,
-    # so the input is checked again where it would reach the process.
-    _refuse_a_turn_input_past_the_cli_limit(request.prompt)
+    # model_copy(update=...) skips validation, so check again where inputs reach the process.
+    _refuse_oversized_cli_inputs(request.prompt, request.system_prompt)
     cmd = [CODEX_CLI, *request.as_cmd_args()]
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.

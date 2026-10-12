@@ -1,12 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""A Codex turn input past the CLI's limit is refused before any process starts.
+"""Codex rejects an oversized turn input or system prompt before starting the CLI.
 
-The Codex CLI refuses a turn input over 1,048,576 characters (``turn/start`` answers
-``input_too_large``), but only once the process is running. A branch resumed from its snapshot
-sends every stored message, joined, as that one input, so a long session crossed the limit on its
-next resume and died with a stack trace from the process it had started.
+A long branch sends its rendered history with each turn, so its input can exceed the CLI limit
+even when the new instruction is short.
 """
 
 from __future__ import annotations
@@ -31,11 +29,18 @@ def test_a_prompt_at_the_limit_is_taken_and_one_past_it_is_refused(tmp_path):
     assert "start a new session" in message
 
 
+def test_the_turn_input_limit_counts_unicode_characters(tmp_path):
+    prompt = "漢" * CODEX_MAX_TURN_INPUT_CHARS
+
+    assert len(prompt.encode("utf-8")) > CODEX_MAX_TURN_INPUT_CHARS
+    assert CodexCodeRequest(prompt=prompt, repo=tmp_path).prompt == prompt
+
+
 def test_the_limit_is_measured_on_the_input_the_messages_join_into(tmp_path):
     """Each message is under the limit; the joined input is not, and that is what the CLI gets."""
     half = "y" * (CODEX_MAX_TURN_INPUT_CHARS // 2)
     messages = [
-        {"role": "system", "content": "s" * CODEX_MAX_TURN_INPUT_CHARS},  # not part of the input
+        {"role": "system", "content": "system instructions"},  # not part of the turn input
         {"role": "user", "content": half},
         {"role": "assistant", "content": half},
     ]
@@ -71,11 +76,38 @@ async def test_a_request_copied_past_the_limit_is_refused_where_the_process_woul
 
 
 @pytest.mark.asyncio
+async def test_a_copied_large_system_prompt_is_refused_before_the_cli_starts(tmp_path, monkeypatch):
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("the Codex CLI was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"system_prompt": "s" * CODEX_MAX_TURN_INPUT_CHARS}
+    )
+
+    with pytest.raises(ValueError, match="system prompt.*command-line argument"):
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
+
+
+def test_a_large_system_message_is_refused_before_it_reaches_argv(tmp_path):
+    with pytest.raises(ValueError, match="system prompt.*command-line argument"):
+        CodexCodeRequest(
+            messages=[
+                {"role": "system", "content": "s" * CODEX_MAX_TURN_INPUT_CHARS},
+                {"role": "user", "content": "hi"},
+            ],
+            repo=tmp_path,
+        )
+
+
+@pytest.mark.asyncio
 async def test_a_branch_whose_transcript_is_past_the_limit_starts_nothing_and_gains_no_reply(
     tmp_path, monkeypatch
 ):
-    """The resume shape: a branch rebuilt with a long transcript asks for one more turn. Nothing
-    is spawned, the stored transcript is untouched, and no reply is recorded.
+    """A long branch sends its rendered history with the next turn. Nothing is spawned, the
+    existing messages remain unchanged, and no reply is recorded.
 
     The run commits its instruction before the model call, as it does for any turn that fails,
     so the refused instruction may be the one message added.
