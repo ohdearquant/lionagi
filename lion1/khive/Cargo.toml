@@ -7,13 +7,13 @@ members = ["pack-lion", "lion1-khive"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.93"
+rust-version = "1.95"
 
 [workspace.dependencies]
-khive-types = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
-khive-storage = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
-khive-runtime = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
-kkernel = { git = "https://github.com/ohdearquant/khive", rev = "96a0a5207c256a9860a279bb1634436e86313486" }
+khive-types = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
+khive-storage = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
+khive-runtime = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
+kkernel = { git = "https://github.com/ohdearquant/khive", rev = "62ca821f32b26ce487f094b12b136ae2e62badae" }
 
 inventory = "0.3"
 async-trait = "0.1"
