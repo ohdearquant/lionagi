@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from lionagi.libs.path_safety import validate_bare_name
 
-__all__ = ("resolve_codex_config_profile",)
+__all__ = (
+    "codex_home_for_env",
+    "global_codex_reasoning_effort",
+    "resolve_codex_config_profile",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,9 @@ def _unreadable_symlink_target(path: Path) -> str | None:
         return "<unreadable>"
 
 
-def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | None:
+def resolve_codex_config_profile(
+    model: str, env: Mapping[str, str] | None = None
+) -> tuple[str, dict[str, Any]] | None:
     """Resolve a codex model part that names a codex config profile.
 
     Only a bare name is looked up (no dots/separators), so an ordinary vendor
@@ -41,13 +48,20 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
     ``None`` when no such profile file exists, leaving the name to be
     treated as a model id exactly as before. See
     docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
+
+    *env* is the environment the CHILD will run under. A request may carry a
+    complete replacement environment, and the profile that decides which model
+    actually runs lives in the codex home THAT environment names. Reading our
+    own ``CODEX_HOME`` instead resolved the name against the wrong directory and
+    silently selected a different model. ``None`` means the child inherits this
+    process's environment, which is the ordinary CLI case.
     """
     try:
         validate_bare_name(model, label="codex config profile name")
     except ValueError:
         return None
 
-    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    codex_home = codex_home_for_env(env)
     profile_path = codex_home / f"{model}.config.toml"
     if not profile_path.is_file():
         # A broken symlink is not the same as no profile: is_file() answers
@@ -67,7 +81,7 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
 
     try:
         data = toml.loads(profile_path.read_text())
-    except (OSError, toml.TomlDecodeError) as exc:
+    except (OSError, UnicodeError, toml.TomlDecodeError) as exc:
         raise ValueError(
             f"codex config profile {str(profile_path)!r} could not be read "
             f"({type(exc).__name__}: {exc}). Fix or remove the file; running "
@@ -112,3 +126,101 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
 
     logger.info("codex profile %r resolves to model %r", model, resolved)
     return resolved, overrides
+
+
+def codex_home_for_env(env: Mapping[str, str] | None) -> Path:
+    """The codex home the process running under ``env`` will read.
+
+    A request may carry a complete REPLACEMENT environment for the child, so
+    the config codex actually reads is the one named by THAT environment, not
+    by ours. ``HOME`` is read from the same mapping for the same reason: an env
+    that redirects HOME redirects the default codex home with it.
+
+    An environment naming NEITHER does not mean there is no config: the child
+    runs as the same OS account, and codex resolves its home from the account
+    when ``HOME`` is unset (``env -i PATH=... codex doctor`` reports the
+    account's ``~/.codex`` with no ``HOME`` in its environment). Answering "no config" for
+    that case is the original 400 with extra steps, so it falls through to the
+    ACCOUNT home. Not ``Path.home()``: that reads ``$HOME`` first and only then
+    the password database, so a parent whose own ``HOME`` is redirected would
+    answer about a directory the child never looks at.
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    override = source.get("CODEX_HOME")
+    if override:
+        return _expanduser_in(override, source)
+    home = source.get("HOME")
+    return (Path(home) if home else _account_home()) / ".codex"
+
+
+def _expanduser_in(value: str, source: Mapping[str, str]) -> Path:
+    """Expand a leading ``~`` against SOURCE's home, not this process's.
+
+    ``Path.expanduser()`` reads our own ``$HOME``. That is the one thing this
+    module is careful never to do -- see the note above about ``Path.home()``
+    -- and doing it here silently undid that care for any environment naming
+    ``CODEX_HOME=~/...``: the child expanded the tilde against ITS ``HOME`` and
+    read a different directory than we resolved, so the profile that decides
+    the model was looked up in the wrong place.
+    """
+    if not value.startswith("~"):
+        return Path(value)
+    if value == "~" or value.startswith("~/"):
+        home = source.get("HOME")
+        base = Path(home) if home else _account_home()
+        return base if value == "~" else base / value[2:]
+    # ``~otheruser/...`` names an account rather than an environment, and only
+    # the password database can resolve it -- it does not differ between the
+    # two environments, so the stdlib expansion is the right instrument.
+    return Path(value).expanduser()
+
+
+def _account_home() -> Path:
+    """The OS account's home directory, independent of this process's ``$HOME``.
+
+    This is the fallback a child with no ``HOME`` in its environment resolves,
+    so it is read from the password database rather than from our own
+    environment. ``Path.home()`` is the wrong instrument here for exactly the
+    reason it is the right one elsewhere: it honours ``$HOME``.
+    """
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, AttributeError):
+        # No password database (non-POSIX, or a uid with no passwd entry).
+        # Falling back to $HOME is strictly better than failing the spawn.
+        return Path.home()
+
+
+def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str | None:
+    """Return ``model_reasoning_effort`` from the global codex config, or None.
+
+    The global value is tuned for the config's own default model, not for
+    whatever model a given spawn resolved — callers must clamp it to the
+    resolved model before emitting it. An absent or unreadable config answers
+    None (codex's own built-in default applies); unreadability is not an error
+    here because nothing was requested — this is a fallback read.
+
+    ``env`` is the environment the SPAWNED process will run under, when the
+    caller has one. Reading our own environment instead answers about the wrong
+    config file in both directions: it can clamp against a value the child will
+    never see, and it can leave unclamped a value the child will.
+    """
+    config_path = codex_home_for_env(env) / "config.toml"
+    try:
+        if not config_path.is_file():
+            return None
+    except OSError:
+        return None
+
+    import toml
+
+    try:
+        data = toml.loads(config_path.read_text())
+    except (OSError, UnicodeError, toml.TomlDecodeError):
+        # UnicodeError: read_text() decodes; a non-UTF-8 config is as
+        # unreadable as an unparseable one and must not crash the spawn.
+        return None
+    value = data.get("model_reasoning_effort")
+    return value if isinstance(value, str) and value else None

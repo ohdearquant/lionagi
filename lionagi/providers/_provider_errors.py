@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 # --- Base hierarchy ---
 
@@ -140,6 +140,10 @@ _QUOTA_PATTERNS: list[re.Pattern[str]] = [
     # have a digit immediately after "at", so the pattern above misses them —
     # match the quota phrasing itself instead of the retry-time suffix.
     re.compile(r"hit\s+your\s+usage\s+limit", re.IGNORECASE),
+    # Claude Code's refusal of a signed-in account ("You've hit your session
+    # limit"). Read only when no status came with the text: Claude Code reports
+    # 429 beside it, and a reported status decides (classify_provider_error).
+    re.compile(r"hit\s+your\s+session\s+limit", re.IGNORECASE),
     re.compile(r"purchase\s+more\s+credits", re.IGNORECASE),
 ]
 
@@ -207,13 +211,22 @@ def classify_provider_error(
     content: str,
     *,
     stderr_tail: str = "",
+    status: Any = None,
 ) -> ProviderError:
-    """Return the most-specific ProviderError subclass matching content; falls back to base ProviderError."""
+    """Return the most-specific ProviderError subclass matching content; falls back to base ProviderError.
+
+    ``status`` is the HTTP status a provider reported beside the error, if it reported one. It
+    decides quota alone: 429 is a quota refusal whatever the text says, and under any other status
+    no text makes it one, since text naming a limit may only be quoting it.
+    """
     combined = f"{content}\n{stderr_tail}" if stderr_tail else content
 
-    for pat in _QUOTA_PATTERNS:
-        if pat.search(combined):
-            return ProviderQuotaError(content, stderr_tail=stderr_tail, raw=content)
+    if status == 429:
+        return ProviderQuotaError(content, stderr_tail=stderr_tail, raw=content)
+    if status is None:
+        for pat in _QUOTA_PATTERNS:
+            if pat.search(combined):
+                return ProviderQuotaError(content, stderr_tail=stderr_tail, raw=content)
 
     for pat in _AUTH_PATTERNS:
         if pat.search(combined):

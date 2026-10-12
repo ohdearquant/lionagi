@@ -1537,7 +1537,11 @@ async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, mo
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
+    # Patch the resolver, not the cached constant: the preflight re-discovers
+    # at call time now, so a None constant on a machine that HAS the CLI
+    # resolves to the real binary and this case would never arise.
     monkeypatch.setattr(claude_code, "CLAUDE_CLI", None)
+    monkeypatch.setattr(claude_code, "resolve_claude_cli", lambda: None)
     coordinator = OperatorCoordinator(
         store=OperatorStore(path), engine_factory=BranchOperatorEngine
     )
@@ -1554,8 +1558,9 @@ async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, mo
     assert error["payload"]["error"] == {
         "code": "provider_unavailable",
         "message": (
-            "Claude Code CLI is unavailable. Install it with "
-            "`npm install -g @anthropic-ai/claude-code`, then run "
+            "Claude Code CLI is unavailable: not on PATH and not in the "
+            "per-user fallback install dirs. Install the Claude Code CLI "
+            "or start this process with a PATH that reaches it, then run "
             "`claude auth login`."
         ),
         "retryable": False,

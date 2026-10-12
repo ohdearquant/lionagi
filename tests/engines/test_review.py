@@ -599,6 +599,137 @@ async def test_minor_only_review_also_gets_the_clean_audit():
     assert any(v.ref == ref for v in run.by_type(VerifyResult))
 
 
+class _CountingEmitter(_RoutedEmitter):
+    """A _RoutedEmitter that keeps every instruction, so a repair pass is visible."""
+
+
+def _counting_make(run, events_by_name: dict, made: list, emitters: dict):
+    async def fake_make(role, *, name=None, **kw):
+        made.append(name or role)
+        if name == "verdict":
+
+            class _Synth:
+                name = "verdict"
+
+                async def operate(self, *, instruction: str):
+                    return "APPROVE"
+
+            return _Synth()
+        em = _CountingEmitter(run, name or role, events_by_name.get(name))
+        emitters[name or role] = em
+        return em
+
+    return fake_make
+
+
+@pytest.mark.asyncio
+async def test_clean_audit_that_drops_the_echoed_ref_still_arrives():
+    """The reproducer for the round that reported twice and was recorded blind.
+
+    ``VerifyResult.ref`` defaults to "", so an audit that emits everything else
+    and omits the echo is a VALID event that lands in the run. Keying arrival on
+    that echo made the emission invisible to the predicate waiting for it: the
+    stage re-prompted, the second emission dropped it the same way, and the run
+    recorded ``verify-clean x2`` for a dimension that had answered twice. The
+    assertions are the three things a consumer reads -- no repair pass, no
+    emission failure, and a stored event the verdict stage can still partition.
+    """
+    dims = ("correctness", "security")
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    ref = _clean_ref(dims)
+    made: list = []
+    emitters: dict = {}
+    run.make_agent = _counting_make(
+        run,
+        {
+            "review-correctness": DimensionClean(dimension="correctness", rationale="checked"),
+            "review-security": DimensionClean(dimension="security", rationale="checked"),
+            # No ref= at all: exactly what the live verifier emitted.
+            "verify-clean": VerifyResult(
+                issue="CLEAN: review affirmed no blocking issues",
+                holds=True,
+                rationale="ran the suite named in the artifact; 12 passed",
+            ),
+        },
+        made,
+        emitters,
+    )
+    await eng._run(run, "ARTIFACT")
+
+    assert "verify-clean" in made
+    assert len(emitters["verify-clean"].calls) == 1, (
+        "a ref-less emission must not trigger a repair pass"
+    )
+    assert run._emission_failures == []
+    results = run.by_type(VerifyResult)
+    assert len(results) == 1
+    assert results[0].ref == ref, (
+        "the clean audit must be stamped so the verdict stage can partition it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stamped_clean_audit_records_the_mismatch():
+    """The stamp is not silent: a dropped echo leaves a line to count.
+
+    Without this the fix would hide the NEXT cause of the same symptom -- a
+    renamed field, a model inventing its own token -- as effectively as it fixes
+    this one, and the failure would again be visible only as a consumer refusing
+    to render a verdict.
+    """
+    dims = ("correctness",)
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    ref = _clean_ref(dims)
+    events: list = []
+    run.on_event = events.append
+    made: list = []
+    emitters: dict = {}
+    run.make_agent = _counting_make(
+        run,
+        {
+            "review-correctness": DimensionClean(dimension="correctness", rationale="checked"),
+            "verify-clean": VerifyResult(issue="CLEAN", ref="V-notours", holds=True),
+        },
+        made,
+        emitters,
+    )
+    await eng._run(run, "ARTIFACT")
+
+    stamped = [e for e in events if e.get("type") == "verify_clean_ref_stamped"]
+    assert len(stamped) == 1
+    assert stamped[0]["expected"] == ref and stamped[0]["got"] == "V-notours"
+    assert run.by_type(VerifyResult)[0].ref == ref
+
+
+@pytest.mark.asyncio
+async def test_a_clean_audit_that_echoes_the_ref_is_not_restamped():
+    """The control for the arm above: a correct echo leaves no mismatch line."""
+    dims = ("correctness",)
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    ref = _clean_ref(dims)
+    events: list = []
+    run.on_event = events.append
+    made: list = []
+    emitters: dict = {}
+    run.make_agent = _counting_make(
+        run,
+        {
+            "review-correctness": DimensionClean(dimension="correctness", rationale="checked"),
+            "verify-clean": VerifyResult(issue="CLEAN", ref=ref, holds=True),
+        },
+        made,
+        emitters,
+    )
+    await eng._run(run, "ARTIFACT")
+
+    assert [e for e in events if e.get("type") == "verify_clean_ref_stamped"] == []
+    assert run._emission_failures == []
+    assert run.by_type(VerifyResult)[0].ref == ref
+
+
 @pytest.mark.asyncio
 async def test_issue_path_spawns_no_clean_audit():
     # A critical issue produces a real issue verification — the clean audit

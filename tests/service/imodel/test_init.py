@@ -10,6 +10,7 @@ import pytest
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.hooks import HookRegistry
+from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.imodel import iModel
 from lionagi.service.types import StreamChunk
 
@@ -152,15 +153,13 @@ class TestiModel:
                 metadata={"model": "provider-served-model", "session_id": "session-123"},
             )
 
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
         with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
-            chunks = [
-                chunk
-                async for chunk in base_imodel.stream(
-                    messages=[{"role": "user", "content": "Hello"}]
-                )
-            ]
+            chunks = [chunk async for chunk in base_imodel.stream(api_call=api_call)]
 
         assert chunks == [{"handled": True}]
+        assert api_call.metadata["served_model"] == "provider-served-model"
         assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
 
     @pytest.mark.asyncio
@@ -168,45 +167,93 @@ class TestiModel:
         async def mock_call(*_args, **_kwargs):
             return {"model": "provider-served-model", "response": "Hello"}
 
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
         with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
-            await base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            result = await base_imodel.invoke(api_call=api_call)
 
+        assert result is api_call
+        assert result.metadata["served_model"] == "provider-served-model"
+        assert result.to_dict()["metadata"]["served_model"] == "provider-served-model"
         assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
         restored = iModel.from_dict(base_imodel.to_dict())
         assert restored.provider_metadata["served_model"] == "provider-served-model"
 
     @pytest.mark.asyncio
-    async def test_stream_clears_stale_served_model_when_provider_omits_it(self, base_imodel):
+    async def test_stream_missing_report_clears_call_and_model_evidence(self, base_imodel):
         base_imodel.provider_metadata["served_model"] = "previous-served-model"
 
         async def mock_stream():
             yield StreamChunk(type="system", metadata={"session_id": "session-123"})
 
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
         with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
-            chunks = [
-                chunk
-                async for chunk in base_imodel.stream(
-                    messages=[{"role": "user", "content": "Hello"}]
-                )
-            ]
+            chunks = [chunk async for chunk in base_imodel.stream(api_call=api_call)]
 
         assert len(chunks) == 1
+        assert "served_model" not in api_call.metadata
         assert "served_model" not in base_imodel.provider_metadata
 
     @pytest.mark.asyncio
-    async def test_invoke_clears_stale_served_model_when_provider_omits_it(self, base_imodel):
+    async def test_invoke_missing_report_clears_call_and_model_evidence(self, base_imodel):
         base_imodel.provider_metadata["served_model"] = "previous-served-model"
 
         async def mock_call(*_args, **_kwargs):
             return {"response": "Hello"}
 
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
         with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
-            await base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            result = await base_imodel.invoke(api_call=api_call)
 
+        assert "served_model" not in result.metadata
         assert "served_model" not in base_imodel.provider_metadata
 
     @pytest.mark.asyncio
-    async def test_concurrent_stream_uses_last_completed_provider_report(self, base_imodel):
+    async def test_stream_hook_cannot_forge_missing_served_model(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+
+        async def mock_stream():
+            yield StreamChunk(type="system", metadata={"session_id": "session-123"})
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+
+        async def poison_metadata(chunk):
+            api_call.metadata["served_model"] = "hook-forged-model"
+            return chunk
+
+        base_imodel.streaming_process_func = poison_metadata
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            chunks = [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert len(chunks) == 1
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_post_invoke_hook_cannot_forge_missing_served_model(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+
+        async def poison_metadata(event, **_kwargs):
+            event.metadata["served_model"] = "hook-forged-model"
+
+        base_imodel.hook_registry = HookRegistry(
+            hooks={HookEventTypes.PostInvocation: poison_metadata}
+        )
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+
+        async def mock_call(*_args, **_kwargs):
+            return {"response": "Hello"}
+
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            result = await base_imodel.invoke(api_call=api_call)
+
+        assert "served_model" not in result.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_concurrent_stream_keeps_call_evidence_isolated(self, base_imodel):
         release_unknown = asyncio.Event()
         unknown_started = asyncio.Event()
 
@@ -219,27 +266,32 @@ class TestiModel:
                 return
             yield StreamChunk(type="system", metadata={"model": "provider-served-model"})
 
-        async def consume(content):
-            return [
-                chunk
-                async for chunk in base_imodel.stream(
-                    messages=[{"role": "user", "content": content}]
-                )
-            ]
+        async def consume(api_call):
+            return [chunk async for chunk in base_imodel.stream(api_call=api_call)]
 
+        unknown_call = await base_imodel.create_event(
+            messages=[{"role": "user", "content": "unknown"}]
+        )
+        unknown_call.metadata["served_model"] = "stale-event-evidence"
+        reported_call = await base_imodel.create_event(
+            messages=[{"role": "user", "content": "reported"}]
+        )
         with patch.object(base_imodel.endpoint, "stream", side_effect=mock_stream):
-            unknown_task = asyncio.create_task(consume("unknown"))
+            unknown_task = asyncio.create_task(consume(unknown_call))
             await unknown_started.wait()
-            await consume("reported")
+            await consume(reported_call)
+            assert reported_call.metadata["served_model"] == "provider-served-model"
             assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
 
             release_unknown.set()
             await unknown_task
 
+        assert "served_model" not in unknown_call.metadata
+        assert reported_call.metadata["served_model"] == "provider-served-model"
         assert "served_model" not in base_imodel.provider_metadata
 
     @pytest.mark.asyncio
-    async def test_concurrent_invoke_uses_last_completed_provider_report(self, base_imodel):
+    async def test_concurrent_invoke_keeps_call_evidence_isolated(self, base_imodel):
         release_unknown = asyncio.Event()
         unknown_started = asyncio.Event()
 
@@ -251,30 +303,143 @@ class TestiModel:
                 return {"response": "unknown"}
             return {"model": "provider-served-model", "response": "reported"}
 
-        async def invoke(content):
-            return await base_imodel.invoke(messages=[{"role": "user", "content": content}])
+        unknown_call = await base_imodel.create_event(
+            messages=[{"role": "user", "content": "unknown"}]
+        )
+        unknown_call.metadata["served_model"] = "stale-event-evidence"
+        reported_call = await base_imodel.create_event(
+            messages=[{"role": "user", "content": "reported"}]
+        )
 
         with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
-            unknown_task = asyncio.create_task(invoke("unknown"))
+            unknown_task = asyncio.create_task(base_imodel.invoke(api_call=unknown_call))
             await unknown_started.wait()
-            await invoke("reported")
+            reported_result = await base_imodel.invoke(api_call=reported_call)
+            assert reported_result.metadata["served_model"] == "provider-served-model"
             assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
 
             release_unknown.set()
-            await unknown_task
+            unknown_result = await unknown_task
 
+        assert "served_model" not in unknown_result.metadata
+        assert reported_result.metadata["served_model"] == "provider-served-model"
         assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_concurrent_invoke_records_each_report_and_model_keeps_last_completed(
+        self, base_imodel
+    ):
+        release_slow = asyncio.Event()
+        slow_started = asyncio.Event()
+
+        async def mock_call(request, **_kwargs):
+            content = request["messages"][0]["content"]
+            if content == "slow":
+                slow_started.set()
+                await release_slow.wait()
+                return {"model": "slow-served-model", "response": "slow"}
+            return {"model": "fast-served-model", "response": "fast"}
+
+        slow_call = await base_imodel.create_event(messages=[{"role": "user", "content": "slow"}])
+        fast_call = await base_imodel.create_event(messages=[{"role": "user", "content": "fast"}])
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            slow_task = asyncio.create_task(base_imodel.invoke(api_call=slow_call))
+            await slow_started.wait()
+            fast_result = await base_imodel.invoke(api_call=fast_call)
+            assert fast_result.metadata["served_model"] == "fast-served-model"
+            assert base_imodel.provider_metadata["served_model"] == "fast-served-model"
+
+            release_slow.set()
+            slow_result = await slow_task
+
+        assert fast_result.metadata["served_model"] == "fast-served-model"
+        assert slow_result.metadata["served_model"] == "slow-served-model"
+        assert base_imodel.provider_metadata["served_model"] == "slow-served-model"
+
+    @pytest.mark.asyncio
+    async def test_early_closed_stream_clears_call_and_model_evidence(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+        never = asyncio.Event()
+
+        async def mock_stream():
+            yield StreamChunk(type="text", content="first")
+            await never.wait()
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            stream = base_imodel.stream(api_call=api_call)
+            assert await stream.__anext__() == StreamChunk(type="text", content="first")
+            await stream.aclose()
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_cancelled_stream_clears_call_and_model_evidence(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+        provider_started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def mock_stream():
+            provider_started.set()
+            await never.wait()
+            yield StreamChunk(type="text", content="unreachable")
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            stream = base_imodel.stream(api_call=api_call)
+            pending_chunk = asyncio.create_task(stream.__anext__())
+            await provider_started.wait()
+            pending_chunk.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending_chunk
+            await stream.aclose()
+
+        assert api_call.status == EventStatus.CANCELLED
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_pre_create_hook_replacement_gets_exact_call_evidence(self, base_imodel):
+        replacement = base_imodel.create_api_calling(
+            messages=[{"role": "user", "content": "replacement payload"}]
+        )
+        replacement.metadata["served_model"] = "stale-event-evidence"
+
+        async def replace_event(_event_type, **_kwargs):
+            return replacement
+
+        async def mock_call(*_args, **_kwargs):
+            return {"model": "provider-served-model", "response": "Hello"}
+
+        base_imodel.hook_registry = HookRegistry(
+            hooks={HookEventTypes.PreEventCreate: replace_event}
+        )
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            result = await base_imodel.invoke(
+                messages=[{"role": "user", "content": "original payload"}]
+            )
+
+        assert result is replacement
+        assert result.metadata["served_model"] == "provider-served-model"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("reported_model", [None, "", "   "])
     async def test_invoke_does_not_infer_missing_served_model(self, base_imodel, reported_model):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+
         async def mock_call(*_args, **_kwargs):
             return {"model": reported_model, "response": "Hello"}
 
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
         with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
-            await base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            result = await base_imodel.invoke(api_call=api_call)
 
         assert base_imodel.model_name == "gpt-4.1-mini"
+        assert "served_model" not in result.metadata
         assert "served_model" not in base_imodel.provider_metadata
 
     def test_model_name_property(self, base_imodel):
@@ -293,13 +458,18 @@ class TestiModel:
     @pytest.mark.asyncio
     async def test_error_handling_in_invoke(self, base_imodel):
         imodel = base_imodel
+        imodel.provider_metadata["served_model"] = "previous-served-model"
+        api_call = await imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
 
         with patch.object(imodel.endpoint, "call", side_effect=Exception("API Error")):
-            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            result = await imodel.invoke(api_call=api_call)
 
             # The invoke method returns a failed APICalling object instead of raising
             assert result.status == EventStatus.FAILED
             assert result.execution.error is not None
+            assert "served_model" not in result.metadata
+            assert "served_model" not in imodel.provider_metadata
 
     def test_cache_control_parameter(self, base_imodel):
         imodel = base_imodel

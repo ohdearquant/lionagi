@@ -39,9 +39,18 @@ model = li.iModel(
 | `**kwargs` | — | — | Provider-specific config (e.g., `model="gpt-4o"`, `temperature=0.7`) |
 
 When a provider reports the model that actually served a request, `iModel`
-stores it in `provider_metadata["served_model"]`. The key remains absent when
-the provider does not report a model; it is never inferred from the requested
-`model` value. Non-CLI session lookup reads `provider_metadata["session_id"]`.
+stores it on that call's `APICalling.metadata["served_model"]` and in
+`provider_metadata["served_model"]`. Either key remains absent when the provider
+does not report a model; it is never inferred from the requested `model` value.
+The call's value is re-established from the provider's own data when the call
+finishes, so a value written by a hook or a caller never stands as the
+provider's report.
+
+The call's metadata is the evidence about that call: read it from the completed
+`APICalling`, or from the serialized copy that `run()` attaches to the final
+response. `provider_metadata["served_model"]` describes whichever call finished
+last; when several calls share one `iModel` concurrently, it says nothing about
+a particular call. Non-CLI session lookup reads `provider_metadata["session_id"]`.
 
 ## Endpoint types
 

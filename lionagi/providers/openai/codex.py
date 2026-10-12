@@ -32,6 +32,7 @@ from lionagi.providers._cli_subprocess import (
     print_readable,
     raise_if_env_is_not_a_string_map,
     resolve_cli_workspace,
+    reveal_redacted,
     validate_message_prompt,
 )
 from lionagi.providers._cli_subprocess import (
@@ -49,7 +50,6 @@ HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("codex-cli")
-
 
 # --------------------------------------------------------------------------- types
 CodexSandboxMode = Literal[
@@ -385,13 +385,20 @@ class CodexCodeRequest(BaseModel):
         from the validator below, before the effort clamp, since the clamp's
         ceilings are keyed on the model. See
         docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
+
+        The lookup is done against the CHILD's environment: when a request
+        carries a replacement `env`, the profile that decides which model runs
+        lives in the codex home that env names. Resolving against ours would
+        read a profile file the child never opens and put a different model on
+        the command line.
         """
         from ._codex_profile import resolve_codex_config_profile
 
         model = values.get("model")
         if not isinstance(model, str) or not model:
             return values
-        resolved = resolve_codex_config_profile(model)
+        env = reveal_redacted(values.get("env"))
+        resolved = resolve_codex_config_profile(model, env if isinstance(env, Mapping) else None)
         if resolved is None:
             return values
         profile_model, profile_overrides = resolved
@@ -413,8 +420,20 @@ class CodexCodeRequest(BaseModel):
         `values` omits `model` when the caller relies on the field default
         (Pydantic v2 applies defaults after `mode="before"` validators), so
         fall back to the field's own default.
+
+        An UNSET `reasoning_effort` is resolved here too, and this is the only
+        place that closes it for every caller: omitting the flag does not mean
+        "no effort", it means the codex CLI reads `model_reasoning_effort` from
+        the global config — a value the user tuned for whichever model they run
+        by hand, applied to a model whose ceiling may be lower. Every other
+        construction seam (CLI builders, agent factory, Studio operator, a bare
+        `Branch()`) reaches the CLI through this request model, so the fix
+        belongs here rather than at each of them.
         """
-        from lionagi.service.providers import _clamp_codex_effort
+        from lionagi.service.providers import (
+            _clamp_codex_effort,
+            codex_unset_effort_default,
+        )
 
         values = cls._resolve_config_profile(values)
 
@@ -423,6 +442,24 @@ class CodexCodeRequest(BaseModel):
             effort = values.get(key)
             if isinstance(effort, str):
                 values[key] = _clamp_codex_effort(effort, model)
+
+        # `is None`, not `not isinstance(..., str)`: only an ABSENT or null
+        # effort is unset. A non-string is malformed input; it falls through
+        # to the field's own `str | None` validation, which rejects it, rather
+        # than being replaced by the derived default.
+        if values.get("reasoning_effort") is None:
+            # The child's own environment decides which config codex reads, and
+            # `env` replaces that environment wholesale when it is set. By this
+            # point an earlier before-validator has wrapped it for redaction,
+            # so it must be revealed to be read at all.
+            env = reveal_redacted(values.get("env"))
+            derived = codex_unset_effort_default(
+                model,
+                values.get("config_overrides"),
+                env if isinstance(env, Mapping) else None,
+            )
+            if derived is not None:
+                values["reasoning_effort"] = derived
         return values
 
     # ── images & config (special-cased) ───────────────────────────

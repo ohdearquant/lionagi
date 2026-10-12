@@ -57,6 +57,34 @@ __all__ = (
 )
 
 
+_MCP_TRANSPORT_PROBE_ATTR = "_lionagi_mcp_transport_probe"
+
+
+def _attach_mcp_transport_probe(exc: BaseException, client: Any) -> None:
+    """Carry the failing client's live ping to a higher error boundary.
+
+    The MCP SDK uses the same ``McpError`` shape for a locally detected
+    disconnect and a server-sent error reply. The client that observed the
+    failure is the only layer that still owns the evidence needed to tell
+    those cases apart, so preserve its ping without wrapping or replacing the
+    original exception.
+    """
+    probe = getattr(client, "ping", None)
+    if not callable(probe):
+        return
+    try:
+        setattr(exc, _MCP_TRANSPORT_PROBE_ATTR, probe)
+    except (AttributeError, TypeError):
+        # Third-party exception types may disallow dynamic attributes. The
+        # caller then retains the historical fail-loud/isolate classification.
+        return
+
+
+def _mcp_transport_probe(exc: BaseException) -> Any:
+    """Return transport liveness evidence attached at the MCP client boundary."""
+    return getattr(exc, _MCP_TRANSPORT_PROBE_ATTR, None)
+
+
 @dataclass(frozen=True)
 class MCPSecurityConfig:
     """Fail-closed security config for MCP connection pool."""
@@ -1854,7 +1882,11 @@ def create_mcp_tool(
         # reachable at all without the capability this closure holds.
         client = await MCPConnectionPool._get_reconnect_client(config_for_client, capability)
 
-        result = await client.call_tool(actual_tool_name, kwargs)
+        try:
+            result = await client.call_tool(actual_tool_name, kwargs)
+        except Exception as exc:
+            _attach_mcp_transport_probe(exc, client)
+            raise
 
         if hasattr(result, "content"):
             content = result.content
