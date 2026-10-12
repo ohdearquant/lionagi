@@ -30,7 +30,7 @@ from lionagi.engines.hypothesis import (
     ResultRecorded,
 )
 from lionagi.engines.research import FindingEmitted, ResearchEngine
-from lionagi.engines.review import IssueFound, ReviewEngine, VerifyResult
+from lionagi.engines.review import IssueFound, ReviewEngine, ReviewVerdict, VerifyResult
 from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 
 SCRIPTED_MODEL = "scripted/scripted-test"
@@ -346,6 +346,75 @@ async def test_review_engine_e2e_with_adversarial_verify(tmp_path, monkeypatch):
     assert "REQUEST-CHANGES" in out
     assert len(run.by_type(IssueFound)) == 1
     assert run.by_type(VerifyResult)[0].holds is True
+
+
+def _verified_issue_script(verdict: dict) -> list[dict]:
+    return [
+        _when(
+            "for **correctness** only",
+            {
+                "issue_found": {
+                    "dimension": "correctness",
+                    "description": "off-by-one in cursor advance",
+                    "severity": "critical",
+                    "location": "store.rs:41",
+                    "confidence": 0.7,
+                }
+            },
+        ),
+        _when(
+            "Adversarially verify",
+            {
+                "verify_result": {
+                    "issue": "off-by-one in cursor advance",
+                    "holds": True,
+                    "rationale": "boundary test confirms skip of last row",
+                }
+            },
+        ),
+        verdict,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_verdict_records_the_model_the_provider_reported(tmp_path, monkeypatch):
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        _verified_issue_script(
+            {
+                "type": "stream",
+                "chunks": [
+                    {"type": "system", "metadata": {"model": "claude-served-x"}},
+                    {"type": "text", "content": "REQUEST-CHANGES: fix cursor advance."},
+                    {"type": "result", "metadata": {"done": True}},
+                ],
+                "when": {"prompt_contains": "Issue a single ProposedVerdict"},
+            }
+        ),
+    )
+
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
+    run = eng.new_run()
+    await eng._run(run, "fn next(&mut self) { self.pos += 1; ... }")
+    assert run.by_type(ReviewVerdict)[-1].served_model == "claude-served-x"
+
+
+@pytest.mark.asyncio
+async def test_review_verdict_served_model_is_none_without_a_provider_report(tmp_path, monkeypatch):
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        _verified_issue_script(
+            _when("Issue a single ProposedVerdict", text="REQUEST-CHANGES: fix cursor advance.")
+        ),
+    )
+
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
+    run = eng.new_run()
+    await eng._run(run, "fn next(&mut self) { self.pos += 1; ... }")
+    # The requested model is never put in its place.
+    assert run.by_type(ReviewVerdict)[-1].served_model is None
 
 
 @pytest.mark.asyncio
