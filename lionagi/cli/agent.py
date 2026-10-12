@@ -1390,6 +1390,10 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if live and "signal_persist_dropped" in live:
+                # Signals this run's persistence could not confirm it wrote, 0 included; the field is
+                # absent when teardown had no session of this run to unbind.
+                run_manifest["signal_persist_dropped"] = live["signal_persist_dropped"]
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
             # Only when an exception is on its way out, because then this is
