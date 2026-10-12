@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from lion1.khive import LOST, UNSTARTED, Khive, KhiveError, actor_name
+from lion1.khive import LOST, UNSTARTED, Khive, KhiveError, actor_name, actor_name_display
 from tests.lionfake import routed_config
 
 
@@ -72,8 +72,7 @@ def test_anything_else_is_refused_naming_where_it_came_from_and_the_rule_it_brea
 
 
 def test_a_refused_long_value_is_shown_by_its_first_six_characters_and_its_length():
-    """Values over six characters are masked; shorter values appear whole in a refusal shown to the
-    person who wrote the file."""
+    """Values over six characters are masked; shorter values appear whole in a refusal."""
     pasted = "xq9" + "Q7" * 19 + "/"  # secret-shaped, 42 characters, refused for the `/`
     with pytest.raises(ValueError) as caught:
         actor_name(pasted, "owner")
@@ -96,6 +95,12 @@ def test_a_refused_six_character_value_is_whole_and_a_seven_character_value_is_m
         actor_name(seven, "owner")
     assert "'abcdef'…[7 chars]" in str(seven_error.value)
     assert seven not in str(seven_error.value)
+
+
+def test_a_value_that_is_not_a_string_is_shown_by_its_type_alone():
+    assert actor_name_display(7) == "<int>"
+    assert actor_name_display(["a secret"]) == "<list>"
+    assert actor_name_display("abcdef!") == "'abcdef'…[7 chars]"
 
 
 def test_a_client_for_a_name_that_is_no_actor_name_is_refused_before_anything_is_read(tmp_path):
