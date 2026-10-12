@@ -611,6 +611,11 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     # The regression: a selected Codex turn must get past the preflight. It
     # fails later for an unrelated reason (no codex binary, no network) or
     # succeeds; what matters is that it is not the Claude-unavailable refusal.
+    # With no codex binary the turn stops before the CLI would start, so the
+    # test never runs the real codex installed on the machine.
+    import lionagi.providers.openai.codex as codex_mod
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
     stream = engine.stream(_turn("codex", "gpt-5.3-codex"))
     try:
         await stream.__anext__()

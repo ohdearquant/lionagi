@@ -197,15 +197,20 @@ def test_strict_clears_the_marker_and_unrelated_commands_are_never_marked():
     assert _unverifiable_reason([]) is None
 
 
-def test_an_unverified_delivery_is_its_own_state_not_a_failure():
-    """Neither 'delivered' nor 'failed' is honest here, so it is marked instead."""
-    out = _deliver(["kkernel", "exec", "comm.send(...)"], {}, program="kkernel")
-    if out["exit_code"] is None:
-        pytest.skip("kkernel not installed on this machine")
-    if out["exit_code"] == 0:
-        assert out["ok"] is True, "a run that exited 0 is not reported as failed"
-        assert out["delivery_verified"] is False
-        assert out["unverified_reason"]
+def test_an_unverified_delivery_is_its_own_state_not_a_failure(tmp_path):
+    """Neither 'delivered' nor 'failed' is honest here, so it is marked instead.
+
+    A stand-in named kkernel exits 0 the way `kkernel exec` does when any op
+    succeeded, so the case runs on every machine and never reaches a real store.
+    """
+    stand_in = tmp_path / "kkernel"
+    stand_in.write_text("#!/bin/sh\ncat > /dev/null\nexit 0\n")
+    stand_in.chmod(0o755)
+    out = _deliver([str(stand_in), "exec", "comm.send(...)"], {}, program="kkernel")
+    assert out["exit_code"] == 0
+    assert out["ok"] is True, "a run that exited 0 is not reported as failed"
+    assert out["delivery_verified"] is False
+    assert out["unverified_reason"]
 
 
 def test_a_verified_zero_exit_carries_no_unverified_marker():
