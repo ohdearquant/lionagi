@@ -491,6 +491,66 @@ async def test_a_spawn_during_the_final_cancel_reap_is_ended_not_left_tracked_an
     )
 
 
+class _SlottedFakeProcess:
+    """A CLI handle stand-in whose freed memory the next one is likely to get.
+
+    Its size (twelve slots) is chosen so that, under CPython's small-object
+    allocator, a handle dropped once its entry is pruned tends to be
+    reallocated, at the same address, as the next spawn's handle.
+    """
+
+    __slots__ = ("pid", "returncode", *(f"_pad{i}" for i in range(10)))
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode = None
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_given_a_reaped_handles_address_is_still_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remembering the handles already tried by ``id()`` alone is not enough.
+
+    A reaped entry is pruned from the tracking map. Once nothing else holds its
+    handle, a spawn arriving during the next reap can be given the same address,
+    and a rescan comparing bare ids reads the newcomer as already tried and
+    returns with it still tracked and running.
+    """
+    import lionagi.providers._cli_subprocess as cli_subprocess
+
+    ended: list[int] = []
+    pids = iter(range(526000, 527000))
+    monkeypatch.setattr(
+        EngineRun,
+        "_end_cli_group_now",
+        staticmethod(lambda process, spawned: ended.append(spawned.pid)),
+    )
+
+    async def cancel_with_late_spawns() -> list[int]:
+        run = _StubEngineForTracking().new_run()
+
+        def spawn() -> None:
+            pid = next(pids)
+            run._track_cli_process(
+                _SlottedFakeProcess(pid),
+                cli_subprocess.SpawnedProcess(pid=pid, pgid=pid, create_time=1.0),
+            )
+
+        async def reap_and_let_another_arrive(*args, **kwargs) -> None:
+            spawn()
+
+        monkeypatch.setattr(cli_subprocess, "end_child_group", reap_and_let_another_arrive)
+        spawn()
+        await run.cancel_active()
+        return [item.spawned.pid for item in run._live_cli_processes()]
+
+    for attempt in range(10):
+        left = await cancel_with_late_spawns()
+        assert left == [], f"attempt {attempt}: cancel_active left {left} tracked and unreaped"
+        assert len(ended) == attempt + 1, "the rescan cap was not exhausted on this attempt"
+
+
 @pytest.mark.asyncio
 async def test_cancelling_leaves_tracking_open_for_the_partial_export(
     monkeypatch: pytest.MonkeyPatch,
