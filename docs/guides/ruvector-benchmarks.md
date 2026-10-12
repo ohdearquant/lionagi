@@ -1,6 +1,6 @@
 # RuVector validation and benchmark evidence
 
-Measured on 2026-10-11 using the proposed LionAGI source implementation on Linux x86_64, Python 3.10.22, RuVector 0.1.2 and NumPy 2.2.6. No embedding provider, remote service or LLM was called.
+Measured on 2026-10-11 using the LionAGI source implementation on Linux x86_64, Python 3.10.22, RuVector 0.1.2 and NumPy 2.2.6. No embedding provider, remote service or LLM was called.
 
 ## Acceptance
 

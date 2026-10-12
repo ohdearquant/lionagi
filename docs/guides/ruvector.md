@@ -6,14 +6,20 @@ RuVector adds local native Rust HNSW retrieval to LionAGI Nodes, branch memory a
 
 ## Install the optional backend
 
-This integration is proposed in the source tree and is not yet in a published LionAGI release. From this checkout:
+The integration ships with LionAGI 0.35.5 and later. Add it to an application with the extra:
+
+```bash
+uv add 'lionagi[ruvector]'
+```
+
+From a checkout of this repository, install the extra and run the example:
 
 ```bash
 uv sync --extra ruvector
 uv run python examples/ruvector_memory.py
 ```
 
-Once released, applications can select `lionagi[ruvector]`. Import the backend explicitly:
+Import the backend explicitly:
 
 ```python
 from lionagi.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
@@ -94,5 +100,3 @@ The native contract suite covers Branch tools, memory fidelity, filtering, cance
 ## Ownership and release
 
 This code lives in LionAGI and depends directly on the RuVector SDK. It does not depend on the separately proposed `ruvector-lionagi` distribution, avoiding a circular package dependency. Adoption makes LionAGI the owner of this upstream implementation; any separate distribution should become a compatibility facade or be retired rather than evolving a second implementation.
-
-Existing LionAGI CI and publishing remain authoritative. This contribution adds no publishing credentials, workflow dispatch, version bump or release authority. Upstream maintainers decide whether to merge and release it.
