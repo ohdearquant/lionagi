@@ -87,7 +87,7 @@ async def chat(
         cause = api_call.execution.error
         error = ExecutionError(f"API call failed: {cause}")
         if isinstance(cause, BaseException):
-            # Chained, so a caller tells one provider error from another by its type, not its text.
+            # Preserve the original exception so callers can classify the failure by type.
             raise error from cause
         # Recorded only as text: no cause, and an exception the caller is handling stays the context.
         raise error

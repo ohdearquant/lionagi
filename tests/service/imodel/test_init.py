@@ -630,8 +630,11 @@ class TestiModel:
             return {"session_id": empty, "response": "test"}
 
         with patch.object(imodel.endpoint, "call", side_effect=no_session):
-            await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            completed_call = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
+        assert completed_call.response == {"session_id": empty, "response": "test"}
+        next_call = imodel.create_api_calling(messages=[{"role": "user", "content": "Again"}])
+        assert next_call.payload["request"].resume == "confirmed-session"
         assert imodel.endpoint.session_id == "confirmed-session"
 
     def test_imodel_to_dict(self):
