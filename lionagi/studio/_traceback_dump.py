@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import faulthandler
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -48,9 +49,72 @@ def _inside_a_git_tree(path: Path) -> Path | None:
     that lands inside a checkout is one ``git add -A`` away from being
     committed. Refusing is cheaper than relying on an ignore rule that the
     operator would have to have written first.
+
+    The entry has to look like a git directory, not merely exist. An aborted
+    ``git init`` leaves a ``.git`` containing nothing but empty ``hooks`` and
+    ``info``, and shared directories collect them; git itself refuses such a
+    directory, so accepting one refuses every path beneath it on behalf of a
+    checkout that is not there. The three entries checked here are the ones
+    git's own discovery requires.
+
+    A ``.git`` *file* stays a match without reading it. That is how a linked
+    worktree and a submodule each record where their real git directory
+    lives, and a path under either is inside a working tree. Reading the file
+    to confirm would trade a cheap answer for one that can fail, and the
+    failure would have to resolve as "not a checkout" -- the wrong direction
+    for a guard whose expensive mistake is missing a tree, not inventing one.
+
+    An entry this function cannot READ resolves as a checkout. Descending into
+    ``.git`` can fail where merely noticing it could not, so every probe here is
+    a ``stat`` whose ``PermissionError`` reaches the handler below. Unreadable
+    means undecidable, and of the three ways to be wrong here -- refuse a safe
+    path, miss a real tree, or raise out of a function the daemon calls while
+    arming -- refusing is the cheap one and raising is the one that takes the
+    process with it. ``is_file``/``is_dir`` cannot carry that rule across
+    interpreters: on 3.14 they answer False rather than raise, which is a
+    fall-through wearing a negative answer's clothes.
     """
     for candidate in (path, *path.parents):
-        if (candidate / ".git").exists():
+        entry = candidate / ".git"
+        try:
+            # One ``stat`` per ancestor, read for its type, rather than
+            # ``is_file()`` then ``is_dir()``. The common case by far is a path
+            # with no checkout above it, and that case walks to the filesystem
+            # root: paying two probes per level there doubled the syscalls this
+            # function costs against the single ``exists()`` it replaced.
+            mode = entry.stat().st_mode
+            if stat.S_ISREG(mode):
+                return candidate
+            if not stat.S_ISDIR(mode):
+                continue
+            # ``stat``, not ``is_file``/``is_dir``, and the reason is the whole
+            # point of the arm below. On Python 3.14 those two answer False for
+            # a path they cannot read instead of raising, so a ``.git`` that can
+            # be seen but not entered stops reaching the fail-closed handler and
+            # falls through to the next ancestor -- the guard quietly stops
+            # refusing exactly where it cannot tell, which is the one case it
+            # exists for. ``requires-python`` has no ceiling, so that
+            # interpreter installs this today. Measured: 3.10 through 3.13 raise
+            # PermissionError here, 3.14 returns False.
+            #
+            # The type check itself is unchanged in meaning. git requires HEAD
+            # to be a file, and a directory named HEAD is one of the shapes it
+            # refuses; an entry that is simply missing still raises
+            # FileNotFoundError, which the handler below already reads as "no
+            # checkout here".
+            if (
+                stat.S_ISREG((entry / "HEAD").stat().st_mode)
+                and stat.S_ISDIR((entry / "objects").stat().st_mode)
+                and stat.S_ISDIR((entry / "refs").stat().st_mode)
+            ):
+                return candidate
+        except (FileNotFoundError, NotADirectoryError):
+            # The two ENOENT-shaped answers, and the only ones that mean "no
+            # checkout here". Kept ahead of the OSError arm below, which they
+            # would otherwise match and turn every ordinary ancestor into a
+            # refusal.
+            continue
+        except OSError:
             return candidate
     return None
 
