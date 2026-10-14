@@ -1,13 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""A result this provider records from a Codex tool call, and the command or file change it
-echoes as the call's input, are bounded, and the bound is stated where the cut is.
+"""A result this provider records from a Codex tool call, and the command, file change or
+function call arguments it echoes as the call's input, are bounded, and the bound is stated
+where the cut is.
 
-No Codex thread is resumed: every turn of a Codex branch sends the branch's rendered history
-as its prompt, so a result recorded whole is sent again on every later turn. The cut keeps the
-head and the tail and names how much is missing, because a result that is silently partial
-reads as a complete one.
+No Codex thread is resumed: every turn of a Codex branch renders the branch's history into its
+prompt, so a result recorded whole is rendered into later prompts. The cut keeps the head and
+the tail and names how much is missing, because a result that is silently partial reads as a
+complete one.
 """
 
 from __future__ import annotations
@@ -158,6 +159,46 @@ async def test_a_structured_function_call_output_over_the_bound_is_cut_as_its_js
 
 
 @pytest.mark.asyncio
+async def test_long_function_call_arguments_are_cut_where_they_are_echoed():
+    arguments = '{"query": "' + "q" * 1_000_000 + '"}'
+
+    chunks, uses, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    head, omitted, total, _ = _parts(echoed)
+    assert head == arguments[:HALF]
+    assert (omitted, total) == (len(arguments) - 2 * HALF, len(arguments))
+    assert uses[0]["input"] == echoed
+
+
+@pytest.mark.asyncio
+async def test_structured_function_call_arguments_keep_their_shape_when_cut():
+    arguments = {"query": "q" * 1_000_000, "limit": 5, "paths": ["a.py", "b.py"]}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert set(echoed) == {"query", "limit", "paths"}
+    assert (echoed["limit"], echoed["paths"]) == (5, ["a.py", "b.py"])
+    assert _parts(echoed["query"])[2] == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_function_call_arguments_within_the_bound_are_left_as_they_came():
+    arguments = {"query": "q" * 100, "limit": 5}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    assert next(c for c in chunks if c.type == "tool_use").tool_input is arguments
+
+
+@pytest.mark.asyncio
 async def test_a_long_command_is_cut_where_it_is_echoed_as_the_calls_input():
     command = "printf '%s' " + "q" * 1_000_000
 
@@ -181,7 +222,15 @@ async def test_a_file_change_over_the_bound_cuts_its_echo_and_its_summary():
     use = next(c for c in chunks if c.type == "tool_use")
     result = next(c for c in chunks if c.type == "tool_result")
     echoed = use.tool_input["changes"]
-    assert _parts(echoed)[2] == len(json.dumps(changes, ensure_ascii=False))
+    # Still a list, so a reader looking for each entry's path finds the ones kept.
+    *kept, marker = echoed
+    assert kept == changes[: len(kept)]
+    assert len(json.dumps(kept, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS
+    assert len(json.dumps(changes[: len(kept) + 1], ensure_ascii=False)) > (
+        CODEX_TOOL_OUTPUT_MAX_CHARS
+    )
+    assert marker == {"omitted": f"{len(changes) - len(kept):,} of 5,000 changes not shown"}
+    assert "path" not in marker
     assert uses[0]["input"]["changes"] == echoed
     summary = "; ".join(f"update: {c['path']}" for c in changes)
     head, omitted, total, tail = _parts(result.tool_output)
@@ -208,10 +257,10 @@ async def test_a_file_change_within_the_bound_is_echoed_and_summarized_as_before
 @pytest.mark.asyncio
 async def test_a_cut_does_not_separate_a_character_from_its_marks():
     # The head's cut falls inside a joined emoji sequence, the tail's on a combining accent.
-    family = "\U0001f468‍\U0001f469‍\U0001f467"
-    output = "a" * (HALF - 1) + family + "x" * 5_000 + "é" + "b" * (HALF - 1)
-    assert output[HALF] == "‍"
-    assert output[len(output) - HALF] == "́"
+    family = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
+    output = "a" * (HALF - 1) + family + "x" * 5_000 + "e\u0301" + "b" * (HALF - 1)
+    assert output[HALF] == "\u200d"
+    assert output[len(output) - HALF] == "\u0301"
 
     chunks, _ = await _tool_results(_command(output))
 
@@ -222,8 +271,8 @@ async def test_a_cut_does_not_separate_a_character_from_its_marks():
 
 
 @pytest.mark.asyncio
-async def test_a_run_of_marks_longer_than_any_character_is_cut_where_the_bound_falls():
-    output = "a" * (HALF - 50) + "e" + "́" * 100 + "y" * 30_000
+async def test_a_run_of_marks_longer_than_the_backoff_is_cut_where_the_bound_falls():
+    output = "a" * (HALF - 50) + "e" + "\u0301" * 100 + "y" * 30_000
 
     chunks, _ = await _tool_results(_command(output))
 

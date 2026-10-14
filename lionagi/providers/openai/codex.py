@@ -775,11 +775,12 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
     yield {"type": "done"}
 
 
-#: The most of one tool result this provider keeps, and of a command or a file change it
-#: echoes as the call's input, in characters. No Codex thread is resumed here: each turn sends
-#: the branch's rendered history as its prompt, tool calls and results included, so whatever
-#: is recorded whole is sent again on every later turn, and one broad search could fill the
-#: prompt on its own.
+#: The most of one tool result this provider keeps, and of a command, a file change or a
+#: function call's arguments it echoes as the call's input, in characters. No Codex thread is
+#: resumed here: each turn renders the branch's history, tool calls and results included,
+#: into its prompt, so one broad search recorded whole could fill a later prompt on its own.
+#: The bound is per record and on the recorded text: a turn with many results still renders
+#: all of them, and the rendering can be longer than the text it renders.
 CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
 
 #: How far a cut moves to keep a character with its marks before it gives up and cuts where
@@ -804,12 +805,15 @@ def _bounded_tool_output(output: Any) -> Any:
     reading it on the next turn knows the result is partial and can narrow the command.
 
     A result that is not text is measured as its JSON text and, when that is over the
-    bound, replaced by the cut JSON text. Neither cut leaves a combining mark, a joiner, a
-    variation selector or a skin-tone modifier apart from the character it belongs to.
+    bound, replaced by the cut JSON text. Neither cut separates a combining mark (a
+    nonzero combining class), a zero-width joiner, a text or emoji variation selector, a
+    skin-tone modifier, or the character after a joiner from the character before it; other
+    clusters (spacing marks, Hangul jamo, tag sequences, flag pairs) can still be split.
 
     The cut text is what the caller, the callbacks and the branch's record receive. The
-    chunk's ``metadata`` still holds the CLI's whole event, in this process only: chunks
-    are not written to a run's buffer file.
+    chunk's ``metadata`` still holds the CLI's whole event: it is not written to a run's
+    buffer file, but a non-streaming call returns its chunks with it, so a logger that
+    records call results keeps the event whole.
     """
     text = output
     if not isinstance(output, str):
@@ -835,6 +839,41 @@ def _bounded_tool_output(output: Any) -> Any:
         f"{text[:head_end]}\n[output truncated: {tail_start - head_end:,} of {len(text):,} "
         f"characters omitted here]\n{text[tail_start:]}"
     )
+
+
+def _bounded_leaves(value: Any) -> Any:
+    """``value`` with each string in it bounded as a result is, keeping its shape, so a
+    reader that expects a mapping or a list still gets one. A value within the bound as a
+    whole is returned as it came."""
+    if isinstance(value, str):
+        return _bounded_tool_output(value)
+    if not isinstance(value, (dict, list)):
+        return value
+    if len(json.dumps(value, ensure_ascii=False, default=str)) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+        return value
+    if isinstance(value, list):
+        return [_bounded_leaves(item) for item in value]
+    return {key: _bounded_leaves(item) for key, item in value.items()}
+
+
+def _bounded_changes(changes: Any) -> Any:
+    """A file change's ``changes`` as echoed for the call's input. A list over the bound
+    keeps, in order, the entries that fit within it whole and ends with one entry naming how
+    many were left out, so a reader of the list still finds each kept entry's ``path``."""
+    if not isinstance(changes, list):
+        return _bounded_tool_output(changes)
+    if len(json.dumps(changes, ensure_ascii=False, default=str)) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+        return changes
+    kept: list[Any] = []
+    used = 2  # the brackets
+    for entry in changes:
+        size = len(json.dumps(entry, ensure_ascii=False, default=str)) + 2  # and a separator
+        if used + size > CODEX_TOOL_OUTPUT_MAX_CHARS:
+            break
+        kept.append(entry)
+        used += size
+    kept.append({"omitted": f"{len(changes) - len(kept):,} of {len(changes):,} changes not shown"})
+    return kept
 
 
 def _pp_text(text: str, theme: str = "light") -> None:
@@ -937,9 +976,11 @@ async def stream_codex_cli(
                     tu = {
                         "id": item.get("id", item.get("call_id", "")),
                         "name": item.get("name", item.get("function", "")),
-                        "input": item.get(
-                            "arguments",
-                            item.get("input", item.get("args", {})),
+                        "input": _bounded_leaves(
+                            item.get(
+                                "arguments",
+                                item.get("input", item.get("args", {})),
+                            )
                         ),
                     }
                     session.tool_uses.append(tu)
@@ -1003,7 +1044,7 @@ async def stream_codex_cli(
                     changes = item.get("changes", [])
                     status = item.get("status", "")
                     is_error = status == "failed"
-                    echoed = _bounded_tool_output(changes)
+                    echoed = _bounded_changes(changes)
 
                     tu = {"id": item_id, "name": "Edit", "input": {"changes": echoed}}
                     session.tool_uses.append(tu)
