@@ -26,6 +26,8 @@ from lionagi.providers._provider_errors import ProviderError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from lionagi import Branch
     from lionagi.state.db import StateDB
 
@@ -103,6 +105,47 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _run_manifest_lock(state_root: Path, *, required: bool = True) -> Iterator[None]:
+    """Hold the lock every write of the run.json in *state_root* takes.
+
+    Invocations that share a run id (`LIONAGI_RUN_ID`) share its run.json. A writer that reads it
+    to decide what to write holds this lock across the read and the write, so no other writer's
+    record lands between them (ADR-0104 Amendment 2). It is POSIX advisory locking on a file beside
+    run.json; where `fcntl` does not exist (Windows) nothing is held, and writers resolve
+    last-writer-wins.
+
+    A lock that cannot be taken (a filesystem without `flock`, a lock file that cannot be opened)
+    raises the OSError when *required*; otherwise the body runs without it, with a warning, so a
+    run's own writes go on as they did before the lock existed.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows fallback
+        yield
+        return
+
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(state_root / ".run.json.lock", flags, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        if required:
+            raise
+        _log.warning("run.json in %s written without its lock: %r", state_root, exc)
+        fd = None
+    if fd is None:
+        yield
+        return
+    try:
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 @dataclass(frozen=True, slots=True)
 class RunDir:
     """Resolved state and artifact paths for one CLI run."""
@@ -173,7 +216,9 @@ class RunDir:
         the previous manifest or the new one, never a truncated file. It is
         a whole-file replacement, not a merge: the caller owns the full
         manifest contents, and two writers racing on one run still resolve
-        last-writer-wins.
+        last-writer-wins. Each write takes the run's manifest lock
+        (`_run_manifest_lock`), so a writer holding it across a read and its
+        write sees no other write land between them.
         """
         ensure_lionagi_dir(self.state_root)
         payload = {
@@ -182,7 +227,8 @@ class RunDir:
             "artifact_root": str(self.artifact_root),
             **data,
         }
-        _atomic_write_json(self.manifest_path, payload)
+        with _run_manifest_lock(self.state_root, required=False):
+            _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
         if not self.manifest_path.exists():
@@ -251,13 +297,14 @@ def _record_persistence_degraded(
         _log.warning("could not record persistence degradation: no active run id")
         return reason
     try:
-        manifest = json.loads(manifest_path.read_text())
-        if not isinstance(manifest, dict):
-            raise TypeError("run manifest is not a JSON object")
-        if run_manifest is not None:
-            manifest.update(run_manifest)
-        manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
-        _atomic_write_json(manifest_path, manifest)
+        with _run_manifest_lock(manifest_path.parent, required=False):
+            manifest = json.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                raise TypeError("run manifest is not a JSON object")
+            if run_manifest is not None:
+                manifest.update(run_manifest)
+            manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
+            _atomic_write_json(manifest_path, manifest)
     except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
         _log.warning(
             "could not record persistence degradation for run %s: %r",
@@ -1067,14 +1114,6 @@ async def teardown_persist(
                 **_usage,
             )
 
-        # Detach signal persistence so the observer handler cannot fire after
-        # teardown (the db handle is about to be closed in the finally block).
-        if session_obj is not None:
-            try:
-                session_obj.observer.unbind_db_persistence()
-            except Exception as _exc:  # noqa: BLE001
-                _log.debug("signal persist unbind failed: %s", _exc)
-
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
@@ -1097,9 +1136,19 @@ async def teardown_persist(
         # explicit unknown outcome instead of a guess.
         return "unknown"
     finally:
+        _session_obj = ctx.get("session")
+        # Detach signal persistence on every path, so the observer handler cannot
+        # fire after the db handle closes below, and hand back how many signals it
+        # could not confirm it wrote, writes still in flight included (run.json reads
+        # it from ctx).
+        if _session_obj is not None:
+            try:
+                _session_obj.observer.unbind_db_persistence()
+                ctx["signal_persist_dropped"] = _session_obj.observer.persist_dropped
+            except Exception as _exc:  # noqa: BLE001
+                _log.debug("signal persist unbind failed: %s", _exc)
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.
-        _session_obj = ctx.get("session")
         if _session_obj is not None:
             for _b in [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]:
                 if _b is None:
