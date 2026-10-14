@@ -163,6 +163,8 @@ def test_path_resolved_run_preserves_execution_provenance(tmp_path, monkeypatch)
 def test_a_manifest_that_cannot_be_read_stops_the_write_instead_of_dropping_provenance(
     tmp_path, monkeypatch
 ):
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whose mode denies it, so the case cannot be set up")
     import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
 
     runs_root = tmp_path / "runs"
@@ -362,3 +364,30 @@ def test_binding_provenance_holds_the_manifest_lock_across_its_read_and_rewrite(
     assert json.loads(rebound.manifest_path.read_text())["mcp_config_reason"] == (
         "no_mcp_config_found"
     )
+
+
+def test_a_manifest_that_cannot_be_decoded_stops_the_write_instead_of_dropping_provenance(
+    tmp_path, monkeypatch
+):
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace"
+    launch_dir.mkdir()
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", runs_root)
+    resolution = McpResolution(
+        servers=None, reason="no_mcp_config_found", source=None, searched_from=launch_dir
+    )
+    run = allocate_run(run_id="undecodable-run")
+    run = run.with_execution_provenance(cwd=launch_dir, mcp_resolution=resolution)
+    reopened = checkpoint_mod._find_run_dir_by_id(run.run_id)
+    assert reopened is not None and reopened.cwd is None
+    before = run.manifest_path.read_bytes()
+    run.manifest_path.write_bytes(before + b"\xff")
+    undecodable = run.manifest_path.read_bytes()
+
+    with pytest.raises(UnicodeError):
+        reopened.write_manifest({"status": "completed", "ended_at": 1.0})
+
+    assert run.manifest_path.read_bytes() == undecodable

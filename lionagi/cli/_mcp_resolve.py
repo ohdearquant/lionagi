@@ -36,8 +36,9 @@ MCP_CONFIG_FILENAME = ".mcp.json"
 # --mcp-config, the flag a caller names a file with, so without this key the set
 # a search found would reach the run as one the caller asked for.
 SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
-# Beside it, the directory that search began in. The run reading the snapshot was
-# started in another directory, so its own cannot stand in for this one.
+# Beside it, the directory that search began in. When the submission names a cwd,
+# the run reading the snapshot starts there, so its own directory cannot stand in
+# for this one.
 SNAPSHOT_SEARCHED_FROM_KEY = "lionagiSnapshotSearchedFrom"
 
 

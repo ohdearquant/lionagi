@@ -104,7 +104,8 @@ so a caller who names a copy of a snapshot gets it read as found too. The resolu
 original path in `source`, which is the path persisted as `mcp_config_source`; the snapshot path
 is only the file the child reads. The snapshot also carries `lionagiSnapshotSearchedFrom`, the
 directory the submission searched from, which the resolution reports as `searched_from` and the
-run persists as `mcp_config_searched_from`, since the child starts in a different directory. A
+run persists as `mcp_config_searched_from`, since a submission that names a cwd starts the child
+there. A
 snapshot from a submission that predates that key reports the child's own directory. Both keys
 must hold absolute paths; any other value makes the file unusable. The child's own directory
 stays the one a relative `--mcp-config` name and a resume read from.

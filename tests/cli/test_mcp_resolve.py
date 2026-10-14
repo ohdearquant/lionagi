@@ -115,8 +115,9 @@ def test_snapshot_keeps_the_discovered_source_and_is_not_explicit(tmp_path):
 
 
 def test_a_snapshot_reports_the_directory_its_search_began_in(tmp_path):
-    """The run reading a snapshot starts elsewhere, so its own directory is not where the
-    search began; the pair it reports must rediscover the same file."""
+    """A run whose submission named a cwd reads its snapshot from there, so its own
+    directory is not where the search began; the pair it reports must rediscover the
+    same file."""
     from lionagi.mcp.jobs import _write_mcp_server_snapshot
 
     server_dir = tmp_path / "server"
