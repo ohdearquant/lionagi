@@ -70,6 +70,7 @@ __all__ = (
 
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-4-argon": 1_048_576,
     "gemini-3.8-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
@@ -87,6 +88,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
 # through so agy surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
+        "Gemini 4 Argon (Medium)",
+        "Gemini 4 Argon (High)",
+        "Gemini 4 Argon (Low)",
         "Gemini 3.8 Flash (Medium)",
         "Gemini 3.8 Flash (High)",
         "Gemini 3.8 Flash (Low)",
@@ -105,6 +109,14 @@ _AGY_MODELS: frozenset[str] = frozenset(
 )
 
 _MODEL_ALIASES: dict[str, str] = {
+    # 4 Argon: newest family on agy (listed by `agy models`, 2026-10-14). A bare
+    # id resolves to the strong tier; suffixed forms map to their exact tier.
+    "gemini-4-argon": "Gemini 4 Argon (High)",
+    "gemini-4-argon-high": "Gemini 4 Argon (High)",
+    "gemini-4-argon-medium": "Gemini 4 Argon (Medium)",
+    "gemini-4-argon-low": "Gemini 4 Argon (Low)",
+    "gemini-4": "Gemini 4 Argon (High)",
+    "argon": "Gemini 4 Argon (High)",
     # Current default flash family. Google documents Low, Medium, and High
     # thinking levels; the bare id resolves to Medium.
     "gemini-3.8-flash": "Gemini 3.8 Flash (Medium)",
@@ -150,11 +162,16 @@ _MODEL_ALIASES: dict[str, str] = {
 # "gemini-3.60-flash", where a neighbouring digit means it is a different number.
 _GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
 _GEMINI_38_TOKEN = re.compile(r"(?<!\d)3\.8(?!\d)")
+# A delimited major-version 4 token ("gemini-4-argon", "gemini-4"), not the 4 in
+# "gemini-4.5-flash" or "gemini-14-flash".
+_GEMINI_4_TOKEN = re.compile(r"(?<![\d.])4(?![\d.])")
 
 
 def _gemini_flash_family(key: str) -> str:
     """The flash-family display prefix for a free-form model key, without
     treating a version embedded in a different number as a family match."""
+    if "argon" in key or _GEMINI_4_TOKEN.search(key):
+        return "Gemini 4 Argon"
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
     if _GEMINI_36_TOKEN.search(key):
@@ -171,9 +188,11 @@ def resolve_agy_model(
     """Map a lionagi model spec + effort onto an exact `agy --model` display name (effort folds into
     the Low/Medium/High suffix; see docs/internals/runtime.md for the precedence rules)."""
     if not model:
-        model = "gemini-3.8-flash"
+        model = "gemini-4-argon"
     if model in _AGY_MODELS:
         if reapply_effort and effort is not None:
+            if model.startswith("Gemini 4 Argon"):
+                return f"Gemini 4 Argon ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.8 Flash"):
                 return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.6 Flash"):
@@ -188,6 +207,8 @@ def resolve_agy_model(
         target = _MODEL_ALIASES[key]
         if effort is None:
             return target
+        if target.startswith("Gemini 4 Argon"):
+            return f"Gemini 4 Argon ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.8 Flash"):
             return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.6 Flash"):
@@ -333,9 +354,10 @@ class GeminiCodeRequest(BaseModel):
 
     # -- runtime & safety ----------------------------------------------------
     model: str | None = Field(
-        default="gemini-3.8-flash",
+        default="gemini-4-argon",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
+            "Accepts gemini-4-argon (defaults to the High tier; -low/-medium/-high suffixes), "
             "Accepts gemini-3.8-flash (defaults to the Medium tier), "
             "gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
             "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "

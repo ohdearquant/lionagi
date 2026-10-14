@@ -398,7 +398,16 @@ async def test_on_text_loop_closed_error_propagates():
         ("pro", "Gemini 3.1 Pro (High)"),
         ("gemini-pro", "Gemini 3.1 Pro (High)"),
         ("Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (High)"),  # exact passthrough
-        (None, "Gemini 3.8 Flash (Medium)"),
+        (None, "Gemini 4 Argon (High)"),
+        ("gemini-4-argon", "Gemini 4 Argon (High)"),
+        ("gemini-4", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+        ("Gemini 4 Argon (Low)", "Gemini 4 Argon (Low)"),  # exact passthrough
+        # a free-form argon name stays on the 4 family via the token heuristic
+        ("gemini-4-argon-preview", "Gemini 4 Argon (Medium)"),
+        # 4.5 / 14 are not major version 4
+        ("gemini-14-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
@@ -486,8 +495,16 @@ def test_resolve_agy_model_36_flash_defaults_high_never_downgrades():
         assert not resolve_agy_model(spec).startswith("Gemini 3.6 Flash"), spec
 
 
+def test_resolve_agy_model_4_argon_is_the_default_and_stays_on_family():
+    assert resolve_agy_model(None) == "Gemini 4 Argon (High)"
+    assert resolve_agy_model("gemini-4-argon", effort="low") == "Gemini 4 Argon (Low)"
+    for spec in ("gemini-4-argon", "gemini-4", "gemini-4-argon-preview"):
+        assert resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
+    for spec in ("gemini-14-flash", "gemini-4.5-flash"):
+        assert not resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
+
+
 def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
-    assert resolve_agy_model(None) == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("flash") == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("gemini-3.8-flash") == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("gemini-3.8-flash", effort="high") == "Gemini 3.8 Flash (High)"

@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
+  family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
+  `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,
+  and the exact display names pass through. It is the default model for the gemini-code aliases
+  and for `GeminiCodeRequest`, and it appears first among the Studio operator's gemini-code models;
+  the 3.8, 3.6 and 3.5 Flash and 3.1 Pro entries are unchanged.
+
 ## [0.35.5] - 2026-10-11
 
 ### Added

@@ -30,7 +30,7 @@ class TestCmdArgs:
         assert args[:2] == ["-p", "hello"]
         assert "--output-format" in args and "json" in args
         i = args.index("--model")
-        assert args[i + 1] == "Gemini 3.8 Flash (Medium)"
+        assert args[i + 1] == "Gemini 4 Argon (High)"
 
     def test_pro_model_resolves_to_high(self):
         args = GeminiCodeRequest(prompt="hi", model="gemini-3-pro-preview").as_cmd_args()
@@ -207,11 +207,11 @@ class TestEndpointCall:
 
 
 class TestDefaultModel:
-    """GeminiCodeRequest default model must be the latest flash family."""
+    """GeminiCodeRequest default model must be the newest agy family."""
 
-    def test_default_model_is_gemini_3_8_flash(self):
+    def test_default_model_is_gemini_4_argon(self):
         req = GeminiCodeRequest(prompt="hello")
-        assert req.model == "gemini-3.8-flash"
+        assert req.model == "gemini-4-argon"
 
     def test_explicit_model_is_preserved(self):
         req = GeminiCodeRequest(prompt="hello", model="gemini-2.5-pro")
@@ -219,15 +219,15 @@ class TestDefaultModel:
 
 
 class TestBackendsDefaultModel:
-    """BACKENDS entries for gemini-cli must point to the latest flash family."""
+    """BACKENDS entries for gemini-cli must point to the newest agy family."""
 
-    def test_gemini_cli_backends_use_3_8_flash(self):
+    def test_gemini_cli_backends_use_4_argon(self):
         from lionagi.service.providers import BACKENDS
 
-        assert BACKENDS["gemini-cli"] == "gemini_code/gemini-3.8-flash"
-        assert BACKENDS["gemini_cli"] == "gemini_code/gemini-3.8-flash"
-        assert BACKENDS["gemini-code"] == "gemini_code/gemini-3.8-flash"
-        assert BACKENDS["gemini_code"] == "gemini_code/gemini-3.8-flash"
+        assert BACKENDS["gemini-cli"] == "gemini_code/gemini-4-argon"
+        assert BACKENDS["gemini_cli"] == "gemini_code/gemini-4-argon"
+        assert BACKENDS["gemini-code"] == "gemini_code/gemini-4-argon"
+        assert BACKENDS["gemini_code"] == "gemini_code/gemini-4-argon"
 
 
 class TestCliProvidersSet:
