@@ -1537,7 +1537,34 @@ async def test_adoption_compares_each_column_it_writes(
         )
         if column not in {name for name, _, _ in differences}:
             unchecked.append(column)
-    assert unchecked == []
+    # A cron trigger reads no interval; an interval row's is compared in its own test.
+    assert unchecked == ["interval_sec"]
+
+
+_EVERY_HOUR_TRIGGER = (
+    '    trigger:\n      cron:\n        expression: "0 2 * * *"\n'
+    "        timezone: America/New_York\n",
+    "    trigger:\n      every: 1h\n",
+)
+
+
+@pytest.mark.asyncio
+async def test_adopt_compares_the_interval_an_interval_row_reads(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(*_EVERY_HOUR_TRIGGER)
+    resolved = resolve_schedule_set(parse_schedule_set(manifest), agent_profile)["nightly"]
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="interval",
+        cron_expr=None,
+        effective_timezone=None,
+        interval_sec=3600,
+    )
+    assert await _adopt_spec_differences(row, resolved) == []
+    row["interval_sec"] = 7200
+    assert [name for name, _, _ in await _adopt_spec_differences(row, resolved)] == ["interval_sec"]
 
 
 @pytest.mark.asyncio
@@ -1693,7 +1720,7 @@ def _undeclared_value(column: str):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "column",
-    ["on_success", "on_fail", "action_extra_args", "threshold_config", "poll_interval_sec"],
+    ["on_success", "on_fail", "action_extra_args", "threshold_config"],
 )
 async def test_adopt_refuses_a_row_setting_a_column_no_declaration_writes(
     temp_db_path, agent_profile, pinned_scheduler_tz, column
@@ -1711,6 +1738,33 @@ async def test_adopt_refuses_a_row_setting_a_column_no_declaration_writes(
         with pytest.raises(ScheduleSetError):
             await apply_schedule_set(db, doc, agent_profile, adopt=True)
         assert (await db.get_schedule_by_name("nightly"))["owner_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_github_poll_row_with_its_own_poll_interval(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        _EVERY_HOUR_TRIGGER[0], "    trigger:\n      github:\n        repo: acme/widgets\n"
+    )
+    doc = parse_schedule_set(manifest)
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                effective_timezone=None,
+                github_repo="acme/widgets",
+                poll_interval_sec=60,
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ERROR"]
+        assert "poll_interval_sec=60" in plan[0].detail
+        assert "which a declaration cannot express" in plan[0].detail
+        assert "differs from the existing row" not in plan[0].detail
 
 
 def test_the_undeclared_column_list_is_the_one_the_refusal_test_names():
@@ -1950,6 +2004,143 @@ async def test_adopt_refuses_a_row_written_between_planning_and_commit(
         row = await db.get_schedule_by_name("nightly")
         assert row["owner_key"] is None
         assert row["on_success"] == chain
+
+
+@pytest.mark.asyncio
+async def test_an_update_refuses_a_row_written_between_planning_and_commit(
+    temp_db_path, agent_profile, monkeypatch, pinned_scheduler_tz
+):
+    async with StateDB() as db:
+        await apply_schedule_set(
+            db, parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile)), agent_profile
+        )
+        row = await db.get_schedule_by_name("demo/nightly")
+        changed = parse_schedule_set(
+            _agent_manifest("nightly", cwd=agent_profile).replace("check things", "check more")
+        )
+        real_apply = db.apply_schedule_set
+
+        async def disabled_first(**kwargs):
+            await db.update_schedule(row["id"], enabled=0)
+            return await real_apply(**kwargs)
+
+        monkeypatch.setattr(db, "apply_schedule_set", disabled_first)
+        with pytest.raises(ScheduleSetError, match="changed while this apply was planning"):
+            await apply_schedule_set(db, changed, agent_profile)
+        row = await db.get_schedule_by_name("demo/nightly")
+        assert row["enabled"] == 0
+        assert row["action_prompt"] == "check things"
+
+
+@pytest.mark.asyncio
+async def test_a_disable_refuses_a_row_written_between_planning_and_commit(
+    temp_db_path, agent_profile, monkeypatch, pinned_scheduler_tz
+):
+    extra = (
+        "  weekly:\n"
+        "    trigger:\n"
+        "      every: 6h\n"
+        "    target:\n"
+        "      kind: agent\n"
+        "      profile: reviewer\n"
+        '      prompt: "weekly things"\n'
+        "    execution:\n"
+        f"      cwd: {agent_profile}\n"
+    )
+    async with StateDB() as db:
+        await apply_schedule_set(
+            db,
+            parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile, extra_member=extra)),
+            agent_profile,
+        )
+        weekly = await db.get_schedule_by_name("demo/weekly")
+        real_apply = db.apply_schedule_set
+
+        async def edited_first(**kwargs):
+            await db.update_schedule(weekly["id"], action_prompt="edited by hand")
+            return await real_apply(**kwargs)
+
+        monkeypatch.setattr(db, "apply_schedule_set", edited_first)
+        with pytest.raises(ScheduleSetError, match="changed while this apply was planning"):
+            await apply_schedule_set(
+                db, parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile)), agent_profile
+            )
+        weekly = await db.get_schedule_by_name("demo/weekly")
+        assert weekly["enabled"] == 1
+        assert weekly["action_prompt"] == "edited by hand"
+
+
+@pytest.mark.parametrize("spelling", ["symlink", "trailing_slash"])
+@pytest.mark.asyncio
+async def test_adopt_compares_the_working_directory_where_it_resolves(
+    temp_db_path, agent_profile, pinned_scheduler_tz, spelling
+):
+    if spelling == "symlink":
+        link = agent_profile.parent / "linked-profile"
+        link.symlink_to(agent_profile, target_is_directory=True)
+        row_cwd = str(link)
+    else:
+        row_cwd = str(agent_profile) + "/"
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_cwd=row_cwd)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_ignores_intervals_a_cron_row_never_reads(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly", cwd=agent_profile, interval_sec=3600, poll_interval_sec=600
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_a_repeated_notify_status_as_one(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    notify = '    notify:\n      on: [failed]\n      command: "echo done"\n'
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile, extra_member=notify))
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    row = _legacy_adoption_row(
+        "nightly", cwd=agent_profile, notify_on=["failed", "failed"], notify_command="echo done"
+    )
+    assert await _adopt_spec_differences(row, resolved) == []
+
+
+@pytest.mark.parametrize(
+    "column,override",
+    [
+        ("action_prompt", {"action_prompt": "--"}),
+        ("action_model", {"action_model": "anthropic/claude-sonnet-5[1m]"}),
+        ("action_project", {"action_project": None}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_adopt_offers_no_member_edit_for_a_value_no_member_can_declare(
+    temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch, column, override
+):
+    from lionagi.cli import _project
+
+    monkeypatch.setattr(_project, "detect_project", lambda path: (None, "none"))
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(_legacy_adoption_row("nightly", cwd=agent_profile, **override))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    detail = plan[0].detail
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert f"no member can declare the row's {column}" in detail
+    assert "edit the member to match the row" not in detail
 
 
 @pytest.mark.asyncio

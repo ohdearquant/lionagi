@@ -758,6 +758,31 @@ async def test_legacy_flow_yaml_with_action_model_is_blocked(temp_db_path, agent
 
 
 @pytest.mark.asyncio
+async def test_legacy_play_row_with_a_prompt_is_blocked(temp_db_path, agent_profile):
+    """The launch passes a play row's prompt to the play; a playbook target cannot carry it."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "pp1",
+                "demo/audit",
+                cwd=agent_profile,
+                action_kind="play",
+                action_agent=None,
+                action_prompt="hello",
+                action_playbook="health-audit",
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert lines[0].status == "BLOCKED"
+    assert "action_prompt" in lines[0].message
+    assert "hello" not in lines[0].message
+    assert "audit" not in docs[0].schedules
+
+
+@pytest.mark.asyncio
 async def test_legacy_row_with_action_extra_args_is_blocked(temp_db_path, agent_profile):
     async with StateDB() as db:
         await db.create_schedule(

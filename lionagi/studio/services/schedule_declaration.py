@@ -967,12 +967,21 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
     """A column value as the scheduler acts on it, for columns where two stored values act alike."""
     if name == "notify_on":
         # No notification is registered for an empty list or for none, and the
-        # events are matched as a set, so their order does not change what fires.
-        return sorted(value) if value else None
-    if name == "interval_sec" and schedule.get("trigger_type") == "github_poll":
-        from lionagi.studio.scheduler.engine import resolve_schedule_cadence_seconds
+        # events are matched as a set, so neither their order nor a repeat changes
+        # what fires.
+        return sorted(set(value)) if value else None
+    if name == "interval_sec":
+        trigger_type = schedule.get("trigger_type")
+        if trigger_type == "github_poll":
+            from lionagi.studio.scheduler.engine import resolve_schedule_cadence_seconds
 
-        return resolve_schedule_cadence_seconds({**schedule, "interval_sec": value})
+            return resolve_schedule_cadence_seconds({**schedule, "interval_sec": value})
+        # Only an interval or github_poll trigger reads the interval.
+        return value if trigger_type == "interval" else None
+    if name == "action_cwd" and value:
+        # The launch runs in the resolved directory, so two spellings of one
+        # directory (a symlink, a trailing slash) act alike.
+        return str(Path(value).resolve())
     return value
 
 
@@ -982,7 +991,12 @@ def _adopt_undeclared_values(row: dict[str, Any]) -> list[tuple[str, Any]]:
     for name in _ADOPT_UNDECLARED_COLUMNS:
         value = row.get(name)
         if name == "poll_interval_sec":
-            if value is not None and value != _GITHUB_POLL_DEFAULT_SEC:
+            # Only a github_poll trigger reads it.
+            if (
+                row.get("trigger_type") == "github_poll"
+                and value is not None
+                and value != _GITHUB_POLL_DEFAULT_SEC
+            ):
                 found.append((name, value))
         elif value:
             found.append((name, value))
@@ -1023,8 +1037,10 @@ async def _adopt_spec_differences(
     return differences
 
 
-async def _adopt_undeclarable(row: dict[str, Any], name: str, current: Any) -> bool:
-    """True when no member could declare the row's value for this column."""
+async def _adopt_undeclarable(
+    row: dict[str, Any], name: str, current: Any, *, is_global: bool
+) -> bool:
+    """True when no member of this set could declare the row's value for this column."""
     if name == "resolved_timezone":
         if current is None:
             return False  # reported with its own remedy: let the scheduler record a zone
@@ -1041,9 +1057,40 @@ async def _adopt_undeclarable(row: dict[str, Any], name: str, current: Any) -> b
     if name == "action_cwd":
         # A member always resolves an execution root.
         return current is None
+    if name == "action_prompt" and isinstance(current, str):
+        # A member's prompt is refused when the launch would refuse it.
+        from lionagi.studio.scheduler.subprocess import _validate_prompt
+
+        try:
+            _validate_prompt(current)
+        except ValueError:
+            return True
+        return False
+    if name == "action_model" and isinstance(current, str):
+        # A member's model, its own or its profile's, is refused when the launch would
+        # refuse it.
+        from lionagi.studio.scheduler.subprocess import _validate_action_model
+
+        try:
+            _validate_action_model(current)
+        except ValueError:
+            return True
+        return False
     if name == "action_project":
-        root_key, _path, _display = await _adoption_execution_root(row)
-        return root_key[0] != "path"
+        root_key, root_path, _display = await _adoption_execution_root(row)
+        if root_key[0] != "path" or root_path is None:
+            return True
+        if is_global or row.get("action_project"):
+            return False
+        # Every member of a project's set runs with a project, its own or the set's, so a
+        # row that sets none and detects none from its root cannot be matched by one.
+        try:
+            from lionagi.cli._project import detect_project
+
+            project, _source = detect_project(Path(root_path))
+        except (OSError, RuntimeError, ValueError):
+            return True
+        return not project
     return False
 
 
@@ -1073,10 +1120,11 @@ async def _adopt_plan_entry(
         # its own remedy below. Any other value no member can declare makes the row
         # unadoptable as it stands, and the member remedy would be one nobody can follow.
         unrecorded_zone = [d for d in differences if d[0] == "resolved_timezone" and d[1] is None]
+        is_global = qualified.startswith("global/")
         undeclarable = [
             name
             for name, current, _ in differences
-            if await _adopt_undeclarable(row, name, current)
+            if await _adopt_undeclarable(row, name, current, is_global=is_global)
         ]
         if undeclarable:
             remedy = (
@@ -1253,6 +1301,7 @@ async def build_plan(
                     resolved=resolved,
                     existing_id=existing_row["id"],
                     claimed_owner_key=existing_row.get("owner_key"),
+                    claimed_updated_at=existing_row.get("updated_at"),
                     model_change=(
                         (stored_model, declared_model) if stored_model != declared_model else None
                     ),
@@ -1263,7 +1312,15 @@ async def build_plan(
 
     for name, row in existing_owned.items():
         if name not in seen_qualified:
-            plan.append(PlanEntry(name, "DISABLE", existing_id=row["id"]))
+            plan.append(
+                PlanEntry(
+                    name,
+                    "DISABLE",
+                    existing_id=row["id"],
+                    claimed_owner_key=row.get("owner_key"),
+                    claimed_updated_at=row.get("updated_at"),
+                )
+            )
 
     return plan, resolved_members
 
@@ -1337,6 +1394,9 @@ async def apply_schedule_set(
                 )
             updates.append((entry.existing_id, fields))
         elif entry.action == "DISABLE":
+            claims[entry.existing_id] = entry.claimed_owner_key
+            if entry.claimed_updated_at is not None:
+                updated_at_claims[entry.existing_id] = entry.claimed_updated_at
             disables.append(entry.existing_id)
 
     names_by_id = {entry.existing_id: entry.qualified_name for entry in plan if entry.existing_id}

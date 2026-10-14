@@ -3709,8 +3709,16 @@ class StateDB:
                 if (claimed or schedule_id in stamps) and result.rowcount == 0:
                     raise ScheduleOwnershipConflictError([schedule_id])
             for schedule_id in disables:
-                stmt, params = self._build_update_schedule_stmt(schedule_id, {"enabled": 0})
-                await conn.execute(stmt, params)
+                claimed = schedule_id in claims
+                stmt, params = self._build_update_schedule_stmt(
+                    schedule_id,
+                    {"enabled": 0},
+                    expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
+                    expect_updated_at=stamps.get(schedule_id, NO_CURSOR_CLAIM),
+                )
+                result = await conn.execute(stmt, params)
+                if (claimed or schedule_id in stamps) and result.rowcount == 0:
+                    raise ScheduleOwnershipConflictError([schedule_id])
 
     async def list_schedules(
         self,

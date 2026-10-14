@@ -254,6 +254,12 @@ def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path, manifest_dir
         name = row.get("action_playbook")
         if not name:
             raise ValueError("action_kind='play' row has no action_playbook")
+        if row.get("action_prompt"):
+            raise ValueError(
+                "action_kind='play' row has an action_prompt, which the scheduled launch "
+                "passes to the play, but a playbook target has no field to carry it -- "
+                "dropping it would silently change fire behavior"
+            )
         return PlaybookTarget(kind="playbook", name=name, args={})
     if kind == "flow_yaml":
         content = row.get("action_flow_yaml")
