@@ -214,8 +214,9 @@ class Executor(Observer):
     async def forward(self) -> None:
         while len(self.pending) > 0:
             id_ = self.pending.popleft()
-            # A streamed or popped event can leave the pile while its id is still pending;
-            # it was already sent, and one caller's stale id must not fail another's forward.
+            # An event can leave the pile while its id is still pending (an invoke or a stream
+            # pops its own call when it ends). Its id is skipped, so one caller's stale id never
+            # fails another caller's forward.
             if id_ not in self.pile:
                 continue
             event = self.pile[id_]

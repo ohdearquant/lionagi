@@ -868,6 +868,53 @@ async def test_a_forward_during_a_stream_does_not_send_that_stream_again(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_a_forward_during_the_stream_of_an_appended_call_does_not_send_it_again(
+    monkeypatch, tmp_path
+):
+    """The call leaves pending when its stream starts, not when the stream ends."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    body = _finished_stream().content.pieces[0]
+
+    class HeldBody:
+        def __aiter__(self):
+            self._sent = False
+            return self
+
+        async def __anext__(self):
+            if self._sent:
+                raise StopAsyncIteration
+            started.set()
+            await release.wait()
+            self._sent = True
+            return body
+
+    held = StubResponse()
+    held.content = HeldBody()
+    model, transport = _model(monkeypatch, [held, _finished_stream()])
+    owner = uuid4()
+
+    async def consume(call):
+        with _branch_routing_context(owner, model):
+            async for _ in model.stream(api_call=call):
+                pass
+
+    with _branch_routing_context(owner, model):
+        call = await model.create_event(stream=True, **QUEUED_REQUEST)
+        await model.executor.append(call)
+    streaming = asyncio.create_task(consume(call))
+    await started.wait()
+    assert call.id not in model.executor.pending
+    await model.executor.forward()
+    release.set()
+    await streaming
+
+    assert _sent_contents(transport) == ["queued elsewhere"]
+    assert _attempt_scopes(path) == [str(owner)]
+
+
+@pytest.mark.asyncio
 async def test_a_queued_call_another_scope_was_refused_is_sent_once_for_its_owner(
     monkeypatch, tmp_path
 ):
@@ -1199,3 +1246,272 @@ async def test_a_stream_cancelled_after_its_request_was_sent_records_why(monkeyp
 
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, "cancelled")
+
+
+def _text_block(index) -> dict:
+    return {
+        "type": "content_block_start",
+        "index": index,
+        "content_block": {"type": "text", "text": ""},
+    }
+
+
+def _text(index, text: str) -> dict:
+    return {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "text_delta", "text": text},
+    }
+
+
+def _citation(index, cited_text: str) -> dict:
+    return {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {
+            "type": "citations_delta",
+            "citation": {
+                "type": "char_location",
+                "cited_text": cited_text,
+                "document_index": 0,
+                "start_char_index": 0,
+                "end_char_index": len(cited_text),
+            },
+        },
+    }
+
+
+_MESSAGE_END = [
+    {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 4}},
+    {"type": "message_stop"},
+]
+
+
+async def _stream_events(monkeypatch, tmp_path, events) -> list:
+    _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse([event]) for event in events])])
+    return [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+
+def _raw_kinds(chunks) -> list:
+    return [(chunk.metadata or {}).get("raw", {}).get("type") for chunk in chunks]
+
+
+# What comes between the two halves of the key, and the block the second half is in.
+_BETWEEN_TWO_TEXT_DELTAS = {
+    "citation": ([_citation(0, "a quote")], 0),
+    "error_event": ([{"type": "error", "error": {"type": "overloaded_error", "message": "x"}}], 0),
+    "next_block": ([{"type": "content_block_stop", "index": 0}, _text_block(1)], 1),
+    "block_start_without_stop": ([_text_block(1)], 1),
+    "thinking_block": (
+        [
+            {"type": "content_block_stop", "index": 0},
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+            _delta("thinking_delta", "thinking", "hmm"),
+            {"type": "content_block_stop", "index": 1},
+            _text_block(2),
+        ],
+        2,
+    ),
+}
+
+
+@pytest.mark.parametrize("cut", range(1, len(CANARY)))
+@pytest.mark.parametrize("between", sorted(_BETWEEN_TWO_TEXT_DELTAS))
+@pytest.mark.asyncio
+async def test_a_key_split_around_another_event_never_reaches_the_joined_text(
+    monkeypatch, tmp_path, between, cut
+):
+    """A consumer joins text across citations, blocks and error events. A key beginning
+    of BOUNDARY_HOLD characters or more waits for the next text and is masked whole; a
+    shorter one has already gone out, and the rest of the key is masked after it."""
+    from lionagi.service.accounts._router import StreamingTextRedactor
+
+    middle, second = _BETWEEN_TWO_TEXT_DELTAS[between]
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _text(0, "ab" + CANARY[:cut]),
+        *middle,
+        _text(second, CANARY[cut:] + "cd"),
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    shown = CANARY[:cut] if cut < StreamingTextRedactor.BOUNDARY_HOLD else ""
+    expected = "ab" + shown + "[REDACTED]cd"
+    assert "".join(chunk.content or "" for chunk in chunks if chunk.type == "text") == expected
+    assert _raw_delta_text(chunks, "text") == expected
+    assert all(CANARY not in repr(chunk) for chunk in chunks)
+
+
+@pytest.mark.parametrize("cut", range(1, len(CANARY)))
+@pytest.mark.asyncio
+async def test_a_key_split_around_a_signature_never_reaches_the_joined_thinking(
+    monkeypatch, tmp_path, cut
+):
+    from lionagi.service.accounts._router import StreamingTextRedactor
+
+    events = [
+        _MESSAGE_START,
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+        },
+        _delta("thinking_delta", "thinking", "ab" + CANARY[:cut]),
+        _delta("signature_delta", "signature", "sig"),
+        _delta("thinking_delta", "thinking", CANARY[cut:] + "cd"),
+        {"type": "content_block_stop", "index": 0},
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    shown = CANARY[:cut] if cut < StreamingTextRedactor.BOUNDARY_HOLD else ""
+    assert _raw_delta_text(chunks, "thinking") == "ab" + shown + "[REDACTED]cd"
+    assert _raw_delta_text(chunks, "signature") == "sig"
+    assert all(CANARY not in repr(chunk) for chunk in chunks)
+
+
+@pytest.mark.parametrize("cut", range(1, len(CANARY)))
+@pytest.mark.asyncio
+async def test_a_key_split_across_two_citations_never_reaches_their_joined_quotes(
+    monkeypatch, tmp_path, cut
+):
+    """A citation arrives whole and is never held, so the first keeps its part of the key
+    and the rest is masked in the second."""
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _citation(0, "ab" + CANARY[:cut]),
+        _citation(0, CANARY[cut:] + "cd"),
+        {"type": "content_block_stop", "index": 0},
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    quotes = [
+        raw["delta"]["citation"]["cited_text"]
+        for raw in ((chunk.metadata or {}).get("raw") for chunk in chunks)
+        if isinstance(raw, dict) and raw.get("delta", {}).get("type") == "citations_delta"
+    ]
+    assert quotes == ["ab" + CANARY[:cut], "[REDACTED]cd"]
+    assert all(CANARY not in repr(chunk) for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_text_that_only_begins_like_the_key_keeps_its_place(monkeypatch, tmp_path):
+    """A text that ends with fewer than BOUNDARY_HOLD characters of the key reaches the
+    consumer before its block's stop, so ordinary text is never moved."""
+    from lionagi.service.accounts._router import StreamingTextRedactor
+
+    ending = CANARY[: StreamingTextRedactor.BOUNDARY_HOLD - 1]
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _text(0, "the end of " + ending),
+        {"type": "content_block_stop", "index": 0},
+        _text_block(1),
+        _text(1, "next"),
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    kinds = _raw_kinds(chunks)
+    before_stop = chunks[: kinds.index("content_block_stop")]
+    assert _raw_delta_text(before_stop, "text") == "the end of " + ending
+    assert _raw_delta_text(chunks, "text") == "the end of " + ending + "next"
+
+
+@pytest.mark.asyncio
+async def test_a_held_key_beginning_that_never_continues_is_still_delivered(monkeypatch, tmp_path):
+    from lionagi.service.accounts._router import StreamingTextRedactor
+
+    beginning = CANARY[: StreamingTextRedactor.BOUNDARY_HOLD]
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _text(0, "ab" + beginning),
+        {"type": "content_block_stop", "index": 0},
+        _text_block(1),
+        _text(1, "zz"),
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    assert _raw_delta_text(chunks, "text") == "ab" + beginning + "zz"
+    kinds = _raw_kinds(chunks)
+    assert max(i for i, kind in enumerate(kinds) if kind == "content_block_delta") < kinds.index(
+        "message_delta"
+    )
+
+
+@pytest.mark.parametrize("index", [0, "0"])
+@pytest.mark.asyncio
+async def test_held_text_reaches_the_consumer_before_its_blocks_stop(monkeypatch, tmp_path, index):
+    events = [
+        _MESSAGE_START,
+        _text_block(index),
+        _text(index, "hello"),
+        {"type": "content_block_stop", "index": index},
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    kinds = _raw_kinds(chunks)
+    last_delta = max(i for i, kind in enumerate(kinds) if kind == "content_block_delta")
+    assert last_delta < kinds.index("content_block_stop")
+    assert _raw_delta_text(chunks, "text") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_held_text_reaches_the_consumer_before_the_next_block_starts(monkeypatch, tmp_path):
+    """Block 0 sends no stop; its held text still precedes block 1's start."""
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _text(0, "hello"),
+        _text_block(1),
+        _text(1, " world"),
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    raws = [(chunk.metadata or {}).get("raw", {}) for chunk in chunks]
+    start_1 = next(
+        i
+        for i, raw in enumerate(raws)
+        if raw.get("type") == "content_block_start" and raw.get("index") == 1
+    )
+    assert _raw_delta_text(chunks[:start_1], "text") == "hello"
+    assert _raw_delta_text(chunks, "text") == "hello world"
+
+
+def test_the_text_redactor_releases_all_but_a_tail_that_begins_the_key():
+    from pydantic import SecretStr
+
+    from lionagi.service.accounts._router import StreamingTextRedactor
+
+    hold = StreamingTextRedactor.BOUNDARY_HOLD
+    redactor = StreamingTextRedactor(SecretStr(CANARY))
+    out = redactor.feed("ab" + CANARY[:hold]) + redactor.release()
+    assert out == "ab"
+    out += redactor.feed(CANARY[hold:] + "cd", final=True)
+    assert out == "ab[REDACTED]cd"
+
+    redactor = StreamingTextRedactor(SecretStr(CANARY))
+    out = redactor.feed("ab" + CANARY[: hold - 1]) + redactor.release()
+    assert out == "ab" + CANARY[: hold - 1]
+    out += redactor.feed(CANARY[hold - 1 :] + "cd", final=True)
+    assert out == "ab" + CANARY[: hold - 1] + "[REDACTED]cd"

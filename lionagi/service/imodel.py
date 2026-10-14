@@ -311,8 +311,9 @@ class iModel:  # noqa: N801
         if captured is None:
             api_call._routing_scope = expected
         elif captured != expected:
-            # The call belongs to the scope that built it. Refusing changes nothing on it, so
-            # its owner can still send it, and only the owner's own invoke or forward does.
+            # The call belongs to the scope that built it. Refusing changes nothing on it: it
+            # stays where its owner put it, and whoever sends it later (the owner's invoke, or
+            # any caller's forward while it is pending) sends it under the owner's scope.
             raise AccountRoutingError(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT) from None
 
     def _is_routing_error(self, error: BaseException) -> bool:
@@ -403,6 +404,10 @@ class iModel:  # noqa: N801
             await self.executor.pile.ainclude(api_call)
         else:
             self._capture_routing_scope(api_call)
+        # A caller may have appended this call before streaming it. The stream sends it now,
+        # so it leaves pending before it is sent, and no forward() during the stream sends it
+        # a second time.
+        self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
 
         if self.executor.processor is None or self.executor.processor.is_stopped():
@@ -432,10 +437,7 @@ class iModel:  # noqa: N801
                     self._store_served_model(api_call, served_model)
                     # Pop without yielding — yield-in-finally would swallow CancelledError
                     # during generator cleanup, breaking anyio.fail_after timeout enforcement.
-                    # A caller that appended this call before streaming it left it in pending,
-                    # where the next forward() would send it again.
                     self.executor.pile.pop(api_call.id, None)
-                    self.executor.pending.exclude(api_call.id)
                 if stream_error is not None:
                     if self._is_routing_error(stream_error):
                         raise stream_error from None
@@ -457,7 +459,6 @@ class iModel:  # noqa: N801
             finally:
                 self._store_served_model(api_call, served_model)
                 self.executor.pile.pop(api_call.id, None)
-                self.executor.pending.exclude(api_call.id)
             if stream_error is not None:
                 if self._is_routing_error(stream_error):
                     raise stream_error from None

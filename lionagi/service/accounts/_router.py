@@ -269,24 +269,66 @@ def redact_value(value: Any, key: SecretStr) -> Any:
 
 
 class StreamingTextRedactor:
-    """Masks a key split across decoded text pieces that a consumer joins.
+    """Masks a key in one run of text a consumer joins, wherever the run is split.
 
-    Each piece is held back by the key's length less one, so a key that
-    continues in the next piece is replaced before either half is emitted.
+    Each piece is held back by the key's length less one, so a key that continues
+    in the next piece is replaced before either half is emitted. At a boundary
+    the text must reach the consumer before (another kind of delta, the end of a
+    block, an error event), ``release`` emits what is held except a tail of at
+    least ``BOUNDARY_HOLD`` characters that begins the key; that tail waits for
+    the next piece, where a continued key is masked whole. A shorter beginning
+    of the key that was emitted is remembered, and the rest of the key is masked
+    when it follows, so the joined run never holds the whole key and at most
+    ``BOUNDARY_HOLD - 1`` of its characters.
     """
+
+    BOUNDARY_HOLD = 8
 
     def __init__(self, key: SecretStr) -> None:
         self._secret = key.get_secret_value()
         self._tail = ""
+        self._emitted = ""
+
+    def _emit(self, text: str) -> str:
+        keep = len(self._secret) - 1
+        self._emitted = (self._emitted + text)[-keep:] if keep > 0 else ""
+        return text
+
+    def _mask_continuation(self, data: str) -> str:
+        """Mask the rest of a key whose beginning was already emitted."""
+        joined = self._emitted + data
+        start = joined.find(self._secret)
+        while 0 <= start < len(self._emitted):
+            end = start + len(self._secret)
+            if end > len(self._emitted):
+                return "[REDACTED]" + data[end - len(self._emitted) :]
+            start = joined.find(self._secret, start + 1)
+        return data
 
     def feed(self, text: str, *, final: bool = False) -> str:
-        data = (self._tail + text).replace(self._secret, "[REDACTED]")
+        data = self._mask_continuation(self._tail + text).replace(self._secret, "[REDACTED]")
         if final:
             self._tail = ""
-            return data
+            return self._emit(data)
         safe_length = max(0, len(data) - len(self._secret) + 1)
         output, self._tail = data[:safe_length], data[safe_length:]
-        return output
+        return self._emit(output)
+
+    def release(self) -> str:
+        """Emit the held text at a boundary, keeping back a tail that begins the key."""
+        keep = 0
+        for n in range(min(len(self._tail), len(self._secret) - 1), self.BOUNDARY_HOLD - 1, -1):
+            if self._secret.startswith(self._tail[-n:]):
+                keep = n
+                break
+        output = self._tail[: len(self._tail) - keep]
+        self._tail = self._tail[len(self._tail) - keep :]
+        return self._emit(output)
+
+    def mask_whole(self, text: str) -> str:
+        """Mask a piece that arrives whole and is never held: a key within it, and the
+        rest of a key whose beginning ended the piece before."""
+        return self._emit(self._mask_continuation(text).replace(self._secret, "[REDACTED]"))
 
 
 class StreamingSecretRedactor:
