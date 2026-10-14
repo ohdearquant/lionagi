@@ -418,7 +418,9 @@ def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
     try:
         profile = load_agent_profile(target.profile, cwd=cwd)
     except FileNotFoundError as exc:
-        raise ValueError(f"target.agent profile {target.profile!r} does not exist: {exc}") from exc
+        raise ValueError(
+            f"target.agent profile {target.profile!r} does not exist (searched from {cwd}): {exc}"
+        ) from exc
 
     resolved_model = target.model or profile.model
     if not resolved_model:
@@ -426,19 +428,29 @@ def _resolve_agent_target(target: AgentTarget, cwd: Path) -> dict[str, Any]:
             f"target.agent profile {target.profile!r} has no default model and target.model "
             "was not set -- a v1 schedule must resolve to a concrete model at declaration time"
         )
-    # The stored model is passed to the launched child as its model argument, and
-    # the launch refuses one outside the model identifier character set. A row
-    # holding such a model would fail at every fire, so refuse it here instead.
-    from lionagi.studio.scheduler.subprocess import _validate_action_model
+    # The stored model and prompt are passed to the launched child as arguments, and
+    # the launch refuses a model outside the model identifier character set and a
+    # prompt it cannot pass through. A row holding either would fail at every fire,
+    # so refuse it here instead.
+    from lionagi.studio.scheduler.subprocess import _validate_action_model, _validate_prompt
 
+    source = "target.model" if target.model else f"profile {target.profile!r}"
+    if not isinstance(resolved_model, str):
+        raise ValueError(
+            f"target.agent model {resolved_model!r} (from {source}) is not a model name. "
+            "Set target.model to a model the launch accepts."
+        )
     try:
         _validate_action_model(resolved_model)
     except ValueError as exc:
-        source = "target.model" if target.model else f"profile {target.profile!r}"
         raise ValueError(
             f"target.agent model {resolved_model!r} (from {source}) cannot be passed to a "
             f"scheduled launch: {exc} Set target.model to a model the launch accepts."
         ) from exc
+    try:
+        _validate_prompt(target.prompt)
+    except ValueError as exc:
+        raise ValueError(f"target.prompt cannot be passed to a scheduled launch: {exc}") from exc
     profile_digest = _digest_of(
         {
             "model": profile.model,
@@ -865,37 +877,43 @@ async def _adopt_project_pair(
     changed_row: list[str] = []
     changed_declared: list[str] = []
 
+    def root_text(root: tuple[tuple[str, ...], str | None, str]) -> str:
+        # A path is quoted; the other roots are described in words.
+        return (
+            f"execution root {root[2]!r}" if root[0][0] == "path" else f"execution root: {root[2]}"
+        )
+
     if row_root[0] != declared_root[0]:
-        changed_row.append(f"execution root {row_root[2]!r}")
-        changed_declared.append(f"execution root {declared_root[2]!r}")
+        changed_row.append(root_text(row_root))
+        changed_declared.append(root_text(declared_root))
 
     async def project_effect(
         schedule: dict[str, Any], root: tuple[tuple[str, ...], str | None, str]
     ) -> tuple[tuple[str, ...], str]:
         if schedule.get("action_kind") not in _PROJECT_FLAG_ACTION_KINDS:
-            return ("unused",), "no project argument is passed"
+            return ("unused",), "none, the action takes no project argument"
         if root[0][0] == "refused":
-            return ("not-launched",), "the action does not launch"
+            return ("not-launched",), "none, the action does not launch"
         project = schedule.get("action_project")
         if project:
-            return ("project", str(project)), f"explicit project {project!r}"
+            return ("project", str(project)), f"{project!r}, set explicitly"
         if root[1] is None:
-            return ("unknown",), "project detected from the scheduler working directory"
+            return ("unknown",), "detected from the scheduler working directory"
         try:
             from lionagi.cli._project import detect_project
 
             project, _source = detect_project(Path(root[1]))
         except (OSError, RuntimeError, ValueError):
-            return ("unknown",), "project could not be detected from the execution root"
+            return ("unknown",), "could not be detected from the execution root"
         if not project:
-            return ("project", project), "no project detected from the execution root"
-        return ("project", project), f"detected project {project!r}"
+            return ("project", project), "none detected from the execution root"
+        return ("project", project), f"{project!r}, detected from the execution root"
 
     row_project = await project_effect(row, row_root)
     declared_project = await project_effect(declared_row, declared_root)
     if row_project[0] != declared_project[0]:
-        changed_row.append(f"run project {row_project[1]}")
-        changed_declared.append(f"run project {declared_project[1]}")
+        changed_row.append(f"run project: {row_project[1]}")
+        changed_declared.append(f"run project: {declared_project[1]}")
 
     if not changed_row:
         return None
@@ -948,8 +966,9 @@ def _adopt_unconfirmed_recorded_zone(row: dict[str, Any]) -> tuple[str, str] | N
 def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
     """A column value as the scheduler acts on it, for columns where two stored values act alike."""
     if name == "notify_on":
-        # No notification is registered for an empty list or for none.
-        return value or None
+        # No notification is registered for an empty list or for none, and the
+        # events are matched as a set, so their order does not change what fires.
+        return sorted(value) if value else None
     if name == "interval_sec" and schedule.get("trigger_type") == "github_poll":
         from lionagi.studio.scheduler.engine import resolve_schedule_cadence_seconds
 
@@ -1004,6 +1023,30 @@ async def _adopt_spec_differences(
     return differences
 
 
+async def _adopt_undeclarable(row: dict[str, Any], name: str, current: Any) -> bool:
+    """True when no member could declare the row's value for this column."""
+    if name == "resolved_timezone":
+        if current is None:
+            return False  # reported with its own remedy: let the scheduler record a zone
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(current)
+        except (ZoneInfoNotFoundError, ValueError):
+            return True
+        return False
+    if name == "interval_sec":
+        # A github trigger declares no interval; the scheduler applies its own cadence.
+        return row.get("trigger_type") == "github_poll"
+    if name == "action_cwd":
+        # A member always resolves an execution root.
+        return current is None
+    if name == "action_project":
+        root_key, _path, _display = await _adoption_execution_root(row)
+        return root_key[0] != "path"
+    return False
+
+
 async def _adopt_plan_entry(
     row: dict[str, Any], resolved: ResolvedMember, qualified: str, owner_key: str
 ) -> PlanEntry:
@@ -1026,11 +1069,27 @@ async def _adopt_plan_entry(
             f"{name}: row={current!r} declared={declared!r}"
             for name, current, declared in differences
         )
-        # A zone nobody has recorded is not one the member can be edited to match.
-        editable = [d for d in differences if not (d[0] == "resolved_timezone" and d[1] is None)]
+        # A zone nobody has recorded is not one the member can be edited to match; it has
+        # its own remedy below. Any other value no member can declare makes the row
+        # unadoptable as it stands, and the member remedy would be one nobody can follow.
+        unrecorded_zone = [d for d in differences if d[0] == "resolved_timezone" and d[1] is None]
+        undeclarable = [
+            name
+            for name, current, _ in differences
+            if await _adopt_undeclarable(row, name, current)
+        ]
+        if undeclarable:
+            remedy = (
+                f"; no member can declare the row's {', '.join(undeclarable)}, so this row "
+                "cannot be adopted as it stands."
+            )
+        elif len(unrecorded_zone) == len(differences):
+            remedy = "."
+        else:
+            remedy = "; edit the member to match the row."
         reasons.append(
             f"the declared member differs from the existing row in {len(differences)} "
-            f"field(s) -- {rendered}" + ("; edit the member to match the row." if editable else ".")
+            f"field(s) -- {rendered}" + remedy
         )
         timezone = next((d for d in differences if d[0] == "resolved_timezone"), None)
         if timezone is not None:
@@ -1295,7 +1354,7 @@ async def apply_schedule_set(
                 (
                     names_by_id.get(schedule_id, schedule_id),
                     f"schedule row {schedule_id} changed while this apply was planning "
-                    f"(planned against owner_key {claims.get(schedule_id)!r}); "
+                    "(its owner or its last update is no longer the one this plan read); "
                     "nothing was written -- re-run to plan against the row as it stands now",
                 )
                 for schedule_id in exc.schedule_ids

@@ -2084,6 +2084,98 @@ def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db
     assert "adopt" not in out2
 
 
+def test_schedule_apply_reports_a_model_change_and_only_a_model_change(
+    agent_profile_cwd, temp_state_db, capsys
+):
+    from lionagi.studio.cli import run_schedule
+
+    profile = agent_profile_cwd / ".lionagi" / "agents" / "reviewer.md"
+    manifest = _write_manifest(agent_profile_cwd)
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest)])) == 0
+    capsys.readouterr()
+
+    # The profile's model moves: the update names the stored and the new model.
+    profile.write_text("---\nmodel: anthropic/claude-sonnet-5-5\n---\nBody.\n")
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run"])) == 0
+    assert (
+        "UPDATE     demo/nightly-review  "
+        "model=anthropic/claude-sonnet-5 -> anthropic/claude-sonnet-5-5\n"
+    ) in capsys.readouterr().out
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])) == 0
+    (entry,) = json.loads(capsys.readouterr().out)["plan"]
+    assert entry["action"] == "UPDATE"
+    assert entry["model_change"] == {
+        "from": "anthropic/claude-sonnet-5",
+        "to": "anthropic/claude-sonnet-5-5",
+    }
+
+    # The model stays and the prompt moves: the update says nothing about a model.
+    profile.write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
+    manifest.write_text(manifest.read_text().replace("check things", "check more"))
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run"])) == 0
+    out = capsys.readouterr().out
+    assert "UPDATE     demo/nightly-review\n" in out
+    assert "model=" not in out
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])) == 0
+    (entry,) = json.loads(capsys.readouterr().out)["plan"]
+    assert entry["action"] == "UPDATE"
+    assert "model_change" not in entry
+
+
+def _write_global_manifest(cwd, *, name="automation", with_cwd=True) -> Path:
+    manifest = Path(cwd) / f"{name}.yaml"
+    execution = f"    execution:\n      cwd: {cwd}\n" if with_cwd else ""
+    manifest.write_text(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: {name}
+  project: demo
+  scope: global
+schedules:
+  nightly-review:
+    trigger:
+      cron:
+        expression: "0 2 * * *"
+        timezone: America/New_York
+    target:
+      kind: agent
+      profile: reviewer
+      prompt: "check things"
+{execution}"""
+    )
+    return manifest
+
+
+@pytest.mark.parametrize("verb", ["validate", "apply"])
+def test_a_global_set_labels_a_member_error_with_its_own_prefix(
+    agent_profile_cwd, temp_state_db, capsys, verb
+):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_global_manifest(agent_profile_cwd, with_cwd=False)
+    assert run_schedule(_parse_schedule_args([verb, str(manifest)])) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("INVALID  global/nightly-review  ")
+    assert "demo/" not in err
+
+
+def test_a_global_set_labels_a_plan_error_with_its_prefix_once(
+    agent_profile_cwd, temp_state_db, capsys
+):
+    from lionagi.studio.cli import run_schedule
+
+    first = _write_global_manifest(agent_profile_cwd, name="first")
+    assert run_schedule(_parse_schedule_args(["apply", str(first)])) == 0
+    capsys.readouterr()
+    second = _write_global_manifest(agent_profile_cwd, name="second")
+    assert run_schedule(_parse_schedule_args(["apply", str(second)])) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("INVALID  global/nightly-review  ")
+    assert "global/global/" not in err and "demo/global/" not in err
+
+
 def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
     import asyncio
 

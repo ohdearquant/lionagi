@@ -6,6 +6,7 @@ atomic validate/diff/apply service."""
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -16,6 +17,7 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 
 from pydantic import ValidationError
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.state.db import StateDB
 from lionagi.studio.services.schedule_declaration import (
     _ADOPT_DECLARATION_FIELDS,
@@ -1741,6 +1743,63 @@ def test_a_profile_model_the_launch_refuses_is_refused_at_declaration(agent_prof
     assert resolved.db_fields["action_model"] == "anthropic/claude-sonnet-5"
 
 
+def test_a_profile_model_that_is_not_text_is_refused_naming_the_profile(agent_profile):
+    agents = agent_profile / ".lionagi" / "agents"
+    (agents / "numbered.md").write_text("---\nmodel: 123\n---\nBody.\n")
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        "profile: reviewer", "profile: numbered"
+    )
+    with pytest.raises(ScheduleSetError) as excinfo:
+        resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
+    ((name, message),) = excinfo.value.errors
+    assert name == "nightly"
+    assert "target.agent model 123 (from profile 'numbered') is not a model name" in message
+
+
+def test_a_model_with_a_trailing_newline_is_refused_at_declaration(agent_profile):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        'prompt: "check things"',
+        'prompt: "check things"\n      model: "anthropic/claude-sonnet-5\\n"',
+    )
+    with pytest.raises(ScheduleSetError) as excinfo:
+        resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
+    ((name, message),) = excinfo.value.errors
+    assert name == "nightly"
+    assert "'anthropic/claude-sonnet-5\\n' (from target.model)" in message
+    assert "cannot be passed to a scheduled launch" in message
+
+
+_UNLAUNCHABLE_PROMPTS = {"end-of-options": "--", "over-cap": "x" * (MAX_SPEC_PROMPT_CHARS + 1)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt", list(_UNLAUNCHABLE_PROMPTS.values()), ids=list(_UNLAUNCHABLE_PROMPTS)
+)
+async def test_a_prompt_the_launch_refuses_is_refused_before_any_write(
+    temp_db_path, agent_profile, pinned_scheduler_tz, prompt
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        'prompt: "check things"', f"prompt: {json.dumps(prompt)}"
+    )
+    doc = parse_schedule_set(manifest)
+    async with StateDB() as db:
+        with pytest.raises(ScheduleSetError) as excinfo:
+            await apply_schedule_set(db, doc, agent_profile)
+        assert "target.prompt cannot be passed to a scheduled launch" in str(excinfo.value)
+        assert await db.list_schedules() == []
+
+        # The same prompt on an unowned row: adoption refuses and leaves the row as it was.
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_prompt=prompt)
+        )
+        before = await db.get_schedule_by_name("nightly")
+        with pytest.raises(ScheduleSetError) as excinfo:
+            await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        assert "target.prompt cannot be passed to a scheduled launch" in str(excinfo.value)
+        assert await db.get_schedule_by_name("nightly") == before
+
+
 @pytest.mark.asyncio
 async def test_adopt_refuses_a_recorded_zone_this_process_does_not_share(
     temp_db_path, agent_profile, pinned_scheduler_tz
@@ -1795,6 +1854,79 @@ async def test_an_unrecorded_zone_is_not_offered_as_a_member_edit(
 
 
 @pytest.mark.asyncio
+async def test_adopt_names_an_unloadable_recorded_zone_as_one_no_member_declares(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, effective_timezone="Not/AZone")
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    detail = plan[0].detail
+    assert "resolved_timezone: row='Not/AZone' declared='America/New_York'" in detail
+    assert (
+        "no member can declare the row's resolved_timezone, so this row cannot be adopted "
+        "as it stands." in detail
+    )
+    assert "edit the member to match the row" not in detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_a_github_cadence_as_one_no_member_declares(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        '      cron:\n        expression: "0 2 * * *"\n        timezone: America/New_York\n',
+        "      github:\n        repo: acme/widgets\n",
+    )
+    doc = parse_schedule_set(manifest)
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="github_poll",
+        cron_expr=None,
+        github_repo="acme/widgets",
+        github_filter=None,
+        interval_sec=60,
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    detail = plan[0].detail
+    assert "differs from the existing row in 1 field(s) -- interval_sec: row=60" in detail
+    assert (
+        "no member can declare the row's interval_sec, so this row cannot be adopted "
+        "as it stands." in detail
+    )
+    assert "edit the member to match the row" not in detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_refusal_for_a_row_without_an_execution_root(
+    temp_db_path, agent_profile, monkeypatch, pinned_scheduler_tz
+):
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_cwd=None, action_project=None)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    detail = plan[0].detail
+    assert (
+        "action_project: row='execution root: inherits the scheduler working directory; "
+        "run project: detected from the scheduler working directory' "
+        f"declared=\"execution root '{agent_profile}'; run project: 'demo', set explicitly\""
+    ) in detail
+    assert (
+        "no member can declare the row's action_cwd, action_project, so this row cannot be "
+        "adopted as it stands." in detail
+    )
+    assert "edit the member to match the row" not in detail
+
+
+@pytest.mark.asyncio
 async def test_adopt_refuses_a_row_written_between_planning_and_commit(
     temp_db_path, agent_profile, monkeypatch, pinned_scheduler_tz
 ):
@@ -1809,8 +1941,12 @@ async def test_adopt_refuses_a_row_written_between_planning_and_commit(
             return await real_apply(**kwargs)
 
         monkeypatch.setattr(db, "apply_schedule_set", chain_written_first)
-        with pytest.raises(ScheduleSetError, match="changed while this apply was planning"):
+        with pytest.raises(ScheduleSetError, match="changed while this apply was planning") as exc:
             await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        assert "(its owner or its last update is no longer the one this plan read)" in str(
+            exc.value
+        )
+        assert "owner_key" not in str(exc.value)
         row = await db.get_schedule_by_name("nightly")
         assert row["owner_key"] is None
         assert row["on_success"] == chain
@@ -1887,6 +2023,21 @@ async def test_adopt_reads_an_empty_notify_list_as_no_notification(
     resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
     row = _legacy_adoption_row("nightly", cwd=agent_profile, notify_on=[])
     assert await _adopt_spec_differences(row, resolved) == []
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_notify_statuses_in_any_order_alike(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    notify = '    notify:\n      on: [failed, completed]\n      command: "echo done"\n'
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile, extra_member=notify))
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    row = _legacy_adoption_row(
+        "nightly", cwd=agent_profile, notify_on=["completed", "failed"], notify_command="echo done"
+    )
+    assert await _adopt_spec_differences(row, resolved) == []
+    row["notify_on"] = ["completed"]
+    assert [name for name, _, _ in await _adopt_spec_differences(row, resolved)] == ["notify_on"]
 
 
 @pytest.mark.asyncio

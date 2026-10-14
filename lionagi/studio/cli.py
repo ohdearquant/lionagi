@@ -1352,11 +1352,8 @@ def _cmd_validate_set(args: argparse.Namespace) -> int:
         else:
             for name, message in exc.errors:
                 # Plan errors carry the qualified name; resolution errors the member name.
-                label = (
-                    name
-                    if name.startswith(f"{doc.metadata.project}/")
-                    else f"{doc.metadata.project}/{name}"
-                )
+                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
+                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
                 print(f"INVALID  {label}  {message}", file=sys.stderr)
         return 1
 
@@ -1440,11 +1437,8 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
         else:
             for name, message in exc.errors:
                 # Plan errors carry the qualified name; resolution errors the member name.
-                label = (
-                    name
-                    if name.startswith(f"{doc.metadata.project}/")
-                    else f"{doc.metadata.project}/{name}"
-                )
+                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
+                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
                 print(f"INVALID  {label}  {message}", file=sys.stderr)
         return 1
 
@@ -2261,7 +2255,8 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         action="store_true",
         help=(
             "Take an existing unowned row into this set in place, keeping its id and history. "
-            "Refuses unless the member declares the row's behavior exactly, enablement included."
+            "Refuses unless the member declares the row's behavior, compared by how the "
+            "scheduler acts on each column, enablement included."
         ),
     )
     apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
