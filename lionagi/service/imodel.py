@@ -317,12 +317,17 @@ class iModel:  # noqa: N801
     def _reported_served_model(value: Any) -> str | None:
         """The model the provider named in a response or stream chunk, else None.
 
-        A CLI provider names it on a system chunk. An API stream chunk keeps the
-        provider event under ``metadata["raw"]``, where the model sits at the top
-        level (chat completion chunks), under ``message`` (Anthropic
-        ``message_start``) or under ``response`` (Responses events). Result
-        chunks are never read: a CLI result chunk is the run record, which may
-        name the requested model.
+        A CLI provider's report sits on its system chunk: Claude Code and agy
+        put the model there, and Codex passes its session event through whole.
+        pi streams no system chunk, so a pi stream reports none. An API stream
+        chunk keeps the provider event under ``metadata["raw"]``, where the
+        model sits at the top level (chat completion chunks), under ``message``
+        (Anthropic ``message_start``) or under ``response`` (Responses events).
+        Result chunks are never read: a CLI result chunk is the run record,
+        which may name the requested model. An event that carries an error or
+        whose type ends in ``failed`` is never read either: the model it names
+        produced no output. An incomplete response is read, since its output
+        came from the model it names.
         """
         if isinstance(value, StreamChunk):
             if value.type not in ("system", "text"):
@@ -330,12 +335,16 @@ class iModel:  # noqa: N801
             metadata = value.metadata if isinstance(value.metadata, dict) else {}
             raw = metadata.get("raw")
             if isinstance(raw, dict):
+                if raw.get("error") or str(raw.get("type", "")).endswith("failed"):
+                    return None
                 holders = [raw, raw.get("message"), raw.get("response")]
             elif value.type == "system":
                 holders = [metadata]
             else:
                 return None
         else:
+            if isinstance(value, dict) and value.get("error"):
+                return None
             holders = [value]
 
         for holder in holders:
@@ -514,9 +523,13 @@ class iModel:  # noqa: N801
             and isinstance(self.endpoint, AgenticEndpoint)
         ):
             new_endpoint.session_id = self.endpoint.session_id
+        # served_model reports this model's last call. A copy is a new model (a new
+        # id) that has made none; from_dict restores the same model, so it keeps it.
         new = iModel(
             endpoint=new_endpoint,
-            provider_metadata=self.provider_metadata.copy(),
+            provider_metadata={
+                k: v for k, v in self.provider_metadata.items() if k != "served_model"
+            },
             streaming_process_func=self.streaming_process_func,
             hook_registry=self.hook_registry,
             exit_hook=self.exit_hook,

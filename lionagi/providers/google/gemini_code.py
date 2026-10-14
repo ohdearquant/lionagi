@@ -528,10 +528,6 @@ async def stream_gemini_cli(
                 cli_error = str(obj.get("error") or "").strip()
 
                 session.session_id = obj.get("conversation_id") or session.session_id
-                # Only a model agy itself reports is recorded, so the requested
-                # model never reads as the served one.
-                reported = obj.get("model")
-                session.model = reported if isinstance(reported, str) and reported else None
                 session.result = response
                 session.usage = obj.get("usage", {}) or {}
                 session.num_turns = obj.get("num_turns")
@@ -547,9 +543,19 @@ async def stream_gemini_cli(
                 if empty_success:
                     session.is_error = True
 
+                # Only a model agy itself reports for a turn that succeeded is
+                # recorded, so the requested model never reads as the served one and
+                # a failed turn names none. An object that names no model keeps the
+                # last one reported.
+                reported = obj.get("model")
+                name = reported.strip() if isinstance(reported, str) else ""
+                if name and not session.is_error:
+                    session.model = name
+
                 # Captured before the error branch: a failed turn can still report
-                # a live conversation id to resume into.
-                if session.session_id:
+                # a live conversation id to resume into. Emitted for a reported
+                # model too, so the stream and the invoke result name the same one.
+                if session.session_id or session.model:
                     sys_sc = StreamChunk(
                         type="system",
                         metadata={"session_id": session.session_id, "model": session.model},

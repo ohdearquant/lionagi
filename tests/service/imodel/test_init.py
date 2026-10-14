@@ -966,6 +966,25 @@ class TestReportedServedModel:
                 None,
             ),
             ('data: {"id":"c2","choices":[{"delta":{"content":"hi"}}]}', None),
+            # A failed response, an in-stream error chunk and an error event name a
+            # model that produced no output.
+            (
+                'data: {"type":"response.failed","response":{"id":"r2","model":"gpt-failed-4",'
+                '"status":"failed","error":{"code":"server_error","message":"x"}}}',
+                None,
+            ),
+            (
+                'data: {"id":"c3","model":"routed-7","choices":[{"delta":{"content":""},'
+                '"finish_reason":"error"}],"error":{"message":"upstream"}}',
+                None,
+            ),
+            ('data: {"error":{"message":"x"},"model":"gpt-err-8"}', None),
+            # An incomplete response's output still came from the model it names.
+            (
+                'data: {"type":"response.incomplete","response":{"id":"r3",'
+                '"model":"gpt-served-5","status":"incomplete"}}',
+                "gpt-served-5",
+            ),
         ],
     )
     def test_api_stream_chunk_through_the_converter(self, base_imodel, line, expected):
@@ -985,6 +1004,47 @@ class TestReportedServedModel:
     )
     def test_chunk_shapes(self, chunk, expected):
         assert iModel._reported_served_model(chunk) == expected
+
+    @pytest.mark.parametrize(
+        "response,expected",
+        [
+            ({"model": "gpt-served-1", "error": None}, "gpt-served-1"),
+            ({"model": "gpt-err-8", "error": {"message": "x"}}, None),
+        ],
+    )
+    def test_a_response_that_carries_an_error_names_no_served_model(self, response, expected):
+        assert iModel._reported_served_model(response) == expected
+
+    def test_a_copy_carries_no_served_model_and_a_restore_keeps_it(self, base_imodel):
+        """A copy is a new model that has made no call; a restore is the same model."""
+        base_imodel.provider_metadata["served_model"] = "gpt-served-1"
+        base_imodel.provider_metadata["session_id"] = "s-1"
+
+        copied = base_imodel.copy()
+        restored = iModel.from_dict(base_imodel.to_dict())
+
+        assert copied.id != base_imodel.id
+        assert "served_model" not in copied.provider_metadata
+        assert copied.provider_metadata["session_id"] == "s-1"
+        assert restored.id == base_imodel.id
+        assert restored.provider_metadata["served_model"] == "gpt-served-1"
+        assert base_imodel.provider_metadata["served_model"] == "gpt-served-1"
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_record_the_model_an_error_chunk_names(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(
+                'data: {"id":"c3","model":"routed-7","choices":[{"delta":{"content":""},'
+                '"finish_reason":"error"}],"error":{"message":"upstream"}}'
+            )
+
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
 
     @pytest.mark.asyncio
     async def test_stream_records_the_model_named_in_an_api_text_chunk(self, base_imodel):
