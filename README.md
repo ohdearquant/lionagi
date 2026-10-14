@@ -250,6 +250,10 @@ uv add "lionagi[ruvector]"  # Native vector memory and retrieval (RuVector)
 uv add "lionagi[all]"       # Everything
 ```
 
+Agents that need memory across sessions can use khive, a hosted memory and
+knowledge graph served over MCP:
+https://khive.ai/?utm_source=github&utm_campaign=lionagi-readme
+
 ## Claude Code Marketplace
 
 Installable Claude Code plugins for the lionagi agent runtime — structured
