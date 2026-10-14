@@ -26,6 +26,7 @@ from lionagi.studio.services.schedule_declaration import (
     ScheduleSetError,
     _adopt_comparable,
     _adopt_spec_differences,
+    _adopt_undeclarable,
     _declared_columns,
     apply_schedule_set,
     build_plan,
@@ -1537,8 +1538,9 @@ async def test_adoption_compares_each_column_it_writes(
         )
         if column not in {name for name, _, _ in differences}:
             unchecked.append(column)
-    # A cron trigger reads no interval; an interval row's is compared in its own test.
-    assert unchecked == ["interval_sec"]
+    # A cron trigger reads no interval and no repository, and a member that notifies on
+    # nothing runs no command; each is compared where it is read, in its own test.
+    assert unchecked == ["github_filter", "github_repo", "interval_sec", "notify_command"]
 
 
 _EVERY_HOUR_TRIGGER = (
@@ -2106,6 +2108,126 @@ async def test_adopt_ignores_intervals_a_cron_row_never_reads(
         )
         plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
         assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_clears_a_poll_interval_so_a_later_github_member_polls_as_declared(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, poll_interval_sec=600)
+        )
+        await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        adopted = await db.get_schedule_by_name("demo/nightly")
+    assert adopted["owner_key"] == "demo/automation"
+    assert adopted["poll_interval_sec"] is None
+
+
+@pytest.mark.parametrize(
+    "trigger,overrides",
+    [
+        (
+            "cron",
+            {"github_repo": "acme/old", "github_filter": "label:stale"},
+        ),
+        (
+            "every",
+            {"trigger_type": "interval", "interval_sec": 3600, "cron_expr": "0 2 * * *"},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_adopt_ignores_trigger_columns_the_rows_own_trigger_never_reads(
+    temp_db_path, agent_profile, pinned_scheduler_tz, trigger, overrides
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile)
+    if trigger == "every":
+        manifest = manifest.replace(
+            '      cron:\n        expression: "0 2 * * *"\n        timezone: America/New_York\n',
+            "      every: 1h\n",
+        )
+    doc = parse_schedule_set(manifest)
+    async with StateDB() as db:
+        await db.create_schedule(_legacy_adoption_row("nightly", cwd=agent_profile, **overrides))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_a_passed_instant_as_the_write_does(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        '      cron:\n        expression: "0 2 * * *"\n        timezone: America/New_York\n',
+        '      at: "2020-01-01T00:00:00+00:00"\n',
+    )
+    doc = parse_schedule_set(manifest)
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="at",
+        cron_expr=None,
+        next_fire_at=None,
+        max_runs=1,
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+def test_adopt_compares_a_column_only_under_the_trigger_that_reads_it():
+    cron, github = {"trigger_type": "cron"}, {"trigger_type": "github_poll"}
+    assert _adopt_comparable("cron_expr", cron, "0 2 * * *") == "0 2 * * *"
+    assert _adopt_comparable("cron_expr", github, "0 2 * * *") is None
+    for name in ("github_repo", "github_filter"):
+        assert _adopt_comparable(name, github, "acme/widgets") == "acme/widgets"
+        assert _adopt_comparable(name, cron, "acme/widgets") is None
+    assert _adopt_comparable("notify_command", {"notify_on": []}, "echo done") is None
+    assert _adopt_comparable("notify_command", {"notify_on": ["failed"]}, "echo done") == (
+        "echo done"
+    )
+
+
+@pytest.mark.parametrize(
+    "row,name,current",
+    [
+        ({"action_kind": "playbook"}, "action_prompt", "hello"),
+        ({"action_kind": "flow_yaml"}, "action_model", "anthropic/claude-sonnet-5"),
+        ({"action_kind": "agent"}, "action_model", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_prompt_or_model_no_member_can_declare_is_named_as_such(row, name, current):
+    assert await _adopt_undeclarable(row, name, current, is_global=False)
+
+
+@pytest.mark.asyncio
+async def test_a_project_named_global_is_not_the_global_scope(
+    temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
+):
+    from lionagi.studio.services import schedule_declaration
+
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        "  project: demo\n", "  project: global\n"
+    )
+    doc = parse_schedule_set(manifest)
+    seen: list[bool] = []
+    real = schedule_declaration._adopt_undeclarable
+
+    async def recording(row, name, current, *, is_global):
+        seen.append(is_global)
+        return await real(row, name, current, is_global=is_global)
+
+    monkeypatch.setattr(schedule_declaration, "_adopt_undeclarable", recording)
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_prompt="other things")
+        )
+        await build_plan(db, doc, agent_profile, adopt=True)
+    assert seen and not any(seen)
 
 
 @pytest.mark.asyncio

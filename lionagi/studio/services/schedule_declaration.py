@@ -970,6 +970,15 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # events are matched as a set, so neither their order nor a repeat changes
         # what fires.
         return sorted(set(value)) if value else None
+    if name == "notify_command":
+        # A command with no event to run on never runs.
+        return value if schedule.get("notify_on") else None
+    if name == "cron_expr":
+        # Only a cron trigger reads the expression.
+        return value if schedule.get("trigger_type") == "cron" else None
+    if name in ("github_repo", "github_filter"):
+        # Only a github_poll trigger reads the repository and its filter.
+        return value if schedule.get("trigger_type") == "github_poll" else None
     if name == "interval_sec":
         trigger_type = schedule.get("trigger_type")
         if trigger_type == "github_poll":
@@ -1029,6 +1038,13 @@ async def _adopt_spec_differences(
             if pair is not None:
                 differences.append((name, *pair))
             continue
+        if (
+            name == "next_fire_at"
+            and declared_fields.get("trigger_type") == "at"
+            and (declared or 0.0) <= time.time()
+        ):
+            # The write leaves the row's instant alone once the declared one has passed.
+            continue
         current = row.get(name)
         if _adopt_comparable(name, row, current) != _adopt_comparable(
             name, {**row, **declared_fields}, declared
@@ -1057,6 +1073,12 @@ async def _adopt_undeclarable(
     if name == "action_cwd":
         # A member always resolves an execution root.
         return current is None
+    if name in ("action_prompt", "action_model") and row.get("action_kind") != "agent":
+        # Only an agent member declares a prompt or a model, and it declares the agent kind.
+        return current is not None
+    if name == "action_model" and current is None:
+        # An agent member always resolves a model, its own or its profile's.
+        return True
     if name == "action_prompt" and isinstance(current, str):
         # A member's prompt is refused when the launch would refuse it.
         from lionagi.studio.scheduler.subprocess import _validate_prompt
@@ -1095,7 +1117,12 @@ async def _adopt_undeclarable(
 
 
 async def _adopt_plan_entry(
-    row: dict[str, Any], resolved: ResolvedMember, qualified: str, owner_key: str
+    row: dict[str, Any],
+    resolved: ResolvedMember,
+    qualified: str,
+    owner_key: str,
+    *,
+    is_global: bool,
 ) -> PlanEntry:
     if not _is_adoptable(row):
         return PlanEntry(
@@ -1120,7 +1147,6 @@ async def _adopt_plan_entry(
         # its own remedy below. Any other value no member can declare makes the row
         # unadoptable as it stands, and the member remedy would be one nobody can follow.
         unrecorded_zone = [d for d in differences if d[0] == "resolved_timezone" and d[1] is None]
-        is_global = qualified.startswith("global/")
         undeclarable = [
             name
             for name, current, _ in differences
@@ -1240,6 +1266,7 @@ async def build_plan(
     entries rather than raising, so callers can report the whole plan.
     """
     owner_key = f"{doc.metadata.project}/{doc.metadata.name}"
+    is_global = doc.metadata.scope == "global"
     resolved_members = resolve_schedule_set(doc, manifest_dir)
 
     existing_owned = {row["name"]: row for row in await db.list_schedules_by_owner_key(owner_key)}
@@ -1259,11 +1286,19 @@ async def build_plan(
             if candidate is None:
                 plan.append(PlanEntry(qualified, "CREATE", resolved=resolved))
                 continue
-            plan.append(await _adopt_plan_entry(candidate, resolved, qualified, owner_key))
+            plan.append(
+                await _adopt_plan_entry(
+                    candidate, resolved, qualified, owner_key, is_global=is_global
+                )
+            )
             continue
         if existing_row.get("owner_key") != owner_key:
             if adopt:
-                plan.append(await _adopt_plan_entry(existing_row, resolved, qualified, owner_key))
+                plan.append(
+                    await _adopt_plan_entry(
+                        existing_row, resolved, qualified, owner_key, is_global=is_global
+                    )
+                )
             else:
                 other_owner = existing_row.get("owner_key")
                 owner_desc = other_owner or (
@@ -1402,6 +1437,10 @@ async def apply_schedule_set(
                         "name": entry.qualified_name,
                         "owner_key": owner_key,
                         "managed_by": "declaration",
+                        # Adoption accepts a poll interval only where the row's trigger
+                        # does not read it. Cleared, so a later apply that makes the
+                        # member a github trigger polls at the cadence it declares.
+                        "poll_interval_sec": None,
                     }
                 )
             updates.append((entry.existing_id, fields))
