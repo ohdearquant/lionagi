@@ -17,15 +17,14 @@ tags:
   - isolation
 ---
 
-# ADR-0029: Leg isolation
+# ADR-0029: Worker isolation
 
 ## Context
 
-The question on 2026-10-09 was whether lion1 can replace the review pipeline that runs today. The
-answer is gate G0, which admits one user's review legs through runtime tools. Today `cast` uses one
-directory for the actor, store client, backend and tools. A VM contains the shell but host readers
-share its writable mount, and its offline network still reaches host services. Naming another actor
-changes attribution; it does not remove these routes.
+The runtime needs an isolated execution mode for submitted tasks. Today `cast` uses one directory
+for the actor, store client, backend and tools. A VM contains the shell but host readers share its
+writable mount, and its offline network still reaches host services. Naming another actor changes
+attribution; it does not remove these routes.
 
 This record separates trusted control state from task files and admits only measured boundaries. It
 covers worker access, report export and cleanup, not a resident's wake policy. ADR-0013 C9 and D7
@@ -38,7 +37,7 @@ Source: `submit.py:cast/run_main`, `chat.py:console/signer` in `apps/cli/lion_cl
 
 ## Definitions
 
-- **leg actor**: the fresh attributed namespace for one admitted review run, with no authority
+- **worker actor**: the fresh attributed namespace for one admitted task run, with no authority
   inherited from its name or submitter.
 - **control directory**: supervisor-owned private configuration, databases, blobs and lifecycle
   state, inaccessible through the worker's tools or mounts.
@@ -49,7 +48,7 @@ Source: `submit.py:cast/run_main`, `chat.py:console/signer` in `apps/cli/lion_cl
 - **qualification receipt**: recorded positive controls and attempted forbidden operations from the
   worker's routes, tied to the exact environment tested.
 - **export receipt**: a supervisor record of an artifact's relative name, byte length, digest and
-  publication status, independent of the model's verdict.
+  publication status, independent of the model's reported result.
 
 ## Assumptions
 
@@ -59,34 +58,34 @@ Source: `submit.py:cast/run_main`, `chat.py:console/signer` in `apps/cli/lion_cl
 | A2 | Today's offline VM can reach the host. | code-checked; prior measurement | `Sandbox.host_only/start`; ADR-0011 D4/S20 reports host reach. No live probe was repeated here. |
 | A3 | A tools-off backend can run on the host without model-directed host access or ambient instruction loading. | assumed | Claude `_exec` and Codex `_flags/_catalog` are partial mechanisms. Falsified by a canary read, hidden tool, hook or unapproved instruction in D5 qualification. |
 | A4 | The local VM adapter can deny all external guest traffic before task code runs. | assumed | Current `offline` does not suffice. Falsified by any host, LAN, DNS, metadata or guest-peer response under D7. |
-| A5 | One prepared image and declared input set suffice for the selected review lane. | assumed | Falsified by paired tasks needing unstaged dependencies, live services or another host environment. Refuse or narrow the lane. |
+| A5 | One prepared image and declared input set suffice for the selected task scope. | assumed | Falsified by paired tasks needing unstaged dependencies, live services or another host environment. Refuse or narrow the scope. |
 | A6 | The supervisor can retain and retrieve a run without granting the worker store access. | assumed | `Khive` accepts explicit config; result authorization and private storage remain owed. Falsified by failed owner read-back or sibling access in D1. |
 | A7 | Host administrators, the pinned backend executable and VM platform are trusted. | assumed | A malicious host process or platform compromise invalidates this threat model. This record makes no defense against either. |
 
 ## Claims
 
-### C1: Admission binds one leg _(enforced: mechanical; owed, S1)_ ^c1
+### C1: Admission binds one isolated run _(enforced: mechanical; owed, S1)_ ^c1
 
-- **Subject**: every submission admitted with leg isolation.
+- **Subject**: every submission admitted with worker isolation.
 - **Violated when**: inference begins without a frozen isolation manifest, or a replay opens a
-  second leg for the same admission key.
+  second run for the same admission key.
 
-The supervisor authenticates the submitter, allocates a run id and leg actor, and checks the result
-recipient against the submitter's authority. A caller-supplied actor string is not authentication.
-The isolation manifest binds actor, submitter, recipient, control directory, task stage, input and
-profile hashes, tool set, network policy, binary digests, qualification receipt and finite limits.
-The row exists before inference. Mutable source files, symlinks, environment or profile reloads
-cannot widen it; conflicting reuse of its admission key refuses.
+The supervisor authenticates the submitter, allocates a run id and worker actor, and checks the
+result recipient against the submitter's authority. A caller-supplied actor string is not
+authentication. The isolation manifest binds actor, submitter, recipient, control directory, task
+stage, input and profile hashes, tool set, network policy, binary digests, qualification receipt and
+finite limits. The row exists before inference. Mutable source files, symlinks, environment or
+profile reloads cannot widen it; conflicting reuse of its admission key refuses.
 
 ### C2: Control state stays private _(enforced: mechanical; owed, S2)_ ^c2
 
-- **Subject**: each leg's config, persistence, launch inputs and result reads.
-- **Violated when**: a task path selects identity, a worker reaches control state, or another leg
+- **Subject**: each worker's config, persistence, launch inputs and result reads.
+- **Violated when**: a task path selects identity, a worker reaches control state, or another run
   reads its records.
 
 The control directory holds a private main store, separate lion database, blob root and daemon
 socket. None routes to the shared store or another run. Only the supervisor's store client receives
-its frozen absolute config and selected binary, asserting the leg actor on every call.
+its frozen absolute config and selected binary, asserting the worker actor on every call.
 
 The authenticated submitter and authorized supervisor/operators retrieve records through the
 supervisor; the worker receives no such route. Workspace and ambient configs, hooks, plugins,
@@ -95,7 +94,7 @@ instruction bytes are hashed inputs. Empty or inconsistent actor configuration r
 
 ### C3: Inputs become a closed task stage _(enforced: mechanical; owed, S3)_ ^c3
 
-- **Subject**: staging and every mount given to a leg.
+- **Subject**: staging and every mount given to a worker.
 - **Violated when**: staging reads an undeclared target, mounts a caller's live tree, or includes
   host control paths, sockets or cross-run writable storage.
 
@@ -126,7 +125,7 @@ interfaces are inaccessible to them.
 
 ### C5: Host inference grants no host tools _(enforced: mechanical; owed, S5)_ ^c5
 
-- **Subject**: initial, resumed and retried CLI backend calls of an isolated leg.
+- **Subject**: initial, resumed and retried CLI backend calls of an isolated task.
 - **Violated when**: a backend exposes its own tool, loads ambient instructions or executable
   configuration, or runs an unqualified release.
 
@@ -141,17 +140,18 @@ unknown combination refuses before inference; production cannot set an unmeasure
 
 ### C6: Worker store reach is absent _(enforced: mechanical; owed, S6)_ ^c6
 
-- **Subject**: tools, automatic context sources and network routes available to a leg.
+- **Subject**: tools, automatic context sources and network routes available to a worker.
 - **Violated when**: model input invokes a store client or mailbox, or store context is injected
-  without being part of the declared packet.
+  without being part of the declared input set.
 
-G0 grants no khive tool, MCP server, `send`, mailbox verb, store-backed note command or experience
-lookup. Defaults are filtered as well as explicit profile tools. Unknown commands refuse at
-dispatch. The worker cannot choose a config, actor, namespace, socket or result recipient.
+The initial task profile grants no khive tool, MCP server, `send`, mailbox verb, store-backed note
+command or experience lookup. Defaults are filtered as well as explicit profile tools. Unknown
+commands refuse at dispatch. The worker cannot choose a config, actor, namespace, socket or result
+recipient.
 
 The runtime still records its own messages, calls and outcomes through its private store client.
 This persistence supplies no general operation endpoint to the model. Terminal delivery is a
-supervisor action to the frozen recipient, never a worker mailbox capability. Admitted packet bytes
+supervisor action to the frozen recipient, never a worker mailbox capability. Admitted input bytes
 may contain prior context; they confer no live store route.
 
 ### C7: Guest networking starts closed _(enforced: mechanical; owed, S7)_ ^c7
@@ -160,10 +160,11 @@ may contain prior context; they confer no live store route.
 - **Violated when**: task code reaches anything outside guest loopback, or closure is installed only
   after task code has begun.
 
-G0 denies guest DNS, internet, host gateway, host LAN addresses, metadata services and other guests,
-for IPv4 and IPv6. Enforcement is outside the task's privilege and cannot be changed by its shell.
-The current host-only `offline` setting is insufficient. Admission refuses an adapter that cannot
-establish the policy before any task program starts and prove it from inside the guest.
+The task network policy denies guest DNS, internet, host gateway, host LAN addresses, metadata
+services and other guests for IPv4 and IPv6. Enforcement is outside the task's privilege and cannot
+be changed by its shell. The current host-only `offline` setting is insufficient. Admission refuses
+an adapter that cannot establish the policy before any task program starts and prove it from inside
+the guest.
 
 Host inference uses its selected provider/account route; it is neither guest egress nor a guest
 proxy. Dependencies are prepared before admission. No silent retry opens networking.
@@ -234,11 +235,11 @@ gone; a second interrupt cannot erase the cleanup obligation.
 
 ### C12: Resource and retention limits are admitted _(enforced: mechanical; owed, S12)_ ^c12
 
-- **Subject**: each leg's resource reservation, execution deadline and retained evidence.
+- **Subject**: each task's resource reservation, execution deadline and retained evidence.
 - **Violated when**: a run starts without finite limits, a deadline leaves execution running, or
   retention silently consumes another run's reservation.
 
-Admission requires finite wall time, guest CPU and memory, scratch and record bytes, concurrent-leg
+Admission requires finite wall time, guest CPU and memory, scratch and record bytes, concurrent-run
 capacity, cleanup deadline, and retention duration and bytes. It reserves capacity before starting
 and refuses when unavailable. The supervisor enforces wall time across backend retries and tool
 calls, including code blocked outside the runtime's turn loop.
@@ -246,7 +247,7 @@ calls, including code blocked outside the runtime's turn loop.
 Quota exhaustion records failure; it never presents a truncated report or incomplete row as whole.
 Retention preserves identity, manifest, run state and export receipts for authorized read-back, then
 purges owned data and records that deletion. It grants no worker mailbox. Dollar accounting follows
-ADR-0003 C5/D5; unknown cost is not zero or a substitute for a wall deadline.
+ADR-0016 S2; unknown cost is not zero or a substitute for a wall deadline.
 
 ## Decisions
 
@@ -266,9 +267,9 @@ actor-name prefix. Refuse conflicting duplicate admissions.
 
 Serves C1 and C2. `cast(actor_dir, workspace, ...)` and `console(workspace, actor_dir=..., ...)`
 take distinct paths in isolated mode. The private `Khive` uses `actor_dir` as cwd and its frozen
-absolute config. Select the binary using ADR-0025 D13, then pin its resolved path and digest.
-Disable ambient hook and instruction discovery for legs; explicit admitted prompt bytes replace it.
-Keep generic console behavior separately scoped.
+absolute config. Select the binary, then pin its resolved path and digest. Disable ambient hook and
+instruction discovery for isolated runs; explicit admitted prompt bytes replace it. Keep generic
+console behavior separately scoped.
 
 - **Landing evidence**: owed (S2): `test_leg_paths_are_disjoint`,
   `test_leg_ignores_hostile_workspace_config`, `test_leg_launch_uses_frozen_inputs`,
@@ -280,7 +281,7 @@ Serves C3. Create the task stage from a declared input manifest using race-safe 
 Exclude live git metadata, sockets, credentials and implicit runtime configuration; preserve
 excluded source only through explicit inert input declarations. Refuse ambiguous links. Give each
 guest private writable storage, including `/opt`; prepared dependencies belong to a pinned read-only
-image. Record the staged bytes and omissions so G1 compares the same inputs.
+image. Record the staged bytes and omissions so qualification compares the same inputs.
 
 - **Landing evidence**: owed (S3): `test_leg_stage_rejects_links_and_devices`,
   `test_leg_stage_rejects_copy_races`, `test_leg_stage_excludes_control_files`,
@@ -289,10 +290,10 @@ image. Record the staged bytes and omissions so G1 compares the same inputs.
 ### D4: One local VM for runtime tools ^d4
 
 Serves C3 and C4. Use the `Tree` interface through a qualified guest tree and `Sandbox` for the
-first lane. Reuse file and code handler semantics, including ADR-0011 D6's read grant. Add safe
-in-guest traversal and search; current resolve-then-open behavior is insufficient under mutation. Do
-not run host `LocalTree` over a guest-writable mount. No remote adapter is admitted by class
-membership alone.
+first supported mode. Reuse ADR-0011 D2's file and code handler semantics. Add safe in-guest
+traversal and search; current resolve-then-open behavior is insufficient under mutation. Do not run
+host `LocalTree` over a guest-writable mount. No remote adapter is admitted by class membership
+alone.
 
 - **Landing evidence**: owed (S4): `test_leg_readers_observe_shell_writes`,
   `test_leg_reader_search_resists_symlink_races`, `test_leg_read_grant_has_no_edit`,
@@ -310,7 +311,7 @@ per run; no user session is resumed.
   `test_leg_backend_rejects_unknown_release`, `test_leg_backend_resume_keeps_policy`,
   `test_live_leg_backend_cannot_read_canary` in `tests/test_leg_backend.py`.
 
-### D6: No live store capability in G0 ^d6
+### D6: No live store capability in the initial implementation ^d6
 
 Serves C6. The isolated profile admits only required runtime control and task tools. Filter default
 handlers and context providers as well as explicit grants; refuse khive, send, mailbox, notes and
@@ -324,7 +325,7 @@ visibility is an acceptable first implementation.
 
 ### D7: Deny guest external networking before execution ^d7
 
-Serves C7. Add a leg network policy distinct from `offline`. The local adapter must enforce denial
+Serves C7. Add a task network policy distinct from `offline`. The local adapter must enforce denial
 outside guest privilege before startup; do not assert that a currently available container flag
 already does it. Verify reach from the guest, including IPv6, host gateways and proxies. Failure or
 lack of enforcement refuses this adapter. No fallback switches to open networking or a paid remote
@@ -361,7 +362,7 @@ record, not a process exit or model statement, owns terminal truth.
 ### D10: Version the adversarial probe suite ^d10
 
 Serves C5, C7 and C10. Commit deterministic handler and policy tests plus an opt-in live suite. Use
-a synthetic user-mailbox canary with positive controls. Replay attempts through the actual leg
+a synthetic user-mailbox canary with positive controls. Replay attempts through the actual worker
 routes; backend challenges also seek hidden native tools. Observe accesses outside the model
 transcript. Bind receipts to the complete environment and reject missing coverage. Admission
 requires a matching live receipt and passing per-instance deterministic preflight, before task input
@@ -385,11 +386,11 @@ has its own outcome and deadline, independent of notification or the worker's fi
 
 ### D12: Reserve finite resources and retained evidence ^d12
 
-Serves C1, C11 and C12. The lane owner supplies finite quotas and retention; no implicit unlimited
-value is admitted. Reserve them before resources are launched. Enforce the absolute wall deadline
-outside the turn loop and across retries. Stop on scratch or record exhaustion and preserve the
-error. Purge only this run's owned data when retention expires; record the deletion and make result
-readers distinguish expired evidence from an unknown run.
+Serves C1, C11 and C12. The task submitter supplies finite quotas and retention; no implicit
+unlimited value is admitted. Reserve them before resources are launched. Enforce the absolute wall
+deadline outside the turn loop and across retries. Stop on scratch or record exhaustion and preserve
+the error. Purge only this run's owned data when retention expires; record the deletion and make
+result readers distinguish expired evidence from an unknown run.
 
 - **Landing evidence**: owed (S12): `test_leg_requires_finite_reserved_limits`,
   `test_leg_wall_deadline_covers_blocked_calls`, `test_leg_quota_failure_is_not_success`,
@@ -399,40 +400,41 @@ readers distinguish expired evidence from an unknown run.
 
 | approach | rejected because |
 | --- | --- |
-| Reusable user-suffixed actor | shares identity across concurrent legs; separate storage is still needed and the suffix grants no safe ACL. |
+| Reusable user-suffixed actor | shares identity across concurrent runs; separate storage is still needed and the suffix grants no safe ACL. |
 | Anonymous worker | current console and store client require attributed config; anonymity also loses durable ownership. |
 | Explicit config without a directory split | leaves cwd, instruction discovery, hooks and mounted control files coupled. |
 | Host readers over a writable guest mount | current path checks and subprocess search are vulnerable to concurrent path changes. |
-| Immutable host readers plus guest scratch | cheaper for source-only review, but readers cannot see generated files; qualifies only a separately declared narrow lane. |
+| Immutable host readers plus guest scratch | cheaper for source-only tasks, but readers cannot see generated files; qualifies only a separately declared narrow task scope. |
 | Inference CLI inside the task VM | adds account plumbing and provider networking to the guest; unnecessary if the host launch passes tools-off qualification. |
 | Current offline flag | blocks guest internet while retaining host-service access. |
-| Gateway or full khive tool | adds corpus authorization and mailbox exclusion work; no live store access is required for the selected lane. |
+| Gateway or full khive tool | adds corpus authorization and mailbox exclusion work; no live store access is required for the selected scope. |
 | Worker-selected export destination | turns result publication into a host write capability and complicates safe path handling. |
 | Exit status as terminal truth | loses the difference between computation, artifact publication, delivery and cleanup. |
 | Daytona or Runta first | adds remote data placement, service credentials and resource approval; existing policies still need inside-box qualification. |
 
 ## Consequences
 
-- **S1**: C1 and D1 are owed. Admission and result authorization land before any isolated run is
-  advertised. Actor allocation is attribution; physical store separation and route denial provide
-  the G0 access boundary.
-- **S2**: C2 and D2 are owed. ADR-0026 gains separate submitter, leg actor and workspace terms.
+- **S1**: C1 and D1 are owed. Admission and result authorization are required before isolated
+  submission is available. Actor allocation is attribution; physical store separation and route
+  denial provide the initial access boundary.
+- **S2**: C2 and D2 are owed. ADR-0026 gains separate submitter, worker actor and workspace terms.
   ADR-0025 keeps binary selection and database routing; this record adds per-run private storage.
-- **S3**: C3 and D3 are owed. Staging consumes time and disk. G1 records staged hashes, image,
-  dependency inventory, omissions and staging duration; it compares matched input sets.
+- **S3**: C3 and D3 are owed. Staging consumes time and disk. Qualification records staged hashes,
+  image, dependency inventory, omissions and staging duration; it compares matched input sets.
 - **S4**: C4 and D4 are owed. Guest readers add transport overhead and require safe traversal.
-  Measure reading, search and shell latency; existing host timings are not forecasts for this lane.
+  Measure reading, search and shell latency; existing host timings are not forecasts for this mode.
 - **S5**: C5 and D5 are owed. A host backend remains trusted code holding account access. Live
   probes establish evidence for a fixed configuration, not safety against malicious CLI binaries or
   every future model behavior.
-- **S6**: C6 and D6 are owed. Injection-enabled profiles need the explicit injection-off override of
-  ADR-0026 C10/D8 on both G1 arms. Full injection parity and a store gateway are outside G0.
+- **S6**: C6 and D6 are owed. Injection-enabled profiles need an explicit injection-off override for
+  both task profiles. Full injection parity and a store gateway are outside the initial
+  implementation.
 - **S7**: C7 and D7 are owed. No supplied code establishes deny-all local networking. If it cannot
-  be enforced and probed, the local shell lane remains inadmissible; a remote service is a human
+  be enforced and probed, the local shell mode remains unavailable; a remote service is an operator
   resource decision, not an automatic fallback.
 - **S8**: C8 and D8 are owed. Report limits bound export, not ADR-0025 C7's persisted message
   semantics. Failed extraction retains only bounded sealed evidence; no live box is kept as an
-  artifact. General patch handoff stays outside this lane.
+  artifact. General patch handoff stays outside this mode.
 - **S9**: C9 and D9 are owed with the job supervisor. ADR-0026 C4/D4/S10 distinguish phase states
   while preserving failed-handoff exit behavior. A complete run may still have a failed job.
 - **S10**: C10 and D10 are owed. The live matrix exercises file tools, shell, symlink races,
@@ -440,15 +442,14 @@ readers distinguish expired evidence from an unknown run.
   changes to the adapter, host, image, backend, launch policy or suite.
 - **S11**: C11 and D11 are owed. All stop paths, including a second interrupt, retain cleanup
   obligations. Failed deletion may leave resources present; it never becomes a clean success.
-- **S12**: C12 and D12 are owed. The lane owner sets retention and capacity before the pilot. G0
-  excludes CLI-owned tools, Gemini, arbitrary hooks, nested delegation, remote adapters and
-  federation with another store. ADR-0013's resident restrictions are unchanged.
-- **S13**: ADR-0029 is allocated provisionally at authoring. Signed unlanded number reservations
-  were not available; renumber the path, title, links and references together at landing if needed.
+- **S12**: C12 and D12 are owed. The task submitter sets retention and capacity before use. The
+  initial implementation excludes CLI-owned tools, Gemini, arbitrary hooks, nested delegation,
+  remote adapters and federation with another store. ADR-0013's resident restrictions are unchanged.
 - **S14**: Owed in D10's matrix: positive reads through `read`, `list_dir`, numbered reads and
   search, then denied absolute and parent paths. Exercise symlink swaps during traversal and search,
   newline and option-like names, hard links, worktree pointers and sibling paths. Repeat through
-  `bash` and `python`. The canary's value stays outside the packet; only targets are supplied.
+  `bash` and `python`. The canary's value stays outside the declared input set; only targets are
+  supplied.
 - **S15**: Owed in D10's matrix: synthetic mailbox reads by inbox and known record id; alternate
   `--config`, `KHIVE_CONFIG`, `KHIVE_DB`, ancestor configs and MCP declarations. Test absent configs
   too. Hostile hooks, plugins, instruction files and credential lookup must create no host side
@@ -462,8 +463,9 @@ readers distinguish expired evidence from an unknown run.
   the deployed adapter. Live model challenges cover initial, resumed and retried backend calls,
   including hidden tools; an unavailable route needs observed rejection, not self-reported safety.
 - **S18**: Full live measurement is once per unchanged qualified tuple, repeated after upgrades or
-  policy changes. Each actual leg repeats canary preflight through its own deterministic tool routes
-  before task execution. Record both receipts; a reused class certificate alone is insufficient.
+  policy changes. Each actual task run repeats canary preflight through its own deterministic tool
+  routes before task execution. Record both receipts; a reused class certificate alone is
+  insufficient.
 - **S19**: Qualification includes a successful report export, missing and oversized reports,
   multibyte byte limits, links and special files, interrupted publication and lost delivery
   receipts. Then verify guest, backend children, per-run volume, socket and canary fixture teardown.

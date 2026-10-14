@@ -79,6 +79,17 @@ __all__ = (
 # Kept in this module's namespace and __all__ because callers import it here.
 
 
+def _add_codex_account_integration_kwargs(
+    extra: dict, account_connectors: tuple[str, ...], contain: bool
+) -> None:
+    # Both are left out when unset, so a codex leg's argv is unchanged unless a
+    # role opts in.
+    if account_connectors:
+        extra["account_connectors"] = list(account_connectors)
+    if contain:
+        extra["contain_account_integrations"] = True
+
+
 def build_imodel_from_spec(
     spec: str,
     *,
@@ -88,6 +99,8 @@ def build_imodel_from_spec(
     effort_override: str | None = None,
     theme: str | None = None,
     fast: bool = False,
+    account_connectors: tuple[str, ...] = (),
+    contain_account_integrations: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden."""
     ms = parse_model_spec(spec)
@@ -119,6 +132,10 @@ def build_imodel_from_spec(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
+    if provider_raw == "codex":
+        _add_codex_account_integration_kwargs(
+            extra, account_connectors, contain_account_integrations
+        )
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -165,6 +182,8 @@ def build_chat_model(
     bypass: bool = False,
     mcp_servers: dict | None = None,
     mcp_exclusive: bool = False,
+    account_connectors: tuple[str, ...] = (),
+    contain_account_integrations: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
@@ -207,6 +226,10 @@ def build_chat_model(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+    if provider == "codex":
+        _add_codex_account_integration_kwargs(
+            extra, account_connectors, contain_account_integrations
+        )
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -459,6 +482,11 @@ class AgentProfile:
     resume_on_timeout: bool = False
     """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
+    # Last, so a positional construction keeps the meaning it had before these existed.
+    contain_account_integrations: bool = False
+    """Run a codex leg of this role with the account's app and plugin integrations turned off."""
+    account_connectors: tuple[str, ...] = ()
+    """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:
@@ -598,7 +626,7 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
     second path for exposing or copying profile instructions. Every reader of the
     roster goes through here so they cannot disagree about either half.
     """
-    return {
+    config: dict[str, Any] = {
         "model": profile.model,
         "effort": profile.effort,
         "role": profile.extra.get("role"),
@@ -611,6 +639,12 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         "timeout": profile.timeout,
         "resume_on_timeout": profile.resume_on_timeout,
     }
+    # Only when set, so a role that uses neither reports exactly what it did before.
+    if profile.contain_account_integrations:
+        config["contain_account_integrations"] = True
+    if profile.account_connectors:
+        config["account_connectors"] = list(profile.account_connectors)
+    return config
 
 
 def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
@@ -740,6 +774,40 @@ def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
     return False
 
 
+def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
+    """Validate the profile flag; a connector grant can lift containment when a request is built.
+
+    An unreadable value warns and defaults to contained.
+    """
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: contain_account_integrations {raw!r} is not true or false; "
+        "containing"
+    )
+    return True
+
+
+def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
+    """Validate the profile 'account_connectors' list; warn and grant none when it does not
+    read as connector names, rather than read it as all."""
+    if raw is None:
+        return ()
+    if isinstance(raw, list) and all(isinstance(c, str) and c.strip() for c in raw):
+        return tuple(dict.fromkeys(c.strip() for c in raw))
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: ignoring account_connectors {raw!r} "
+        "(must be a list of connector names)"
+    )
+    return ()
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
@@ -768,6 +836,12 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         resume_on_timeout=_parse_profile_resume_on_timeout(
             name, frontmatter.get("resume_on_timeout")
         ),
+        contain_account_integrations=_parse_profile_contain_account_integrations(
+            name, frontmatter.get("contain_account_integrations")
+        ),
+        account_connectors=_parse_profile_account_connectors(
+            name, frontmatter.get("account_connectors")
+        ),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -783,6 +857,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "artifact_defaults",
                 "timeout",
                 "resume_on_timeout",
+                "contain_account_integrations",
+                "account_connectors",
             )
         },
     )

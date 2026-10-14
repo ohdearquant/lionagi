@@ -640,8 +640,8 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
             )
         ) as stream:
             async for obj in stream:
-                if isinstance(obj, dict) and obj.get("type") == "result" and obj.get("is_error"):
-                    refusal = obj
+                if isinstance(obj, dict) and obj.get("type") == "result":
+                    refusal = obj if obj.get("is_error") else None
                 yield obj
     except RuntimeError as exc:
         if refusal is None or isinstance(exc, ProviderError):

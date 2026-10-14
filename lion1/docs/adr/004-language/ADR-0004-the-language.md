@@ -172,7 +172,7 @@ a resumed run declares nothing from it.
   `test_a_native_tool_call_answer_is_the_models_turn_as_text_and_is_not_retried`,
   `test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`,
   `test_the_backend_rewrites_native_markup_and_a_swallowed_closer_before_the_parser`; the markup
-  cases in `tests/test_harness_markup.py`.
+  cases in `tests/test_backend_markup.py`.
 
 ### D3: The guidance text names the heredoc first ^d3
 

@@ -229,3 +229,34 @@ class TestGlobalEffortIsClampedToTheResolvedModel:
             effort=None,
         )
         assert spec == "codex/gpt-5.3-codex-spark"
+
+    def test_minimal_global_effort_is_omitted_for_a_model_without_minimal(self, codex_home):
+        _write_global(codex_home, 'model_reasoning_effort = "minimal"\n')
+        model = build_chat_model(
+            provider="codex",
+            model="gpt-6-sol",
+            yolo=True,
+            verbose=False,
+            theme=None,
+            effort=None,
+        )
+        assert "reasoning_effort" not in model.endpoint.config.kwargs
+
+    def test_permission_error_checking_global_config_falls_back_to_no_effort(
+        self, codex_home, monkeypatch
+    ):
+        from pathlib import Path
+
+        from lionagi.providers.openai._codex_profile import global_codex_reasoning_effort
+
+        config_path = codex_home / "config.toml"
+        _write_global(codex_home, 'model_reasoning_effort = "high"\n')
+        real_is_file = Path.is_file
+
+        def is_file(path):
+            if path == config_path:
+                raise PermissionError("config is not readable")
+            return real_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", is_file)
+        assert global_codex_reasoning_effort({"CODEX_HOME": str(codex_home)}) is None

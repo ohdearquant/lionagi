@@ -208,7 +208,10 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
     never see, and it can leave unclamped a value the child will.
     """
     config_path = codex_home_for_env(env) / "config.toml"
-    if not config_path.is_file():
+    try:
+        if not config_path.is_file():
+            return None
+    except OSError:
         return None
 
     import toml

@@ -164,7 +164,9 @@ async def test_compact_summary_takes_the_place_of_the_first_collapsed_message():
     assert "CONTEXT COMPACTION" in b.msgs.messages[b.progression[3]].content.assistant_response
 
 
-async def test_compact_refuses_a_view_with_two_instructions_in_a_row(monkeypatch):
+async def test_compact_keeps_working_when_the_view_already_has_two_instructions_in_a_row(
+    monkeypatch,
+):
     b = Branch(system="sys")
     b.msgs.add_message(instruction="first")
     b.msgs.add_message(assistant_response="first answer")
@@ -182,11 +184,10 @@ async def test_compact_refuses_a_view_with_two_instructions_in_a_row(monkeypatch
     monkeypatch.setattr(Branch, "chat", fake_chat)
     res = await _call(b, action="compact", start=3, end=4, mode="all", auto=True)
 
-    assert res["success"] is False
-    assert "two instructions in a row" in res["error"]
-    assert called["chat"] is False
-    assert len(b.msgs.messages) == record
-    assert list(b.progression) == view
+    assert res["success"] is True
+    assert called["chat"] is True
+    assert len(b.msgs.messages) == record + 1
+    assert list(b.progression) != view
 
 
 async def test_compact_refuses_a_view_that_would_begin_with_the_summary():

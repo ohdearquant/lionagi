@@ -7,6 +7,8 @@ spawned directly with templated argv, distinct from the `li`-invoking kinds."""
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -181,6 +183,66 @@ class TestCommandAllowlist:
 
         with pytest.raises(ValueError, match="not in LIONAGI_SCHEDULER_COMMAND_ALLOWLIST"):
             build_argv(_schedule(), {})
+
+    def test_refusal_names_whose_environment_it_read_and_not_the_document(self, monkeypatch):
+        """A refusal identifies the environment that supplied the value.
+
+        Schedule creation and the later spawn check can run in separate
+        processes, so the message needs to identify the configuration it read.
+        """
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
+        with pytest.raises(ValueError) as unset:
+            _validate_command_allowlisted("uv")
+        message = str(unset.value)
+        assert "is not set in the environment of this process" in message
+        assert f"(pid {os.getpid()})" in message
+        assert "not of the document being checked" in message
+        assert "checks again at spawn time" in message
+        assert "scheduler daemon's environment" in message
+        assert "restart the scheduler daemon" in message
+        assert "<your command>" not in message
+
+    @pytest.mark.parametrize("allowlisted_name", ["tool with space", "tool'quote", "tool$dollar"])
+    def test_refusal_prints_a_shell_safe_allowlist_value(self, monkeypatch, allowlisted_name):
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.setenv(ALLOWLIST_ENV, allowlisted_name)
+        with pytest.raises(ValueError) as caught:
+            _validate_command_allowlisted("kdev")
+
+        permitted = ",".join(sorted({allowlisted_name, "kdev"}))
+        assert str(caught.value).endswith(f"{ALLOWLIST_ENV}={shlex.quote(permitted)}")
+
+    def test_refusal_separates_an_unset_variable_from_an_empty_one(self, monkeypatch):
+        """`(currently: [])` is what BOTH an unset and a deliberately empty
+        variable produced, and the two have different causes: one is a shell
+        that never exported it, the other is a policy that permits nothing.
+        A reader cannot act on the first without being told which it is.
+        """
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
+        with pytest.raises(ValueError) as unset:
+            _validate_command_allowlisted("uv")
+        monkeypatch.setenv(ALLOWLIST_ENV, " , ")
+        with pytest.raises(ValueError) as empty:
+            _validate_command_allowlisted("uv")
+        assert "is not set in" in str(unset.value)
+        assert "naming no command" in str(empty.value) and "' , '" in str(empty.value)
+        assert str(unset.value) != str(empty.value)
+
+    def test_refusal_preserves_existing_allow_list_entries(self, monkeypatch):
+        """The suggested daemon value keeps existing entries and adds the refused command."""
+        from lionagi.studio.scheduler.subprocess import _validate_command_allowlisted
+
+        monkeypatch.setenv(ALLOWLIST_ENV, "other-tool,kdev")
+        with pytest.raises(ValueError) as exc:
+            _validate_command_allowlisted("uv")
+        message = str(exc.value)
+        assert message.endswith(f"{ALLOWLIST_ENV}=kdev,other-tool,uv")
+        assert "['kdev', 'other-tool']" in message
 
     def test_allowlisted_command_builds_exact_argv(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "kdev,other-tool")

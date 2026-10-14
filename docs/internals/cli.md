@@ -772,9 +772,15 @@ pid markers.
 
 ## `skill.py` — skill path resolution
 
-**`resolve_skill_path`** — symlink containment (security). Rejects any path whose resolved
-target escapes the resolved skills root. Blocks the disclosure vector where a `SKILL.md` is
-itself a symlink to an arbitrary file on disk.
+**`resolve_skill_path`** — symlink containment (security). The resolved target must be a file
+named `SKILL.md` and must stay under the nearest git working tree containing the resolved skills
+root, or under the root itself when no repository contains it. Blocks the disclosure vector where
+a `SKILL.md` is itself a symlink to an arbitrary file on disk, while a skills root that is a
+symlink into a repository whose skill directories link to sibling trees of that repository still
+resolves. A repository is recognised by git's own shape (a `.git` directory with `HEAD`, and
+`refs/` and `objects/` there or in the directory its `commondir` names, or a gitfile naming one);
+pointer files are read only when the open descriptor is a regular file, so a FIFO or device at
+that path cannot block the lookup.
 
 ## `stats.py` — aggregate run stats
 
@@ -1303,6 +1309,9 @@ across its branches; bare `li agent -a <profile>` teardown records the same shap
 A top-level resume seeds its totals from the durable session; an in-process timeout resume carries
 the first leg's counters into the final teardown. Only counts are persisted — never the injected
 source text — and absent, zero, or malformed counter sets are omitted from the session drill-in.
+`degraded_turns` increments once when one or more providers report degradation during a turn. It
+includes contained transport failures and operation refusals, with each provider's reason logged.
+It is separate from `failed` (an exception escaped the provider) and a successful empty recall.
 
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler

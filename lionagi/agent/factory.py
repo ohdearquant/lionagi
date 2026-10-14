@@ -532,14 +532,21 @@ def _resolve_mcp_path(spec: AgentSpec, *, trust_project_settings: bool = False) 
             f"spec.mcp_config_path={spec.mcp_config_path!r} does not resolve to an existing file"
         )
 
+    from lionagi._paths import is_account_home, is_account_lionagi_dir
+
     candidates = []
     cwd = Path(spec.cwd) if spec.cwd else Path.cwd()
 
     if trust_project_settings:
         for parent in [cwd, *cwd.parents]:
-            candidates.append(parent / ".lionagi" / ".mcp.json")
-            candidates.append(parent / ".mcp.json")
-            if (parent / ".lionagi").is_dir():
+            lionagi_dir = parent / ".lionagi"
+            # The account home's own files are user-level configuration, reached
+            # below through HOME or not at all; its `.lionagi` still ends the walk.
+            if not is_account_lionagi_dir(lionagi_dir):
+                candidates.append(lionagi_dir / ".mcp.json")
+            if not is_account_home(parent):
+                candidates.append(parent / ".mcp.json")
+            if lionagi_dir.is_dir():
                 break
 
     candidates.append(Path.home() / ".lionagi" / ".mcp.json")
@@ -860,7 +867,13 @@ def _forward_mcp_to_cli_request(
 
     # Branch keeps a caller-supplied chat_model by reference; copy before
     # mutating config.kwargs to avoid cross-contaminating other branches.
-    branch.chat_model = branch.chat_model.copy(share_session=True, share_executor=True)
+    # The factory takes no parse model of its own, so the branch's parse model
+    # is its chat model (the same object, or the twin Branch builds from the
+    # same str or dict). Parse repair runs on it, so it moves to the copy too:
+    # otherwise a repair call starts the CLI without the forwarded server set.
+    forwarded = branch.chat_model.copy(share_session=True, share_executor=True)
+    branch.chat_model = forwarded
+    branch.parse_model = forwarded
     apply_forwarded_mcp_servers(
         branch.chat_model.endpoint.config.kwargs,
         servers,

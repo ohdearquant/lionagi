@@ -138,6 +138,26 @@ async def test_legacy_transition_cas_conflict_is_a_clean_skip(db: StateDB) -> No
     assert row["status"] == "queued"
 
 
+@pytest.mark.asyncio
+async def test_public_transition_rejects_null_guard_values(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="queued")
+
+    with pytest.raises(ValueError, match="None"):
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="queued",
+                to_state="running",
+                reason=StateReason(code=RunReasons.STARTED_OK),
+                actor=Actor(type="system", id="w1"),
+                idempotency_key=_uid(),
+            ),
+            guard={"leased_by": None},
+        )
+
+
 # Same-status write: "append" rule applies identically on both surfaces
 
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import faulthandler
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -48,9 +49,60 @@ def _inside_a_git_tree(path: Path) -> Path | None:
     that lands inside a checkout is one ``git add -A`` away from being
     committed. Refusing is cheaper than relying on an ignore rule that the
     operator would have to have written first.
+
+    The entry has to look like a git directory, not merely exist. An aborted
+    ``git init`` leaves a ``.git`` containing nothing but empty ``hooks`` and
+    ``info``, and shared directories collect them; git itself refuses such a
+    directory, so accepting one refuses every path beneath it on behalf of a
+    checkout that is not there. The three entries checked here are the ones
+    git's own discovery requires.
+
+    A ``.git`` *file* stays a match without reading it. That is how a linked
+    worktree and a submodule each record where their real git directory
+    lives, and a path under either is inside a working tree. Reading the file
+    to confirm would trade a cheap answer for one that can fail, and the
+    failure would have to resolve as "not a checkout" -- the wrong direction
+    for a guard whose expensive mistake is missing a tree, not inventing one.
+
+    An unreadable candidate is treated as inside a checkout. The function uses
+    ``lstat`` to classify ``.git`` and ``HEAD`` without
+    following links; checking ``objects`` and ``refs`` can still fail when the
+    directory is unreadable, and that error reaches the handler below.
+    Unreadable means undecidable, so the function refuses the path rather than
+    overlook a tree or raise out of the daemon's startup path.
     """
     for candidate in (path, *path.parents):
-        if (candidate / ".git").exists():
+        entry = candidate / ".git"
+        try:
+            # One ``lstat`` per ancestor, read for its type, rather than
+            # ``is_file()`` then ``is_dir()``. The common case by far is a path
+            # with no checkout above it, and that case walks to the filesystem
+            # root: paying two probes per level there doubled the syscalls this
+            # function costs against the single ``exists()`` it replaced.
+            mode = entry.lstat().st_mode
+            if not stat.S_ISDIR(mode):
+                return candidate
+            # Explicit ``stat`` calls preserve filesystem errors for the
+            # handler below. ``Path.is_file`` and ``Path.is_dir`` can turn an
+            # unreadable entry into False, which would overlook a tree this
+            # guard cannot inspect.
+            #
+            # Git accepts HEAD as a file or symlink. A directory named HEAD is
+            # not a checkout; a missing entry is handled below as no checkout.
+            head_mode = (entry / "HEAD").lstat().st_mode
+            if (
+                (stat.S_ISREG(head_mode) or stat.S_ISLNK(head_mode))
+                and stat.S_ISDIR((entry / "objects").stat().st_mode)
+                and stat.S_ISDIR((entry / "refs").stat().st_mode)
+            ):
+                return candidate
+        except (FileNotFoundError, NotADirectoryError):
+            # The two ENOENT-shaped answers, and the only ones that mean "no
+            # checkout here". Kept ahead of the OSError arm below, which they
+            # would otherwise match and turn every ordinary ancestor into a
+            # refusal.
+            continue
+        except OSError:
             return candidate
     return None
 

@@ -424,7 +424,7 @@ session's patch within one `GIT_TIMEOUT`.
   `apps/cli/tests/test_chat_command.py` (the whole record logged again, the unsettled commands, the
   missing log).
 
-### D5: `Editor`, `status_line` and `lion_cli/config.py` ^d5
+### D5: `Editor`, `status_line` and `apps/cli/lion_cli/config.py` ^d5
 
 Serves C8. `Editor` wraps a `PromptSession` with its own key bindings and `handle_sigint` off;
 `Console.ask` uses it on a terminal, `stdin_ask` otherwise. `status_line` reads the actor's inbox,
@@ -546,9 +546,9 @@ of its own.
 
 ### D15: The tool line writes the client's own `allowed` ^d15
 
-Serves C18. `console` in `lion_cli/chat.py` and `chair` in `lion_cli/agent.py` join
-`sorted(khive.allowed)` of the `Bounded` client they register, so the line and the boundary read one
-set.
+Serves C18. `console` in `apps/cli/lion_cli/chat.py` and `chair` in `apps/cli/lion_cli/agent.py`
+join `sorted(khive.allowed)` of the `Bounded` client they register, so the line and the boundary
+read one set.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
   `test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor`; `tests/test_agent.py`:

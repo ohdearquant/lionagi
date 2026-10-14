@@ -17,7 +17,7 @@ def names() -> list[str]:
 
 
 def guidance(name: str, **fields: object) -> str:
-    """The text of `hub/guidance/<name>.md`, its `$fields` filled, trailing newline dropped."""
+    """The text of `lion1/hub/guidance/<name>.md`, its `$fields` filled, trailing newline dropped."""
     path = HERE / f"{name}.md"
     if not path.exists():
         raise KeyError(f"no guidance {name!r}; there is {', '.join(names())}")

@@ -70,6 +70,16 @@ async def test_a_nonzero_exit_without_an_error_result_raises_as_it_did(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_a_later_success_result_clears_an_earlier_refusal(tmp_path, monkeypatch):
+    done = {**REFUSAL, "is_error": False, "result": "completed"}
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: _cli(tmp_path, [REFUSAL, done], 1))
+
+    with pytest.raises(RuntimeError, match="exited with code 1") as info:
+        await _drain(tmp_path)
+    assert not isinstance(info.value, ProviderError)
+
+
+@pytest.mark.asyncio
 async def test_an_error_result_on_a_clean_exit_is_left_to_the_stream(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "resolve_claude_cli", lambda: _cli(tmp_path, [REFUSAL], 0))
 

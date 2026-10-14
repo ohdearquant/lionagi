@@ -84,6 +84,8 @@ class SchedulerStateService(Protocol):
         replacement_run: dict[str, Any],
         *,
         expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
     ) -> bool: ...
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
@@ -264,12 +266,16 @@ class _DBSchedulerStateService:
         replacement_run: dict[str, Any],
         *,
         expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
     ) -> bool:
         async with self._db_context() as db:
             return await db.tombstone_and_replace_schedule_run(
                 orphan_id,
                 replacement_run,
                 expected_orphan_status=expected_orphan_status,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
             )
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:

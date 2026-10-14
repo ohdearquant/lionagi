@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import anyio
@@ -17,6 +18,7 @@ from lionagi.engines.review import (
     ReviewEngine,
     ReviewVerdict,
     _is_all_isolated_failure,
+    _is_all_isolated_failure_after_probe,
 )
 from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.protocols.action.manager import ActionManager
@@ -141,6 +143,35 @@ def _mcp_error(message: str) -> BaseException:
     from mcp.types import ErrorData
 
     return McpError(ErrorData(code=-32000, message=message))
+
+
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+@pytest.mark.asyncio
+async def test_a_live_mcp_transport_can_answer_a_ping_taking_over_one_second(monkeypatch) -> None:
+    from lionagi.engines import review as review_mod
+
+    error = _mcp_error("Connection closed")
+    simulated_ping_seconds = 1.1
+    timeouts = []
+
+    @contextmanager
+    def simulated_timeout(seconds):
+        timeouts.append(seconds)
+        yield
+        if seconds < simulated_ping_seconds:
+            raise TimeoutError
+
+    async def ping() -> bool:
+        return True
+
+    monkeypatch.setattr(review_mod.anyio, "fail_after", simulated_timeout)
+    setattr(error, "_lionagi_mcp_transport_probe", ping)
+
+    isolated = await _is_all_isolated_failure_after_probe(error)
+
+    assert timeouts == [review_mod._MCP_TRANSPORT_PROBE_TIMEOUT_S]
+    assert timeouts[0] >= simulated_ping_seconds
+    assert isolated is False
 
 
 @pytest.mark.asyncio

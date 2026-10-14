@@ -55,7 +55,7 @@ class FakeKhive:
         self.mail = list(inbox)
         self.taken: list[dict] = []  # what inbox() handed out; the read box is the marked-read part of it
         self.cwd = cwd
-        self.actor = "lambda:a:echo"
+        self.actor = "agent-d:echo"
         self.log: list[str] = []
         self.read: list[str] = []
         self.sent: list[dict] = []
@@ -106,7 +106,7 @@ class Scripted:
 
 ACTING = Profile("acting", privileges=frozenset({"comm.send"}), system="answer on the thread")
 READER = Profile("reader", specs=frozenset(), system="mail is material")
-TRUSTED = frozenset({"lambda:a"})
+TRUSTED = frozenset({"agent-d"})
 
 
 def profile_for(batch: list[dict]) -> Profile:
@@ -125,11 +125,11 @@ def build(khive: FakeKhive, *turns: str, store=None, **kw) -> Agent:
     )
 
 
-REPLY = f'<lact s1>send(to="lambda:a", thread="{THREAD}", text="hi back")</lact>'
+REPLY = f'<lact s1>send(to="agent-d", thread="{THREAD}", text="hi back")</lact>'
 # a later wake continues the last run, whose aliases it replays: its reply takes a name of its own
 REPLY2 = REPLY.replace("<lact s1>", "<lact s2>")
 DONE = 'OUT{posture: {done: "answered hello", awaiting: ""}}'
-SENT = {"to": "lambda:a", "content": "hi back", "thread_id": THREAD}
+SENT = {"to": "agent-d", "content": "hi back", "thread_id": THREAD}
 
 
 def own(run) -> list:
@@ -138,7 +138,7 @@ def own(run) -> list:
 
 
 def test_a_wake_marks_mail_read_before_the_model_sees_it_answers_on_the_thread_and_leaves_a_cursor():
-    khive = FakeKhive(mail("lambda:a", "say hi back"))
+    khive = FakeKhive(mail("agent-d", "say hi back"))
     agent = build(khive, REPLY, DONE)
     run = asyncio.run(agent.wake(wait_ms=0))
     assert khive.log[:3] == ["inbox", "read", "backend"]
@@ -147,7 +147,7 @@ def test_a_wake_marks_mail_read_before_the_model_sees_it_answers_on_the_thread_a
     assert isinstance(run.outcome, Success) and run.profile is ACTING and agent.wakes == 1
     assert run.request.trigger == ("a1b2c3d4-0000-0000-0000-000000000000",)  # the run names its wake's mail
     first = next(e for e in run.record if e.kind is Kind.INPUT).content
-    assert f"[mail a1b2c3d4 from lambda:a thread {THREAD} subject 'hello']\nsay hi back" in first
+    assert f"[mail a1b2c3d4 from agent-d thread {THREAD} subject 'hello']\nsay hi back" in first
     cursor = agent.state.get("cursor").value
     assert cursor["mail"] == ["a1b2c3d4"] and cursor["sent"] == 1 and cursor["outcome"] == "Success"
     assert cursor["run"] == run.id and cursor["wake"] == 1 and cursor["profile"] == "acting"
@@ -160,8 +160,8 @@ def test_a_wake_marks_mail_read_before_the_model_sees_it_answers_on_the_thread_a
 
 def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_point_as_a_wake(tmp_path, store):
     # the owner, 2026-09-23: the chair never invokes a new run for new mail; it is the same conversation
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    later = mail("lambda:a", "one more", mid="c3d4e5f6")
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
+    later = mail("agent-d", "one more", mid="c3d4e5f6")
     lines: list[str] = []
     # aliases are unique for the whole run, bursts included; a command's result comes back next turn
     # and a turn of plain text, the posture, ends the burst
@@ -212,8 +212,8 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     ids=["done-awaiting", "text", "other-fields", "no-posture", "not-json"],
 )
 def test_a_continuous_chairs_out_is_its_stop_and_its_posture_as_written(tmp_path, stop, posture):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    later = mail("lambda:a", "one more", mid="c3d4e5f6")
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
+    later = mail("agent-d", "one more", mid="c3d4e5f6")
     lines: list[str] = []
     again = REPLY.replace("<lact s1>", "<lact s2>")
     backend = Scripted(REPLY, stop, again, "answered again", khive=khive)
@@ -250,7 +250,7 @@ def test_a_continuous_chairs_out_is_its_stop_and_its_posture_as_written(tmp_path
 
 @pytest.mark.parametrize("reply", ["", "OUT{}"], ids=["empty", "bare-out"])  # a bare OUT{} reads as nothing
 def test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst(tmp_path, reply, store):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
     lines: list[str] = []
     agent = Agent(
         Actor("echo", privileges={"comm.send"}, store=store),
@@ -270,7 +270,7 @@ def test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst(tmp_
 
 def agent_dir(d: Path) -> Path:
     (d / ".khive").mkdir()
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:a:echo", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-d:echo", d))
     return d
 
 
@@ -289,12 +289,12 @@ def run_row(store, run_id: str) -> dict:
 def test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file(tmp_path, store):
     d = agent_dir(tmp_path)
     tree = sorted(p.relative_to(d) for p in d.rglob("*"))
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     first = on(store, khive, REPLY, DONE)
     one = asyncio.run(first.wake(wait_ms=0))
     assert first.state.get("cursor").value["run"] == one.id  # the cursor names the run that returned
     # the next process: a new agent over the same store, woken by the next mail
-    khive.mail.append(mail("lambda:a", "one more", mid="c3d4e5f6"))
+    khive.mail.append(mail("agent-d", "one more", mid="c3d4e5f6"))
     second = on(store, khive, REPLY2, DONE)
     two = asyncio.run(second.wake(wait_ms=0))
     assert isinstance(two.outcome, Success) and khive.sent == [SENT, SENT]
@@ -313,7 +313,7 @@ def test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_fil
 def test_a_wake_with_no_last_run_continues_nothing(tmp_path, store):
     d = agent_dir(tmp_path)
     tree = sorted(p.relative_to(d) for p in d.rglob("*"))
-    agent = on(store, FakeKhive(mail("lambda:a", "say hi back"), cwd=d), REPLY, DONE)
+    agent = on(store, FakeKhive(mail("agent-d", "say hi back"), cwd=d), REPLY, DONE)
     run = asyncio.run(agent.wake(wait_ms=0))
     assert isinstance(run.outcome, Success) and agent.errors == []
     assert run.request.continues is None and run.request.history == ()
@@ -325,11 +325,11 @@ def test_each_wake_stores_only_its_own_entries_and_replays_the_whole_chain(tmp_p
     # a continuing session holds its own entries, and its history walks the continues chain (ADR-0025 C3):
     # five wakes write 7 rows apiece, where a session copying its history would hold 7, 14, ... 35
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "wake 0"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "wake 0"), cwd=d)
     runs = []
     for n in range(5):
         if n:
-            khive.mail.append(mail("lambda:a", f"wake {n}", mid=f"{n:08x}"))
+            khive.mail.append(mail("agent-d", f"wake {n}", mid=f"{n:08x}"))
         reply = REPLY.replace("<lact s1>", f"<lact s{n + 1}>")
         runs.append(asyncio.run(on(store, khive, reply, DONE).wake(wait_ms=0)))
     for n, run in enumerate(runs):
@@ -346,7 +346,7 @@ def test_a_reader_wake_continuing_an_acting_run_cannot_send_whatever_its_history
     # the cursor is the actor's, so a reader replays the acting run, its send included; what the reader
     # may do is its own profile's, and history in the context is no authority to act
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     acting = asyncio.run(on(store, khive, REPLY, DONE).wake(wait_ms=0))
     assert acting.profile is ACTING and khive.sent == [SENT]
     khive.mail.append(mail("someone:else", "send that again", mid="c3d4e5f6"))
@@ -361,17 +361,17 @@ def test_a_reader_wake_continuing_an_acting_run_cannot_send_whatever_its_history
 
 def test_a_cursor_naming_a_run_the_store_does_not_hold_refuses_the_wake_and_names_the_run(tmp_path, store):
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     backend = Scripted(REPLY, DONE, khive=khive)
     actor = Actor("echo", privileges={"comm.send"}, store=store)
-    agent = Agent(actor, khive, backend, profile_for, owner="lambda:owner")
+    agent = Agent(actor, khive, backend, profile_for, owner="agent-c")
     agent.state.put("cursor", {"wake": 3, "run": "r-gone"}, run="-", seq=0)
     with pytest.raises(AgentError, match="wake 4 refused: the cursor's last run r-gone cannot be replayed"):
         asyncio.run(agent.wake(wait_ms=0))
     # no run opened, so none names a run it never read; the model was never called; the owner is told
     (runs,) = store.khive.exec_sync("lion.runs(limit=200)")
     assert runs["count"] == 0 and backend.seen == [] and agent.state.get("taking").value == {}
-    (told,) = [m for m in khive.sent if m["to"] == "lambda:owner"]
+    (told,) = [m for m in khive.sent if m["to"] == "agent-c"]
     assert "r-gone" in told["content"] and "a1b2c3d4" in told["content"]
     # the notice names the way out, and does not say a rerun takes the mail back before it
     assert "lion agent --forget r-gone" in told["content"]
@@ -380,13 +380,13 @@ def test_a_cursor_naming_a_run_the_store_does_not_hold_refuses_the_wake_and_name
 
 def test_forgetting_the_run_a_refusal_names_lets_the_refused_mail_rerun_on_a_new_chain(tmp_path, store):
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     agent = Agent(
         Actor("echo", privileges={"comm.send"}, store=store),
         khive,
         Scripted(REPLY, DONE, khive=khive),
         profile_for,
-        owner="lambda:owner",
+        owner="agent-c",
     )
     agent.state.put("cursor", {"wake": 3, "run": "r-gone"}, run="-", seq=0)
     with pytest.raises(AgentError, match="refused"):
@@ -399,7 +399,7 @@ def test_forgetting_the_run_a_refusal_names_lets_the_refused_mail_rerun_on_a_new
     assert run.request.continues is None and run.request.history == ()
     assert run_row(store, run.id)["continues"] is None
     # a later wake moves the cursor on; the forget stays readable, which run and when
-    khive.mail.append(mail("lambda:a", "one more", mid="c3d4e5f6"))
+    khive.mail.append(mail("agent-d", "one more", mid="c3d4e5f6"))
     agent.backend = Scripted(REPLY2, DONE, khive=khive)
     later = asyncio.run(agent.wake(wait_ms=0))
     assert agent.state.get("cursor").value["run"] == later.id and later.request.continues == run.id
@@ -408,7 +408,7 @@ def test_forgetting_the_run_a_refusal_names_lets_the_refused_mail_rerun_on_a_new
 
 
 def test_forget_refuses_a_run_the_store_can_replay_and_any_run_but_the_cursors(store):
-    khive = FakeKhive(mail("lambda:a", "say hi back"))
+    khive = FakeKhive(mail("agent-d", "say hi back"))
     agent = on(store, khive, REPLY, DONE)
     one = asyncio.run(agent.wake(wait_ms=0))
     cursor = agent.state.get("cursor").value
@@ -426,7 +426,7 @@ def test_a_forget_retried_after_dying_between_its_writes_keeps_one_record(store,
     class Died(Exception):
         pass
 
-    agent = on(store, FakeKhive(mail("lambda:a", "say hi back")), REPLY, DONE)
+    agent = on(store, FakeKhive(mail("agent-d", "say hi back")), REPLY, DONE)
     now = [1_000_000.0]
     agent.clock = lambda: now[0]
     agent.state.put("cursor", {"wake": 3, "run": "r-gone"}, run="-", seq=0)
@@ -456,7 +456,7 @@ def test_a_history_the_store_never_answered_propagates_and_is_neither_refused_no
     """Only the store's answer that it does not hold the chain (`not_found`, `invalid`) is a refusal the
     owner forgets past: a call it never answered raises as raised, from the wake and from the forget,
     and leaves the cursor naming the run, nothing owed the owner and nothing forgotten."""
-    agent = on(store, FakeKhive(mail("lambda:a", "say hi back")), REPLY, DONE)
+    agent = on(store, FakeKhive(mail("agent-d", "say hi back")), REPLY, DONE)
     agent.state.put("cursor", {"wake": 3, "run": "r-gone"}, run="-", seq=0)
 
     async def unanswered(run_id):
@@ -477,11 +477,11 @@ def test_the_batch_of_a_wake_whose_history_went_unanswered_is_owed_and_taken_aga
     """The propagated error leaves the batch read and held under `taking`, never marked handled: the next
     wake on mail tells the owner it is owed, and the owner's rerun takes it through a wake on the chain."""
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     actor = Actor("echo", privileges={"comm.send"}, store=store)
-    agent = Agent(actor, khive, Scripted(REPLY, DONE, khive=khive), profile_for, owner="lambda:owner")
+    agent = Agent(actor, khive, Scripted(REPLY, DONE, khive=khive), profile_for, owner="agent-c")
     first = asyncio.run(agent.wake(wait_ms=0))
-    khive.mail.append(mail("lambda:a", "one more", mid="c3d4e5f6"))
+    khive.mail.append(mail("agent-d", "one more", mid="c3d4e5f6"))
 
     async def unanswered(run_id):
         raise KhiveError(LOST)
@@ -492,10 +492,10 @@ def test_the_batch_of_a_wake_whose_history_went_unanswered_is_owed_and_taken_aga
     monkeypatch.undo()
     assert agent.state.get("taking").value == {"mail": ["c3d4e5f6"]}
     assert agent.state.get("cursor").value["run"] == first.id
-    khive.mail.append(mail("lambda:a", "and another", mid="e5f6a7b8"))
+    khive.mail.append(mail("agent-d", "and another", mid="e5f6a7b8"))
     agent.backend = Scripted(REPLY2, DONE, khive=khive)
     second = asyncio.run(agent.wake(wait_ms=0))
-    (told,) = [m for m in khive.sent if m["to"] == "lambda:owner"]
+    (told,) = [m for m in khive.sent if m["to"] == "agent-c"]
     assert "c3d4e5f6" in told["content"] and "marked read and unanswered" in told["content"]
     assert second.request.continues == first.id and agent.state.get("taking").value == {}
     agent.backend = Scripted(REPLY.replace("<lact s1>", "<lact s3>"), DONE, khive=khive)
@@ -505,11 +505,11 @@ def test_the_batch_of_a_wake_whose_history_went_unanswered_is_owed_and_taken_aga
 
 def _a_wake_left_c3d4e5f6_under_taking(tmp_path, store, monkeypatch):
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     actor = Actor("echo", privileges={"comm.send"}, store=store)
-    agent = Agent(actor, khive, Scripted(REPLY, DONE, khive=khive), profile_for, owner="lambda:owner")
+    agent = Agent(actor, khive, Scripted(REPLY, DONE, khive=khive), profile_for, owner="agent-c")
     first = asyncio.run(agent.wake(wait_ms=0))
-    khive.mail.append(mail("lambda:a", "one more", mid="c3d4e5f6"))
+    khive.mail.append(mail("agent-d", "one more", mid="c3d4e5f6"))
 
     async def unanswered(run_id):
         raise KhiveError(LOST)
@@ -531,7 +531,7 @@ def test_a_rerun_of_other_mail_tells_the_owner_of_the_batch_a_wake_left_under_ta
     agent.backend = Scripted(REPLY2, DONE, khive=khive)
     again = asyncio.run(agent.rerun(["a1b2c3d4"]))
     assert isinstance(again.outcome, Success) and again.request.continues == first.id
-    (told,) = [m for m in khive.sent if m["to"] == "lambda:owner"]
+    (told,) = [m for m in khive.sent if m["to"] == "agent-c"]
     assert "c3d4e5f6" in told["content"] and "marked read and unanswered" in told["content"]
     assert agent.state.get("taking").value == {} and agent.state.get("unreported").value == []
 
@@ -542,16 +542,16 @@ def test_a_rerun_of_the_batch_under_taking_does_not_owe_it_again(tmp_path, store
     agent.backend = Scripted(REPLY2, DONE, khive=khive)
     again = asyncio.run(agent.rerun(["c3d4e5f6"]))
     assert isinstance(again.outcome, Success) and again.request.continues == first.id
-    assert [m for m in khive.sent if m["to"] == "lambda:owner"] == []
+    assert [m for m in khive.sent if m["to"] == "agent-c"] == []
     assert agent.state.get("taking").value == {}
 
 
 def test_a_rerun_whose_history_went_unanswered_leaves_its_batch_under_taking(tmp_path, store, monkeypatch):
     """A rerun raises as a wake does, and its mail is held under `taking` for the next wake to tell."""
     d = agent_dir(tmp_path)
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     actor = Actor("echo", privileges={"comm.send"}, store=store)
-    agent = Agent(actor, khive, Scripted(REPLY, DONE, khive=khive), profile_for, owner="lambda:owner")
+    agent = Agent(actor, khive, Scripted(REPLY, DONE, khive=khive), profile_for, owner="agent-c")
     asyncio.run(agent.wake(wait_ms=0))
 
     async def unanswered(run_id):
@@ -562,24 +562,24 @@ def test_a_rerun_whose_history_went_unanswered_leaves_its_batch_under_taking(tmp
         asyncio.run(agent.rerun(["a1b2c3d4"]))
     monkeypatch.undo()
     assert agent.state.get("taking").value == {"mail": ["a1b2c3d4"]}
-    khive.mail.append(mail("lambda:a", "and another", mid="e5f6a7b8"))
+    khive.mail.append(mail("agent-d", "and another", mid="e5f6a7b8"))
     agent.backend = Scripted(REPLY2, DONE, khive=khive)
     asyncio.run(agent.wake(wait_ms=0))
-    (told,) = [m for m in khive.sent if m["to"] == "lambda:owner"]
+    (told,) = [m for m in khive.sent if m["to"] == "agent-c"]
     assert "a1b2c3d4" in told["content"] and "marked read and unanswered" in told["content"]
 
 
 def test_a_wake_whose_run_raised_leaves_the_run_it_continued_for_the_next_wake(store):
-    khive = FakeKhive(mail("lambda:a", "say hi back"))
+    khive = FakeKhive(mail("agent-d", "say hi back"))
     agent = on(store, khive, REPLY, DONE)
     one = asyncio.run(agent.wake(wait_ms=0))
-    khive.mail.append(mail("lambda:a", "hi", mid="c3d4e5f6"))
+    khive.mail.append(mail("agent-d", "hi", mid="c3d4e5f6"))
     agent.backend = Boom(khive=khive)
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(agent.wake(wait_ms=0))
     cursor = agent.state.get("cursor").value
     assert cursor["run"] is None and cursor["continues"] == one.id  # no run returned: the last stands
-    khive.mail.append(mail("lambda:a", "again", mid="e5f6a7b8"))
+    khive.mail.append(mail("agent-d", "again", mid="e5f6a7b8"))
     agent.backend = Scripted(REPLY2, DONE, khive=khive)
     three = asyncio.run(agent.wake(wait_ms=0))
     assert three.request.continues == one.id and run_row(store, three.id)["continues"] == one.id
@@ -587,7 +587,7 @@ def test_a_wake_whose_run_raised_leaves_the_run_it_continued_for_the_next_wake(s
 
 def test_rerun_finds_read_mail_by_the_short_id_the_cursor_carries():
     """The box answers with full ids; the cursor and the owner's notice name the short one."""
-    m = mail("lambda:a", "say hi back")
+    m = mail("agent-d", "say hi back")
     m["id"] = m["full_id"]
     khive = FakeKhive(m)
     agent = build(khive, REPLY, DONE, REPLY2, DONE)
@@ -599,7 +599,7 @@ def test_rerun_finds_read_mail_by_the_short_id_the_cursor_carries():
 
 
 def test_a_chair_woken_once_outside_serve_is_one_wake_that_returns():
-    khive = FakeKhive(mail("lambda:a", "say hi back"))
+    khive = FakeKhive(mail("agent-d", "say hi back"))
     agent = build(khive, REPLY, DONE, continuous=True)
     run = asyncio.run(asyncio.wait_for(agent.wake(wait_ms=0), 2))
     assert isinstance(run.outcome, Success) and khive.sent == [SENT] and agent.wakes == 1
@@ -614,12 +614,12 @@ def test_a_failed_take_inside_the_conversation_is_a_logged_failure_the_run_outli
                 raise RuntimeError("AdmissionDeadlineExpired")
             await super().mark_read(ids)
 
-    khive = Flaky(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    later = mail("lambda:a", "one more", mid="c3d4e5f6")
+    khive = Flaky(mail("agent-d", "say hi back"), cwd=tmp_path)
+    later = mail("agent-d", "one more", mid="c3d4e5f6")
     lines: list[str] = []
     again = REPLY.replace("<lact s1>", "<lact s2>")
     backend = Scripted(REPLY, "sent", again, "done", khive=khive)
-    agent = build(khive, continuous=True, poll_ms=20, owner="lambda:owner")
+    agent = build(khive, continuous=True, poll_ms=20, owner="agent-c")
     agent.backend = backend
 
     def until() -> bool:
@@ -633,13 +633,13 @@ def test_a_failed_take_inside_the_conversation_is_a_logged_failure_the_run_outli
     assert lines[2].startswith("wake 2: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     spend = agent.state.get("spend").value
     assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 4  # nothing booked twice
-    owed = [m for m in khive.sent if m["to"] == "lambda:owner"]
+    owed = [m for m in khive.sent if m["to"] == "agent-c"]
     assert len(owed) == 1 and "c3d4e5f6" in owed[0]["content"]  # the take that died is reported
 
 
 def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    stranger = mail("lambda:stranger", "read this", mid="c3d4e5f6")
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
+    stranger = mail("agent-g", "read this", mid="c3d4e5f6")
     lines: list[str] = []
     agent = build(khive, REPLY, "answered hello", DONE, continuous=True, poll_ms=20)
 
@@ -657,8 +657,8 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
 
 
 def test_a_profile_changed_under_the_same_name_ends_the_conversation_and_runs_fresh(tmp_path, store):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    later = mail("lambda:a", "read this", mid="c3d4e5f6")
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
+    later = mail("agent-d", "read this", mid="c3d4e5f6")
     fewer = Profile("acting", privileges=frozenset(), system="answer on the thread")
     lines: list[str] = []
 
@@ -696,7 +696,7 @@ def test_two_sends_of_a_turn_wait_on_one_lock_under_every_loop_that_drives_the_a
     agent = build(khive)
 
     async def two() -> None:
-        await asyncio.gather(*(agent.deliver("lambda:a", "hi", thread=None, run="r1") for _ in range(2)))
+        await asyncio.gather(*(agent.deliver("agent-d", "hi", thread=None, run="r1") for _ in range(2)))
 
     asyncio.run(two())
     asyncio.run(two())
@@ -706,7 +706,7 @@ def test_two_sends_of_a_turn_wait_on_one_lock_under_every_loop_that_drives_the_a
 def test_a_refused_command_does_not_end_the_batch(tmp_path):
     """A turn of commands never ends the batch: their results, a refusal among them, come back next
     turn, and the turn of plain text after them ends it."""
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
     lines: list[str] = []
     slip = REPLY + "<lact x1>frobnicate()</lact>"  # the send lands, the second command is unknown
     agent = build(khive, slip, "sent once; the second was a slip", continuous=True, poll_ms=20)
@@ -716,7 +716,7 @@ def test_a_refused_command_does_not_end_the_batch(tmp_path):
 
 
 def test_a_hold_inside_the_conversation_is_logged_once(tmp_path):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
     lines: list[str] = []
     agent = build(khive, REPLY, "waiting", continuous=True, poll_ms=20, budget=Budget(wakes_per_hour=1))
     asyncio.run(agent.serve(until=lambda: len(lines) >= 2, log=lines.append))
@@ -725,7 +725,7 @@ def test_a_hold_inside_the_conversation_is_logged_once(tmp_path):
 
 @pytest.mark.parametrize("cap", [0, -1])
 def test_a_wake_cap_below_one_holds_every_wake_and_says_why(cap):
-    agent = build(FakeKhive(mail("lambda:a", "say hi back")), REPLY, DONE, budget=Budget(wakes_per_hour=cap))
+    agent = build(FakeKhive(mail("agent-d", "say hi back")), REPLY, DONE, budget=Budget(wakes_per_hour=cap))
     assert agent.hold() == f"wakes_per_hour is {cap}: no wakes until it is raised"
     # with a wake still in the hour the reason is the same: its ageing out lifts nothing
     agent.state.put("spend", {"wakes": [agent.clock() - 10]}, run="-", seq=0)
@@ -733,12 +733,12 @@ def test_a_wake_cap_below_one_holds_every_wake_and_says_why(cap):
 
 
 def test_no_mail_means_no_run_and_the_next_wake_reads_the_cursor_first():
-    khive = FakeKhive(mail("lambda:a", "say hi back"))
+    khive = FakeKhive(mail("agent-d", "say hi back"))
     agent = build(khive, REPLY, DONE, DONE)
     asyncio.run(agent.wake(wait_ms=0))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.wakes == 1 and khive.log.count("backend") == 2  # two turns of the one run
-    khive.mail.append(mail("lambda:a", "and again", mid="e5f6a7b8"))
+    khive.mail.append(mail("agent-d", "and again", mid="e5f6a7b8"))
     run = asyncio.run(agent.wake(wait_ms=0))
     first = next(e for e in own(run) if e.kind is Kind.INPUT).content
     assert "Last wake: {'wake': 1" in first and "Your posture then: answered hello" in first
@@ -760,14 +760,14 @@ def test_the_wake_number_continues_from_the_stored_cursor_across_processes():
     store = fresh_store()
     state = store.notes("agent")
     for n in (1, 2, 3):  # one Agent per process; the store, its rows and its notes, is what survives
-        khive = FakeKhive(mail("lambda:a", "hi", mid=f"m{n}"))
+        khive = FakeKhive(mail("agent-d", "hi", mid=f"m{n}"))
         agent = build(khive, REPLY.replace("<lact s1>", f"<lact s{n}>"), DONE, state=state, store=store)
         asyncio.run(agent.wake(wait_ms=0))
         assert agent.wakes == n and state.get("cursor").value["wake"] == n
 
 
 def test_the_cursor_names_the_batch_before_the_run_so_a_wake_that_dies_still_shows_what_it_took():
-    khive = FakeKhive(mail("lambda:a", "hi"))
+    khive = FakeKhive(mail("agent-d", "hi"))
     seen: list[dict] = []
     agent = build(khive)
     agent.backend = Scripted(REPLY, DONE, check=lambda: seen.append(dict(agent.state.get("cursor").value)))
@@ -780,7 +780,7 @@ def test_the_hop_limit_refuses_a_send_past_the_cap_on_one_thread():
     store = fresh_store()
     state = store.notes("agent")
     for n in (1, 2, 3):
-        khive = FakeKhive(mail("lambda:a", "again", mid=f"m{n}"))
+        khive = FakeKhive(mail("agent-d", "again", mid=f"m{n}"))
         reply = REPLY.replace("<lact s1>", f"<lact s{n}>")
         agent = build(khive, reply, DONE, state=state, store=store, budget=Budget(hops_per_thread=2))
         run = asyncio.run(agent.wake(wait_ms=0))
@@ -795,10 +795,10 @@ def test_the_hop_limit_refuses_a_send_past_the_cap_on_one_thread():
 
 def test_the_wake_cap_holds_the_agent_for_the_rest_of_the_hour_and_mail_waits():
     now = [1_000_000.0]
-    khive = FakeKhive(mail("lambda:a", "one"))
+    khive = FakeKhive(mail("agent-d", "one"))
     agent = build(khive, REPLY, DONE, REPLY2, DONE, budget=Budget(wakes_per_hour=1), clock=lambda: now[0])
     assert asyncio.run(agent.wake(wait_ms=0)) is not None
-    khive.mail.append(mail("lambda:a", "two", mid="m2"))  # arrives after; a batch takes all that waits
+    khive.mail.append(mail("agent-d", "two", mid="m2"))  # arrives after; a batch takes all that waits
     polls = khive.log.count("inbox")
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held.startswith("1 wakes in the last hour (cap 1)") and khive.log.count("inbox") == polls
@@ -815,10 +815,10 @@ def test_the_cost_cap_holds_the_agent_for_the_day_from_the_backends_own_cost_fig
     actor = Actor("echo", privileges={"comm.send"}, store=store)
     agent = Agent(actor, khive, backend, profile_for, budget=Budget(cost_per_day=1.0), clock=lambda: now[0])
     for n in range(2):  # two wakes, two calls each: 1.2 spent
-        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        khive.mail.append(mail("agent-d", "go", mid=f"m{n}"))
         assert asyncio.run(agent.wake(wait_ms=0)) is not None
     assert agent.state.get("spend").value["cost"] == pytest.approx(1.2)
-    khive.mail.append(mail("lambda:a", "go", mid="m2"))
+    khive.mail.append(mail("agent-d", "go", mid="m2"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None and agent.held.startswith("$1.2000 spent today")
     now[0] += 86_400  # the next day; the mail is still waiting
     assert asyncio.run(agent.wake(wait_ms=0)) is not None
@@ -851,7 +851,7 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
     agent = Agent(actor, khive, backend, profile_for, state=state, budget=cap, clock=lambda: now[0])
     rows, lines = [], []
     for n in range(3):
-        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        khive.mail.append(mail("agent-d", "go", mid=f"m{n}"))
         assert asyncio.run(agent.wake(wait_ms=0)) is not None
         rows.append({k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")})
         lines.append(_line(agent.state.get("cursor").value))
@@ -863,7 +863,7 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
     assert "$0.3000; 0 idle poll(s)" in lines[0] and "partial" not in lines[0]
     assert "$0.0000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[1]
     assert "$0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[2]
-    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    khive.mail.append(mail("agent-d", "go", mid="m3"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == "$0.7000 spent today (partial: 2 call(s) of unknown cost) (cap $0.65); next day"
     day, _, last = stats(tmp_path, noted(state)).splitlines()
@@ -899,7 +899,7 @@ def test_a_malformed_cost_figure_adds_nothing_and_counts_as_a_call_of_unknown_co
     agent = Agent(actor, khive, backend, profile_for, budget=Budget(cost_per_day=0.5), clock=lambda: now[0])
     rows = []
     for n in range(3):
-        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        khive.mail.append(mail("agent-d", "go", mid=f"m{n}"))
         assert asyncio.run(agent.wake(wait_ms=0)) is not None
         rows.append({k: agent.state.get("spend").value[k] for k in ("cost", "unknown")})
     assert rows == [
@@ -907,7 +907,7 @@ def test_a_malformed_cost_figure_adds_nothing_and_counts_as_a_call_of_unknown_co
         {"cost": 0.3, "unknown": 1},
         {"cost": pytest.approx(0.6), "unknown": 1},
     ]
-    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    khive.mail.append(mail("agent-d", "go", mid="m3"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == "$0.6000 spent today (partial: 1 call(s) of unknown cost) (cap $0.5); next day"
 
@@ -930,7 +930,7 @@ def test_a_days_spend_past_a_floats_range_is_kept_as_the_largest_float(store):
     budget = Budget(cost_per_day=math.inf)
     agent = Agent(actor, khive, backend, profile_for, budget=budget, clock=lambda: now[0])
     for n in range(2):
-        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        khive.mail.append(mail("agent-d", "go", mid=f"m{n}"))
         assert asyncio.run(agent.wake(wait_ms=0)) is not None
     assert agent.state.get("spend").value["cost"] == sys.float_info.max
 
@@ -938,7 +938,7 @@ def test_a_days_spend_past_a_floats_range_is_kept_as_the_largest_float(store):
 def test_one_wakes_calls_summing_past_a_floats_range_still_write_its_cursor(store):
     # the wake's own sum is read for the cursor as well as the day: past a float's range it is the
     # largest float there too, where an infinite one would fail the cursor's write after the calls
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     backend = Scripted(REPLY, DONE, cost=1.7e308, khive=khive)
     actor = Actor("echo", privileges={"comm.send"}, store=store)
     budget = Budget(cost_per_day=1.75e308)
@@ -967,7 +967,7 @@ def test_a_day_row_the_agent_would_not_have_written_reads_as_none_spent_and_part
     from hub.agent.agent import _day
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     if ROWS[kind] is None:
         state.put("spend", [_day(now), 0.6, 0], run="-", seq=0)
@@ -998,7 +998,7 @@ def test_a_day_row_whose_count_is_no_number_of_calls_keeps_its_dollars_and_reads
     from hub.agent.agent import _day
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     row = {"day": _day(now), "cost": 0.1, "unknown": count, "calls": 2, "wakes": [], "runs": 1}
     state.put("spend", row, run="-", seq=0)
@@ -1056,7 +1056,7 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
     uncounted = "(partial: calls of unknown cost before this count went uncounted)"
     rows, lines = [], []
     for n in range(3):
-        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        khive.mail.append(mail("agent-d", "go", mid=f"m{n}"))
         assert asyncio.run(agent.wake(wait_ms=0)) is not None
         rows.append({k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")})
         lines.append(_line(agent.state.get("cursor").value))
@@ -1069,13 +1069,13 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
     assert "$0.3000; 0 idle poll(s)" in lines[0]  # the wake's own line counts its own calls
     assert "$0.0000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[1]
     assert "$0.1000; 0 idle poll(s)" in lines[2]
-    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    khive.mail.append(mail("agent-d", "go", mid="m3"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
     day = stats(tmp_path, noted(state)).splitlines()[0]
     assert f"$0.9000 {uncounted}; 4 wake(s)" in day
     now[0] += 86_400  # the next day starts counted
-    khive.mail.append(mail("lambda:a", "go", mid="m4"))
+    khive.mail.append(mail("agent-d", "go", mid="m4"))
     assert asyncio.run(agent.wake(wait_ms=0)) is not None
     assert {k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")} == {
         "calls": 1,
@@ -1086,7 +1086,7 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
     # a row from before the count that is already at the cap is held before any wake writes it: the
     # hold and the stats line still say it is uncounted
     state.put("spend", {"day": _day(now[0]), "cost": 0.9, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=9)
-    khive.mail.append(mail("lambda:a", "go", mid="m5"))
+    khive.mail.append(mail("agent-d", "go", mid="m5"))
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
     assert f"$0.9000 {uncounted}; 1 wake(s)" in stats(tmp_path, noted(state)).splitlines()[0]
@@ -1094,7 +1094,7 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
 
 def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path, kkernel_stub):
     assert stats(tmp_path) == f"notes unread at {tmp_path}: chores.toml names no actor"
-    (tmp_path / "chores.toml").write_text('actor = "lambda:x:stats"\n')
+    (tmp_path / "chores.toml").write_text('actor = "agent-a:stats"\n')
     assert stats(tmp_path) == (
         f"notes unread at {tmp_path}: {tmp_path} holds no .khive/config.toml; "
         "khive would resolve it as 'local'"
@@ -1202,7 +1202,7 @@ def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_en
         raise claude_code.ClaudeCodeError("claude reported error_max_turns: cap", printed)
 
     monkeypatch.setattr(claude_code, "_exec", capped)
-    khive = FakeKhive(mail("lambda:a", "go"))
+    khive = FakeKhive(mail("agent-d", "go"))
     agent = Agent(
         Actor("echo", privileges={"comm.send"}, store=store),
         khive,
@@ -1219,22 +1219,22 @@ def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_en
 
 def test_a_wake_killed_after_its_mark_read_is_reported_to_the_owner_and_rerun_takes_it_back(store):
     state = fresh_store().notes("agent")
-    khive = FakeKhive(mail("lambda:a", "hi"))
+    khive = FakeKhive(mail("agent-d", "hi"))
 
     class Died(Scripted):
         async def __call__(self, messages):
             raise SystemExit(1)  # the process died mid-run: nothing after the mark-read ran
 
     actor = Actor("echo", privileges={"comm.send"}, store=store)
-    agent = Agent(actor, khive, Died(khive=khive), profile_for, state=state, owner="lambda:a")
+    agent = Agent(actor, khive, Died(khive=khive), profile_for, state=state, owner="agent-d")
     with pytest.raises(SystemExit):
         asyncio.run(agent.wake(wait_ms=0))
     assert state.get("cursor").value["outcome"] == "running" and khive.sent == []
-    khive.mail.append(mail("lambda:a", "again", mid="m2"))
-    agent = build(khive, REPLY, DONE, state=state, owner="lambda:a")  # the next process
+    khive.mail.append(mail("agent-d", "again", mid="m2"))
+    agent = build(khive, REPLY, DONE, state=state, owner="agent-d")  # the next process
     run = asyncio.run(agent.wake(wait_ms=0))
     notice = khive.sent[0]
-    assert notice["to"] == "lambda:a" and "['a1b2c3d4']" in notice["content"] and "rerun" in notice["content"]
+    assert notice["to"] == "agent-d" and "['a1b2c3d4']" in notice["content"] and "rerun" in notice["content"]
     assert khive.sent[1] == SENT and isinstance(
         run.outcome, Success
     )  # told first, then the new batch answered
@@ -1248,18 +1248,18 @@ def test_a_wake_killed_after_its_mark_read_is_reported_to_the_owner_and_rerun_ta
 
 
 def test_a_wake_whose_run_raises_tells_the_owner_which_batch_went_unanswered(store):
-    khive = FakeKhive(mail("lambda:a", "hi"))
+    khive = FakeKhive(mail("agent-d", "hi"))
 
     class Boom(Scripted):
         async def __call__(self, messages):
             raise RuntimeError("boom")
 
     actor = Actor("echo", privileges={"comm.send"}, store=store)
-    agent = Agent(actor, khive, Boom(khive=khive), profile_for, owner="lambda:a")
+    agent = Agent(actor, khive, Boom(khive=khive), profile_for, owner="agent-d")
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(agent.wake(wait_ms=0))
     assert agent.state.get("cursor").value["outcome"] == "error RuntimeError: boom"
-    assert khive.sent[0]["to"] == "lambda:a" and "['a1b2c3d4']" in khive.sent[0]["content"]
+    assert khive.sent[0]["to"] == "agent-d" and "['a1b2c3d4']" in khive.sent[0]["content"]
 
 
 def test_serve_refuses_a_held_identity_reports_a_died_wake_first_and_logs_one_line_per_wake(tmp_path):
@@ -1279,13 +1279,13 @@ def test_serve_refuses_a_held_identity_reports_a_died_wake_first_and_logs_one_li
         holder.wait(timeout=5)
         holder.stdout.close()
     (tmp_path / "agent.pid").write_text("999999999")  # a stale file nobody holds does not
-    khive.mail.append(mail("lambda:a", "hi"))
+    khive.mail.append(mail("agent-d", "hi"))
     state = fresh_store().notes("agent")
     state.put(
         "cursor", {"wake": 4, "outcome": "running", "mail": ["deadbeef"]}, run="-", seq=0
     )  # a died wake
     lines: list[str] = []
-    agent = build(khive, REPLY, DONE, state=state, owner="lambda:a")
+    agent = build(khive, REPLY, DONE, state=state, owner="agent-d")
     asyncio.run(agent.serve(until=lambda: bool(lines), log=lines.append))
     assert (
         "['deadbeef']" in khive.sent[0]["content"] and khive.sent[1] == SENT
@@ -1306,7 +1306,7 @@ def test_two_sends_in_one_turn_share_the_thread_cap():
             await asyncio.sleep(0.01)  # the real transport awaits a subprocess
             return await super().send(*args, **kwargs)
 
-    khive = Yielding(mail("lambda:a", "reply twice"))
+    khive = Yielding(mail("agent-d", "reply twice"))
     state = fresh_store().notes("agent")
     twice = REPLY + "\n" + REPLY.replace("s1>", "s2>")
     agent = build(khive, twice, DONE, state=state, budget=Budget(hops_per_thread=1))
@@ -1323,16 +1323,16 @@ def test_a_wake_that_dies_after_taking_its_mail_is_reported_on_the_next_start():
             await super().mark_read(ids)
             raise RuntimeError("audit failed after the mark-read committed")
 
-    khive = ReadThenDie(mail("lambda:a", "do this once", mid="deadbeef"))
+    khive = ReadThenDie(mail("agent-d", "do this once", mid="deadbeef"))
     state = fresh_store().notes("agent")
-    agent = build(khive, DONE, state=state, owner="lambda:a")
+    agent = build(khive, DONE, state=state, owner="agent-d")
     with pytest.raises(RuntimeError):
         asyncio.run(agent.wake(wait_ms=0))
     assert khive.read and state.get("cursor") is None and khive.sent == []
-    again = build(khive, DONE, state=state, owner="lambda:a")
+    again = build(khive, DONE, state=state, owner="agent-d")
     asyncio.run(again._recover())  # what serve does first
     (notice,) = khive.sent
-    assert notice["to"] == "lambda:a" and "deadbeef" in notice["content"] and "rerun" in notice["content"]
+    assert notice["to"] == "agent-d" and "deadbeef" in notice["content"] and "rerun" in notice["content"]
     asyncio.run(again._recover())
     assert len(khive.sent) == 1  # told once
 
@@ -1388,17 +1388,17 @@ def test_a_recovery_notice_the_transport_dropped_is_told_at_the_next_start():
 
     khive, state = FirstSendFails(), fresh_store().notes("agent")
     state.put("taking", {"mail": ["deadbeef"]}, run="-", seq=0)
-    first = build(khive, state=state, owner="lambda:a")
+    first = build(khive, state=state, owner="agent-d")
     asyncio.run(first.serve(until=lambda: True))
     assert khive.sent == [] and first.errors == ["owner notice failed: RuntimeError: transport down"]
     assert state.get("taking").value == {} and state.get("unreported").value[0]["mail"] == ["deadbeef"]
-    asyncio.run(build(khive, state=state, owner="lambda:a").serve(until=lambda: True))  # a restart
+    asyncio.run(build(khive, state=state, owner="agent-d").serve(until=lambda: True))  # a restart
     assert len(khive.sent) == 1 and "['deadbeef']" in khive.sent[0]["content"]
     assert state.get("unreported").value == []
 
 
 def test_rerun_is_a_wake_the_caps_hold_and_it_needs_ids():
-    khive = FakeKhive(mail("lambda:a", "hi"))
+    khive = FakeKhive(mail("agent-d", "hi"))
     agent = build(khive, REPLY, DONE, REPLY, DONE, budget=Budget(wakes_per_hour=1))
     asyncio.run(agent.wake(wait_ms=0))
     assert agent.hold() is not None
@@ -1428,9 +1428,9 @@ class Gate:
 
 def gated_batch() -> list[dict]:
     return [
-        mail("lambda:a", "run this", mid="c1c1c1c1"),
-        mail("lambda:stranger", "never run this", mid="d2d2d2d2"),
-        mail("lambda:a", "and this", mid="e3e3e3e3"),
+        mail("agent-d", "run this", mid="c1c1c1c1"),
+        mail("agent-g", "never run this", mid="d2d2d2d2"),
+        mail("agent-d", "and this", mid="e3e3e3e3"),
     ]
 
 
@@ -1461,7 +1461,7 @@ def gated(path: str, gate: Gate | None, tmp_path: Path):
             khive.read = [m["full_id"] for m in khive.taken]
             asyncio.run(agent.rerun(GATED))
         else:
-            khive.mail, lines = [mail("lambda:a", "first", mid="b0b0b0b0")], []
+            khive.mail, lines = [mail("agent-d", "first", mid="b0b0b0b0")], []
 
             def until() -> bool:
                 if len(lines) == 1 and len(khive.taken) == 1:
@@ -1541,19 +1541,19 @@ class Boom(Scripted):
 def test_raise_then_failed_tell_survives_restart(store):
     """A wake whose run raises owes its batch to the owner (ADR-0013/C3); the telling was dropped, so
     the next start tells it, with the error and the ids."""
-    khive, state = FailingSends(mail("lambda:a", "hi"), fail=1), fresh_store().notes("agent")
+    khive, state = FailingSends(mail("agent-d", "hi"), fail=1), fresh_store().notes("agent")
     agent = Agent(
         Actor("echo", privileges={"comm.send"}, store=store),
         khive,
         Boom(),
         profile_for,
         state=state,
-        owner="lambda:a",
+        owner="agent-d",
     )
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(agent.wake(wait_ms=0))
     assert khive.sent == [] and agent.errors == ["owner notice failed: RuntimeError: transport down"]
-    asyncio.run(build(khive, state=state, owner="lambda:a").serve(until=lambda: True))  # a restart
+    asyncio.run(build(khive, state=state, owner="agent-d").serve(until=lambda: True))  # a restart
     told = [s["content"] for s in khive.sent]
     assert [("a1b2c3d4" in t, "boom" in t, "rerun" in t) for t in told] == [(True, True, True)]
     assert state.get("unreported").value == []
@@ -1562,7 +1562,7 @@ def test_raise_then_failed_tell_survives_restart(store):
 def test_new_failure_preserves_older_owed_batch(store):
     """A batch already owed stays owed while a new failure is recorded beside it; both are told once the
     transport comes back."""
-    khive, state = FailingSends(mail("lambda:a", "hi", mid="bbbbbbbb"), fail=2), fresh_store().notes("agent")
+    khive, state = FailingSends(mail("agent-d", "hi", mid="bbbbbbbb"), fail=2), fresh_store().notes("agent")
     state.put("unreported", [{"why": "an earlier wake died mid-run", "mail": ["aaaaaaaa"]}], run="-", seq=0)
     agent = Agent(
         Actor("echo", privileges={"comm.send"}, store=store),
@@ -1570,11 +1570,11 @@ def test_new_failure_preserves_older_owed_batch(store):
         Boom(),
         profile_for,
         state=state,
-        owner="lambda:a",
+        owner="agent-d",
     )
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(agent.wake(wait_ms=0))  # the recovery's telling and the failed wake's telling both drop
-    asyncio.run(build(khive, state=state, owner="lambda:a").serve(until=lambda: True))
+    asyncio.run(build(khive, state=state, owner="agent-d").serve(until=lambda: True))
     told = " ".join(s["content"] for s in khive.sent)
     assert ("aaaaaaaa" in told, "bbbbbbbb" in told) == (True, True)
     assert state.get("unreported").value == [] and len(khive.sent) == 1
@@ -1596,7 +1596,7 @@ def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeyp
             return []
 
     class Held:
-        khive = SimpleNamespace(actor="lambda:x")
+        khive = SimpleNamespace(actor="agent-a")
 
         def _claim(self):
             return None
@@ -1639,7 +1639,7 @@ def test_the_forget_flag_lets_go_of_the_run_and_makes_no_tick(tmp_path, monkeypa
             return []
 
     class Held:
-        khive = SimpleNamespace(actor="lambda:x")
+        khive = SimpleNamespace(actor="agent-a")
 
         def _claim(self):
             seen["order"].append("claim")
@@ -1708,7 +1708,7 @@ def test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for(tmp
             raise RuntimeError("agenda: boom")
 
     class Held:
-        khive = SimpleNamespace(actor="lambda:x")
+        khive = SimpleNamespace(actor="agent-a")
 
         def _claim(self):
             return None
@@ -1747,10 +1747,10 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
     available."""
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:agent", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
-        'every = "every:1h"\n'
+        'actor = "agent-a:agent"\nowner = "agent-a"\nsteward = "agent-c"\n'
+        '\n[chores.gtd-inbox]\nevery = "every:1h"\n'
     )
     ops: list[str] = []
 
@@ -1821,9 +1821,9 @@ def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_
     of a tick already pending: a chore with no run yet is inside its first grace, not missing."""
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:agent", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n'
+        'actor = "agent-a:agent"\nowner = "agent-a"\nsteward = "agent-c"\nbatch = 1\n\n'
         '[chores.gtd-inbox]\nevery = "every:1h"\n'
     )
 
@@ -1837,13 +1837,13 @@ def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_
         "created_at": at(now),
         "properties": {
             "status": "pending",
-            "created_by_actor": "lambda:x:agent",
+            "created_by_actor": "agent-a:agent",
             "trigger_at": at(now + 60),
             "repeat": "every:1h",
         },
     }
     ops: list[str] = []
-    boxes = [[mail("lambda:x:agent", "tick: digest")]]
+    boxes = [[mail("agent-a:agent", "tick: digest")]]
 
     lion = LionFake()
 
@@ -1876,7 +1876,7 @@ def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_
     )
     asyncio.run(agent_main(argparse.Namespace(**base, once=True)))
     (sent,) = [op for op in ops if op.startswith("comm.send(")]
-    assert "lambda:x gtd-inbox no run yet, first due by " in sent and "MISSING: " not in sent
+    assert "agent-a gtd-inbox no run yet, first due by " in sent and "MISSING: " not in sent
     order = [op.split("(")[0] for op in ops]
     assert order.index("schedule.agenda") < order.index("comm.inbox")  # the ticks first, as a start has it
 
@@ -1884,12 +1884,12 @@ def test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_
 def test_a_once_wake_of_a_chair_makes_no_tick(tmp_path, kkernel_stub, monkeypatch):
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:v1"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n[chair]\n'
+        'actor = "agent-a:v1"\nowner = "agent-a"\nsteward = "agent-c"\nbatch = 1\n\n[chair]\n'
     )
     ops: list[str] = []
-    boxes = [[mail("lambda:x", "hello")]]
+    boxes = [[mail("agent-a", "hello")]]
 
     lion = LionFake()
 
@@ -1924,11 +1924,11 @@ def test_a_once_wake_prints_its_own_entries_and_not_the_run_it_continues(
 ):
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:v1"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n[chair]\n'
+        'actor = "agent-a:v1"\nowner = "agent-a"\nsteward = "agent-c"\nbatch = 1\n\n[chair]\n'
     )
-    boxes = [[mail("lambda:x", "FIRST-MAIL")], [mail("lambda:x", "SECOND-MAIL", mid="c3d4e5f6")]]
+    boxes = [[mail("agent-a", "FIRST-MAIL")], [mail("agent-a", "SECOND-MAIL", mid="c3d4e5f6")]]
     lion = LionFake()  # one store across both processes
 
     async def fake_exec(self, op):
@@ -2020,8 +2020,8 @@ def test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing(
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", d))
-    (d / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n')
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:agent", d))
+    (d / "chores.toml").write_text('actor = "agent-a:agent"\nowner = "agent-a"\nsteward = "agent-c"\n')
     ops: list[str] = []
 
     lion = LionFake()
@@ -2075,10 +2075,10 @@ def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends
     lands the same text, then lets the identity go: no send, no ledger row, no tick."""
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:agent", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:agent", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
-        'every = "every:1h"\n'
+        'actor = "agent-a:agent"\nowner = "agent-a"\nsteward = "agent-c"\n'
+        '\n[chores.gtd-inbox]\nevery = "every:1h"\n'
     )
     ops: list[str] = []
 
@@ -2114,7 +2114,7 @@ def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends
     assert path.parent == d / "landing" and re.fullmatch(r"\d{8}-check-gtd-inbox\.txt", path.name)
     assert path.read_text() == text
     assert ops == [
-        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+        '[gtd.tasks(status="inbox", assignee="agent-a", limit=100), gtd.tasks(assignee="agent-a", limit=1)]'
     ]
     files = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
     assert files == [".khive/config.toml", "chores.toml", f"landing/{path.name}"]  # the identity let go
@@ -2139,10 +2139,10 @@ def test_serve_refuses_a_directory_that_routes_the_lion_tables_while_nothing_fol
     from tests.lionfake import actor_dir, patch_khive
 
     patch_khive(monkeypatch)
-    d = actor_dir(tmp_path / "routed", "lambda:a:echo")
-    store = Store(Khive(d, "lambda:a:echo"))
+    d = actor_dir(tmp_path / "routed", "agent-d:echo")
+    store = Store(Khive(d, "agent-d:echo"))
     assert store.database == d / ".khive" / "lion.db"  # routed: the lion tables have their own file
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     backend = Scripted(REPLY, DONE, khive=khive)
     agent = Agent(Actor("echo", privileges={"comm.send"}, store=store), khive, backend, profile_for)
     with pytest.raises(AgentError, match="routes the lion tables, and no fold point yet bounds the chain"):
@@ -2153,7 +2153,7 @@ def test_serve_refuses_a_directory_that_routes_the_lion_tables_while_nothing_fol
 
 def test_serve_runs_a_store_that_routes_nothing(tmp_path):
     """The control: the same serve over a double, which routes no tables, claims, serves and releases."""
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
     agent = build(khive, REPLY, DONE)
     assert agent.unservable() is None and agent.actor.store.database is None
     lines: list[str] = []
@@ -2179,11 +2179,11 @@ def test_the_serve_form_is_refused_before_the_start_makes_its_ticks(tmp_path, mo
         _claim, _release = Agent._claim, Agent._release  # the lock an agent takes, on its directory
 
         def __init__(self):
-            self.khive, self._lock_fd = SimpleNamespace(actor="lambda:x", cwd=tmp_path), None
+            self.khive, self._lock_fd = SimpleNamespace(actor="agent-a", cwd=tmp_path), None
 
         def unservable(self):
             seen["order"].append("asked")
-            return "lambda:x is not served: its directory routes the lion tables"
+            return "agent-a is not served: its directory routes the lion tables"
 
         async def wake(self, wait_ms=None):
             seen["order"].append("wake")
@@ -2212,10 +2212,10 @@ def test_the_forget_flag_runs_in_a_directory_whose_serving_form_is_refused(tmp_p
     from tests.lionfake import actor_dir, patch_khive
 
     patch_khive(monkeypatch)
-    d = actor_dir(tmp_path / "routed", "lambda:a:echo")
-    store = Store(Khive(d, "lambda:a:echo"))
+    d = actor_dir(tmp_path / "routed", "agent-d:echo")
+    store = Store(Khive(d, "agent-d:echo"))
     assert store.database == d / ".khive" / "lion.db"  # routed: the lion tables have their own file
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=d)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=d)
     backend = Scripted(REPLY, DONE, khive=khive)
     agent = Agent(Actor("echo", privileges={"comm.send"}, store=store), khive, backend, profile_for)
     agent.state.put("cursor", {"wake": 3, "run": "r-gone"}, run="-", seq=0)
@@ -2313,8 +2313,8 @@ def test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own(tmp
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
-    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
+    (d / "chores.toml").write_text('actor = "agent-a:v1"\nowner = "agent-a"\n\n[chair]\n')
     backend = ClaudeCodeSession(cli="/bin/claude", **given)
     if given:
         with pytest.raises(
@@ -2326,7 +2326,7 @@ def test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own(tmp
         assert agent.backend is backend and backend.actor is None
         # the config's own `[claude_code] tools` refuses here too, whoever built the session
         (d / "chores.toml").write_text(
-            'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[claude_code]\ntools = ["Bash"]\n'
+            'actor = "agent-a:v1"\nowner = "agent-a"\n\n[chair]\n\n[claude_code]\ntools = ["Bash"]\n'
         )
         with pytest.raises(
             ValueError, match=r"\[claude_code\] tools: a claude_code model has no tools of its own"
@@ -2435,15 +2435,15 @@ def test_build_refuses_a_codex_backend_built_for_an_unmeasured_release(tmp_path,
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
-    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
+    (d / "chores.toml").write_text('actor = "agent-a:v1"\nowner = "agent-a"\n\n[chair]\n')
     with pytest.raises(ValueError, match="a codex backend built to run an unmeasured CLI release"):
         build(d, CodexSession(cli="/bin/codex", unmeasured=True))
     backend = CodexSession(cli="/bin/codex")
     _, agent = build(d, backend)
     assert agent.backend is backend
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[codex]\nunmeasured = true\n'
+        'actor = "agent-a:v1"\nowner = "agent-a"\n\n[chair]\n\n[codex]\nunmeasured = true\n'
     )
     with pytest.raises(ValueError, match=r"\[codex\] unmeasured: a codex model has no tools of its own"):
         build(d, backend)
@@ -2459,18 +2459,18 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:v1"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n[chair]\n'
-        'system = "You are the twin of lambda:x for the harness QA."\n\n[budget]\ncost_per_day = 5\n'
+        'actor = "agent-a:v1"\nowner = "agent-a"\nsteward = "agent-c"\nbatch = 1\n\n[chair]\n'
+        'system = "You are the twin of agent-a for the harness QA."\n\n[budget]\ncost_per_day = 5\n'
         "hops_per_thread = 3\n"
     )
     (d / "README.md").write_text("twin: hello from the directory\n")
     ops: list[str] = []
     boxes = [
-        [mail("lambda:x", "what does README.md say?")],
+        [mail("agent-a", "what does README.md say?")],
         [mail("someone:else", "and me?", mid="e5f6a7b8")],
-        [mail("lambda:x", "now tell someone:else about it", mid="c9d0e1f2")],
+        [mail("agent-a", "now tell someone:else about it", mid="c9d0e1f2")],
     ]
 
     lion = LionFake()
@@ -2488,7 +2488,7 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
     monkeypatch.setattr(Khive, "exec", fake_exec)
     turns = [
         '<lact r1>read(path="README.md")</lact>',
-        f'<lact s1>send(to="lambda:x", thread="{THREAD}", text="README.md says: twin: hello")</lact>',
+        f'<lact s1>send(to="agent-a", thread="{THREAD}", text="README.md says: twin: hello")</lact>',
         'OUT{posture: {done: "answered the README question", awaiting: ""}}',
         # wake 2: `send` is the agent handler over the BOUNDED client: a recipient outside the trusted set
         # is refused there, before any comm.send; the model reads the refusal and ends the wake
@@ -2505,10 +2505,9 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
     )
     assert not {"check", "digest", "aged"} & run.profile.specs
     system = run.profile.system
-    assert "You are lambda:x:v1, the chair of lambda:x" in system and "twin of lambda:x" in system
+    assert "You are agent-a:v1, the chair of agent-a" in system and "twin of agent-a" in system
     assert (
-        "signing as lambda:x:v1" in system
-        and "Mail from lambda:owner, lambda:x, lambda:x:v1 is your work" in system
+        "signing as agent-a:v1" in system and "Mail from agent-a, agent-a:v1, agent-c is your work" in system
     )
     named = ", ".join(sorted(ALLOWED_VERBS))  # the verbs by name, not a count and a summary
     assert f"(these verbs and no other: {named}; memory.remember with an explicit salience" in system
@@ -2526,9 +2525,7 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
     results = [e.content.value for e in run.record if e.kind is Kind.RESULT]
     assert any("twin: hello from the directory" in str(r) for r in results)
     sends = [op for op in ops if op.startswith("comm.send(")]
-    assert (
-        len(sends) == 1 and '"lambda:x"' in sends[0] and THREAD in sends[0] and "README.md says" in sends[0]
-    )
+    assert len(sends) == 1 and '"agent-a"' in sends[0] and THREAD in sends[0] and "README.md says" in sends[0]
     assert agent.state.get("cursor").value["sent"] == 1
     assert agent.actor.notes_for(run.profile).get("posture").value == "answered the README question"
     # the outsider: read, noted, never run
@@ -2564,8 +2561,8 @@ def test_a_chair_that_is_not_a_table_is_refused_by_name(tmp_path, kkernel_stub):
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
-    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\nchair = true\n')
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
+    (d / "chores.toml").write_text('actor = "agent-a:v1"\nowner = "agent-a"\nchair = true\n')
     with pytest.raises(ValueError, match=r"\[chair\] is a table"):
         build(d, Scripted())
 
@@ -2585,8 +2582,8 @@ def test_a_chair_config_giving_the_model_tools_or_idle_work_fails_to_load_and_wi
     )
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
-    base = 'actor = "lambda:x:v1"\nowner = "lambda:x"\nmodel = "claude_code/claude-opus-5-5"\n\n[chair]\n'
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
+    base = 'actor = "agent-a:v1"\nowner = "agent-a"\nmodel = "claude_code/claude-opus-5-5"\n\n[chair]\n'
     args = argparse.Namespace(
         dir=str(d),
         stats=False,
@@ -2622,9 +2619,9 @@ def test_a_chair_with_a_due_task_names_it_in_the_posture_and_its_gtd_write_is_re
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[gtd]\ndue = "now"\n'
+        'actor = "agent-a:v1"\nowner = "agent-a"\n\n[chair]\n\n[gtd]\ndue = "now"\n'
     )
     ops: list[str] = []
 
@@ -2664,8 +2661,8 @@ def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_k
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x:v1", d))
-    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a:v1", d))
+    (d / "chores.toml").write_text('actor = "agent-a:v1"\nowner = "agent-a"\n\n[chair]\n')
 
     lion = LionFake()
 
@@ -2673,7 +2670,7 @@ def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_k
         if op.lstrip("[").startswith("lion."):
             return lion.answer(op)
         if op.startswith("comm.inbox("):
-            return [{"messages": [{"id": "m1", "properties": {"to_actor": "lambda:x:v1"}}]}]
+            return [{"messages": [{"id": "m1", "properties": {"to_actor": "agent-a:v1"}}]}]
         raise AgentError("agent boundary: refused")
 
     monkeypatch.setattr(Khive, "exec", fake_exec)
@@ -2714,9 +2711,9 @@ def test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x"\nowner = "lambda:owner"\nbatch = 1\n\n[chair]\nadmit = "all"\n'
+        'actor = "agent-a"\nowner = "agent-c"\nbatch = 1\n\n[chair]\nadmit = "all"\n'
     )
     ops: list[str] = []
     boxes = [[mail("someone:else", "hello from outside")]]
@@ -2792,21 +2789,21 @@ def test_wake_rules_read_top_down_by_sender_glob_subject_and_spent_fraction():
             "batch_size": 3,
             "quiet": ["23:00-07:00"],
             "rule": [
-                {"from": ["lambda:owner", "email:*"], "then": "now"},
+                {"from": ["agent-c", "email:*"], "then": "now"},
                 {"subject": "^\\[NOW\\]", "then": "now"},
                 {"from": "*:desk", "spent_over": 0.75, "then": "drop"},
-                {"from": ["daemon:*"], "then": "batch"},
+                {"from": ["*-daemon"], "then": "batch"},
             ],
         }
     )
     assert rules.batch_after == 1800.0 and rules.batch_size == 3 and rules.quiet == ((23 * 60, 7 * 60),)
-    assert rules.decide(mail("lambda:owner", "x"), 0.0) == "now"
+    assert rules.decide(mail("agent-c", "x"), 0.0) == "now"
     assert rules.decide(mail("email:person@example.com", "x"), 0.0) == "now"
-    assert rules.decide({**mail("lambda:c", "x"), "subject": "[NOW] merge"}, 0.0) == "now"
-    assert rules.decide(mail("lambda:b:desk", "x"), 0.5) == "batch"  # not past the spent fraction yet
-    assert rules.decide(mail("lambda:b:desk", "x"), 0.9) == "drop"
-    assert rules.decide(mail("daemon:review", "x"), 0.0) == "batch"
-    assert rules.decide(mail("lambda:d", "x"), 0.0) == "batch"  # the default
+    assert rules.decide({**mail("agent-f", "x"), "subject": "[NOW] merge"}, 0.0) == "now"
+    assert rules.decide(mail("agent-e:desk", "x"), 0.5) == "batch"  # not past the spent fraction yet
+    assert rules.decide(mail("agent-e:desk", "x"), 0.9) == "drop"
+    assert rules.decide(mail("source-agent", "x"), 0.0) == "batch"
+    assert rules.decide(mail("dee", "x"), 0.0) == "batch"  # the default
     night = time.mktime(time.strptime("2026-09-24 23:30:00", "%Y-%m-%d %H:%M:%S"))
     noon = time.mktime(time.strptime("2026-09-24 12:00:00", "%Y-%m-%d %H:%M:%S"))
     assert rules.is_quiet(night) and rules.is_quiet(night + 3 * 3600) and not rules.is_quiet(noon)
@@ -2828,7 +2825,7 @@ def test_wake_rules_read_top_down_by_sender_glob_subject_and_spent_fraction():
 
 def test_batch_mail_waits_read_under_the_deferred_note_and_now_mail_takes_it_along(tmp_path):
     rules = Wake(default="batch", batch_after=3600, batch_size=5, rules=(WakeRule("now", subject="^urgent"),))
-    khive = FakeKhive(mail("lambda:a", "a verdict", mid="d1d1d1d1"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "a verdict", mid="d1d1d1d1"), cwd=tmp_path)
     agent = build(khive, REPLY, DONE, wake_rules=rules)
     lines: list[str] = []
     agent._say = lines.append
@@ -2839,7 +2836,7 @@ def test_batch_mail_waits_read_under_the_deferred_note_and_now_mail_takes_it_alo
     assert agent.state.get("taking").value == {}  # nothing owed: the mail is safe under `deferred`
     assert lines == ["waiting: 1 mail (oldest 0s) for the window, 3600s or 5 mail"]
     assert asyncio.run(agent.wake(wait_ms=0)) is None and len(lines) == 1  # still waiting, said once
-    khive.mail.append({**mail("lambda:a", "now please", mid="e2e2e2e2"), "subject": "urgent: now"})
+    khive.mail.append({**mail("agent-d", "now please", mid="e2e2e2e2"), "subject": "urgent: now"})
     run = asyncio.run(agent.wake(wait_ms=0))
     assert run is not None and agent.state.get("cursor").value["mail"] == ["d1d1d1d1", "e2e2e2e2"]
     assert agent.state.get("deferred").value == {"mail": []}
@@ -2850,7 +2847,7 @@ def test_batch_mail_waits_read_under_the_deferred_note_and_now_mail_takes_it_alo
 def test_the_window_opens_by_age_with_no_new_mail_and_the_wake_now_file_opens_it_at_once(tmp_path):
     now = [1_000_000.0]
     rules = Wake(default="batch", batch_after=600, batch_size=5)
-    khive = FakeKhive(mail("lambda:a", "later", mid="d1d1d1d1"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "later", mid="d1d1d1d1"), cwd=tmp_path)
     agent = build(khive, REPLY, DONE, wake_rules=rules, clock=lambda: now[0])
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     now[0] += 599
@@ -2858,7 +2855,7 @@ def test_the_window_opens_by_age_with_no_new_mail_and_the_wake_now_file_opens_it
     now[0] += 1
     run = asyncio.run(agent.wake(wait_ms=0))  # the box is empty; the window opened on age alone
     assert run is not None and agent.state.get("cursor").value["mail"] == ["d1d1d1d1"]
-    khive.mail.append(mail("lambda:a", "later too", mid="e2e2e2e2"))
+    khive.mail.append(mail("agent-d", "later too", mid="e2e2e2e2"))
     agent = build(khive, REPLY, DONE, wake_rules=rules, clock=lambda: now[0])  # the same notes on disk
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     (tmp_path / "wake-now").write_text("the owner from the app\n")
@@ -2889,15 +2886,15 @@ class FailsOnce(KhiveNoteStore):
 
 def test_released_mail_is_named_under_taking_before_deferred_lets_go_so_a_failed_write_still_owes_it():
     rules = Wake(default="batch", batch_after=3600, batch_size=5, rules=(WakeRule("now", subject="^urgent"),))
-    khive, state = FakeKhive(mail("lambda:a", "a verdict", mid="d1d1d1d1")), FailsOnce("taking", "deferred")
-    agent = build(khive, state=state, wake_rules=rules, owner="lambda:a")
+    khive, state = FakeKhive(mail("agent-d", "a verdict", mid="d1d1d1d1")), FailsOnce("taking", "deferred")
+    agent = build(khive, state=state, wake_rules=rules, owner="agent-d")
     assert asyncio.run(agent.wake(wait_ms=0)) is None  # read and kept under `deferred`
-    khive.mail.append({**mail("lambda:a", "now please", mid="e2e2e2e2"), "subject": "urgent: now"})
+    khive.mail.append({**mail("agent-d", "now please", mid="e2e2e2e2"), "subject": "urgent: now"})
     state.armed = True  # `deferred` lets go of d1d1d1d1, then the write naming the run's batch fails
     with pytest.raises(OSError, match="disk full"):
         asyncio.run(agent.wake(wait_ms=0))
     assert state.get("deferred").value == {"mail": []}
-    asyncio.run(build(khive, state=state, wake_rules=rules, owner="lambda:a").serve(until=lambda: True))
+    asyncio.run(build(khive, state=state, wake_rules=rules, owner="agent-d").serve(until=lambda: True))
     told = [s["content"] for s in khive.sent]
     assert len(told) == 1 and "d1d1d1d1" in told[0] and "e2e2e2e2" in told[0]
     assert state.get("unreported").value == [] and state.get("taking").value == {}
@@ -2906,11 +2903,11 @@ def test_released_mail_is_named_under_taking_before_deferred_lets_go_so_a_failed
 def test_a_batch_told_as_lost_leaves_deferred_so_it_is_never_run_later_too():
     rules = Wake(default="batch", batch_after=3600, batch_size=5)
     khive, state = FakeKhive(), fresh_store().notes("agent")
-    waiting = [{**mail("lambda:a", "a verdict", mid="d1d1d1d1"), "deferred_ts": 0.0}]
-    waiting.append({**mail("lambda:a", "another", mid="f3f3f3f3"), "deferred_ts": 0.0})
+    waiting = [{**mail("agent-d", "a verdict", mid="d1d1d1d1"), "deferred_ts": 0.0}]
+    waiting.append({**mail("agent-d", "another", mid="f3f3f3f3"), "deferred_ts": 0.0})
     state.put("deferred", {"mail": waiting}, run="-", seq=0)  # a take whose `deferred` write never landed
     state.put("taking", {"mail": ["d1d1d1d1"]}, run="-", seq=0)
-    agent = build(khive, state=state, wake_rules=rules, owner="lambda:a")
+    agent = build(khive, state=state, wake_rules=rules, owner="agent-d")
     asyncio.run(agent.serve(until=lambda: True))
     assert len(khive.sent) == 1 and "d1d1d1d1" in khive.sent[0]["content"]
     assert [m["id"] for m in state.get("deferred").value["mail"]] == ["f3f3f3f3"]
@@ -2940,10 +2937,10 @@ def test_a_rerun_stopped_at_any_write_leaves_its_mail_told_at_the_next_start_or_
     rules = Wake(default="batch", batch_after=3600, batch_size=5)
     stops = []
     for n in itertools.count(1):
-        khive, state = FakeKhive(mail("lambda:a", "kept for later", mid="d1d1d1d1")), StopsAt(n)
-        agent = build(khive, REPLY, DONE, state=state, wake_rules=rules, owner="lambda:owner")
+        khive, state = FakeKhive(mail("agent-d", "kept for later", mid="d1d1d1d1")), StopsAt(n)
+        agent = build(khive, REPLY, DONE, state=state, wake_rules=rules, owner="agent-c")
         assert asyncio.run(agent.wake(wait_ms=0)) is None  # read, waiting under `deferred`
-        other = mail("lambda:a", "a dead wake's", mid="e5f6a7b8")
+        other = mail("agent-d", "a dead wake's", mid="e5f6a7b8")
         khive.taken.append(other)
         khive.read.append(other["full_id"])
         if left_under == "taking":  # a wake that died after taking both; `deferred` no longer names it
@@ -2963,9 +2960,9 @@ def test_a_rerun_stopped_at_any_write_leaves_its_mail_told_at_the_next_start_or_
             assert agent.state.get("cursor").value["outcome"] == "Success"
             continue
         stops.append(n)
-        restarted = build(khive, state=state, wake_rules=rules, owner="lambda:owner")
+        restarted = build(khive, state=state, wake_rules=rules, owner="agent-c")
         asyncio.run(restarted.serve(until=lambda: True))
-        told = " ".join(s["content"] for s in khive.sent if s["to"] == "lambda:owner")
+        told = " ".join(s["content"] for s in khive.sent if s["to"] == "agent-c")
         waiting = [m["id"] for m in (state.get("deferred").value or {}).get("mail") or []]
         assert ("d1d1d1d1" in told) != ("d1d1d1d1" in waiting), (n, told, waiting)
         assert "e5f6a7b8" in told, (n, told)
@@ -2974,8 +2971,8 @@ def test_a_rerun_stopped_at_any_write_leaves_its_mail_told_at_the_next_start_or_
 
 def test_a_rerun_of_waiting_mail_takes_it_out_of_deferred_so_its_due_wake_does_not_run_it_again():
     rules = Wake(default="batch", batch_after=3600, batch_size=5)
-    khive = FakeKhive(mail("lambda:a", "kept for later", mid="d1d1d1d1"))
-    agent = build(khive, REPLY, DONE, REPLY2, DONE, wake_rules=rules, owner="lambda:owner")
+    khive = FakeKhive(mail("agent-d", "kept for later", mid="d1d1d1d1"))
+    agent = build(khive, REPLY, DONE, REPLY2, DONE, wake_rules=rules, owner="agent-c")
     assert asyncio.run(agent.wake(wait_ms=0)) is None
     due = agent.state.get("deferred").value["mail"][0]["deferred_ts"] + 3600
     run = asyncio.run(agent.rerun(["d1d1d1d1"]))
@@ -2990,14 +2987,14 @@ def test_a_batch_under_taking_and_a_running_cursor_both_is_told_once():
     state.put("taking", {"mail": ["c3d4e5f6"]}, run="-", seq=0)
     running = {"wake": 4, "outcome": "running", "mail": ["c3d4e5f6"], "notices": []}
     state.put("cursor", running, run="-", seq=0)
-    asyncio.run(build(khive, state=state, owner="lambda:owner")._recover())
+    asyncio.run(build(khive, state=state, owner="agent-c")._recover())
     (told,) = [s["content"] for s in khive.sent]
     assert told.count("c3d4e5f6") == 1 and "wake 4 died mid-run" in told
     assert state.get("cursor").value["outcome"] == "lost" and state.get("unreported").value == []
 
 
 def test_a_hold_file_holds_the_agent_by_its_first_line_and_its_removal_resumes_it(tmp_path):
-    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    khive = FakeKhive(mail("agent-d", "say hi back"), cwd=tmp_path)
     agent = build(khive, REPLY, DONE)
     (tmp_path / "hold").write_text("held by the owner from the app: reviewing\nmore\n")
     assert asyncio.run(agent.wake(wait_ms=0)) is None and khive.log == []  # not even polled
@@ -3018,7 +3015,7 @@ def test_budget_and_wake_rules_follow_the_config_file_while_serving(tmp_path):
     assert lines == [] and agent.budget.cost_per_day == 5.0  # unchanged since the build
     cfg.write_text(
         '[budget]\ncost_per_day = 9.0\nwakes_per_hour = 7\n\n[wake]\ndefault = "batch"\nbatch_after = "10m"\n'
-        '[[wake.rule]]\nfrom = ["lambda:owner"]\nthen = "now"\n'
+        '[[wake.rule]]\nfrom = ["agent-c"]\nthen = "now"\n'
     )
     os.utime(cfg, (time.time() + 5, time.time() + 5))  # a same-second rewrite is still a change
     agent._reload()
@@ -3053,17 +3050,17 @@ def test_build_reads_the_wake_rules_and_names_the_config_for_reload(tmp_path, kk
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
-    (d / ".khive" / "config.toml").write_text(routed_config("lambda:x", d))
+    (d / ".khive" / "config.toml").write_text(routed_config("agent-a", d))
     (d / "chores.toml").write_text(
-        'actor = "lambda:x"\nowner = "lambda:owner"\n\n[chair]\nadmit = "all"\n'
+        'actor = "agent-a"\nowner = "agent-c"\n\n[chair]\nadmit = "all"\n'
         "\n[budget]\ncost_per_day = 3.0\n"
         '\n[wake]\ndefault = "batch"\nbatch_size = 2\n'
-        '[[wake.rule]]\nfrom = ["lambda:owner", "email:*"]\nthen = "now"\n\n[gtd]\npoll = "30s"\n'
+        '[[wake.rule]]\nfrom = ["agent-c", "email:*"]\nthen = "now"\n\n[gtd]\npoll = "30s"\n'
     )
     chores, agent = build_dir(d, Scripted())
     assert agent.gtd is not None and agent.gtd.poll == 30.0 and agent.gtd.work == "off"
     assert agent.wake_rules.default == "batch" and agent.wake_rules.batch_size == 2
-    assert agent.wake_rules.rules[0].senders == ("lambda:owner", "email:*")
+    assert agent.wake_rules.rules[0].senders == ("agent-c", "email:*")
     assert agent.config == d / "chores.toml" and agent.budget.cost_per_day == 3.0
 
 
@@ -3252,7 +3249,7 @@ def test_the_pull_reads_the_queue_with_due_off_and_keeps_when_refused_mail_used_
     from hub.agent.agent import Gtd
 
     now = [3_000_000.0]
-    khive = QueueKhive(mail("lambda:a", "junk"), queue=[task("t4", "answer the desk")], cwd=tmp_path)
+    khive = QueueKhive(mail("agent-d", "junk"), queue=[task("t4", "answer the desk")], cwd=tmp_path)
     agent = Agent(
         Actor("echo", privileges={"comm.send"}, store=store),
         khive,
@@ -3312,7 +3309,7 @@ def test_a_pull_during_the_continuous_chairs_wait_is_one_wake_on_that_path(tmp_p
 
     now = [5_000_000.0]
     queued = [task("t3", "read the desk"), task("t6", "cost report", at=now[0] + 1000)]
-    khive = QueueKhive(mail("lambda:a", "say hi back"), queue=queued, cwd=tmp_path)
+    khive = QueueKhive(mail("agent-d", "say hi back"), queue=queued, cwd=tmp_path)
     # the mail is answered on its thread; a task notice has no thread, so those bursts end on plain words
     backend = Scripted(REPLY, "on it", "on it", "on it", khive=khive)
     agent = Agent(
@@ -3370,7 +3367,7 @@ def test_a_day_row_whose_wakes_are_not_times_still_starts_the_agent_and_counts_t
     from hub.agent.agent import _day
 
     now = 3000.0  # inside the first hour, so a bool read as a time would count as recent
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     stored = [now - 10, *wakes] if isinstance(wakes, list) else wakes
     # every count the agent writes is in the row, so only the wakes can make the day partial
@@ -3406,7 +3403,7 @@ def test_a_day_row_whose_count_the_agent_would_not_have_written_is_dropped_and_t
     from hub.areas import day_spend
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [], "calls": 2, "mail": 1, field: count}
     state.put("spend", row, run="-", seq=0)
@@ -3426,7 +3423,7 @@ def test_a_day_row_as_the_agent_wrote_it_is_not_partial_for_its_counts(store):
     from hub.agent.agent import _day
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [now - 10], **_WHOLE, "idle": 3}
     state.put("spend", row, run="-", seq=0)
@@ -3471,7 +3468,7 @@ def test_the_largest_count_reads_as_written_and_a_write_past_it_holds_there(stor
     from hub.agent.agent import _counts, _day
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     top = 9007199254740991  # 2**53 - 1, the literal so a cap moved by one is caught
     row = {
@@ -3511,7 +3508,7 @@ def test_a_day_row_whose_unknown_count_is_past_the_cap_is_partial_not_lowered(st
     from hub.areas import day_spend
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     row = {"day": _day(now), "cost": 0.1, "unknown": 2**53, "wakes": [now - 10], **_WHOLE}
     state.put("spend", row, run="-", seq=0)
@@ -3535,7 +3532,7 @@ def test_a_day_row_missing_a_field_the_agent_always_writes_is_dropped_and_the_da
     from hub.agent.agent import _day
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
     row = {"day": _day(now), "cost": 0.1, "unknown": 0, "wakes": [now - 10], **_WHOLE}
     del row[field]
@@ -3582,7 +3579,7 @@ def test_a_token_figure_the_backend_would_not_report_is_none_and_the_row_stays_w
     from hub.agent.agent import _day
 
     now = 1_000_000.0
-    khive = FakeKhive(mail("lambda:a", "go", mid="m0"))
+    khive = FakeKhive(mail("agent-d", "go", mid="m0"))
     state = store.notes("agent")
 
     class Counted(Scripted):

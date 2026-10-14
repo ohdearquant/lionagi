@@ -9,7 +9,13 @@ from weakref import finalize
 
 from typing_extensions import Self, TypedDict, override
 
-from .._structural import _IdentityKey, _structural_hash, _structural_key
+from .._structural import (
+    UnhashableStructuralValueError,
+    _dataclass_structural_key,
+    _IdentityKey,
+    _structural_hash,
+    _structural_key,
+)
 from ._sentinel import Undefined, Unset, _compat_policy, _SentinelPolicy
 
 __all__ = (
@@ -360,14 +366,24 @@ class DataClass:
         return _declared_field_state(self)
 
     def __hash__(self) -> int:
-        from .._hash import hash_dict
+        return hash(_dataclass_structural_key(self._field_state()))
 
-        return hash_dict(self.to_dict())
+    def __eq__(self, other: object) -> bool:
+        """Compare readable declared field state of instances from the same class.
 
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, DataClass):
+        Equal instances hash equal because both operations use the same field projection.
+        A cyclic value or a deleted nested field compares unequal.
+        """
+        if self is other:
+            return True
+        if type(self) is not type(other):
             return False
-        return hash(self) == hash(other)
+        try:
+            return _dataclass_structural_key(self._field_state()) == _dataclass_structural_key(
+                cast(DataClass, other)._field_state()
+            )
+        except (AttributeError, UnhashableStructuralValueError):
+            return False
 
 
 # Concrete key-container types accepted by fuzzy_match_keys. Bare ``str`` is

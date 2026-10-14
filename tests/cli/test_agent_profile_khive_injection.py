@@ -162,6 +162,7 @@ async def test_bare_li_agent_path_registers_injection_from_profile(monkeypatch, 
             "recall_turns": 2,
             "blocks_injected": 3,
             "failed": 1,
+            "degraded_turns": 0,
             "writeback_records": 5,
             "writeback_failed": 2,
         }

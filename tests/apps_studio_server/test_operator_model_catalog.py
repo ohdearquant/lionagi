@@ -36,6 +36,12 @@ def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path) -> None:
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
+    monkeypatch.setattr("lionagi.cli.kill.psutil.boot_time", lambda: 1_700_000_000.0)
+
+
+async def _empty_branch_run(self, *_args, **_kwargs):
+    if False:
+        yield None
 
 
 # ── catalog_entries() ───────────────────────────────────────────────────────
@@ -577,6 +583,7 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     no Claude CLI installed.
     """
     import lionagi.providers.anthropic.claude_code as claude_mod
+    from lionagi import Branch
     from lionagi.studio.operator.engine import (
         BranchOperatorEngine,
         OperatorProviderUnavailableError,
@@ -589,6 +596,7 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     # machine that HAS the CLI it would resolve and this case never arise.
     monkeypatch.setattr(claude_mod, "CLAUDE_CLI", None)
     monkeypatch.setattr(claude_mod, "resolve_claude_cli", lambda: None)
+    monkeypatch.setattr(Branch, "run", _empty_branch_run)
 
     def _turn(provider: str | None, model: str | None) -> OperatorEngineTurn:
         return OperatorEngineTurn(
@@ -617,7 +625,12 @@ async def test_a_codex_turn_is_not_refused_because_claude_is_the_env_default(tmp
     # before it ever reached the provider -- a generic early RuntimeError would
     # pass while proving nothing -- so the positive fact is asserted after:
     # branch construction was reached, and it saw the selected Codex pair.
+    # With no codex binary the turn stops before the CLI would start, so the
+    # test never runs the real codex installed on the machine.
+    import lionagi.providers.openai.codex as codex_mod
     import lionagi.studio.operator.engine as engine_mod
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
 
     built: list[tuple[str, str]] = []
     real_build = engine_mod.build_operator_branch
@@ -658,6 +671,7 @@ async def test_the_preflight_gates_on_the_resolved_provider_not_the_live_env(tmp
     """
     import lionagi.providers.anthropic.claude_code as claude_mod
     import lionagi.studio.operator.engine as engine_mod
+    from lionagi import Branch
     from lionagi.studio.operator.engine import (
         BranchOperatorEngine,
         OperatorProviderUnavailableError,
@@ -666,6 +680,7 @@ async def test_the_preflight_gates_on_the_resolved_provider_not_the_live_env(tmp
 
     monkeypatch.setattr(claude_mod, "CLAUDE_CLI", None)
     monkeypatch.setattr(claude_mod, "resolve_claude_cli", lambda: None)
+    monkeypatch.setattr(Branch, "run", _empty_branch_run)
     # The live environment disagrees with what this turn was resolved as.
     monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
 

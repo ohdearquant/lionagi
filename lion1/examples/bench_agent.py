@@ -2,7 +2,7 @@
 mail, the row answered on the asker's thread as JSON and written to memory.
 
 Two kinds of mail reach it. An actor asks for a run; the model calls `launch(...)` with the ask's
-fields, the handler starts `bench/swe/run_set.py` as a detached child whose last act is to mail this
+fields, the handler starts `lion1/bench/swe/run_set.py` as a detached child whose last act is to mail this
 actor "job <id> finished" (a notify sent as itself), and the wake ends. That mail wakes it again;
 the model calls `report(run_id=...)`, and the handler reads the ledger, sends the row as JSON on the
 asker's thread, and writes it to memory under the agent's own tag. The model routes and names; the
@@ -11,8 +11,9 @@ handlers type, launch, read and reply. Nothing waits inside a wake.
 Its identity is configured, never assumed: `--actor` is the id `.khive/agents/bench` resolves to,
 `--owner` the actor it works for; the owner, itself and each `--trust` get the acting profile.
 
-    uv run python examples/bench_agent.py --actor <id> --owner <id>                      # serve
-    uv run python examples/bench_agent.py --actor <id> --owner <id> --once [--wait 30]   # one wake
+    cd lion1 && uv run python examples/bench_agent.py --actor <id> --owner <id>                      # serve
+    cd lion1 && uv run python examples/bench_agent.py --actor <id> --owner <id> --once \\
+        [--wait 30]  # one wake
 
 Ask it from the owner:
     kkernel exec 'comm.send(to="<its actor id>", subject="run", content="mini50, limit 1, deepseek")'

@@ -621,9 +621,16 @@ def test_status_reports_a_reused_pid_as_not_this_runs_process(
 
     kill() refuses this same record as a reused pid, so the two surfaces are
     asserted together: one module answering one record two ways is the defect.
+
+    Two agreeing live reads that both mismatch the record only prove the two
+    reads agree with each other, not that the record's own spawn-time read
+    was accurate — `_run_process_liveness` checks the marker inherited from
+    the run's process tree before concluding `pid_recycled`, so this scenario
+    also has to name a marker inherited from a different run.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run-id"))
 
     rid = _identity_record()
     st = jobs.status(rid)
@@ -3616,6 +3623,21 @@ def test_a_submission_that_could_not_read_its_directory_records_that_it_could_no
     rec = jobs._read_job(rid)
     assert "submit_cwd" in rec
     assert rec["submit_cwd"] is None
+
+
+def test_default_mcp_resolution_requires_a_readable_working_directory(sandbox, monkeypatch):
+    def removed_directory():
+        raise OSError("gone")
+
+    monkeypatch.setattr(jobs.os, "getcwd", removed_directory)
+    monkeypatch.setattr(
+        jobs.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("submission must stop before spawning"),
+    )
+
+    with pytest.raises(OSError, match="gone"):
+        jobs.submit("agent", [], prompt="work")
 
 
 def test_the_listing_says_which_running_rows_never_started(sandbox, monkeypatch):

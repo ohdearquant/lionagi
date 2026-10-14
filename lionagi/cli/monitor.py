@@ -451,12 +451,31 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _invocation_kind(inv: dict[str, Any]) -> str:
+    """The row's own action kind when one was recorded, else the generic label.
+
+    The kind lives in ``node_metadata`` because the ``invocations`` table has
+    no column for it. Normalize the legacy alias and hide unsupported values.
+    """
+    node_metadata = _parse_json_field(inv.get("node_metadata")) or {}
+    kind = node_metadata.get("action_kind")
+    if not isinstance(kind, str) or not kind:
+        return "invocation"
+    from lionagi.studio.scheduler.subprocess import (
+        _ALIAS_ACTION_KINDS,
+        _VALID_ACTION_KINDS,
+    )
+
+    normalized = _ALIAS_ACTION_KINDS.get(kind, kind)
+    return normalized if normalized in _VALID_ACTION_KINDS else "invocation"
+
+
 def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
     return {
         "id": inv["id"][:16],
-        "type": "invocation",
+        "type": _invocation_kind(inv),
         "project": "-",
         "status": inv.get("status") or "?",
         "phase": inv.get("skill") or "-",
@@ -651,6 +670,7 @@ def _format_khive_injection_line(telemetry: dict[str, Any]) -> str | None:
         "recall_turns",
         "blocks_injected",
         "failed",
+        "degraded_turns",
         "writeback_records",
         "writeback_failed",
     )
@@ -687,6 +707,7 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
+    lines.append(f"  kind:          {_invocation_kind(inv)}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
     lines.append(f"  session_count: {inv.get('session_count') or 0}")
@@ -704,6 +725,17 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             f"  started:       {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}"
         )
 
+    # The spawn path already persists the exit reason and the drained stderr
+    # tail on a non-zero exit; until this line nothing read them back, so a
+    # run that fired and died was indistinguishable at the CLI from one that
+    # never fired.
+    reason_code = inv.get("status_reason_code")
+    if reason_code:
+        lines.append(f"  reason_code:   {reason_code}")
+    reason_summary = inv.get("status_reason_summary")
+    if reason_summary:
+        lines.append(f"  reason:        {reason_summary}")
+
     node_metadata = _parse_json_field(inv.get("node_metadata"))
     coordination = (node_metadata or {}).get("coordination")
     if isinstance(coordination, dict):
@@ -718,6 +750,33 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             for entry in top:
                 if isinstance(entry, dict) and entry.get("path"):
                     lines.append(f"      {entry['path']}  (workers={entry.get('workers', '?')})")
+
+    # A scheduled fire keeps its exit code and error detail on the schedule_run,
+    # not on the invocation. A launched process has an exit code and stderr;
+    # a setup refusal has a reason code and no process output.
+    run_rows = await db.fetch_all(
+        "SELECT id, action_kind, exit_code, error_detail, status_reason_code FROM schedule_runs "
+        "WHERE invocation_id = ? ORDER BY fired_at DESC LIMIT 1",
+        (inv["id"],),
+    )
+    if run_rows:
+        run = run_rows[0]
+        lines.append("")
+        lines.append(_dim("  -- schedule run --"))
+        lines.append(f"    run:        {run['id']}")
+        run_kind = _invocation_kind({"node_metadata": {"action_kind": run["action_kind"]}})
+        lines.append(f"    kind:       {run_kind}")
+        exit_code = run["exit_code"]
+        lines.append(f"    exit_code:  {exit_code if exit_code is not None else '-'}")
+        if run["error_detail"]:
+            if exit_code is None:
+                lines.append(
+                    _dim(f"    -- reason_code: {run['status_reason_code'] or 'unknown'} --")
+                )
+            else:
+                lines.append(_dim("    -- stderr tail --"))
+            for tail_line in str(run["error_detail"]).splitlines():
+                lines.append(f"      {tail_line}")
 
     child_rows = await db.fetch_all(
         "SELECT id, status, model, started_at FROM sessions WHERE invocation_id = ? ORDER BY created_at",
@@ -919,8 +978,12 @@ async def _gather_entities(
 
     rows.extend(("session", s) for s in sessions)
 
-    if entity_type in (None, "invocation"):
+    if entity_type in (None, "invocation", "command"):
         invocations = await _query_running_invocations(db, since=since)
+        if entity_type == "command":
+            # Filtered here rather than in SQL: the kind rides node_metadata
+            # JSON, so a WHERE clause would have to reach into it per backend.
+            invocations = [i for i in invocations if _invocation_kind(i) == "command"]
         rows.extend(("invocation", i) for i in invocations)
 
     if entity_type in (None, "show"):
@@ -1724,8 +1787,11 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "-t",
         dest="entity_type",
         default=None,
-        choices=["session", "invocation", "show", "play"],
-        help="Narrow the table to one kind of entity: session, invocation, show or play.",
+        choices=["session", "invocation", "show", "play", "command"],
+        help=(
+            "Narrow the table to one kind of entity: session, invocation, show or play. "
+            "`command` narrows to invocations launched as a command action."
+        ),
     )
     mon.add_argument(
         "--project",
@@ -1877,7 +1943,7 @@ _ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
         "current_phase",
         "branch_count",
     ),
-    "invocation": ("skill", "plugin"),
+    "invocation": ("skill", "plugin", "action_kind"),
     "show": ("repo", "topic"),
     "play": ("name", "session_id", "show_id", "session_project", "branch_count"),
 }
@@ -1894,6 +1960,8 @@ def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
     entity: dict[str, Any] = {"kind": kind}
     for field in (*_ENTITY_CORE, *_ENTITY_EXTRA[kind]):
         value = row.get(field)
+        if kind == "invocation" and field == "action_kind":
+            value = _invocation_kind(row)
         entity[field] = optional_flag(value) if field in _ENTITY_BOOL_FIELDS else value
     return entity
 
@@ -1943,10 +2011,11 @@ def machine_result(argv: list[str]) -> dict[str, Any]:
     parser.add_argument("--project", "-p", default=None, help=argparse.SUPPRESS)
     args = parse_machine_argv(parser, argv)
 
-    if args.entity_type is not None and args.entity_type not in _ENTITY_EXTRA:
+    machine_filters = {*_ENTITY_EXTRA, "command"}
+    if args.entity_type is not None and args.entity_type not in machine_filters:
         raise MachineError(
             "invalid_input",
-            f"--type must be one of {', '.join(sorted(_ENTITY_EXTRA))}; got {args.entity_type!r}",
+            f"--type must be one of {', '.join(sorted(machine_filters))}; got {args.entity_type!r}",
         )
     try:
         return run_async(

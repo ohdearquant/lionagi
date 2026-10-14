@@ -24,7 +24,7 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 @pytest.fixture
 def public_repo(tmp_path: Path) -> Path:
-    for directory in ("scripts", "docs", "notebooks", "cookbooks"):
+    for directory in ("scripts", "docs", "notebooks", "cookbooks", "lion1"):
         (tmp_path / directory).mkdir()
     shutil.copy2(CI_SCRIPT, tmp_path / "scripts" / "ci.sh")
     shutil.copy2(NOTEBOOK_HYGIENE_SCRIPT, tmp_path / "scripts" / "lint_notebook_hygiene.py")
@@ -318,3 +318,36 @@ def test_ripgrep_scanner_error_is_not_treated_as_no_matches(public_repo: Path) -
     assert result.returncode != 0
     assert "scanner error" in result.stderr
     assert "publication hygiene: ERROR" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content", "message"),
+    [
+        (
+            Path("lion1/README.md"),
+            "Run it from /Users/example/project.\n",
+            "machine-local paths found",
+        ),
+        (
+            Path("lion1/docs/guide.md"),
+            "Ask lambda:sample-unit first.\n",
+            "internal namespace identifiers",
+        ),
+        (
+            Path("lion1/hub/example.py"),
+            '"""Owned by lambda:sample-unit."""\n',
+            "internal namespace identifiers",
+        ),
+    ],
+)
+def test_a_leak_under_lion1_is_rejected(
+    public_repo: Path, relative_path: Path, content: str, message: str
+) -> None:
+    path = public_repo / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+    result = _run_hygiene(public_repo)
+
+    assert result.returncode != 0
+    assert message in result.stdout

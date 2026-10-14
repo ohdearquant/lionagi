@@ -28,7 +28,7 @@ _FIELD_KEYS_BY_CLASS: dict[int, tuple[type, frozenset[str]]] = {}
 
 B = TypeVar("B", bound=type[BaseModel])
 
-__all__ = ("RUNTIME_STATE_NAMES", "EndpointConfig")
+__all__ = ("AUTHORIZATION_KWARG_NAMES", "RUNTIME_STATE_NAMES", "EndpointConfig")
 
 # Values a caller hands an endpoint for the lifetime of the process and never to
 # be written down. ``env`` is a child process's environment and commonly holds
@@ -37,6 +37,19 @@ __all__ = ("RUNTIME_STATE_NAMES", "EndpointConfig")
 # serialize them, because that is the one place every route to a written-down
 # config has to pass through.
 RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn")
+
+# Kwargs that grant the call an authority, kept in ``kwargs`` for the live call
+# and never written down. ``account_connectors`` lets a codex request reach the
+# signed-in account's app connectors, and it belongs to the role the call runs
+# under, not to the branch: a branch restored from a snapshot or a run record by
+# a caller under another role would otherwise run with the grant. Restored
+# without it, the request falls back to what its persisted settings say, and a
+# caller whose role names connectors hands them again.
+AUTHORIZATION_KWARG_NAMES: tuple[str, ...] = ("account_connectors",)
+
+# Both sets, for the serialization seams. Kept as one name so a seam cannot be
+# updated for one category and silently miss the other.
+_UNWRITTEN_KWARG_NAMES: tuple[str, ...] = RUNTIME_STATE_NAMES + AUTHORIZATION_KWARG_NAMES
 
 
 class EndpointConfig(BaseModel):
@@ -51,7 +64,7 @@ class EndpointConfig(BaseModel):
     auth_type: AUTH_TYPES = "bearer"
     default_headers: dict = {}
     request_options: B | None = None
-    api_key: str | SecretStr | None = Field(None, exclude=True)
+    api_key: str | SecretStr | None = Field(None, exclude=True, repr=False)
     timeout: int = 300
     max_retries: int = 3
     # A retried POST to a non-idempotent creation endpoint (image generation,
@@ -147,20 +160,21 @@ class EndpointConfig(BaseModel):
 
     @field_serializer("kwargs")
     def _serialize_kwargs(self, v: dict):
-        """Excludes RUNTIME_STATE_NAMES (env, on_spawn) from every dump of this
-        config (model_dump, to_dict, run snapshots), independent of caller.
+        """Excludes RUNTIME_STATE_NAMES (env, on_spawn) and AUTHORIZATION_KWARG_NAMES
+        (account_connectors) from every dump of this config (model_dump, to_dict,
+        run snapshots), independent of caller.
         See docs/internals/service-layer.md#runtime-state-across-serialization-channels.
         """
-        return {k: val for k, val in v.items() if k not in RUNTIME_STATE_NAMES}
+        return {k: val for k, val in v.items() if k not in _UNWRITTEN_KWARG_NAMES}
 
     def __iter__(self):
-        """Applies the same RUNTIME_STATE_NAMES exclusion on the ``dict(config)``/
+        """Applies the same exclusion on the ``dict(config)``/
         ``list(config)`` path, which bypasses the field serializer above. See
         docs/internals/service-layer.md#runtime-state-across-serialization-channels.
         """
         for name, value in super().__iter__():
             if name == "kwargs" and isinstance(value, dict):
-                value = {k: val for k, val in value.items() if k not in RUNTIME_STATE_NAMES}
+                value = {k: val for k, val in value.items() if k not in _UNWRITTEN_KWARG_NAMES}
             yield name, value
 
     def __repr_args__(self):

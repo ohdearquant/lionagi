@@ -11,7 +11,7 @@ counted against `max_refusals`, where the run ends as `Refused` with no output. 
 name only, so the role prompt describes the nested models with `render_guidance`. The note is
 invented; scripted backend; runs offline.
 
-    uv run python examples/structured_output.py
+    cd lion1 && uv run python examples/structured_output.py
 """
 
 import asyncio

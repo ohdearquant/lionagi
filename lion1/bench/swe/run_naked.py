@@ -6,7 +6,8 @@ one `claude -p` on the host with its own Read/Grep/Glob/Edit/Write/Bash over tha
 to run tests through `docker exec`, and take `git diff` of the host directory as the patch. Same
 model, same CLI, same flags, same oracle as run_swe.py; the only difference is who runs the loop.
 
-    uv run python bench/swe/run_naked.py --instances django__django-11119 [--model sonnet] [--oracle]
+    cd lion1 && uv run python bench/swe/run_naked.py --instances django__django-11119 \\
+        [--model sonnet] [--oracle]
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "Bash")
 PROMPT = """\
 Resolve this GitHub issue by editing the repository source in the current directory.
 
-The repository's Python environment is NOT on this machine. It lives in a running docker container
-named {container}, where this same directory is mounted at /testbed. Run any Python, test or shell
+The repository's Python environment runs inside a Docker container named {container}, where this same
+directory is mounted at /testbed. Run any Python, test or shell
 command for the repository as:
 
     docker exec {container} bash -c 'source /opt/miniconda3/bin/activate testbed; cd /testbed && <command>'

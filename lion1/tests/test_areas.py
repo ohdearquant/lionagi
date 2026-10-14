@@ -54,7 +54,7 @@ WAKE_LINE = (
     "2026-09-23 20:14:46 wake 1: Success after 1 turns, 1 mail, 1 sent; 1 model call(s), 512345 in, "
     "4321 out, $0.1234; 39 idle poll(s) before it at 0 tokens"
 )
-RESTART = "serving lambda:x:desk from /x as pid 4321; ticks created: []; programs gh=/g git=/t"
+RESTART = "serving agent-a:desk from /x as pid 4321; ticks created: []; programs gh=/g git=/t"
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +89,7 @@ def agent_dir(tmp_path: Path, name: str, *, role: str, cursor: dict, spend: dict
     d = tmp_path / name
     d.mkdir(parents=True)
     section = {"desk": "[desk]\nevery = 'every:5m'\n"}.get(role, "")
-    (d / "chores.toml").write_text(f'actor = "lambda:x:{name}"\nowner = "lambda:x"\nmodel = "m"\n{section}')
+    (d / "chores.toml").write_text(f'actor = "agent-a:{name}"\nowner = "agent-a"\nmodel = "m"\n{section}')
     store = resident_store(d)
     store.put("cursor", cursor, run="-", seq=0)
     if spend is not None:
@@ -103,12 +103,12 @@ def test_a_residents_notes_are_refused_where_its_config_puts_them_in_the_main_st
     page says the notes are unread."""
     d = tmp_path / "r"
     (d / ".khive").mkdir(parents=True)
-    (d / "chores.toml").write_text('actor = "lambda:x:r"\n')
-    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:r"\n')
+    (d / "chores.toml").write_text('actor = "agent-a:r"\n')
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "agent-a:r"\n')
     with pytest.raises(KhiveError, match="would resolve to the main store"):
         agent_store(d)
     assert not kkernel_stub.with_name("lion.json").exists()  # the binary never ran
-    problem = resident(Area("a", "lambda:a", [str(d)]), str(d), TODAY).problem
+    problem = resident(Area("a", "agent-d", [str(d)]), str(d), TODAY).problem
     assert problem.startswith("notes: ") and "would resolve to the main store" in problem
     resident_store(d).put("cursor", {"wake": 1}, run="-", seq=0)  # the control: routed, the same call writes
     assert kkernel_stub.with_name("lion.json").exists()
@@ -116,18 +116,22 @@ def test_a_residents_notes_are_refused_where_its_config_puts_them_in_the_main_st
 
 def test_the_registry_reads_areas_and_a_missing_file_is_no_areas(tmp_path):
     reg = tmp_path / "areas.toml"
-    reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x", "/y"]\n\n[area.b]\nchair = "lambda:b"\n')
-    assert load_areas(reg) == [Area("a", "lambda:a", ["/x", "/y"]), Area("b", "lambda:b", [])]
+    reg.write_text('[area.a]\nchair = "agent-d"\ndesks = ["/x", "/y"]\n\n[area.b]\nchair = "agent-e"\n')
+    assert load_areas(reg) == [Area("a", "agent-d", ["/x", "/y"]), Area("b", "agent-e", [])]
     assert load_areas(tmp_path / "none.toml") == []
     reg.write_text("[area.c]\ndesks = []\n")
     with pytest.raises(ValueError, match=r"\[area.c\] has no chair"):
         load_areas(reg)
+    for chair in ('""', '"x"', '"two words"', "7"):  # a chair is an actor's name, plain, 3 to 100
+        reg.write_text(f"[area.c]\nchair = {chair}\n")
+        with pytest.raises(ValueError, match=r"^areas.toml: \[area.c\] chair: .* is not an actor name"):
+            load_areas(reg)
 
 
 def test_a_desk_named_either_way_answers_with_the_registrys_own_spelling(tmp_path):
     reg = tmp_path / "areas.toml"
-    reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x/desk/"]\n')
-    area = Area("a", "lambda:a", ["/x/desk/"])
+    reg.write_text('[area.a]\nchair = "agent-d"\ndesks = ["/x/desk/"]\n')
+    area = Area("a", "agent-d", ["/x/desk/"])
     assert areas_cli._desk(reg, "/x/desk/") == (area, "/x/desk/")
     assert areas_cli._desk(reg, "/x/desk") == (area, "/x/desk/")  # as a row prints it
     assert areas_cli._desk(reg, "/x/desk/../desk") is None  # a spelling the registry does not hold
@@ -135,7 +139,7 @@ def test_a_desk_named_either_way_answers_with_the_registrys_own_spelling(tmp_pat
 
 def test_the_context_api_reads_the_desk_the_registry_spells(tmp_path, monkeypatch):
     reg = tmp_path / "areas.toml"
-    reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x/desk/"]\n')
+    reg.write_text('[area.a]\nchair = "agent-d"\ndesks = ["/x/desk/"]\n')
     seen = []
     monkeypatch.setattr(areas_cli, "context_status", lambda d: seen.append(d) or {"ok": True})
     for spelling in ("/x/desk/", "/x/desk"):
@@ -154,9 +158,9 @@ def test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid
         cursor={"wake": 7, "at": f"{TODAY} 11:09:15", "outcome": "Success"},
         spend={"day": TODAY, "runs": 7, "mail": 9, "cost": 0.0123},
     )
-    area = Area("x", "lambda:x", [str(d)])
+    area = Area("x", "agent-a", [str(d)])
     r = resident(area, str(d), TODAY)
-    assert (r.actor, r.role, r.model, r.wake, r.last_outcome) == ("lambda:x:desk", "desk", "m", 7, "Success")
+    assert (r.actor, r.role, r.model, r.wake, r.last_outcome) == ("agent-a:desk", "desk", "m", 7, "Success")
     assert (r.runs_today, r.mail_today, r.cost_today, r.problem) == (7, 9, 0.0123, "")
     assert r.serving is False and r.pid is None and r.in_wake is False
     # a pid file nobody locks (a stale one) is not serving; a locked one is, whatever the pid says
@@ -187,10 +191,23 @@ def test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid
     assert r.actor == "?" and r.problem.startswith("chores.toml: ")
     never = tmp_path / "never"
     never.mkdir()
-    (never / "chores.toml").write_text('actor = "lambda:x:n"\n')
+    (never / "chores.toml").write_text('actor = "agent-a:n"\n')
     resident_store(never)
     r = resident(area, str(never), TODAY)
     assert r.problem == "no notes yet: never ran from this directory" and r.wake == 0
+
+
+@pytest.mark.parametrize(("value", "kind"), [("true", "bool"), ("12345", "int")])
+def test_a_residents_row_refuses_a_non_string_actor_and_names_the_config_file(tmp_path, value, kind):
+    d = tmp_path / "resident"
+    d.mkdir()
+    config = d / "chores.toml"
+    config.write_text(f"actor = {value}\n")
+
+    row = resident(Area("a", "agent-a", [str(d)]), str(d), TODAY)
+
+    assert row.actor == "?"
+    assert f"{config}: actor: a {kind} is not an actor name" in row.problem
 
 
 def test_the_table_and_the_page_say_the_counts_and_each_residents_state(tmp_path):
@@ -201,19 +218,19 @@ def test_the_table_and_the_page_say_the_counts_and_each_residents_state(tmp_path
         cursor={"wake": 2, "at": f"{TODAY} 10:00:00", "outcome": "Success"},
         spend=None,
     )
-    areas = [Area("x", "lambda:x", [str(d)]), Area("empty", "lambda:e", [])]
+    areas = [Area("x", "agent-a", [str(d)]), Area("empty", "agent-h", [])]
     rows = status(areas, TODAY)
     text = table(areas, rows)
     assert text.startswith(
         "2 resident(s) in 2 area(s), 0 serving, 0 in a wake".replace("2 resident", "1 resident")
     )
-    assert "x: chair lambda:x, 1 resident(s)" in text and "empty: chair lambda:e, 0 resident(s)" in text
-    row = "lambda:x:desk (desk, m): stopped; wake 2 at 2026-09-22 10:00:00 Success; today 0 run(s), 0 mail"
+    assert "x: chair agent-a, 1 resident(s)" in text and "empty: chair agent-h, 0 resident(s)" in text
+    row = "agent-a:desk (desk, m): stopped; wake 2 at 2026-09-22 10:00:00 Success; today 0 run(s), 0 mail"
     assert row + ", $0.0000" in text
     html = page(areas, rows, refresh=3)
     assert '<meta http-equiv=refresh content="3">' in html and "<span class=off>stopped</span>" in html
     assert (
-        "lambda:x:desk" in html and "chair lambda:x" in html and "1 resident(s), 2 area(s), 0 serving" in html
+        "agent-a:desk" in html and "chair agent-a" in html and "1 resident(s), 2 area(s), 0 serving" in html
     )
     assert table([], []).startswith("no areas:") and "no areas:" in page([], [])
 
@@ -227,15 +244,15 @@ def test_the_served_page_and_json_reread_the_registry_on_every_request(tmp_path)
         spend=None,
     )
     reg = tmp_path / "areas.toml"
-    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
+    reg.write_text(f'[area.x]\nchair = "agent-a"\ndesks = ["{d}"]\n')
     port = serve_on(reg)
     rows = json.loads(fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1))
-    assert [r["actor"] for r in rows] == ["lambda:x:desk"] and rows[0]["serving"] is False
+    assert [r["actor"] for r in rows] == ["agent-a:desk"] and rows[0]["serving"] is False
     html = fetch(f"http://127.0.0.1:{port}/").decode()
-    assert "lambda:x:desk" in html and 'content="2"' in html
-    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n[area.y]\nchair = "lambda:y"\n')
+    assert "agent-a:desk" in html and 'content="2"' in html
+    reg.write_text(f'[area.x]\nchair = "agent-a"\ndesks = ["{d}"]\n[area.y]\nchair = "agent-b"\n')
     html = fetch(f"http://127.0.0.1:{port}/").decode()
-    assert "chair lambda:y" in html  # re-read, not cached
+    assert "chair agent-b" in html  # re-read, not cached
     with pytest.raises(urllib.error.HTTPError) as e:
         fetch(f"http://127.0.0.1:{port}/nope")
     e.value.close()
@@ -250,7 +267,7 @@ def test_the_command_prints_the_table_from_a_given_registry(tmp_path):
         spend=None,
     )
     reg = tmp_path / "areas.toml"
-    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
+    reg.write_text(f'[area.x]\nchair = "agent-a"\ndesks = ["{d}"]\n')
     done = subprocess.run(
         [sys.executable, "-m", "lion_cli.main", "areas", "--file", str(reg)],
         capture_output=True,
@@ -259,7 +276,7 @@ def test_the_command_prints_the_table_from_a_given_registry(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     assert (
-        "1 resident(s) in 1 area(s), 0 serving, 0 in a wake" in done.stdout and "lambda:x:desk" in done.stdout
+        "1 resident(s) in 1 area(s), 0 serving, 0 in a wake" in done.stdout and "agent-a:desk" in done.stdout
     )
 
 
@@ -300,6 +317,19 @@ def test_identity_is_none_without_a_config_or_without_an_actor_id(tmp_path):
     assert identity(tmp_path) is None
 
 
+@pytest.mark.parametrize(("value", "kind"), [("true", "bool"), ("12345", "int")])
+def test_identity_refuses_a_non_string_actor_id_and_names_the_config_file(tmp_path, value, kind):
+    config = tmp_path / ".khive" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(f"[actor]\nid = {value}\n")
+
+    with pytest.raises(ValueError) as caught:
+        identity(tmp_path)
+
+    assert str(config) in str(caught.value)
+    assert f"{config}: [actor] id: a {kind} is not an actor name" in str(caught.value)
+
+
 def test_talk_merges_my_sent_box_and_my_inbox_oldest_first_and_marks_nothing_read():
     def msg(i: str, at: str, frm: str, to: str) -> dict:
         return {"id": i, "from": frm, "to": to, "subject": f"s{i}", "content": f"c{i}", "created_at": at}
@@ -307,30 +337,30 @@ def test_talk_merges_my_sent_box_and_my_inbox_oldest_first_and_marks_nothing_rea
     # 03.5Z sorts before 03Z as text: the order is by time; b is in both boxes and is shown once
     khive = FakeKhive(
         sent=[
-            msg("b", "2026-09-23T20:00:02Z", "person", "lambda:x"),
-            msg("d", "2026-09-23T20:00:03Z", "person", "lambda:x"),
+            msg("b", "2026-09-23T20:00:02Z", "person", "agent-a"),
+            msg("d", "2026-09-23T20:00:03Z", "person", "agent-a"),
         ],
         got=[
-            msg("c", "2026-09-23T20:00:03.5Z", "lambda:x", "person"),
-            msg("a", "2026-09-23T20:00:01Z", "lambda:x", "person"),
-            msg("b", "2026-09-23T20:00:02Z", "person", "lambda:x"),
+            msg("c", "2026-09-23T20:00:03.5Z", "agent-a", "person"),
+            msg("a", "2026-09-23T20:00:01Z", "agent-a", "person"),
+            msg("b", "2026-09-23T20:00:02Z", "person", "agent-a"),
         ],
     )
-    rows = asyncio.run(talk(khive, "lambda:x"))
+    rows = asyncio.run(talk(khive, "agent-a"))
     assert [r["id"] for r in rows] == ["a", "b", "d", "c"]
     assert rows[1] == {
         "at": "2026-09-23T20:00:02Z",
         "from": "person",
-        "to": "lambda:x",
+        "to": "agent-a",
         "subject": "sb",
         "content": "cb",
         "id": "b",
     }
     assert sorted(khive.ops) == [
-        'comm.inbox(box="sent", to_actor="lambda:x", limit=50)',
-        'comm.inbox(from_actor="lambda:x", status="all", limit=50)',
+        'comm.inbox(box="sent", to_actor="agent-a", limit=50)',
+        'comm.inbox(from_actor="agent-a", status="all", limit=50)',
     ]
-    assert [r["id"] for r in asyncio.run(talk(khive, "lambda:x", limit=2))] == ["d", "c"]
+    assert [r["id"] for r in asyncio.run(talk(khive, "agent-a", limit=2))] == ["d", "c"]
 
 
 def test_the_resident_page_shows_its_wakes_the_talk_and_the_form_only_with_an_identity(tmp_path):
@@ -342,21 +372,21 @@ def test_the_resident_page_shows_its_wakes_the_talk_and_the_form_only_with_an_id
         spend=None,
     )
     (d / "serve.log").write_text(f"{RESTART}\n{WAKE_LINE}\n")
-    row = resident(Area("x", "lambda:x", [str(d)]), str(d), TODAY)
+    row = resident(Area("x", "agent-a", [str(d)]), str(d), TODAY)
     said = {
         "at": "2026-09-23T20:14:46Z",
         "from": "person",
-        "to": "lambda:x:desk",
+        "to": "agent-a:desk",
         "subject": "hello <desk>",
         "content": "line one\nline <two>",
         "id": "m1",
     }
     html = resident_page(row, wakes(str(d)), log_tail(str(d)), [said], "person", 7, str(d))
-    assert "<h2>lambda:x:desk" in html and '<a href="/">' in html
+    assert "<h2>agent-a:desk" in html and '<a href="/">' in html
     assert "<td>512345</td>" in html and "<td>4321</td>" in html and "<td>$0.1234</td>" in html
     assert "<td>39</td>" in html and "<tr class=restart><td colspan=11>restarted as pid " in html
     assert "<b>hello &lt;desk&gt;</b>" in html and "line one\nline &lt;two&gt;</pre>" in html
-    assert "person → lambda:x:desk" in html and "<details><summary>log tail</summary>" in html
+    assert "person → agent-a:desk" in html and "<details><summary>log tail</summary>" in html
     assert "<form method=post action=/send " in html and f'name=dir value="{d}"' in html
     assert 'name=once value="' in html and "required" in html
     assert "<input name=subject" in html and "<textarea name=content" in html
@@ -381,7 +411,7 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
     )
     (d / "serve.log").write_text(f"{WAKE_LINE}\n")
     reg = tmp_path / "areas.toml"
-    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
+    reg.write_text(f'[area.x]\nchair = "agent-a"\ndesks = ["{d}"]\n')
 
     def start(ident) -> int:
         return serve_on(reg, ident)
@@ -400,10 +430,10 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
     port = start(("person", khive))
     q = urllib.parse.urlencode({"dir": str(d)})
     index = fetch(f"http://127.0.0.1:{port}/").decode()
-    assert f'<a href="/r?{q}">lambda:x:desk</a>' in index and "you are person" in index
+    assert f'<a href="/r?{q}">agent-a:desk</a>' in index and "you are person" in index
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/r?{q}", timeout=2) as got:
         html = got.read().decode()
-    assert got.status == 200 and "<h2>lambda:x:desk" in html and "<td>512345</td>" in html
+    assert got.status == 200 and "<h2>agent-a:desk" in html and "<td>512345</td>" in html
     assert khive.ops and all(o.startswith("comm.inbox(") for o in khive.ops)  # read, never marked read
     with pytest.raises(urllib.error.HTTPError) as e:
         fetch(f"http://127.0.0.1:{port}/r?dir=/tmp/elsewhere")
@@ -411,7 +441,7 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
     assert e.value.code == 404
     api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
     assert set(api) == {"resident", "wakes", "tail", "talk", "me", "controls", "budget", "wake", "waiting"}
-    assert api["me"] == "person" and api["resident"]["actor"] == "lambda:x:desk" and api["talk"] == []
+    assert api["me"] == "person" and api["resident"]["actor"] == "agent-a:desk" and api["talk"] == []
     assert api["wakes"][0]["tokens_in"] == 512345 and api["tail"] == WAKE_LINE
     khive.ops.clear()
     assert post(port, {"dir": str(d), "subject": "s", "content": "  \n "}).status == 400
@@ -436,12 +466,12 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
     assert rebound_err.value.code == 403 and khive.ops == []
     content = 'hi "there"\nsecond line'
     once = "ab" * 16
-    sent = post(port, {"dir": str(d), "subject": "", "content": content, "to": "lambda:evil", "once": once})
+    sent = post(port, {"dir": str(d), "subject": "", "content": content, "to": "evan", "once": once})
     assert sent.status == 303 and sent.getheader("Location") == f"/r?{q}&sent=x"
     (op,) = khive.ops
-    assert op.startswith("comm.send(") and 'to="lambda:x:desk"' in op and lit(content) in op
+    assert op.startswith("comm.send(") and 'to="agent-a:desk"' in op and lit(content) in op
     assert f'idempotency_key="ui:{once}"' in op and khive.calls == []
-    assert "lambda:evil" not in op and "subject=" not in op  # the recipient is never a form value
+    assert "evan" not in op and "subject=" not in op  # the recipient is never a form value
     bare = start(None)
     assert post(bare, {"dir": str(d), "content": "hi"}).status == 400
     assert "no identity: run lion areas" in fetch(f"http://127.0.0.1:{bare}/r?{q}").decode()
@@ -450,7 +480,7 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
 # ---- the API the phone app reads ----
 
 CHORES = (
-    'actor = "lambda:x:desk"\nmodel = "m"\n[desk]\nevery = "every:5m"\n\n'
+    'actor = "agent-a:desk"\nmodel = "m"\n[desk]\nevery = "every:5m"\n\n'
     "# the caps, edited from the phone\n"
     "[budget]\n"
     "cost_per_day = 1.5  # dollars, the day's cap\n"
@@ -464,7 +494,7 @@ CHORES = (
     "batch_size = 5\n"
     "quiet = []\n"
     "[[wake.rule]]\n"
-    'from = ["lambda:owner"]\n'
+    'from = ["agent-c"]\n'
     'then = "now"\n'
 )
 LABEL = "com.example.x.agent"
@@ -505,7 +535,7 @@ def app_dir(root: Path, *, plists: int = 1, deferred: list | None = None) -> Pat
 
 def registry(root: Path, *desks: Path) -> Path:
     reg = root / "areas.toml"
-    reg.write_text('[area.x]\nchair = "lambda:x"\ndesks = [' + ", ".join(f'"{d}"' for d in desks) + "]\n")
+    reg.write_text('[area.x]\nchair = "agent-a"\ndesks = [' + ", ".join(f'"{d}"' for d in desks) + "]\n")
     return reg
 
 
@@ -579,7 +609,7 @@ class FailingKhive(FakeKhive):
 def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and_each_alone(tmp_path):
     base = {"wake": 45, "outcome": "Quiet", "turns": 1, "mail": ["a", "b"], "sent": 0, "idle_polls": 0}
     tokens = {"calls": 1, "in": 56129, "out": 1038, "cost": 0.0624}
-    at = "2026-09-24 10:52:43"  # serve prints each line after the time (apps/cli/lion_cli/agent.py)
+    at = "2026-09-24 10:52:43"  # serve prints each line after the time (lion1/apps/cli/lion_cli/agent.py)
     old = f"{at} {_line({**base, 'tokens': tokens})}"
     ctx = f"{at} {_line({**base, 'tokens': {**tokens, 'context': 28324}})}"
     both = f"{at} {_line({**base, 'tokens': {**tokens, 'context': 28324, 'restarts': 2}})}"
@@ -641,7 +671,7 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=whole_day)
     past_cap = {**whole_day, "unknown": 2**53}  # a count no agent wrote (its writer holds below 2**53)
     over = agent_dir(tmp_path, "over", role="desk", cursor=cursor, spend=past_cap)
-    area = Area("x", "lambda:x", [str(d), str(done), str(over)])
+    area = Area("x", "agent-a", [str(d), str(done), str(over)])
     r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
     assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, 1, 0)
     assert (resident(area, str(over), TODAY).cost_today, resident(area, str(over), TODAY).unknown_today) == (
@@ -682,7 +712,7 @@ def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=before)
     counted = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0, **_WHOLE}
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=counted)
-    area = Area("x", "lambda:x", [str(d), str(done)])
+    area = Area("x", "agent-a", [str(d), str(done)])
     r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
     assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, None, 0)
     mark = "$0.3000 (partial: calls of unknown cost before this count went uncounted)"
@@ -735,7 +765,7 @@ def test_a_days_row_the_agent_would_not_have_written_reads_in_the_views_as_the_c
 ):
     cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=spend)
-    area = Area("x", "lambda:x", [str(d)])
+    area = Area("x", "agent-a", [str(d)])
     r = resident(area, str(d), TODAY)
     assert (r.cost_today, r.unknown_today) == read
     # a count that is not one the agent wrote reads as 0 in the row, never coerced or raised on
@@ -753,7 +783,7 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
         {
             "id": "d1d1d1d1",
             "from": "x",
-            "properties": {"from_actor": "daemon:review"},
+            "properties": {"from_actor": "source-agent"},
             "subject": "verdict",
             "content": "the body stays in the note",
             "deferred_at": "2026-09-24 11:02:10",
@@ -761,7 +791,7 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
         },
         {
             "id": "e2",
-            "from": "lambda:owner",
+            "from": "agent-c",
             "subject": None,
             "deferred_at": "2026-09-24 11:03:00",
             "deferred_ts": 5,
@@ -771,14 +801,14 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
     assert waiting_mail(str(d)) == [
         {
             "id": "d1d1d1d1",
-            "from": "daemon:review",
+            "from": "source-agent",
             "subject": "verdict",
             "deferred_at": "2026-09-24 11:02:10",
             "deferred_ts": 1790000000.0,
         },
         {
             "id": "e2",
-            "from": "lambda:owner",
+            "from": "agent-c",
             "subject": "",
             "deferred_at": "2026-09-24 11:03:00",
             "deferred_ts": 5.0,
@@ -806,9 +836,9 @@ def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_
         "batch_after": "30m",
         "batch_size": 5,
         "quiet": [],
-        "rule": [{"from": ["lambda:owner"], "then": "now"}],
+        "rule": [{"from": ["agent-c"], "then": "now"}],
     }
-    (d / "chores.toml").write_text('actor = "lambda:x:desk"\n')  # a missing table is {}
+    (d / "chores.toml").write_text('actor = "agent-a:desk"\n')  # a missing table is {}
     api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
     assert api["budget"] == {} and api["wake"] == {}
     unread(d)  # notes that cannot be read: the count is null on the row and the page, never zero
@@ -950,7 +980,7 @@ def test_cap_rewrites_only_the_two_keys_keeps_every_comment_and_refuses_what_it_
         assert code == 400 and doc["ok"] is False, fields
     assert (d / "chores.toml").read_bytes() == before
     # a [budget] the text rewrite cannot reach in place is refused, the file untouched
-    inline = 'actor = "lambda:x:desk"\nbudget = { cost_per_day = 1.0 }\n'
+    inline = 'actor = "agent-a:desk"\nbudget = { cost_per_day = 1.0 }\n'
     (d / "chores.toml").write_text(inline)
     code, doc = control(port, {"dir": str(d), "action": "cap", "cost_per_day": 2})
     assert code == 409 and "could not be rewritten in place" in doc["detail"]
@@ -1037,7 +1067,7 @@ def test_cap_keeps_a_crlf_files_line_endings_and_refuses_one_that_is_not_utf8(tm
 def test_a_pid_file_holding_anything_but_ascii_digits_names_no_pid_and_never_raises(tmp_path, text):
     # str.isdigit admits a superscript int refuses and another script's digits int reads as a number
     d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "Quiet"}, spend=None)
-    area = Area("x", "lambda:x", [str(d)])
+    area = Area("x", "agent-a", [str(d)])
     (d / "agent.pid").write_text(text)
     r = resident(area, str(d), TODAY)
     assert (r.serving, r.pid, r.problem) == (False, None, "")
@@ -1088,7 +1118,7 @@ def test_a_pid_file_that_cannot_be_read_or_locked_is_that_residents_problem_and_
     d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "Quiet"}, spend=None)
     other = agent_dir(tmp_path, "chores", role="chores", cursor={"wake": 1, "outcome": "Quiet"}, spend=None)
     (d / "agent.pid").write_text("424242")
-    area = Area("x", "lambda:x", [str(d), str(other)])
+    area = Area("x", "agent-a", [str(d), str(other)])
     assert _held(tmp_path / "gone.pid") == (False, None)  # vanished between a listing and the read
     real = fcntl.flock
 
@@ -1148,7 +1178,7 @@ def test_send_answers_json_under_accept_from_a_json_or_form_body_with_no_origin(
     code, text, got = call(port, "POST", "/send", body, head)
     assert (code, json.loads(text), got["Content-Type"]) == (200, {"ok": True, "id": "x"}, "application/json")
     (op,) = khive.ops
-    assert 'to="lambda:x:desk"' in op and 'subject="s"' in op and f'idempotency_key="ui:{once}"' in op
+    assert 'to="agent-a:desk"' in op and 'subject="s"' in op and f'idempotency_key="ui:{once}"' in op
     code, text, _ = call(port, "POST", "/send", json.dumps({"dir": "/tmp/elsewhere", "content": "hi"}), head)
     assert code == 404 and json.loads(text)["ok"] is False
     code, text, _ = call(port, "POST", "/send", json.dumps({"dir": str(d), "content": " "}), head)
@@ -2045,3 +2075,26 @@ def test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top(tmp_pa
     assert seen["atTop"] == {"before": "line 5", "after": "line 8", "scrollTop": 0, "nodes": 400}
     # a window two lines down loses the line it was on with the oldest, and rests at the top
     assert seen["nearTop"] == {"before": "line 10", "after": "line 11", "scrollTop": 0, "nodes": 400}
+
+
+def test_a_residents_row_keeps_its_model_and_role_when_the_actor_is_refused(tmp_path):
+    d = tmp_path / "resident"
+    d.mkdir()
+    config = d / "chores.toml"
+    config.write_text('actor = 12345\nmodel = "m-1"\n\n[desk]\n')
+
+    row = resident(Area("a", "agent-a", [str(d)]), str(d), TODAY)
+
+    assert (row.actor, row.model, row.role) == ("?", "m-1", "desk")
+    assert f"{config}: actor: a int is not an actor name" in row.problem
+
+
+def test_identity_refuses_an_actor_that_is_not_a_table_and_names_the_config_file(tmp_path):
+    config = tmp_path / ".khive" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('actor = "agent-a"\n')
+
+    with pytest.raises(ValueError, match=r"\[actor\] is a str, not a table") as caught:
+        identity(tmp_path)
+
+    assert str(caught.value).startswith(f"{config}: ")
