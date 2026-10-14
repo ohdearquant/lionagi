@@ -6,6 +6,7 @@ import contextlib
 import os
 from unittest.mock import patch
 
+import anyio
 import pytest
 
 from lionagi.protocols.generic.event import EventStatus
@@ -1061,9 +1062,12 @@ class TestReportedServedModel:
         "event_type,expected",
         [
             ("response.failed", True),
+            ("turn.failed", True),
             ("failed", True),
             ("response.mcp_call.failed", False),
             ("response.mcp_list_tools.failed", False),
+            ("item.failed", False),
+            ("tool_failed", False),
             ("response.completed", False),
         ],
     )
@@ -1175,6 +1179,98 @@ class TestReportedServedModel:
 
         assert api_call.metadata["served_model"] == "gpt-served-2"
         assert model.provider_metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.parametrize("how", ["cancel", "timeout"])
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_call_cancelled_after_the_model_was_named_keeps_it(
+        self, how, concurrency_limit
+    ):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+        never = asyncio.Event()
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            await never.wait()
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.output_text.delta","delta":"unreachable"}'
+            )
+
+        model.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        named = asyncio.Event()
+
+        async def consume():
+            async for _chunk in model.stream(api_call=api_call):
+                named.set()
+
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            if how == "timeout":
+                with pytest.raises(TimeoutError):
+                    with anyio.fail_after(0.5):
+                        await consume()
+            else:
+                task = asyncio.create_task(consume())
+                await named.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        assert api_call.status == EventStatus.CANCELLED
+        assert api_call.metadata["served_model"] == "gpt-served-2"
+        assert model.provider_metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_timeout_raised_inside_the_stream_records_no_model(self, concurrency_limit):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            raise asyncio.TimeoutError("read timed out")
+
+        model.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            with pytest.raises(ValueError):
+                [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.status == EventStatus.FAILED
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in model.provider_metadata
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_response_with_a_cancelled_status_is_read(self, concurrency_limit):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.incomplete","response":{"id":"r1",'
+                '"model":"gpt-cancelled-7","status":"cancelled"}}'
+            )
+
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-cancelled-7"
+        assert model.provider_metadata["served_model"] == "gpt-cancelled-7"
 
     @pytest.mark.asyncio
     async def test_a_stream_that_fails_in_transport_records_no_model(self, base_imodel):

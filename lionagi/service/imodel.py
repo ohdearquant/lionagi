@@ -43,6 +43,12 @@ def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
     return RuntimeError(str(err) if err is not None else "stream failed without a recorded cause")
 
 
+# The event types a provider sends when the call itself failed: the Responses API's
+# ``response.failed`` and Codex's ``turn.failed``, and a bare ``failed``. An event about
+# an item inside the call, such as ``response.mcp_call.failed``, is not one of them.
+_CALL_FAILED_EVENT_TYPES = frozenset({"response.failed", "turn.failed", "failed"})
+
+
 class iModel:  # noqa: N801
     """Provider endpoint wrapper with rate-limiting, hooks, and streaming."""
 
@@ -317,17 +323,16 @@ class iModel:  # noqa: N801
     def _event_failed(event: Any) -> bool:
         """Whether a provider event or response says the call failed.
 
-        The event counts as failed when its type names the call failing: it ends
-        in ``failed`` and has at most one dot, so ``response.failed`` counts and
-        ``response.mcp_call.failed``, about an item inside the call, does not. It
+        The event counts as failed when its type is one the provider sends for
+        the call itself failing (``_CALL_FAILED_EVENT_TYPES``); an event about an
+        item inside the call, such as ``response.mcp_call.failed``, does not. It
         also counts when the event itself, its ``message`` or its ``response`` has
         an ``error`` or ``is_error`` that is set, a ``status`` of ``failed``, or a
         choice whose ``finish_reason`` is ``error``.
         """
         if not isinstance(event, dict):
             return False
-        event_type = str(event.get("type", ""))
-        if event_type.endswith("failed") and event_type.count(".") <= 1:
+        if str(event.get("type", "")) in _CALL_FAILED_EVENT_TYPES:
             return True
         for holder in (event, event.get("message"), event.get("response")):
             if not isinstance(holder, dict):
@@ -351,7 +356,7 @@ class iModel:  # noqa: N801
         chunk that is not one. A chunk's provider event is read under
         ``metadata["raw"]``. A CLI system chunk has no such event, so its own
         metadata is read in its place: the whole event for Codex, the session id
-        and model (and tools) for Claude Code and agy.
+        and model for agy, and those and the tools for Claude Code.
         """
         if isinstance(value, StreamChunk):
             if value.type == "error" and value.is_error:
@@ -416,9 +421,10 @@ class iModel:  # noqa: N801
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value reflects whichever call finished last, so under concurrency it is
         never evidence about a particular call. A call that failed records none.
-        A stream its consumer closed early, and a call cancelled or timed out
-        after the provider named its model, have not failed: each keeps the
-        model read from what it delivered.
+        A stream its consumer closed early, and a call cancelled after the
+        provider named its model (a timeout that cancels it included), have not
+        failed: each keeps the model read from what it delivered. A timeout
+        raised inside the stream fails the call, so it records none.
         """
         if api_call is not None and api_call.status == EventStatus.FAILED:
             served_model = None
