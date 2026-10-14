@@ -103,28 +103,45 @@ _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 #: after the process has started; the request refuses first.
 CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 
-# The system prompt reaches the CLI as one argument, ``developer_instructions=<text>``. Linux
-# caps a single argument at 128 KiB and macOS caps the whole argument list, environment
-# included, at 1 MiB, so no supported platform passes a system prompt of this many UTF-8 bytes.
-# A shorter one can still be refused when the process starts, with the operating system's error.
-_SYSTEM_PROMPT_ARGUMENT_MAX_BYTES = 1_048_576
+# The system prompt and each `-c` override reach the CLI as single command-line arguments.
+# macOS refuses an argument list, environment included, past ARG_MAX (1,048,576 bytes from
+# `getconf ARG_MAX`); Linux refuses one argument past MAX_ARG_STRLEN, 32 pages (131,072 bytes
+# with 4 KiB pages). So an argument of this many bytes does not start the CLI on macOS or on
+# Linux with 4 KiB pages. A shorter one can still be refused there when the process starts,
+# with the operating system's error, and larger pages admit more.
+_CLI_ARGUMENT_MAX_BYTES = 1_048_576
 
 
-def _refuse_oversized_cli_inputs(prompt: str, system_prompt: str | None = None) -> None:
+def _refuse_oversized_argument(argument: str, what: str) -> None:
+    size = len(argument.encode("utf-8"))
+    if size >= _CLI_ARGUMENT_MAX_BYTES:
+        raise ValueError(
+            f"{what} reaches the Codex CLI as one command-line argument of {size:,} bytes "
+            f"in UTF-8, and an argument of {_CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not "
+            "start the CLI on macOS or on Linux with 4 KiB pages."
+        )
+
+
+def _refuse_oversized_cli_inputs(
+    prompt: str,
+    system_prompt: str | None = None,
+    config_overrides: dict[str, Any] | None = None,
+) -> None:
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
         raise ValueError(
             f"the Codex turn input is {len(prompt):,} characters, past the CLI's limit of "
             f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A long branch sends its rendered history as "
             "the input: start a new session and hand it the earlier result as a file."
         )
-    if system_prompt is not None:
-        system_prompt_bytes = len(system_prompt.encode("utf-8"))
-        if system_prompt_bytes >= _SYSTEM_PROMPT_ARGUMENT_MAX_BYTES:
-            raise ValueError(
-                f"the Codex system prompt is {system_prompt_bytes:,} bytes in UTF-8. The CLI "
-                "takes it as one command-line argument, and no supported platform passes an "
-                f"argument of {_SYSTEM_PROMPT_ARGUMENT_MAX_BYTES:,} bytes or more."
-            )
+    # Measured as as_cmd_args builds each argument.
+    if system_prompt:
+        _refuse_oversized_argument(f"developer_instructions={system_prompt}", "The system prompt")
+    for key, value in (config_overrides or {}).items():
+        try:
+            encoded = toml_override_value(value)
+        except TypeError:
+            continue  # as_cmd_args refuses the value itself, as before
+        _refuse_oversized_argument(f"{key}={encoded}", f"The config override {key!r}")
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
@@ -552,7 +569,7 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="after")
     def _refuse_a_turn_input_past_the_cli_limit(self):
         # A long branch sends its rendered history with every turn, which can exceed the limit.
-        _refuse_oversized_cli_inputs(self.prompt, self.system_prompt)
+        _refuse_oversized_cli_inputs(self.prompt, self.system_prompt, self.config_overrides)
         return self
 
     @model_validator(mode="after")
@@ -684,7 +701,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     # model_copy(update=...) skips validation, so check again where inputs reach the process.
-    _refuse_oversized_cli_inputs(request.prompt, request.system_prompt)
+    _refuse_oversized_cli_inputs(request.prompt, request.system_prompt, request.config_overrides)
     cmd = [CODEX_CLI, *request.as_cmd_args()]
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.

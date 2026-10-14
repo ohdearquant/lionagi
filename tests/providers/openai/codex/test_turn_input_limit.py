@@ -14,7 +14,14 @@ import pytest
 from lionagi.providers.openai import codex as codex_mod
 from lionagi.providers.openai.codex import CODEX_MAX_TURN_INPUT_CHARS, CodexCodeRequest
 
-SYSTEM_PROMPT_MAX_BYTES = codex_mod._SYSTEM_PROMPT_ARGUMENT_MAX_BYTES
+ARGUMENT_MAX_BYTES = codex_mod._CLI_ARGUMENT_MAX_BYTES
+# developer_instructions=<system prompt> is one argument; the prefix counts toward it.
+PREFIX = len("developer_instructions=")
+
+
+def test_the_limits_are_the_documented_values():
+    assert CODEX_MAX_TURN_INPUT_CHARS == 1_048_576
+    assert ARGUMENT_MAX_BYTES == 1_048_576
 
 
 def test_a_prompt_at_the_limit_is_taken_and_one_past_it_is_refused(tmp_path):
@@ -85,7 +92,7 @@ async def test_a_copied_large_system_prompt_is_refused_before_the_cli_starts(tmp
     monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
     monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
     request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
-        update={"system_prompt": "s" * SYSTEM_PROMPT_MAX_BYTES}
+        update={"system_prompt": "s" * (ARGUMENT_MAX_BYTES - PREFIX)}
     )
 
     with pytest.raises(ValueError, match="system prompt.*command-line argument"):
@@ -93,28 +100,65 @@ async def test_a_copied_large_system_prompt_is_refused_before_the_cli_starts(tmp
             pass
 
 
-def test_a_system_message_no_platform_passes_as_one_argument_is_refused(tmp_path):
+def test_a_system_message_too_long_for_one_argument_is_refused(tmp_path):
     with pytest.raises(ValueError, match="system prompt.*command-line argument"):
         CodexCodeRequest(
             messages=[
-                {"role": "system", "content": "s" * SYSTEM_PROMPT_MAX_BYTES},
+                {"role": "system", "content": "s" * (ARGUMENT_MAX_BYTES - PREFIX)},
                 {"role": "user", "content": "hi"},
             ],
             repo=tmp_path,
         )
 
 
-def test_the_system_prompt_bound_counts_utf8_bytes(tmp_path):
-    """The system prompt is a command-line argument, which the operating system measures in
-    bytes, so the bound is in bytes where the turn input's is in characters."""
-    just_under = "s" * (SYSTEM_PROMPT_MAX_BYTES - 1)
+def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
+    """The bound is on developer_instructions=<system prompt>, in UTF-8 bytes, which is what
+    the operating system measures; the turn input is bounded in characters."""
+    just_under = "s" * (ARGUMENT_MAX_BYTES - PREFIX - 1)
     request = CodexCodeRequest(prompt="hi", system_prompt=just_under, repo=tmp_path)
     assert request.system_prompt == just_under
+    argument = next(a for a in request.as_cmd_args() if a.startswith("developer_instructions="))
+    assert len(argument.encode("utf-8")) == ARGUMENT_MAX_BYTES - 1
 
-    wide = "漢" * (SYSTEM_PROMPT_MAX_BYTES // 3 + 1)
-    assert len(wide) < SYSTEM_PROMPT_MAX_BYTES < len(wide.encode("utf-8"))
-    with pytest.raises(ValueError, match=f"{len(wide.encode('utf-8')):,} bytes in UTF-8"):
+    with pytest.raises(ValueError, match=f"argument of {ARGUMENT_MAX_BYTES:,} bytes"):
+        CodexCodeRequest(prompt="hi", system_prompt=just_under + "s", repo=tmp_path)
+
+    wide = "漢" * ((ARGUMENT_MAX_BYTES - PREFIX) // 3 + 1)
+    assert len(wide) < ARGUMENT_MAX_BYTES < len(wide.encode("utf-8")) + PREFIX
+    size = len(wide.encode("utf-8")) + PREFIX
+    with pytest.raises(ValueError, match=f"argument of {size:,} bytes in UTF-8"):
         CodexCodeRequest(prompt="hi", system_prompt=wide, repo=tmp_path)
+
+
+def test_a_config_override_too_long_for_one_argument_is_refused(tmp_path):
+    """A `-c key=value` override is one argument too, developer_instructions included."""
+    key = "developer_instructions"
+    # toml_override_value quotes a string: two quote characters.
+    fits = "s" * (ARGUMENT_MAX_BYTES - len(key) - 1 - 2 - 1)
+    request = CodexCodeRequest(prompt="hi", config_overrides={key: fits}, repo=tmp_path)
+    argument = next(a for a in request.as_cmd_args() if a.startswith(f"{key}="))
+    assert len(argument.encode("utf-8")) == ARGUMENT_MAX_BYTES - 1
+
+    with pytest.raises(ValueError, match="config override 'developer_instructions'"):
+        CodexCodeRequest(prompt="hi", config_overrides={key: fits + "s"}, repo=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_a_copied_large_config_override_is_refused_before_the_cli_starts(
+    tmp_path, monkeypatch
+):
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("the Codex CLI was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"config_overrides": {"k": "v" * ARGUMENT_MAX_BYTES}}
+    )
+
+    with pytest.raises(ValueError, match="config override 'k'"):
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
 
 
 @pytest.mark.asyncio
