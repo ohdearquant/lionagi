@@ -20,7 +20,7 @@ import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -146,8 +146,11 @@ FINISHED_AT_UPPER_BOUND = "upper_bound"
 RECORD_ABSENT = "absent"
 LOCK_UNAVAILABLE = "lock_unavailable"
 
-# Orphan-observer evidence, deliberately bounded to kind + finding — no argv,
-# environment, logs, or secrets belong on a record any caller may read back.
+# Orphan-observer evidence: kind + finding, plus what the conclusion was based
+# on (the create-time reads compared, the tolerance, when it was observed, and
+# which server observed it) — bounded to process-identity facts, never argv,
+# environment, logs, or secrets, since this is a record any caller may read
+# back. See docs/internals/mcp.md#liveness-findings for the evidence keys.
 EVIDENCE_PROCESS_GONE = "process_identity_conclusively_gone"
 
 # The only findings that positively establish a run's process is gone and admit
@@ -158,6 +161,27 @@ FINDING_PID_RECYCLED = "pid_recycled"
 CONCLUSIVE_FINDINGS = frozenset(
     {FINDING_PID_ABSENT, FINDING_DISAPPEARED_DURING_PROBE, FINDING_PID_RECYCLED}
 )
+
+# A single mismatch between a live read and the recorded start time is not
+# enough to call a process gone. Two live reads must agree before the marker
+# check below can establish that another process now holds the pid.
+FINDING_IDENTITY_UNSTABLE = "identity_unstable"
+
+# Two live reads agreeing with each other, both mismatching the recorded start
+# time, prove the two reads agree — not that the single spawn-time read the
+# record carries was the accurate one. Before that is read as `pid_recycled`,
+# the marker inherited from this run's process (`config.JOB_MARKER_ENV_VAR`)
+# is consulted. `identity_confirmed_by_marker`
+# is what a match against this run's own id produces: alive, not reaped, and
+# the record's own `pid_create_time` is the one worth treating as suspect.
+# `identity_unconfirmed` is a marker read that could not rule anything in or
+# out — an unreadable environment, or one with no marker at all, which a
+# platform may hand back for a protected process without that meaning the
+# marker is genuinely absent (see `process_marker`'s own docstring). Neither
+# is in CONCLUSIVE_FINDINGS: only a marker naming a *different* run still
+# reads as `pid_recycled`.
+FINDING_IDENTITY_CONFIRMED_BY_MARKER = "identity_confirmed_by_marker"
+FINDING_IDENTITY_UNCONFIRMED = "identity_unconfirmed"
 
 # Name of the per-run mutation lock, kept beside the record it guards.
 _LOCK_NAME = "job.lock"
@@ -879,6 +903,11 @@ class NotifySenderResolutionError(RuntimeError):
     """The submitting directory's actor could not be resolved for admission."""
 
 
+def _status_text(value: Any) -> str:
+    """Keep open status values intact while replacing malformed values safely."""
+    return value if isinstance(value, str) else "unknown"
+
+
 def _outcome_for(status: Any) -> str:
     """How a terminal run came out, from the status the CLI recorded.
 
@@ -886,9 +915,9 @@ def _outcome_for(status: Any) -> str:
     whether it ended. An unrecognized status classifies as failure — a stale
     success list would otherwise read a timeout back as a success.
     """
-    if status in _SUCCEEDED_STATUSES:
+    if isinstance(status, str) and status in _SUCCEEDED_STATUSES:
         return "succeeded"
-    if status in _CANCELLED_STATUSES:
+    if isinstance(status, str) and status in _CANCELLED_STATUSES:
         return "cancelled"
     return "failed"
 
@@ -921,7 +950,7 @@ def _derive(
             "possibly_orphaned": False,
         }
 
-    recorded = job.get("status", "unknown")
+    recorded = _status_text(job.get("status", "unknown"))
     spawn_state = job.get("spawn_state")
 
     if spawn_state == "failed":
@@ -959,7 +988,7 @@ def _derive(
     # Process gone (or never there), sidecar records no end. The lifecycle
     # store is the only place `li kill` records an end (it writes nothing here).
     if lifecycle is not None and lifecycle.get("terminal"):
-        lifecycle_status = lifecycle.get("status", recorded)
+        lifecycle_status = _status_text(lifecycle.get("status", recorded))
         return {
             "status": lifecycle_status,
             "terminal": True,
@@ -1440,6 +1469,16 @@ def _cache_lifecycle_end(
     between the lifecycle store and the terminal hook wins. A failed write here
     is not an error (it's a cache; the next observation just asks again); the
     in-memory record is returned either way so this call is what classifies.
+
+    The first recorded terminal state remains authoritative, including an
+    orphan reap's `indeterminate` (`terminal_source == mcp_orphan_reaper`): a
+    lifecycle end reported here after a reap has already latched does not
+    replace it — reached by a different race than `mark_terminal`'s own late
+    report, this read started before the reap and lost the lock to it. What
+    it can still do is leave a record of itself beside the latch: the first
+    such late report is kept in `late_report`, bounded to what it reported, so
+    the contradiction is visible without moving anything the reap already
+    wrote.
     """
     if job is None or lifecycle is None or not lifecycle.get("terminal"):
         return job
@@ -1448,13 +1487,15 @@ def _cache_lifecycle_end(
     # that does not leaves the same gap the reaper has, and the same substituted
     # value: now, standing in for a moment nobody recorded.
     observed_end = _iso_from_epoch(ended)
+    status = _status_text(lifecycle.get("status", job.get("status")))
+    reason_code = lifecycle.get("reason_code")
     fields = {
-        "status": lifecycle.get("status", job.get("status")),
+        "status": status,
         "finished_at": observed_end or _now_iso(),
         "finished_at_precision": (
             FINISHED_AT_OBSERVED if observed_end else FINISHED_AT_UPPER_BOUND
         ),
-        "reason_code": lifecycle.get("reason_code"),
+        "reason_code": reason_code,
         "terminal_source": TERMINAL_SOURCE_LIFECYCLE,
     }
     updated = {**job, **fields}
@@ -1467,11 +1508,40 @@ def _cache_lifecycle_end(
             if current is None:
                 return updated
             if current.get("finished_at") is not None:
+                if current.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER:
+                    _note_late_report(
+                        current, source="lifecycle", status=status, reason_code=reason_code
+                    )
                 return current
             current.update(fields)
             return current
     except OSError:
         return updated
+
+
+_LATE_REPORT_FIELD = "late_report"
+
+
+def _note_late_report(
+    record: dict[str, Any], *, source: str, status: Any, reason_code: str | None
+) -> None:
+    """Record a report that reached an already reaper-latched record.
+
+    First late report wins, same discipline as the latch itself: a second one
+    is dropped rather than overwriting the first. Bounded to the same shape
+    every time — no payloads, no raw lifecycle/CLI objects — since this sits
+    beside `terminal_evidence` on a record any caller may read back.
+    """
+    if _LATE_REPORT_FIELD in record:
+        return
+    status = _status_text(status)
+    record[_LATE_REPORT_FIELD] = {
+        "source": source,
+        "status": status,
+        "outcome": _outcome_for(status),
+        "reason_code": reason_code,
+        "reported_at": _now_iso(),
+    }
 
 
 def _iso_from_epoch(value: Any) -> str | None:
@@ -1505,12 +1575,20 @@ class ProcessLiveness:
     value that may end a run; ``"unknown"`` (an unaskable pid, a denied read)
     can never end one — a case added later is inconclusive until explicitly
     added to `CONCLUSIVE_FINDINGS`, never by exclusion. ``finding`` names which
-    observation produced the conclusion.
+    observation produced the conclusion. ``observed_create_time`` is the live
+    create-time read this conclusion turned on (None where no live read was
+    the deciding fact, e.g. `pid_absent`) — carried so a reap can put it in
+    the terminal evidence without re-probing under the lock. ``marker`` is the
+    foreign run id a `pid_recycled` conclusion read from the marker inherited
+    by the process at this pid (None otherwise) — carried the same way, so the
+    evidence behind a recycled-pid reap names the run the process descends from.
     """
 
     alive: bool
     conclusion: LivenessConclusion
     finding: str
+    observed_create_time: float | None = None
+    marker: str | None = None
 
 
 # Internal finding -> public `pid_identity` value; keeps the two vocabularies
@@ -1521,11 +1599,26 @@ _PID_IDENTITY_BY_FINDING: dict[str, str | None] = {
     FINDING_DISAPPEARED_DURING_PROBE: "gone",
     FINDING_PID_RECYCLED: "recycled",
     "identity_confirmed": "confirmed",
+    FINDING_IDENTITY_CONFIRMED_BY_MARKER: "confirmed",
     "identity_not_recorded": "not_recorded",
     "identity_unusable": "unusable",
     "identity_unreadable": "unreadable",
     "no_record": None,
+    FINDING_IDENTITY_UNSTABLE: "unstable",
+    FINDING_IDENTITY_UNCONFIRMED: "unconfirmed",
 }
+
+
+def _identity_is_confirmed(finding: str) -> bool:
+    """Whether *finding* settled that the live process is this run's.
+
+    Read off `_PID_IDENTITY_BY_FINDING` rather than compared against a literal:
+    two findings confirm identity (a matching start time, and a start time that
+    did not match beside a marker that did), and a caller naming only the first
+    silently drops the second. The marker case is the one that matters most
+    here, since it is reached exactly when the start times disagree.
+    """
+    return _PID_IDENTITY_BY_FINDING.get(finding) == "confirmed"
 
 
 def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> ProcessLiveness:
@@ -1567,8 +1660,46 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> Proces
     if state != "found" or live_created is None:
         return ProcessLiveness(True, "unknown", "identity_unreadable")
     if _start_time_matches(live_created, spawned_at):
-        return ProcessLiveness(True, "alive", "identity_confirmed")
-    return ProcessLiveness(False, "process_gone", FINDING_PID_RECYCLED)
+        return ProcessLiveness(True, "alive", "identity_confirmed", live_created)
+
+    # One mismatch is not enough: a single stray read has ended a live run
+    # whose later reads all matched the record exactly. A second fresh read settles
+    # it — if it also says the process is gone, that's the existing
+    # disappeared-during-probe finding; if it disagrees with the first live
+    # read, the probe itself is unreliable right now and settles nothing; only
+    # when both live reads agree with each other, and both still mismatch the
+    # record, does a live process actually hold the pid — and that proves only
+    # that the two live reads agree with each other, not that the single
+    # spawn-time read the record carries was the accurate one. Identity is
+    # settled from a third source, the marker inherited from the run, before anything
+    # is reaped on it.
+    second_state, second_created = _process_create_time(asked)
+    if second_state == "gone":
+        return ProcessLiveness(False, "process_gone", FINDING_DISAPPEARED_DURING_PROBE)
+    if second_state != "found" or second_created is None or second_created != live_created:
+        return ProcessLiveness(True, "unknown", FINDING_IDENTITY_UNSTABLE, live_created)
+
+    marker_state, marker = _process_marker(asked)
+    # Bracket the marker read the same way `kill` brackets its own (see
+    # `_signal_leader_group`): re-read the create time and require it to still
+    # equal the live value, so the marker answer describes the same process
+    # the two prior reads did rather than a process that has since been
+    # replaced at this pid.
+    bracket_state, bracket_created = _process_create_time(asked)
+    if bracket_state != "found" or bracket_created is None or bracket_created != live_created:
+        return ProcessLiveness(True, "unknown", FINDING_IDENTITY_UNSTABLE, live_created)
+
+    run_id = job.get("run_id")
+    if marker_state == "found" and marker is not None and marker == run_id:
+        return ProcessLiveness(True, "alive", FINDING_IDENTITY_CONFIRMED_BY_MARKER, live_created)
+    if marker_state == "found" and marker is not None:
+        return ProcessLiveness(
+            False, "process_gone", FINDING_PID_RECYCLED, live_created, marker=marker
+        )
+    # marker_state == "unknown", or "found" with a None value: neither rules
+    # this run in or out (a None marker read can never assert "not ours" —
+    # see `process_marker`'s own docstring), so nothing is reaped on it.
+    return ProcessLiveness(True, "unknown", FINDING_IDENTITY_UNCONFIRMED, live_created)
 
 
 @dataclass(frozen=True)
@@ -1602,7 +1733,117 @@ def _notice_recorded_undelivered(run_id: str) -> bool:
     return isinstance(outcome, dict) and outcome.get("ok") is False
 
 
-def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
+# Per-key type check for `evidence=` on `reap_orphan`: this is a record any
+# caller may read back, so an unbounded `dict.update` would let a caller stamp
+# arbitrary keys (including an override of `kind`/`finding` themselves) onto a
+# terminal fact. Each entry names the keys this branch's evidence actually
+# populates and the shape each one is allowed to take; nothing outside this
+# set is accepted, and neither reserved key may be supplied at all.
+_EVIDENCE_VALUE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "observed_create_time": lambda v: v is None or _is_plain_number(v),
+    "recorded_create_time": lambda v: v is None or _is_plain_number(v),
+    "tolerance": lambda v: v is None or _is_plain_number(v),
+    "observed_at": lambda v: v is None or (isinstance(v, str) and len(v) <= 64),
+    "observer": lambda v: v is None or _is_short_string_map(v),
+    "marker": lambda v: v is None or (isinstance(v, str) and len(v) <= 256),
+}
+
+# Never accepted in *evidence*: these two are `reap_orphan`'s own to set, and
+# admitting either from a caller would let a terminal record misreport what
+# kind of end it was, or which finding produced it.
+_EVIDENCE_RESERVED_KEYS = frozenset({"kind", "finding"})
+
+
+def _is_plain_number(value: Any) -> bool:
+    """A real, finite number — not a bool, and not a NaN or an infinity.
+
+    Finiteness is part of the type check rather than a separate concern because
+    of where these values end up. Evidence is persisted and then read back by
+    `job.status` and `job.list`, and `json.dumps` writes a non-finite float as
+    the bare tokens `NaN` / `Infinity`, which are not JSON. Python's own
+    `json.loads` accepts them, so nothing inside this process notices; a strict
+    reader on the other end of the protocol cannot parse the response at all.
+    One such value therefore poisons every later read of that record, for as
+    long as it is stored.
+
+    A caller can reach this: `json.loads` admits those same tokens on the way
+    in, so `Infinity` arrives as a float and passes an `isinstance` test.
+
+    `math.isfinite` is asked inside a `try` because it converts to float before
+    it answers, and an integer past float range makes that conversion raise
+    rather than return. Python's ints are unbounded and JSON's are too, so a
+    309-digit `pid_create_time` is a valid document that `json.loads` hands back
+    as an `int` — and the sanitizer that exists so a bad persisted value cannot
+    take down a read would have raised out of `job.status` and `job.list` on
+    exactly the value it was written to drop. Answering False is also what the
+    record's own identity check already answers for it (`identity_unusable`,
+    which catches the same `OverflowError` around the same conversion): these
+    fields are POSIX times, and one that cannot act as a float cannot act as one
+    here either.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _is_short_string_map(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) <= 8
+        and all(
+            isinstance(k, str) and isinstance(v, str) and len(v) <= 256 for k, v in value.items()
+        )
+    )
+
+
+def _sanitized_reap_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """*evidence* with every value its own check rejects dropped rather than raised on.
+
+    For evidence this module assembles itself, where the values come from the
+    record on disk and from a process that may not be this run's. Both are
+    outside the caller's control, so neither can be treated as a caller error:
+    a record whose ``pid_create_time`` did not survive as a number, and a
+    stranger's over-long marker, would otherwise raise out of a read and take
+    the whole listing with them, while leaving the run permanently unreapable.
+
+    `_validate_reap_evidence` stays strict for its actual purpose — an external
+    caller stamping arbitrary keys onto a terminal fact. Dropping a key here
+    loses one diagnostic field; raising loses the transition and the read.
+    """
+    kept = {}
+    for key, value in evidence.items():
+        check = _EVIDENCE_VALUE_CHECKS.get(key)
+        if check is not None and check(value):
+            kept[key] = value
+    return kept
+
+
+def _validate_reap_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
+    """Reject anything *evidence* isn't allowed to carry, before the lock.
+
+    Unknown keys and any attempt to override ``kind``/``finding`` both raise
+    ``ValueError`` — the whole point of validating ahead of the lock is that a
+    rejected call never touches the record it was aimed at.
+    """
+    if not evidence:
+        return {}
+    for key, value in evidence.items():
+        if key in _EVIDENCE_RESERVED_KEYS:
+            raise ValueError(f"evidence may not set reserved key {key!r}")
+        check = _EVIDENCE_VALUE_CHECKS.get(key)
+        if check is None:
+            raise ValueError(f"evidence has unknown key {key!r}")
+        if not check(value):
+            raise ValueError(f"evidence key {key!r} has an unsupported value")
+    return dict(evidence)
+
+
+def reap_orphan(
+    run_id: str, *, finding: str, observed_at: str, evidence: dict[str, Any] | None = None
+) -> ReapResult:
     """Publish the end of a run whose process is conclusively gone.
 
     Idempotent, safe to call from every observer at once. The whole check runs
@@ -1615,9 +1856,20 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
     lock. ``finished_at`` is *observed_at* — when the loss was established, not
     the unknowable moment the process actually exited. Notification runs after
     this returns, outside the lock, and is the winner's to attempt.
+
+    *evidence*, when given, is merged onto ``terminal_evidence`` beside
+    ``kind``/``finding`` — the create-time reads compared, the tolerance, and
+    who observed it, so a later contradiction is diagnosable from the record
+    alone rather than needing the vanished process back. Optional and never
+    required to identify what wrote a value here: a caller with nothing beyond
+    the finding (a test invoking this directly, for instance) still reaps with
+    the bounded two-key evidence this always carried. Validated against
+    `_EVIDENCE_VALUE_CHECKS` before the lock is taken — an invalid *evidence*
+    raises `ValueError` and writes nothing.
     """
     if finding not in CONCLUSIVE_FINDINGS:
         return ReapResult(False, None, "finding_is_not_conclusive")
+    validated_evidence = _validate_reap_evidence(evidence)
 
     with _locked_job(run_id) as guard:
         job = guard.record
@@ -1634,6 +1886,8 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
             if _notice_recorded_undelivered(run_id)
             else LOST_REASON
         )
+        terminal_evidence = {"kind": EVIDENCE_PROCESS_GONE, "finding": finding}
+        terminal_evidence.update(validated_evidence)
         job.update(
             {
                 "status": "exited",
@@ -1642,7 +1896,7 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
                 "finished_at": observed_at,
                 "finished_at_precision": FINISHED_AT_UPPER_BOUND,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
-                "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
+                "terminal_evidence": terminal_evidence,
                 "notify_delivery": {"attempted": False},
             }
         )
@@ -1713,8 +1967,26 @@ def _reap_if_conclusively_gone(
     """
     if not _admits_orphan_reap(job, liveness):
         return job
+    observed_at = _now_iso()
+    # Sanitized, not validated: two of these come from outside this call's
+    # control — the recorded start time is whatever survived in the record on
+    # disk, and the marker is read from a process that by this point is
+    # probably not this run's. A value either of them cannot supply well-formed
+    # is a missing diagnostic field, never a reason to abandon the transition.
+    evidence = _sanitized_reap_evidence(
+        {
+            "observed_create_time": liveness.observed_create_time,
+            "recorded_create_time": (job or {}).get("pid_create_time"),
+            "tolerance": _CREATE_TIME_TOLERANCE,
+            "observed_at": observed_at,
+            "observer": _server_identity(),
+            "marker": liveness.marker,
+        }
+    )
     try:
-        result = reap_orphan(run_id, finding=liveness.finding, observed_at=_now_iso())
+        result = reap_orphan(
+            run_id, finding=liveness.finding, observed_at=observed_at, evidence=evidence
+        )
     except OSError:
         return job  # transition unpublishable; next observation retries
     if result.record is None:
@@ -1748,6 +2020,25 @@ def status(run_id: str) -> dict[str, Any]:
     job = _reap_if_conclusively_gone(run_id, job, liveness)
 
     derived = _derive(job, alive, lifecycle)
+    # The reap above only fires on a record not yet terminal; a record already
+    # reaper-terminal from an earlier call keeps that end no matter what this
+    # call's own fresh probe finds (see #status-response-contract) — but a
+    # probe that now confirms the process's identity is a fact worth a caller
+    # knowing about, not one to leave buried in two fields that happen to
+    # disagree.
+    reap_contradicted_by_fresh_probe = (
+        job is not None
+        and job.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER
+        and _identity_is_confirmed(liveness.finding)
+    )
+    # The same contradiction, reached the other way: not this call's own
+    # probe, but a late report from the run's actual owner (the hook or the
+    # lifecycle store) that arrived after the reap had already latched.
+    reap_contradicted_by_owner_report = (
+        job is not None
+        and job.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER
+        and job.get(_LATE_REPORT_FIELD) is not None
+    )
     notify_delivery = (job or {}).get("notify_delivery")
     if notify_delivery is None and derived["terminal"]:
         notify_delivery = {"attempted": False}
@@ -1775,6 +2066,9 @@ def status(run_id: str) -> dict[str, Any]:
         "possibly_orphaned": derived["possibly_orphaned"],
         "terminal_source": (job or {}).get("terminal_source"),
         "terminal_evidence": (job or {}).get("terminal_evidence"),
+        "reap_contradicted_by_fresh_probe": reap_contradicted_by_fresh_probe,
+        "reap_contradicted_by_owner_report": reap_contradicted_by_owner_report,
+        "late_report": (job or {}).get(_LATE_REPORT_FIELD),
         "alive": alive,
         "pid_identity": _PID_IDENTITY_BY_FINDING.get(liveness.finding),
         "liveness_conclusion": liveness.conclusion,
@@ -2495,17 +2789,31 @@ def mark_terminal(run_id: str, cli_status: str, *, reason_code: str | None = Non
     The CLI's terminal status is trusted and recorded verbatim, never matched
     against a local set (an earlier version's fallback-to-`"completed"` on any
     miss silently turned `timed_out`/`cancelled`/`aborted`/`completed_empty`
-    into a false success). First-writer-wins: a record that already carries an
-    end (a kill, a lifecycle-cached end, an orphan transition published while
-    this hook was starting) keeps it — this call reports what's there rather
-    than replacing it, though its own delivery attempt still goes ahead.
+    into a false success). First-writer-wins for every other end: a record
+    that already carries one (a kill, a lifecycle-cached end, another hook
+    call) keeps it — this call reports what's there rather than replacing it,
+    though its own delivery attempt still goes ahead.
+
+    The one apparent exception is an end this server inferred rather than one
+    anybody reported (`terminal_source == mcp_orphan_reaper`, from a liveness
+    probe that read the process as conclusively gone). This call is the run's
+    own process saying it did not end when the reaper concluded that — but the
+    first recorded end remains in place regardless of who wrote it, including the
+    reaper's own `indeterminate`, so this does not replace the reap the way it
+    once did. What it does instead is leave a record of itself beside the
+    latch: the first such late report is kept in `late_report`, so the
+    contradiction is visible without moving anything the reap already wrote.
+    A second late report is dropped, same as the latch itself.
     """
+    cli_status = _status_text(cli_status)
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None:
             return WriteResult(job, guard.state)
         job.setdefault("notify_delivery", {"attempted": False})
         if job.get("finished_at") is not None:
+            if job.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER:
+                _note_late_report(job, source="hook", status=cli_status, reason_code=reason_code)
             return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status

@@ -27,10 +27,12 @@ class APICalling(HookedEvent):
 
     payload: dict = Field(..., description="Request payload to send to the API")
 
+    # Carries the authorization header, so it stays out of repr()/str() as well as dumps.
     headers: dict = Field(
         default_factory=dict,
         description="Additional headers for the request",
         exclude=True,
+        repr=False,
     )
 
     call_kwargs: dict = Field(

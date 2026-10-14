@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from lionagi.cli.orchestrate._orchestration import (
+    _warn_worker_config_collision,
     build_worker_branch,
     casts_role_system,
     mode_roster,
@@ -107,6 +108,171 @@ def test_role_config_model_unset_in_default_pack():
     assert role_config("critic").model is None
 
 
+def test_casts_reference_describes_model_and_mode_fallbacks():
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[3] / "docs/reference/casts.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "role name when a profile has no model" in doc
+    assert "without a profile, the orchestration default applies" in doc
+    assert "only when `modes_allow` is non-empty" in doc
+
+
+@pytest.mark.parametrize(
+    (
+        "case",
+        "role",
+        "model_override",
+        "effort_override",
+        "prompt_override",
+        "modes",
+        "raw_body",
+        "expected",
+    ),
+    [
+        (
+            "worker model override",
+            "researcher",
+            "openai/task-model",
+            None,
+            None,
+            None,
+            "profile prompt",
+            "model=worker override",
+        ),
+        (
+            "effort override",
+            "researcher",
+            None,
+            "high",
+            None,
+            None,
+            "profile prompt",
+            "effort=orchestration override",
+        ),
+        (
+            "mode override without allowlist",
+            "researcher",
+            None,
+            None,
+            None,
+            ["adversarial"],
+            "profile prompt",
+            "modes=task override",
+        ),
+        (
+            "prompt override",
+            "researcher",
+            None,
+            None,
+            "task prompt",
+            None,
+            "profile prompt",
+            "prompt=worker override",
+        ),
+        (
+            "casts role prompt",
+            "critic",
+            None,
+            None,
+            None,
+            None,
+            "",
+            "prompt=cast role with pack policy",
+        ),
+        (
+            "generic prompt",
+            "custom_worker",
+            None,
+            None,
+            None,
+            None,
+            "",
+            "prompt=generic worker",
+        ),
+    ],
+)
+def test_collision_notice_names_resolved_sources(
+    monkeypatch,
+    case,
+    role,
+    model_override,
+    effort_override,
+    prompt_override,
+    modes,
+    raw_body,
+    expected,
+):
+    from types import SimpleNamespace
+
+    from lionagi.casts.pack import Pack, RoleConfig
+
+    pack = Pack(name="selected", configs={role: RoleConfig()})
+    resolved_modes = resolve_modes(role, modes, pack) if modes else None
+    profile = SimpleNamespace(
+        name=role,
+        model="openai/profile-model",
+        effort="medium",
+        raw_body=raw_body,
+    )
+    env = SimpleNamespace(
+        bare=False,
+        effort=effort_override,
+        pack=pack,
+    )
+    notices = []
+    monkeypatch.setattr("lionagi.cli.orchestrate._orchestration.warn", notices.append)
+
+    _warn_worker_config_collision(
+        env,
+        role,
+        model_override=model_override,
+        system_prompt_override=prompt_override,
+        modes=resolved_modes,
+        profile=profile,
+        pack_config=pack.config(role),
+    )
+
+    assert len(notices) == 1, case
+    assert expected in notices[0], case
+    if case == "mode override without allowlist":
+        assert "validated by pack" not in notices[0]
+
+
+def test_collision_notice_is_emitted_once_per_environment(monkeypatch):
+    from types import SimpleNamespace
+
+    from lionagi.casts.pack import Pack, RoleConfig
+
+    role = "researcher"
+    pack = Pack(name="selected", configs={role: RoleConfig()})
+    profile = SimpleNamespace(
+        name=role,
+        model="openai/profile-model",
+        effort="medium",
+        raw_body="profile prompt",
+    )
+    notices = []
+    monkeypatch.setattr("lionagi.cli.orchestrate._orchestration.warn", notices.append)
+
+    for _ in range(2):
+        env = SimpleNamespace(bare=False, effort=None, pack=pack)
+        for _ in range(2):
+            _warn_worker_config_collision(
+                env,
+                role,
+                model_override=None,
+                system_prompt_override=None,
+                modes=None,
+                profile=profile,
+                pack_config=pack.config(role),
+            )
+
+    assert len(notices) == 2
+
+
 @pytest.mark.asyncio
 async def test_selected_pack_reaches_worker_prompt(tmp_path, monkeypatch):
     from types import SimpleNamespace
@@ -165,6 +331,176 @@ async def test_selected_pack_reaches_worker_prompt(tmp_path, monkeypatch):
     )
 
     assert "selected-pack-worker-boundary" in branch.system.rendered
+
+
+@pytest.mark.asyncio
+async def test_pack_profile_collision_discloses_each_setting_source(tmp_path, monkeypatch):
+    """A same-named pack role/profile must not silently compose two configs."""
+    from types import SimpleNamespace
+
+    from lionagi import iModel
+    from lionagi.casts.pack import Pack, RoleConfig
+    from lionagi.cli._providers import AgentProfile
+
+    class _Session:
+        def include_branches(self, _branch):
+            pass
+
+    profile = AgentProfile(
+        name="researcher",
+        model="openai/profile-model",
+        effort="high",
+        system_prompt="profile-authored prompt",
+        raw_body="profile-authored prompt",
+    )
+    pack = Pack(
+        name="selected",
+        configs={
+            "researcher": RoleConfig(
+                model="openai/pack-model",
+                effort="low",
+                default_modes=("adversarial",),
+                modes_allow=("adversarial",),
+            )
+        },
+    )
+    env = SimpleNamespace(
+        run=SimpleNamespace(agent_artifact_dir=lambda name: tmp_path / name),
+        worker_artifact_dirs={},
+        session=_Session(),
+        default_model_spec="openai/default-model",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=str(tmp_path),
+        team_data=None,
+        exchange=None,
+        messenger=None,
+        roster=None,
+        messenger_names=None,
+        pack=pack,
+        _live_persist=None,
+        register_name=lambda _name: None,
+    )
+    monkeypatch.setattr(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        lambda *_a, **_kw: iModel(provider="openai", model="gpt-4o-mini", api_key="dummy-key"),
+    )
+    monkeypatch.setattr(
+        "lionagi.cli.orchestrate._orchestration.load_agent_profile", lambda _name: profile
+    )
+    notices: list[str] = []
+    monkeypatch.setattr("lionagi.cli.orchestrate._orchestration.warn", notices.append)
+
+    await build_worker_branch(
+        env,
+        agent_id="researcher",
+        role="researcher",
+        explicit_name="researcher",
+    )
+    await build_worker_branch(
+        env,
+        agent_id="researcher-2",
+        role="researcher",
+        explicit_name="researcher-2",
+    )
+
+    assert len(notices) == 1
+    notice = notices[0]
+    assert "pack 'selected'" in notice
+    assert "profile 'researcher'" in notice
+    assert "model=pack" in notice
+    assert "effort=profile" in notice
+    assert "modes=pack" in notice
+    assert "prompt=profile" in notice
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_model", [None, ""])
+async def test_pack_profile_collision_model_source_is_profile_when_profile_has_no_model(
+    tmp_path, monkeypatch, profile_model
+):
+    """When the profile contributes no model, the resolved model is the role name
+    (via resolve_worker_spec's fallback), not the orchestration default -- the
+    disclosure must say so. Both spellings of "no model" are covered: the field
+    absent (None) and the field present but empty, which YAML admits and which
+    `profile.model or token` treats identically."""
+    from types import SimpleNamespace
+
+    from lionagi import iModel
+    from lionagi.casts.pack import Pack, RoleConfig
+    from lionagi.cli._providers import AgentProfile
+
+    class _Session:
+        def include_branches(self, _branch):
+            pass
+
+    profile = AgentProfile(
+        name="researcher",
+        model=profile_model,
+        effort="high",
+        system_prompt="profile-authored prompt",
+        raw_body="profile-authored prompt",
+    )
+    pack = Pack(
+        name="selected",
+        configs={
+            "researcher": RoleConfig(
+                effort="low",
+                default_modes=("adversarial",),
+                modes_allow=("adversarial",),
+            )
+        },
+    )
+    env = SimpleNamespace(
+        run=SimpleNamespace(agent_artifact_dir=lambda name: tmp_path / name),
+        worker_artifact_dirs={},
+        session=_Session(),
+        default_model_spec="openai/default-model",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=str(tmp_path),
+        team_data=None,
+        exchange=None,
+        messenger=None,
+        roster=None,
+        messenger_names=None,
+        pack=pack,
+        _live_persist=None,
+        register_name=lambda _name: None,
+    )
+    monkeypatch.setattr(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        lambda *_a, **_kw: iModel(provider="openai", model="gpt-4o-mini", api_key="dummy-key"),
+    )
+    monkeypatch.setattr(
+        "lionagi.cli.orchestrate._orchestration.load_agent_profile", lambda _name: profile
+    )
+    notices: list[str] = []
+    monkeypatch.setattr("lionagi.cli.orchestrate._orchestration.warn", notices.append)
+
+    await build_worker_branch(
+        env,
+        agent_id="researcher",
+        role="researcher",
+        explicit_name="researcher",
+    )
+
+    assert len(notices) == 1
+    notice = notices[0]
+    # The role name is what actually resolves as the model spec here (see
+    # resolve_worker_spec), never the orchestration default -- pin that.
+    assert "model=orchestration default" not in notice
+    assert "model=profile (no effective model; role name used as spec)" in notice
 
 
 @pytest.mark.asyncio

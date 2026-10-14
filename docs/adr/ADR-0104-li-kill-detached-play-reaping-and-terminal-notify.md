@@ -1,6 +1,6 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
-- **Status**: Accepted (2026-07-15), amended 2026-07-27 — see Amendment 1
+- **Status**: Accepted (2026-07-15), amended 2026-07-27 and 2026-10-11 — see Amendments 1 and 2
 - **Kind**: Aspirational (records the target state)
 - **Implementation-status**: partial — D3/D5 (terminal-notify on kill) are on main;
   D1/D2 (play-worker reaping) shipped code that cannot reach a worker; that code is
@@ -69,6 +69,72 @@ anyone reading only this amendment would fix one.
 missing link written at play-creation time. That is a capability change with its
 own design question (which writer owns the binding, and what a play with several
 worker sessions means), tracked separately. This amendment does not decide it.
+
+## Amendment 2 (2026-10-11) — a run whose persistence setup failed is stopped by its run id
+
+`li agent` keeps running when its persistence setup fails (a locked state database is the
+common cause): it records `persistence_degraded_reason` on its run.json and goes on with no
+session, since setup returned none. Every id `li kill` resolves is a row, so such a run had
+no handle printed for it: its run id named no row, and the only row it could have is one
+setup committed before it failed, which the run never prints and `li monitor` lists,
+`running`, under that row's own id. Without that row a leg started that way could only be
+stopped by finding its pid by hand.
+
+**Decision.** A run whose persistence setup failed records its own process on its run.json
+(`pid`, `pid_create_time`, `pid_host`, `pid_boot_time`, `process_identity_mode`, the same
+markers a session row carries) and prints `stop it with: li kill <run_id>` on stderr.
+`li kill <run_id>` resolves such a run when no row matches: only a run.json that carries
+`persistence_degraded_reason`, read from the run directory the id names, and only an id that
+is a single path component. Its process is stopped by the checks a session's pid gets (host,
+boot, identity mode, then the recorded start time and a lionagi command line, refusing when
+the start time is absent), and the kill prints `killed run <run_id>`. A run that
+took the SIGTERM writes its own terminal status; one that was force-killed or had already
+died still says `running`, and the kill writes `cancelled` and `ended_at` on it. Invocations
+that share a run id (`LIONAGI_RUN_ID`) share its run.json, so the kill reads it again under
+the run's manifest lock and writes only if it still records the process the kill stopped, by
+pid and start time: a record another invocation wrote is that invocation's, and is left as
+it is. Every writer of a run.json takes that lock for its write (`RunDir.write_manifest`,
+and the record of a degraded setup across its read and its write), so, where the lock can be
+taken, no record lands between the kill's read and its write (Limits). A run.json the kill
+cannot read then, or whose lock it cannot take, is left as it is too, with a warning, since
+what it records cannot be checked.
+
+A degraded run that `li state import` picked up while it was still running has a session row
+named by its run id, with no pid on it, and that row resolves first. When a session row that
+resolves has no pid and the run directory of the same id holds a degraded run.json, the kill
+stops the process that run.json records, by the same checks, then cancels the row and settles
+the run.json as above.
+
+Whichever way the id resolves, when that run.json records no pid, or its pid fails the checks,
+nothing is signalled and nothing is written: the kill reports the process as not stopped and
+`li kill` exits non-zero. It writes `cancelled` only over a record of a process it stopped or of one that no longer runs.
+The second is sound because the run writes that record about itself, its pid and that pid's
+start time read from its own process in one call, and a pid is not reissued while its holder
+lives: a recorded pid that nothing holds, or that only an unreaped exited process holds, means
+the run has ended. A record whose pid and start time name two different processes is not one
+the run writes, and the kill does not defend against it.
+
+**Why this and not refusing to start.** Running without persistence is deliberate here: a
+run that loses its store still delivers its terminal notice itself and records why it
+degraded, and the lion MCP job record reads that reason. Refusing to start would trade a
+transient lock for a failed leg. What was missing was only a way to stop it.
+
+**Limits.** No other run id stops anything. It does not resolve, unless `li state import`
+gave it a row; that row records no process, so the kill refuses it and writes nothing, and
+`li kill` exits non-zero. A run with a
+session row of its own is stopped by that session id, which also writes the cancellation to
+the row. The orchestration path (`li o flow`, plays) degrades the same way and is not
+covered: its runs record no process on their manifest, so at the moment one degrades it
+prints that its run id is no `li kill` handle, with its pid. The manifest lock is POSIX
+advisory locking on a file beside run.json (`.run.json.lock`); where it does not exist
+(Windows) nothing is held, and an invocation sharing the run id that records itself between
+the kill's read and its write has its record replaced. A program outside lionagi that
+rewrites a run.json without taking the lock is not covered either. A writer that cannot take
+the lock (a filesystem without `flock`, a lock file it cannot open) writes without it, with
+a warning, rather than fail the run; the kill in that case leaves run.json as it is. Setup
+can commit the run's session row and then fail: that row carries the process's pid and start
+time but no branch, is never completed, and stays `running` after the run ends, as it did
+before this amendment, which does not close it; that is tracked separately.
 
 ## Depth contract
 

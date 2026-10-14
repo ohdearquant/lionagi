@@ -28,6 +28,7 @@ __all__ = (
 
 import yaml
 
+from lionagi._paths import is_account_lionagi_dir
 from lionagi.libs.nested import deep_merge as _deep_merge_impl
 
 from .spec import AgentSpec
@@ -58,9 +59,13 @@ def load_settings(
     for parent in [project_root, *project_root.parents]:
         candidate = parent / ".lionagi" / "settings.yaml"
         if candidate.is_file():
-            with open(candidate) as f:
-                local_settings = yaml.safe_load(f) or {}
-            _deep_merge(merged, local_settings)
+            # The account home's own file is the global layer, read above through
+            # HOME or not at all. As the nearest file it still ends the search, so
+            # excluding it never promotes a farther one.
+            if not is_account_lionagi_dir(candidate.parent):
+                with open(candidate) as f:
+                    local_settings = yaml.safe_load(f) or {}
+                _deep_merge(merged, local_settings)
             break
 
     return merged

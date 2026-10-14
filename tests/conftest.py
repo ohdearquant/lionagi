@@ -47,6 +47,16 @@ _TEST_CODEX_HOME = tempfile.mkdtemp(prefix="lionagi-tests-codex-")
 os.environ["CODEX_HOME"] = _TEST_CODEX_HOME
 atexit.register(_remove_test_home, _TEST_CODEX_HOME)
 
+# Discovery reads the user-level `.lionagi` (profiles, MCP config, settings)
+# through $HOME on every call, so a run that keeps the developer's HOME hands
+# any test that builds a profiled agent the real directory. The replacement is
+# unconditional, made before anything imports lionagi, and inherited by every
+# child process the suite starts. Tests that need a user-level directory write
+# into this one or monkeypatch HOME themselves.
+_TEST_USER_HOME = os.path.realpath(tempfile.mkdtemp(prefix="lionagi-tests-home-"))
+os.environ["HOME"] = _TEST_USER_HOME
+atexit.register(_remove_test_home, _TEST_USER_HOME)
+
 if "lionagi._paths" in sys.modules:
     # The constants are already bound to the old value, so the redirect above
     # did nothing and every run-directory write in this session lands in the

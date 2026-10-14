@@ -1129,6 +1129,21 @@ async def _run_agent(
         # consumer.
         drains_controls=True,
     )
+    if live is None and _write_run_manifest is not None:
+        # Setup returned no session (it may have committed a row before it failed, which `li
+        # monitor` lists under that row's own id; nothing here prints it), so the run id names no
+        # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
+        # says how to stop it (ADR-0104 Amendment 2).
+        from lionagi.cli._logging import warn
+
+        from .kill import current_pid_markers
+
+        run_manifest.update(current_pid_markers())
+        _write_run_manifest(run_manifest)
+        warn(
+            f"run {run.run_id}: persistence setup returned no session; "
+            f"stop it with: li kill {run.run_id}"
+        )
     if seed_injection_totals:
         await _seed_injection_stats(live, _injection_totals)
 
@@ -1416,6 +1431,10 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if live and "signal_persist_dropped" in live:
+                # Signals this run's persistence could not confirm it wrote, 0 included; the field is
+                # absent when teardown had no session of this run to unbind.
+                run_manifest["signal_persist_dropped"] = live["signal_persist_dropped"]
             if _terminal_status == "failed":
                 # The reason teardown decided for this run, so a reader of the run directory
                 # alone can tell a provider's refusal from a crash. A failure teardown decides
