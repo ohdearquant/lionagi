@@ -119,3 +119,102 @@ async def test_planning_engine_without_either_setting_builds():
     engine = PlanningEngine()
     assert engine.agent_env is None
     assert engine.contain_account_integrations is False
+
+
+_SETTINGS = pytest.mark.parametrize(
+    "settings",
+    [
+        {"agent_env": {"LEG_ID": "leg-7"}},
+        {"contain_account_integrations": True},
+    ],
+    ids=["agent-env", "containment"],
+)
+
+
+def _record_flow(monkeypatch):
+    from lionagi.session.session import Session
+
+    calls: list[dict] = []
+
+    async def flow(self, graph, **kwargs):
+        calls.append(kwargs)
+        return {"operation_results": {}}
+
+    monkeypatch.setattr(Session, "flow", flow)
+    return calls
+
+
+@_SETTINGS
+async def test_run_dag_refuses_reactive_spawning_with_an_agent_setting(settings, monkeypatch):
+    """A spawned node may be placed on the session's default branch, which make_agent did not build."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=branch, instruction="do it")
+    with pytest.raises(ConfigurationError, match=r"reactive=True") as exc:
+        await run.run_dag(builder.get_graph(), reactive=True)
+    assert next(iter(settings)) in str(exc.value)
+    assert "leg-7" not in str(exc.value)
+    assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_refuses_a_node_on_a_branch_make_agent_did_not_build(settings, monkeypatch):
+    """A node with no branch runs on the session's default branch; a caller's own branch carries nothing."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    own = Branch(name="own")
+    run.session.include_branches(own)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a")
+    builder.add_operation("operate", instruction="b")
+    builder.add_operation("operate", branch=own, instruction="c")
+    with pytest.raises(ConfigurationError, match=r"2 of 3 nodes") as exc:
+        await run.run_dag(builder.get_graph())
+    assert "leg-7" not in str(exc.value)
+    assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_runs_nodes_on_branches_make_agent_built(settings, monkeypatch):
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    a = await run.make_agent("researcher", name="a", model=_CLI_MODEL)
+    b = await run.make_agent("researcher", name="b", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    first = builder.add_operation("operate", branch=a, instruction="a")
+    builder.add_operation("operate", branch=b, depends_on=[first], instruction="b")
+    await run.run_dag(builder.get_graph())
+    assert len(calls) == 1
+
+
+async def test_run_dag_without_either_setting_runs_a_node_with_no_branch(monkeypatch):
+    """Control: the check applies only when a setting is on."""
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", instruction="a")
+    await Engine().new_run().run_dag(builder.get_graph(), reactive=True)
+    assert len(calls) == 1
+
+
+async def test_the_judge_raises_when_it_cannot_carry_the_overlay():
+    """An API judge cannot take the overlay; that is not a pass."""
+    from lionagi._errors import ConfigurationError
+
+    engine = Engine(agent_env={"LEG_ID": "leg-7"}, judge_model="openai/gpt-4.1")
+    run = engine.new_run()
+    with pytest.raises(ConfigurationError, match="agent_env"):
+        await engine.judge(run, "e1", "a subject")

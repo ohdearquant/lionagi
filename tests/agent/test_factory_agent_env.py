@@ -207,7 +207,15 @@ async def test_a_restored_model_spawns_with_the_current_process_environment():
 
 
 @pytest.mark.parametrize(
-    "key", ["TOKEN=sk-not-a-key", "ghp_notarealtoken0123456789", "TOKEN sk-not-a-key"]
+    "key",
+    [
+        "TOKEN=sk-not-a-key",
+        "ghp_notarealtoken0123456789",
+        "TOKEN sk-not-a-key",
+        "LEG\0sk-not-a-key",
+        "TOKEN:sk-not-a-key",
+        "TOKEN\nsk-not-a-key",
+    ],
 )
 def test_a_model_env_key_is_never_printed(key):
     """The same check guards a model's own env, which the request model applies when

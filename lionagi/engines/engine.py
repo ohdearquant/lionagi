@@ -339,6 +339,9 @@ class EngineRun:
         # namespace so recall/writeback never crosses runs or projects.
         self.run_id: str = uuid.uuid4().hex[:12]
         self.agents_made: int = 0
+        # Branches make_agent built, the only ones that carry the engine's
+        # agent_env and containment; run_dag refuses any other when either is set.
+        self._agent_branch_ids: set[str] = set()
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         # Populated at the shared CLI spawn boundary through a run-scoped
@@ -509,6 +512,7 @@ class EngineRun:
         # AgentSpec has no env field, so the overlay goes to create_agent, which
         # hands it to the CLI endpoint it builds: the carrier that reaches the child.
         branch = await create_agent(spec, load_settings=False, agent_env=env)
+        self._agent_branch_ids.add(str(branch.id))
         if name:
             branch.name = name
         self.session.include_branches(branch)
@@ -985,8 +989,45 @@ class EngineRun:
 
         ``skip_signal_ops`` names ops that already ran in an earlier pass, so this
         pass does not signal them a second time. Default signals every node.
+
+        With the engine's ``agent_env`` or ``contain_account_integrations`` set,
+        every node must name a branch ``make_agent`` built, and ``reactive`` is
+        refused: a node with no branch runs on the session's default branch or a
+        clone of it, and a spawned node may be placed on either, so it would run
+        without the setting. Both raise ``ConfigurationError`` before any node runs.
         """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
+
+        settings = [
+            name
+            for name, value in (
+                ("contain_account_integrations", self.engine.contain_account_integrations),
+                ("agent_env", self.engine.agent_env),
+            )
+            if value
+        ]
+        if settings:
+            from lionagi._errors import ConfigurationError  # noqa: PLC0415
+            from lionagi.operations.node import Operation  # noqa: PLC0415
+
+            if reactive:
+                raise ConfigurationError(
+                    f"run_dag(reactive=True) is not supported with {' or '.join(settings)}: "
+                    "a spawned node may run on a branch make_agent did not build, which "
+                    "does not carry the setting."
+                )
+            operations = [n for n in graph.internal_nodes.values() if isinstance(n, Operation)]
+            unbuilt = [
+                op
+                for op in operations
+                if op.branch_id is None or str(op.branch_id) not in self._agent_branch_ids
+            ]
+            if unbuilt:
+                raise ConfigurationError(
+                    f"run_dag with {' or '.join(settings)} runs only on branches make_agent "
+                    f"built: {len(unbuilt)} of {len(operations)} nodes name no such branch "
+                    "and would run without the setting."
+                )
 
         async with flow_progress_signals(
             self.session, graph, skip_ops=skip_signal_ops
@@ -1175,7 +1216,9 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, except a ConfigurationError, which is raised: the judge could not be built as configured, so no verdict exists to read as a pass."""
+        from lionagi._errors import ConfigurationError  # noqa: PLC0415
+
         if not self.judge_model:
             return True
         try:
@@ -1201,6 +1244,8 @@ class Engine:
             return allow
         except EngineBudgetError:
             return False
+        except ConfigurationError:
+            raise
         except Exception as exc:
             run.notify("judge_error", eid=eid, error=str(exc))
             return True
