@@ -1126,6 +1126,7 @@ class Engine:
         self.agent_mcp_config_path = agent_mcp_config_path
         # Environment overlay for every CLI agent this engine spawns, merged over
         # os.environ by create_agent; per-call make_agent(env=...) still wins.
+        # PlanningEngine refuses it: its workers are not built by make_agent.
         # A caller running several engines concurrently in one process cannot
         # give each its own value through os.environ, which every run shares;
         # this field is the per-engine carrier.
@@ -1148,7 +1149,8 @@ class Engine:
         # agent this engine spawns. Codex attaches them from the account,
         # whatever MCP servers a request carries, and a connector acts as the
         # account. Default False keeps the agent's request as the account and
-        # config set it.
+        # config set it. PlanningEngine refuses it: its workers are not built by
+        # make_agent.
         self.contain_account_integrations = contain_account_integrations
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,

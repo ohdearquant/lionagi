@@ -109,20 +109,36 @@ async def test_claude_code_is_also_a_carrier():
 @pytest.mark.parametrize(
     "bad_env,named,hidden",
     [
-        ({"PORT": 8080}, "'PORT' (value is int)", "8080"),
-        ({"TOKEN_FILE": pathlib.Path("/x/secret-y")}, "'TOKEN_FILE'", "secret-y"),
-        ({"LEG_ID": None}, "'LEG_ID' (value is NoneType)", None),
+        ({"PORT": 8080}, "entry 0 (value is int)", "PORT"),
+        ({"TOKEN_FILE": pathlib.Path("/x/secret-y")}, "entry 0 (value is", "secret-y"),
+        ({"LEG_ID": None}, "entry 0 (value is NoneType)", "LEG_ID"),
         ({b"sk-not-a-key": "leg-7"}, "entry 0 (key is bytes)", "sk-not-a-key"),
         ({"TOKEN=sk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
         ({"LEG\0sk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
+        # keys a shape test would pass as names, holding a credential
+        ({"ghp_notarealtoken0123456789": 8080}, "entry 0 (value is int)", "notarealtoken"),
+        ({"TOKEN sk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
+        ({"TOKEN:sk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
+        ({"TOKEN\nsk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
     ],
-    ids=["int-value", "path-value", "none-value", "bytes-key", "equals-in-name", "nul-in-name"],
+    ids=[
+        "int-value",
+        "path-value",
+        "none-value",
+        "bytes-key",
+        "equals-in-name",
+        "nul-in-name",
+        "token-shaped-name",
+        "space-in-name",
+        "colon-in-name",
+        "newline-in-name",
+    ],
 )
 async def test_agent_env_rejects_non_string_entries_at_construction(bad_env, named, hidden):
     """The request model checks env only when a call is built, so without the
     factory check these fail at the first call. The message names the entry by
-    key and type and never prints a value or a non-string key, either of which
-    could be a credential."""
+    position and type and prints nothing from the mapping: a key can be a
+    credential as easily as a value."""
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
     with pytest.raises(ConfigurationError, match="agent_env") as exc:
         await create_agent(config, load_settings=False, agent_env=bad_env)
@@ -190,12 +206,17 @@ async def test_a_restored_model_spawns_with_the_current_process_environment():
     assert reveal_redacted(payload["request"].env) is None
 
 
-def test_a_model_env_name_written_as_an_assignment_is_never_printed():
+@pytest.mark.parametrize(
+    "key", ["TOKEN=sk-not-a-key", "ghp_notarealtoken0123456789", "TOKEN sk-not-a-key"]
+)
+def test_a_model_env_key_is_never_printed(key):
     """The same check guards a model's own env, which the request model applies when
     a call is built."""
-    model = iModel(provider="codex", model="gpt-5.5", env={"TOKEN=sk-not-a-key": 8080})
+    model = iModel(provider="codex", model="gpt-5.5", env={key: 8080})
     with pytest.raises(TypeError, match="entry 0") as exc:
         model.endpoint.create_payload({"prompt": "hi"})
+    assert key not in str(exc.value)
+    assert "notarealtoken" not in str(exc.value)
     assert "sk-not-a-key" not in str(exc.value)
 
 

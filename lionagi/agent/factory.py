@@ -72,10 +72,9 @@ async def create_agent(
     the child. Only the overlay is checked: an ``env`` passed with a later call
     replaces the child environment this factory built, and one naming another
     ``CODEX_HOME`` or ``HOME`` is not refused. The overlay is runtime state and
-    is not serialized, so a model
-    restored with ``iModel.from_dict`` spawns its child with this process's
-    environment; an agent rebuilt with ``create_agent`` gets the overlay only
-    when ``agent_env`` is passed again.
+    is not serialized, so a model restored with ``iModel.from_dict`` spawns its
+    child with this process's environment; an agent rebuilt with
+    ``create_agent`` gets the overlay only when ``agent_env`` is passed again.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
@@ -107,8 +106,9 @@ async def create_agent(
     if agent_env:
         # The request model checks env only when a call is built, so a bad
         # entry would surface at the first call instead of here. Neither check
-        # prints a value, and a key is printed only when it is a valid name: an
-        # environment routinely carries credentials.
+        # prints anything from the mapping: an entry is reported by its position,
+        # since an environment routinely carries credentials and a key can hold
+        # one as easily as a value.
         from lionagi.providers._cli_subprocess import raise_if_env_is_not_a_string_map
 
         if not isinstance(agent_env, Mapping):
@@ -121,7 +121,10 @@ async def create_agent(
             raise ConfigurationError(f"agent_env: {exc}") from exc
 
         def _spawnable(text: str) -> bool:
-            # The spawn encodes each entry with os.fsencode, which refuses a lone surrogate.
+            # The spawn encodes each entry with os.fsencode, which refuses a lone
+            # surrogate outside U+DC80 to U+DCFF. One inside that range is a surrogate
+            # escape for an undecodable byte, so it passes and reaches the child as
+            # that byte.
             try:
                 os.fsencode(text)
             except UnicodeEncodeError:

@@ -157,27 +157,21 @@ def reveal_redacted(value):
 def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """Reject a malformed environment without quoting anything out of it.
 
-    Values are never printed, whatever their type. A key is printed only when it
-    is a string holding no ``=`` or NUL; any other key is reported by position
-    and type only, since a non-string key or a ``NAME=value`` written as a name
-    could carry a credential. Raises TypeError, not ValueError —
-    pydantic quotes a ValueError's rejected input verbatim into the error.
+    Nothing from the mapping is printed: each bad entry is reported by its
+    position and the type that is wrong. A key can carry a credential as easily
+    as a value (a token pasted where a name belongs, ``NAME=value`` written as a
+    name), and no test of a key's shape tells the two apart. Raises TypeError,
+    not ValueError — pydantic quotes a ValueError's rejected input verbatim into
+    the error.
     """
-    named: list[str] = []
-    unnamed: list[str] = []
+    bad: list[str] = []
     for index, (key, val) in enumerate(value.items()):
         if not isinstance(key, str):
-            unnamed.append(f"entry {index} (key is {type(key).__name__})")
+            bad.append(f"entry {index} (key is {type(key).__name__})")
         elif not isinstance(val, str):
-            if "=" in key or "\0" in key:
-                unnamed.append(f"entry {index} (value is {type(val).__name__})")
-            else:
-                named.append(f"{key!r} (value is {type(val).__name__})")
-    if named or unnamed:
-        raise TypeError(
-            "env must map strings to strings; these entries do not: "
-            + ", ".join([*sorted(named), *unnamed])
-        )
+            bad.append(f"entry {index} (value is {type(val).__name__})")
+    if bad:
+        raise TypeError("env must map strings to strings; these entries do not: " + ", ".join(bad))
 
 
 def redact_runtime_fields_in_place(data) -> None:

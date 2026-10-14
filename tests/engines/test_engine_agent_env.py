@@ -75,3 +75,47 @@ async def test_the_overlay_keeps_the_inherited_environment():
     run = Engine(agent_env={"LEG_ID": "leg-7"}).new_run()
     branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
     assert _child_env(branch)["PATH"] == os.environ["PATH"]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"agent_env": {"LEG_ID": "leg-7"}},
+        {"contain_account_integrations": True},
+        {"agent_env": {"LEG_ID": "leg-7"}, "contain_account_integrations": True},
+    ],
+    ids=["agent-env", "containment", "both"],
+)
+async def test_planning_engine_refuses_settings_its_workers_drop(settings):
+    """Its workers are built by spawn_roles from the role alone and would get neither."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.engines import PlanningEngine
+
+    with pytest.raises(ConfigurationError, match="PlanningEngine does not support") as exc:
+        PlanningEngine(**settings)
+    for name in settings:
+        assert name in str(exc.value)
+    assert "leg-7" not in str(exc.value)
+
+
+async def test_planning_engine_refuses_a_setting_added_after_construction(monkeypatch):
+    """The check runs again before planning, so no model call is made."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.engines import PlanningEngine
+
+    async def fail_plan(self, run, prompt, max_ops):
+        raise AssertionError("planned despite the refused setting")
+
+    monkeypatch.setattr(PlanningEngine, "_plan", fail_plan)
+    engine = PlanningEngine()
+    engine.contain_account_integrations = True
+    with pytest.raises(ConfigurationError, match="contain_account_integrations"):
+        await engine.run("do it")
+
+
+async def test_planning_engine_without_either_setting_builds():
+    from lionagi.engines import PlanningEngine
+
+    engine = PlanningEngine()
+    assert engine.agent_env is None
+    assert engine.contain_account_integrations is False
