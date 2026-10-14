@@ -214,6 +214,10 @@ class Executor(Observer):
     async def forward(self) -> None:
         while len(self.pending) > 0:
             id_ = self.pending.popleft()
+            # A streamed or popped event can leave the pile while its id is still pending;
+            # it was already sent, and one caller's stale id must not fail another's forward.
+            if id_ not in self.pile:
+                continue
             event = self.pile[id_]
             await self.processor.enqueue(event)
 

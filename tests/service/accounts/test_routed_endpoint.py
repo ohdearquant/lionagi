@@ -609,16 +609,30 @@ _PARTIAL_TEXT = {
 }
 
 
+def _attempt_scopes(path) -> list[str]:
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT scope_id FROM attempt ORDER BY rowid").fetchall()
+    return [row[0] for row in rows]
+
+
+def _sent_contents(transport) -> list[str]:
+    return [json.loads(call["data"])["messages"][0]["content"] for call in transport.calls]
+
+
+QUEUED_REQUEST = {**REQUEST, "messages": [{"role": "user", "content": "queued elsewhere"}]}
+
+
 @pytest.mark.parametrize("hand_over", ["stream", "invoke"])
 @pytest.mark.asyncio
-async def test_a_refused_prebuilt_call_does_not_stay_queued_for_the_next_invoke(
+async def test_a_refused_prebuilt_call_stays_where_its_owner_put_it(
     monkeypatch, tmp_path, hand_over
 ):
+    from lionagi.protocols.generic.event import EventStatus
+
     _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_response()])
-    queued_request = {**REQUEST, "messages": [{"role": "user", "content": "queued elsewhere"}]}
     with _branch_routing_context(uuid4(), model):
-        queued = await model.create_event(stream=hand_over == "stream", **queued_request)
+        queued = await model.create_event(stream=hand_over == "stream", **QUEUED_REQUEST)
     await model.executor.append(queued)
 
     with pytest.raises(AccountRoutingError) as caught:
@@ -628,13 +642,76 @@ async def test_a_refused_prebuilt_call_does_not_stay_queued_for_the_next_invoke(
         else:
             await model.invoke(api_call=queued)
     assert caught.value.code is RouterErrorCode.ACCOUNT_CONFIG_CONFLICT
-    assert queued.id not in model.executor.pending
-    assert queued.id not in model.executor.pile
+    assert queued.id in model.executor.pending
+    assert queued.id in model.executor.pile
+    assert queued.status is EventStatus.PENDING
 
     with _branch_routing_context(uuid4(), model):
         await model.invoke(**REQUEST)
-    sent = [json.loads(call["data"])["messages"][0]["content"] for call in transport.calls]
-    assert sent == ["A short request"]
+    assert _sent_contents(transport) == ["A short request"]
+
+
+@pytest.mark.asyncio
+async def test_the_owner_sends_its_call_after_another_scope_was_refused(monkeypatch, tmp_path):
+    from lionagi.protocols.generic.event import EventStatus
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    owner = uuid4()
+    with _branch_routing_context(owner, model):
+        call = await model.create_event(**QUEUED_REQUEST)
+
+    with _branch_routing_context(uuid4(), model):
+        with pytest.raises(AccountRoutingError):
+            await model.invoke(api_call=call)
+    with _branch_routing_context(owner, model):
+        sent = await model.invoke(api_call=call)
+
+    assert sent.status is EventStatus.COMPLETED
+    assert _sent_contents(transport) == ["queued elsewhere"]
+    assert _attempt_scopes(path) == [str(owner)]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_during_the_owners_send_leaves_that_send_alone(monkeypatch, tmp_path):
+    from lionagi.protocols.generic.event import EventStatus
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    model = iModel(provider="anthropic", model=MODEL)
+    model.endpoint._assert_ssrf_safe_url = lambda: None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[dict] = []
+
+    class HeldSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def request(self, **kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await release.wait()
+            return _response()
+
+    model.endpoint._create_http_session = HeldSession
+    owner = uuid4()
+    with _branch_routing_context(owner, model):
+        call = await model.create_event(**QUEUED_REQUEST)
+        owner_send = asyncio.create_task(model.invoke(api_call=call))
+    await entered.wait()
+
+    with _branch_routing_context(uuid4(), model):
+        with pytest.raises(AccountRoutingError):
+            await model.invoke(api_call=call)
+    release.set()
+    sent = await owner_send
+
+    assert sent.status is EventStatus.COMPLETED
+    assert len(calls) == 1
+    assert _attempt_scopes(path) == [str(owner)]
 
 
 @pytest.mark.parametrize("where", ["client", "request", "stream"])
@@ -716,26 +793,171 @@ def test_the_stream_redactor_masks_a_key_that_straddles_its_cut():
     assert out == b"ab[REDACTED]cd"
 
 
+def _finished_stream() -> StubResponse:
+    return StubResponse(
+        pieces=[
+            _sse(
+                [
+                    _MESSAGE_START,
+                    _PARTIAL_TEXT,
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 5},
+                    },
+                    {"type": "message_stop"},
+                ]
+            )
+        ]
+    )
+
+
 @pytest.mark.asyncio
-async def test_a_refused_call_already_in_the_processor_queue_is_never_sent(monkeypatch, tmp_path):
+async def test_a_call_appended_then_streamed_is_not_sent_again(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_finished_stream(), _response()])
+    owner = uuid4()
+    with _branch_routing_context(owner, model):
+        call = await model.create_event(stream=True, **QUEUED_REQUEST)
+        await model.executor.append(call)
+        async for _ in model.stream(api_call=call):
+            pass
+
+    assert call.id not in model.executor.pending
+    await model.executor.forward()
+    assert _sent_contents(transport) == ["queued elsewhere"]
+    assert _attempt_scopes(path) == [str(owner)]
+
+
+@pytest.mark.asyncio
+async def test_a_forward_during_a_stream_does_not_send_that_stream_again(monkeypatch, tmp_path):
+    _install_accounts(monkeypatch, tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    body = _finished_stream().content.pieces[0]
+
+    class HeldBody:
+        def __aiter__(self):
+            self._sent = False
+            return self
+
+        async def __anext__(self):
+            if self._sent:
+                raise StopAsyncIteration
+            started.set()
+            await release.wait()
+            self._sent = True
+            return body
+
+    held = StubResponse()
+    held.content = HeldBody()
+    model, transport = _model(monkeypatch, [held, _finished_stream()])
+
+    async def consume():
+        with _branch_routing_context(uuid4(), model):
+            async for _ in model.stream(**REQUEST):
+                pass
+
+    streaming = asyncio.create_task(consume())
+    await started.wait()
+    await model.executor.forward()
+    release.set()
+    await streaming
+
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_queued_call_another_scope_was_refused_is_sent_once_for_its_owner(
+    monkeypatch, tmp_path
+):
     from lionagi.protocols.generic.event import EventStatus
 
-    _install_accounts(monkeypatch, tmp_path)
+    path = _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_response()])
-    queued_request = {**REQUEST, "messages": [{"role": "user", "content": "queued elsewhere"}]}
-    with _branch_routing_context(uuid4(), model):
-        queued = await model.create_event(**queued_request)
-    # Deferred by the processor before the hand-over, out of the refusal's reach.
+    owner = uuid4()
+    with _branch_routing_context(owner, model):
+        queued = await model.create_event(**QUEUED_REQUEST)
+    # Forwarded by its owner and deferred by the processor before the hand-over.
     await model.executor.start()
     await model.executor.processor.enqueue(queued)
 
-    with pytest.raises(AccountRoutingError) as caught:
-        await model.invoke(api_call=queued)
+    with _branch_routing_context(uuid4(), model):
+        with pytest.raises(AccountRoutingError) as caught:
+            await model.invoke(api_call=queued)
     assert caught.value.code is RouterErrorCode.ACCOUNT_CONFIG_CONFLICT
 
     await model.executor.processor.process()
-    assert transport.calls == []
-    assert queued.status is EventStatus.FAILED
+    assert queued.status is EventStatus.COMPLETED
+    assert _sent_contents(transport) == ["queued elsewhere"]
+    assert _attempt_scopes(path) == [str(owner)]
+
+
+@pytest.mark.asyncio
+async def test_an_invoke_sends_only_its_own_call(monkeypatch, tmp_path):
+    from lionagi.protocols.generic.event import EventStatus
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response(), _response()])
+    owner, other = uuid4(), uuid4()
+    with _branch_routing_context(owner, model):
+        waiting = await model.create_event(**QUEUED_REQUEST)
+    await model.executor.append(waiting)
+
+    with _branch_routing_context(other, model):
+        await model.invoke(**REQUEST)
+    assert _sent_contents(transport) == ["A short request"]
+    assert waiting.status is EventStatus.PENDING
+    assert waiting.id in model.executor.pending
+
+    await model.executor.forward()
+    assert waiting.status is EventStatus.COMPLETED
+    assert _sent_contents(transport) == ["A short request", "queued elsewhere"]
+    assert _attempt_scopes(path) == [str(other), str(owner)]
+
+
+@pytest.mark.asyncio
+async def test_invokes_after_a_finished_stream_send_their_own_calls(monkeypatch, tmp_path):
+    from lionagi.protocols.generic.event import EventStatus
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    streamed = StubResponse(
+        pieces=[
+            _sse(
+                [
+                    _MESSAGE_START,
+                    _PARTIAL_TEXT,
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 5},
+                    },
+                    {"type": "message_stop"},
+                ]
+            )
+        ]
+    )
+    model, transport = _model(monkeypatch, [streamed, _response(), _response()])
+    streamer, first, second = uuid4(), uuid4(), uuid4()
+
+    with _branch_routing_context(streamer, model):
+        async for _ in model.stream(**REQUEST):
+            pass
+    assert len(model.executor.pending) == 0
+
+    with _branch_routing_context(first, model):
+        first_call = await model.invoke(
+            **{**REQUEST, "messages": [{"role": "user", "content": "first"}]}
+        )
+    with _branch_routing_context(second, model):
+        second_call = await model.invoke(
+            **{**REQUEST, "messages": [{"role": "user", "content": "second"}]}
+        )
+
+    assert first_call.status is EventStatus.COMPLETED
+    assert second_call.status is EventStatus.COMPLETED
+    assert _sent_contents(transport) == ["A short request", "first", "second"]
+    assert _attempt_scopes(path) == [str(streamer), str(first), str(second)]
 
 
 @pytest.mark.parametrize("path_kind", ["call", "stream"])
@@ -753,6 +975,28 @@ async def test_a_service_tier_given_as_a_call_keyword_is_refused_before_any_rese
             async for _ in model.endpoint.stream(REQUEST, service_tier="priority"):
                 pass
     assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.parametrize(
+    "name", ["serviceTier", "service_tier ", "\u017fervice_tier", "ssl", "proxy"]
+)
+@pytest.mark.parametrize("path_kind", ["call", "stream"])
+@pytest.mark.asyncio
+async def test_any_other_request_keyword_is_refused_before_any_reservation(
+    monkeypatch, tmp_path, path_kind, name
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if path_kind == "call":
+            await model.endpoint.call(REQUEST, **{name: "priority"})
+        else:
+            async for _ in model.endpoint.stream(REQUEST, **{name: "priority"}):
+                pass
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
     assert not transport.calls
     assert not path.exists() or not _attempts(path)
 
@@ -796,13 +1040,19 @@ def _raw_delta_text(chunks, field: str) -> str:
             "partial_json",
             None,
         ),
+        (
+            {"type": "thinking", "thinking": "", "signature": ""},
+            "signature_delta",
+            "signature",
+            None,
+        ),
     ],
-    ids=["text", "thinking", "tool_input"],
+    ids=["text", "thinking", "tool_input", "signature"],
 )
-@pytest.mark.parametrize("block_ends", [True, False])
+@pytest.mark.parametrize("ending", ["block_stop", "message_stop_only", "truncated"])
 @pytest.mark.asyncio
 async def test_a_key_split_across_two_deltas_never_reaches_the_joined_text(
-    monkeypatch, tmp_path, block, delta_type, field, chunk_type, block_ends
+    monkeypatch, tmp_path, block, delta_type, field, chunk_type, ending
 ):
     _install_accounts(monkeypatch, tmp_path)
     events = [
@@ -811,9 +1061,10 @@ async def test_a_key_split_across_two_deltas_never_reaches_the_joined_text(
         _delta(delta_type, field, "ab" + CANARY[:5]),
         _delta(delta_type, field, CANARY[5:] + "cd"),
     ]
-    if block_ends:
+    if ending == "block_stop":
+        events.append({"type": "content_block_stop", "index": 0})
+    if ending != "truncated":
         events += [
-            {"type": "content_block_stop", "index": 0},
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": "end_turn"},
@@ -829,16 +1080,51 @@ async def test_a_key_split_across_two_deltas_never_reaches_the_joined_text(
     chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
 
     # A consumer may join the chunk text or the raw events' delta text; neither
-    # holds the key, and the held rest arrives before the block's stop event.
+    # holds the key, and the held rest arrives before the event that ends its block.
     assert _raw_delta_text(chunks, field) == "ab[REDACTED]cd"
     if chunk_type is not None:
         joined = "".join(chunk.content or "" for chunk in chunks if chunk.type == chunk_type)
         assert joined == "ab[REDACTED]cd"
     assert all(CANARY not in repr(chunk) for chunk in chunks)
-    if block_ends:
+    if ending != "truncated":
         kinds = [(chunk.metadata or {}).get("raw", {}).get("type") for chunk in chunks]
         last_delta = max(i for i, kind in enumerate(kinds) if kind == "content_block_delta")
-        assert last_delta < kinds.index("content_block_stop")
+        ends_block = "content_block_stop" if ending == "block_stop" else "message_delta"
+        assert last_delta < kinds.index(ends_block)
+
+
+@pytest.mark.asyncio
+async def test_held_thinking_reaches_the_consumer_before_the_blocks_signature(
+    monkeypatch, tmp_path
+):
+    _install_accounts(monkeypatch, tmp_path)
+    events = [
+        _MESSAGE_START,
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+        },
+        _delta("thinking_delta", "thinking", "ab" + CANARY[:5]),
+        _delta("signature_delta", "signature", "sig"),
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_stop"},
+    ]
+    model, transport = _model(
+        monkeypatch, [StubResponse(pieces=[_sse([event]) for event in events])]
+    )
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    deltas = [
+        (chunk.metadata or {}).get("raw", {}).get("delta", {}).get("type")
+        for chunk in chunks
+        if (chunk.metadata or {}).get("raw", {}).get("type") == "content_block_delta"
+    ]
+    last_thinking = max(i for i, kind in enumerate(deltas) if kind == "thinking_delta")
+    assert last_thinking < deltas.index("signature_delta")
+    assert _raw_delta_text(chunks, "thinking") == "ab" + CANARY[:5]
+    assert _raw_delta_text(chunks, "signature") == "sig"
 
 
 @pytest.mark.parametrize(

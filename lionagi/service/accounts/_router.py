@@ -196,19 +196,17 @@ def validate_routed_request(
         for name in client_kwargs
     ) or _has_auth_header(client_kwargs.get("headers")):
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
-    if any(
-        isinstance(name, str)
-        and name.lower() in _FORBIDDEN_CLIENT_OPTIONS | {"headers", "data", "json", "api_key"}
-        for name in request_kwargs
-    ):
+    # A routed call takes no request keyword. Each one reaches the HTTP client, where a name it
+    # does not know fails only after an account was reserved, and one it does know (ssl, proxy)
+    # can move the keyed request off the verified connection. A tier keeps its own code: routed
+    # calls are priced for the standard tier alone, and the caller should see a pricing refusal.
+    if request_kwargs:
+        if any(isinstance(name, str) and name.lower() == "service_tier" for name in request_kwargs):
+            raise _refuse(RouterErrorCode.UNSUPPORTED_PRICING)
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
     if body_kwargs is not None:
         if set(body_kwargs) != {"json"}:
             raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
-    # Routed calls are priced for the standard tier alone; a tier given as a call
-    # keyword is refused like one given in the request body.
-    if any(isinstance(name, str) and name.lower() == "service_tier" for name in request_kwargs):
-        raise _refuse(RouterErrorCode.UNSUPPORTED_PRICING)
 
 
 def get_router() -> AccountRouter:

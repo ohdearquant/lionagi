@@ -16,11 +16,14 @@ from ._config import AnthropicConfigs
 
 __all__ = ("CreateMessageRequest", "AnthropicMessagesEndpoint")
 
-# Delta fields a consumer joins across the events of one content block.
+# Delta fields a consumer joins across the events of one content block. A citations_delta is not
+# here: each one carries a whole citation, masked within its own event, and holding part of its
+# cited_text back would move text from one citation into the next.
 _JOINED_DELTA_FIELDS = {
     "text_delta": "text",
     "thinking_delta": "thinking",
     "input_json_delta": "partial_json",
+    "signature_delta": "signature",
 }
 
 
@@ -592,13 +595,16 @@ class AnthropicMessagesEndpoint(Endpoint):
                         initial_usage = message.get("usage")
                         if isinstance(initial_usage, dict):
                             usage.update(initial_usage)
-                elif event.get("type") == "message_delta":
-                    delta_usage = event.get("usage")
-                    if isinstance(delta_usage, dict):
-                        usage.update(delta_usage)
                 elif event.get("type") == "content_block_delta":
                     delta = event.get("delta")
                     delta_type = delta.get("type") if isinstance(delta, dict) else None
+                    # Another kind of delta ends the held run of this block's other fields, which
+                    # must reach the consumer first.
+                    block = block_of(event)
+                    for held in release_held(
+                        [key for key in delta_redactors if key[0] == block and key[1] != delta_type]
+                    ):
+                        yield held
                     field = (
                         _JOINED_DELTA_FIELDS.get(delta_type)
                         if isinstance(delta_type, str)
@@ -606,7 +612,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                     )
                     if field is not None and isinstance(delta.get(field), str):
                         delta_redactor = delta_redactors.setdefault(
-                            (block_of(event), delta_type), StreamingTextRedactor(attempt.key)
+                            (block, delta_type), StreamingTextRedactor(attempt.key)
                         )
                         delta[field] = delta_redactor.feed(delta[field])
                         data = json.dumps(event)
@@ -614,7 +620,20 @@ class AnthropicMessagesEndpoint(Endpoint):
                     block = block_of(event)
                     for held in release_held([key for key in delta_redactors if key[0] == block]):
                         yield held
+                elif event.get("type") in ("content_block_start", "message_delta", "error"):
+                    # A block that never sent its stop still ends before the next block or the
+                    # message's own events.
+                    for held in release_held(list(delta_redactors)):
+                        yield held
+                    if event.get("type") == "message_delta":
+                        delta_usage = event.get("usage")
+                        if isinstance(delta_usage, dict):
+                            usage.update(delta_usage)
+                    elif event.get("type") == "error":
+                        saw_error_event = True
                 elif event.get("type") == "message_stop":
+                    for held in release_held(list(delta_redactors)):
+                        yield held
                     priced = price_usage(
                         router.revision,
                         attempt.ttls,
@@ -624,8 +643,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                     )
                     await router.settle_stream_end(attempt, priced)
                     settled = True
-                elif event.get("type") == "error":
-                    saw_error_event = True
             chunk = self._line_to_stream_chunk(data)
             if chunk is not None:
                 chunk.content = redact_value(chunk.content, attempt.key)
