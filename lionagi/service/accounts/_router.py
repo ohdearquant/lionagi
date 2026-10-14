@@ -268,67 +268,126 @@ def redact_value(value: Any, key: SecretStr) -> Any:
     return value
 
 
-class StreamingTextRedactor:
-    """Masks a key in one run of text a consumer joins, wherever the run is split.
+class _Char:
+    __slots__ = ("ch", "masked", "open")
 
-    Each piece is held back by the key's length less one, so a key that continues
-    in the next piece is replaced before either half is emitted. At a boundary
-    the text must reach the consumer before (another kind of delta, the end of a
-    block, an error event), ``release`` emits what is held except a tail of at
-    least ``BOUNDARY_HOLD`` characters that begins the key; that tail waits for
-    the next piece, where a continued key is masked whole. A shorter beginning
-    of the key that was emitted is remembered, and the rest of the key is masked
-    when it follows, so the joined run never holds the whole key and at most
-    ``BOUNDARY_HOLD - 1`` of its characters.
+    def __init__(self, ch: str, joins: int) -> None:
+        self.ch = ch
+        self.masked = False
+        self.open = joins  # joins that have not decided this character yet
+
+
+class _Join:
+    __slots__ = ("active", "pending")
+
+    def __init__(self) -> None:
+        self.active: set[int] = set()  # lengths of the key's beginning the join now ends with
+        self.pending: list[_Char] = []  # undecided characters, the join's last ones
+
+
+class StreamTextRedactor:
+    """Masks a key in the text a consumer joins out of one streamed message.
+
+    A consumer joins the pieces of one kind across the message (text across blocks
+    and citations, thinking across signatures, the quoted text of citations) and may
+    join every piece in order. Each of those joins is matched against the key's
+    beginning, and a character is masked when it lies in a run of ``MIN_RUN`` or
+    more characters that begins the key, in any join it belongs to. A whole key and
+    any long beginning of one are masked wherever the message splits them.
+
+    An event whose text ends in a shorter beginning of the key is held until the
+    next event shows whether the key continues. When the next event does not carry
+    text into the same join, the held characters are sent: at most ``MIN_RUN - 1``
+    characters that begin the key, which for an Anthropic key are the ``sk-ant-``
+    every key starts with. If the key continues later, it is masked from there.
     """
 
-    BOUNDARY_HOLD = 8
+    MIN_RUN = 8
+    MASK = "[REDACTED]"
+    ALL = ""  # the join of every piece in order; a kind is never empty
 
     def __init__(self, key: SecretStr) -> None:
         self._secret = key.get_secret_value()
-        self._tail = ""
-        self._emitted = ""
+        self._joins: dict[str, _Join] = {self.ALL: _Join()}
+        self._queue: list[tuple[Any, list[tuple[str, list[_Char]]]]] = []
+        self._last_masked: dict[str, bool] = {}
 
-    def _emit(self, text: str) -> str:
-        keep = len(self._secret) - 1
-        self._emitted = (self._emitted + text)[-keep:] if keep > 0 else ""
-        return text
+    def push(self, item: Any, pieces: list[tuple[str, str]]) -> list[tuple[Any, list[str]]]:
+        """Queue one event's text pieces as ``(kind, text)`` and return the events now
+        ready, in order, each with its pieces' text as sent."""
+        fed: set[str] = set()
+        entry = []
+        for kind, text in pieces:
+            chars = [_Char(ch, 2) for ch in text]
+            entry.append((kind, chars))
+            join = self._joins.setdefault(kind, _Join())
+            for char in chars:
+                self._feed(self._joins[self.ALL], char)
+                self._feed(join, char)
+            if chars:
+                fed.update((self.ALL, kind))
+        for name, join in self._joins.items():
+            if name not in fed:
+                self._decide(join)
+        self._queue.append((item, entry))
+        return self._ready()
 
-    def _mask_continuation(self, data: str) -> str:
-        """Mask the rest of a key whose beginning was already emitted."""
-        joined = self._emitted + data
-        start = joined.find(self._secret)
-        while 0 <= start < len(self._emitted):
-            end = start + len(self._secret)
-            if end > len(self._emitted):
-                return "[REDACTED]" + data[end - len(self._emitted) :]
-            start = joined.find(self._secret, start + 1)
-        return data
+    def finish(self) -> list[tuple[Any, list[str]]]:
+        """Send everything held: the stream has ended, so no key continues."""
+        for join in self._joins.values():
+            self._decide(join)
+        return self._ready()
 
-    def feed(self, text: str, *, final: bool = False) -> str:
-        data = self._mask_continuation(self._tail + text).replace(self._secret, "[REDACTED]")
-        if final:
-            self._tail = ""
-            return self._emit(data)
-        safe_length = max(0, len(data) - len(self._secret) + 1)
-        output, self._tail = data[:safe_length], data[safe_length:]
-        return self._emit(output)
+    def _feed(self, join: _Join, char: _Char) -> None:
+        secret = self._secret
+        join.active = {
+            length + 1
+            for length in (*join.active, 0)
+            if length < len(secret) and secret[length] == char.ch
+        }
+        longest = max(join.active, default=0)
+        join.pending.append(char)
+        if longest >= min(self.MIN_RUN, len(secret)):
+            # Every undecided character of the run is masked; its earlier characters
+            # were masked when the run reached MIN_RUN or sent before it did.
+            for held in join.pending:
+                held.masked = True
+                held.open -= 1
+            join.pending.clear()
+        else:
+            while len(join.pending) > longest:
+                join.pending.pop(0).open -= 1
+        join.active.discard(len(secret))
 
-    def release(self) -> str:
-        """Emit the held text at a boundary, keeping back a tail that begins the key."""
-        keep = 0
-        for n in range(min(len(self._tail), len(self._secret) - 1), self.BOUNDARY_HOLD - 1, -1):
-            if self._secret.startswith(self._tail[-n:]):
-                keep = n
-                break
-        output = self._tail[: len(self._tail) - keep]
-        self._tail = self._tail[len(self._tail) - keep :]
-        return self._emit(output)
+    def _decide(self, join: _Join) -> None:
+        # No more text reaches this join before the next event, so its undecided
+        # characters are sent; the join still remembers the beginning they make.
+        for held in join.pending:
+            held.open -= 1
+        join.pending.clear()
 
-    def mask_whole(self, text: str) -> str:
-        """Mask a piece that arrives whole and is never held: a key within it, and the
-        rest of a key whose beginning ended the piece before."""
-        return self._emit(self._mask_continuation(text).replace(self._secret, "[REDACTED]"))
+    def _ready(self) -> list[tuple[Any, list[str]]]:
+        ready = []
+        while self._queue and all(
+            char.masked or char.open == 0 for _, chars in self._queue[0][1] for char in chars
+        ):
+            item, entry = self._queue.pop(0)
+            texts = []
+            for kind, chars in entry:
+                out = []
+                previous = self._last_masked.get(kind, False)
+                for char in chars:
+                    if char.masked:
+                        if not previous:
+                            out.append(self.MASK)
+                        previous = True
+                    else:
+                        out.append(char.ch)
+                        previous = False
+                self._last_masked[kind] = previous
+                texts.append("".join(out))
+            ready.append((item, texts))
+        return ready
 
 
 class StreamingSecretRedactor:

@@ -108,7 +108,7 @@ def _response(*, text: str = "A completed response", usage: dict | None = None) 
     )
 
 
-def _install_accounts(monkeypatch, tmp_path, *, accounts=None):
+def _install_accounts(monkeypatch, tmp_path, *, accounts=None, key=CANARY):
     declarations = accounts or [
         {"name": "primary", "key_env": KEY_NAME, "budget_usd": "20"},
         {"name": "secondary", "key_env": "LIONAGI_ROUTER_SECONDARY", "budget_usd": "20"},
@@ -117,7 +117,7 @@ def _install_accounts(monkeypatch, tmp_path, *, accounts=None):
     monkeypatch.setattr(config_module, "settings", settings)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     for item in declarations:
-        monkeypatch.setenv(item["key_env"], CANARY)
+        monkeypatch.setenv(item["key_env"], key)
     sources = CredentialSources(
         dotenv_files=(),
         dotenv_encoding="utf-8",
@@ -1048,15 +1048,24 @@ async def test_any_other_request_keyword_is_refused_before_any_reservation(
     assert not path.exists() or not _attempts(path)
 
 
-def test_the_text_redactor_masks_a_key_split_across_pieces():
+def _redacted(events, key=CANARY) -> list[tuple[str, list[str]]]:
+    """Each event's pieces as sent, for events given as ``(name, [(kind, text)])``."""
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import StreamingTextRedactor
+    from lionagi.service.accounts._router import StreamTextRedactor
 
-    redactor = StreamingTextRedactor(SecretStr(CANARY))
-    out = redactor.feed("ab" + CANARY[:5]) + redactor.feed(CANARY[5:] + "cd")
-    out += redactor.feed("", final=True)
-    assert out == "ab[REDACTED]cd"
+    redactor = StreamTextRedactor(SecretStr(key))
+    out = []
+    for name, pieces in events:
+        out += redactor.push(name, pieces)
+    out += redactor.finish()
+    assert [name for name, _ in out] == [name for name, _ in events]
+    return out
+
+
+def test_the_text_redactor_masks_a_key_split_across_pieces():
+    out = _redacted([("a", [("text", "ab" + CANARY[:5])]), ("b", [("text", CANARY[5:] + "cd")])])
+    assert out == [("a", ["ab[REDACTED]"]), ("b", ["cd"])]
 
 
 def _delta(delta_type: str, field: str, text: str) -> dict:
@@ -1327,9 +1336,9 @@ async def test_a_key_split_around_another_event_never_reaches_the_joined_text(
     monkeypatch, tmp_path, between, cut
 ):
     """A consumer joins text across citations, blocks and error events. A key beginning
-    of BOUNDARY_HOLD characters or more waits for the next text and is masked whole; a
-    shorter one has already gone out, and the rest of the key is masked after it."""
-    from lionagi.service.accounts._router import StreamingTextRedactor
+    of MIN_RUN characters or more is masked at once; a shorter one goes out before the
+    event between, and the rest of the key is masked after it."""
+    from lionagi.service.accounts._router import StreamTextRedactor
 
     middle, second = _BETWEEN_TWO_TEXT_DELTAS[between]
     events = [
@@ -1343,7 +1352,7 @@ async def test_a_key_split_around_another_event_never_reaches_the_joined_text(
 
     chunks = await _stream_events(monkeypatch, tmp_path, events)
 
-    shown = CANARY[:cut] if cut < StreamingTextRedactor.BOUNDARY_HOLD else ""
+    shown = CANARY[:cut] if cut < StreamTextRedactor.MIN_RUN else ""
     expected = "ab" + shown + "[REDACTED]cd"
     assert "".join(chunk.content or "" for chunk in chunks if chunk.type == "text") == expected
     assert _raw_delta_text(chunks, "text") == expected
@@ -1355,7 +1364,7 @@ async def test_a_key_split_around_another_event_never_reaches_the_joined_text(
 async def test_a_key_split_around_a_signature_never_reaches_the_joined_thinking(
     monkeypatch, tmp_path, cut
 ):
-    from lionagi.service.accounts._router import StreamingTextRedactor
+    from lionagi.service.accounts._router import StreamTextRedactor
 
     events = [
         _MESSAGE_START,
@@ -1373,7 +1382,7 @@ async def test_a_key_split_around_a_signature_never_reaches_the_joined_thinking(
 
     chunks = await _stream_events(monkeypatch, tmp_path, events)
 
-    shown = CANARY[:cut] if cut < StreamingTextRedactor.BOUNDARY_HOLD else ""
+    shown = CANARY[:cut] if cut < StreamTextRedactor.MIN_RUN else ""
     assert _raw_delta_text(chunks, "thinking") == "ab" + shown + "[REDACTED]cd"
     assert _raw_delta_text(chunks, "signature") == "sig"
     assert all(CANARY not in repr(chunk) for chunk in chunks)
@@ -1384,8 +1393,8 @@ async def test_a_key_split_around_a_signature_never_reaches_the_joined_thinking(
 async def test_a_key_split_across_two_citations_never_reaches_their_joined_quotes(
     monkeypatch, tmp_path, cut
 ):
-    """A citation arrives whole and is never held, so the first keeps its part of the key
-    and the rest is masked in the second."""
+    """A citation whose quote ends in a beginning of the key waits for the next one, so
+    the key is masked across both at every cut."""
     events = [
         _MESSAGE_START,
         _text_block(0),
@@ -1402,7 +1411,7 @@ async def test_a_key_split_across_two_citations_never_reaches_their_joined_quote
         for raw in ((chunk.metadata or {}).get("raw") for chunk in chunks)
         if isinstance(raw, dict) and raw.get("delta", {}).get("type") == "citations_delta"
     ]
-    assert quotes == ["ab" + CANARY[:cut], "[REDACTED]cd"]
+    assert quotes == ["ab[REDACTED]", "cd"]
     assert all(CANARY not in repr(chunk) for chunk in chunks)
 
 
@@ -1418,7 +1427,7 @@ async def test_text_that_only_begins_like_the_key_keeps_its_place(monkeypatch, t
         _text(0, "the end of " + ending),
         {"type": "content_block_stop", "index": 0},
         _text_block(1),
-        _text(1, "next"),
+        _text(1, " after"),
         *_MESSAGE_END,
     ]
 
@@ -1427,14 +1436,16 @@ async def test_text_that_only_begins_like_the_key_keeps_its_place(monkeypatch, t
     kinds = _raw_kinds(chunks)
     before_stop = chunks[: kinds.index("content_block_stop")]
     assert _raw_delta_text(before_stop, "text") == "the end of " + ending
-    assert _raw_delta_text(chunks, "text") == "the end of " + ending + "next"
+    assert _raw_delta_text(chunks, "text") == "the end of " + ending + " after"
 
 
 @pytest.mark.asyncio
-async def test_a_held_key_beginning_that_never_continues_is_still_delivered(monkeypatch, tmp_path):
-    from lionagi.service.accounts._router import StreamingTextRedactor
+async def test_a_long_key_beginning_is_masked_even_when_the_key_never_completes(
+    monkeypatch, tmp_path
+):
+    from lionagi.service.accounts._router import StreamTextRedactor
 
-    beginning = CANARY[: StreamingTextRedactor.BOUNDARY_HOLD]
+    beginning = CANARY[: StreamTextRedactor.MIN_RUN]
     events = [
         _MESSAGE_START,
         _text_block(0),
@@ -1447,7 +1458,7 @@ async def test_a_held_key_beginning_that_never_continues_is_still_delivered(monk
 
     chunks = await _stream_events(monkeypatch, tmp_path, events)
 
-    assert _raw_delta_text(chunks, "text") == "ab" + beginning + "zz"
+    assert _raw_delta_text(chunks, "text") == "ab[REDACTED]zz"
     kinds = _raw_kinds(chunks)
     assert max(i for i, kind in enumerate(kinds) if kind == "content_block_delta") < kinds.index(
         "message_delta"
@@ -1497,20 +1508,103 @@ async def test_held_text_reaches_the_consumer_before_the_next_block_starts(monke
     assert _raw_delta_text(chunks, "text") == "hello world"
 
 
-def test_the_text_redactor_releases_all_but_a_tail_that_begins_the_key():
-    from pydantic import SecretStr
+def test_a_beginning_of_the_key_waits_only_for_the_next_event():
+    """Held while the next event may continue the key; sent when it cannot."""
+    from lionagi.service.accounts._router import StreamTextRedactor
 
-    from lionagi.service.accounts._router import StreamingTextRedactor
+    run = StreamTextRedactor.MIN_RUN
+    out = _redacted(
+        [
+            ("a", [("text", "ab" + CANARY[: run - 1])]),
+            ("stop", []),
+            ("b", [("text", CANARY[run - 1 :] + "cd")]),
+        ]
+    )
+    assert out == [("a", ["ab" + CANARY[: run - 1]]), ("stop", []), ("b", ["[REDACTED]cd"])]
 
-    hold = StreamingTextRedactor.BOUNDARY_HOLD
-    redactor = StreamingTextRedactor(SecretStr(CANARY))
-    out = redactor.feed("ab" + CANARY[:hold]) + redactor.release()
-    assert out == "ab"
-    out += redactor.feed(CANARY[hold:] + "cd", final=True)
-    assert out == "ab[REDACTED]cd"
+    out = _redacted([("a", [("text", "ab" + CANARY[:run])]), ("stop", []), ("b", [("text", "zz")])])
+    assert out == [("a", ["ab[REDACTED]"]), ("stop", []), ("b", ["zz"])]
 
-    redactor = StreamingTextRedactor(SecretStr(CANARY))
-    out = redactor.feed("ab" + CANARY[: hold - 1]) + redactor.release()
-    assert out == "ab" + CANARY[: hold - 1]
-    out += redactor.feed(CANARY[hold - 1 :] + "cd", final=True)
-    assert out == "ab" + CANARY[: hold - 1] + "[REDACTED]cd"
+
+def test_a_key_split_across_kinds_is_masked_in_the_join_of_every_piece():
+    out = _redacted(
+        [("a", [("text_delta", "ab" + CANARY[:5])]), ("b", [("thinking_delta", CANARY[5:] + "zz")])]
+    )
+    assert out == [("a", ["ab[REDACTED]"]), ("b", ["[REDACTED]zz"])]
+
+
+def test_a_key_continued_after_a_block_stop_shows_only_its_short_beginning():
+    long_key = "k" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(118))
+    out = _redacted(
+        [
+            ("a", [("text_delta", "ab" + long_key[:5])]),
+            ("stop", []),
+            ("b", [("text_delta", long_key[5:100])]),
+            ("stop2", []),
+            ("c", [("text_delta", long_key[100:] + "zz")]),
+        ],
+        key=long_key,
+    )
+    joined = "".join(text for _, texts in out for text in texts)
+    assert joined == "ab" + long_key[:5] + "[REDACTED]zz"
+
+
+def test_two_long_beginnings_in_one_piece_are_masked():
+    out = _redacted([("a", [("text_delta", CANARY[:20] + CANARY[:8] + "zz")])])
+    assert out == [("a", ["[REDACTED]zz"])]
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_no_join_ever_holds_more_than_a_short_beginning_of_the_key(seed):
+    """Random splits of keys across kinds, citations and textless events: in the join
+    of each kind and of every piece, at most MIN_RUN - 1 characters that begin the
+    key appear before a mask, and the key never does."""
+    import random
+
+    from lionagi.service.accounts._router import StreamTextRedactor
+
+    rng = random.Random(seed)
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    key = "sk-ant-" + "".join(rng.choice(alphabet) for _ in range(rng.randint(20, 110)))
+    kinds = ["text_delta", "thinking_delta", "input_json_delta", "citations_delta"]
+    text = ""
+    for _ in range(rng.randint(1, 4)):
+        filler = "".join(rng.choice(alphabet + " .\n") for _ in range(rng.randint(0, 12)))
+        text += filler + key[: rng.choice([len(key), rng.randint(1, len(key))])]
+    events = []
+    position = 0
+    while position < len(text):
+        size = rng.randint(1, 15)
+        events.append((len(events), [(rng.choice(kinds), text[position : position + size])]))
+        position += size
+        if rng.random() < 0.3:
+            events.append((len(events), []))
+    out = _redacted(events, key=key)
+    joins = {"": ""}
+    for (_, pieces), (_, texts) in zip(events, out, strict=True):
+        for (kind, _), sent in zip(pieces, texts, strict=True):
+            joins[kind] = joins.get(kind, "") + sent
+            joins[""] += sent
+    for joined in joins.values():
+        assert key not in joined
+        for length in range(StreamTextRedactor.MIN_RUN, len(key) + 1):
+            assert key[:length] not in joined
+
+
+@pytest.mark.asyncio
+async def test_a_long_key_whose_held_bytes_hold_the_last_events_still_settles(
+    monkeypatch, tmp_path
+):
+    """The byte redactor holds the key's length less one at the end of the stream; the
+    events in that tail are split into lines like any others."""
+    long_key = "sk-ant-" + "x7" * 50
+    path = _install_accounts(monkeypatch, tmp_path, key=long_key)
+    events = [_MESSAGE_START, _text_block(0), _text(0, "hi"), *_MESSAGE_END]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert "message_stop" in _raw_kinds(chunks)
+    assert _raw_delta_text(chunks, "text") == "hi"
+    row = _attempts(path)[0]
+    assert row[2] == "settled", row
