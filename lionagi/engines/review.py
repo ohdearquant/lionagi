@@ -286,8 +286,8 @@ class ReviewVerdict(Verdict):
     served_model: str | None = Field(
         default=None,
         description=(
-            "The model the provider reported serving the synthesis call; None when it "
-            "reported none or no call was made. Never the model the run requested."
+            "The model the provider named for the last synthesis call; None when it "
+            "named none or no call was made."
         ),
     )
 
@@ -821,9 +821,10 @@ class ReviewEngine(Engine):
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
         text = str(res) if res is not None else ""
-        # The provider's own report, never the requested label: this branch and its model
-        # were made for the synthesis alone, and a call that reports no model clears the
-        # value, so what is left is what the synthesis calls were served by.
+        # The provider's own report on the synthesis model. The model-level value is the
+        # last call's, not call-correlated; it is this call's because this branch and its
+        # model were made for the synthesis alone and call in sequence, and a call that
+        # reports no model clears it.
         metadata = getattr(getattr(synth, "chat_model", None), "provider_metadata", None)
         served = metadata.get("served_model") if isinstance(metadata, dict) else None
         if not isinstance(served, str) or not served.strip():

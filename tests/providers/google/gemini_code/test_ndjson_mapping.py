@@ -205,12 +205,42 @@ async def _run_chunks(objects: list[dict], request: GeminiCodeRequest | None = N
 
 
 @pytest.mark.asyncio
-async def test_system_chunk_carries_session_id_and_model():
-    chunks = await _run_chunks([_success_obj()])
+async def test_system_chunk_carries_session_id_and_no_model_agy_did_not_report():
+    """The system chunk is where a served model is read from, so it carries
+    only a model agy itself reported, never the requested one."""
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj()], request)
     system_chunks = [c for c in chunks if c.type == "system"]
     assert len(system_chunks) == 1
     assert system_chunks[0].metadata["session_id"] == "conv-123"
-    assert system_chunks[0].metadata["model"]
+    assert system_chunks[0].metadata["model"] is None
+    session = await _run_objects([_success_obj()], request)
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_system_chunk_carries_the_model_agy_reported():
+    chunks = await _run_chunks([_success_obj(model="gemini-served-x")])
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reported", [None, "", 42, {"name": "x"}])
+async def test_a_model_field_that_is_not_a_name_is_not_recorded(reported):
+    chunks = await _run_chunks([_success_obj(model=reported)])
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_result_record_keeps_the_requested_model_when_agy_reports_none():
+    """The run record read from the result chunk still names a model; result
+    chunks are never read as the served model."""
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj()], request)
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert result_chunks[0].metadata["model"] == resolve_agy_model("gemini-3.8-flash")
 
 
 @pytest.mark.asyncio

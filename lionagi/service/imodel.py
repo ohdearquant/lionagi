@@ -315,16 +315,35 @@ class iModel:  # noqa: N801
 
     @staticmethod
     def _reported_served_model(value: Any) -> str | None:
-        if isinstance(value, StreamChunk):
-            if value.type != "system":
-                return None
-            value = value.metadata
-        if not isinstance(value, dict):
-            return None
+        """The model the provider named in a response or stream chunk, else None.
 
-        served_model = value.get("model")
-        if isinstance(served_model, str) and served_model.strip():
-            return served_model
+        A CLI provider names it on a system chunk. An API stream chunk keeps the
+        provider event under ``metadata["raw"]``, where the model sits at the top
+        level (chat completion chunks), under ``message`` (Anthropic
+        ``message_start``) or under ``response`` (Responses events). Result
+        chunks are never read: a CLI result chunk is the run record, which may
+        name the requested model.
+        """
+        if isinstance(value, StreamChunk):
+            if value.type not in ("system", "text"):
+                return None
+            metadata = value.metadata if isinstance(value.metadata, dict) else {}
+            raw = metadata.get("raw")
+            if isinstance(raw, dict):
+                holders = [raw, raw.get("message"), raw.get("response")]
+            elif value.type == "system":
+                holders = [metadata]
+            else:
+                return None
+        else:
+            holders = [value]
+
+        for holder in holders:
+            if not isinstance(holder, dict):
+                continue
+            served_model = holder.get("model")
+            if isinstance(served_model, str) and served_model.strip():
+                return served_model
         return None
 
     def _store_served_model(

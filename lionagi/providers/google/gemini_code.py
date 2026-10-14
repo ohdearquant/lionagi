@@ -528,7 +528,10 @@ async def stream_gemini_cli(
                 cli_error = str(obj.get("error") or "").strip()
 
                 session.session_id = obj.get("conversation_id") or session.session_id
-                session.model = resolve_agy_model(request.model)
+                # Only a model agy itself reports is recorded, so the requested
+                # model never reads as the served one.
+                reported = obj.get("model")
+                session.model = reported if isinstance(reported, str) and reported else None
                 session.result = response
                 session.usage = obj.get("usage", {}) or {}
                 session.num_turns = obj.get("num_turns")
@@ -588,7 +591,9 @@ async def stream_gemini_cli(
                     # Terminal usage/turns/duration — the only channel run.py reads
                     # provider-reported usage from (persisted onto model_response).
                     result_meta: dict[str, Any] = {
-                        "model": session.model,
+                        # The run record keeps the requested model when agy reports
+                        # none; result chunks are never read as the served model.
+                        "model": session.model or resolve_agy_model(request.model),
                         "conversation_id": session.session_id,
                         "status": status or "SUCCESS",
                     }

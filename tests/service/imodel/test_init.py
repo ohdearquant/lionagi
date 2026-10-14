@@ -937,3 +937,65 @@ class TestEffortSuffixIsNotStrippedFromVendorModelIds:
             api_key="dummy",
         )
         assert m.endpoint.config.kwargs["model"] == "deepseek/deepseek-v4-flash-0731"
+
+
+class TestReportedServedModel:
+    """Where a provider's own model name is read from, per chunk shape."""
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            # Chat completion chunk: model at the event's top level.
+            (
+                'data: {"id":"c1","model":"gpt-served-1","choices":[{"delta":{"content":"hi"}}]}',
+                "gpt-served-1",
+            ),
+            # Anthropic message_start: model under "message".
+            (
+                'data: {"type":"message_start","message":{"id":"m1","model":"claude-served-1"}}',
+                "claude-served-1",
+            ),
+            # Responses created event: model under "response".
+            (
+                'data: {"type":"response.created","response":{"id":"r1","model":"gpt-served-2"}}',
+                "gpt-served-2",
+            ),
+            # A result chunk is never read.
+            (
+                'data: {"type":"response.completed","response":{"model":"gpt-served-3"}}',
+                None,
+            ),
+            ('data: {"id":"c2","choices":[{"delta":{"content":"hi"}}]}', None),
+        ],
+    )
+    def test_api_stream_chunk_through_the_converter(self, base_imodel, line, expected):
+        chunk = base_imodel.endpoint._line_to_stream_chunk(line)
+        assert iModel._reported_served_model(chunk) == expected
+
+    @pytest.mark.parametrize(
+        "chunk,expected",
+        [
+            (StreamChunk(type="system", metadata={"model": "cli-served"}), "cli-served"),
+            # A CLI text or result chunk carrying a model is not a report.
+            (StreamChunk(type="text", content="x", metadata={"model": "echoed"}), None),
+            (StreamChunk(type="result", metadata={"model": "requested"}), None),
+            (StreamChunk(type="system", metadata={"model": "  "}), None),
+            (StreamChunk(type="system", metadata={"raw": {"model": 7}}), None),
+        ],
+    )
+    def test_chunk_shapes(self, chunk, expected):
+        assert iModel._reported_served_model(chunk) == expected
+
+    @pytest.mark.asyncio
+    async def test_stream_records_the_model_named_in_an_api_text_chunk(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(
+                'data: {"id":"c1","model":"gpt-served-1","choices":[{"delta":{"content":"hi"}}]}'
+            )
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-served-1"
+        assert base_imodel.provider_metadata["served_model"] == "gpt-served-1"

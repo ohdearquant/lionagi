@@ -413,7 +413,7 @@ async def test_review_verdict_served_model_is_none_without_a_provider_report(tmp
     eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
     run = eng.new_run()
     await eng._run(run, "fn next(&mut self) { self.pos += 1; ... }")
-    # The requested model is never put in its place.
+    # The script names no model, so none is recorded.
     assert run.by_type(ReviewVerdict)[-1].served_model is None
 
 
