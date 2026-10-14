@@ -413,13 +413,22 @@ async def test_on_text_loop_closed_error_propagates():
         # a free-form name with argon in it is on the 4 family by its name
         ("gemini-4-argon-preview", "Gemini 4 Argon (Medium)"),
         ("gemini-argon-high", "Gemini 4 Argon (High)"),
-        # ...unless it names 3.8 or 3.6, which wins as before, or Pro (3.1 Pro, as before)
+        ("gemini-14-argon", "Gemini 4 Argon (Medium)"),
+        # ...unless it names Pro (3.1 Pro) or a dotted version, which it keeps, as before
         ("gemini-3.8-flash-argon", "Gemini 3.8 Flash (Medium)"),
         ("gemini-argon-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.6-flash-argon", "Gemini 3.6 Flash (Medium)"),
+        ("gemini-3.5-flash-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-argon-2.5-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.5-argon", "Gemini 3.5 Flash (Medium)"),
         ("gemini-argon-pro", "Gemini 3.1 Pro (Low)"),
-        # an undotted major version 4 is the 4 family, unless a dotted version is named
+        ("gemini-3.8-flash-pro-argon", "Gemini 3.1 Pro (Low)"),
+        # an undotted major version 4 is the 4 family, unless a dotted version is named;
+        # a date is not a version, and 4k is a size, not a version
         ("gemini-4-flash", "Gemini 4 Argon (Medium)"),
+        ("gemini-v4-flash", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash-2026.10", "Gemini 4 Argon (Medium)"),
+        ("gemini-4k-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash-4", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.6-flash-4", "Gemini 3.6 Flash (Medium)"),
         ("gemini-3.5-flash-4", "Gemini 3.5 Flash (Medium)"),
@@ -509,6 +518,11 @@ def test_resolve_agy_model_effort_folding(spec, effort, expected):
     assert resolve_agy_model(spec, effort=effort) == expected
 
 
+@pytest.mark.parametrize("effort", [0, 1.5])
+def test_resolve_agy_model_ignores_an_effort_that_is_not_a_word(effort):
+    assert resolve_agy_model("gemini-3.8-flash", effort=effort) == "Gemini 3.8 Flash (Medium)"
+
+
 def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
     """Claude/GPT-OSS routed through agy have no Low/Medium/High tiers —
     effort is accepted but has no suffix to fold into."""
@@ -546,6 +560,10 @@ def test_resolve_agy_model_4_argon_is_the_default_and_stays_on_family():
 )
 def test_an_argon_name_has_the_argon_context_window(spec):
     assert lookup_context_window(spec, "gemini_code") == 1_048_576
+
+
+def test_a_longer_window_row_still_wins_over_the_argon_rows():
+    assert lookup_context_window("gemini-2.5-pro-argon", "gemini_code") == 2_097_152
 
 
 def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():

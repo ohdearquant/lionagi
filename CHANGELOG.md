@@ -12,20 +12,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,
   and the exact display names pass through (earlier releases resolved an exact Argon display name
-  to a 3.5 Flash name). `argon-low` / `-medium` / `-high` are aliases too. A free-form name with
-  `argon` in it resolves to the 4 Argon family unless it names 3.8 or 3.6, which wins as before, or
-  Pro, which stays 3.1 Pro. So does one with an undotted major version 4 that spells out no other
-  dotted version: `gemini-4-flash` resolved to 3.5 Flash in earlier releases and resolves to Argon
-  now. It is the default model for the gemini-code aliases and for `GeminiCodeRequest`, and it
+  to a 3.5 Flash name). `argon-low` / `-medium` / `-high` are aliases too. A free-form name
+  resolves in this order: one naming Pro stays 3.1 Pro; one that spells out a dotted version keeps
+  it as before (3.8 and 3.6 pick their family, any other, such as `gemini-3.5-flash-argon` or
+  `gemini-4.5-flash`, resolves to 3.5 Flash); otherwise a name containing `argon` or a delimited
+  major version 4 (`gemini-4-flash`, `gemini-v4-flash`, but not `gemini-4k-flash` or
+  `gemini-14-flash`) resolves to the 4 Argon family. A four-digit dotted number such as a date
+  (`2026.10`) is not a version. `gemini-4-flash` resolved to 3.5 Flash in earlier releases and
+  resolves to Argon now. It is the default model for the gemini-code aliases and for
+  `GeminiCodeRequest`, and it
   appears first among the Studio operator's gemini-code models; the 3.8, 3.6 and 3.5 Flash and
   3.1 Pro entries are unchanged.
 - The gemini-code context window table gains `gemini-4-argon`, `gemini-4` and `argon` rows at
-  1,048,576 tokens. Rows match as substrings and the lookup falls back across every provider's
-  table, so any model name containing `gemini-4` or `argon` now reads that window on any provider
-  (for example `gemini-4.5-flash` on `gemini`) where it read the 128,000-token default.
+  1,048,576 tokens. Rows match as substrings, longest first, and the lookup falls back across
+  every provider's table, so a model name containing `gemini-4` or `argon` that no longer row
+  matches now reads that window on any provider (for example `gemini-4.5-flash` on `gemini`) where
+  it read the 128,000-token default; `gemini-2.5-pro-argon` keeps the 2.5 Pro window.
 - `resolve_agy_model` reads an effort without regard to case or surrounding spaces (`"High"` was
   read as an unknown effort and gave Medium), and a blank effort counts as none, so the model's
-  default tier applies.
+  default tier applies. An effort that is not a string is ignored, as before.
 
 ## [0.35.5] - 2026-10-11
 
