@@ -433,6 +433,17 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
         raise ValueError(f"Invalid column(s): {bad}")
 
 
+def _is_utf8_str(value: Any) -> bool:
+    """Whether ``value`` is a string that encodes as UTF-8 (no lone surrogate)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _to_json_column(value: Any) -> Any:
     """Serialize value to a JSON string for a TEXT column, rejecting inf, -inf and nan."""
     if value is None or isinstance(value, bytes | bytearray | memoryview):
@@ -2350,9 +2361,10 @@ class StateDB:
     ) -> None:
         """Write a batch of messages and append their ids to progressions in one transaction.
 
-        Each progression is read once and rewritten at most once for the whole batch, where
-        ``insert_message`` plus ``append_to_progression`` per message rewrites each
-        progression's whole array once per message. Ids are appended in batch order and
+        Each progression is read once. One that holds an array of string ids, given string
+        ids, is rewritten at most once for the whole batch, where ``insert_message`` plus
+        ``append_to_progression`` per message rewrites each progression's whole array once
+        per message. Ids are appended in batch order and
         skipped when already present, so re-running a batch leaves every progression
         unchanged. That single rewrite covers a stored array of string ids given string ids,
         the shape every writer produces; any other stored value or id goes through
@@ -2396,11 +2408,13 @@ class StateDB:
                 current = None
         if (
             not isinstance(current, list)
-            or not all(isinstance(item, str) for item in current)
-            or not all(isinstance(message_id, str) for message_id in message_ids)
+            or not all(_is_utf8_str(item) for item in current)
+            or not all(_is_utf8_str(message_id) for message_id in message_ids)
         ):
-            # Any other shape (not an array, a non-string or non-finite element, a non-string
-            # id) compares differently on each dialect, so it takes the per-message statement.
+            # Any other shape (not an array, a non-string or non-finite element, a string that
+            # cannot be encoded as UTF-8 such as a lone surrogate, a non-string id) compares or
+            # encodes differently on each dialect, so it takes the per-message statement. The
+            # SQLite tests cannot tell the two paths apart for a non-string id.
             for message_id in message_ids:
                 await self._append_to_progression_in_tx(conn, progression_id, message_id)
             return

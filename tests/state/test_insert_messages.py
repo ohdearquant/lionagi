@@ -139,6 +139,7 @@ async def _outcome(call) -> str | None:
         "[1e400]",
         "[5]",
         '["m0", 5]',
+        '["\\ud800"]',
         "[",
     ],
     ids=[
@@ -151,6 +152,7 @@ async def _outcome(call) -> str | None:
         "overflow-element",
         "number-element",
         "mixed-elements",
+        "lone-surrogate-element",
         "malformed",
     ],
 )

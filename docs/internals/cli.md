@@ -1162,8 +1162,9 @@ A tool result consumes its use's entry, so a file's map holds only uses still wa
 result; it is saved as `pending_tool_names` and loaded whole, so a use that never gets a result
 stays in it for as long as the file's state is kept. The same map is also saved as `tool_names`,
 the key earlier releases read. Maps saved by earlier releases have only `tool_names` and held
-every use ever seen; a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP` entries of such a map,
-assuming a use still pending is among the newest. A second result for a use already answered
+every use ever seen; a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP` (64) entries of such a
+map, assuming a use still pending is among the newest, so a pending use with 64 or more later uses
+in the map is dropped. A second result for a use already answered
 finds no entry and is mirrored with an empty function name, replacing the row the first result
 wrote. The map, and for a Codex rollout the current turn, move with the cursor: a pass hands
 `mirror_session` copies and adopts them only after the batch is durable, so a re-read batch finds
@@ -1173,7 +1174,7 @@ pass writes nothing and a file removed from outside is written again on the next
 
 **`write_mirrored_messages`** (`state/_mirror_common.py`) — one transaction per chunk of
 `MIRROR_WRITE_CHUNK` (500) messages through `StateDB.insert_messages`, which reads each progression
-once and rewrites it at most once per chunk. Appending message by message rewrote both of a
+once and rewrites one that holds string ids at most once per chunk. Appending message by message rewrote both of a
 session's progression arrays once per message, so a pass of k messages rewrote each array k
 times; now it rewrites each once per chunk. Each rewrite still writes the whole array, so the
 cost of a pass still grows with the session's length until progression storage changes
