@@ -297,17 +297,26 @@ class StreamTextRedactor:
 
     An event whose text ends in a shorter beginning of the key is held until the
     next event shows whether the key continues. When the next event does not carry
-    text into the same join, the held characters are sent: at most ``MIN_RUN - 1``
-    characters that begin the key, which for an Anthropic key are the ``sk-ant-``
-    every key starts with. If the key continues later, it is masked from there.
+    text into the same join, or the stream ends, the held characters are decided:
+    sent while the beginning they end is no longer than ``PUBLIC_PREFIX``, the
+    ``sk-ant-`` every Anthropic key starts with, so what is sent is public; masked
+    otherwise. A key that does not start with ``PUBLIC_PREFIX`` therefore has every
+    held character masked. If the key continues later, it is masked from there.
     """
 
     MIN_RUN = 8
     MASK = "[REDACTED]"
     ALL = ""  # the join of every piece in order; a kind is never empty
+    PUBLIC_PREFIX = "sk-ant-"
 
     def __init__(self, key: SecretStr) -> None:
         self._secret = key.get_secret_value()
+        # The longest beginning of the key that held text may end in and still be sent.
+        self._release = (
+            len(self.PUBLIC_PREFIX) if self._secret.startswith(self.PUBLIC_PREFIX) else 0
+        )
+        if self._release >= self.MIN_RUN:
+            raise ValueError("PUBLIC_PREFIX must be shorter than MIN_RUN")
         self._joins: dict[str, _Join] = {self.ALL: _Join()}
         self._queue: list[tuple[Any, list[tuple[str, list[_Char]]]]] = []
         self._last_masked: dict[str, bool] = {}
@@ -360,9 +369,13 @@ class StreamTextRedactor:
         join.active.discard(len(secret))
 
     def _decide(self, join: _Join) -> None:
-        # No more text reaches this join before the next event, so its undecided
-        # characters are sent; the join still remembers the beginning they make.
+        # No more text reaches this join before the next event. Its undecided
+        # characters end a beginning of the key: sent while that beginning is within
+        # the public prefix, masked once it is longer. The join still remembers the
+        # beginning they make.
+        masked = max(join.active, default=0) > self._release
         for held in join.pending:
+            held.masked = held.masked or masked
             held.open -= 1
         join.pending.clear()
 

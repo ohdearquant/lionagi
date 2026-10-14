@@ -26,7 +26,9 @@ from lionagi.service.resilience import RetryConfig
 from lionagi.session.branch import Branch
 
 KEY_NAME = "LIONAGI_ROUTER_CANARY"
-CANARY = "test-canary-key-0123456789"
+CANARY = "sk-ant-api03-canary-0123456789"
+# A key without the public prefix every Anthropic key starts with.
+OTHER_KEY = "test-canary-key-0123456789"
 MODEL = "claude-sonnet-5-5"
 REQUEST = {
     "model": MODEL,
@@ -1296,8 +1298,8 @@ _MESSAGE_END = [
 ]
 
 
-async def _stream_events(monkeypatch, tmp_path, events) -> list:
-    _install_accounts(monkeypatch, tmp_path)
+async def _stream_events(monkeypatch, tmp_path, events, key=CANARY) -> list:
+    _install_accounts(monkeypatch, tmp_path, key=key)
     model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse([event]) for event in events])])
     return [chunk async for chunk in model.endpoint.stream(REQUEST)]
 
@@ -1331,32 +1333,32 @@ _BETWEEN_TWO_TEXT_DELTAS = {
 
 @pytest.mark.parametrize("cut", range(1, len(CANARY)))
 @pytest.mark.parametrize("between", sorted(_BETWEEN_TWO_TEXT_DELTAS))
+@pytest.mark.parametrize("key", [CANARY, OTHER_KEY], ids=["sk-ant", "other"])
 @pytest.mark.asyncio
 async def test_a_key_split_around_another_event_never_reaches_the_joined_text(
-    monkeypatch, tmp_path, between, cut
+    monkeypatch, tmp_path, key, between, cut
 ):
     """A consumer joins text across citations, blocks and error events. A key beginning
-    of MIN_RUN characters or more is masked at once; a shorter one goes out before the
-    event between, and the rest of the key is masked after it."""
-    from lionagi.service.accounts._router import StreamTextRedactor
-
+    of MIN_RUN characters or more is masked at once; one within the public prefix goes
+    out before the event between, and the rest of the key is masked after it. Nothing
+    of a key without that prefix goes out."""
     middle, second = _BETWEEN_TWO_TEXT_DELTAS[between]
     events = [
         _MESSAGE_START,
         _text_block(0),
-        _text(0, "ab" + CANARY[:cut]),
+        _text(0, "ab" + key[:cut]),
         *middle,
-        _text(second, CANARY[cut:] + "cd"),
+        _text(second, key[cut:] + "cd"),
         *_MESSAGE_END,
     ]
 
-    chunks = await _stream_events(monkeypatch, tmp_path, events)
+    chunks = await _stream_events(monkeypatch, tmp_path, events, key=key)
 
-    shown = CANARY[:cut] if cut < StreamTextRedactor.MIN_RUN else ""
+    shown = key[:cut] if key.startswith("sk-ant-") and cut <= len("sk-ant-") else ""
     expected = "ab" + shown + "[REDACTED]cd"
     assert "".join(chunk.content or "" for chunk in chunks if chunk.type == "text") == expected
     assert _raw_delta_text(chunks, "text") == expected
-    assert all(CANARY not in repr(chunk) for chunk in chunks)
+    assert all(key not in repr(chunk) for chunk in chunks)
 
 
 @pytest.mark.parametrize("cut", range(1, len(CANARY)))
@@ -1533,8 +1535,9 @@ def test_a_key_split_across_kinds_is_masked_in_the_join_of_every_piece():
     assert out == [("a", ["ab[REDACTED]"]), ("b", ["[REDACTED]zz"])]
 
 
-def test_a_key_continued_after_a_block_stop_shows_only_its_short_beginning():
-    long_key = "k" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(118))
+@pytest.mark.parametrize("prefix", ["sk-ant-", "k"])
+def test_a_key_continued_after_a_block_stop_shows_only_its_public_beginning(prefix):
+    long_key = prefix + "".join(chr(ord("A") + (i * 7) % 26) for i in range(112))
     out = _redacted(
         [
             ("a", [("text_delta", "ab" + long_key[:5])]),
@@ -1546,7 +1549,51 @@ def test_a_key_continued_after_a_block_stop_shows_only_its_short_beginning():
         key=long_key,
     )
     joined = "".join(text for _, texts in out for text in texts)
-    assert joined == "ab" + long_key[:5] + "[REDACTED]zz"
+    shown = long_key[:5] if prefix == "sk-ant-" else ""
+    assert joined == "ab" + shown + "[REDACTED]zz"
+
+
+# Past the public prefix this key holds only capitals, which no other text below uses.
+_PREFIXED_KEY = "sk-ant-" + "QWXVJKPZ" * 4
+_UNPREFIXED_KEY = "QWXVJKPZ" * 4
+
+
+def _sent(out) -> str:
+    return "".join(text for _, texts in out for text in texts)
+
+
+@pytest.mark.parametrize("cut", range(1, 9))
+def test_an_anthropic_key_split_at_a_pause_sends_nothing_past_its_public_prefix(cut):
+    """The key's first eight characters, split at every position with a textless event
+    between: what goes out before the pause is the public prefix at most."""
+    key = _PREFIXED_KEY
+    out = _redacted(
+        [("a", [("text", "ab" + key[:cut])]), ("pause", []), ("b", [("text", key[cut:8] + "zz")])],
+        key=key,
+    )
+    sent = _sent(out)
+    assert not set(key[7:]) & set(sent.replace("[REDACTED]", ""))
+    assert sent == "ab" + (key[:cut] if cut <= 7 else "") + "[REDACTED]zz"
+
+
+@pytest.mark.parametrize("cut", range(1, 9))
+def test_a_key_without_the_public_prefix_is_masked_from_its_first_character_at_a_pause(cut):
+    key = _UNPREFIXED_KEY
+    out = _redacted(
+        [("a", [("text", "ab" + key[:cut])]), ("pause", []), ("b", [("text", key[cut:8] + "zz")])],
+        key=key,
+    )
+    sent = _sent(out)
+    assert not set(key) & set(sent.replace("[REDACTED]", ""))
+    assert sent == "ab[REDACTED]zz"
+
+
+@pytest.mark.parametrize("cut", range(1, 9))
+@pytest.mark.parametrize("key", [_PREFIXED_KEY, _UNPREFIXED_KEY], ids=["sk-ant", "other"])
+def test_a_beginning_of_the_key_held_when_the_stream_ends_is_decided_the_same_way(key, cut):
+    sent = _sent(_redacted([("a", [("text", "ab" + key[:cut])])], key=key))
+    public = key.startswith("sk-ant-") and cut <= 7
+    assert sent == "ab" + (key[:cut] if public else "[REDACTED]")
 
 
 def test_two_long_beginnings_in_one_piece_are_masked():
