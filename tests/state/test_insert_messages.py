@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, text
 
 from lionagi.state.db import StateDB
 
@@ -110,6 +110,32 @@ async def test_same_result_as_appending_one_message_at_a_time(db: StateDB):
     assert await db.get_progression(batched) == await db.get_progression(one)
 
 
+@pytest.mark.parametrize(
+    "stored",
+    ['"[\\"m1\\"]"', '{"m1": 1}', "5", "null"],
+    ids=["json-string", "object", "number", "null"],
+)
+async def test_a_collection_that_is_not_an_array_is_left_as_appending_leaves_it(
+    db: StateDB, stored: str
+):
+    one, batched = uid(), uid()
+    for pid in (one, batched):
+        await db.create_progression(pid)
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE progressions SET collection = :c WHERE id = :id"),
+                {"c": stored, "id": pid},
+            )
+    ids = [uid(), uid()]
+
+    for mid in ids:
+        await db.append_to_progression(one, mid)
+    await db.insert_messages([_msg(m) for m in ids], progression_ids=(batched,))
+
+    assert await db.get_progression(batched) == await db.get_progression(one)
+    assert all([await db.get_message(m) is not None for m in ids])
+
+
 async def test_a_rejected_message_writes_nothing(db: StateDB):
     p = uid()
     await db.create_progression(p)
@@ -164,6 +190,25 @@ async def test_the_session_activity_clock_moves_in_the_same_batch(db: StateDB):
     row = await db.get_session(sid)
     assert row["last_message_at"] == 50.0
     assert row["updated_at"] == 50.0
+
+
+async def test_a_mirrored_batch_is_written_in_chunks_of_500(db: StateDB):
+    from lionagi.state._mirror_common import write_mirrored_messages
+
+    branch, session = uid(), uid()
+    await db.create_progression(branch)
+    await db.create_progression(session)
+    updates = _progression_updates(db)
+
+    rows = [_msg(uid(), t) for t in range(501)]
+    await write_mirrored_messages(
+        db, rows, progression_ids=(branch, session), session_id=uid(), activity_at=501.0
+    )
+
+    # Two chunks (500 and 1), each rewriting both progressions once.
+    assert len(updates) == 4
+    assert await db.get_progression(branch) == [row["id"] for row in rows]
+    assert await db.get_progression(session) == [row["id"] for row in rows]
 
 
 async def test_an_empty_batch_writes_nothing(db: StateDB):

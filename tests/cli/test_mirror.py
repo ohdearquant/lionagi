@@ -1920,9 +1920,23 @@ def test_a_legacy_tool_name_map_loads_as_its_newest_entries(
 
     loaded = _load_states()["f"].tool_names
 
-    keep = mirror_mod._PENDING_TOOL_NAMES_KEEP
+    keep = mirror_mod._LEGACY_TOOL_NAMES_KEEP
     assert list(loaded) == [f"tool_{i}" for i in range(100 - keep, 100)]
     assert loaded["tool_99"] == "Fn99"
+
+
+def test_a_saved_pending_tool_name_map_loads_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    # More uses waiting for a result than a legacy map keeps, as one message with many
+    # parallel tool calls leaves them across a restart.
+    names = {f"tool_{i}": f"Fn{i}" for i in range(mirror_mod._LEGACY_TOOL_NAMES_KEEP + 6)}
+    _save_states({"f": _FileState(session_uid="s", offset=5, tool_names=dict(names))})
+
+    assert _load_states()["f"].tool_names == names
 
 
 def test_an_unchanged_save_leaves_offsets_json_alone(
@@ -1934,16 +1948,24 @@ def test_an_unchanged_save_leaves_offsets_json_alone(
     monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
     states = {"f": _FileState(session_uid="s", offset=12, tool_names={"t1": "Read"})}
 
-    first = _save_states(states)
+    _save_states(states)
+    first = offsets.read_text()
     inode = offsets.stat().st_ino
-    again = _save_states(states, first)
-    assert again == first
+    _save_states(states)
+    assert offsets.read_text() == first
     assert offsets.stat().st_ino == inode  # not replaced
 
     states["f"].offset = 40
-    moved = _save_states(states, again)
-    assert moved != again
+    _save_states(states)
     assert offsets.stat().st_ino != inode  # a changed state is written
+    assert json.loads(offsets.read_text())["f"]["offset"] == 40
+
+    # The comparison is with the file, so one removed or replaced from outside comes back.
+    offsets.unlink()
+    _save_states(states)
+    assert json.loads(offsets.read_text())["f"]["offset"] == 40
+    offsets.write_text("{}")
+    _save_states(states)
     assert json.loads(offsets.read_text())["f"]["offset"] == 40
 
 

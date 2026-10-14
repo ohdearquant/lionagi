@@ -2388,7 +2388,12 @@ class StateDB:
         current = row["collection"]
         if isinstance(current, str):
             current = json.loads(current)
-        # Only a string element can equal a message id, as in the SQL append's json_each test.
+        if not isinstance(current, list):
+            # The per-message append leaves a collection that is not an array unchanged.
+            return
+        # Message ids are strings, so only string elements are compared, as SQLite's json_each
+        # test compares them. PostgreSQL's per-message append compares each element's text, so
+        # there a non-string element spelled like an id (5 and "5") also counts as present.
         seen = {item for item in current if isinstance(item, str)}
         added: list[str] = []
         for message_id in message_ids:

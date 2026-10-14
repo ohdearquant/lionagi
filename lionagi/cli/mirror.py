@@ -219,15 +219,16 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
 
 
 # A tool result consumes its tool use's name (see messages_for_event), so a file's map holds only
-# uses still waiting for a result. Maps saved before that kept every use ever seen; a use still
-# pending is among a file's most recent ones, so a load keeps the newest entries and drops the rest.
-_PENDING_TOOL_NAMES_KEEP = 64
+# uses still waiting for a result, and is saved as "pending_tool_names" and loaded whole. Maps
+# saved before that, as "tool_names", kept every use ever seen; a use still pending is among a
+# file's most recent ones, so a load keeps the newest entries of such a map and drops the rest.
+_LEGACY_TOOL_NAMES_KEEP = 64
 
 
 def _recent_tool_names(names: dict[str, str]) -> dict[str, str]:
-    if len(names) <= _PENDING_TOOL_NAMES_KEEP:
+    if len(names) <= _LEGACY_TOOL_NAMES_KEEP:
         return names
-    return dict(list(names.items())[-_PENDING_TOOL_NAMES_KEEP:])
+    return dict(list(names.items())[-_LEGACY_TOOL_NAMES_KEEP:])
 
 
 def _load_states() -> dict[str, _FileState]:
@@ -243,28 +244,35 @@ def _load_states() -> dict[str, _FileState]:
         if isinstance(val, int):
             states[key] = _FileState(session_uid="", offset=val)
         elif isinstance(val, dict):
+            pending = val.get("pending_tool_names")
             states[key] = _FileState(
                 session_uid=val.get("session_uid") or "",
                 offset=val.get("offset", 0),
-                tool_names=_recent_tool_names(dict(val.get("tool_names") or {})),
+                tool_names=(
+                    dict(pending)
+                    if isinstance(pending, dict)
+                    else _recent_tool_names(dict(val.get("tool_names") or {}))
+                ),
                 leaf_uuid=val.get("leaf_uuid"),
                 turn={str(k): str(v) for k, v in (val.get("turn") or {}).items() if v is not None},
             )
     return states
 
 
-def _save_states(states: dict[str, _FileState], previous: str | None = None) -> str:
-    """Write offsets.json unless its content equals ``previous``; return the content.
+def _save_states(states: dict[str, _FileState]) -> None:
+    """Write offsets.json unless the file already holds this content.
 
     A pass that advanced no transcript produces the same content, and rewriting the whole
-    file on every poll for nothing would be most of what an idle mirror writes.
+    file on every poll for nothing would be most of what an idle mirror writes. The check
+    reads the file instead of remembering the last write, so a file removed or replaced
+    from outside is written again on the next pass.
     """
     ensure_lionagi_dir(_OFFSETS_PATH.parent)
     payload = {
         key: {
             "offset": st.offset,
             "session_uid": st.session_uid,
-            "tool_names": st.tool_names,
+            "pending_tool_names": st.tool_names,
             "leaf_uuid": st.leaf_uuid,
             "turn": st.turn,
         }
@@ -276,12 +284,14 @@ def _save_states(states: dict[str, _FileState], previous: str | None = None) -> 
     # round-trip forever through the equally permissive read above.
     raise_if_non_finite(payload)
     data = json.dumps(payload)
-    if data == previous:
-        return data
+    try:
+        if _OFFSETS_PATH.read_text() == data:
+            return
+    except (OSError, UnicodeDecodeError):
+        pass  # absent or unreadable: write it
     tmp = _OFFSETS_PATH.with_suffix(".json.tmp")
     tmp.write_text(data)
     tmp.replace(_OFFSETS_PATH)
-    return data
 
 
 def _seed_lineage(lineage: _Lineage, states: dict[str, _FileState]) -> None:
@@ -872,7 +882,6 @@ async def mirror_forever(
         return
     since_secs = _parse_window(since) if since else None
     states = _load_states()
-    saved: str | None = None
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     threads: dict[str, str] = {}
@@ -907,7 +916,7 @@ async def mirror_forever(
                                 live_window=live_window,
                                 threads=threads,
                             )
-                        saved = _save_states(states, saved)
+                        _save_states(states)
                     except Exception:  # a single bad pass must never kill the tail
                         _log.exception("transcript mirror pass failed")
                     try:
@@ -950,7 +959,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     since = args.since  # argparse already parsed --since to seconds (or None)
     states = _load_states()
-    saved: str | None = None
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     threads: dict[str, str] = {}
@@ -988,7 +996,7 @@ async def _run(args: argparse.Namespace) -> int:
                     live_window=args.live_window,
                     threads=threads,
                 )
-            saved = _save_states(states, saved)
+            _save_states(states)
             if n:
                 progress(f"  mirrored {n} new message(s)")
             if args.once:

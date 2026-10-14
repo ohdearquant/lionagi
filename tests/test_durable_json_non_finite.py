@@ -251,7 +251,7 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
     monkeypatch.setattr(mirror, "_OFFSETS_PATH", target)
 
     bad = mirror._FileState(session_uid="s", offset=12, tool_names={"t1": float("nan")})
-    with pytest.raises(ValueError, match=r"non-finite float at \$\.f\.tool_names\.t1"):
+    with pytest.raises(ValueError, match=r"non-finite float at \$\.f\.pending_tool_names\.t1"):
         mirror._save_states({"f": bad})
     assert not target.exists()
 
@@ -260,7 +260,7 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
     assert json.loads(target.read_text())["f"] == {
         "offset": 12,
         "session_uid": "s",
-        "tool_names": {"t1": "Read"},
+        "pending_tool_names": {"t1": "Read"},
         "leaf_uuid": None,
         # Carried so a message mirrored after a restart keeps the attribution of
         # the turn that produced it; it reaches this file out of a codex rollout,

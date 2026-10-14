@@ -1158,19 +1158,23 @@ when a file's root parent resolves to a different session's leaf, records a prov
 `leaf_uuid` alongside the byte offset so a restart resumes mid-conversation without dropping a
 later tool_result's function name or losing cross-session lineage — both live only in process
 memory otherwise. Legacy `{path: int}` caches (offset only) load as bare cursors, then upgrade.
-A tool result consumes its use's entry, so a file's `tool_names` holds only uses still waiting
-for a result; maps saved before that held every use ever seen, and a load keeps the newest
-`_PENDING_TOOL_NAMES_KEEP` entries of such a map. The map moves with the cursor: a pass hands
-`mirror_session` a copy and adopts it only after the batch is durable, so a re-read batch finds
-the names it consumed. `_save_states` returns what it wrote and skips the write when a pass left
-the content unchanged.
+A tool result consumes its use's entry, so a file's map holds only uses still waiting for a
+result; it is saved as `pending_tool_names` and loaded whole, so a use that never gets a result
+stays in it for as long as the file's state is kept. Maps saved before that, as `tool_names`,
+held every use ever seen, and a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP` entries of such a
+map. A second result for a use already answered finds no entry and is mirrored with an empty
+function name. The map moves with the cursor: a pass hands `mirror_session` a copy and adopts it
+only after the batch is durable, so a re-read batch finds the names it consumed. `_save_states`
+reads `offsets.json` and skips the write when the file already holds the content, so an idle
+pass writes nothing and a file removed from outside is written again on the next pass.
 
 **`write_mirrored_messages`** (`state/_mirror_common.py`) — one transaction per chunk of
 `MIRROR_WRITE_CHUNK` messages through `StateDB.insert_messages`, which reads each progression
 once and rewrites it at most once per chunk. Appending message by message rewrote both of a
 session's progression arrays once per message, so a pass of k messages rewrote each array k
-times; now it rewrites each once. Each rewrite still writes the whole array, so the cost of a
-pass still grows with the session's length until progression storage changes (ADR-0117).
+times; now it rewrites each once per chunk. Each rewrite still writes the whole array, so the
+cost of a pass still grows with the session's length until progression storage changes
+(ADR-0117).
 
 **`_read_new_events`** — cursor-advance-after-durable-write contract. The cursor is NOT
 advanced inside this function — the caller sets `state.offset` to the returned offset only
