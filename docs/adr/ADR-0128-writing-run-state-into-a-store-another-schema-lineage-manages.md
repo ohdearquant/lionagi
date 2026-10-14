@@ -248,3 +248,73 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 - **An out-of-process writer broker with operating-system file restrictions.** It also protects
   against code outside lionagi. It is larger than the threat this record addresses (lionagi's own
   persistence drifting), and stays available if that threat model changes.
+
+## Appendix A: operation manifest for the first profile
+
+Traced at commit `5cab31a2` by reading each entry point down through `StateDB`, the lifecycle
+service and the session observer. Entries name functions, not line numbers. The traced runs on
+scratch stores that confirm the manifest (D4) and the tests in the last column (D8) land with the
+implementation; until then this is the reading, and a trace that shows an effect missing here is a
+defect in this appendix.
+
+### A.0 Today
+
+A writable open of a store stamped with a higher `schema_meta.version` raises `SchemaTooNewError`
+before any data or DDL statement. Every step `_apply_schema()` runs ahead of its main version check
+(`_reconcile_columns`, the legacy `sessions` rebuild, and the six legacy CHECK rebuilds of
+`schedules`, `invocations`, `schedule_runs` and `definitions`) either finds nothing to do or checks
+the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
+any of it. Compatibility mode (D1) runs none of these steps.
+
+### A.1 Entry points
+
+The first profile admits one entry point: a fresh `li agent` run, reaching the store through
+`setup_agent_persist`, the message-persistence hook with its retry queue, the session observer's
+signal sink, and `teardown_persist`.
+
+Outside the first profile, so these refuse with the D6 error:
+
+- resuming or adopting an existing branch: `repair_session_progression`,
+  `repair_branch_progression`, `create_progression` for a repaired id, and
+  `_reopen_session_for_resume`, which calls `update_status`;
+- `find_incomplete_session_for_run`, whose `update_status` marks a session failed after a setup
+  failure, called from the Studio operator only;
+- `attach_session_invocation`, orchestration and flow persistence, schedules, engines, MCP run
+  submission, import, prune and every maintenance operation.
+
+### A.2 Operations
+
+Transaction labels are per operation; "after commit" means a separate transaction that runs only once
+the previous one committed.
+
+| Op | Statements today | Row predicate today | Transactions | Profile rule |
+|----|------------------|---------------------|--------------|--------------|
+| `create_progression` (session, then branch) | `INSERT INTO progressions (id, created_at, collection)` `ON CONFLICT (id) DO NOTHING` | an existing id is left as is and the run then appends to it | one per call | the id must not exist; an existing id refuses |
+| `create_session` | `INSERT INTO sessions` (33 columns) `ON CONFLICT (id) DO NOTHING`; when a row was inserted with a declared initial status: `UPDATE sessions` reason columns, then the lifecycle initializer reads the row, checks no initial transition exists and `INSERT INTO status_transitions`; when `invocation_id` is set: `UPDATE invocations SET session_count = session_count + 1` | by id only | one transaction for all of these | the id must not exist; the owner written on the session and its transition (D5); the invocation must belong to the same owner, or the run carries no `invocation_id` |
+| project registration (`register_project`, from `create_session`) | `INSERT INTO projects ... ON CONFLICT (name) DO UPDATE SET last_seen_at, updated_at, source, path, github` | by name; updates a project row the run did not create | after commit; its failure leaves the session committed | not admitted: the run's project stays on the session row, and registration is left to the managing application |
+| `insert_message` (system message) and `_insert_message_in_tx` | `INSERT INTO message_types (lion_class) ON CONFLICT DO NOTHING`, a `SELECT` of the type id, then `INSERT INTO messages ... ON CONFLICT (id) DO UPDATE SET` every content column | by id only: an existing id is overwritten whatever its owner | one | `message_types`: insert-if-absent admitted, no owner; `messages`: the id must not exist or must already belong to this run's session through its progression, and the owner is written (D5) |
+| `create_branch` | `INSERT INTO branches ... ON CONFLICT (id) DO NOTHING` | by id only | one | the id must not exist; session, progression and system message share the branch's owner |
+| `_persist_live_message` (hook, retry queue, teardown flush) | `_insert_message_in_tx` as above; `_append_to_progression_in_tx` for the branch and session progressions; for a system message `UPDATE branches SET system_msg_id`; `UPDATE sessions SET last_message_at, updated_at` to the maximum of the stored and new values | by id only | one per message | appends only to progressions this run created; updates only this run's branch and session |
+| `insert_session_signal` (observer sink) | `SELECT COALESCE(MAX(seq), 0)` for the session, then `INSERT INTO session_signals (id, session_id, seq, kind, op_id, ts, payload)` with no conflict clause | by session id; on Postgres a transaction-scoped lock keyed on the session first, on SQLite `BEGIN IMMEDIATE` | one per signal | only for this run's session; where the managed schema keeps `(session_id, seq)` unique, a concurrent writer's signal makes the insert raise, and the sink counts it dropped instead of retrying with a new `seq` |
+| teardown `update_session` | `UPDATE sessions SET first_msg_id, last_msg_id, node_metadata, updated_at WHERE id` | by id; `node_metadata` is read, merged in Python and written whole | one | only this run's session; `node_metadata` written by key merge, never whole |
+| teardown `update_artifact_verification` | `UPDATE sessions SET artifact_verification_json, updated_at WHERE id` | by id | one, after the previous commit | only this run's session |
+| teardown `merge_session_node_metadata` (provider-error path only) | `UPDATE sessions SET node_metadata` by JSON patch | by id | one | only this run's session |
+| teardown `update_status` (lifecycle transition) | a `SELECT` of the status columns (Postgres `FOR UPDATE`), `UPDATE sessions` guarded on the expected previous status, `INSERT INTO status_transitions`, and `INSERT INTO admin_events` on the rejected and override paths | compare-and-set on status; no owner predicate | one | only this run's session; owner on the transition and any admin event; override refuses in compatibility mode |
+| terminal callbacks | after commit, in process: handlers registered on the terminal callback registry run; `li` registers one when `notify.on_terminal` is configured, and it runs an external command and records its outcome in the run directory | none | after commit, outside any transaction | no store statement; admitted unchanged |
+| session and branch signals at setup | `SESSION_START` and `BRANCH_CREATE` are emitted before the observer's sink is bound, so neither reaches `session_signals` today | n/a | n/a | unchanged; the manifest does not add them |
+
+### A.3 Reader invariants the profile keeps
+
+- A progression lists its messages in arrival order with no duplicates.
+- `last_message_at` and `updated_at` on a session never move backwards.
+- A session's `status` and its newest `status_transitions` row change in one transaction, so a reader
+  never sees one without the other.
+- A run's session, branch, progressions and messages share one owner, so a reader filtering by owner
+  sees the whole run or none of it.
+
+### A.4 Tests (D8)
+
+Each row of A.2 gets a test on a scratch store built to the managed schema: the statement set it
+emits (a statement spy, as the progression tests use), the refusal for an existing id or a foreign
+owner, and the rollback when a later statement in the same transaction is denied. The A.0 refusal and
+the A.1 refusals each get a test that the store's bytes are unchanged after the call.
