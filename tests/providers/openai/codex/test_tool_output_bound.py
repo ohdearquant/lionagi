@@ -359,3 +359,232 @@ async def test_a_run_of_marks_longer_than_the_backoff_is_cut_where_the_bound_fal
     head, omitted, _, _ = _parts(chunks[0].tool_output)
     assert head == output[:HALF]
     assert omitted == len(output) - 2 * HALF
+
+
+def _nested(depth: int, leaf, kind: str = "dict"):
+    value = leaf
+    for _ in range(depth):
+        value = {"k": value} if kind == "dict" else [value]
+    return value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {},
+        [],
+        "plain",
+        'quote " backslash \\ newline \n tab \t nul \x00',
+        "漢字 é 👨‍👩‍👧",
+        [1, 2.5, None, True, False, float("inf"), -0.0, 10**30],
+        {"a": [1, {"b": []}], "é": "x\ny", 1: "one", 2.5: [], None: {}, False: "f"},
+        [[[[[]]]], {"k": {"k": {"k": "v"}}}],
+        {"path": __import__("pathlib").PurePosixPath("/x/y")},
+    ],
+)
+def test_the_json_size_of_a_value_is_the_length_of_its_json_text(value):
+    from lionagi.providers.openai.codex import _json_size
+
+    assert _json_size(value, {}) == len(json.dumps(value, ensure_ascii=False, default=str))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_text", [False, True], ids=["mapping", "json-text"])
+async def test_a_mapping_of_many_long_values_is_bounded_as_a_whole(as_text):
+    arguments = {f"k{i}": "v" * 19_999 for i in range(60)}
+
+    chunks, _, _ = await _run(
+        {
+            "type": "function_call",
+            "id": "fc-1",
+            "name": "write",
+            "arguments": json.dumps(arguments) if as_text else arguments,
+        }
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    decoded = json.loads(echoed) if as_text else echoed
+    assert len(json.dumps(decoded, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    assert list(decoded) == ["k0", "[omitted]"]
+    assert _parts(decoded["k0"])[2] == 19_999
+    assert decoded["[omitted]"] == "59 of 60 keys not shown"
+
+
+@pytest.mark.asyncio
+async def test_small_entries_beside_a_long_one_are_kept_whole_in_their_place():
+    arguments = {"limit": 5, "query": "q" * 1_000_000, "paths": ["a.py", "b.py"]}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert list(echoed) == ["limit", "query", "paths"]
+    assert (echoed["limit"], echoed["paths"]) == (5, ["a.py", "b.py"])
+    assert _parts(echoed["query"])[2] == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_that_is_the_first_item_of_a_list_is_bounded_too():
+    arguments = json.dumps({"items": [{f"k{i}": i for i in range(100_000)}, 1]})
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert len(echoed) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    first, note = json.loads(echoed)["items"]
+    kept = len(first) - 1
+    assert first["[omitted]"] == f"{100_000 - kept:,} of 100,000 keys not shown"
+    assert [first[f"k{i}"] for i in range(kept)] == list(range(kept))
+    assert note == "[1 of 2 items not shown]"
+
+
+@pytest.mark.asyncio
+async def test_a_list_cuts_the_first_item_that_does_not_fit_and_stops_there():
+    arguments = {"items": ["a" * 100, "b" * 30_000, "c" * 100]}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    first, second, note = next(c for c in chunks if c.type == "tool_use").tool_input["items"]
+    assert first == "a" * 100
+    assert _parts(second)[2] == 30_000
+    assert note == "[1 of 3 items not shown]"
+
+
+@pytest.mark.asyncio
+async def test_a_long_key_is_cut_with_its_value():
+    arguments = {"k" * 30_000: "v" * 30_000}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert len(json.dumps(echoed, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    ((key, value),) = echoed.items()
+    assert _parts(key)[2] == 30_000
+    assert _parts(value)[2] == 30_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["dict", "list"])
+@pytest.mark.parametrize("leaf", ["q" * 25_000, "q"], ids=["long-leaf", "short-leaf"])
+async def test_arguments_nested_too_deep_to_measure_are_echoed_bounded(kind, leaf):
+    """No exception leaves the stream: the arguments are bounded as a result is. Their
+    JSON text, where this Python can encode it, is kept when within the bound and cut when
+    over it; otherwise a line says they are nested too deep to show."""
+    arguments = _nested(5_000, leaf, kind)
+
+    chunks, uses, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    if echoed is not arguments:
+        assert isinstance(echoed, str)
+        assert len(echoed) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    else:
+        assert len(json.dumps(arguments)) <= CODEX_TOOL_OUTPUT_MAX_CHARS
+    assert uses[0]["input"] is echoed
+
+
+@pytest.mark.asyncio
+async def test_a_structured_result_nested_very_deep_is_recorded_as_bounded_text():
+    output = _nested(5_000, "q" * 25_000)
+
+    chunks, callback = await _tool_results(
+        {"type": "function_call_output", "call_id": "call-1", "output": output}
+    )
+
+    kept = chunks[0].tool_output
+    assert isinstance(kept, str)
+    assert len(kept) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    assert callback[0]["content"] == kept
+
+
+@pytest.mark.asyncio
+async def test_a_single_file_change_over_the_bound_keeps_its_entry_cut():
+    changes = [{"kind": "add", "path": "p" * 30_000}]
+
+    chunks, _, _ = await _run(
+        {"type": "file_change", "id": "fc-1", "changes": changes, "status": "completed"}
+    )
+
+    (entry,) = next(c for c in chunks if c.type == "tool_use").tool_input["changes"]
+    assert entry["kind"] == "add"
+    assert _parts(entry["path"])[2] == 30_000
+
+
+@pytest.mark.asyncio
+async def test_file_changes_given_as_a_mapping_stay_a_mapping():
+    changes = {"a.py": "x" * 30_000, "b.py": "y"}
+
+    chunks, _, _ = await _run(
+        {"type": "file_change", "id": "fc-1", "changes": changes, "status": "completed"}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input["changes"]
+    assert isinstance(echoed, dict)
+    assert echoed["b.py"] == "y"
+    assert _parts(echoed["a.py"])[2] == 30_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base,mark",
+    [("\U0001f44d", "\U0001f3fd"), ("❤", "️"), ("❤", "︎")],
+    ids=["skin-tone", "emoji-selector", "text-selector"],
+)
+async def test_a_cut_keeps_a_modifier_or_selector_with_its_character(base, mark):
+    output = "a" * (HALF - 1) + base + mark + "x" * 5_000 + "b" * HALF
+    assert output[HALF] == mark
+
+    chunks, _ = await _tool_results(_command(output))
+
+    head, _, _, _ = _parts(chunks[0].tool_output)
+    assert head == "a" * (HALF - 1)
+
+
+@pytest.mark.asyncio
+async def test_json_text_naming_a_string_is_cut_as_text_not_encoded_again():
+    arguments = json.dumps("q" * 30_000)
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    head, _, total, _ = _parts(echoed)
+    assert head == arguments[:HALF]
+    assert total == len(arguments)
+
+
+def test_a_deep_value_is_serialized_a_bounded_number_of_times(monkeypatch):
+    """Each mapping and list is measured once, so bounding a value nested many levels
+    deep costs a small multiple of its size, not its size per level."""
+    import types
+
+    from lionagi.providers.openai import codex
+
+    leaf = "q" * 200_000
+    value = leaf
+    for _ in range(50):
+        value = {"k": value, "n": 1}
+    serialized = 0
+
+    def dumps(obj, *args, **kwargs):
+        nonlocal serialized
+        out = json.dumps(obj, *args, **kwargs)
+        serialized += len(out)
+        return out
+
+    monkeypatch.setattr(codex, "json", types.SimpleNamespace(dumps=dumps, loads=json.loads))
+
+    bounded = codex._bounded_leaves(value)
+
+    assert serialized < 4 * len(leaf)
+    assert len(json.dumps(bounded, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
