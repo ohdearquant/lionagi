@@ -79,7 +79,8 @@ class AgentSpec(HooksMixin):
     context_management: bool = True
     khive_injection: Any = None
     # Codex only: turn the signed-in account's apps and plugins off for this
-    # agent. Other providers' requests attach no account integrations.
+    # agent's endpoint by default (a call can still lift it; see create_agent).
+    # Other providers' requests attach no account integrations.
     contain_account_integrations: bool = False
 
     @classmethod

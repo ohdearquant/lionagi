@@ -69,17 +69,25 @@ async def create_agent(
     environment. A codex agent's overlay may not set ``CODEX_HOME`` or
     ``HOME``: this process resolves the codex home for the agent's MCP server
     profile and default reasoning effort, and would read a different one than
-    the child. The overlay is runtime state and is not serialized, so a model
+    the child. Only the overlay is checked: an ``env`` passed with a later call
+    replaces the child environment this factory built, and one naming another
+    ``CODEX_HOME`` or ``HOME`` is not refused. The overlay is runtime state and
+    is not serialized, so a model
     restored with ``iModel.from_dict`` spawns its child with this process's
     environment; an agent rebuilt with ``create_agent`` gets the overlay only
     when ``agent_env`` is passed again.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
-    ``apps`` and ``plugins`` features off. It is applied to the endpoint this
-    factory builds, whatever spelling of the provider built it, so a
-    caller-supplied ``chat_model`` or a missing ``spec.model`` (which leaves the
-    branch to build its default model) with it set raises rather than running
-    uncontained.
+    ``apps`` and ``plugins`` features off by default. It is applied to the
+    endpoint this factory builds, whatever spelling of the provider built it, so
+    a caller-supplied ``chat_model`` or a missing ``spec.model`` (which leaves
+    the branch to build its default model) with it set raises rather than
+    running uncontained. It is the endpoint's default, not a limit on later
+    calls: a call that passes ``contain_account_integrations=False`` or names
+    ``account_connectors``, or a model put on the branch in place of the one
+    built here, is not held to it. The endpoint is recognised by its class, so
+    a registered provider that wraps codex in another endpoint class is not
+    contained.
     """
     spec = config
 
@@ -98,9 +106,9 @@ async def create_agent(
 
     if agent_env:
         # The request model checks env only when a call is built, so a bad
-        # entry would surface at the first call instead of here. The shared
-        # check names keys and types and never prints a value: an environment
-        # routinely carries credentials.
+        # entry would surface at the first call instead of here. Neither check
+        # prints a value, and a key is printed only when it is a valid name: an
+        # environment routinely carries credentials.
         from lionagi.providers._cli_subprocess import raise_if_env_is_not_a_string_map
 
         if not isinstance(agent_env, Mapping):
@@ -111,15 +119,25 @@ async def create_agent(
             raise_if_env_is_not_a_string_map(agent_env)
         except TypeError as exc:
             raise ConfigurationError(f"agent_env: {exc}") from exc
+
+        def _spawnable(text: str) -> bool:
+            # The spawn encodes each entry with os.fsencode, which refuses a lone surrogate.
+            try:
+                os.fsencode(text)
+            except UnicodeEncodeError:
+                return False
+            return "\0" not in text
+
         unusable = [
             f"entry {index}"
             for index, (key, val) in enumerate(agent_env.items())
-            if not key or "=" in key or "\0" in key or "\0" in val
+            if not key or "=" in key or not _spawnable(key) or not _spawnable(val)
         ]
         if unusable:
             raise ConfigurationError(
-                "agent_env: a variable needs a non-empty name with no '=' or NUL "
-                f"and a value with no NUL; these entries are not: {', '.join(unusable)}"
+                "agent_env: a variable needs a non-empty name with no '=', and a name and "
+                "value with no NUL that encode to the filesystem encoding; these entries "
+                f"are not: {', '.join(unusable)}"
             )
         if chat_model is not None:
             raise ConfigurationError(

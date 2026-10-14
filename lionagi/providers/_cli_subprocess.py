@@ -157,19 +157,22 @@ def reveal_redacted(value):
 def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """Reject a malformed environment without quoting anything out of it.
 
-    Values are never printed, whatever their type; non-string keys are
-    reported by position and type only, since printing one could print a
-    credential the caller embedded there. Raises TypeError, not ValueError —
+    Values are never printed, whatever their type. A key is printed only when it
+    is a string holding no ``=`` or NUL; any other key is reported by position
+    and type only, since a non-string key or a ``NAME=value`` written as a name
+    could carry a credential. Raises TypeError, not ValueError —
     pydantic quotes a ValueError's rejected input verbatim into the error.
     """
     named: list[str] = []
     unnamed: list[str] = []
     for index, (key, val) in enumerate(value.items()):
-        if isinstance(key, str):
-            if not isinstance(val, str):
-                named.append(f"{key!r} (value is {type(val).__name__})")
-        else:
+        if not isinstance(key, str):
             unnamed.append(f"entry {index} (key is {type(key).__name__})")
+        elif not isinstance(val, str):
+            if "=" in key or "\0" in key:
+                unnamed.append(f"entry {index} (value is {type(val).__name__})")
+            else:
+                named.append(f"{key!r} (value is {type(val).__name__})")
     if named or unnamed:
         raise TypeError(
             "env must map strings to strings; these entries do not: "

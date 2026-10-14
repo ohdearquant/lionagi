@@ -113,7 +113,10 @@ async def test_claude_code_is_also_a_carrier():
         ({"TOKEN_FILE": pathlib.Path("/x/secret-y")}, "'TOKEN_FILE'", "secret-y"),
         ({"LEG_ID": None}, "'LEG_ID' (value is NoneType)", None),
         ({b"sk-not-a-key": "leg-7"}, "entry 0 (key is bytes)", "sk-not-a-key"),
+        ({"TOKEN=sk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
+        ({"LEG\0sk-not-a-key": 8080}, "entry 0 (value is int)", "sk-not-a-key"),
     ],
+    ids=["int-value", "path-value", "none-value", "bytes-key", "equals-in-name", "nul-in-name"],
 )
 async def test_agent_env_rejects_non_string_entries_at_construction(bad_env, named, hidden):
     """The request model checks env only when a call is built, so without the
@@ -136,8 +139,17 @@ async def test_agent_env_rejects_non_string_entries_at_construction(bad_env, nam
         ({"TOKEN=sk-not-a-key": "leg-7"}, "sk-not-a-key"),
         ({"LEG\0ID": "leg-7"}, None),
         ({"LEG_ID": "leg\0-7"}, "leg"),
+        ({"LEG\ud800": "leg-7"}, None),
+        ({"LEG_ID": "leg-\ud800"}, "leg"),
     ],
-    ids=["empty-name", "equals-in-name", "nul-in-name", "nul-in-value"],
+    ids=[
+        "empty-name",
+        "equals-in-name",
+        "nul-in-name",
+        "nul-in-value",
+        "surrogate-in-name",
+        "surrogate-in-value",
+    ],
 )
 async def test_agent_env_rejects_entries_no_environment_can_hold(bad_env, hidden):
     """A name with '=' splits where the child reads it, and a NUL fails the spawn.
@@ -168,7 +180,7 @@ async def test_a_claude_code_agent_env_may_set_home():
     assert reveal_redacted(branch.chat_model.endpoint._runtime_state["env"])["HOME"] == "/elsewhere"
 
 
-async def test_a_restored_model_spawns_with_this_processs_environment():
+async def test_a_restored_model_spawns_with_the_current_process_environment():
     """The overlay is runtime state and is not serialized: a restored model's
     child inherits this process's environment unless the overlay is passed again."""
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
@@ -176,6 +188,15 @@ async def test_a_restored_model_spawns_with_this_processs_environment():
     restored = iModel.from_dict(branch.chat_model.to_dict())
     payload, _ = restored.endpoint.create_payload({"prompt": "hi"})
     assert reveal_redacted(payload["request"].env) is None
+
+
+def test_a_model_env_name_written_as_an_assignment_is_never_printed():
+    """The same check guards a model's own env, which the request model applies when
+    a call is built."""
+    model = iModel(provider="codex", model="gpt-5.5", env={"TOKEN=sk-not-a-key": 8080})
+    with pytest.raises(TypeError, match="entry 0") as exc:
+        model.endpoint.create_payload({"prompt": "hi"})
+    assert "sk-not-a-key" not in str(exc.value)
 
 
 async def test_agent_env_that_is_not_a_mapping_raises():
