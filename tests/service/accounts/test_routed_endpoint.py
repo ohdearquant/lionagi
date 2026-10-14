@@ -1406,13 +1406,12 @@ async def test_a_key_split_across_two_citations_never_reaches_their_joined_quote
     assert all(CANARY not in repr(chunk) for chunk in chunks)
 
 
+@pytest.mark.parametrize("length", range(1, 8))
 @pytest.mark.asyncio
-async def test_text_that_only_begins_like_the_key_keeps_its_place(monkeypatch, tmp_path):
-    """A text that ends with fewer than BOUNDARY_HOLD characters of the key reaches the
-    consumer before its block's stop, so ordinary text is never moved."""
-    from lionagi.service.accounts._router import StreamingTextRedactor
-
-    ending = CANARY[: StreamingTextRedactor.BOUNDARY_HOLD - 1]
+async def test_text_that_only_begins_like_the_key_keeps_its_place(monkeypatch, tmp_path, length):
+    """A text that ends with fewer than eight characters of the key reaches the consumer
+    before its block's stop, so ordinary text is never moved."""
+    ending = CANARY[:length]
     events = [
         _MESSAGE_START,
         _text_block(0),
