@@ -28,7 +28,7 @@ class BoundedLRUCache(Generic[K, V]):
     mode exists to refuse.
     """
 
-    __slots__ = ("_cache", "_lock", "_max_size", "_pending_removals", "_weak_values")
+    __slots__ = ("_cache", "_lock", "_max_size", "_pending_removals", "_weak_values", "forget")
 
     def __init__(self, max_size_env: str, default_max: int, *, weak_values: bool = False) -> None:
         self._max_size = int(os.environ.get(max_size_env, str(default_max)))
@@ -36,15 +36,12 @@ class BoundedLRUCache(Generic[K, V]):
         self._lock = threading.RLock()
         self._weak_values = weak_values
         self._pending_removals: deque[K] = deque()
-
-    def forget(self, key: K) -> None:
-        """Remove ``key``'s entry when the cache is next read or written.
-
-        Meant for a weakref callback, which can run in any thread and in the middle
-        of this cache's own work, so it only queues the key; the entry is removed
-        under the lock before the next read or write.
-        """
-        self._pending_removals.append(key)
+        # forget(key) removes key's entry when the cache is next read or written. It is
+        # meant for a weakref callback, which can run in any thread and in the middle of
+        # this cache's own work, so it only queues the key. It is the queue's own append
+        # rather than a method, so a callback holding it holds the queue and not the
+        # cache: a key stored here with it forms no cycle back to the cache.
+        self.forget: Callable[[K], None] = self._pending_removals.append
 
     def _remove_forgotten_unlocked(self) -> None:
         pending = self._pending_removals
@@ -55,6 +52,10 @@ class BoundedLRUCache(Generic[K, V]):
         with self._lock:
             self._remove_forgotten_unlocked()
             return len(self._cache)
+
+    def __bool__(self) -> bool:
+        # Truthy whatever it holds, so `cache or default` never replaces an empty cache.
+        return True
 
     def _get_unlocked(self, key: K) -> tuple[bool, V | None]:
         """``(hit, value)``. A weak entry whose value is gone is not a hit."""

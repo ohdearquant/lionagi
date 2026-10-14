@@ -48,10 +48,11 @@ class _IdentityKey:
     target retains. The hash is the id taken while the target was alive, so it stays usable
     after the target dies; equality demands both referents still be live, so an id the
     interpreter has reused cannot collide with a dead entry, and the dead entry matches
-    nothing and is evicted in its turn. A target that cannot be weakly referenced is held
-    strongly, which keeps it and everything it carries alive for as long as the key lives;
-    `holds_weakly` says which of the two a key is, so a caller storing one past the call
-    can decide whether to.
+    nothing until it leaves the cache: when its target is collected for a key given
+    `on_collect`, when it is evicted for any other. A target that cannot be weakly
+    referenced is held strongly, which keeps it and everything it carries alive for as
+    long as the key lives; `holds_weakly` says which of the two a key is, so a caller
+    storing one past the call can decide whether to.
 
     A dead entry is never hit, but until it is removed it shares a hash bucket with every
     later object allocated at the same address, and each lookup there compares against it.
@@ -67,7 +68,9 @@ class _IdentityKey:
         self._hash = id(target)
         callback = None
         if on_collect is not None:
-            # Weak, so the key, its reference and this callback form no cycle.
+            # Weak, so the key, its reference and this callback form no cycle. A cache's
+            # `forget` holds the cache's queue, not the cache, so a cache storing this key
+            # forms none either.
             this = weakref.ref(self)
 
             def callback(_ref: weakref.ref) -> None:

@@ -420,28 +420,26 @@ def test_a_large_payload_never_enters_the_dataclass_cache():
         _structural_key,
     )
 
-    before = len(_stable_dataclass_keys)
     large = _Payload("x" * (_MAX_CACHED_WEIGHT + 1))
     _structural_key(large)
-    assert len(_stable_dataclass_keys) == before
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is large]
 
     small = _Payload("x")
     _structural_key(small)
-    assert len(_stable_dataclass_keys) == before + 1
+    assert [key for key in _stable_dataclass_keys._cache if key.target is small]
 
 
 def test_a_declaration_that_cannot_be_held_weakly_never_enters_the_dataclass_cache():
     """Storing it means the entry holds it, and it holds everything it carries."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
-    before = len(_stable_dataclass_keys)
     unreferenceable = _Unreferenceable("x")
     _structural_key(unreferenceable)
-    assert len(_stable_dataclass_keys) == before
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is unreferenceable]
 
     payload = _Payload("y")
     _structural_key(payload)
-    assert len(_stable_dataclass_keys) == before + 1
+    assert [key for key in _stable_dataclass_keys._cache if key.target is payload]
 
 
 def _oversized(limit: int) -> str:
@@ -732,13 +730,13 @@ def test_the_cache_is_bounded_by_eviction():
 
 
 def test_an_entry_leaves_the_cache_when_its_declaration_is_collected():
-    """Each of these dies at once, usually at the address the last one used. Left in the
-    cache, every dead entry shares that hash, so each lookup compared against all of them
-    and inserting the cache's size in such objects took quadratic time."""
+    """Each of these is freed after its one use, and the next is allocated at the address
+    it left. Left in the cache, every dead entry shares that hash, so each lookup compared
+    against all of them and inserting the cache's size in such objects took quadratic time."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
     for filler in range(2000):
-        _structural_key(_Payload(f"short-lived-{filler}"))
+        _structural_key(_Payload(filler))
     len(_stable_dataclass_keys)  # a read removes the entries already forgotten
 
     # Asserted per entry, not by count: a cache another test left full stays at its
@@ -768,6 +766,51 @@ def test_a_collected_entry_is_removed_without_removing_a_live_one_in_its_bucket(
     # The read removed the collected entry itself.
     assert len(cache._cache) == 1
     assert len(cache) == 1
+
+
+def test_a_write_removes_a_collected_entry():
+    from lionagi.ln._cache import BoundedLRUCache
+    from lionagi.ln._structural import _IdentityKey
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    dead, live = _Payload("dead"), _Payload("live")
+    cache.put(_IdentityKey(dead, on_collect=cache.forget), "dead")
+    del dead
+    gc.collect()
+
+    cache.put(_IdentityKey(live, on_collect=cache.forget), "live")
+
+    assert [key.target for key in cache._cache] == [live]
+
+
+def test_a_dropped_cache_frees_its_keys_and_values_without_the_cycle_collector():
+    """A stored key's callback holds neither the key nor the cache, so reference counting
+    alone frees both once nothing else holds them."""
+    from lionagi.ln._cache import BoundedLRUCache
+    from lionagi.ln._structural import _IdentityKey
+
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        target, value = _Payload("target"), _Payload("value")
+        cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+        key = _IdentityKey(target, on_collect=cache.forget)
+        cache.put(key, value)
+        key_freed, value_freed = weakref.ref(key), weakref.ref(value)
+
+        del cache, key, value
+
+        assert (key_freed(), value_freed()) == (None, None)
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def test_an_empty_cache_is_truthy():
+    from lionagi.ln._cache import BoundedLRUCache
+
+    assert BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
 
 
 def test_a_dynamically_created_callable_is_released_after_projection():
