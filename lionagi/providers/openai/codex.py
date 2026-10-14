@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 import subprocess
+import unicodedata
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
@@ -773,22 +775,65 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
     yield {"type": "done"}
 
 
-#: The most of one tool result this provider keeps, in characters. The CLI's event can carry
-#: about a million characters of a single command's output, and every turn here sends the
-#: branch's rendered history as its input, which the CLI refuses past 1,048,576 characters, so
-#: one uncut search result would leave no room for the next turn.
+#: The most of one tool result this provider keeps, and of a command or a file change it
+#: echoes as the call's input, in characters. No Codex thread is resumed here: each turn sends
+#: the branch's rendered history as its prompt, tool calls and results included, so whatever
+#: is recorded whole is sent again on every later turn, and one broad search could fill the
+#: prompt on its own.
 CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
+
+#: How far a cut moves to keep a character with its marks before it gives up and cuts where
+#: the bound falls.
+_CUT_BACKOFF_CHARS = 32
+
+
+def _continues_previous(text: str, i: int) -> bool:
+    """Whether the character at ``i`` belongs with the one before it: a combining mark, a
+    joiner or a variation selector, a skin-tone modifier, or anything after a joiner."""
+    ch = text[i]
+    return (
+        unicodedata.combining(ch) != 0
+        or ch in "\u200d\ufe0e\ufe0f"
+        or "\U0001f3fb" <= ch <= "\U0001f3ff"
+        or (i > 0 and text[i - 1] == "\u200d")
+    )
 
 
 def _bounded_tool_output(output: Any) -> Any:
-    """Keep the head and tail of an oversized text result and say what was cut, so the model
-    reading it on the next turn knows the result is partial and can narrow the command."""
-    if not isinstance(output, str) or len(output) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+    """Keep the head and tail of an oversized result and say what was cut, so the model
+    reading it on the next turn knows the result is partial and can narrow the command.
+
+    A result that is not text is measured as its JSON text and, when that is over the
+    bound, replaced by the cut JSON text. Neither cut leaves a combining mark, a joiner, a
+    variation selector or a skin-tone modifier apart from the character it belongs to.
+
+    The cut text is what the caller, the callbacks and the branch's record receive. The
+    chunk's ``metadata`` still holds the CLI's whole event, in this process only: chunks
+    are not written to a run's buffer file.
+    """
+    text = output
+    if not isinstance(output, str):
+        if output is None:
+            return output
+        text = json.dumps(output, ensure_ascii=False, default=str)
+    if len(text) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
         return output
     half = CODEX_TOOL_OUTPUT_MAX_CHARS // 2
+    head_end = half
+    while half - head_end < _CUT_BACKOFF_CHARS and _continues_previous(text, head_end):
+        head_end -= 1
+    if _continues_previous(text, head_end):
+        head_end = half
+    tail_start = len(text) - half
+    while tail_start - (len(text) - half) < _CUT_BACKOFF_CHARS and _continues_previous(
+        text, tail_start
+    ):
+        tail_start += 1
+    if _continues_previous(text, tail_start):
+        tail_start = len(text) - half
     return (
-        f"{output[:half]}\n[output truncated: {len(output) - 2 * half:,} of {len(output):,} "
-        f"characters omitted here]\n{output[-half:]}"
+        f"{text[:head_end]}\n[output truncated: {tail_start - head_end:,} of {len(text):,} "
+        f"characters omitted here]\n{text[tail_start:]}"
     )
 
 
@@ -920,6 +965,7 @@ async def stream_codex_cli(
                     status = item.get("status", "")
                     is_error = status == "failed" or (exit_code is not None and exit_code != 0)
 
+                    command = _bounded_tool_output(command)
                     tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
                     session.tool_uses.append(tu)
                     if on_tool_use:
@@ -957,8 +1003,9 @@ async def stream_codex_cli(
                     changes = item.get("changes", [])
                     status = item.get("status", "")
                     is_error = status == "failed"
+                    echoed = _bounded_tool_output(changes)
 
-                    tu = {"id": item_id, "name": "Edit", "input": {"changes": changes}}
+                    tu = {"id": item_id, "name": "Edit", "input": {"changes": echoed}}
                     session.tool_uses.append(tu)
                     if on_tool_use:
                         await maybe_await(on_tool_use(tu))
@@ -968,7 +1015,7 @@ async def stream_codex_cli(
                         type="tool_use",
                         tool_name="Edit",
                         tool_id=item_id,
-                        tool_input={"changes": changes},
+                        tool_input={"changes": echoed},
                         metadata=obj,
                     )
                     session.chunks.append(sc)
@@ -981,7 +1028,7 @@ async def stream_codex_cli(
                     ]
                     tr = {
                         "tool_use_id": item_id,
-                        "content": "; ".join(summary_parts) or status,
+                        "content": _bounded_tool_output("; ".join(summary_parts) or status),
                         "is_error": is_error,
                     }
                     session.tool_results.append(tr)
