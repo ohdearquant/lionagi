@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
 from lionagi._errors import ConfigurationError
@@ -47,6 +47,7 @@ async def create_agent(
     log_config: Any = None,
     resolved_mcp_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_mcp_explicit: bool = False,
+    agent_env: Mapping[str, str] | None = None,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
 
@@ -56,6 +57,14 @@ async def create_agent(
     directory. ``None`` means "hand nothing over"; leaving it unset keeps the
     discovery behaviour. ``resolved_mcp_explicit`` says that set was named by
     the caller rather than found near its launch directory.
+
+    ``agent_env`` is an environment overlay for the spawned CLI child. It is
+    merged over ``os.environ`` here, because the CLI request hands its env to
+    the child as the complete environment: a bare overlay would strip PATH,
+    which shows up as a broken toolchain rather than a missing setting. Every
+    case where the overlay could not reach a child raises instead of
+    dropping it: a caller-supplied ``chat_model``, no ``spec.model``, or a
+    provider that spawns no child process.
     """
     spec = config
 
@@ -71,6 +80,33 @@ async def create_agent(
         )
 
     from lionagi.service.imodel import iModel
+
+    if agent_env:
+        # The request model checks env only when a call is built, so a bad
+        # entry would surface at the first call instead of here. The shared
+        # check names keys and types and never prints a value: an environment
+        # routinely carries credentials.
+        from lionagi.providers._cli_subprocess import raise_if_env_is_not_a_string_map
+
+        if not isinstance(agent_env, Mapping):
+            raise ConfigurationError(
+                f"agent_env must be a mapping of strings to strings, got {type(agent_env).__name__}"
+            )
+        try:
+            raise_if_env_is_not_a_string_map(agent_env)
+        except TypeError as exc:
+            raise ConfigurationError(f"agent_env: {exc}") from exc
+        if chat_model is not None:
+            raise ConfigurationError(
+                "agent_env cannot be combined with a caller-supplied chat_model: "
+                "the overlay is applied while this factory builds the endpoint. "
+                "Set env on the model you built, or let this factory build it."
+            )
+        if not spec.model:
+            raise ConfigurationError(
+                "agent_env requires spec.model: with no model this factory "
+                "builds no endpoint, so no child process receives the overlay."
+            )
 
     branch_kwargs = {}
 
@@ -122,11 +158,22 @@ async def create_agent(
             if repo_kwarg:
                 extra[repo_kwarg] = spec.cwd
 
+        if agent_env:
+            extra["env"] = {**os.environ, **agent_env}
+
         chat_model = iModel(
             provider=provider,
             model=model_name,
             **extra,
         )
+        # A CLI endpoint takes env as runtime state; an API endpoint has no
+        # child and would leave it unread in its config. Ask the endpoint.
+        if agent_env and "env" not in getattr(chat_model.endpoint, "_runtime_state", {}):
+            raise ConfigurationError(
+                f"agent_env was not taken by the {type(chat_model.endpoint).__name__} "
+                f"built for model {model_name!r}: only a CLI endpoint spawns a child "
+                "process to carry an environment."
+            )
         branch_kwargs["chat_model"] = chat_model
 
     if log_config is not None:

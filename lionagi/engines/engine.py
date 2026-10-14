@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -440,6 +440,7 @@ class EngineRun:
         mcp_servers: list[str] | None = None,
         mcp_config_path: str | None = None,
         extra_prompt: str | None = None,
+        env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
@@ -456,6 +457,8 @@ class EngineRun:
             extra_prompt = self.engine.agent_extra_prompt
         if mcp_config_path is None:
             mcp_config_path = self.engine.agent_mcp_config_path
+        if env is None:
+            env = self.engine.agent_env
         # Resolution order: explicit call > engine-wide > role profile. An
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
@@ -502,7 +505,9 @@ class EngineRun:
 
             _wire_secure_guards(spec, cwd)
         # create_agent is the single grant site; capabilities are granted once here.
-        branch = await create_agent(spec, load_settings=False)
+        # AgentSpec has no env field, so the overlay goes to create_agent, which
+        # hands it to the CLI endpoint it builds: the carrier that reaches the child.
+        branch = await create_agent(spec, load_settings=False, agent_env=env)
         if name:
             branch.name = name
         self.session.include_branches(branch)
@@ -1099,6 +1104,7 @@ class Engine:
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
         agent_mcp_config_path: str | None = None,
+        agent_env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
         yolo: bool = False,
     ) -> None:
@@ -1116,6 +1122,12 @@ class Engine:
         # falling back to the global one. Per-call
         # make_agent(mcp_config_path=...) still wins.
         self.agent_mcp_config_path = agent_mcp_config_path
+        # Environment overlay for every CLI agent this engine spawns, merged over
+        # os.environ by create_agent; per-call make_agent(env=...) still wins.
+        # A caller running several engines concurrently in one process cannot
+        # give each its own value through os.environ, which every run shares;
+        # this field is the per-engine carrier.
+        self.agent_env = dict(agent_env) if agent_env else None
         # Auto-approve tool permission requests for every agent this engine
         # spawns, applied per provider from the same table the CLI and profile
         # paths use. Default False: auto-approving tool execution is not
