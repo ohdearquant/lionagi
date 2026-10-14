@@ -370,6 +370,7 @@ class OperatorCoordinator:
         terminal_status = "completed"
         terminal_exc: BaseException | None = None
         engine_link_task: asyncio.Task | None = None
+        opening_write: asyncio.Future | None = None
         engine_session_uid: str | None = None
         try:
             complete_turns = await self.store.list_complete_turn_frame_groups(
@@ -481,18 +482,29 @@ class OperatorCoordinator:
             run_dir.ensure_state_dirs()
             run_dir.ensure_artifact_root()
             started_at = time.time()
-            run_dir.write_manifest(
-                {
-                    "kind": "agent",
-                    "agent_name": "Operator",
-                    "branch_id": str(run_branch.id),
-                    "provider": resolved_provider,
-                    "model": resolved_model,
-                    "status": "running",
-                    "started_at": started_at,
-                    "ended_at": None,
-                }
+            # each write takes the run's manifest lock, which another writer of the run can hold: off
+            # the event loop, so a held lock stalls this turn and not every turn the loop serves. The
+            # write is kept, never cancelled by a wait on it, and the terminal write below waits for it
+            # through any number of cancels, so `running` cannot land after the turn's terminal record.
+            # asyncio.wait rather than shield: from Python 3.14 a shield whose waiter was cancelled
+            # logs the write's failure itself, and the cleanup below already logs it once
+            opening_write = asyncio.ensure_future(
+                asyncio.to_thread(
+                    run_dir.write_manifest,
+                    {
+                        "kind": "agent",
+                        "agent_name": "Operator",
+                        "branch_id": str(run_branch.id),
+                        "provider": resolved_provider,
+                        "model": resolved_model,
+                        "status": "running",
+                        "started_at": started_at,
+                        "ended_at": None,
+                    },
+                )
             )
+            await asyncio.wait((opening_write,))
+            opening_write.result()
             # Scripted/test engines may not call Branch.run themselves; the
             # canonical snapshot still exists before the run link is emitted.
             await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
@@ -707,9 +719,25 @@ class OperatorCoordinator:
                         exception=terminal_exc,
                     )
             if run_branch is not None and run_dir is not None:
+                if opening_write is not None:
+                    # its thread writes whatever happens to this wait, so the wait holds through any
+                    # number of cancels and `running` lands before the terminal record; a failure the
+                    # turn stopped waiting for is logged here, once
+                    while not opening_write.done():
+                        with suppress(asyncio.CancelledError, Exception):
+                            await asyncio.wait((opening_write,))
+                    if not opening_write.cancelled():
+                        failure = opening_write.exception()
+                        if failure is not None and failure is not terminal_exc:
+                            _log.error(
+                                "Operator turn %s: its opening run.json write failed",
+                                request_id,
+                                exc_info=failure,
+                            )
                 with suppress(Exception):
                     final_provider, final_model = resolve_operator_provider_model(engine_turn)
-                    run_dir.write_manifest(
+                    await asyncio.to_thread(
+                        run_dir.write_manifest,
                         {
                             "kind": "agent",
                             "agent_name": "Operator",
@@ -720,7 +748,7 @@ class OperatorCoordinator:
                             "status": terminal_status,
                             "started_at": started_at or time.time(),
                             "ended_at": time.time(),
-                        }
+                        },
                     )
             ready.set()
 

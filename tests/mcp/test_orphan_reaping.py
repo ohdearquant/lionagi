@@ -84,6 +84,10 @@ def _disappeared_during_probe(monkeypatch) -> None:
 def _pid_recycled(monkeypatch) -> None:
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))
+    # Two agreeing mismatching reads only conclude `pid_recycled` once the
+    # inherited marker names a different run; a foreign marker here is
+    # what makes that positive.
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run-id"))
 
 
 _CONCLUSIVE = {
@@ -118,10 +122,17 @@ def test_each_conclusive_finding_writes_one_terminal_transition(
     assert first["reason_code"] == jobs.LOST_REASON
     assert first["liveness_conclusion"] == "process_gone"
     assert first["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
-    assert first["terminal_evidence"] == {
-        "kind": jobs.EVIDENCE_PROCESS_GONE,
-        "finding": finding,
-    }
+    evidence = first["terminal_evidence"]
+    assert evidence["kind"] == jobs.EVIDENCE_PROCESS_GONE
+    assert evidence["finding"] == finding
+    assert evidence["recorded_create_time"] == _SPAWNED_AT
+    assert evidence["tolerance"] == jobs._CREATE_TIME_TOLERANCE
+    assert evidence["observed_at"] == first["finished_at"]
+    assert evidence["observer"] == jobs._server_identity()
+    if finding == jobs.FINDING_PID_RECYCLED:
+        assert evidence["observed_create_time"] == _SPAWNED_AT + 5000
+    else:
+        assert evidence["observed_create_time"] is None
 
     on_disk = jobs._read_job(rid)
     assert on_disk["finished_at"] == first["finished_at"] is not None
@@ -214,6 +225,85 @@ def test_a_finding_outside_the_conclusive_set_is_refused_at_the_primitive(sandbo
     assert result.won_transition is False
     assert jobs._read_job(rid)["finished_at"] is None
     assert no_delivery == []
+
+
+def test_reap_evidence_cannot_override_kind_or_finding(sandbox, no_delivery):
+    """*evidence* is merged onto `terminal_evidence` beside `kind`/`finding`,
+    never over them — a caller supplying either key is refused before the
+    lock is taken, and nothing is written.
+    """
+    rid = _stranded()
+
+    with pytest.raises(ValueError):
+        jobs.reap_orphan(
+            rid,
+            finding=jobs.FINDING_PID_ABSENT,
+            observed_at="2026-07-27T00:00:00+00:00",
+            evidence={"finding": "x", "secret": "y"},
+        )
+
+    assert jobs._read_job(rid)["finished_at"] is None
+    assert no_delivery == []
+
+
+def test_reap_evidence_rejects_unknown_keys(sandbox, no_delivery):
+    """A key this branch never populates is refused, not silently accepted —
+    the allow-list is exhaustive, not a denylist of the two reserved names.
+    """
+    rid = _stranded()
+
+    with pytest.raises(ValueError):
+        jobs.reap_orphan(
+            rid,
+            finding=jobs.FINDING_PID_ABSENT,
+            observed_at="2026-07-27T00:00:00+00:00",
+            evidence={"payload": "whatever an attacker likes"},
+        )
+
+    assert jobs._read_job(rid)["finished_at"] is None
+    assert no_delivery == []
+
+
+def test_reap_evidence_rejects_wrong_shaped_values(sandbox, no_delivery):
+    """A known key with a value outside what it's allowed to hold — an
+    oversized string standing in for `observed_at` — is refused the same way.
+    """
+    rid = _stranded()
+
+    with pytest.raises(ValueError):
+        jobs.reap_orphan(
+            rid,
+            finding=jobs.FINDING_PID_ABSENT,
+            observed_at="2026-07-27T00:00:00+00:00",
+            evidence={"observed_at": "x" * 1000},
+        )
+
+    assert jobs._read_job(rid)["finished_at"] is None
+    assert no_delivery == []
+
+
+def test_reap_evidence_accepts_the_bounded_shape_this_branch_writes(sandbox, no_delivery):
+    """The exact shape `_reap_if_conclusively_gone` builds is accepted — the
+    allow-list bounds a caller, not the module's own evidence construction.
+    """
+    rid = _stranded()
+
+    result = jobs.reap_orphan(
+        rid,
+        finding=jobs.FINDING_PID_RECYCLED,
+        observed_at="2026-07-27T00:00:00+00:00",
+        evidence={
+            "observed_create_time": _SPAWNED_AT + 5000,
+            "recorded_create_time": _SPAWNED_AT,
+            "tolerance": jobs._CREATE_TIME_TOLERANCE,
+            "observed_at": "2026-07-27T00:00:00+00:00",
+            "observer": jobs._server_identity(),
+            "marker": "some-other-run-id",
+        },
+    )
+
+    assert result.won_transition is True
+    assert result.record["terminal_evidence"]["marker"] == "some-other-run-id"
 
 
 # --- verify-by 3 and 4: interleavings ------------------------------------------
@@ -379,25 +469,396 @@ def test_a_delivery_result_never_rolls_terminal_fields_backward(sandbox, monkeyp
     assert jobs.status(rid)["outcome"] == jobs.OUTCOME_INDETERMINATE
 
 
-def test_a_hook_arriving_after_a_reap_keeps_the_recorded_end(sandbox, monkeypatch, no_delivery):
-    """The child's own hook, running late, cannot replace an inferred end.
-
-    Whichever end was recorded first is the one every reader has already been
-    given, so it stays. The hook's arrival is still allowed to add what is
-    missing beside it — which is what makes this a merge rule rather than a
-    refusal to write.
+def test_a_hook_arriving_after_a_reap_leaves_the_latch_and_records_the_report(
+    sandbox, monkeypatch, no_delivery
+):
+    """The child's own hook, running late, is the owner reporting in — but the
+    first recorded terminal state remains authoritative, including the reap's
+    `indeterminate`: the hook's report does not replace it. What it leaves is
+    a `late_report` beside the untouched latch, so the contradiction between
+    what the reaper concluded and what the run's own process reported stays
+    visible without moving anything the reap already wrote.
     """
     _pid_absent(monkeypatch)
     rid = _stranded()
     reaped = jobs.status(rid)
+    assert reaped["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert reaped["outcome"] == jobs.OUTCOME_INDETERMINATE
 
     kept = jobs.mark_terminal(rid, "completed").record
+
+    assert kept["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
     assert kept["finished_at"] == reaped["finished_at"]
+    assert kept["status"] == reaped["status"]
+    assert kept["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert "superseded_reap" not in kept
+    late_report = kept["late_report"]
+    assert late_report["source"] == "hook"
+    assert late_report["status"] == "completed"
+    assert late_report["outcome"] == "succeeded"
+    assert late_report["reported_at"]
 
     st = jobs.status(rid)
-    assert st["status"] == "exited"
+    assert st["status"] == reaped["status"]
     assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reap_contradicted_by_owner_report"] is True
+    assert st["late_report"] == late_report
+
+    # First late report wins too — a second one is dropped, not overwritten.
+    again = jobs.mark_terminal(rid, "timed_out", reason_code="deadline").record
+    assert again["late_report"] == late_report
+
+
+def test_a_lifecycle_end_arriving_after_a_reap_leaves_the_latch_and_records_the_report(
+    sandbox, monkeypatch, no_delivery
+):
+    """The same first-writer-wins rule, reached through the lifecycle cache
+    race instead of the hook: a `_cache_lifecycle_end` call that started
+    before the reap and lost the lock to it must not move the latched end,
+    only record its own report beside it.
+    """
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    reaped = jobs.status(rid)
+    assert reaped["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+
+    stale_job = jobs._read_job(rid)
+    updated = jobs._cache_lifecycle_end(
+        stale_job,
+        {
+            "terminal": True,
+            "status": "cancelled",
+            "ended_at": _SPAWNED_AT + 30,
+            "reason_code": "killed_by_operator",
+        },
+    )
+
+    assert updated["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert updated["finished_at"] == reaped["finished_at"]
+    assert updated["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert "superseded_reap" not in updated
+    late_report = updated["late_report"]
+    assert late_report["source"] == "lifecycle"
+    assert late_report["status"] == "cancelled"
+    assert late_report["outcome"] == "cancelled"
+    assert late_report["reason_code"] == "killed_by_operator"
+
+    st = jobs.status(rid)
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert st["reap_contradicted_by_owner_report"] is True
+    assert st["late_report"] == late_report
+
+
+def test_a_lifecycle_report_with_a_non_string_status_is_sanitized_after_a_reap(
+    sandbox, monkeypatch, no_delivery
+):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    jobs.status(rid)
+
+    updated = jobs._cache_lifecycle_end(
+        jobs._read_job(rid),
+        {
+            "terminal": True,
+            "status": ["completed"],
+            "ended_at": _SPAWNED_AT + 30,
+            "reason_code": "killed_by_operator",
+        },
+    )
+
+    assert updated["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert updated["late_report"]["status"] == "unknown"
+    assert updated["late_report"]["outcome"] == "failed"
+
+
+def test_a_terminal_record_with_a_non_string_status_is_sanitized(sandbox, monkeypatch, no_delivery):
+    _pid_absent(monkeypatch)
+    rid = _stranded(status=["completed"], finished_at="2026-07-27T00:00:00+00:00")
+
+    st = jobs.status(rid)
+
+    assert st["status"] == "unknown"
+    assert st["terminal"] is True
+    assert st["outcome"] == "failed"
+
+
+# --- confirmation read before a pid_recycled reap ------------------------------
+
+
+def _two_reads(monkeypatch, first: tuple[str, float | None], second: tuple[str, float | None]):
+    """Make `_process_create_time` answer *first*, then *second*; a third call
+    fails the test outright rather than repeating *second* forever, since a
+    probe called more than twice here is a bug in the liveness function under
+    test, not something a fixture should mask by answering on its behalf."""
+    calls = iter((first, second))
+
+    def _fake(pid: int) -> tuple[str, float | None]:
+        try:
+            return next(calls)
+        except StopIteration:
+            raise AssertionError("unexpected third create-time read")
+
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", _fake)
+
+
+def _agreeing_mismatch_with_marker(
+    monkeypatch,
+    *,
+    marker: tuple[str, str | None],
+    bracket: tuple[str, float | None] | None = None,
+):
+    """Two agreeing live reads that both mismatch the record, followed by the
+    marker consultation `_run_process_liveness` makes before concluding
+    anything from that agreement, and the bracketing create-time re-read the
+    consultation takes right after the marker read. *bracket* defaults to
+    matching the two agreeing reads; a fourth create-time call fails the test,
+    same discipline as `_two_reads`.
+    """
+    agreeing = ("found", _SPAWNED_AT + 5000)
+    bracket = bracket or agreeing
+    calls = iter((agreeing, agreeing, bracket))
+
+    def _fake_time(pid: int) -> tuple[str, float | None]:
+        try:
+            return next(calls)
+        except StopIteration:
+            raise AssertionError("unexpected extra create-time read")
+
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", _fake_time)
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: marker)
+
+
+def test_a_mismatch_confirmed_gone_is_disappeared_during_probe(sandbox, monkeypatch, no_delivery):
+    """First read mismatches the record; the process is gone by the second."""
+    _two_reads(monkeypatch, ("found", _SPAWNED_AT + 5000), ("gone", None))
+    rid = _stranded()
+
+    st = jobs.status(rid)
+
+    assert st["liveness_conclusion"] == "process_gone"
+    assert st["terminal_evidence"]["finding"] == jobs.FINDING_DISAPPEARED_DURING_PROBE
+
+
+def test_two_agreeing_mismatched_reads_with_a_foreign_marker_are_pid_recycled(
+    sandbox, monkeypatch, no_delivery
+):
+    """(b) Two live reads agreeing with each other, both mismatching the
+    record, are proof the two reads agree — not proof the single spawn-time
+    read the record carries was the accurate one. `pid_recycled` is concluded
+    only once the marker inherited from another run names a *different* run.
+    """
+    rid = _stranded()
+    _agreeing_mismatch_with_marker(monkeypatch, marker=("found", "some-other-run-id"))
+
+    st = jobs.status(rid)
+
+    assert st["liveness_conclusion"] == "process_gone"
+    assert st["pid_identity"] == "recycled"
+    assert st["terminal_evidence"]["finding"] == jobs.FINDING_PID_RECYCLED
+    assert st["terminal_evidence"]["observed_create_time"] == _SPAWNED_AT + 5000
+    assert st["terminal_evidence"]["recorded_create_time"] == _SPAWNED_AT
+    assert st["terminal_evidence"]["marker"] == "some-other-run-id"
+
+
+def test_two_agreeing_mismatched_reads_confirmed_by_this_runs_marker_stay_alive(
+    sandbox, monkeypatch, no_delivery
+):
+    """(a) The same two agreeing, record-mismatching reads — but the
+    marker inherited from this run names it. That confirms the process at this
+    pid descends from this run; what's suspect is the record's own recorded
+    start time. Nothing is reaped.
+    """
+    rid = _stranded()
+    _agreeing_mismatch_with_marker(monkeypatch, marker=("found", rid))
+
+    st = jobs.status(rid)
+
+    assert st["alive"] is True
+    assert st["terminal"] is False
+    assert st["liveness_conclusion"] == "alive"
+    assert st["pid_identity"] == "confirmed"
+    assert jobs._read_job(rid)["finished_at"] is None
+
+
+def test_two_agreeing_mismatched_reads_with_an_unreadable_marker_settle_nothing(
+    sandbox, monkeypatch, no_delivery
+):
+    """(c) A marker read that could not be made — an unreadable environment,
+    or a `found` reply carrying no value at all, which a platform may return
+    for a protected process without that meaning ownership was disclaimed —
+    rules nothing in or out, so nothing is reaped on it.
+    """
+    rid = _stranded()
+    _agreeing_mismatch_with_marker(monkeypatch, marker=("unknown", None))
+
+    st = jobs.status(rid)
+
+    assert st["alive"] is True
+    assert st["terminal"] is False
+    assert st["liveness_conclusion"] == "unknown"
+    assert st["pid_identity"] == "unconfirmed"
+    assert jobs._read_job(rid)["finished_at"] is None
+
+
+def test_a_marker_match_unsettled_by_a_changing_bracket_read_is_identity_unstable(
+    sandbox, monkeypatch, no_delivery
+):
+    """(d) The marker consultation is bracketed the way `kill` brackets its
+    own: even a marker naming this run doesn't settle identity if the
+    create-time re-read taken right after it no longer matches the two reads
+    that came before — the process at this pid changed out from under the
+    probe between the marker read and the bracket read.
+    """
+    rid = _stranded()
+    _agreeing_mismatch_with_marker(
+        monkeypatch, marker=("found", rid), bracket=("found", _SPAWNED_AT + 9000)
+    )
+
+    st = jobs.status(rid)
+
+    assert st["alive"] is True
+    assert st["terminal"] is False
+    assert st["liveness_conclusion"] == "unknown"
+    assert st["pid_identity"] == "unstable"
+    assert jobs._read_job(rid)["finished_at"] is None
+
+
+def test_two_disagreeing_mismatched_reads_settle_nothing(sandbox, monkeypatch, no_delivery):
+    """The two live reads disagree with each other: the probe, not the
+    process, is what's unreliable here, and nothing may end the run on it."""
+    _two_reads(monkeypatch, ("found", _SPAWNED_AT + 5000), ("found", _SPAWNED_AT + 9000))
+    rid = _stranded()
+
+    st = jobs.status(rid)
+
+    assert st["alive"] is True
+    assert st["liveness_conclusion"] == "unknown"
+    assert st["pid_identity"] == "unstable"
+    assert st["terminal"] is False
+    assert jobs._read_job(rid)["finished_at"] is None
+
+
+# --- status() names a reap its own fresh probe now contradicts -----------------
+
+
+def test_status_names_a_fresh_probe_that_contradicts_its_own_reap(
+    sandbox, monkeypatch, no_delivery
+):
+    """A later call's fresh probe can reconfirm identity after an earlier call
+    already reaped the run on the opposite observation. `status()` only reaps
+    a record that isn't terminal yet, so this contradiction does not undo the
+    reap — but it must be named, not left for a caller to notice by comparing
+    `terminal_source` against `alive`/`liveness_conclusion` by hand.
+    """
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    first = jobs.status(rid)
+    assert first["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert first["reap_contradicted_by_fresh_probe"] is False
+
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    second = jobs.status(rid)
+
+    assert second["alive"] is True
+    assert second["liveness_conclusion"] == "alive"
+    assert second["pid_identity"] == "confirmed"
+    assert second["terminal"] is True
+    assert second["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert second["reap_contradicted_by_fresh_probe"] is True
+
+
+def test_status_names_a_marker_confirmed_probe_that_contradicts_its_own_reap(
+    sandbox, monkeypatch, no_delivery
+):
+    """The contradiction is named for either way identity gets confirmed.
+
+    Two findings confirm that the live process is this run's: a start time that
+    matches the record, and a start time that does not while the process's own
+    marker does. Only the second can occur here at all — a reap on
+    `pid_recycled` happened *because* the start times disagreed, and nothing
+    since makes them agree — so a check that recognizes only the first is blind
+    to the case the flag exists for.
+    """
+    _pid_recycled(monkeypatch)
+    rid = _stranded()
+
+    first = jobs.status(rid)
+    assert first["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert first["pid_identity"] == "recycled"
+    assert first["reap_contradicted_by_fresh_probe"] is False
+
+    # Same disagreeing-but-stable start time; this time the marker is the run's.
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", rid))
+    second = jobs.status(rid)
+
+    assert second["liveness_conclusion"] == "alive"
+    assert second["pid_identity"] == "confirmed"
+    assert second["terminal"] is True
+    assert second["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert second["reap_contradicted_by_fresh_probe"] is True
+
+
+# --- a read never raises on evidence it did not choose -------------------------
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    ["not-a-number", True, [1, 2], {"a": "b"}],
+    ids=["string", "bool", "list", "dict"],
+)
+def test_a_record_whose_create_time_is_not_a_number_still_reaps(
+    sandbox, monkeypatch, no_delivery, recorded
+):
+    """A malformed `pid_create_time` is a bad record, not a bad caller.
+
+    The value reaches evidence straight off disk, and a dead pid settles the
+    finding before the record's own start time is ever consulted — so the
+    unusable value arrives at a conclusive reap rather than being screened out
+    earlier. Rejecting it there would raise out of a read, lose the transition,
+    and leave the run unreapable for good.
+    """
+    _pid_absent(monkeypatch)
+    rid = _stranded(pid_create_time=recorded)
+
+    st = jobs.status(rid)
+
+    assert st["terminal"] is True
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert st["reason_code"] == jobs.LOST_REASON
+    # The unusable value is dropped rather than persisted or guessed at.
+    assert "recorded_create_time" not in jobs._read_job(rid)["terminal_evidence"]
+    assert jobs._read_job(rid)["terminal_evidence"]["finding"] == jobs.FINDING_PID_ABSENT
+
+
+def test_a_foreign_over_long_marker_does_not_abort_status_or_the_listing(
+    sandbox, monkeypatch, no_delivery
+):
+    """A stranger at a recycled pid controls the marker's length, not us.
+
+    `_process_marker` reads the environment of whatever process now holds the
+    pid, so its value is attacker-influenced in the only sense that matters
+    here: a long enough one must not turn a status read into an exception, nor
+    take out `list_jobs`, which calls `status` once per entry.
+    """
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "x" * 257))
+    rid = _stranded()
+
+    st = jobs.status(rid)
+
+    assert st["terminal"] is True
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert "marker" not in jobs._read_job(rid)["terminal_evidence"]
+    # The surface a caller actually polls survives it too.
+    assert [row["run_id"] for row in jobs.list_jobs()] == [rid]
 
 
 # --- verify-by 7: list and status agree ---------------------------------------
@@ -833,3 +1294,123 @@ def test_a_child_recorded_end_wins_over_a_later_reaper_observation(
     assert st["reason_code"] != jobs.LOST_REASON_NOTICE_RECORDED_UNDELIVERED
     assert st["terminal_source"] == jobs.TERMINAL_SOURCE_HOOK
     assert len(no_delivery) == 1, "the reaper must not attempt its own delivery over a recorded end"
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_number_is_refused_from_caller_evidence(bad):
+    """`Infinity` survives the trip in, so an isinstance check is not enough.
+
+    `json.loads` accepts the bare tokens `NaN` and `Infinity`, so a caller can
+    put a real non-finite float into `evidence=` without doing anything exotic.
+    Stored, it comes back out through `json.dumps` as those same tokens, which
+    are not JSON -- and Python's reader accepts them, so nothing in this process
+    ever notices. The strict reader at the other end of the protocol is the one
+    that cannot parse the reply, for every later read of that record.
+    """
+    with pytest.raises(ValueError):
+        jobs._validate_reap_evidence({"recorded_create_time": bad})
+
+
+def test_a_finite_number_is_still_accepted():
+    """The must-match control: the check rejects non-finite, not numeric."""
+    kept = jobs._validate_reap_evidence({"recorded_create_time": _SPAWNED_AT, "tolerance": 0.1})
+
+    assert kept["recorded_create_time"] == _SPAWNED_AT
+    assert kept["tolerance"] == 0.1
+
+
+def test_a_non_finite_number_from_our_own_side_is_dropped_not_raised():
+    """The two paths differ on purpose, and this is the difference.
+
+    Caller evidence is refused out loud, because the caller can fix it. Evidence
+    this module assembles itself is sanitized instead: a probe returning
+    something unusable must not take down the reap it was gathered for, which is
+    the whole reason the reap became reversible.
+    """
+    kept = jobs._sanitized_reap_evidence(
+        {"recorded_create_time": float("inf"), "observed_create_time": _SPAWNED_AT}
+    )
+
+    assert "recorded_create_time" not in kept
+    assert kept["observed_create_time"] == _SPAWNED_AT
+
+
+def test_an_integer_past_float_range_is_dropped_rather_than_raised_from():
+    """The finiteness check is a predicate over `float(value)`, not over *value*.
+
+    So an integer larger than float range makes it raise instead of answer.
+    Python's ints are unbounded and JSON's are too, which is how this arrives by
+    the ordinary route: a 309-digit number is a valid document and `json.loads`
+    hands it back as an `int`. Raising here is the exact failure the sanitizer
+    exists to prevent, reached through the line that prevents the other one.
+    """
+    kept = jobs._sanitized_reap_evidence(
+        {"recorded_create_time": 10**309, "observed_create_time": _SPAWNED_AT}
+    )
+
+    assert "recorded_create_time" not in kept
+    assert kept["observed_create_time"] == _SPAWNED_AT
+
+
+def test_an_integer_inside_float_range_is_still_kept():
+    """The must-match control: what is refused is unrepresentable, not large."""
+    kept = jobs._sanitized_reap_evidence({"recorded_create_time": 10**300})
+
+    assert kept["recorded_create_time"] == 10**300
+
+
+def test_caller_evidence_past_float_range_is_refused_as_a_value_error():
+    """Refused, and refused as the kind of error this path promises.
+
+    The caller path raises on purpose. But an `OverflowError` out of a validator
+    whose documented answer is `ValueError` is not that refusal -- it is the
+    same uncaught escape wearing a rejection's clothes, and a caller catching
+    what the signature names would not catch it.
+    """
+    with pytest.raises(ValueError):
+        jobs._validate_reap_evidence({"recorded_create_time": 10**309})
+
+
+def test_a_persisted_start_time_past_float_range_does_not_take_down_a_read(
+    sandbox, monkeypatch, no_delivery
+):
+    """The reachable arm, and why the three unit arms above do not cover it.
+
+    An absent pid is conclusive before the recorded start time is consulted, so
+    the identity check that already refuses this value -- it catches the same
+    `OverflowError` around the same conversion, and answers `identity_unusable`
+    -- never runs. The record goes straight into the evidence the reap is
+    assembled from. That is the ordinary orphan case rather than an exotic one,
+    which is what makes the read that reports the run the read that raises.
+    """
+    rid = _stranded(pid_create_time=10**309)
+    _pid_absent(monkeypatch)
+
+    st = jobs.status(rid)
+
+    assert st["terminal"] is True
+    assert st["terminal_evidence"]["finding"] == jobs.FINDING_PID_ABSENT
+    # Dropped rather than stored: the field the record could not supply is
+    # absent from the evidence, not present and unreadable.
+    assert "recorded_create_time" not in st["terminal_evidence"]
+    assert any(j["run_id"] == rid for j in jobs.list_jobs())
+    json.dumps(st, allow_nan=False)
+
+
+def test_what_survives_sanitizing_is_serializable_as_strict_json():
+    """Assert the OUTCOME, not that nothing raised.
+
+    The defect is not that a non-finite value is present, it is that the record
+    stops being readable. So the assertion is the property that was lost:
+    `allow_nan=False` is what a conforming reader does.
+    """
+    kept = jobs._sanitized_reap_evidence(
+        {
+            "recorded_create_time": float("nan"),
+            "observed_create_time": float("inf"),
+            "tolerance": 0.1,
+            "observed_at": "2026-09-03T00:00:00Z",
+        }
+    )
+
+    json.dumps(kept, allow_nan=False)

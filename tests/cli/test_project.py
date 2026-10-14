@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi import _paths
 from lionagi.cli._project import (
     _parse_remote_url,
     _read_project_from_toml,
@@ -74,6 +75,20 @@ class TestReadProjectFromToml:
 
 
 class TestDetectProject:
+    def test_account_home_config_is_not_a_project(self, tmp_path, monkeypatch):
+        account_home = tmp_path / "acct"
+        work_dir = account_home / "work" / "repo"
+        work_dir.mkdir(parents=True)
+        safe_home = tmp_path / "safe"
+        safe_home.mkdir()
+        lionagi_dir = account_home / ".lionagi"
+        lionagi_dir.mkdir()
+        (lionagi_dir / "config.toml").write_text('[project]\nname = "acct-project"\n')
+        monkeypatch.setattr(_paths, "_account_home", lambda: account_home)
+        monkeypatch.setenv("HOME", str(safe_home))
+
+        assert detect_project(work_dir) == (None, None)
+
     def test_config_toml_in_cwd(self, tmp_path: Path):
         lionagi_dir = tmp_path / ".lionagi"
         lionagi_dir.mkdir()
