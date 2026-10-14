@@ -1309,8 +1309,9 @@ def _raw_kinds(chunks) -> list:
 
 
 # What comes between the two halves of the key, and the block the second half is in.
+# The quoted text begins with a character no test key has, so it never continues one.
 _BETWEEN_TWO_TEXT_DELTAS = {
-    "citation": ([_citation(0, "a quote")], 0),
+    "citation": ([_citation(0, "quoted")], 0),
     "error_event": ([{"type": "error", "error": {"type": "overloaded_error", "message": "x"}}], 0),
     "next_block": ([{"type": "content_block_stop", "index": 0}, _text_block(1)], 1),
     "block_start_without_stop": ([_text_block(1)], 1),
@@ -1359,6 +1360,26 @@ async def test_a_key_split_around_another_event_never_reaches_the_joined_text(
     assert "".join(chunk.content or "" for chunk in chunks if chunk.type == "text") == expected
     assert _raw_delta_text(chunks, "text") == expected
     assert all(key not in repr(chunk) for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_a_quote_that_continues_the_key_masks_the_held_public_prefix(monkeypatch, tmp_path):
+    """The join of every piece runs held text into the next event's pieces, so a
+    citation whose quote continues the key makes a long beginning of it there, and
+    the held public prefix is masked rather than sent."""
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _text(0, "ab" + CANARY[:7]),
+        _citation(0, CANARY[7:9] + " quoted"),
+        _text(0, "cd"),
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    assert _raw_delta_text(chunks, "text") == "ab[REDACTED]cd"
+    assert all(CANARY[:8] not in repr(chunk) for chunk in chunks)
 
 
 @pytest.mark.parametrize("cut", range(1, len(CANARY)))
