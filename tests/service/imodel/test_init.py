@@ -1058,6 +1058,19 @@ class TestReportedServedModel:
         assert iModel._reports_failure(chunk) is expected
 
     @pytest.mark.parametrize(
+        "event_type,expected",
+        [
+            ("response.failed", True),
+            ("failed", True),
+            ("response.mcp_call.failed", False),
+            ("response.mcp_list_tools.failed", False),
+            ("response.completed", False),
+        ],
+    )
+    def test_only_the_calls_own_failure_event_reports_a_failed_call(self, event_type, expected):
+        assert iModel._event_failed({"type": event_type}) is expected
+
+    @pytest.mark.parametrize(
         "response,expected",
         [
             ({"model": "gpt-served-1", "error": None}, "gpt-served-1"),
@@ -1134,6 +1147,34 @@ class TestReportedServedModel:
 
         assert "served_model" not in api_call.metadata
         assert "served_model" not in model.provider_metadata
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_failed_tool_call_inside_a_completed_call_keeps_the_model(
+        self, concurrency_limit
+    ):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.mcp_call.failed","item_id":"mcp_1","output_index":0}'
+            )
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.output_text.delta","delta":"hi"}'
+            )
+
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-served-2"
+        assert model.provider_metadata["served_model"] == "gpt-served-2"
 
     @pytest.mark.asyncio
     async def test_a_stream_that_fails_in_transport_records_no_model(self, base_imodel):

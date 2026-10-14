@@ -317,14 +317,17 @@ class iModel:  # noqa: N801
     def _event_failed(event: Any) -> bool:
         """Whether a provider event or response says the call failed.
 
-        The event counts as failed when its type ends in ``failed``, or when the
-        event itself, its ``message`` or its ``response`` has an ``error`` or
-        ``is_error`` that is set, a ``status`` of ``failed``, or a choice whose
-        ``finish_reason`` is ``error``.
+        The event counts as failed when its type names the call failing: it ends
+        in ``failed`` and has at most one dot, so ``response.failed`` counts and
+        ``response.mcp_call.failed``, about an item inside the call, does not. It
+        also counts when the event itself, its ``message`` or its ``response`` has
+        an ``error`` or ``is_error`` that is set, a ``status`` of ``failed``, or a
+        choice whose ``finish_reason`` is ``error``.
         """
         if not isinstance(event, dict):
             return False
-        if str(event.get("type", "")).endswith("failed"):
+        event_type = str(event.get("type", ""))
+        if event_type.endswith("failed") and event_type.count(".") <= 1:
             return True
         for holder in (event, event.get("message"), event.get("response")):
             if not isinstance(holder, dict):
@@ -346,7 +349,9 @@ class iModel:  # noqa: N801
         An error chunk counts only when it is marked as an error: a Codex
         reconnect notice or a resumed session's clean end arrives as an error
         chunk that is not one. A chunk's provider event is read under
-        ``metadata["raw"]``; a CLI system chunk's own metadata is its event.
+        ``metadata["raw"]``. A CLI system chunk has no such event, so its own
+        metadata is read in its place: the whole event for Codex, the session id
+        and model (and tools) for Claude Code and agy.
         """
         if isinstance(value, StreamChunk):
             if value.type == "error" and value.is_error:
@@ -372,8 +377,10 @@ class iModel:  # noqa: N801
         (Responses events). Result chunks are never read: a CLI result chunk is
         the run record, which may name the requested model. A chunk or response
         that says the call failed (see ``_reports_failure``) is never read
-        either. An incomplete response is read: the call was cut short rather
-        than refused, and the model it names is the one that ran.
+        either. A call cut short rather than refused is read, because the model
+        it names is the one that ran: an incomplete response (a content filter
+        included), a ``status`` of ``cancelled``, and a stream that ends without
+        a terminal event.
         """
         if iModel._reports_failure(value):
             return None
@@ -409,8 +416,9 @@ class iModel:  # noqa: N801
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value reflects whichever call finished last, so under concurrency it is
         never evidence about a particular call. A call that failed records none.
-        A stream its consumer closed early has not failed, and keeps the model
-        read from what it delivered.
+        A stream its consumer closed early, and a call cancelled or timed out
+        after the provider named its model, have not failed: each keeps the
+        model read from what it delivered.
         """
         if api_call is not None and api_call.status == EventStatus.FAILED:
             served_model = None

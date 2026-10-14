@@ -396,6 +396,23 @@ async def test_loop_closed_during_teardown_preserves_text_and_is_retryable():
 
 
 @pytest.mark.asyncio
+async def test_a_teardown_failure_after_a_reported_model_clears_it():
+    async def events_then_teardown_failure(_request):
+        yield _success_obj(model="gemini-A")
+        raise RuntimeError("Event loop is closed")
+
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=events_then_teardown_failure,
+    ):
+        yielded = [item async for item in stream_gemini_cli(_make_request())]
+
+    session = next(item for item in yielded if isinstance(item, GeminiSession))
+    assert session.is_error is True
+    assert session.model is None
+
+
+@pytest.mark.asyncio
 async def test_loop_closed_before_output_emits_one_retryable_error():
     async def teardown_failure(_request):
         raise RuntimeError("Event loop is closed")

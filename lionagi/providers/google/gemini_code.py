@@ -512,6 +512,9 @@ async def stream_gemini_cli(
                     "event loop is closed" in str(exc).casefold()
                 ):
                     session.is_error = True
+                    # Failed like a failed turn, so the invoke result names no
+                    # model, as the stream does once this error chunk voids it.
+                    session.model = None
                     error = ProviderTeardownError("agy teardown failed: Event loop is closed")
                     sc = StreamChunk(type="error", content=str(error), is_error=True)
                     session.chunks.append(sc)
