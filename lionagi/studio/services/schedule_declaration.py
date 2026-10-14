@@ -1156,12 +1156,24 @@ async def _adopt_plan_entry(
     )
     if unconfirmed_zone is not None:
         recorded, local = unconfirmed_zone
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(recorded)
+            remedy = (
+                "run the apply with LIONAGI_SCHEDULER_TZ set to the scheduler's zone, or "
+                "start the scheduler so it records its zone again."
+            )
+        except (ZoneInfoNotFoundError, ValueError):
+            # This process cannot read its cron in that zone, so naming it here cannot help.
+            remedy = (
+                f"this host cannot load {recorded!r}, so start the scheduler so it records "
+                "its zone again."
+            )
         reasons.append(
             f"the row stores no zone, so it fires in the zone of the scheduler that runs it; "
             f"the scheduler last recorded {recorded!r} and this process reads the scheduler "
-            f"zone as {local!r}. Adoption stores a zone only when the two agree: run the apply "
-            f"with LIONAGI_SCHEDULER_TZ set to the scheduler's zone, or start the scheduler so "
-            f"it records its zone again."
+            f"zone as {local!r}. Adoption stores a zone only when the two agree: {remedy}"
         )
     if undeclared:
         rendered = "; ".join(f"{name}={value!r}" for name, value in undeclared)

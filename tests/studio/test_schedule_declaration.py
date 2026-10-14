@@ -1880,6 +1880,7 @@ async def test_adopt_refuses_a_recorded_zone_this_process_does_not_share(
         detail = plan[0].detail
         assert "last recorded 'Europe/Berlin'" in detail
         assert "reads the scheduler zone as 'America/New_York'" in detail
+        assert "LIONAGI_SCHEDULER_TZ set to the scheduler's zone" in detail
         assert "edit the member to match the row" not in detail
 
         # The same row recorded in this process's zone adopts.
@@ -1924,6 +1925,8 @@ async def test_adopt_names_an_unloadable_recorded_zone_as_one_no_member_declares
         "as it stands." in detail
     )
     assert "edit the member to match the row" not in detail
+    assert "this host cannot load 'Not/AZone', so start the scheduler" in detail
+    assert "LIONAGI_SCHEDULER_TZ" not in detail
 
 
 @pytest.mark.asyncio
