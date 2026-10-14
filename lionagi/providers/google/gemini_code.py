@@ -544,12 +544,14 @@ async def stream_gemini_cli(
                     session.is_error = True
 
                 # Only a model agy itself reports for a turn that succeeded is
-                # recorded, so the requested model never reads as the served one and
-                # a failed turn names none. An object that names no model keeps the
-                # last one reported.
+                # recorded, so the requested model never reads as the served one. A
+                # failed turn clears it, including a model an earlier turn reported;
+                # an object that succeeds and names no model keeps the last one.
                 reported = obj.get("model")
                 name = reported.strip() if isinstance(reported, str) else ""
-                if name and not session.is_error:
+                if session.is_error:
+                    session.model = None
+                elif name:
                     session.model = name
 
                 # Captured before the error branch: a failed turn can still report

@@ -281,6 +281,20 @@ async def test_a_failed_turn_names_no_model():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_turn_clears_the_model_an_earlier_turn_reported():
+    objects = [
+        _success_obj(model="gemini-A"),
+        _success_obj(status="FAILED", model="gemini-failed-x", error="quota"),
+    ]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-A", None]
+    session = await _run_objects(objects)
+    assert session.is_error
+    assert session.model is None
+
+
+@pytest.mark.asyncio
 async def test_result_record_keeps_the_requested_model_when_agy_reports_none():
     """The run record read from the result chunk still names a model; result
     chunks are never read as the served model."""

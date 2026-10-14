@@ -314,37 +314,81 @@ class iModel:  # noqa: N801
         return processed
 
     @staticmethod
+    def _event_failed(event: Any) -> bool:
+        """Whether a provider event or response says the call failed.
+
+        The event counts as failed when its type ends in ``failed``, or when the
+        event itself, its ``message`` or its ``response`` has an ``error`` or
+        ``is_error`` that is set, a ``status`` of ``failed``, or a choice whose
+        ``finish_reason`` is ``error``.
+        """
+        if not isinstance(event, dict):
+            return False
+        if str(event.get("type", "")).endswith("failed"):
+            return True
+        for holder in (event, event.get("message"), event.get("response")):
+            if not isinstance(holder, dict):
+                continue
+            if holder.get("error") or holder.get("is_error") or holder.get("status") == "failed":
+                return True
+            choices = holder.get("choices")
+            if isinstance(choices, list) and any(
+                isinstance(choice, dict) and choice.get("finish_reason") == "error"
+                for choice in choices
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _reports_failure(value: Any) -> bool:
+        """Whether a stream chunk or a response says the call failed.
+
+        An error chunk counts only when it is marked as an error: a Codex
+        reconnect notice or a resumed session's clean end arrives as an error
+        chunk that is not one. A chunk's provider event is read under
+        ``metadata["raw"]``; a CLI system chunk's own metadata is its event.
+        """
+        if isinstance(value, StreamChunk):
+            if value.type == "error" and value.is_error:
+                return True
+            metadata = value.metadata if isinstance(value.metadata, dict) else {}
+            raw = metadata.get("raw")
+            if isinstance(raw, dict):
+                return iModel._event_failed(raw)
+            return value.type == "system" and iModel._event_failed(metadata)
+        return iModel._event_failed(value)
+
+    @staticmethod
     def _reported_served_model(value: Any) -> str | None:
         """The model the provider named in a response or stream chunk, else None.
 
         A CLI provider's report sits on its system chunk: Claude Code and agy
         put the model there, and Codex passes its session event through whole.
-        pi streams no system chunk, so a pi stream reports none. An API stream
-        chunk keeps the provider event under ``metadata["raw"]``, where the
-        model sits at the top level (chat completion chunks), under ``message``
-        (Anthropic ``message_start``) or under ``response`` (Responses events).
-        Result chunks are never read: a CLI result chunk is the run record,
-        which may name the requested model. An event that carries an error or
-        whose type ends in ``failed`` is never read either: the model it names
-        produced no output. An incomplete response is read, since its output
-        came from the model it names.
+        pi streams no system chunk, so a pi stream reports none, while pi's
+        invoke result carries the model pi reported, so invoke reads one. An API
+        stream chunk keeps the provider event under ``metadata["raw"]``, where
+        the model sits at the top level (chat completion chunks), under
+        ``message`` (Anthropic ``message_start``) or under ``response``
+        (Responses events). Result chunks are never read: a CLI result chunk is
+        the run record, which may name the requested model. A chunk or response
+        that says the call failed (see ``_reports_failure``) is never read
+        either. An incomplete response is read: the call was cut short rather
+        than refused, and the model it names is the one that ran.
         """
+        if iModel._reports_failure(value):
+            return None
         if isinstance(value, StreamChunk):
             if value.type not in ("system", "text"):
                 return None
             metadata = value.metadata if isinstance(value.metadata, dict) else {}
             raw = metadata.get("raw")
             if isinstance(raw, dict):
-                if raw.get("error") or str(raw.get("type", "")).endswith("failed"):
-                    return None
                 holders = [raw, raw.get("message"), raw.get("response")]
             elif value.type == "system":
                 holders = [metadata]
             else:
                 return None
         else:
-            if isinstance(value, dict) and value.get("error"):
-                return None
             holders = [value]
 
         for holder in holders:
@@ -364,8 +408,12 @@ class iModel:  # noqa: N801
 
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
         value reflects whichever call finished last, so under concurrency it is
-        never evidence about a particular call.
+        never evidence about a particular call. A call that failed records none.
+        A stream its consumer closed early has not failed, and keeps the model
+        read from what it delivered.
         """
+        if api_call is not None and api_call.status == EventStatus.FAILED:
+            served_model = None
         if api_call is not None:
             # Hooks receive the mutable event. Re-establish this field at the
             # finalization boundary so hook or caller metadata can never pass
@@ -394,9 +442,13 @@ class iModel:  # noqa: N801
                 stream_error = None
                 try:
                     async for i in api_call.stream():
-                        reported_model = self._reported_served_model(i)
-                        if reported_model is not None:
-                            served_model = reported_model
+                        if self._reports_failure(i):
+                            # A failure voids any model read before it.
+                            served_model = None
+                        else:
+                            reported_model = self._reported_served_model(i)
+                            if reported_model is not None:
+                                served_model = reported_model
                         result = await self.process_chunk(i)
                         yield result if result is not None else i
                     # api_call.stream() captures a transport/provider failure as
@@ -418,9 +470,12 @@ class iModel:  # noqa: N801
             stream_error = None
             try:
                 async for i in api_call.stream():
-                    reported_model = self._reported_served_model(i)
-                    if reported_model is not None:
-                        served_model = reported_model
+                    if self._reports_failure(i):
+                        served_model = None
+                    else:
+                        reported_model = self._reported_served_model(i)
+                        if reported_model is not None:
+                            served_model = reported_model
                     result = await self.process_chunk(i)
                     yield result if result is not None else i
                 stream_error = _terminal_stream_error(api_call)
