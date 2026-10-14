@@ -120,7 +120,8 @@ CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 # `getconf ARG_MAX`); Linux refuses one argument past MAX_ARG_STRLEN, 32 pages (131,072 bytes
 # with 4 KiB pages). So an argument of this many bytes does not start the CLI on macOS or on
 # Linux with 4 KiB pages. A shorter one can still be refused there when the process starts,
-# with the operating system's error, and larger pages admit more.
+# with the operating system's error. The bound is the same on every platform, so it also
+# refuses an argument Linux with larger pages would take.
 _CLI_ARGUMENT_MAX_BYTES = 1_048_576
 
 
@@ -134,10 +135,40 @@ def _refuse_oversized_argument(argument: str, what: str) -> None:
         )
 
 
+def _refuse_oversized_command(cmd: list[str]) -> None:
+    """Refuse ``cmd`` when any argument after the program is too long to start the CLI."""
+    for position, argument in enumerate(cmd[1:], start=1):
+        flag = cmd[position - 1] if position > 1 else ""
+        if flag == "-c":
+            what = f"The -c override {argument.split('=', 1)[0][:80]!r}"
+        elif flag.startswith("-"):
+            what = f"The value of {flag}"
+        else:
+            what = f"Command-line argument {position}"
+        _refuse_oversized_argument(argument, what)
+
+
+def _contain_override(key: str, value: Any) -> tuple[bool, Any]:
+    """Whether account-integration containment keeps the override ``key=value``, and the
+    value it keeps: an override under `features.apps` or `features.plugins` is dropped, and
+    those keys leave an inline `features` table, which is dropped when nothing is left."""
+    path = _override_key_path(key)
+    if path[0] == "features":
+        if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
+            return False, value
+        if len(path) == 1 and isinstance(value, Mapping):
+            value = {k: v for k, v in value.items() if k not in _ACCOUNT_INTEGRATION_FEATURES}
+            if not value:
+                return False, value
+    return True, value
+
+
 def _refuse_oversized_cli_inputs(
     prompt: str,
     system_prompt: str | None = None,
     config_overrides: dict[str, Any] | None = None,
+    *,
+    contained: bool = False,
 ) -> None:
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
         raise ValueError(
@@ -145,14 +176,19 @@ def _refuse_oversized_cli_inputs(
             f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A long branch sends its rendered history as "
             "the input: start a new session and hand it the earlier result as a file."
         )
-    # Measured as as_cmd_args builds each argument.
+    # The system prompt's and each override's argument, measured as as_cmd_args builds them,
+    # so the refusal names them; every argument is measured again where the process starts.
     if system_prompt:
         _refuse_oversized_argument(f"developer_instructions={system_prompt}", "The system prompt")
     for key, value in (config_overrides or {}).items():
         try:
+            if contained:
+                kept, value = _contain_override(key, value)
+                if not kept:
+                    continue
             encoded = toml_override_value(value)
-        except TypeError:
-            continue  # as_cmd_args refuses the value itself, as before
+        except (TypeError, ValueError):
+            continue  # as_cmd_args refuses the key or the value itself, as before
         _refuse_oversized_argument(f"{key}={encoded}", f"The config override {key!r}")
 
 
@@ -633,7 +669,12 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="after")
     def _refuse_a_turn_input_past_the_cli_limit(self):
         # A long branch sends its rendered history with every turn, which can exceed the limit.
-        _refuse_oversized_cli_inputs(self.prompt, self.system_prompt, self.config_overrides)
+        _refuse_oversized_cli_inputs(
+            self.prompt,
+            self.system_prompt,
+            self.config_overrides,
+            contained=self._contains_account_integrations(),
+        )
         return self
 
     @model_validator(mode="after")
@@ -744,16 +785,9 @@ class CodexCodeRequest(BaseModel):
             # table. Config profiles can contribute either form alongside the
             # caller. Drop them here rather than relying on flag order.
             if containing:
-                path = _override_key_path(key)
-                if path[0] == "features":
-                    if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
-                        continue
-                    if len(path) == 1 and isinstance(value, Mapping):
-                        value = {
-                            k: v for k, v in value.items() if k not in _ACCOUNT_INTEGRATION_FEATURES
-                        }
-                        if not value:
-                            continue
+                kept, value = _contain_override(key, value)
+                if not kept:
+                    continue
             args.extend(["-c", f"{key}={toml_override_value(value)}"])
 
         # Working directory (always emit)
@@ -797,8 +831,14 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     # model_copy(update=...) skips validation, so check again where inputs reach the process.
-    _refuse_oversized_cli_inputs(request.prompt, request.system_prompt, request.config_overrides)
+    _refuse_oversized_cli_inputs(
+        request.prompt,
+        request.system_prompt,
+        request.config_overrides,
+        contained=request._contains_account_integrations(),
+    )
     cmd = [CODEX_CLI, *request.as_cmd_args()]
+    _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
     async with contextlib.aclosing(

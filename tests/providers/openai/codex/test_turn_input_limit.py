@@ -9,6 +9,8 @@ even when the new instruction is short.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from lionagi.providers.openai import codex as codex_mod
@@ -196,3 +198,78 @@ async def test_a_branch_whose_transcript_is_past_the_limit_starts_nothing_and_ga
     added = messages[len(prior) :]
     assert len(added) <= 1
     assert all(isinstance(m, Instruction) for m in added)
+
+
+def _refuse_a_spawn(monkeypatch):
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("the Codex CLI was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "update,named",
+    [
+        ({"reasoning_effort": "x" * ARGUMENT_MAX_BYTES}, "-c override 'reasoning_effort'"),
+        (
+            {"plan_mode_reasoning_effort": "x" * ARGUMENT_MAX_BYTES},
+            "-c override 'plan_mode_reasoning_effort'",
+        ),
+        ({"enable_features": ["f" * ARGUMENT_MAX_BYTES]}, "value of --enable"),
+    ],
+    ids=["reasoning-effort", "plan-mode-effort", "enable-feature"],
+)
+async def test_every_argument_is_measured_before_the_cli_starts(
+    tmp_path, monkeypatch, update, named
+):
+    """Arguments the request does not measure when it is built are measured where the
+    process would start."""
+    _refuse_a_spawn(monkeypatch)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, **update)
+
+    with pytest.raises(ValueError, match=f"{named}.*command-line argument"):
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "set_int_max_str_digits"),
+    reason="only Pythons with an integer digit limit refuse to encode this value",
+)
+def test_an_override_value_toml_cannot_encode_is_left_to_the_command_builder(tmp_path):
+    """A value the encoder refuses with ValueError is not measured at construction; the
+    command builder refuses it where it is encoded, as it did before."""
+    request = CodexCodeRequest(prompt="hi", config_overrides={"k": 10**5000}, repo=tmp_path)
+
+    with pytest.raises(ValueError):
+        request.as_cmd_args()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["features.apps", "features.plugins"])
+async def test_an_override_containment_drops_is_not_measured(tmp_path, monkeypatch, key):
+    """With account integrations contained, an apps or plugins override never reaches the
+    command line, so its size refuses nothing."""
+    started = []
+
+    async def spawned(cmd, **_kwargs):
+        started.append(cmd)
+        return
+        yield
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+    request = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides={key: "v" * ARGUMENT_MAX_BYTES},
+    )
+
+    async for _ in codex_mod._ndjson_from_cli(request):
+        pass
+
+    (cmd,) = started
+    assert not any(argument.startswith(key) for argument in cmd)
