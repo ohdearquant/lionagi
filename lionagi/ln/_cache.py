@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import threading
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from typing import Any, Generic, TypeVar
 
@@ -28,16 +28,37 @@ class BoundedLRUCache(Generic[K, V]):
     mode exists to refuse.
     """
 
-    __slots__ = ("_cache", "_lock", "_max_size", "_weak_values")
+    __slots__ = ("_cache", "_lock", "_max_size", "_pending_removals", "_weak_values")
 
     def __init__(self, max_size_env: str, default_max: int, *, weak_values: bool = False) -> None:
         self._max_size = int(os.environ.get(max_size_env, str(default_max)))
         self._cache: OrderedDict[K, Any] = OrderedDict()
         self._lock = threading.RLock()
         self._weak_values = weak_values
+        self._pending_removals: deque[K] = deque()
+
+    def forget(self, key: K) -> None:
+        """Remove ``key``'s entry when the cache is next read or written.
+
+        Meant for a weakref callback, which can run in any thread and in the middle
+        of this cache's own work, so it only queues the key; the entry is removed
+        under the lock before the next read or write.
+        """
+        self._pending_removals.append(key)
+
+    def _remove_forgotten_unlocked(self) -> None:
+        pending = self._pending_removals
+        while pending:
+            self._cache.pop(pending.popleft(), None)
+
+    def __len__(self) -> int:
+        with self._lock:
+            self._remove_forgotten_unlocked()
+            return len(self._cache)
 
     def _get_unlocked(self, key: K) -> tuple[bool, V | None]:
         """``(hit, value)``. A weak entry whose value is gone is not a hit."""
+        self._remove_forgotten_unlocked()
         if key not in self._cache:
             return False, None
         stored = self._cache[key]
@@ -73,6 +94,7 @@ class BoundedLRUCache(Generic[K, V]):
             return value
 
     def _put_unlocked(self, key: K, value: V) -> None:
+        self._remove_forgotten_unlocked()
         if self._weak_values:
             try:
                 stored: Any = weakref.ref(value)

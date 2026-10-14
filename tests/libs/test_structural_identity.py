@@ -420,24 +420,28 @@ def test_a_large_payload_never_enters_the_dataclass_cache():
         _structural_key,
     )
 
-    before = len(_stable_dataclass_keys._cache)
-    _structural_key(_Payload("x" * (_MAX_CACHED_WEIGHT + 1)))
-    assert len(_stable_dataclass_keys._cache) == before
+    before = len(_stable_dataclass_keys)
+    large = _Payload("x" * (_MAX_CACHED_WEIGHT + 1))
+    _structural_key(large)
+    assert len(_stable_dataclass_keys) == before
 
-    _structural_key(_Payload("x"))
-    assert len(_stable_dataclass_keys._cache) == before + 1
+    small = _Payload("x")
+    _structural_key(small)
+    assert len(_stable_dataclass_keys) == before + 1
 
 
 def test_a_declaration_that_cannot_be_held_weakly_never_enters_the_dataclass_cache():
     """Storing it means the entry holds it, and it holds everything it carries."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
-    before = len(_stable_dataclass_keys._cache)
-    _structural_key(_Unreferenceable("x"))
-    assert len(_stable_dataclass_keys._cache) == before
+    before = len(_stable_dataclass_keys)
+    unreferenceable = _Unreferenceable("x")
+    _structural_key(unreferenceable)
+    assert len(_stable_dataclass_keys) == before
 
-    _structural_key(_Payload("y"))
-    assert len(_stable_dataclass_keys._cache) == before + 1
+    payload = _Payload("y")
+    _structural_key(payload)
+    assert len(_stable_dataclass_keys) == before + 1
 
 
 def _oversized(limit: int) -> str:
@@ -718,11 +722,52 @@ def test_the_cache_is_bounded_by_eviction():
     """A cache is a bounded store, not a growing one: eviction has to actually fire."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
-    for filler in range(_stable_dataclass_keys._max_size + 1):
-        _structural_key(_Payload(filler))
+    # Held, so no entry is removed for its declaration being collected and only
+    # eviction can keep the count at the bound.
+    held_alive = [_Payload(filler) for filler in range(_stable_dataclass_keys._max_size + 1)]
+    for payload in held_alive:
+        _structural_key(payload)
 
-    held = len(_stable_dataclass_keys._cache)
-    assert 0 < held <= _stable_dataclass_keys._max_size
+    assert len(_stable_dataclass_keys) == _stable_dataclass_keys._max_size
+
+
+def test_an_entry_leaves_the_cache_when_its_declaration_is_collected():
+    """Each of these dies at once, usually at the address the last one used. Left in the
+    cache, every dead entry shares that hash, so each lookup compared against all of them
+    and inserting the cache's size in such objects took quadratic time."""
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    for filler in range(2000):
+        _structural_key(_Payload(f"short-lived-{filler}"))
+    len(_stable_dataclass_keys)  # a read removes the entries already forgotten
+
+    # Asserted per entry, not by count: a cache another test left full stays at its
+    # bound however many dead entries it holds.
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is None]
+
+
+def test_a_collected_entry_is_removed_without_removing_a_live_one_in_its_bucket():
+    """An object allocated where a collected one was hashes the same; its entry stays."""
+    from lionagi.ln._cache import BoundedLRUCache
+    from lionagi.ln._structural import _IdentityKey
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    dead, live = _Payload("dead"), _Payload("live")
+    dead_key = _IdentityKey(dead, on_collect=cache.forget)
+    live_key = _IdentityKey(live, on_collect=cache.forget)
+    lookup = _IdentityKey(live)
+    # One bucket, as when the live object took the collected one's address.
+    live_key._hash = lookup._hash = dead_key._hash
+    cache.put(dead_key, "dead")
+    cache.put(live_key, "live")
+
+    del dead
+    gc.collect()
+
+    assert cache.get(lookup) == "live"
+    # The read removed the collected entry itself.
+    assert len(cache._cache) == 1
+    assert len(cache) == 1
 
 
 def test_a_dynamically_created_callable_is_released_after_projection():

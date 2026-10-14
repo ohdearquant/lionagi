@@ -52,14 +52,31 @@ class _IdentityKey:
     strongly, which keeps it and everything it carries alive for as long as the key lives;
     `holds_weakly` says which of the two a key is, so a caller storing one past the call
     can decide whether to.
+
+    A dead entry is never hit, but until it is removed it shares a hash bucket with every
+    later object allocated at the same address, and each lookup there compares against it.
+    A key stored in a cache is therefore given `on_collect`, which is called with the key
+    when its weakly-held target is collected, while the key itself is still alive.
     """
 
-    __slots__ = ("_hash", "_ref", "_strong")
+    __slots__ = ("__weakref__", "_hash", "_ref", "_strong")
 
-    def __init__(self, target: object) -> None:
+    def __init__(
+        self, target: object, on_collect: Callable[[_IdentityKey], None] | None = None
+    ) -> None:
         self._hash = id(target)
+        callback = None
+        if on_collect is not None:
+            # Weak, so the key, its reference and this callback form no cycle.
+            this = weakref.ref(self)
+
+            def callback(_ref: weakref.ref) -> None:
+                key = this()
+                if key is not None:
+                    on_collect(key)
+
         try:
-            self._ref: weakref.ref | None = weakref.ref(target)
+            self._ref: weakref.ref | None = weakref.ref(target, callback)
             self._strong: object = None
         except TypeError:
             self._ref = None
@@ -566,7 +583,9 @@ def _project(
                     and identity_key.holds_weakly
                     and not value_semantics
                 ):
-                    _stable_dataclass_keys.put(identity_key, result)
+                    _stable_dataclass_keys.put(
+                        _IdentityKey(value, on_collect=_stable_dataclass_keys.forget), result
+                    )
                 return result
             return dataclasses.replace(
                 combined,
