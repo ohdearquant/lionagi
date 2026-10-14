@@ -218,3 +218,117 @@ async def test_the_judge_raises_when_it_cannot_carry_the_overlay():
     run = engine.new_run()
     with pytest.raises(ConfigurationError, match="agent_env"):
         await engine.judge(run, "e1", "a subject")
+
+
+_CHANGES = pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({"agent_env": {"LEG_ID": "leg-7"}}, {"agent_env": {"LEG_ID": "leg-8"}}),
+        ({}, {"agent_env": {"LEG_ID": "leg-7"}}),
+        ({}, {"contain_account_integrations": True}),
+        ({"agent_env": {"LEG_ID": "leg-7"}}, {"contain_account_integrations": True}),
+    ],
+    ids=["overlay-replaced", "overlay-added", "containment-added", "containment-added-to-overlay"],
+)
+
+
+@_CHANGES
+async def test_run_dag_refuses_a_branch_built_before_a_setting_changed(before, after, monkeypatch):
+    """A branch keeps what it was built with; a setting changed afterwards does not reach it."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    engine = Engine(**before)
+    run = engine.new_run()
+    branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    for name, value in after.items():
+        setattr(engine, name, value)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=branch, instruction="a")
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes") as exc:
+        await run.run_dag(builder.get_graph())
+    assert "leg-7" not in str(exc.value) and "leg-8" not in str(exc.value)
+    assert calls == []
+
+
+async def test_run_dag_refuses_an_overlay_changed_in_place_after_the_branch_was_built(
+    monkeypatch,
+):
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    engine = Engine(agent_env={"LEG_ID": "leg-7"})
+    run = engine.new_run()
+    branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    engine.agent_env["LEG_ID"] = "leg-8"
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=branch, instruction="a")
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_refuses_a_node_whose_branch_left_the_session(settings, monkeypatch):
+    """The flow runs a node whose branch it cannot find on the default branch."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    kept = await run.make_agent("researcher", name="kept", model=_CLI_MODEL)
+    removed = await run.make_agent("researcher", name="removed", model=_CLI_MODEL)
+    run.session.remove_branch(removed)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=kept, instruction="a")
+    builder.add_operation("operate", branch=removed, instruction="b")
+    with pytest.raises(ConfigurationError, match=r"1 of 2 nodes"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_runs_each_node_on_the_branch_it_names(settings, monkeypatch):
+    """Through the real flow: each node runs on the built branch it names, not the
+    session's default branch or a clone of it."""
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+
+    ran: list[str] = []
+
+    async def operate(self, **kwargs):
+        ran.append(str(self.id))
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    run = Engine(**settings).new_run()
+    a = await run.make_agent("researcher", name="a", model=_CLI_MODEL)
+    b = await run.make_agent("researcher", name="b", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    first = builder.add_operation("operate", branch=a, instruction="a")
+    builder.add_operation("operate", branch=b, depends_on=[first], instruction="b")
+    await run.run_dag(builder.get_graph())
+    assert ran == [str(a.id), str(b.id)]
+    assert str(run.session.default_branch.id) not in ran
+
+
+async def test_the_judge_fails_open_on_any_other_configuration_error(monkeypatch):
+    """Only a judge that cannot carry the engine's settings is raised; every other
+    error, a ConfigurationError included, reads as a pass, as it always has."""
+    from lionagi._errors import ConfigurationError
+
+    engine = Engine(agent_env={"LEG_ID": "leg-7"}, judge_model=_CLI_MODEL)
+    run = engine.new_run()
+    events: list[tuple] = []
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
+
+    async def make_agent(*args, **kwargs):
+        raise ConfigurationError("an mcp config this judge cannot use")
+
+    monkeypatch.setattr(run, "make_agent", make_agent)
+    assert await engine.judge(run, "e1", "a subject") is True
+    assert events == [
+        ("judge_error", {"eid": "e1", "error": "an mcp config this judge cannot use"})
+    ]

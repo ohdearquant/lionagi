@@ -339,9 +339,10 @@ class EngineRun:
         # namespace so recall/writeback never crosses runs or projects.
         self.run_id: str = uuid.uuid4().hex[:12]
         self.agents_made: int = 0
-        # Branches make_agent built, the only ones that carry the engine's
-        # agent_env and containment; run_dag refuses any other when either is set.
-        self._agent_branch_ids: set[str] = set()
+        # Each branch make_agent built, with the engine's agent_env and
+        # containment as they were when it was built. With either set, run_dag
+        # runs a node only on such a branch built under the settings now in force.
+        self._agent_branches: dict[str, tuple[dict[str, str] | None, bool]] = {}
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         # Populated at the shared CLI spawn boundary through a run-scoped
@@ -512,7 +513,10 @@ class EngineRun:
         # AgentSpec has no env field, so the overlay goes to create_agent, which
         # hands it to the CLI endpoint it builds: the carrier that reaches the child.
         branch = await create_agent(spec, load_settings=False, agent_env=env)
-        self._agent_branch_ids.add(str(branch.id))
+        self._agent_branches[str(branch.id)] = (
+            dict(self.engine.agent_env) if self.engine.agent_env else None,
+            bool(self.engine.contain_account_integrations),
+        )
         if name:
             branch.name = name
         self.session.include_branches(branch)
@@ -991,10 +995,19 @@ class EngineRun:
         pass does not signal them a second time. Default signals every node.
 
         With the engine's ``agent_env`` or ``contain_account_integrations`` set,
-        every node must name a branch ``make_agent`` built, and ``reactive`` is
-        refused: a node with no branch runs on the session's default branch or a
-        clone of it, and a spawned node may be placed on either, so it would run
-        without the setting. Both raise ``ConfigurationError`` before any node runs.
+        every node must name a branch ``make_agent`` built while the engine's
+        settings were what they are now, and that is still in the session; and
+        ``reactive`` is refused. A node with no branch runs on the session's
+        default branch or a clone of it, a node whose branch was removed runs on
+        the default branch, and a spawned node may be placed on either, so each
+        would run without the setting. Both raise ``ConfigurationError`` before
+        any node runs.
+
+        The settings reach only the branches ``make_agent`` builds. The run's
+        ``session`` used directly (``session.flow``, a branch the caller built) does
+        not carry them, and what a graph's author sets on a node or a branch is
+        kept as written: a node parameter ``contain_account_integrations=False``
+        or a branch built with ``make_agent(env={})`` runs that way.
         """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
 
@@ -1016,17 +1029,31 @@ class EngineRun:
                     "a spawned node may run on a branch make_agent did not build, which "
                     "does not carry the setting."
                 )
+            in_force = (
+                dict(self.engine.agent_env) if self.engine.agent_env else None,
+                bool(self.engine.contain_account_integrations),
+            )
+
+            def _carries(op: Operation) -> bool:
+                if op.branch_id is None:
+                    return False
+                if self._agent_branches.get(str(op.branch_id)) != in_force:
+                    return False
+                # The lookup the flow makes; a branch it cannot find runs on the default.
+                try:
+                    self.session.branches[op.branch_id]
+                except Exception:
+                    return False
+                return True
+
             operations = [n for n in graph.internal_nodes.values() if isinstance(n, Operation)]
-            unbuilt = [
-                op
-                for op in operations
-                if op.branch_id is None or str(op.branch_id) not in self._agent_branch_ids
-            ]
+            unbuilt = [op for op in operations if not _carries(op)]
             if unbuilt:
                 raise ConfigurationError(
                     f"run_dag with {' or '.join(settings)} runs only on branches make_agent "
-                    f"built: {len(unbuilt)} of {len(operations)} nodes name no such branch "
-                    "and would run without the setting."
+                    "built under the settings now in force and still in the session: "
+                    f"{len(unbuilt)} of {len(operations)} nodes name no such branch and would "
+                    "run without the setting."
                 )
 
         async with flow_progress_signals(
@@ -1216,8 +1243,8 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, except a ConfigurationError, which is raised: the judge could not be built as configured, so no verdict exists to read as a pass."""
-        from lionagi._errors import ConfigurationError  # noqa: PLC0415
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, except a judge agent that cannot carry the engine's agent_env or containment, which is raised: no judge ran, so there is no verdict to read as a pass."""
+        from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
         if not self.judge_model:
             return True
@@ -1244,7 +1271,7 @@ class Engine:
             return allow
         except EngineBudgetError:
             return False
-        except ConfigurationError:
+        except _AgentSettingError:
             raise
         except Exception as exc:
             run.notify("judge_error", eid=eid, error=str(exc))

@@ -26,6 +26,7 @@ __all__ = (
     "CREATE_AGENT_BRANCH_ORIGIN_KEY",
     "_chain_pre_hooks",
     "_chain_post_hooks",
+    "_AgentSettingError",
 )
 
 # Durable `branch.metadata` marker: a resumed leg checks this key on the
@@ -34,6 +35,12 @@ __all__ = (
 CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
 
 logger = logging.getLogger(__name__)
+
+
+class _AgentSettingError(ConfigurationError):
+    """The agent being built cannot carry ``agent_env`` or ``contain_account_integrations``."""
+
+    __slots__ = ()
 
 
 async def create_agent(
@@ -112,13 +119,13 @@ async def create_agent(
         from lionagi.providers._cli_subprocess import raise_if_env_is_not_a_string_map
 
         if not isinstance(agent_env, Mapping):
-            raise ConfigurationError(
+            raise _AgentSettingError(
                 f"agent_env must be a mapping of strings to strings, got {type(agent_env).__name__}"
             )
         try:
             raise_if_env_is_not_a_string_map(agent_env)
         except TypeError as exc:
-            raise ConfigurationError(f"agent_env: {exc}") from exc
+            raise _AgentSettingError(f"agent_env: {exc}") from exc
 
         def _spawnable(text: str) -> bool:
             # The spawn encodes each entry with os.fsencode, which refuses a lone
@@ -137,32 +144,32 @@ async def create_agent(
             if not key or "=" in key or not _spawnable(key) or not _spawnable(val)
         ]
         if unusable:
-            raise ConfigurationError(
+            raise _AgentSettingError(
                 "agent_env: a variable needs a non-empty name with no '=', and a name and "
                 "value with no NUL that encode to the filesystem encoding; these entries "
                 f"are not: {', '.join(unusable)}"
             )
         if chat_model is not None:
-            raise ConfigurationError(
+            raise _AgentSettingError(
                 "agent_env cannot be combined with a caller-supplied chat_model: "
                 "the overlay is applied while this factory builds the endpoint. "
                 "Set env on the model you built, or let this factory build it."
             )
         if not spec.model:
-            raise ConfigurationError(
+            raise _AgentSettingError(
                 "agent_env requires spec.model: with no model this factory "
                 "builds no endpoint, so no child process receives the overlay."
             )
 
     if spec.contain_account_integrations and chat_model is not None:
-        raise ConfigurationError(
+        raise _AgentSettingError(
             "spec.contain_account_integrations cannot be combined with a caller-supplied "
             "chat_model: it is applied while this factory builds the endpoint. Set "
             "contain_account_integrations on the codex model you built, or let this "
             "factory build it."
         )
     if spec.contain_account_integrations and chat_model is None and not spec.model:
-        raise ConfigurationError(
+        raise _AgentSettingError(
             "spec.contain_account_integrations requires spec.model: with no model this "
             "factory builds no endpoint, and the model the branch builds by default "
             "is not contained."
@@ -229,7 +236,7 @@ async def create_agent(
         # A CLI endpoint takes env as runtime state; an API endpoint has no
         # child and would leave it unread in its config. Ask the endpoint.
         if agent_env and "env" not in getattr(chat_model.endpoint, "_runtime_state", {}):
-            raise ConfigurationError(
+            raise _AgentSettingError(
                 f"agent_env was not taken by the {type(chat_model.endpoint).__name__} "
                 f"built for model {model_name!r}: this endpoint takes no environment for "
                 "a child process (the codex and claude_code CLI endpoints do)."
@@ -242,7 +249,7 @@ async def create_agent(
             if isinstance(chat_model.endpoint, CodexCLIEndpoint):
                 moved = sorted(k for k in ("CODEX_HOME", "HOME") if agent_env and k in agent_env)
                 if moved:
-                    raise ConfigurationError(
+                    raise _AgentSettingError(
                         f"agent_env cannot set {' or '.join(moved)} for a codex agent: this "
                         "process resolves the codex home for the agent's MCP server profile "
                         "and default reasoning effort, and would read a different one than "
