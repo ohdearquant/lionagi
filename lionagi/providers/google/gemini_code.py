@@ -71,6 +71,11 @@ __all__ = (
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
     "gemini-4-argon": 1_048_576,
+    # Matched as substrings: these cover the `gemini-4` and `argon` aliases and the
+    # "Gemini 4 Argon (...)" display names. `gemini-4` also matches a dotted
+    # "gemini-4.5-flash", which resolves to 3.5 Flash, the same window.
+    "gemini-4": 1_048_576,
+    "argon": 1_048_576,
     "gemini-3.8-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
@@ -117,6 +122,9 @@ _MODEL_ALIASES: dict[str, str] = {
     "gemini-4-argon-low": "Gemini 4 Argon (Low)",
     "gemini-4": "Gemini 4 Argon (High)",
     "argon": "Gemini 4 Argon (High)",
+    "argon-high": "Gemini 4 Argon (High)",
+    "argon-medium": "Gemini 4 Argon (Medium)",
+    "argon-low": "Gemini 4 Argon (Low)",
     # Current default flash family. Google documents Low, Medium, and High
     # thinking levels; the bare id resolves to Medium.
     "gemini-3.8-flash": "Gemini 3.8 Flash (Medium)",
@@ -162,20 +170,28 @@ _MODEL_ALIASES: dict[str, str] = {
 # "gemini-3.60-flash", where a neighbouring digit means it is a different number.
 _GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
 _GEMINI_38_TOKEN = re.compile(r"(?<!\d)3\.8(?!\d)")
-# A delimited major-version 4 token ("gemini-4-argon", "gemini-4"), not the 4 in
-# "gemini-4.5-flash" or "gemini-14-flash".
+# A delimited, undotted major-version 4 token ("gemini-4-argon", "gemini-4-flash").
+# A dotted 4 ("gemini-4.0-flash", "gemini-4.5-flash") is a version this table does
+# not list, and the 4 in "gemini-14-flash" is a different number: both fall back.
 _GEMINI_4_TOKEN = re.compile(r"(?<![\d.])4(?![\d.])")
 
 
 def _gemini_flash_family(key: str) -> str:
-    """The flash-family display prefix for a free-form model key, without
-    treating a version embedded in a different number as a family match."""
-    if "argon" in key or _GEMINI_4_TOKEN.search(key):
+    """The Gemini family display prefix for a free-form model key.
+
+    A name containing ``argon`` is the 4 Argon family. Otherwise a delimited 3.8
+    or 3.6 version picks that Flash family, then a delimited major version 4
+    picks 4 Argon, and anything else falls back to 3.5 Flash. A version embedded
+    in a different number is never a family match.
+    """
+    if "argon" in key:
         return "Gemini 4 Argon"
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
     if _GEMINI_36_TOKEN.search(key):
         return "Gemini 3.6 Flash"
+    if _GEMINI_4_TOKEN.search(key):
+        return "Gemini 4 Argon"
     return "Gemini 3.5 Flash"
 
 
@@ -358,7 +374,7 @@ class GeminiCodeRequest(BaseModel):
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
             "Accepts gemini-4-argon (defaults to the High tier; -low/-medium/-high suffixes), "
-            "Accepts gemini-3.8-flash (defaults to the Medium tier), "
+            "gemini-3.8-flash (defaults to the Medium tier), "
             "gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
             "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "
             "gemini-3-pro-preview), bare family names (flash/pro), or an exact agy "

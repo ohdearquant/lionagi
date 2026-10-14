@@ -4,7 +4,7 @@
 
 Covers argv construction (json output-format, model resolution, resume/yolo
 flags), nonzero-exit error surfacing, endpoint _call session mapping, default
-model gemini-3.8-flash, and the REST-vs-CLI helpful error.
+model gemini-4-argon, and the REST-vs-CLI helpful error.
 """
 
 from __future__ import annotations

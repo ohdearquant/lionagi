@@ -26,6 +26,7 @@ from lionagi.providers.google.gemini_code import (
     resolve_agy_model,
     stream_gemini_cli,
 )
+from lionagi.service.token_budget import lookup_context_window
 
 
 def _make_request(**kw) -> GeminiCodeRequest:
@@ -404,9 +405,20 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
         ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
         ("Gemini 4 Argon (Low)", "Gemini 4 Argon (Low)"),  # exact passthrough
-        # a free-form argon name stays on the 4 family via the token heuristic
+        ("argon", "Gemini 4 Argon (High)"),
+        ("ARGON", "Gemini 4 Argon (High)"),
+        ("argon-low", "Gemini 4 Argon (Low)"),
+        ("argon-medium", "Gemini 4 Argon (Medium)"),
+        ("argon-high", "Gemini 4 Argon (High)"),
+        # a free-form name with argon in it is on the 4 family by its name
         ("gemini-4-argon-preview", "Gemini 4 Argon (Medium)"),
-        # 4.5 / 14 are not major version 4
+        ("gemini-argon-high", "Gemini 4 Argon (High)"),
+        # an undotted major version 4 is the 4 family, unless 3.8 or 3.6 is named
+        ("gemini-4-flash", "Gemini 4 Argon (Medium)"),
+        ("gemini-3.8-flash-4", "Gemini 3.8 Flash (Medium)"),
+        # 4.0 / 4.5 / 14 are not major version 4
+        ("gemini-4.0-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.5-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-14-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
@@ -467,6 +479,16 @@ def test_resolve_agy_model(spec, expected):
         ("gemini-3.6-flash", "high", "Gemini 3.6 Flash (High)"),
         ("gemini-3.6-flash", "xhigh", "Gemini 3.6 Flash (High)"),
         ("gemini-3.6-flash", None, "Gemini 3.6 Flash (High)"),
+        # Gemini 4 Argon: effort folds onto its three tiers, whatever tier the
+        # id or alias carried.
+        ("gemini-4-argon", "minimal", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon", "medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-argon", "max", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-high", "low", "Gemini 4 Argon (Low)"),
+        ("argon", "medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4", "xhigh", "Gemini 4 Argon (High)"),
+        ("gemini-argon-preview", "low", "Gemini 4 Argon (Low)"),
+        ("Gemini 4 Argon (Low)", "high", "Gemini 4 Argon (Low)"),
     ],
 )
 def test_resolve_agy_model_effort_folding(spec, effort, expected):
@@ -504,6 +526,14 @@ def test_resolve_agy_model_4_argon_is_the_default_and_stays_on_family():
         assert not resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
 
 
+@pytest.mark.parametrize(
+    "spec",
+    ["gemini-4-argon", "gemini-4", "argon", "Gemini 4 Argon (High)", "Gemini 4 Argon (Low)"],
+)
+def test_an_argon_name_has_the_argon_context_window(spec):
+    assert lookup_context_window(spec, "gemini_code") == 1_048_576
+
+
 def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
     assert resolve_agy_model("flash") == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("gemini-3.8-flash") == "Gemini 3.8 Flash (Medium)"
@@ -529,6 +559,8 @@ def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
         # reapply on a persisted 3.6 model stays on the 3.6 family.
         ("Gemini 3.6 Flash (Low)", "high", "Gemini 3.6 Flash (High)"),
         ("Gemini 3.6 Flash (High)", "low", "Gemini 3.6 Flash (Low)"),
+        ("Gemini 4 Argon (High)", "low", "Gemini 4 Argon (Low)"),
+        ("Gemini 4 Argon (Low)", "max", "Gemini 4 Argon (High)"),
     ],
 )
 def test_resolve_agy_model_reapply_effort_overrides_persisted_suffix(spec, effort, expected):
