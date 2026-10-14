@@ -159,10 +159,25 @@ async def test_a_structured_function_call_output_over_the_bound_is_cut_as_its_js
 
 
 @pytest.mark.asyncio
-async def test_long_function_call_arguments_are_cut_where_they_are_echoed():
-    arguments = '{"query": "' + "q" * 1_000_000 + '"}'
+async def test_long_json_arguments_are_bounded_and_still_parse():
+    arguments = '{"query": "' + "q" * 1_000_000 + '", "limit": 5}'
 
     chunks, uses, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    decoded = json.loads(echoed)
+    assert decoded["limit"] == 5
+    assert _parts(decoded["query"])[2] == 1_000_000
+    assert uses[0]["input"] == echoed
+
+
+@pytest.mark.asyncio
+async def test_long_arguments_that_are_not_json_are_cut_as_text():
+    arguments = "q" * 1_000_000
+
+    chunks, _, _ = await _run(
         {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
     )
 
@@ -170,7 +185,6 @@ async def test_long_function_call_arguments_are_cut_where_they_are_echoed():
     head, omitted, total, _ = _parts(echoed)
     assert head == arguments[:HALF]
     assert (omitted, total) == (len(arguments) - 2 * HALF, len(arguments))
-    assert uses[0]["input"] == echoed
 
 
 @pytest.mark.asyncio

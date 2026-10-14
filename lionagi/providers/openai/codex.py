@@ -856,6 +856,24 @@ def _bounded_leaves(value: Any) -> Any:
     return {key: _bounded_leaves(item) for key, item in value.items()}
 
 
+def _bounded_arguments(arguments: Any) -> Any:
+    """A function call's arguments as echoed for the call's input, bounded so they still
+    parse: JSON text naming an object or an array is decoded, has each string in it bounded,
+    and is encoded again; a mapping or a list keeps its shape the same way; any other text is
+    cut as a result is."""
+    if not isinstance(arguments, str):
+        return _bounded_leaves(arguments)
+    if len(arguments) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+        return arguments
+    try:
+        decoded = json.loads(arguments)
+    except ValueError:
+        return _bounded_tool_output(arguments)
+    if not isinstance(decoded, (dict, list)):
+        return _bounded_tool_output(arguments)
+    return json.dumps(_bounded_leaves(decoded), ensure_ascii=False)
+
+
 def _bounded_changes(changes: Any) -> Any:
     """A file change's ``changes`` as echoed for the call's input. A list over the bound
     keeps, in order, the entries that fit within it whole and ends with one entry naming how
@@ -976,7 +994,7 @@ async def stream_codex_cli(
                     tu = {
                         "id": item.get("id", item.get("call_id", "")),
                         "name": item.get("name", item.get("function", "")),
-                        "input": _bounded_leaves(
+                        "input": _bounded_arguments(
                             item.get(
                                 "arguments",
                                 item.get("input", item.get("args", {})),
