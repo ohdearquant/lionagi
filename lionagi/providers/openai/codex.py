@@ -777,10 +777,11 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
 
 #: The most of one tool result this provider keeps, and of a command, a file change or a
 #: function call's arguments it echoes as the call's input, in characters. No Codex thread is
-#: resumed here: each turn renders the branch's history, tool calls and results included,
-#: into its prompt, so one broad search recorded whole could fill a later prompt on its own.
-#: The bound is per record and on the recorded text: a turn with many results still renders
-#: all of them, and the rendering can be longer than the text it renders.
+#: resumed here: each turn renders the branch's history into its prompt, and the tool calls
+#: and results recorded here can be part of it, so one broad search recorded whole could fill
+#: a later prompt on its own. The bound is per record and on the recorded text: a turn with
+#: many results still renders all of them, and the rendering can be longer than the text it
+#: renders.
 CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
 
 #: How far a cut moves to keep a character with its marks before it gives up and cuts where
@@ -790,7 +791,8 @@ _CUT_BACKOFF_CHARS = 32
 
 def _continues_previous(text: str, i: int) -> bool:
     """Whether the character at ``i`` belongs with the one before it: a combining mark, a
-    joiner or a variation selector, a skin-tone modifier, or anything after a joiner."""
+    zero-width joiner, the text or emoji variation selector (U+FE0E, U+FE0F), a skin-tone
+    modifier, or anything after a joiner."""
     ch = text[i]
     return (
         unicodedata.combining(ch) != 0
@@ -805,10 +807,12 @@ def _bounded_tool_output(output: Any) -> Any:
     reading it on the next turn knows the result is partial and can narrow the command.
 
     A result that is not text is measured as its JSON text and, when that is over the
-    bound, replaced by the cut JSON text. Neither cut separates a combining mark (a
-    nonzero combining class), a zero-width joiner, a text or emoji variation selector, a
-    skin-tone modifier, or the character after a joiner from the character before it; other
-    clusters (spacing marks, Hangul jamo, tag sequences, flag pairs) can still be split.
+    bound, replaced by the cut JSON text. Each cut moves up to ``_CUT_BACKOFF_CHARS``
+    characters so as not to separate a combining mark (a nonzero combining class), a
+    zero-width joiner, the text or emoji variation selector, a skin-tone modifier, or the
+    character after a joiner from the character before it, and cuts where the bound falls
+    when the run is longer than that. Other clusters (spacing marks, Hangul jamo, tag
+    sequences, flag pairs) can be split.
 
     The cut text is what the caller, the callbacks and the branch's record receive. The
     chunk's ``metadata`` still holds the CLI's whole event: it is not written to a run's
@@ -841,37 +845,57 @@ def _bounded_tool_output(output: Any) -> Any:
     )
 
 
+def _json_length(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str))
+
+
 def _bounded_leaves(value: Any) -> Any:
-    """``value`` with each string in it bounded as a result is, keeping its shape, so a
-    reader that expects a mapping or a list still gets one. A value within the bound as a
-    whole is returned as it came."""
+    """``value`` with each string value in it bounded as a result is, keeping its shape, so
+    a reader that expects a mapping or a list still gets one. A list still over the bound
+    keeps its first item and, in order, the items after it that fit within the bound, and
+    ends with a string naming how many were left out. A mapping keeps every key, and keys are
+    not cut, so a mapping with very many keys can stay over the bound. A value within the
+    bound as a whole is returned as it came."""
     if isinstance(value, str):
         return _bounded_tool_output(value)
     if not isinstance(value, (dict, list)):
         return value
-    if len(json.dumps(value, ensure_ascii=False, default=str)) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+    if _json_length(value) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
         return value
-    if isinstance(value, list):
-        return [_bounded_leaves(item) for item in value]
-    return {key: _bounded_leaves(item) for key, item in value.items()}
+    if isinstance(value, dict):
+        return {key: _bounded_leaves(item) for key, item in value.items()}
+    kept: list[Any] = []
+    used = 2  # the brackets
+    for item in value:
+        item = _bounded_leaves(item)
+        size = _json_length(item) + 2  # and a separator
+        if kept and used + size > CODEX_TOOL_OUTPUT_MAX_CHARS:
+            break
+        kept.append(item)
+        used += size
+    if len(kept) < len(value):
+        kept.append(f"[{len(value) - len(kept):,} of {len(value):,} items not shown]")
+    return kept
 
 
 def _bounded_arguments(arguments: Any) -> Any:
-    """A function call's arguments as echoed for the call's input, bounded so they still
-    parse: JSON text naming an object or an array is decoded, has each string in it bounded,
-    and is encoded again; a mapping or a list keeps its shape the same way; any other text is
-    cut as a result is."""
+    """A function call's arguments as echoed for the call's input, bounded as
+    ``_bounded_leaves`` bounds a value. JSON text naming an object or an array is decoded,
+    bounded and encoded again, so it still parses and names the same values, though its
+    spelling can differ (escapes, numbers, a repeated key keeps its last value); a mapping
+    or a list is bounded the same way; any other text, and JSON nested too deep to decode,
+    is cut as a result is."""
     if not isinstance(arguments, str):
         return _bounded_leaves(arguments)
     if len(arguments) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
         return arguments
     try:
         decoded = json.loads(arguments)
-    except ValueError:
-        return _bounded_tool_output(arguments)
-    if not isinstance(decoded, (dict, list)):
-        return _bounded_tool_output(arguments)
-    return json.dumps(_bounded_leaves(decoded), ensure_ascii=False)
+        if isinstance(decoded, (dict, list)):
+            return json.dumps(_bounded_leaves(decoded), ensure_ascii=False)
+    except (ValueError, RecursionError):
+        pass
+    return _bounded_tool_output(arguments)
 
 
 def _bounded_changes(changes: Any) -> Any:
@@ -1274,7 +1298,9 @@ async def stream_codex_cli(
                             tu = {
                                 "id": blk.get("id", ""),
                                 "name": blk.get("name", blk.get("function", {}).get("name", "")),
-                                "input": blk.get("input", blk.get("arguments", {})),
+                                "input": _bounded_arguments(
+                                    blk.get("input", blk.get("arguments", {}))
+                                ),
                             }
                             session.tool_uses.append(tu)
                             if on_tool_use:

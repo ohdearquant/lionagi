@@ -202,6 +202,72 @@ async def test_structured_function_call_arguments_keep_their_shape_when_cut():
 
 
 @pytest.mark.asyncio
+async def test_a_long_list_of_short_arguments_keeps_the_items_that_fit_and_says_how_many_were_left_out():
+    arguments = {"ids": list(range(200_000)), "limit": 5}
+
+    chunks, uses, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "fetch", "arguments": json.dumps(arguments)}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    decoded = json.loads(echoed)
+    assert len(echoed) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 100
+    assert decoded["limit"] == 5
+    *kept, note = decoded["ids"]
+    assert kept == list(range(len(kept)))
+    assert note == f"[{200_000 - len(kept):,} of 200,000 items not shown]"
+    assert uses[0]["input"] == echoed
+
+
+@pytest.mark.asyncio
+async def test_a_list_keeps_its_first_item_cut_when_that_item_alone_is_over_the_bound():
+    arguments = {"queries": ["q" * 1_000_000, "r" * 1_000_000]}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    first, note = next(c for c in chunks if c.type == "tool_use").tool_input["queries"]
+    assert _parts(first)[2] == 1_000_000
+    assert note == "[1 of 2 items not shown]"
+
+
+@pytest.mark.asyncio
+async def test_json_arguments_nested_too_deep_to_decode_are_cut_as_text():
+    arguments = "[" * 5_000 + '"' + "q" * 30_000 + '"' + "]" * 5_000
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "search", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    head, omitted, total, _ = _parts(echoed)
+    assert head == arguments[:HALF]
+    assert total == len(arguments)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_use_block_in_a_message_echoes_its_input_bounded():
+    request = CodexCodeRequest(prompt="test", verbose_output=False)
+    block = {
+        "type": "tool_use",
+        "id": "tu-1",
+        "name": "search",
+        "input": {"query": "q" * 1_000_000},
+    }
+    uses: list[dict] = []
+    chunks: list[StreamChunk] = []
+    with _fake_events([{"type": "message", "content": [block]}]):
+        async for out in stream_codex_cli(request, on_tool_use=uses.append):
+            if isinstance(out, StreamChunk) and out.type == "tool_use":
+                chunks.append(out)
+
+    echoed = chunks[0].tool_input
+    assert _parts(echoed["query"])[2] == 1_000_000
+    assert uses[0]["input"] == echoed
+
+
+@pytest.mark.asyncio
 async def test_function_call_arguments_within_the_bound_are_left_as_they_came():
     arguments = {"query": "q" * 100, "limit": 5}
 
