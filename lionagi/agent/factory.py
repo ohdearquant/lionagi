@@ -65,6 +65,11 @@ async def create_agent(
     case where the overlay could not reach a child raises instead of
     dropping it: a caller-supplied ``chat_model``, no ``spec.model``, or a
     provider that spawns no child process.
+
+    ``spec.contain_account_integrations`` turns a codex agent's account
+    ``apps`` and ``plugins`` features off. It is applied while this factory
+    builds the endpoint, so a caller-supplied ``chat_model`` with it set
+    raises rather than running uncontained.
     """
     spec = config
 
@@ -108,6 +113,14 @@ async def create_agent(
                 "builds no endpoint, so no child process receives the overlay."
             )
 
+    if spec.contain_account_integrations and chat_model is not None:
+        raise ConfigurationError(
+            "spec.contain_account_integrations cannot be combined with a caller-supplied "
+            "chat_model: it is applied while this factory builds the endpoint. Set "
+            "contain_account_integrations on the codex model you built, or let this "
+            "factory build it."
+        )
+
     branch_kwargs = {}
 
     if chat_model is not None:
@@ -145,6 +158,11 @@ async def create_agent(
                 extra[kwarg] = effort
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+        # Codex attaches the signed-in account's app connectors and plugins
+        # whatever MCP servers the request carries, and a connector acts as
+        # the account. No other provider's request has such a switch.
+        if spec.contain_account_integrations and provider == "codex":
+            extra["contain_account_integrations"] = True
 
         # CLI providers auth via subprocess, so a placeholder api_key is fine;
         # API providers need their real key or auth silently breaks.

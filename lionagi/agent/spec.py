@@ -78,6 +78,9 @@ class AgentSpec(HooksMixin):
     mcp_config_path: str | None = None
     context_management: bool = True
     khive_injection: Any = None
+    # Codex only: turn the signed-in account's apps and plugins off for this
+    # agent. Other providers' requests attach no account integrations.
+    contain_account_integrations: bool = False
 
     @classmethod
     def compose(
@@ -96,6 +99,7 @@ class AgentSpec(HooksMixin):
         cwd: str | None = None,
         yolo: bool = False,
         khive_injection: Any = None,
+        contain_account_integrations: bool = False,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
         prof = Profile.compose(role, modes=modes)
@@ -113,6 +117,7 @@ class AgentSpec(HooksMixin):
             cwd=cwd,
             yolo=yolo,
             khive_injection=khive_injection,
+            contain_account_integrations=contain_account_integrations,
         )
 
     @classmethod
@@ -164,6 +169,7 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
+            contain_account_integrations=bool(data.get("contain_account_integrations", False)),
         )
         # compose() defaults lion_system to True, so a saved False must be
         # restored explicitly or it would be silently dropped.
@@ -210,6 +216,8 @@ class AgentSpec(HooksMixin):
         }
         if self.cwd:
             data["cwd"] = self.cwd
+        if self.contain_account_integrations:
+            data["contain_account_integrations"] = True
         if isinstance(self.khive_injection, (bool, dict)):
             data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:

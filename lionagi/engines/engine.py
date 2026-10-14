@@ -495,6 +495,7 @@ class EngineRun:
             # permission, so a leg spawned without this is denied every tool
             # call and reports success with nothing in it.
             yolo=self.engine.yolo,
+            contain_account_integrations=self.engine.contain_account_integrations,
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -1107,6 +1108,7 @@ class Engine:
         agent_env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
         yolo: bool = False,
+        contain_account_integrations: bool = False,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
@@ -1136,6 +1138,12 @@ class Engine:
         # table is unreachable on this path, and a CLI that cannot prompt for a
         # permission has no way to be granted one.
         self.yolo = yolo
+        # Turn the signed-in account's apps and plugins off for every codex
+        # agent this engine spawns. Codex attaches them from the account,
+        # whatever MCP servers a request carries, and a connector acts as the
+        # account. Default False keeps the agent's request as the account and
+        # config set it.
+        self.contain_account_integrations = contain_account_integrations
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,
         # None defers to each stage role's agent profile).
