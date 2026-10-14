@@ -1129,6 +1129,12 @@ class Engine:
         # A caller running several engines concurrently in one process cannot
         # give each its own value through os.environ, which every run shares;
         # this field is the per-engine carrier.
+        if agent_env is not None and not isinstance(agent_env, Mapping):
+            from lionagi._errors import ConfigurationError
+
+            raise ConfigurationError(
+                f"agent_env must be a mapping of strings to strings, got {type(agent_env).__name__}"
+            )
         self.agent_env = dict(agent_env) if agent_env else None
         # Auto-approve tool permission requests for every agent this engine
         # spawns, applied per provider from the same table the CLI and profile

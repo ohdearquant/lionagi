@@ -61,15 +61,25 @@ async def create_agent(
     ``agent_env`` is an environment overlay for the spawned CLI child. It is
     merged over ``os.environ`` here, because the CLI request hands its env to
     the child as the complete environment: a bare overlay would strip PATH,
-    which shows up as a broken toolchain rather than a missing setting. Every
-    case where the overlay could not reach a child raises instead of
-    dropping it: a caller-supplied ``chat_model``, no ``spec.model``, or a
-    provider that spawns no child process.
+    which shows up as a broken toolchain rather than a missing setting.
+    ``os.environ`` is read once, now, so a later change to this process's
+    environment does not reach the agent. Every case where the overlay could
+    not reach a child raises instead of dropping it: a caller-supplied
+    ``chat_model``, no ``spec.model``, or an endpoint that takes no
+    environment. A codex agent's overlay may not set ``CODEX_HOME`` or
+    ``HOME``: this process resolves the codex home for the agent's MCP server
+    profile and default reasoning effort, and would read a different one than
+    the child. The overlay is runtime state and is not serialized, so a model
+    restored with ``iModel.from_dict`` spawns its child with this process's
+    environment; an agent rebuilt with ``create_agent`` gets the overlay only
+    when ``agent_env`` is passed again.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
-    ``apps`` and ``plugins`` features off. It is applied while this factory
-    builds the endpoint, so a caller-supplied ``chat_model`` with it set
-    raises rather than running uncontained.
+    ``apps`` and ``plugins`` features off. It is applied to the endpoint this
+    factory builds, whatever spelling of the provider built it, so a
+    caller-supplied ``chat_model`` or a missing ``spec.model`` (which leaves the
+    branch to build its default model) with it set raises rather than running
+    uncontained.
     """
     spec = config
 
@@ -101,6 +111,16 @@ async def create_agent(
             raise_if_env_is_not_a_string_map(agent_env)
         except TypeError as exc:
             raise ConfigurationError(f"agent_env: {exc}") from exc
+        unusable = [
+            f"entry {index}"
+            for index, (key, val) in enumerate(agent_env.items())
+            if not key or "=" in key or "\0" in key or "\0" in val
+        ]
+        if unusable:
+            raise ConfigurationError(
+                "agent_env: a variable needs a non-empty name with no '=' or NUL "
+                f"and a value with no NUL; these entries are not: {', '.join(unusable)}"
+            )
         if chat_model is not None:
             raise ConfigurationError(
                 "agent_env cannot be combined with a caller-supplied chat_model: "
@@ -119,6 +139,12 @@ async def create_agent(
             "chat_model: it is applied while this factory builds the endpoint. Set "
             "contain_account_integrations on the codex model you built, or let this "
             "factory build it."
+        )
+    if spec.contain_account_integrations and chat_model is None and not spec.model:
+        raise ConfigurationError(
+            "spec.contain_account_integrations requires spec.model: with no model this "
+            "factory builds no endpoint, and the model the branch builds by default "
+            "is not contained."
         )
 
     branch_kwargs = {}
@@ -158,11 +184,6 @@ async def create_agent(
                 extra[kwarg] = effort
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
-        # Codex attaches the signed-in account's app connectors and plugins
-        # whatever MCP servers the request carries, and a connector acts as
-        # the account. No other provider's request has such a switch.
-        if spec.contain_account_integrations and provider == "codex":
-            extra["contain_account_integrations"] = True
 
         # CLI providers auth via subprocess, so a placeholder api_key is fine;
         # API providers need their real key or auth silently breaks.
@@ -189,9 +210,29 @@ async def create_agent(
         if agent_env and "env" not in getattr(chat_model.endpoint, "_runtime_state", {}):
             raise ConfigurationError(
                 f"agent_env was not taken by the {type(chat_model.endpoint).__name__} "
-                f"built for model {model_name!r}: only a CLI endpoint spawns a child "
-                "process to carry an environment."
+                f"built for model {model_name!r}: this endpoint takes no environment for "
+                "a child process (the codex and claude_code CLI endpoints do)."
             )
+        if spec.contain_account_integrations or agent_env:
+            from lionagi.providers.openai.codex import CodexCLIEndpoint
+
+            # Decided by the endpoint that was built, so an alias or another case of
+            # the provider name ("openai-codex", "Codex") is treated as codex.
+            if isinstance(chat_model.endpoint, CodexCLIEndpoint):
+                moved = sorted(k for k in ("CODEX_HOME", "HOME") if agent_env and k in agent_env)
+                if moved:
+                    raise ConfigurationError(
+                        f"agent_env cannot set {' or '.join(moved)} for a codex agent: this "
+                        "process resolves the codex home for the agent's MCP server profile "
+                        "and default reasoning effort, and would read a different one than "
+                        "the child."
+                    )
+                # Codex attaches the signed-in account's app connectors and plugins
+                # whatever MCP servers the request carries, and a connector acts as
+                # the account. Kept in the endpoint's config, so a restored model
+                # stays contained.
+                if spec.contain_account_integrations:
+                    chat_model.endpoint.config.kwargs["contain_account_integrations"] = True
         branch_kwargs["chat_model"] = chat_model
 
     if log_config is not None:

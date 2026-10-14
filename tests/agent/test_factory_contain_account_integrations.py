@@ -43,6 +43,39 @@ async def test_a_contained_codex_agent_turns_apps_and_plugins_off():
     ]
 
 
+@pytest.mark.parametrize("model", ["openai-codex/gpt-5.5", "Codex/gpt-5.5", "CODEX/gpt-5.5"])
+async def test_every_spelling_of_codex_is_contained(model):
+    branch = await _branch(model, contain_account_integrations=True)
+    assert _features_switched(_argv(branch.chat_model)) == [
+        ("--disable", "apps"),
+        ("--disable", "plugins"),
+    ]
+
+
+async def test_a_codex_model_named_without_a_provider_is_contained(monkeypatch):
+    """A model with no provider prefix takes the configured chat provider."""
+    from lionagi import config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "settings",
+        config_mod.settings.model_copy(update={"LIONAGI_CHAT_PROVIDER": "codex"}),
+    )
+    branch = await _branch("gpt-5.5", contain_account_integrations=True)
+    assert _features_switched(_argv(branch.chat_model)) == [
+        ("--disable", "apps"),
+        ("--disable", "plugins"),
+    ]
+
+
+async def test_containment_without_a_spec_model_raises():
+    """With no model the branch builds its default one, which would run uncontained."""
+    spec = AgentSpec.compose("reviewer", contain_account_integrations=True)
+    spec.model = None
+    with pytest.raises(ConfigurationError, match="requires spec.model"):
+        await create_agent(spec, load_settings=False)
+
+
 async def test_an_uncontained_codex_agent_leaves_them_as_the_account_sets_them():
     """Control: the default argv names neither feature."""
     branch = await _branch("codex/gpt-5.5")
@@ -79,6 +112,15 @@ def test_the_setting_round_trips_through_yaml(tmp_path):
     path = tmp_path / "spec.yaml"
     AgentSpec.compose("reviewer", contain_account_integrations=True).to_yaml(path)
     assert AgentSpec.from_yaml(path).contain_account_integrations is True
+
+
+def test_a_setting_that_is_not_a_boolean_is_refused_from_yaml(tmp_path):
+    """bool("false") is True, so a quoted value is refused rather than read as set."""
+    path = tmp_path / "spec.yaml"
+    AgentSpec.compose("reviewer").to_yaml(path)
+    path.write_text(path.read_text() + 'contain_account_integrations: "false"\n')
+    with pytest.raises(ValueError, match="true or false"):
+        AgentSpec.from_yaml(path)
 
 
 def test_an_unset_setting_is_not_written_to_yaml(tmp_path):

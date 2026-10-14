@@ -158,6 +158,12 @@ class AgentSpec(HooksMixin):
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        contain = data.get("contain_account_integrations", False)
+        if not isinstance(contain, bool):
+            # bool("false") is True; a quoted value is a mistake to report, not to read.
+            raise ValueError(
+                f"contain_account_integrations must be true or false, got {type(contain).__name__}"
+            )
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
@@ -169,7 +175,7 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
-            contain_account_integrations=bool(data.get("contain_account_integrations", False)),
+            contain_account_integrations=contain,
         )
         # compose() defaults lion_system to True, so a saved False must be
         # restored explicitly or it would be silently dropped.

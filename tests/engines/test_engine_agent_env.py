@@ -55,6 +55,13 @@ async def test_no_agent_env_leaves_the_child_inheriting():
     assert "env" not in branch.chat_model.endpoint._runtime_state
 
 
+async def test_an_engine_agent_env_that_is_not_a_mapping_raises():
+    from lionagi._errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="mapping"):
+        Engine(agent_env=[("LEG_ID", "leg-7")])
+
+
 async def test_engine_agent_env_is_copied_not_aliased():
     """A caller's mapping changed after construction does not change later agents."""
     supplied = {"LEG_ID": "leg-7"}

@@ -46,8 +46,8 @@ async def test_agent_env_merges_over_os_environ():
 
 async def test_agent_env_wins_over_an_inherited_value_of_the_same_name(monkeypatch):
     monkeypatch.setenv("CARGO_TARGET_DIR", "/inherited/target")
-    env = await _request_env(agent_env={"CARGO_TARGET_DIR": "/per/round/target"})
-    assert env["CARGO_TARGET_DIR"] == "/per/round/target"
+    env = await _request_env(agent_env={"CARGO_TARGET_DIR": "/agent/target"})
+    assert env["CARGO_TARGET_DIR"] == "/agent/target"
 
 
 async def test_no_agent_env_leaves_the_child_inheriting():
@@ -92,7 +92,7 @@ async def test_agent_env_on_a_provider_with_no_child_process_raises(model):
     """An API provider spawns nothing, so the overlay would sit unread in a
     serializable config field."""
     config = AgentSpec.compose("reviewer", model=model)
-    with pytest.raises(ConfigurationError, match="CLI endpoint"):
+    with pytest.raises(ConfigurationError, match="takes no environment"):
         await create_agent(config, load_settings=False, agent_env={"LEG_ID": "leg-7"})
 
 
@@ -127,6 +127,55 @@ async def test_agent_env_rejects_non_string_entries_at_construction(bad_env, nam
     assert named in message
     if hidden is not None:
         assert hidden not in message
+
+
+@pytest.mark.parametrize(
+    "bad_env,hidden",
+    [
+        ({"": "leg-7"}, None),
+        ({"TOKEN=sk-not-a-key": "leg-7"}, "sk-not-a-key"),
+        ({"LEG\0ID": "leg-7"}, None),
+        ({"LEG_ID": "leg\0-7"}, "leg"),
+    ],
+    ids=["empty-name", "equals-in-name", "nul-in-name", "nul-in-value"],
+)
+async def test_agent_env_rejects_entries_no_environment_can_hold(bad_env, hidden):
+    """A name with '=' splits where the child reads it, and a NUL fails the spawn.
+    The entry is named by position: a name written as NAME=value carries the value."""
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    with pytest.raises(ConfigurationError, match="entry 1") as exc:
+        await create_agent(config, load_settings=False, agent_env={"OK": "1", **bad_env})
+    message = str(exc.value)
+    assert "entry 0" not in message
+    if hidden is not None:
+        assert hidden not in message
+
+
+@pytest.mark.parametrize("key", ["CODEX_HOME", "HOME"])
+@pytest.mark.parametrize("model", ["codex/gpt-5.5", "openai-codex/gpt-5.5"])
+async def test_a_codex_agent_env_may_not_move_the_codex_home(key, model):
+    """This process writes the MCP server profile and reads the default effort from
+    the codex home; a child reading another home would miss both."""
+    config = AgentSpec.compose("reviewer", model=model)
+    with pytest.raises(ConfigurationError, match=key):
+        await create_agent(config, load_settings=False, agent_env={key: "/elsewhere"})
+
+
+async def test_a_claude_code_agent_env_may_set_home():
+    """Control: the codex home check is about codex, not every carrier."""
+    config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
+    branch = await create_agent(config, load_settings=False, agent_env={"HOME": "/elsewhere"})
+    assert reveal_redacted(branch.chat_model.endpoint._runtime_state["env"])["HOME"] == "/elsewhere"
+
+
+async def test_a_restored_model_spawns_with_this_processs_environment():
+    """The overlay is runtime state and is not serialized: a restored model's
+    child inherits this process's environment unless the overlay is passed again."""
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    branch = await create_agent(config, load_settings=False, agent_env={"LEG_ID": "leg-7"})
+    restored = iModel.from_dict(branch.chat_model.to_dict())
+    payload, _ = restored.endpoint.create_payload({"prompt": "hi"})
+    assert reveal_redacted(payload["request"].env) is None
 
 
 async def test_agent_env_that_is_not_a_mapping_raises():
