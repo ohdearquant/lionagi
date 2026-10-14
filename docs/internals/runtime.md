@@ -968,9 +968,10 @@ Two rejections stay explicit because the redaction cannot reach them:
   validator rejects it itself rather than leaving it for pydantic to quote.
 - A mapping with bad entries is rejected as `TypeError`, not `ValueError`: pydantic converts
   `ValueError` and `AssertionError` into a `ValidationError` that quotes the rejected input and
-  lets everything else propagate untouched. The message names string keys, because a string key
-  is a variable *name* and naming it is what makes the error actionable; a key of any other type
-  is not a name and is reported by position and type only. Values are never printed.
+  lets everything else propagate untouched. The message prints nothing from the mapping: each bad
+  entry is reported by its position and the type that is wrong. A key can carry a credential as
+  easily as a value (a token pasted where a name belongs, `NAME=value` written as a name), and no
+  test of a key's shape tells the two apart.
 
 `_runtime_state_fields` on the endpoint does two jobs for those fields, and both are about a
 value that must stay in memory:
