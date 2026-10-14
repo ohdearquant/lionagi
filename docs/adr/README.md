@@ -221,6 +221,8 @@ its area block.
   progression membership and online cutover (sequential number; see Numbering)
 - [ADR-0118](ADR-0118-declared-entity-schema-as-single-authority.md) — Declared entity schema as
   the single authority for state and studio persistence (sequential number; see Numbering)
+- [ADR-0128](ADR-0128-writing-run-state-into-a-store-another-schema-lineage-manages.md) — Writing
+  run state into a store another schema lineage manages (sequential number; see Numbering)
 
 ### cli-surface (0062-0067)
 

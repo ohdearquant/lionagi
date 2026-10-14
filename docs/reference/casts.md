@@ -23,3 +23,15 @@ A `Mode` may declare `conflicts_with: frozenset[str]`. `Profile.__post_init__` r
 ## Pack overlay precedence
 
 A `Pack` overlays per-role `RolePolicy` (authority, boundaries, escalations) and `RoleConfig` (model, effort, modes_allow, active). The built-in `default.yaml` ships with lionagi; pass a custom `Pack` to the orchestrator to override or extend it. Pack fields do not affect the prompt body.
+
+If an agent profile has the same name as a packed cast role, the worker is an
+explicit composition rather than an implicit replacement. Model precedence is
+worker override, pack, profile, then the role name when a profile has no model;
+without a profile, the orchestration default applies when no worker override
+or pack model is present. Effort precedence is orchestration override, profile,
+then pack. Modes come from a task override when supplied. The pack restricts
+that override only when `modes_allow` is non-empty; without an override, pack
+defaults apply. An authored profile body wins
+the prompt unless the worker supplies a prompt override. The CLI emits this
+setting-by-setting provenance once for each distinct collision in a run, so a
+pack/profile composition cannot silently change a worker.

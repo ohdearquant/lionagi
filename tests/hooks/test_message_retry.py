@@ -302,3 +302,106 @@ async def test_a_recovery_between_teardowns_does_not_swallow_a_later_loss(caplog
     assert len(losses) == 2, (
         "the second loss has the same count as the first and is still a different loss"
     )
+
+
+def _writer_lock_refused() -> Exception:
+    """What a contended store raises through SQLAlchemy when BEGIN IMMEDIATE times out."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("BEGIN IMMEDIATE", {}, sqlite3.OperationalError("database is locked"))
+
+
+class _FailingDB:
+    def __init__(self, make_error) -> None:
+        self.make_error = make_error
+
+    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+        raise self.make_error()
+
+
+async def _warnings_until_deferred(db, caplog) -> list[logging.LogRecord]:
+    queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")
+    with caplog.at_level(logging.WARNING, logger="test"):
+        for i in range(3):
+            await queue.submit(_event(f"m{i}"))
+    warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert ["ordered retry" in rec.getMessage() for rec in warnings] == [True, False]
+    assert "deferred" in warnings[1].getMessage()
+    return warnings
+
+
+async def test_a_refused_writer_lock_is_one_warning_line_without_a_traceback(caplog):
+    """SQLAlchemy's text for a lock refusal spans lines, and its traceback ran ~120 more."""
+    warnings = await _warnings_until_deferred(_FailingDB(_writer_lock_refused), caplog)
+
+    for rec in warnings:
+        assert rec.exc_info is None
+        assert "\n" not in rec.getMessage()
+        assert "OperationalError('database is locked')" in rec.getMessage()
+
+
+async def test_any_other_write_failure_keeps_its_traceback(caplog):
+    warnings = await _warnings_until_deferred(
+        _FailingDB(lambda: RuntimeError("disk I/O error")), caplog
+    )
+
+    for rec in warnings:
+        assert rec.exc_info is not None and isinstance(rec.exc_info[1], RuntimeError)
+        assert "disk I/O error" in rec.getMessage()
+
+
+def _raised_while_handling_a_lock_refusal() -> Exception:
+    import sqlite3
+
+    try:
+        raise sqlite3.OperationalError("database is locked")
+    except sqlite3.OperationalError:
+        try:
+            raise RuntimeError("rollback failed")
+        except RuntimeError as exc:
+            return exc
+
+
+async def test_a_failure_raised_while_handling_a_lock_refusal_keeps_its_traceback(caplog):
+    """The refusal is only this error's context; the error itself is a different failure."""
+    warnings = await _warnings_until_deferred(
+        _FailingDB(_raised_while_handling_a_lock_refusal), caplog
+    )
+
+    for rec in warnings:
+        assert rec.exc_info is not None and isinstance(rec.exc_info[1], RuntimeError)
+        assert "rollback failed" in rec.getMessage()
+
+
+async def test_a_failure_that_cannot_be_classified_is_still_logged_and_retried(caplog):
+    """Classifying reads attributes of a foreign error, which can raise; describing it must not."""
+
+    class DriverError(Exception):
+        @property
+        def sqlite_errorcode(self) -> int:
+            raise RuntimeError("connection already closed")
+
+    warnings = await _warnings_until_deferred(
+        _FailingDB(lambda: DriverError("write failed")), caplog
+    )
+
+    for rec in warnings:
+        assert rec.exc_info is not None and isinstance(rec.exc_info[1], DriverError)
+        assert "write failed" in rec.getMessage()
+
+
+async def test_a_lock_refusal_whose_repr_spans_lines_is_still_one_line(caplog):
+    class Refusal(Exception):
+        sqlite_errorcode = 5
+
+        def __repr__(self) -> str:
+            return "Refusal(\n'database is locked')"
+
+    warnings = await _warnings_until_deferred(_FailingDB(Refusal), caplog)
+
+    for rec in warnings:
+        assert rec.exc_info is None
+        assert "\n" not in rec.getMessage()
+        assert "Refusal( 'database is locked')" in rec.getMessage()
