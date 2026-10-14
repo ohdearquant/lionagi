@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from lionagi.state.codex_mirror import (
     SOURCE_KIND,
     RecordTally,
     _det,
+    messages_for_record,
     mirror_session,
     session_db_id,
     turn_context,
@@ -60,6 +62,28 @@ def _records() -> list[dict]:
         # developer turns are instruction plumbing: seen, never mirrored
         _rec("response_item", {"type": "message", "role": "developer", "content": [{"text": "d"}]}),
     ]
+
+
+def test_a_tool_output_consumes_its_call_name() -> None:
+    # The output labels its ActionResponse with the call's name and removes the entry, so
+    # a rollout's persisted map holds only calls still awaiting an output.
+    names: dict[str, str] = {}
+    call = _rec(
+        "response_item",
+        {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1", "id": "fc1"},
+    )
+    output = _rec(
+        "response_item", {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+    )
+
+    messages_for_record(call, ROLLOUT_UID, names)
+    assert names == {"c1": "shell"}
+    (response,) = messages_for_record(output, ROLLOUT_UID, names)
+
+    content = response.to_dict(mode="db")["content"]
+    content = json.loads(content) if isinstance(content, str) else content
+    assert content["function"] == "shell"
+    assert names == {}
 
 
 @pytest_asyncio.fixture

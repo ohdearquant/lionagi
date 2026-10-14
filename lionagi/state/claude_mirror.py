@@ -15,7 +15,12 @@ from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-from ._mirror_common import MIRROR_PROVIDER_ERROR_KEY, SourceLine, bound_mirror_content
+from ._mirror_common import (
+    MIRROR_PROVIDER_ERROR_KEY,
+    SourceLine,
+    bound_mirror_content,
+    write_mirrored_messages,
+)
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
@@ -79,7 +84,8 @@ def messages_for_event(
     tool_names: dict[str, str],
 ) -> list[RoledMessage]:
     """Map one Claude JSONL event to ordered lionagi messages. ``tool_names`` is
-    read/written in place so a matching tool_result can label its ActionResponse."""
+    read/written in place so a matching tool_result can label its ActionResponse; the
+    result consumes its entry, so the map holds only tool uses still awaiting a result."""
     etype = event.get("type")
     if etype not in _MESSAGE_TYPES or event.get("isMeta"):
         return []
@@ -116,7 +122,7 @@ def messages_for_event(
                 err = "error" if b.get("is_error") else None
                 link = _det(session_uid, "toolreq", tuid) if tuid else None
                 mid = _det(session_uid, "toolresp", tuid or euid)
-                fn = tool_names.get(tuid, "")
+                fn = tool_names.pop(tuid, "")
                 specs.append(
                     (
                         mid,
@@ -325,6 +331,7 @@ async def mirror_session(
         }
     )
 
+    rows: list[dict[str, Any]] = []
     for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
         if max_preview_chars is not None and src is not None:
@@ -340,12 +347,12 @@ async def mirror_session(
             nm = dict(md.get("node_metadata") or {})
             nm["mirror_source"] = pointer
             md["node_metadata"] = nm
-        await db.insert_message(md)
-        await db.append_to_progression(bprog, md["id"])
-        await db.append_to_progression(sprog, md["id"])
+        rows.append(md)
 
-    if messages:
-        await db.touch_session_activity(sid, at=last_ts)
+    if rows:
+        await write_mirrored_messages(
+            db, rows, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
+        )
 
     return len(messages)
 

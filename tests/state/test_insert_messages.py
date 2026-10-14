@@ -1,0 +1,177 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""StateDB.insert_messages: one transaction, at most one progression rewrite per batch."""
+
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import event
+
+from lionagi.state.db import StateDB
+
+
+def uid() -> str:
+    return str(uuid.uuid4())
+
+
+@pytest_asyncio.fixture
+async def db(tmp_path: Path):
+    state = StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    async with state:
+        yield state
+
+
+def _msg(mid: str, t: float = 1.0) -> dict:
+    return {
+        "id": mid,
+        "created_at": t,
+        "role": "assistant",
+        "content": {"assistant_response": mid},
+        "node_metadata": {"lion_class": "lionagi.protocols.messages.AssistantResponse"},
+    }
+
+
+def _progression_updates(db: StateDB) -> list[str]:
+    """Record every UPDATE of the progressions table issued on db's engine."""
+    seen: list[str] = []
+
+    def _spy(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE PROGRESSIONS"):
+            seen.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+    return seen
+
+
+async def test_a_batch_appends_in_order_with_one_rewrite_per_progression(db: StateDB):
+    a, b, first = uid(), uid(), uid()
+    await db.create_progression(a, [first])
+    await db.create_progression(b)
+    ids = [uid() for _ in range(5)]
+    updates = _progression_updates(db)
+
+    await db.insert_messages([_msg(i) for i in ids], progression_ids=(a, b))
+
+    assert await db.get_progression(a) == [first, *ids]
+    assert await db.get_progression(b) == ids
+    assert len(updates) == 2
+    for i in ids:
+        assert await db.get_message(i) is not None
+
+
+async def test_ids_already_present_or_repeated_in_the_batch_are_skipped(db: StateDB):
+    p, old, new = uid(), uid(), uid()
+    await db.create_progression(p, [old])
+
+    await db.insert_messages([_msg(old), _msg(new), _msg(new)], progression_ids=(p,))
+
+    assert await db.get_progression(p) == [old, new]
+
+
+async def test_rerunning_a_batch_rewrites_no_progression(db: StateDB):
+    p = uid()
+    await db.create_progression(p)
+    batch = [_msg(uid()) for _ in range(3)]
+    await db.insert_messages(batch, progression_ids=(p,))
+    before = await db.get_progression(p)
+    updates = _progression_updates(db)
+
+    await db.insert_messages(batch, progression_ids=(p,))
+
+    assert await db.get_progression(p) == before
+    assert updates == []
+
+
+async def test_a_missing_progression_is_left_alone(db: StateDB):
+    missing, mid = uid(), uid()
+
+    await db.insert_messages([_msg(mid)], progression_ids=(missing,))
+
+    assert await db.get_progression(missing) == []
+    assert await db.get_message(mid) is not None
+
+
+async def test_same_result_as_appending_one_message_at_a_time(db: StateDB):
+    one, batched = uid(), uid()
+    seed = [uid(), uid()]
+    await db.create_progression(one, seed)
+    await db.create_progression(batched, seed)
+    sequence = [seed[1], uid(), uid(), seed[0], uid()]
+    sequence.append(sequence[2])
+
+    for mid in sequence:
+        await db.append_to_progression(one, mid)
+    await db.insert_messages([_msg(m) for m in sequence], progression_ids=(batched,))
+
+    assert await db.get_progression(batched) == await db.get_progression(one)
+
+
+async def test_a_rejected_message_writes_nothing(db: StateDB):
+    p = uid()
+    await db.create_progression(p)
+    good = _msg(uid())
+    bad = {**_msg(uid()), "content": None}
+
+    with pytest.raises(ValueError, match="content is NOT NULL"):
+        await db.insert_messages([good, bad], progression_ids=(p,))
+
+    assert await db.get_progression(p) == []
+    assert await db.get_message(good["id"]) is None
+
+
+async def test_a_failure_inside_the_transaction_commits_no_message(db: StateDB):
+    p = uid()
+    await db.create_progression(p)
+    ids = [uid(), uid()]
+
+    def _fail_progression_write(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE PROGRESSIONS"):
+            raise RuntimeError("progression write failed")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _fail_progression_write)
+    try:
+        with pytest.raises(Exception, match="progression write failed"):
+            await db.insert_messages([_msg(i) for i in ids], progression_ids=(p,))
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _fail_progression_write)
+
+    assert await db.get_progression(p) == []
+    for i in ids:
+        assert await db.get_message(i) is None
+
+
+async def test_the_session_activity_clock_moves_in_the_same_batch(db: StateDB):
+    prog, sid = uid(), uid()
+    await db.create_progression(prog)
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog,
+            "created_at": 1.0,
+            "updated_at": 1.0,
+            "last_message_at": 1.0,
+        }
+    )
+
+    await db.insert_messages(
+        [_msg(uid())], progression_ids=(prog,), session_id=sid, activity_at=50.0
+    )
+
+    row = await db.get_session(sid)
+    assert row["last_message_at"] == 50.0
+    assert row["updated_at"] == 50.0
+
+
+async def test_an_empty_batch_writes_nothing(db: StateDB):
+    p = uid()
+    await db.create_progression(p)
+    updates = _progression_updates(db)
+
+    await db.insert_messages([], progression_ids=(p,), session_id=uid())
+
+    assert updates == []
+    assert await db.get_progression(p) == []

@@ -183,6 +183,8 @@ def test_action_request_response_linkage() -> None:
     assert rc["action_request_id"] == str(req.id)
     assert rc["function"] == "Read"
     assert rc["output"] == "file contents"
+    # The result consumed its use's name: the map holds only uses still awaiting a result.
+    assert tool_names == {}
 
 
 def test_tool_result_error_flag_recorded() -> None:
@@ -1824,6 +1826,127 @@ async def test_tool_name_survives_restart_between_use_and_result(
     assert resp["function"] == "Bash"  # recovered from persisted tool_names, not ""
 
 
+def _response_functions(contents: list[dict]) -> list[str]:
+    return [c["function"] for c in contents if "action_request_id" in c]
+
+
+async def _session_contents(db: StateDB) -> list[dict]:
+    row = await db.get_session(session_db_id(SID))
+    contents = []
+    for mid in await db.get_progression(row["progression_id"]):
+        c = (await db.get_message(mid))["content"]
+        contents.append(json.loads(c) if isinstance(c, str) else c)
+    return contents
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_is_re_read_with_the_tool_names_it_consumed(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The tool_use lands in one committed pass; its result arrives in a batch whose write
+    # fails. The re-read of that batch must still find the use's name, so the map is only
+    # adopted once the batch is durable, like the cursor.
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{SID}.jsonl"
+    _write_lineage_file(
+        path,
+        [
+            _user_text("u1", "run it"),
+            _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}]),
+        ],
+    )
+    async with StateDB() as db:
+        states: dict[str, _FileState] = {}
+        await _one_pass(db, root, states, {}, since=None, live_window=300)
+        state = states[str(path)]
+        assert state.tool_names == {"tool_1": "Bash"}
+        offset_before = state.offset
+
+        with path.open("a") as fh:
+            fh.write(json.dumps(_tool_result("u2", "tool_1", "total 0")) + "\n")
+
+        async def _fail(*args, **kwargs):
+            raise RuntimeError("write failed")
+
+        with monkeypatch.context() as m:
+            m.setattr(db, "insert_messages", _fail)
+            await _one_pass(db, root, states, {}, since=None, live_window=300)
+        assert state.offset == offset_before
+        assert state.tool_names == {"tool_1": "Bash"}
+
+        await _one_pass(db, root, states, {}, since=None, live_window=300)
+        assert state.tool_names == {}
+        contents = await _session_contents(db)
+    assert _response_functions(contents) == ["Bash"]
+
+
+@pytest.mark.asyncio
+async def test_a_mirror_pass_rewrites_each_progression_once(temp_db_path: Path) -> None:
+    from sqlalchemy import event
+
+    events = [_user_text("u1", "start")] + [
+        _assistant(f"a{i}", [{"type": "text", "text": f"step {i}"}]) for i in range(6)
+    ]
+    async with StateDB() as db:
+        updates: list[str] = []
+
+        def _spy(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("UPDATE PROGRESSIONS"):
+                updates.append(statement)
+
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+        written = await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, status="running"
+        )
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
+        row = await db.get_session(session_db_id(SID))
+        session_ids = await db.get_progression(row["progression_id"])
+    assert written == 7
+    assert len(session_ids) == 7
+    # One rewrite of the branch progression and one of the session progression for the
+    # whole batch, where the per-message path issued one of each per message.
+    assert len(updates) == 2
+
+
+def test_a_legacy_tool_name_map_loads_as_its_newest_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    offsets = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    names = {f"tool_{i}": f"Fn{i}" for i in range(100)}
+    offsets.write_text(json.dumps({"f": {"offset": 5, "session_uid": "s", "tool_names": names}}))
+
+    loaded = _load_states()["f"].tool_names
+
+    keep = mirror_mod._PENDING_TOOL_NAMES_KEEP
+    assert list(loaded) == [f"tool_{i}" for i in range(100 - keep, 100)]
+    assert loaded["tool_99"] == "Fn99"
+
+
+def test_an_unchanged_save_leaves_offsets_json_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    offsets = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    states = {"f": _FileState(session_uid="s", offset=12, tool_names={"t1": "Read"})}
+
+    first = _save_states(states)
+    inode = offsets.stat().st_ino
+    again = _save_states(states, first)
+    assert again == first
+    assert offsets.stat().st_ino == inode  # not replaced
+
+    states["f"].offset = 40
+    moved = _save_states(states, again)
+    assert moved != again
+    assert offsets.stat().st_ino != inode  # a changed state is written
+    assert json.loads(offsets.read_text())["f"]["offset"] == 40
+
+
 @pytest.mark.asyncio
 async def test_lineage_resolves_after_restart(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2408,7 +2531,7 @@ async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
     monkeypatch.setattr(mirror_mod, "_absorb_backfill", fake_backfill)
     monkeypatch.setattr(mirror_mod, "_codex_pass", fake_codex_pass)
     monkeypatch.setattr(mirror_mod, "_load_states", lambda: {})
-    monkeypatch.setattr(mirror_mod, "_save_states", lambda states: None)
+    monkeypatch.setattr(mirror_mod, "_save_states", lambda states, previous=None: None)
     monkeypatch.setattr("lionagi.state.db.StateDB", lambda: FakeDB())
     monkeypatch.setattr("anyio.sleep", fake_sleep)
 

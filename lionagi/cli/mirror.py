@@ -218,6 +218,18 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
     return project, source
 
 
+# A tool result consumes its tool use's name (see messages_for_event), so a file's map holds only
+# uses still waiting for a result. Maps saved before that kept every use ever seen; a use still
+# pending is among a file's most recent ones, so a load keeps the newest entries and drops the rest.
+_PENDING_TOOL_NAMES_KEEP = 64
+
+
+def _recent_tool_names(names: dict[str, str]) -> dict[str, str]:
+    if len(names) <= _PENDING_TOOL_NAMES_KEEP:
+        return names
+    return dict(list(names.items())[-_PENDING_TOOL_NAMES_KEEP:])
+
+
 def _load_states() -> dict[str, _FileState]:
     # offsets.json persisted-state contract: see docs/internals/cli.md#mirror.py.
     # Dropping `turn` would leave messages written after a restart unattributed
@@ -234,14 +246,19 @@ def _load_states() -> dict[str, _FileState]:
             states[key] = _FileState(
                 session_uid=val.get("session_uid") or "",
                 offset=val.get("offset", 0),
-                tool_names=dict(val.get("tool_names") or {}),
+                tool_names=_recent_tool_names(dict(val.get("tool_names") or {})),
                 leaf_uuid=val.get("leaf_uuid"),
                 turn={str(k): str(v) for k, v in (val.get("turn") or {}).items() if v is not None},
             )
     return states
 
 
-def _save_states(states: dict[str, _FileState]) -> None:
+def _save_states(states: dict[str, _FileState], previous: str | None = None) -> str:
+    """Write offsets.json unless its content equals ``previous``; return the content.
+
+    A pass that advanced no transcript produces the same content, and rewriting the whole
+    file on every poll for nothing would be most of what an idle mirror writes.
+    """
     ensure_lionagi_dir(_OFFSETS_PATH.parent)
     payload = {
         key: {
@@ -258,9 +275,13 @@ def _save_states(states: dict[str, _FileState]) -> None:
     # coerces to str. Refuse those tokens at the write instead of letting them
     # round-trip forever through the equally permissive read above.
     raise_if_non_finite(payload)
+    data = json.dumps(payload)
+    if data == previous:
+        return data
     tmp = _OFFSETS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload))
+    tmp.write_text(data)
     tmp.replace(_OFFSETS_PATH)
+    return data
 
 
 def _seed_lineage(lineage: _Lineage, states: dict[str, _FileState]) -> None:
@@ -498,11 +519,12 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
 
     # Always kept "running"; the session-level idle sweep after the whole pass
     # flips it to completed.
+    names = dict(state.tool_names)
     written = await mirror_session(
         db,
         session_uid=state.session_uid,
         events=events,
-        tool_names=state.tool_names,
+        tool_names=names,
         project=state.project,
         project_source=state.project_source,
         model=state.model,
@@ -514,7 +536,9 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance the cursor only after the batch is durably mirrored, so a failed
-    # write re-reads (idempotently) rather than losing the batch.
+    # write re-reads (idempotently) rather than losing the batch. The tool-name map
+    # moves with it: the re-read needs the names the batch consumed.
+    state.tool_names = names
     state.offset = new_offset
     if written and not state.created:
         state.created = True
@@ -711,11 +735,12 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         if thread:
             node_metadata = {"codex": thread}
 
+    names = dict(state.tool_names)
     written, tally = await mirror_session(
         db,
         rollout_uid=state.session_uid,
         records=records,
-        tool_names=state.tool_names,
+        tool_names=names,
         project=state.project,
         project_source=state.project_source,
         model=state.model,
@@ -729,7 +754,9 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         event_sources=sources,
         max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
-    # Advance only after a durable write, so a failed batch is re-read next pass.
+    # Advance only after a durable write, so a failed batch is re-read next pass, with
+    # the tool-name map it started from.
+    state.tool_names = names
     state.offset = new_offset
 
     if meta and meta.get("thread_uid"):
@@ -845,6 +872,7 @@ async def mirror_forever(
         return
     since_secs = _parse_window(since) if since else None
     states = _load_states()
+    saved: str | None = None
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     threads: dict[str, str] = {}
@@ -879,7 +907,7 @@ async def mirror_forever(
                                 live_window=live_window,
                                 threads=threads,
                             )
-                        _save_states(states)
+                        saved = _save_states(states, saved)
                     except Exception:  # a single bad pass must never kill the tail
                         _log.exception("transcript mirror pass failed")
                     try:
@@ -922,6 +950,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     since = args.since  # argparse already parsed --since to seconds (or None)
     states = _load_states()
+    saved: str | None = None
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     threads: dict[str, str] = {}
@@ -959,7 +988,7 @@ async def _run(args: argparse.Namespace) -> int:
                     live_window=args.live_window,
                     threads=threads,
                 )
-            _save_states(states)
+            saved = _save_states(states, saved)
             if n:
                 progress(f"  mirrored {n} new message(s)")
             if args.once:

@@ -16,6 +16,7 @@ import sqlite3
 import struct
 import time
 import uuid
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -2329,6 +2330,76 @@ class StateDB:
         await conn.execute(
             text(self._progression_append_sql(self.dialect)),
             {"v": message_id, "id": progression_id},
+        )
+
+    @staticmethod
+    def _progression_collection_for_update_sql(dialect: str) -> str:
+        # SQLite's BEGIN IMMEDIATE already holds the writer reservation for the whole transaction;
+        # elsewhere the row lock keeps a concurrent append from being lost between read and write.
+        if dialect == "sqlite":
+            return "SELECT collection FROM progressions WHERE id = :id"
+        return "SELECT collection FROM progressions WHERE id = :id FOR UPDATE"
+
+    async def insert_messages(
+        self,
+        msgs: Sequence[dict[str, Any]],
+        *,
+        progression_ids: Sequence[str] = (),
+        session_id: str | None = None,
+        activity_at: float | None = None,
+    ) -> None:
+        """Write a batch of messages and append their ids to progressions in one transaction.
+
+        Each progression is read once and rewritten at most once for the whole batch, where
+        ``insert_message`` plus ``append_to_progression`` per message rewrites each
+        progression's whole array once per message. Ids are appended in batch order and
+        skipped when already present, as ``append_to_progression`` does, so re-running a
+        batch leaves every progression unchanged. ``session_id`` moves that session's
+        activity clock in the same transaction.
+        """
+        for msg in msgs:
+            self._validate_message(msg)
+        if not msgs:
+            return
+        message_ids = [msg["id"] for msg in msgs]
+        async with self._tx() as conn:
+            for msg in msgs:
+                await self._insert_message_in_tx(conn, msg)
+            for progression_id in progression_ids:
+                await self._extend_progression_in_tx(conn, progression_id, message_ids)
+            if session_id is not None:
+                await self._touch_session_activity_in_tx(conn, session_id, at=activity_at)
+
+    async def _extend_progression_in_tx(
+        self, conn, progression_id: str, message_ids: Sequence[str]
+    ) -> None:
+        row = (
+            (
+                await conn.execute(
+                    text(self._progression_collection_for_update_sql(self.dialect)),
+                    {"id": progression_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            return
+        current = row["collection"]
+        if isinstance(current, str):
+            current = json.loads(current)
+        # Only a string element can equal a message id, as in the SQL append's json_each test.
+        seen = {item for item in current if isinstance(item, str)}
+        added: list[str] = []
+        for message_id in message_ids:
+            if message_id not in seen:
+                seen.add(message_id)
+                added.append(message_id)
+        if not added:
+            return
+        await conn.execute(
+            text("UPDATE progressions SET collection = :col WHERE id = :id"),
+            {"col": _to_json_column([*current, *added]), "id": progression_id},
         )
 
     # Sessions

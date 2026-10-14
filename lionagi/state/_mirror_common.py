@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
@@ -37,6 +37,8 @@ __all__ = (
     "content_sha256",
     "bound_mirror_content",
     "resolve_mirrored_content",
+    "MIRROR_WRITE_CHUNK",
+    "write_mirrored_messages",
 )
 
 MirrorKind = Literal["claude_jsonl", "codex_jsonl"]
@@ -48,6 +50,10 @@ _RETRYABLE_PROVIDER_ERROR_KINDS = frozenset({"rate_limit", "server_error"})
 
 # Function-name preview never exceeds this even when the char budget is larger.
 _FUNCTION_PREVIEW_CAP = 128
+
+# Messages per transaction when a mirror pass writes a batch: bounds how long one batch holds the
+# writer while keeping each progression's rewrite to once per chunk.
+MIRROR_WRITE_CHUNK = 500
 
 
 class MirrorSourcePointer(TypedDict):
@@ -387,3 +393,25 @@ async def link_lineage(
         lineage.update(extra)
     meta["lineage"] = lineage
     await db.set_session_provenance(child_sid, node_metadata=meta)
+
+
+async def write_mirrored_messages(
+    db: StateDB,
+    rows: Sequence[dict[str, Any]],
+    *,
+    progression_ids: Sequence[str],
+    session_id: str,
+    activity_at: float | None,
+) -> None:
+    """Persist one mirrored batch, rewriting each progression once per chunk rather than once
+    per message. The session's activity clock moves once, with the last chunk, as the
+    per-message loop moved it once after its last message."""
+    for start in range(0, len(rows), MIRROR_WRITE_CHUNK):
+        chunk = rows[start : start + MIRROR_WRITE_CHUNK]
+        last = start + MIRROR_WRITE_CHUNK >= len(rows)
+        await db.insert_messages(
+            chunk,
+            progression_ids=progression_ids,
+            session_id=session_id if last else None,
+            activity_at=activity_at if last else None,
+        )
