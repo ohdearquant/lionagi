@@ -414,6 +414,13 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-4-argon-preview", "Gemini 4 Argon (Medium)"),
         ("gemini-argon-high", "Gemini 4 Argon (High)"),
         ("gemini-14-argon", "Gemini 4 Argon (Medium)"),
+        # argon alone is enough, and a tier word in the name picks the tier
+        ("argon high", "Gemini 4 Argon (High)"),
+        ("Argon High", "Gemini 4 Argon (High)"),
+        ("argon-max", "Gemini 4 Argon (High)"),
+        ("argon-4-high", "Gemini 4 Argon (High)"),
+        # with no tier word a free-form name takes Medium; only the aliases default to High
+        ("Gemini 4 Argon", "Gemini 4 Argon (Medium)"),
         # ...unless it names Pro (3.1 Pro) or a dotted version, which it keeps, as before
         ("gemini-3.8-flash-argon", "Gemini 3.8 Flash (Medium)"),
         ("gemini-argon-3.8-flash", "Gemini 3.8 Flash (Medium)"),
@@ -421,6 +428,9 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-3.5-flash-argon", "Gemini 3.5 Flash (Medium)"),
         ("gemini-argon-2.5-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-4.5-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.5.1-flash-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-1.5.2-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-flash-3.5.1", "Gemini 3.5 Flash (Medium)"),
         ("gemini-argon-pro", "Gemini 3.1 Pro (Low)"),
         ("gemini-3.8-flash-pro-argon", "Gemini 3.1 Pro (Low)"),
         # an undotted major version 4 is the 4 family, unless a dotted version is named;
@@ -428,15 +438,18 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-4-flash", "Gemini 4 Argon (Medium)"),
         ("gemini-v4-flash", "Gemini 4 Argon (Medium)"),
         ("gemini-4-flash-2026.10", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash-100.5", "Gemini 4 Argon (Medium)"),
         ("gemini-4k-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash-4", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.6-flash-4", "Gemini 3.6 Flash (Medium)"),
         ("gemini-3.5-flash-4", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.1-flash-4", "Gemini 3.5 Flash (Medium)"),
-        # 4.0 / 4.5 / 14 are not major version 4
+        # 4.0 / 4.5 / 4.x / 14 / 40 are not major version 4
         ("gemini-4.0-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-4.5-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.x-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-14-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-40-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
@@ -505,6 +518,9 @@ def test_resolve_agy_model(spec, expected):
         ("argon", "medium", "Gemini 4 Argon (Medium)"),
         ("gemini-4", "xhigh", "Gemini 4 Argon (High)"),
         ("gemini-argon-preview", "low", "Gemini 4 Argon (Low)"),
+        ("argon high", "low", "Gemini 4 Argon (Low)"),
+        ("argon 4", "high", "Gemini 4 Argon (High)"),
+        ("argon-3.5", "high", "Gemini 3.5 Flash (High)"),
         ("Gemini 4 Argon (Low)", "high", "Gemini 4 Argon (Low)"),
         # an effort is matched as a lowercase word, and a blank one is no effort
         ("gemini-4-argon", "High", "Gemini 4 Argon (High)"),
@@ -518,9 +534,21 @@ def test_resolve_agy_model_effort_folding(spec, effort, expected):
     assert resolve_agy_model(spec, effort=effort) == expected
 
 
-@pytest.mark.parametrize("effort", [0, 1.5])
-def test_resolve_agy_model_ignores_an_effort_that_is_not_a_word(effort):
-    assert resolve_agy_model("gemini-3.8-flash", effort=effort) == "Gemini 3.8 Flash (Medium)"
+@pytest.mark.parametrize("effort", [0, 1.5, ["high"], {"high": 1}])
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        # each name's own tier differs from Medium, the tier an unknown effort clamps to
+        ("gemini-argon-high", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon", "Gemini 4 Argon (High)"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash (High)"),
+        ("Gemini 4 Argon (Low)", "Gemini 4 Argon (Low)"),
+    ],
+)
+def test_resolve_agy_model_ignores_an_effort_that_is_not_a_string(spec, expected, effort):
+    assert resolve_agy_model(spec, effort=effort) == expected
+    assert resolve_agy_model(spec, effort=effort, reapply_effort=True) == expected
 
 
 def test_resolve_agy_model_effort_ignored_for_cross_family_alias():

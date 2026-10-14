@@ -76,6 +76,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     # on any provider unless a longer row matches it: the `gemini-4` and `argon`
     # aliases, the "Gemini 4 Argon (...)" display names, but also `gemini-4-flash`, or
     # `gemini-4.5-flash` on `gemini`; `gemini-2.5-pro-argon` keeps the 2.5 Pro window.
+    # The windows follow these substrings, not resolve_agy_model's token rules, so
+    # `gemini-4k-flash` reads the `gemini-4` row while it resolves to 3.5 Flash.
     "gemini-4": 1_048_576,
     "argon": 1_048_576,
     "gemini-3.8-flash": 1_048_576,
@@ -172,25 +174,28 @@ _MODEL_ALIASES: dict[str, str] = {
 # "gemini-3.60-flash", where a neighbouring digit means it is a different number.
 _GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
 _GEMINI_38_TOKEN = re.compile(r"(?<!\d)3\.8(?!\d)")
-# A delimited, undotted major-version 4 token ("gemini-4-argon", "gemini-4-flash",
-# "gemini-v4-flash"). A dotted 4 ("gemini-4.0-flash", "gemini-4.5-flash") is a version
-# this table does not list, the 4 in "gemini-14-flash" is a different number, and the
-# 4 in "gemini-4k-flash" is a size: none of them is the 4 family.
+# A major version 4 that is not part of a longer number and is not followed by a
+# letter ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash"). A dotted 4
+# ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash") is a version this table
+# does not list, the 4 in "gemini-14-flash" or "gemini-40-flash" is a different
+# number, and the 4 in "gemini-4k-flash" is a size: none of them is the 4 family.
 _GEMINI_4_TOKEN = re.compile(r"(?<![\d.])4(?![\d.a-z])")
-# A delimited dotted version with a one- or two-digit major ("3.5", "2.5", "4.5"). A
-# four-digit one ("2026.10") is a date, not a model version.
-_DOTTED_VERSION = re.compile(r"(?<![\d.])\d{1,2}\.\d+(?![\d.])")
+# A dotted version with a one- or two-digit major and one or more dotted parts ("3.5",
+# "2.5", "4.5", "3.5.1"). A four-digit major ("2026.10") is a date and a three-digit
+# one ("100.5") is not a model version.
+_DOTTED_VERSION = re.compile(r"(?<![\d.])\d{1,2}(?:\.\d+)+(?![\d.])")
 
 
 def _gemini_flash_family(key: str) -> str:
     """The Gemini family display prefix for a free-form, lowercased model key.
 
     A name that spells out a dotted version keeps it, whatever else it says: 3.8 and
-    3.6 pick that Flash family, and any other (2.5, 3.1, 3.5, 4.5) falls back to 3.5
-    Flash. A name with no dotted version is the 4 Argon family when it contains
-    ``argon`` or a delimited major version 4, and 3.5 Flash otherwise. A version
-    embedded in a different number is never a family match. ``resolve_agy_model``
-    checks for Pro before this, so a Pro name is 3.1 Pro whatever else it says.
+    3.6 pick that Flash family, and any other (2.5, 3.1, 3.5, 3.5.1, 4.5) falls back to
+    3.5 Flash. A name with no dotted version is the 4 Argon family when it contains
+    ``argon`` or a major version 4 that is not part of a longer number or followed by
+    a letter, and 3.5 Flash otherwise. A version embedded in a different number is
+    never a family match. ``resolve_agy_model`` checks for Pro before this, so a Pro
+    name is 3.1 Pro whatever else it says.
     """
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
@@ -211,10 +216,9 @@ def resolve_agy_model(
 ) -> str:
     """Map a lionagi model spec + effort onto an exact `agy --model` display name (effort folds into
     the Low/Medium/High suffix; see docs/internals/runtime.md for the precedence rules)."""
-    if isinstance(effort, str):
-        # Matched as a lowercase word; a blank effort is no effort, so the model's
-        # default tier applies.
-        effort = effort.strip().lower() or None
+    # Matched as a lowercase word. A blank effort, or one that is not a string, is no
+    # effort, so the model's default tier applies.
+    effort = (effort.strip().lower() or None) if isinstance(effort, str) else None
     if not model:
         model = "gemini-4-argon"
     if model in _AGY_MODELS:
@@ -250,7 +254,7 @@ def resolve_agy_model(
     # Effort given but string isn't a known alias: still resolve a gemini family
     # from it so --effort works on forward-compatible model names.
     is_pro = "pro" in key
-    if effort is not None and (is_pro or "flash" in key or "gemini" in key):
+    if effort is not None and (is_pro or "flash" in key or "gemini" in key or "argon" in key):
         family = "Gemini 3.1 Pro" if is_pro else _gemini_flash_family(key)
         return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
 
@@ -264,7 +268,7 @@ def resolve_agy_model(
         heuristic = "Low" if is_pro else "Medium"
     if is_pro:
         return f"Gemini 3.1 Pro ({'High' if heuristic == 'Medium' else heuristic})"
-    if "flash" in key or "gemini" in key:
+    if "flash" in key or "gemini" in key or "argon" in key:
         return f"{_gemini_flash_family(key)} ({heuristic})"
 
     # Not recognizable — pass through; agy rejects an invalid name clearly.

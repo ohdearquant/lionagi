@@ -14,23 +14,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   and the exact display names pass through (earlier releases resolved an exact Argon display name
   to a 3.5 Flash name). `argon-low` / `-medium` / `-high` are aliases too. A free-form name
   resolves in this order: one naming Pro stays 3.1 Pro; one that spells out a dotted version keeps
-  it as before (3.8 and 3.6 pick their family, any other, such as `gemini-3.5-flash-argon` or
-  `gemini-4.5-flash`, resolves to 3.5 Flash); otherwise a name containing `argon` or a delimited
-  major version 4 (`gemini-4-flash`, `gemini-v4-flash`, but not `gemini-4k-flash` or
-  `gemini-14-flash`) resolves to the 4 Argon family. A four-digit dotted number such as a date
-  (`2026.10`) is not a version. `gemini-4-flash` resolved to 3.5 Flash in earlier releases and
-  resolves to Argon now. It is the default model for the gemini-code aliases and for
+  it as before (3.8 and 3.6 pick their family, any other, such as `gemini-3.5-flash-argon`,
+  `gemini-3.5.1-flash-argon` or `gemini-4.5-flash`, resolves to 3.5 Flash); otherwise a name
+  containing `argon` or a major version 4 that is not part of a longer number or followed by a
+  letter (`gemini-4-flash`, `gemini-v4-flash`, `argon high`, but not `gemini-4k-flash`,
+  `gemini-14-flash` or `gemini-40-flash`) resolves to the 4 Argon family. A version has a one- or
+  two-digit major, so a date such as `2026.10` or a three-digit number such as `100.5` is not
+  one. A free-form name with no tier word takes Medium, as free-form names did before, so
+  `Gemini 4 Argon` without a suffix gives `Gemini 4 Argon (Medium)` while the `gemini-4-argon`
+  alias gives High. `gemini-4-flash` resolved to 3.5 Flash in earlier releases, and a name such as
+  `argon high` passed through unresolved; both resolve to Argon now. It is the default model for
+  the gemini-code aliases and for
   `GeminiCodeRequest`, and it
   appears first among the Studio operator's gemini-code models; the 3.8, 3.6 and 3.5 Flash and
   3.1 Pro entries are unchanged.
 - The gemini-code context window table gains `gemini-4-argon`, `gemini-4` and `argon` rows at
   1,048,576 tokens. Rows match as substrings, longest first, and the lookup falls back across
-  every provider's table, so a model name containing `gemini-4` or `argon` that no longer row
-  matches now reads that window on any provider (for example `gemini-4.5-flash` on `gemini`) where
-  it read the 128,000-token default; `gemini-2.5-pro-argon` keeps the 2.5 Pro window.
+  every provider's table, so a model name containing `gemini-4` or `argon` now reads that window
+  on any provider unless a longer row matches it (for example `gemini-4.5-flash` on `gemini`,
+  which read the 128,000-token default); `gemini-2.5-pro-argon` keeps the 2.5 Pro window. The
+  window follows these substrings, not the model resolution above, so `gemini-4k-flash` reads the
+  `gemini-4` row while it resolves to 3.5 Flash.
 - `resolve_agy_model` reads an effort without regard to case or surrounding spaces (`"High"` was
   read as an unknown effort and gave Medium), and a blank effort counts as none, so the model's
-  default tier applies. An effort that is not a string is ignored, as before.
+  default tier applies. An effort that is not a string also counts as none (earlier releases
+  read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
+  on a list or dict).
 
 ## [0.35.5] - 2026-10-11
 
