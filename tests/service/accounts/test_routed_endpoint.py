@@ -894,7 +894,7 @@ async def test_a_queued_call_another_scope_was_refused_is_sent_once_for_its_owne
 
 
 @pytest.mark.asyncio
-async def test_an_invoke_sends_only_its_own_call(monkeypatch, tmp_path):
+async def test_an_invoke_never_sends_a_call_another_caller_has_not_forwarded(monkeypatch, tmp_path):
     from lionagi.protocols.generic.event import EventStatus
 
     path = _install_accounts(monkeypatch, tmp_path)
