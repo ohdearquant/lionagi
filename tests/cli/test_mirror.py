@@ -1939,6 +1939,86 @@ def test_a_saved_pending_tool_name_map_loads_whole(
     assert _load_states()["f"].tool_names == names
 
 
+def test_the_saved_map_is_also_written_under_the_key_earlier_releases_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    offsets = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    names = {"tool_1": "Read", "tool_2": "Bash"}
+    _save_states({"f": _FileState(session_uid="s", offset=5, tool_names=dict(names))})
+
+    saved = json.loads(offsets.read_text())["f"]
+    assert saved["pending_tool_names"] == names
+    # An earlier release reads only "tool_names", and saves it alone; both directions keep
+    # the names.
+    assert saved["tool_names"] == names
+    offsets.write_text(json.dumps({"f": {"offset": 5, "session_uid": "s", "tool_names": names}}))
+    assert _load_states()["f"].tool_names == names
+
+
+@pytest.mark.asyncio
+async def test_a_failed_codex_batch_is_re_read_in_the_turn_it_started_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The walk updates the turn as it meets turn_context records. A batch whose write fails
+    # after a turn change must be re-read from the turn it started in, or its leading
+    # messages are attributed to the later turn.
+    import lionagi.state.codex_mirror as codex_mod
+    from lionagi.cli.mirror import _mirror_one_codex
+
+    def turn(turn_id: str, model: str) -> dict:
+        return {
+            "type": "turn_context",
+            "timestamp": "2026-07-29T12:00:00Z",
+            "payload": {"model": model, "effort": "low", "turn_id": turn_id},
+        }
+
+    def said(mid: str, text: str) -> dict:
+        return {
+            "type": "response_item",
+            "timestamp": "2026-07-29T12:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "id": mid,
+                "content": [{"type": "output_text", "text": text}],
+            },
+        }
+
+    path = tmp_path / "rollout-turn.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in (turn("t1", "m-one"), said("a1", "one"))))
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await _mirror_one_codex(db, path, state, {})
+        assert state.turn["turn_id"] == "t1"
+        offset_before = state.offset
+        with path.open("a") as fh:
+            for r in (said("a2", "two"), turn("t2", "m-two"), said("a3", "three")):
+                fh.write(json.dumps(r) + "\n")
+
+        async def _fail(*args, **kwargs):
+            raise RuntimeError("write failed")
+
+        with monkeypatch.context() as m:
+            m.setattr(codex_mod, "write_mirrored_messages", _fail)
+            with pytest.raises(RuntimeError, match="write failed"):
+                await _mirror_one_codex(db, path, state, {})
+        assert state.offset == offset_before
+        assert state.turn["turn_id"] == "t1"
+
+        await _mirror_one_codex(db, path, state, {})
+        assert state.turn["turn_id"] == "t2"
+        turns = {}
+        for mid in ("a1", "a2", "a3"):
+            row = await db.get_message(codex_mod._det(path.stem, mid, "text"))
+            meta = row["node_metadata"]
+            meta = json.loads(meta) if isinstance(meta, str) else meta
+            turns[mid] = meta["codex_turn"]["turn_id"]
+    assert turns == {"a1": "t1", "a2": "t1", "a3": "t2"}
+
+
 def test_an_unchanged_save_leaves_offsets_json_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

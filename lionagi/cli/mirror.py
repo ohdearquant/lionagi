@@ -219,9 +219,12 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
 
 
 # A tool result consumes its tool use's name (see messages_for_event), so a file's map holds only
-# uses still waiting for a result, and is saved as "pending_tool_names" and loaded whole. Maps
-# saved before that, as "tool_names", kept every use ever seen; a use still pending is among a
-# file's most recent ones, so a load keeps the newest entries of such a map and drops the rest.
+# uses still waiting for a result, and is saved as "pending_tool_names" and loaded whole. It is
+# also saved as "tool_names", the key earlier releases read, so a downgraded mirror still names
+# those results. Maps saved by earlier releases have only "tool_names" and kept every use ever
+# seen. A load keeps the newest entries of such a map, on the assumption that a use still
+# pending is among a file's most recent ones; an older pending use is dropped, and its result
+# is mirrored with no function name.
 _LEGACY_TOOL_NAMES_KEEP = 64
 
 
@@ -273,6 +276,7 @@ def _save_states(states: dict[str, _FileState]) -> None:
             "offset": st.offset,
             "session_uid": st.session_uid,
             "pending_tool_names": st.tool_names,
+            "tool_names": st.tool_names,
             "leaf_uuid": st.leaf_uuid,
             "turn": st.turn,
         }
@@ -746,6 +750,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
             node_metadata = {"codex": thread}
 
     names = dict(state.tool_names)
+    turn = dict(state.turn)
     written, tally = await mirror_session(
         db,
         rollout_uid=state.session_uid,
@@ -759,14 +764,15 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         cwd=state.cwd,
         node_metadata=node_metadata,
         source_path=str(path),
-        turn=state.turn,
+        turn=turn,
         unparseable=unreadable,
         event_sources=sources,
         max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance only after a durable write, so a failed batch is re-read next pass, with
-    # the tool-name map it started from.
+    # the tool-name map and the turn it started from.
     state.tool_names = names
+    state.turn = turn
     state.offset = new_offset
 
     if meta and meta.get("thread_uid"):

@@ -110,14 +110,51 @@ async def test_same_result_as_appending_one_message_at_a_time(db: StateDB):
     assert await db.get_progression(batched) == await db.get_progression(one)
 
 
+async def _stored(db: StateDB, pid: str):
+    # The stored text, compared as written: a decoded NaN never equals another.
+    async with db._tx() as conn:
+        result = await conn.execute(
+            text("SELECT collection FROM progressions WHERE id = :id"), {"id": pid}
+        )
+        return result.scalar()
+
+
+async def _outcome(call) -> str | None:
+    try:
+        await call()
+    except Exception as exc:
+        return type(exc).__name__
+    return None
+
+
 @pytest.mark.parametrize(
     "stored",
-    ['"[\\"m1\\"]"', '{"m1": 1}', "5", "null"],
-    ids=["json-string", "object", "number", "null"],
+    [
+        '"[\\"m1\\"]"',
+        '{"m1": 1}',
+        "5",
+        "null",
+        "NaN",
+        "[NaN]",
+        "[1e400]",
+        "[5]",
+        '["m0", 5]',
+        "[",
+    ],
+    ids=[
+        "json-string",
+        "object",
+        "number",
+        "null",
+        "bare-nan",
+        "nan-element",
+        "overflow-element",
+        "number-element",
+        "mixed-elements",
+        "malformed",
+    ],
 )
-async def test_a_collection_that_is_not_an_array_is_left_as_appending_leaves_it(
-    db: StateDB, stored: str
-):
+async def test_any_other_stored_shape_ends_as_appending_one_at_a_time(db: StateDB, stored: str):
     one, batched = uid(), uid()
     for pid in (one, batched):
         await db.create_progression(pid)
@@ -128,12 +165,32 @@ async def test_a_collection_that_is_not_an_array_is_left_as_appending_leaves_it(
             )
     ids = [uid(), uid()]
 
-    for mid in ids:
-        await db.append_to_progression(one, mid)
-    await db.insert_messages([_msg(m) for m in ids], progression_ids=(batched,))
+    async def one_at_a_time():
+        for mid in ids:
+            await db.append_to_progression(one, mid)
 
-    assert await db.get_progression(batched) == await db.get_progression(one)
-    assert all([await db.get_message(m) is not None for m in ids])
+    expected = await _outcome(one_at_a_time)
+    got = await _outcome(
+        lambda: db.insert_messages([_msg(m) for m in ids], progression_ids=(batched,))
+    )
+
+    assert got == expected
+    assert await _stored(db, batched) == await _stored(db, one)
+    if expected is None:
+        assert all([await db.get_message(m) is not None for m in ids])
+
+
+@pytest.mark.parametrize("seed", [[], ["5"]], ids=["empty", "string-spelled-alike"])
+async def test_a_non_string_id_ends_as_appending_one_at_a_time(db: StateDB, seed: list):
+    one, batched = uid(), uid()
+    await db.create_progression(one, seed)
+    await db.create_progression(batched, seed)
+
+    for _ in range(2):
+        await db.append_to_progression(one, 5)
+        await db.insert_messages([_msg(5)], progression_ids=(batched,))
+
+    assert await _stored(db, batched) == await _stored(db, one)
 
 
 async def test_a_rejected_message_writes_nothing(db: StateDB):

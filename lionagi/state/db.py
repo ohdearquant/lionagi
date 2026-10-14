@@ -2353,9 +2353,12 @@ class StateDB:
         Each progression is read once and rewritten at most once for the whole batch, where
         ``insert_message`` plus ``append_to_progression`` per message rewrites each
         progression's whole array once per message. Ids are appended in batch order and
-        skipped when already present, as ``append_to_progression`` does, so re-running a
-        batch leaves every progression unchanged. ``session_id`` moves that session's
-        activity clock in the same transaction.
+        skipped when already present, so re-running a batch leaves every progression
+        unchanged. That single rewrite covers a stored array of string ids given string ids,
+        the shape every writer produces; any other stored value or id goes through
+        ``append_to_progression``'s own statement one id at a time, so it ends as appending
+        one message at a time would. ``session_id`` moves that session's activity clock in
+        the same transaction.
         """
         for msg in msgs:
             self._validate_message(msg)
@@ -2387,14 +2390,21 @@ class StateDB:
             return
         current = row["collection"]
         if isinstance(current, str):
-            current = json.loads(current)
-        if not isinstance(current, list):
-            # The per-message append leaves a collection that is not an array unchanged.
+            try:
+                current = json.loads(current)
+            except ValueError:
+                current = None
+        if (
+            not isinstance(current, list)
+            or not all(isinstance(item, str) for item in current)
+            or not all(isinstance(message_id, str) for message_id in message_ids)
+        ):
+            # Any other shape (not an array, a non-string or non-finite element, a non-string
+            # id) compares differently on each dialect, so it takes the per-message statement.
+            for message_id in message_ids:
+                await self._append_to_progression_in_tx(conn, progression_id, message_id)
             return
-        # Message ids are strings, so only string elements are compared, as SQLite's json_each
-        # test compares them. PostgreSQL's per-message append compares each element's text, so
-        # there a non-string element spelled like an id (5 and "5") also counts as present.
-        seen = {item for item in current if isinstance(item, str)}
+        seen = set(current)
         added: list[str] = []
         for message_id in message_ids:
             if message_id not in seen:

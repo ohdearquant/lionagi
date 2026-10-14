@@ -1154,22 +1154,25 @@ conversation opens a fresh transcript whose first message points — via `parent
 last message of the session it continues. `_Lineage` indexes each file's current leaf uuid and,
 when a file's root parent resolves to a different session's leaf, records a provenance link.
 
-**`_load_states`** — `offsets.json` persisted-state contract. Persists `tool_names` +
+**`_load_states`** — `offsets.json` persisted-state contract. Persists the tool-name map +
 `leaf_uuid` alongside the byte offset so a restart resumes mid-conversation without dropping a
 later tool_result's function name or losing cross-session lineage — both live only in process
 memory otherwise. Legacy `{path: int}` caches (offset only) load as bare cursors, then upgrade.
 A tool result consumes its use's entry, so a file's map holds only uses still waiting for a
 result; it is saved as `pending_tool_names` and loaded whole, so a use that never gets a result
-stays in it for as long as the file's state is kept. Maps saved before that, as `tool_names`,
-held every use ever seen, and a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP` entries of such a
-map. A second result for a use already answered finds no entry and is mirrored with an empty
-function name. The map moves with the cursor: a pass hands `mirror_session` a copy and adopts it
-only after the batch is durable, so a re-read batch finds the names it consumed. `_save_states`
+stays in it for as long as the file's state is kept. The same map is also saved as `tool_names`,
+the key earlier releases read. Maps saved by earlier releases have only `tool_names` and held
+every use ever seen; a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP` entries of such a map,
+assuming a use still pending is among the newest. A second result for a use already answered
+finds no entry and is mirrored with an empty function name, replacing the row the first result
+wrote. The map, and for a Codex rollout the current turn, move with the cursor: a pass hands
+`mirror_session` copies and adopts them only after the batch is durable, so a re-read batch finds
+the names it consumed and the turn it started in. `_save_states`
 reads `offsets.json` and skips the write when the file already holds the content, so an idle
 pass writes nothing and a file removed from outside is written again on the next pass.
 
 **`write_mirrored_messages`** (`state/_mirror_common.py`) — one transaction per chunk of
-`MIRROR_WRITE_CHUNK` messages through `StateDB.insert_messages`, which reads each progression
+`MIRROR_WRITE_CHUNK` (500) messages through `StateDB.insert_messages`, which reads each progression
 once and rewrites it at most once per chunk. Appending message by message rewrote both of a
 session's progression arrays once per message, so a pass of k messages rewrote each array k
 times; now it rewrites each once per chunk. Each rewrite still writes the whole array, so the
