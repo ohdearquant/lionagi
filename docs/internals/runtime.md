@@ -20,6 +20,14 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   rejects any write statement) are set. SQLite only — a genuinely read-only Postgres
   connection should use a read-only DB role instead; there is no equivalent "connect without
   side effects" mode to fake at this layer for Postgres.
+- `make_compatibility_engine()` — the engine of a compatibility-mode open (ADR-0128) of an
+  existing SQLite store that another application manages. Each connection sets only
+  connection-local PRAGMAs (`busy_timeout`, `synchronous`, `foreign_keys`), reads `journal_mode`
+  and refuses unless it is already `wal`, and carries the guard's SQLite authorizer before any
+  application statement; a connection that cannot be set up that way is closed and the refusal
+  raised. The driver's statement cache is off (`cached_statements=0`) because the authorizer runs
+  only when SQLite prepares a statement, and one of its decisions (no COMMIT of a transaction in
+  which a statement was denied) depends on the transaction, not on the statement text.
 - `has_wal_reset_fix()` — SQLite documents a data race between a starting checkpoint and a
   commit that resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
   header field, and a later checkpoint then skips part of the committed transaction,
@@ -27,6 +35,39 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   3.51.2, fixed in 3.51.3 with backports on the 3.44 and 3.50 branches. Exposure needs two
   connections writing or checkpointing at the same instant, which is exactly what this store
   does — hence the startup warning when an unfixed SQLite is linked.
+
+### `state/compat.py`
+
+Compatibility mode (ADR-0128): `StateDB(path, compatibility=profile)` writes runs into a store
+whose schema another application manages, and never migrates, stamps or reconfigures it.
+
+- **Admission.** `open()` requires an existing store file. Inside one read snapshot it reads the
+  structure of the profile's tables (`read_closure()`: columns from `PRAGMA table_xinfo`, unique
+  keys, CHECK constraints, table options, every foreign key into or out of the tables, and every
+  trigger or view whose SQL names one of them) and refuses unless it equals the profile's closure.
+  `store_versions` narrows the stores a profile is tried on; a version never admits on its own. A
+  failed admission disposes the engine, so the object stays unopened. A write transaction compares
+  `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
+  closure when it moved: a change elsewhere in the store re-admits, a change to the closure
+  refuses.
+- **Operations.** A StateDB method marked as an operation the profile names runs inside that
+  operation's scope (a context variable, so code the operation calls inherits it). `_tx()` and the
+  engine's begin listener refuse a transaction outside a scope; `execute()` and `transaction()`
+  refuse, and `fetch_all()`/`fetch_one()` refuse anything but a read.
+- **Statements.** Every statement SQLAlchemy sends is checked: outside an operation only reads,
+  read PRAGMAs and transaction control pass; inside one only INSERT and UPDATE (directly or after a
+  `WITH`), never with an `OR REPLACE` conflict clause or `RETURNING`; savepoints are refused.
+- **Authorizer.** The ceiling on every connection, seeing statements that reach SQLite by any
+  path: INSERT only into tables the profile inserts into, UPDATE only of its update columns, both
+  only on `main` and only inside a transaction the guard opened; reads; a short PRAGMA list; any
+  function but `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
+- **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
+  its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
+- **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
+  `committed` names the operation's transactions that had already committed. `vacuum()`,
+  `checkpoint()` and the migration path refuse before any statement runs.
+- Handles are shared by `(url, mode, profile)`, so a native and a compatibility handle on one
+  file are never the same object.
 
 ### `state/health.py`
 

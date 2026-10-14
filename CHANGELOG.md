@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- A compatibility open mode for `StateDB` (ADR-0128): `StateDB(path, compatibility=profile)`
+  writes into a SQLite store whose schema another application manages without migrating,
+  stamping or reconfiguring it. A `CompatibilityProfile` declares the exact structure of the
+  tables it depends on, the columns it inserts and updates, and the operations it serves; the store
+  is admitted only when that structure matches, every connection carries a default-deny SQLite
+  authorizer, and anything outside the profile raises `StateCompatibilityRefused`. The minimum
+  aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
+
 ## [0.35.5] - 2026-10-11
 
 ### Added

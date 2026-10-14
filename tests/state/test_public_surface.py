@@ -13,7 +13,19 @@ def test_all_is_declared():
 
 
 def test_all_contents():
-    assert set(state_pkg.__all__) == {"StateDB", "SchemaTooNewError"}
+    assert set(state_pkg.__all__) == {
+        "CompatibilityProfile",
+        "SchemaTooNewError",
+        "StateCompatibilityRefused",
+        "StateDB",
+    }
+
+
+def test_compatibility_names_resolve_to_their_module():
+    from lionagi.state import compat
+
+    assert state_pkg.CompatibilityProfile is compat.CompatibilityProfile
+    assert state_pkg.StateCompatibilityRefused is compat.StateCompatibilityRefused
 
 
 def test_statedb_importable():
