@@ -339,10 +339,12 @@ class EngineRun:
         # namespace so recall/writeback never crosses runs or projects.
         self.run_id: str = uuid.uuid4().hex[:12]
         self.agents_made: int = 0
-        # Each branch make_agent built, with the engine's agent_env and
-        # containment as they were when it was built. With either set, run_dag
-        # runs a node only on such a branch built under the settings now in force.
-        self._agent_branches: dict[str, tuple[dict[str, str] | None, bool]] = {}
+        # Each branch make_agent built: the engine's agent_env and containment as
+        # make_agent read them before building it, the branch, and the model it was
+        # built with. With either set, run_dag runs a node only on such a branch,
+        # built under the settings now in force, still the one the session holds
+        # under its id, and still on that model.
+        self._agent_branches: dict[str, tuple[tuple[dict[str, str] | None, bool], Any, Any]] = {}
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         # Populated at the shared CLI spawn boundary through a run-scoped
@@ -455,6 +457,13 @@ class EngineRun:
                 f"agent budget exhausted ({self.agents_made}/{self.engine.max_agents})"
             )
         self.agents_made += 1
+        # One reading of the engine's agent settings, taken before any await: the
+        # build below and the record run_dag checks both use it, so a setting
+        # changed while create_agent awaits cannot be recorded as the build's.
+        built_under = (
+            dict(self.engine.agent_env) if self.engine.agent_env else None,
+            bool(self.engine.contain_account_integrations),
+        )
         if cwd is None:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
@@ -462,7 +471,7 @@ class EngineRun:
         if mcp_config_path is None:
             mcp_config_path = self.engine.agent_mcp_config_path
         if env is None:
-            env = self.engine.agent_env
+            env = built_under[0]
         # Resolution order: explicit call > engine-wide > role profile. An
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
@@ -499,7 +508,7 @@ class EngineRun:
             # permission, so a leg spawned without this is denied every tool
             # call and reports success with nothing in it.
             yolo=self.engine.yolo,
-            contain_account_integrations=self.engine.contain_account_integrations,
+            contain_account_integrations=built_under[1],
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -513,10 +522,7 @@ class EngineRun:
         # AgentSpec has no env field, so the overlay goes to create_agent, which
         # hands it to the CLI endpoint it builds: the carrier that reaches the child.
         branch = await create_agent(spec, load_settings=False, agent_env=env)
-        self._agent_branches[str(branch.id)] = (
-            dict(self.engine.agent_env) if self.engine.agent_env else None,
-            bool(self.engine.contain_account_integrations),
-        )
+        self._agent_branches[str(branch.id)] = (built_under, branch, branch.chat_model)
         if name:
             branch.name = name
         self.session.include_branches(branch)
@@ -996,18 +1002,23 @@ class EngineRun:
 
         With the engine's ``agent_env`` or ``contain_account_integrations`` set,
         every node must name a branch ``make_agent`` built while the engine's
-        settings were what they are now, and that is still in the session; and
-        ``reactive`` is refused. A node with no branch runs on the session's
-        default branch or a clone of it, a node whose branch was removed runs on
-        the default branch, and a spawned node may be placed on either, so each
-        would run without the setting. Both raise ``ConfigurationError`` before
-        any node runs.
+        settings were what they are now, that the session still holds under that
+        id, and whose model is still the one it was built with; no node may set
+        ``chat_model`` or ``imodel``, which puts another model on the branch for
+        that node and every later one; and ``reactive`` is refused. A node with no
+        branch runs on the session's default branch or a clone of it, a node whose
+        branch was removed runs on the default branch, and a spawned node may be
+        placed on either, so each would run without the setting. Each raises
+        ``ConfigurationError`` before any node runs.
 
-        The settings reach only the branches ``make_agent`` builds. The run's
-        ``session`` used directly (``session.flow``, a branch the caller built) does
-        not carry them, and what a graph's author sets on a node or a branch is
-        kept as written: a node parameter ``contain_account_integrations=False``
-        or a branch built with ``make_agent(env={})`` runs that way.
+        The settings reach only the branches ``make_agent`` builds, through the
+        model it builds for them. The run's ``session`` used directly
+        (``session.flow``, a branch the caller built) does not carry them; a change
+        made inside that model after it was built (its endpoint or its config) is
+        not checked; and what a graph's author sets on a node or a branch is kept
+        as written: a node parameter ``contain_account_integrations=False`` or
+        ``account_connectors``, or a branch built with ``make_agent(env={})``, runs
+        that way.
         """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
 
@@ -1035,25 +1046,46 @@ class EngineRun:
             )
 
             def _carries(op: Operation) -> bool:
-                if op.branch_id is None:
+                record = self._agent_branches.get(str(op.branch_id)) if op.branch_id else None
+                if record is None or record[0] != in_force:
                     return False
-                if self._agent_branches.get(str(op.branch_id)) != in_force:
-                    return False
+                _, built, model = record
                 # The lookup the flow makes; a branch it cannot find runs on the default.
                 try:
-                    self.session.branches[op.branch_id]
+                    held = self.session.branches[op.branch_id]
                 except Exception:
                     return False
-                return True
+                # Another branch included under the same id, or another model put on
+                # the built branch, does not carry the settings.
+                return held is built and built.chat_model is model
+
+            def _swaps_model(op: Operation) -> bool:
+                params = op.parameters
+                keys = (
+                    params if isinstance(params, dict) else getattr(params, "model_fields_set", ())
+                )
+                return any(key in keys for key in ("chat_model", "imodel"))
 
             operations = [n for n in graph.internal_nodes.values() if isinstance(n, Operation)]
             unbuilt = [op for op in operations if not _carries(op)]
-            if unbuilt:
+            swapping = [op for op in operations if _swaps_model(op)]
+            if unbuilt or swapping:
+                problems = []
+                if unbuilt:
+                    problems.append(
+                        f"{len(unbuilt)} of {len(operations)} nodes name no branch make_agent "
+                        "built under the settings now in force, or one the session no longer "
+                        "holds under that id, or one whose model was replaced"
+                    )
+                if swapping:
+                    problems.append(
+                        f"{len(swapping)} of {len(operations)} nodes set chat_model or imodel, "
+                        "which puts another model on the branch"
+                    )
                 raise ConfigurationError(
                     f"run_dag with {' or '.join(settings)} runs only on branches make_agent "
-                    "built under the settings now in force and still in the session: "
-                    f"{len(unbuilt)} of {len(operations)} nodes name no such branch and would "
-                    "run without the setting."
+                    "built under the settings now in force, on the model it built: "
+                    f"{'; '.join(problems)}. Each would run without the setting."
                 )
 
         async with flow_progress_signals(

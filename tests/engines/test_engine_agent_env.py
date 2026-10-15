@@ -314,6 +314,96 @@ async def test_run_dag_runs_each_node_on_the_branch_it_names(settings, monkeypat
     assert str(run.session.default_branch.id) not in ran
 
 
+async def _uncontained_model():
+    """A codex model built with neither setting, to put on a built branch."""
+    other = await Engine().new_run().make_agent("researcher", name="other", model=_CLI_MODEL)
+    return other.chat_model
+
+
+@_SETTINGS
+async def test_run_dag_refuses_a_branch_whose_model_was_replaced(settings, monkeypatch):
+    """The settings ride the model make_agent built; another model on the branch carries none."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    branch.chat_model = await _uncontained_model()
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=branch, instruction="a")
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes name no branch") as exc:
+        await run.run_dag(builder.get_graph())
+    assert "leg-7" not in str(exc.value)
+    assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_refuses_another_branch_included_under_a_built_id(settings, monkeypatch):
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    run.session.remove_branch(built)
+    run.session.include_branches(Branch(id=built.id, name="stand-in"))
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a")
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes name no branch"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+@_SETTINGS
+@pytest.mark.parametrize("key", ["chat_model", "imodel"])
+async def test_run_dag_refuses_a_node_that_puts_another_model_on_its_branch(
+    settings, key, monkeypatch
+):
+    """operate(chat_model=...) and run(imodel=...) leave the model on the branch for later nodes."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    other = await _uncontained_model()
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", **{key: other})
+    builder.add_operation("operate", branch=built, instruction="b")
+    with pytest.raises(ConfigurationError, match=r"1 of 2 nodes set chat_model or imodel"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+async def test_a_setting_changed_while_make_agent_builds_is_not_recorded_as_the_builds(
+    monkeypatch,
+):
+    """make_agent reads the settings once, before it awaits the build, and records that reading."""
+    import lionagi.engines.engine as engine_module
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    engine = Engine()
+    run = engine.new_run()
+    real_create_agent = engine_module.create_agent
+
+    async def create_agent_then_contain(spec, **kwargs):
+        engine.contain_account_integrations = True
+        return await real_create_agent(spec, **kwargs)
+
+    monkeypatch.setattr(engine_module, "create_agent", create_agent_then_contain)
+    branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    assert engine.contain_account_integrations is True
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=branch, instruction="a")
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes name no branch"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
 async def test_the_judge_fails_open_on_any_other_configuration_error(monkeypatch):
     """Only a judge that cannot carry the engine's settings is raised; every other
     error, a ConfigurationError included, reads as a pass, as it always has."""
