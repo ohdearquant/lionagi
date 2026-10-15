@@ -425,8 +425,8 @@ class iModel:  # noqa: N801
         """Record the provider's report on the call and on the model.
 
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
-        value reflects whichever call finished last, so under concurrency it is
-        never evidence about a particular call. A call that failed records none.
+        value reflects whichever call last finished while its invoke waited for it,
+        so under concurrency it is never evidence about a particular call. A call that failed records none.
         A stream its consumer closed early, and a stream cancelled after the
         provider named its model (a timeout that cancels it included), have not
         failed: each keeps the model read from what it delivered. A timeout

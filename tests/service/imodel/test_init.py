@@ -1370,22 +1370,23 @@ class TestReportedServedModel:
         try:
             with patch.object(model.endpoint, "call", side_effect=call):
                 await model.invoke(messages=[{"role": "user", "content": "A"}])
-                task = asyncio.create_task(
-                    model.invoke(messages=[{"role": "user", "content": "B"}])
-                )
+                queued = await model.create_event(messages=[{"role": "user", "content": "B"}])
+                task = asyncio.create_task(model.invoke(api_call=queued))
                 await asyncio.sleep(0.3)
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
                 assert sent == ["A"]
 
-                # The next replenish lets the queue send the call nobody waits for.
+                # Room for one more request, so the queue sends the call nobody waits for.
                 model.executor.processor._available_requests = 2
                 await model.executor.processor.process()
         finally:
             await model.close()
 
         assert sent == ["A", "B"]
+        assert queued.status == EventStatus.COMPLETED
+        assert "served_model" not in queued.metadata
         assert model.provider_metadata["served_model"] == "gpt-A"
 
     @pytest.mark.parametrize("concurrency_limit", [None, 2])
