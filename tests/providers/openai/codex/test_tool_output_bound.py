@@ -456,18 +456,21 @@ async def test_a_list_cuts_the_first_item_that_does_not_fit_and_stops_there():
 
 
 @pytest.mark.asyncio
-async def test_a_long_key_is_cut_with_its_value():
-    arguments = {"k" * 30_000: "v" * 30_000}
+async def test_an_entry_whose_key_does_not_fit_is_left_out_whole():
+    """A key is never cut: a redactor classifies an entry by its key, and a cut can drop the
+    part that names a credential, so the entry is left out and counted."""
+    from lionagi.studio.operator.redact import redact_arguments
+
+    marked = "k" * 15_000 + "password" + "k" * 15_000
+    arguments = {marked: "s3cr3t-value", "path": "a.txt"}
 
     chunks, _, _ = await _run(
         {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
     )
 
     echoed = next(c for c in chunks if c.type == "tool_use").tool_input
-    assert len(json.dumps(echoed, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
-    ((key, value),) = echoed.items()
-    assert _parts(key)[2] == 30_000
-    assert _parts(value)[2] == 30_000
+    assert echoed == {"path": "a.txt", "[omitted]": "1 of 2 keys not shown"}
+    assert "s3cr3t-value" not in json.dumps(redact_arguments(echoed))
 
 
 @pytest.mark.asyncio

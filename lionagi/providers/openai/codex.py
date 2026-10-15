@@ -918,9 +918,10 @@ def _bounded_leaves(
     A list keeps its items in order up to the first that does not fit. That item is cut to
     the room left when the room is worth it, and an item naming how many were left out
     comes last. A mapping keeps every entry that fits whole, in order; then the entries
-    that did not fit are cut, in order, to the room left while it is worth it, a long key
-    cut with its value, and an ``"[omitted]"`` entry names how many entries were left
-    out. An entry cut to fit keeps its own note inside the room it was given, so only the
+    that did not fit are cut, in order, to the room left while it is worth it, and an
+    ``"[omitted]"`` entry names how many entries were left out. A key is never cut, since a
+    reader can classify an entry by its key (a redactor looking for a credential name in it):
+    an entry whose key takes more than half the room left is left out whole. An entry cut to fit keeps its own note inside the room it was given, so only the
     outermost note and a cut line inside it come on top of ``limit``. Strings are measured
     in characters, so text with many characters JSON escapes can render longer.
     """
@@ -959,32 +960,26 @@ def _bounded_leaves(
         if used + sep + size <= limit:
             whole.add(key)
             used += sep + size
-    cut: dict[Any, tuple[Any, Any]] = {}  # by the entry's own key: (key as kept, value)
-    cut_keys: set[Any] = set()
+    cut: dict[Any, Any] = {}
     for key, item in value.items():
         if key in whole:
             continue
         room = limit - used - 2
         if room < _MIN_CUT_CHARS:
             break
-        kept_key = key
         key_text = _key_text(key)
         if len(key_text) > room // 2:
-            kept_key = key_text = _cut_text(key_text, room // 2 - _CUT_NOTE_CHARS)
-            if kept_key in value or kept_key in cut_keys:
-                continue
+            continue
         key_size = _json_size(key_text, sizes) + 2
         item = _bounded_leaves(item, room - key_size - _CUT_NOTE_CHARS, sizes)
-        cut[key] = (kept_key, item)
-        cut_keys.add(kept_key)
+        cut[key] = item
         used += 2 + key_size + _json_size(item, sizes)
     kept: dict[Any, Any] = {}
     for key, item in value.items():
         if key in whole:
             kept[key] = item
         elif key in cut:
-            kept_key, kept_item = cut[key]
-            kept[kept_key] = kept_item
+            kept[key] = cut[key]
     left_out = len(value) - len(kept)
     if left_out:
         note = "[omitted]"
