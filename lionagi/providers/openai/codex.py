@@ -781,8 +781,10 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
 #: and results recorded here can be part of it, so one broad search recorded whole could fill
 #: a later prompt on its own. The bound is per record and on the recorded text: a turn with
 #: many results still renders all of them, and the rendering can be longer than the text it
-#: renders: up to four times for control characters and six for lone surrogates or U+FFFE,
-#: which it escapes, and a nested value's indentation grows with the square of its depth.
+#: renders: up to ten times where a control character or a lone surrogate makes it escape the
+#: text (a character outside the Basic Multilingual Plane is then written as ten), and a string
+#: of many lines nested deep repeats its indentation on every line, so it grows with the number
+#: of lines times the depth.
 CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
 
 #: How far a cut moves to keep a character with its marks before it gives up and cuts where

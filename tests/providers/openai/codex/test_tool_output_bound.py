@@ -543,7 +543,8 @@ async def test_an_entry_cut_to_fit_keeps_its_note_within_the_bound():
 @pytest.mark.asyncio
 async def test_a_list_item_cut_to_fit_keeps_its_note_within_the_bound():
     """The item a list cuts is given the room left less its note's share, so the list, the
-    item's cut line included, stays within the bound."""
+    item's cut line included, stays within the bound, with only the list's own count note on
+    top."""
     arguments = ["a" * 100, "x" * 30_000]
 
     chunks, _, _ = await _run(
@@ -631,8 +632,9 @@ async def test_a_structured_result_nested_very_deep_is_recorded_as_bounded_text(
 async def test_a_structured_result_the_json_encoder_cannot_reach_says_it_is_too_deep(
     monkeypatch,
 ):
-    """Where this Python's JSON encoder cannot go as deep as a result (before 3.12), the
-    result is recorded as a line saying it is nested too deep to show."""
+    """Where this Python's JSON encoder cannot go as deep as a result (how deep it goes depends
+    on the Python version and the stack; the encoder is stubbed here), the result is recorded
+    as a line saying it is nested too deep to show."""
     import types
 
     from lionagi.providers.openai import codex
