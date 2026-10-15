@@ -41,12 +41,13 @@ class BoundedLRUCache(Generic[K, V]):
     def forget(self, key: K) -> None:
         """Remove ``key``'s entry at the cache's next read or write.
 
-        It hashes the key and queues it, touching nothing else, so it is safe from a weakref
-        callback, which can run in any thread and in the middle of this cache's own work. A
-        callback stored inside this cache that must not keep the cache alive passes
-        ``_pending_removals.append`` instead of this bound method, which holds the cache. An
-        unhashable key raises ``TypeError`` here rather than at the next read or write; raised
-        from a weakref callback, Python reports it as unraisable and the entry stays.
+        It takes no lock: it hashes the key and queues it, so it is safe from a weakref callback,
+        which can run in any thread and in the middle of this cache's own work, as long as the
+        key's own ``__hash__`` does not read this cache. A callback stored inside this cache
+        that must not keep the cache alive passes ``_pending_removals.append`` instead of this
+        bound method, which holds the cache. An unhashable key raises ``TypeError`` here rather
+        than at the next read or write; raised from a weakref callback, Python reports it as
+        unraisable and the entry stays.
         """
         hash(key)
         self._pending_removals.append(key)

@@ -828,7 +828,7 @@ def _held_by(func) -> list:
     return held
 
 
-def test_the_projection_cache_hands_its_keys_a_callback_that_does_not_hold_it():
+def test_the_projection_cache_callback_holds_its_queue_and_not_the_cache():
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
     payload = _Payload("held")
@@ -836,7 +836,7 @@ def test_the_projection_cache_hands_its_keys_a_callback_that_does_not_hold_it():
     (key,) = [key for key in _stable_dataclass_keys._cache if key.target is payload]
 
     # The weakref callback and, one level down, each callable it holds: their closure
-    # cells, default arguments and bound owners.
+    # cells, default arguments and bound owners. A holder deeper than that is not read.
     direct = _held_by(key._ref.__callback__)
     reached = direct + [item for value in direct if callable(value) for item in _held_by(value)]
     assert not any(value is _stable_dataclass_keys for value in reached)

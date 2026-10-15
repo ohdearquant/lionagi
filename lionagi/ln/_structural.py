@@ -211,6 +211,9 @@ _UUID = 22
 _ELLIPSIS = 23
 _TYPING_SINGLETON = 24
 
+# Keyed by identity, so a frozen dataclass's key is computed once: its fields are assumed not
+# to change after that. A field written through `object.__setattr__` once the key is cached is
+# not seen, and the old key is returned until newer entries evict it or its object is collected.
 _stable_dataclass_keys: BoundedLRUCache[_IdentityKey, _StructuralKey] = BoundedLRUCache(
     "LIONAGI_STRUCTURAL_CACHE_SIZE",
     10000,
