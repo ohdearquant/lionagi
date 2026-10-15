@@ -1297,10 +1297,23 @@ async def test_an_orchestrate_run_json_names_the_reason_in_compatibility_mode(
         ctx["terminal_reason"] = ("failed", "The store refused a write: x")
         return "failed"
 
+    from lionagi.state.compat import Closure
+
     monkeypatch.setattr(_orchestration, "teardown_persist", teardown)
     written: list = []
+    profile = (
+        CompatibilityProfile(
+            name="orchestrate-records",
+            version=1,
+            closure=Closure(tables=()),
+            writes={},
+            operations={"run"},
+        )
+        if compatibility == "profile"
+        else None
+    )
     env = SimpleNamespace(
-        _live_persist={"db": SimpleNamespace(compatibility=compatibility)},
+        _live_persist={"db": SimpleNamespace(compatibility=profile)},
         cwd=None,
         _run_manifest={},
         run=SimpleNamespace(write_manifest=written.append),

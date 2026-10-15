@@ -48,6 +48,8 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.exc import DBAPIError
 
+from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
 __all__ = (
     "Closure",
     "ColumnShape",
@@ -58,7 +60,9 @@ __all__ = (
     "StateCompatibilityRefused",
     "TableShape",
     "TableWrites",
+    "is_compatibility_store",
     "read_closure",
+    "refusal_in",
 )
 
 
@@ -87,6 +91,33 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
 
     def __reduce__(self):
         return (type(self), (self.operation, self.profile, self.reason, self.committed))
+
+
+def refusal_in(error: BaseException | None) -> StateCompatibilityRefused | None:
+    """The store refusal *error* is, or carries inside exception groups however deeply nested.
+
+    Task groups and callback collectors wrap failures, so a refusal can arrive beside a
+    cancellation or another error; a plain ``isinstance`` on the outermost exception would read
+    that group as an ordinary failure.
+    """
+    if isinstance(error, StateCompatibilityRefused):
+        return error
+    if isinstance(error, BaseExceptionGroup):
+        for item in error.exceptions:
+            found = refusal_in(item)
+            if found is not None:
+                return found
+    return None
+
+
+def is_compatibility_store(db: Any) -> bool:
+    """Whether *db* is a store opened in compatibility mode, by the profile it was opened with.
+
+    A store sets ``compatibility`` to its :class:`CompatibilityProfile`, or to ``None``; any other
+    object on that attribute (a test double, a store from another version) is not evidence of
+    compatibility mode, so callers take the native path.
+    """
+    return isinstance(getattr(db, "compatibility", None), CompatibilityProfile)
 
 
 # SQL tokens

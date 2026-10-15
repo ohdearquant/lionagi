@@ -30,6 +30,7 @@ from lionagi.ln.concurrency import (
     ConcurrencyEvent,
     create_task_group,
     get_cancelled_exc_class,
+    is_cancelled,
 )
 from lionagi.models.note import Note
 from lionagi.operations.node import Operation, create_operation
@@ -113,16 +114,31 @@ def _render_operator_messages(operation: "Operation", context: dict[str, Any]) -
     operation.metadata["rendered_into_op"] = op_id
 
 
-def _refusal(error: BaseException) -> BaseException | None:
-    """The store's refusal (ADR-0128 D6) that *error* carries through task-group wrapping."""
-    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+def _leaf_errors(error: BaseException) -> list[BaseException]:
+    """Every leaf failure *error* carries, however deeply a task group nested it."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for exc in error.exceptions for leaf in _leaf_errors(exc)]
+    return [error]
 
-    while isinstance(error, BaseExceptionGroup):
-        matched = error.subgroup(lambda e: isinstance(e, StateCompatibilityRefused))
-        if matched is None:
-            return None
-        error = matched.exceptions[0]
-    return error if isinstance(error, StateCompatibilityRefused) else None
+
+def _refusal(error: BaseException) -> BaseException | None:
+    """The store's refusal (ADR-0128 D6) that *error* carries through task-group wrapping.
+
+    Only one failure is raised out of a flow, so every other one the group carries is logged
+    here before that happens: a sibling left unlogged would leave the run's record naming one
+    failure while others happened without a trace. Cancellations are the group's ordinary
+    teardown noise and are not reported as errors.
+    """
+    from lionagi.state.compat import refusal_in  # noqa: PLC0415
+
+    refusal = refusal_in(error)
+    if refusal is None:
+        return None
+    for other in _leaf_errors(error):
+        if other is refusal or is_cancelled(other):
+            continue
+        logger.warning("flow error alongside the refusal that is raised: %s", other)
+    return refusal
 
 
 @dataclass(slots=True)
@@ -259,10 +275,12 @@ class DependencyAwareExecutor:
         except BaseExceptionGroup as group:
             # A refused write is the one operation failure a flow raises (ADR-0128 D6), and
             # it is raised as itself, with its own cause, rather than inside the task groups'
-            # wrapping.
+            # wrapping. This path also sweeps: a sibling held behind the limiter never reaches its
+            # own terminal, so without the sweep it keeps "queued" as its last signal.
             refusal = _refusal(group)
             if refusal is None:
                 raise
+            self._cancel_announced_unfinished()
             raise refusal from refusal.__cause__
 
         completed_ops = self._completed_operation_ids()
@@ -1159,6 +1177,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
             refusal = _refusal(group)
             if refusal is None:
                 raise
+            # Sweep, as the cancellation path above does -- a sibling held behind the limiter
+            # never reaches its own terminal, so without the sweep it keeps "queued".
+            self._cancel_announced_unfinished()
             raise refusal from refusal.__cause__
         finally:
             self._running = False
@@ -1261,6 +1282,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 with contextlib.suppress(get_cancelled_exc_class(), Exception):
                     await driver_done.wait()
         if driver_errors:
+            # Sweep, as the driver's own cancellation path does: the driver stopped on an error
+            # rather than completing, so a node it announced and never reached is still owed a
+            # terminal, and a refusal here is raised as itself.
+            self._cancel_announced_unfinished()
             raise _refusal(driver_errors[0]) or driver_errors[0]
 
     async def _run_tracked(self, node: Operation) -> None:
@@ -1638,9 +1663,14 @@ async def flow(
 ) -> dict[str, Any]:
     """Execute a graph with dependency management and optional reactive
     self-expansion. Returns ``{completed_operations, operation_results,
-    final_context, skipped_operations}`` always, plus ``spawned_operations``/
+    final_context, skipped_operations}``, plus ``spawned_operations``/
     ``escalated_operations``/``dropped_spawns`` when ``reactive=True`` — see
-    docs/internals/core.md for the full return-shape and hook contracts."""
+    docs/internals/core.md for the full return-shape and hook contracts.
+
+    Raises ``StateCompatibilityRefused`` when the store refuses a write one of
+    the operations made: that refusal is raised as itself, and no result is
+    returned, so a refused write never reads as a flow that succeeded without
+    persistence."""
 
     if not parallel:
         max_concurrent = 1

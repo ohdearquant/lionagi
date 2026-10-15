@@ -455,7 +455,18 @@ class _LockedThenRefusingDB:
         raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
 
 
-@pytest.mark.parametrize("compatibility", [None, "profile"], ids=["native", "compatibility"])
+def _compatibility_profile():
+    """The type of object a store actually carries in its ``compatibility`` attribute."""
+    from lionagi.state.compat import Closure, CompatibilityProfile
+
+    return CompatibilityProfile(
+        name="synthetic", version=1, closure=Closure(tables=()), writes={}, operations={"op"}
+    )
+
+
+@pytest.mark.parametrize(
+    "compatibility", [None, _compatibility_profile()], ids=["native", "compatibility"]
+)
 async def test_a_deferred_queue_attempts_its_head_only_in_compatibility_mode(compatibility):
     """Deferred after three ordinary failures, a queue on a compatibility-mode store still attempts
     its head on each submit, so a refusal stops the run then rather than at teardown (ADR-0128 D6);

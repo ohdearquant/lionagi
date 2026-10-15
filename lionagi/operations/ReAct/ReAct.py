@@ -672,6 +672,8 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
             if param in resp_ctx:
                 operate_kwargs[param] = resp_ctx[param]
 
+    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
     try:
         if "context" in resp_ctx_updates:  # the final call's own context, not the caller's
             out = await operate(**operate_kwargs)
@@ -687,6 +689,10 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
                 )
     except (ExecutionError, ProviderError):
         # The provider refused the final call; an earlier round's reply is not its answer.
+        raise
+    except StateCompatibilityRefused:
+        # The store refused a write this call made (ADR-0128 D6): the run stops rather than
+        # reporting an earlier round's reply as this call's answer.
         raise
     except Exception:
         out = branch.msgs.last_response.response

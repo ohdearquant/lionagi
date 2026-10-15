@@ -72,7 +72,9 @@ class MessagePersistRetryQueue:
         """Queue ``event`` and persist pending events in their original order."""
         async with self._lock:
             self._pending.append(event)
-            if self._retry_deferred and getattr(self._db, "compatibility", None) is None:
+            from lionagi.state.compat import is_compatibility_store  # noqa: PLC0415
+
+            if self._retry_deferred and not is_compatibility_store(self._db):
                 return False
             # In compatibility mode a deferred queue still attempts its head: the store may be
             # refusing it, and a refusal stops the run now rather than at teardown (ADR-0128 D6).
