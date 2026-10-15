@@ -226,9 +226,11 @@ class RunDir:
         (`_run_manifest_lock`), so a writer holding it across a read and its
         write sees no other write land between them. A run reconstructed from
         its path preserves any execution provenance already stored in the
-        manifest, read under that lock; a manifest it cannot read or decode
-        (an ``OSError`` other than a missing file, or ``UnicodeDecodeError``)
-        stops the write with that error.
+        manifest, read under that lock; any error reading it other than a
+        missing file or a ``JSONDecodeError`` (an ``OSError``, a
+        ``UnicodeDecodeError``, or a ``ValueError`` the JSON parser raises for
+        JSON it will not read, such as an integer over its digit limit) stops
+        the write with that error.
         """
         ensure_lionagi_dir(self.state_root)
         with _run_manifest_lock(self.state_root, required=False):
@@ -264,9 +266,9 @@ class RunDir:
                 }
             )
         else:
-            # A manifest that is gone, or that the JSON parser rejects, holds nothing
-            # this code can read back; one that cannot be read or decoded may hold
-            # provenance, so that error stops the write.
+            # A manifest that is gone, or that is malformed JSON (JSONDecodeError), holds
+            # nothing this code can read back; any other error reading it leaves a file
+            # that may hold provenance, so that error stops the write.
             try:
                 existing = self.read_manifest()
             except (FileNotFoundError, json.JSONDecodeError):

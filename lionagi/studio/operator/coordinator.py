@@ -752,7 +752,8 @@ class OperatorCoordinator:
                     )
                 except Exception:
                     # The run's record keeps its last status; say why, as the opening
-                    # write's failure is said.
+                    # write's failure is said. A cancel that lands while this write is in
+                    # flight propagates instead, and the write's outcome goes unobserved.
                     _log.error(
                         "Operator turn %s: its terminal run.json write failed",
                         request_id,
