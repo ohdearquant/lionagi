@@ -371,6 +371,7 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
         {"X-Forwarded-Host": "attacker.example"},
         {"x-trace": "1"},
         {"anthropic_version": "2023-06-01"},
+        {"Idempotency-\u212aey": "x"},
     ],
     ids=[
         "bytes-name",
@@ -394,6 +395,7 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
         "forwarded-host",
         "unlisted-name",
         "underscore-spelling-of-a-listed-name",
+        "kelvin-sign-in-a-listed-name",
     ],
 )
 @pytest.mark.parametrize(
@@ -567,8 +569,9 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
     call_headers = {"anthropic-version": "2023-01-01"}
     client_headers = {"idempotency-key": "client-1"}
     model.endpoint.config.client_kwargs = {"headers": client_headers}
-    # The header mapping the attempt itself is handed: building the payload copies the
-    # caller's, so this is the one a change made while the account is reserved could reach.
+    # The header mapping the attempt is handed. The attempt copies it, and reads the client's,
+    # before it reserves an account, so neither change made below while the account is
+    # reserved may reach the wire.
     held = []
     name = "_routed_stream_attempt" if stream else "_request_attempt"
     attempt = getattr(model.endpoint, name)
@@ -766,6 +769,22 @@ async def test_a_callers_idempotency_key_is_the_one_sent(monkeypatch, tmp_path):
     (sent,) = transport.calls
     keys = [value for name, value in sent["headers"].items() if name.lower() == "idempotency-key"]
     assert keys == ["caller-key"]
+    assert len(_attempts(path)) == 1
+
+
+@pytest.mark.parametrize("value", ["", "  "], ids=["empty", "blank"])
+@pytest.mark.asyncio
+async def test_an_empty_idempotency_key_is_replaced_by_a_minted_one(monkeypatch, tmp_path, value):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    model.endpoint.config.idempotent_retries = True
+
+    await model.endpoint.call(REQUEST, extra_headers={"idempotency-key": value})
+
+    (sent,) = transport.calls
+    keys = [value for name, value in sent["headers"].items() if name.lower() == "idempotency-key"]
+    assert len(keys) == 1
+    assert keys[0].strip()
     assert len(_attempts(path)) == 1
 
 

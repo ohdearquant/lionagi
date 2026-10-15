@@ -1326,6 +1326,52 @@ class TestIdempotencyKeyOnRetriedPosts:
         assert len(sent_headers) == 2
         assert sent_headers[0]["Idempotency-Key"] != sent_headers[1]["Idempotency-Key"]
 
+    def _recording_session(self, sent_headers: list[dict]):
+        def _make_new_session(*args, **kwargs):
+            mock_session = AsyncMock(spec=aiohttp.ClientSession)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            async def _request(*a, **kw):
+                sent_headers.append(dict(kw["headers"]))
+                return self._make_ok_response()
+
+            mock_session.request = _request
+            return mock_session
+
+        return _make_new_session
+
+    @pytest.mark.parametrize("value", ["", "  "], ids=["empty", "blank"])
+    @pytest.mark.asyncio
+    async def test_an_empty_key_is_replaced_by_a_minted_one(self, value):
+        endpoint = self._make_endpoint(idempotent_retries=True, max_retries=1)
+        sent_headers: list[dict] = []
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=self._recording_session(sent_headers)
+            ):
+                await endpoint.call({"prompt": "a cat"}, extra_headers={"idempotency-key": value})
+
+        keys = [v for name, v in sent_headers[0].items() if name.lower() == "idempotency-key"]
+        assert len(keys) == 1
+        assert keys[0].strip()
+
+    @pytest.mark.asyncio
+    async def test_a_header_name_that_is_not_a_string_is_left_to_the_http_client(self):
+        """The key check skips it; the HTTP client is what refuses such a name, as before."""
+        endpoint = self._make_endpoint(idempotent_retries=True, max_retries=1)
+        sent_headers: list[dict] = []
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=self._recording_session(sent_headers)
+            ):
+                await endpoint.call({"prompt": "a cat"}, extra_headers={1: "x"})
+
+        assert sent_headers[0][1] == "x"
+        assert sent_headers[0]["Idempotency-Key"]
+
     @pytest.mark.asyncio
     async def test_idempotency_key_absent_when_not_opted_in(self):
         endpoint = self._make_endpoint(idempotent_retries=False, max_retries=1)

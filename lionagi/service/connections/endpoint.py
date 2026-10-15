@@ -324,18 +324,26 @@ class Endpoint:
         else:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
-        if (
-            self.config.idempotent_retries
-            and self.config.method.upper() == "POST"
-            and not any(name.lower() == "idempotency-key" for name in headers)
-        ):
-            import uuid
+        if self.config.idempotent_retries and self.config.method.upper() == "POST":
+            # A name that is not a string is left to the HTTP client, which refuses it as before.
+            named = [
+                name
+                for name in headers
+                if isinstance(name, str) and name.lower() == "idempotency-key"
+            ]
+            # An empty value names no request, so it is replaced rather than sent.
+            if not any(str(headers[name]).strip() for name in named):
+                import uuid
 
-            # Minted once per logical request, here -- before either retry path
-            # (native _call_aiohttp or the opt-in RetryConfig wrapper below) is
-            # entered -- and reused verbatim across every attempt, so the
-            # provider can recognize a lost-response replay as the same request.
-            headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+                # Minted once per logical request, here -- before either retry path
+                # (native _call_aiohttp or the opt-in RetryConfig wrapper below) is
+                # entered -- and reused verbatim across every attempt, so the
+                # provider can recognize a lost-response replay as the same request.
+                # It also takes the place of a client-level key: one key shared by
+                # every request would let the provider answer a new request with an
+                # earlier one's response.
+                headers = {name: value for name, value in headers.items() if name not in named}
+                headers["Idempotency-Key"] = str(uuid.uuid4())
 
         call_func = self._call
 
