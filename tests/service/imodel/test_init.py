@@ -1075,6 +1075,21 @@ class TestReportedServedModel:
         assert iModel._event_failed({"type": event_type}) is expected
 
     @pytest.mark.parametrize(
+        "carried",
+        [
+            {"error": {"code": "mcp_error", "message": "x"}},
+            {"is_error": True},
+            {"status": "failed"},
+        ],
+        ids=["error", "is_error", "status"],
+    )
+    @pytest.mark.parametrize("event_type", ["response.mcp_call.failed", "item.failed"])
+    def test_an_item_failure_is_not_the_call_failing_whatever_it_carries(self, event_type, carried):
+        assert iModel._event_failed({"type": event_type, **carried}) is False
+        # Control: the same fields on an event of no failure type do fail the call.
+        assert iModel._event_failed({"type": "response.output_item.done", **carried}) is True
+
+    @pytest.mark.parametrize(
         "response,expected",
         [
             ({"model": "gpt-served-1", "error": None}, "gpt-served-1"),
@@ -1224,6 +1239,32 @@ class TestReportedServedModel:
         assert api_call.status == EventStatus.CANCELLED
         assert api_call.metadata["served_model"] == "gpt-served-2"
         assert model.provider_metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.asyncio
+    async def test_an_invoke_cancelled_before_it_returns_records_no_model(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def mock_call(*_args, **_kwargs):
+            started.set()
+            await never.wait()
+            return {"model": "unreachable", "response": "x"}
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.metadata["served_model"] = "stale-event-evidence"
+        try:
+            with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+                task = asyncio.create_task(base_imodel.invoke(api_call=api_call))
+                await started.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        finally:
+            never.set()
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
 
     @pytest.mark.parametrize("concurrency_limit", [None, 2])
     @pytest.mark.asyncio

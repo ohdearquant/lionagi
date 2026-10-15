@@ -43,9 +43,10 @@ def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
     return RuntimeError(str(err) if err is not None else "stream failed without a recorded cause")
 
 
-# The event types a provider sends when the call itself failed: the Responses API's
-# ``response.failed`` and Codex's ``turn.failed``, and a bare ``failed``. An event about
-# an item inside the call, such as ``response.mcp_call.failed``, is not one of them.
+# The event types that say the call itself failed: the Responses API's
+# ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
+# way, although no provider in this package sends one. Any other type naming a failure,
+# such as ``response.mcp_call.failed``, is about an item inside the call.
 _CALL_FAILED_EVENT_TYPES = frozenset({"response.failed", "turn.failed", "failed"})
 
 
@@ -323,17 +324,21 @@ class iModel:  # noqa: N801
     def _event_failed(event: Any) -> bool:
         """Whether a provider event or response says the call failed.
 
-        The event counts as failed when its type is one the provider sends for
-        the call itself failing (``_CALL_FAILED_EVENT_TYPES``); an event about an
-        item inside the call, such as ``response.mcp_call.failed``, does not. It
-        also counts when the event itself, its ``message`` or its ``response`` has
-        an ``error`` or ``is_error`` that is set, a ``status`` of ``failed``, or a
-        choice whose ``finish_reason`` is ``error``.
+        The event counts as failed when its type is one that says the call itself
+        failed (``_CALL_FAILED_EVENT_TYPES``). Any other type ending in ``failed``,
+        such as ``response.mcp_call.failed``, is about an item inside the call and
+        does not count, whatever else the event carries. Otherwise it counts when
+        the event itself, its ``message`` or its ``response`` has an ``error`` or
+        ``is_error`` that is set, a ``status`` of ``failed``, or a choice whose
+        ``finish_reason`` is ``error``.
         """
         if not isinstance(event, dict):
             return False
-        if str(event.get("type", "")) in _CALL_FAILED_EVENT_TYPES:
+        event_type = str(event.get("type", ""))
+        if event_type in _CALL_FAILED_EVENT_TYPES:
             return True
+        if event_type.endswith("failed"):
+            return False
         for holder in (event, event.get("message"), event.get("response")):
             if not isinstance(holder, dict):
                 continue
@@ -424,7 +429,8 @@ class iModel:  # noqa: N801
         A stream its consumer closed early, and a call cancelled after the
         provider named its model (a timeout that cancels it included), have not
         failed: each keeps the model read from what it delivered. A timeout
-        raised inside the stream fails the call, so it records none.
+        raised inside the stream fails the call, so it records none, and an invoke
+        cancelled before it returns has read no response, so it records none.
         """
         if api_call is not None and api_call.status == EventStatus.FAILED:
             served_model = None
@@ -549,6 +555,10 @@ class iModel:  # noqa: N801
         except Exception as e:
             self._store_served_model(api_call, None)
             raise ValueError(f"Failed to invoke API call: {e}") from e
+        except BaseException:
+            # Cancelled (a caller's timeout included) before any response was read.
+            self._store_served_model(api_call, None)
+            raise
 
     @property
     def is_cli(self) -> bool:
