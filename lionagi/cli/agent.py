@@ -1112,23 +1112,37 @@ async def _run_agent(
         playbook_artifacts=None,
         agent_defaults=profile.artifact_defaults if profile else None,
     )
-    live = await setup_agent_persist(
-        branch,
-        agent_name=agent_name,
-        artifacts_path=str(run.artifact_root),
-        artifact_contract=artifact_contract,
-        invocation_id=invocation_id,
-        model=resolved_model_spec,
-        provider=provider,
-        effort=effort,
-        project=project,
-        run_id=run.run_id,
-        run_manifest=run_manifest,
-        # This runner drains queued operator messages at turn end and
-        # tombstones whatever it did not take, so controls aimed at it have a
-        # consumer.
-        drains_controls=True,
-    )
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    try:
+        live = await setup_agent_persist(
+            branch,
+            agent_name=agent_name,
+            artifacts_path=str(run.artifact_root),
+            artifact_contract=artifact_contract,
+            invocation_id=invocation_id,
+            model=resolved_model_spec,
+            provider=provider,
+            effort=effort,
+            project=project,
+            run_id=run.run_id,
+            run_manifest=run_manifest,
+            # This runner drains queued operator messages at turn end and
+            # tombstones whatever it did not take, so controls aimed at it have a
+            # consumer.
+            drains_controls=True,
+        )
+    except StateCompatibilityRefused as exc:
+        # The run stops before it starts (ADR-0128 D6), and its run.json says so rather than
+        # reading `running` with no process behind it.
+        if _write_run_manifest is not None:
+            run_manifest.update(
+                status="failed",
+                ended_at=time.time(),
+                error=f"The store refused a write: {exc}",
+            )
+            _write_run_manifest(run_manifest)
+        raise
     if live is None and _write_run_manifest is not None:
         # Setup returned no session (it may have committed a row before it failed, which `li
         # monitor` lists under that row's own id; nothing here prints it), so the run id names no

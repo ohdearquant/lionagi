@@ -1305,7 +1305,11 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
             if not await retry_queue.flush_final():
                 flushed = False
         except StateCompatibilityRefused as exc:
-            refusal = refusal or exc
+            if refusal is None:
+                refusal = exc
+            else:
+                # The first refusal is raised; each later one is logged, so none goes unreported.
+                _log.error("live persist flush refused another queue: %s", exc)
     if refusal is not None:
         raise refusal
     return flushed

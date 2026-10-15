@@ -713,11 +713,16 @@ class OperatorCoordinator:
                 from lionagi.cli._runs import teardown_agent_persist
 
                 with suppress(Exception):
-                    await teardown_agent_persist(
+                    status = await teardown_agent_persist(
                         live,
                         status=terminal_status,
                         exception=terminal_exc,
                     )
+                    if getattr(live.get("db"), "compatibility", None) is not None:
+                        # In compatibility mode run.json records the status teardown decided, as
+                        # `li agent`'s does: a turn the engine finished fails when the store
+                        # refused one of its writes (ADR-0128 D6).
+                        terminal_status = status
             if run_branch is not None and run_dir is not None:
                 if opening_write is not None:
                     # its thread writes whatever happens to this wait, so the wait holds through any

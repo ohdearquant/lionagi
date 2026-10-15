@@ -1130,3 +1130,250 @@ async def test_teardown_flushes_every_queue_before_it_raises_a_refusal():
         await _flush_pending_message_events({"message_retry_queues": [first, second]})
 
     assert (first.attempts, second.attempts) == (1, 1)
+
+
+class _RefusingFlushQueue:
+    def __init__(self, target: str) -> None:
+        self.target = target
+
+    async def flush_final(self) -> bool:
+        raise StateCompatibilityRefused("persist_live_message", self.target, "refused")
+
+
+async def test_teardown_logs_every_refusal_after_the_one_it_raises(caplog):
+    from lionagi.cli._runs import _flush_pending_message_events
+
+    queues = [_RefusingFlushQueue("messages@1"), _RefusingFlushQueue("messages@2")]
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        await _flush_pending_message_events({"message_retry_queues": queues})
+
+    (record,) = [r for r in caplog.records if "messages@2" in r.getMessage()]
+    assert record.levelname == "ERROR"
+
+
+@pytest.mark.parametrize("entry", ["dependency-aware", "reactive", "stream"])
+async def test_a_refused_write_in_a_flow_operation_stops_the_flow(entry):
+    """A refusal in one operation is raised from the flow, instead of failing that operation while
+    the others run on (ADR-0128 D6)."""
+    import anyio
+
+    from lionagi.operations import flow
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    ran = []
+
+    async def refused(**kw):
+        raise StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+
+    async def slow(**kw):
+        await anyio.sleep(0.5)
+        ran.append("slow")
+        return "slow"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("refused", refused)
+    session.register_operation("slow", slow)
+    builder = OperationGraphBuilder()
+    builder.add_operation("refused", depends_on=[])
+    builder.add_operation("slow", depends_on=[])
+
+    graph = builder.get_graph()
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        if entry == "stream":
+            async for _ in session.flow_stream(graph):
+                pass
+        else:
+            await flow(session, graph, reactive=entry == "reactive")
+    assert ran == []
+
+
+async def test_a_refused_message_write_in_a_stream_run_keeps_its_type(monkeypatch):
+    """A refusal is no provider failure: a stream run raises it as itself (ADR-0128 D6)."""
+    import types
+    from unittest.mock import AsyncMock
+
+    from lionagi.operations.run.run import RunParam, run
+    from lionagi.service.imodel import iModel
+    from lionagi.service.types.stream_chunk import StreamChunk
+    from lionagi.session.branch import Branch
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    model.endpoint = types.SimpleNamespace(
+        is_cli=True, session_id=None, to_dict=lambda: {"type": "fake_cli", "session_id": None}
+    )
+    model.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    async def stream(api_call=None):
+        yield StreamChunk(type="text", content="reply")
+
+    model.create_event = create_event
+    model.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+    model.stream = stream
+    branch = Branch()
+    branch.chat_model = model
+    add_message = branch.msgs.a_add_message
+
+    async def refusing(**kwargs):
+        if "assistant_response" in kwargs:
+            raise StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+        return await add_message(**kwargs)
+
+    monkeypatch.setattr(branch.msgs, "a_add_message", refusing)
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        async for _ in run(branch, "do something", RunParam()):
+            pass
+
+
+async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
+    """`li agent` stops at a refused setup, and its run.json reads `failed` with the refusal
+    instead of `running` (ADR-0128 D6)."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli._runs as runs_mod
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.service.manager import iModelManager
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/model")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}", agent_definition_hash=lambda n: "abc"
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="refused-setup")
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda: run)
+
+    async def refused_setup(*args, **kwargs):
+        raise StateCompatibilityRefused("create_session", "sessions@1", "refused")
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", refused_setup)
+
+    from lionagi.cli.agent import _run_agent
+
+    with pytest.raises(StateCompatibilityRefused):
+        await _run_agent("codex/model", "do the thing")
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["ended_at"] is not None
+    assert manifest["error"].startswith("The store refused a write: create_session refused")
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "error"),
+    [(None, None), ("profile", "The store refused a write: x")],
+    ids=["native", "compatibility"],
+)
+async def test_an_orchestrate_run_json_names_the_reason_in_compatibility_mode(
+    monkeypatch, compatibility, error
+):
+    from types import SimpleNamespace
+
+    from lionagi.cli.orchestrate import _orchestration
+
+    async def teardown(ctx, **kwargs):
+        ctx["terminal_reason"] = ("failed", "The store refused a write: x")
+        return "failed"
+
+    monkeypatch.setattr(_orchestration, "teardown_persist", teardown)
+    written: list = []
+    env = SimpleNamespace(
+        _live_persist={"db": SimpleNamespace(compatibility=compatibility)},
+        cwd=None,
+        _run_manifest={},
+        run=SimpleNamespace(write_manifest=written.append),
+    )
+
+    assert await _orchestration.stop_live_persist(env, status="failed") == "failed"
+    assert written[0]["status"] == "failed"
+    assert written[0].get("error") == error
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "recorded"),
+    [(None, "completed"), ("profile", "failed")],
+    ids=["native", "compatibility"],
+)
+async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compatibility_mode(
+    tmp_path, monkeypatch, compatibility, recorded
+):
+    """A turn the engine finished whose teardown the store refused reads `failed` in its run.json
+    in compatibility mode (ADR-0128 D6); natively run.json keeps the turn's own status."""
+    import json
+    import time
+    from types import SimpleNamespace
+
+    import anyio
+
+    import lionagi.cli._runs as runs_mod
+    from lionagi.studio.operator.coordinator import OperatorCoordinator
+    from lionagi.studio.operator.store import OperatorStore
+    from lionagi.studio.operator.types import OperatorEngineEvent
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+
+    async def setup(*args, **kwargs):
+        return {"session_id": "s1", "db": SimpleNamespace(compatibility=compatibility)}
+
+    async def teardown(ctx, *, status="completed", **kwargs):
+        return "failed"
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "teardown_agent_persist", teardown)
+
+    class _Engine:
+        async def _stream(self, _turn):
+            yield OperatorEngineEvent(
+                "text", {"content": "reply", "format": "plain", "role": "assistant"}
+            )
+
+        def stream(self, turn):
+            return self._stream(turn)
+
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_Engine
+    )
+    await coordinator.startup()
+    try:
+        cid = (await coordinator.create_conversation())["conversation"]["id"]
+        await coordinator.submit(
+            cid,
+            instruction="hello",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        deadline = time.monotonic() + 5
+        status = None
+        while time.monotonic() < deadline:
+            manifests = list((tmp_path / "runs").glob("operator-*/run.json"))
+            if manifests:
+                status = json.loads(manifests[0].read_text()).get("status")
+                if status != "running":
+                    break
+            await anyio.sleep(0.02)
+    finally:
+        await coordinator.shutdown()
+
+    assert status == recorded

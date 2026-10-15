@@ -569,3 +569,23 @@ async def test_handler_cancellation_is_not_misclassified_as_an_ordinary_failure(
     else:  # pragma: no cover - the profile must propagate handler cancellation
         pytest.fail("HookBus swallowed handler cancellation")
     assert later_calls == []
+
+
+async def test_a_refused_session_end_flush_logs_every_refusal_after_the_one_it_raises(caplog):
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    class _Queue:
+        def __init__(self, target: str) -> None:
+            self.target = target
+
+        async def flush_final(self) -> bool:
+            raise StateCompatibilityRefused("persist_live_message", self.target, "refused")
+
+    bus = HookBus(_RecordingObserver())
+    bus._message_retry_queues = {"first": _Queue("messages@1"), "second": _Queue("messages@2")}
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        await bus.emit(HookPoint.SESSION_END, session_id="s", status="completed")
+
+    (record,) = [r for r in caplog.records if "messages@2" in r.getMessage()]
+    assert record.levelname == "ERROR"

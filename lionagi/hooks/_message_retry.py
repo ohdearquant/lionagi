@@ -72,9 +72,11 @@ class MessagePersistRetryQueue:
         """Queue ``event`` and persist pending events in their original order."""
         async with self._lock:
             self._pending.append(event)
-            if self._retry_deferred:
+            if self._retry_deferred and getattr(self._db, "compatibility", None) is None:
                 return False
-            return await self._drain_locked()
+            # In compatibility mode a deferred queue still attempts its head: the store may be
+            # refusing it, and a refusal stops the run now rather than at teardown (ADR-0128 D6).
+            return await self._drain_locked(force=self._retry_deferred)
 
     async def flush(self) -> bool:
         """Make the one additional teardown attempt for every pending event."""
@@ -131,8 +133,8 @@ class MessagePersistRetryQueue:
                     activity_at=event.activity_at,
                 )
             except StateCompatibilityRefused:
-                # The store refuses the same write on every retry, and the run stops instead
-                # of going on without it (ADR-0128 D6); the event stays at the head.
+                # The store refuses the same write on every retry, so the refusal is raised to the
+                # caller with the event kept at the head, instead of being retried (ADR-0128 D6).
                 raise
             except ValueError as exc:
                 # StateDB._validate_message raises ValueError for a

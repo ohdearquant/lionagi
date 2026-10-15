@@ -25,6 +25,7 @@ import sniffio
 from lionagi._errors import ExecutionError, OperationError
 from lionagi.ln import AlcallParams
 from lionagi.ln.concurrency import (
+    BaseExceptionGroup,
     CapacityLimiter,
     ConcurrencyEvent,
     create_task_group,
@@ -110,6 +111,18 @@ def _render_operator_messages(operation: "Operation", context: dict[str, Any]) -
     for m in pending:
         m["rendered_into_op"] = op_id
     operation.metadata["rendered_into_op"] = op_id
+
+
+def _refusal(error: BaseException) -> BaseException | None:
+    """The store's refusal (ADR-0128 D6) that *error* carries through task-group wrapping."""
+    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
+    while isinstance(error, BaseExceptionGroup):
+        matched = error.subgroup(lambda e: isinstance(e, StateCompatibilityRefused))
+        if matched is None:
+            return None
+        error = matched.exceptions[0]
+    return error if isinstance(error, StateCompatibilityRefused) else None
 
 
 @dataclass(slots=True)
@@ -243,6 +256,14 @@ class DependencyAwareExecutor:
             # Without it, an announced operation stays queued forever.
             self._cancel_announced_unfinished()
             raise
+        except BaseExceptionGroup as group:
+            # A refused write is the one operation failure a flow raises (ADR-0128 D6), and
+            # it is raised as itself, with its own cause, rather than inside the task groups'
+            # wrapping.
+            refusal = _refusal(group)
+            if refusal is None:
+                raise
+            raise refusal from refusal.__cause__
 
         completed_ops = self._completed_operation_ids()
 
@@ -693,6 +714,12 @@ class DependencyAwareExecutor:
                             elapsed,
                             operation.execution.error,
                         )
+                    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
+                    if isinstance(operation.execution.error, StateCompatibilityRefused):
+                        # A write the store refused in compatibility mode stops the flow rather
+                        # than failing one operation (ADR-0128 D6): nothing more is scheduled.
+                        raise operation.execution.error
 
                 elif operation.execution.status == EventStatus.CANCELLED:
                     self._emit_terminal_once(
@@ -711,6 +738,10 @@ class DependencyAwareExecutor:
             raise
 
         except Exception as e:
+            from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
+            if isinstance(e, StateCompatibilityRefused):
+                raise
             # Defensive net for unexpected flow-level errors; invoke() already handles FAILED status.
             if operation.id not in self.results:
                 self.results[operation.id] = {"error": str(e)}
@@ -1124,6 +1155,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # it or leaves its announced operations queued forever.
             self._cancel_announced_unfinished()
             raise
+        except BaseExceptionGroup as group:
+            refusal = _refusal(group)
+            if refusal is None:
+                raise
+            raise refusal from refusal.__cause__
         finally:
             self._running = False
             self._tg = None
@@ -1225,7 +1261,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 with contextlib.suppress(get_cancelled_exc_class(), Exception):
                     await driver_done.wait()
         if driver_errors:
-            raise driver_errors[0]
+            raise _refusal(driver_errors[0]) or driver_errors[0]
 
     async def _run_tracked(self, node: Operation) -> None:
         token = _CURRENT_OP.set(node)
