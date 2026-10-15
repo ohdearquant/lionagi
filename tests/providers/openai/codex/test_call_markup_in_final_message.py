@@ -429,11 +429,11 @@ async def test_a_legacy_tool_block_after_the_markup_supersedes_it():
 
 @pytest.mark.asyncio
 async def test_a_failed_turn_clears_the_text_for_the_next_turn():
-    """turn.failed ends the turn like turn.completed, and a later turn is read afresh."""
+    """turn.failed ends the turn like turn.completed: a later turn that writes no text
+    does not read the failed turn's message."""
     events = [
         _agent_message(MARKUP_FIXTURE),
         _turn_failed("boom"),
-        _agent_message("Recovered and finished."),
         _turn_completed(),
     ]
     chunks, session = await _parse(events)
