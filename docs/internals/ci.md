@@ -4,6 +4,51 @@
 development, and pre-commit. Workflows select a command and set policy through
 environment variables; they do not inline pytest commands.
 
+## Release images
+
+The Release workflow resolves one published `v<version>` release to a full
+commit SHA. Its test matrix, wheel publisher and container build all check out
+that SHA. The tag must match the source package's version. A new release event
+also requires the tag to match the event's commit; it can publish a wheel that
+does not exist on PyPI yet. The image waits for the wheel publisher to succeed.
+
+To repair a missing container image, dispatch `release.yml` **from the default
+branch**, with the published version as its `version` input, without `v`. The
+current workflow helpers run from the dispatch commit, while the build context
+comes from the released commit. A repair does not run the wheel publisher. It
+also retains that release's Dockerfile; package, frontend or Dockerfile changes
+require a new release rather than republishing changed source under an old tag.
+The manual repair
+requires all of:
+
+- A published, non-draft GitHub release with the exact version tag.
+- A matching package version in the released `pyproject.toml`.
+- A non-yanked wheel for that exact version on PyPI.
+- A successful `deploy` job and `Publish package to PyPI` step in a release-event
+  run of `release.yml` at the same tag and commit. Earlier successful attempts
+  count when a later retry fails because the wheel was already uploaded.
+
+The last check uses retained Actions history as evidence that the repository's
+trusted release workflow published this commit. It is not a cryptographic
+attestation of wheel contents: it relies on that workflow testing and uploading
+its run's source. Missing or expired publication history refuses a manual repair;
+it does not prevent a new release event from publishing normally. A moved tag
+without matching publication evidence is refused. Dispatching a branch with
+different package or frontend code cannot substitute that tree for the release.
+
+Immediately before an image is built, the workflow rechecks the source binding
+and PyPI version. It publishes the version tag, and updates `latest` only when
+that version is PyPI's current default. Repairing an older release therefore
+leaves `latest` alone. The image carries its version and source SHA as OCI
+labels. Verification compares the registry manifest digest with the digest
+returned by this run's image build; a pre-existing version tag cannot make a
+failed build pass. When the workflow publishes `latest`, its digest is checked
+as well.
+
+`tests/scripts/test_release_image.py` exercises the production resolver with
+mock GitHub/PyPI metadata, verifies workflow source wiring, and runs the registry
+verification shell with mock HTTP responses. These checks do not publish images.
+
 ## Test lanes
 
 The required `test` matrix runs Python 3.10 and 3.14 on pull requests and the
