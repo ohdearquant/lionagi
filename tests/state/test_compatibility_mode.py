@@ -1207,3 +1207,96 @@ def test_tokens_split_where_sqlite_splits_them():
         ("ident", "open"),
         ("ident", "open"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("named", "twin"), [("ünits", "Ünits"), ("keys", "\u212aeys")], ids=["u-umlaut", "kelvin sign"]
+)
+async def test_a_name_that_differs_past_ascii_in_case_is_another_table(tmp_path, named, twin):
+    """SQLite folds only ASCII letters, so the two spellings name two tables."""
+    store = _store(
+        tmp_path / "managed.db",
+        f'CREATE TABLE "{named}" (id TEXT PRIMARY KEY, label TEXT);\n'
+        f'CREATE TABLE "{twin}" (id TEXT PRIMARY KEY, label TEXT, extra TEXT);\n',
+    )
+    with closing(sqlite3.connect(store)) as conn:
+        closure = read_closure(conn, [named])
+    (shape,) = closure.tables
+    assert [column.name for column in shape.columns] == ["id", "label"]
+    profile = CompatibilityProfile(
+        name="twins",
+        version=1,
+        closure=closure,
+        writes={named: TableWrites(insert={"id", "label"})},
+        operations={"run_sql"},
+    )
+    db = _RunsDB(store, compatibility=profile)
+    await db.open()
+    try:
+        await db.run_sql(f"INSERT INTO \"{named}\" (id, label) VALUES ('a', 'x')")
+        with pytest.raises(StateCompatibilityRefused):
+            await db.run_sql(f"INSERT INTO \"{twin}\" (id, label) VALUES ('b', 'x')")
+    finally:
+        await db.close()
+    assert _rows(store, f'SELECT id FROM "{named}"') == [("a",)]
+    assert _rows(store, f'SELECT id FROM "{twin}"') == []
+
+
+@pytest.mark.parametrize(
+    ("body", "joins"),
+    [
+        ("INSERT INTO other (id, value) VALUES ('runs', NEW.id)", False),
+        ("UPDATE other SET value = 'runs' WHERE id = NEW.id", False),
+        ("DELETE FROM other WHERE value IN (SELECT id FROM other, 'runs')", True),
+        ("DELETE FROM other WHERE value IN 'runs'", True),
+        ("DELETE FROM other WHERE value IN (SELECT id FROM main.'runs')", True),
+        ("UPDATE OR ABORT 'runs' SET note = NEW.value WHERE id = NEW.id", True),
+    ],
+    ids=["value", "set value", "from list", "in", "after a dot", "or action"],
+)
+async def test_a_string_literal_names_a_table_only_where_sqlite_reads_a_name(tmp_path, body, joins):
+    store = _store(
+        tmp_path / "managed.db",
+        _SCHEMA + f"CREATE TRIGGER mirror AFTER INSERT ON other BEGIN {body}; END;\n",
+    )
+    with closing(sqlite3.connect(store)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert (("trigger", "mirror") in {(o.type, o.name) for o in closure.objects}) is joins
+
+
+@pytest.mark.parametrize(
+    ("old", "reference_new", "store_new"),
+    [
+        ("REFERENCES runs(id)", "REFERENCES runs(id)", 'REFERENCES "Runs"(id)'),
+        ("    owner TEXT", "    owner TEXT", '    "Owner" TEXT'),
+        ("CHECK (status IN", "CHECK (status IN", 'CHECK ("STATUS" IN'),
+        ("    note TEXT,", "    note TEXT COLLATE NOCASE,", '    note TEXT COLLATE "NOCASE",'),
+        (
+            "INSERT INTO other",
+            "CREATE UNIQUE INDEX open_note ON runs (note);\nINSERT INTO other",
+            'CREATE UNIQUE INDEX open_note ON "Runs" ("NOTE");\nINSERT INTO other',
+        ),
+        (
+            "INSERT INTO other",
+            "CREATE TRIGGER finished AFTER UPDATE ON runs BEGIN SELECT 1; END;\nINSERT INTO other",
+            'CREATE TRIGGER finished AFTER UPDATE ON "Runs" BEGIN SELECT 1; END;\n'
+            "INSERT INTO other",
+        ),
+        (
+            "INSERT INTO other",
+            "CREATE TRIGGER noted AFTER UPDATE ON runs BEGIN "
+            "UPDATE events SET body = 'noted' WHERE run_id = NEW.id; END;\nINSERT INTO other",
+            "CREATE TRIGGER noted AFTER UPDATE ON runs BEGIN "
+            "UPDATE events SET body = 'noted' WHERE \"RUN_ID\" = NEW.id; END;\nINSERT INTO other",
+        ),
+    ],
+    ids=["references", "column", "check", "collate", "index", "trigger", "trigger body column"],
+)
+async def test_a_double_quoted_name_matches_its_bare_spelling(
+    old, reference_new, store_new, tmp_path
+):
+    """SQLite reads a double-quoted token that names a table, a column or a collation as that name."""
+    assert old in _SCHEMA
+    reference = _store(tmp_path / "reference.db", _SCHEMA.replace(old, reference_new, 1))
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(old, store_new, 1))
+    await (await _open(store, _profile(reference))).close()
