@@ -321,14 +321,15 @@ class StreamTextRedactor:
 
     A consumer joins the pieces of one kind across the message (text across blocks
     and citations, thinking across signatures, the quoted text of citations), joins
-    the text of the stream chunks it receives by chunk type, and may join every piece
-    in order. Each of those joins is matched against the key, and a character is
-    masked when it lies in a run of ``MIN_RUN`` or more characters that occurs
-    anywhere in the key, in any join it belongs to. A whole key and any part of
-    ``MIN_RUN`` or more characters of one are masked however the message's events
-    split them. Pieces of kind ``RAW`` (the data of an event that carries no known
-    text field) are joined only with each other; the text a chunk shows for such an
-    event is a piece of its own (see ``push``).
+    the text of the stream chunks it receives by chunk type and all of it in order,
+    and may join every piece in order. Each of those joins is matched against the key,
+    and a character is masked when it lies in a run of ``MIN_RUN`` or more characters
+    that occurs anywhere in the key, in any join it belongs to. A whole key and any
+    part of ``MIN_RUN`` or more characters of one are masked however the message's
+    events split them. Pieces of kind ``RAW`` (the data of an event that carries no
+    known text field) are joined only with each other; the text a chunk shows for such
+    an event is a piece of its own (see ``push``). Joins are keyed by tuples, so no
+    type name an event carries can name another join.
 
     A character in a beginning of the key longer than ``PUBLIC_PREFIX``, the
     ``sk-ant-`` every Anthropic key starts with, is masked as soon as the beginning
@@ -356,8 +357,9 @@ class StreamTextRedactor:
 
     MIN_RUN = 8
     MASK = "[REDACTED]"
-    ALL = ""  # the join of every piece in order; a kind is never empty
-    RAW = "\x00data"  # an event's data when it carries no known text field
+    ALL = ("all",)  # every piece in order
+    CHUNKS = ("chunks",)  # the text of every chunk a consumer receives, in order
+    RAW = ("data",)  # the kind of an event's data when it carries no known text field
     PUBLIC_PREFIX = "sk-ant-"
 
     def __init__(self, key: SecretStr) -> None:
@@ -368,39 +370,45 @@ class StreamTextRedactor:
         )
         if self._release >= self.MIN_RUN:
             raise ValueError("PUBLIC_PREFIX must be shorter than MIN_RUN")
-        self._joins: dict[str, _Join] = {self.ALL: _Join()}
-        self._holding: set[str] = set()  # joins with undecided characters
-        self._queue: list[tuple[Any, list[tuple[str, list[_Char]]]]] = []
-        self._last_masked: dict[str, bool] = {}
+        self._joins: dict[tuple, _Join] = {self.ALL: _Join()}
+        self._holding: set[tuple] = set()  # joins with undecided characters
+        self._queue: list[tuple[Any, list[tuple[tuple, list[_Char]]]]] = []
+        self._last_masked: dict[tuple, bool] = {}
 
     def push(
         self,
         item: Any,
-        pieces: list[tuple[str, str]],
+        pieces: list[tuple[str | None | tuple[str], str]],
         chunk: tuple[str, int | str] | None = None,
     ) -> list[tuple[Any, list[str]]]:
         """Queue one event's text pieces as ``(kind, text)`` and return the events now
-        ready, in order, each with its pieces' text as sent.
+        ready, in order, each with its pieces' text as sent. A kind is a delta type, or
+        ``RAW``.
 
-        ``chunk`` is ``(join, source)`` for an event a consumer receives as a chunk whose
-        text it joins with the text of the other chunks of its type: ``join`` names that
-        join, and ``source`` is the index of the piece whose text the chunk shows, or the
-        text itself when no piece holds it. The chunk's text as sent follows the pieces'.
-        Text no piece holds is also joined with every piece in order."""
-        fed: set[str] = set()
-        entry: list[tuple[str, list[_Char]]] = []
+        ``chunk`` is ``(chunk_type, source)`` for an event a consumer receives as a chunk
+        with text, which it joins with the text of the other chunks of its type and with
+        the text of every chunk: ``source`` is the index of the piece whose text the
+        chunk shows, or the text itself when no piece holds it. The chunk's text as sent
+        follows the pieces'. Text no piece holds is also joined with every piece in
+        order."""
+        fed: set[tuple] = set()
+        entry: list[tuple[tuple, list[_Char]]] = []
         linked = chunk[1] if chunk is not None and isinstance(chunk[1], int) else None
+        chunk_joins = (("chunk", chunk[0]), self.CHUNKS) if chunk is not None else ()
         for index, (kind, text) in enumerate(pieces):
-            joins = (self.ALL, kind) if kind != self.RAW else (kind,)
+            own = self.RAW if kind == self.RAW else ("delta", kind)
+            joins = (own,) if kind == self.RAW else (self.ALL, own)
             if index == linked:
-                joins += (chunk[0],)
-            entry.append((kind, self._feed_text(text, joins, fed)))
+                joins += chunk_joins
+            entry.append((own, self._feed_text(text, joins, fed)))
         if chunk is not None:
-            name, source = chunk
+            source = chunk[1]
             if isinstance(source, int):
-                entry.append((name, entry[source][1]))
+                entry.append((chunk_joins[0], entry[source][1]))
             else:
-                entry.append((name, self._feed_text(source, (self.ALL, name), fed)))
+                entry.append(
+                    (chunk_joins[0], self._feed_text(source, (self.ALL, *chunk_joins), fed))
+                )
         for name in fed:
             if self._joins[name].pending:
                 self._holding.add(name)
@@ -419,7 +427,7 @@ class StreamTextRedactor:
         self._holding.clear()
         return self._ready()
 
-    def _feed_text(self, text: str, joins: tuple[str, ...], fed: set[str]) -> list[_Char]:
+    def _feed_text(self, text: str, joins: tuple[tuple, ...], fed: set[tuple]) -> list[_Char]:
         chars = [_Char(ch, len(joins)) for ch in text]
         for name in joins:
             join = self._joins.setdefault(name, _Join())

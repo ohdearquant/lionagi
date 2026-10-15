@@ -25,9 +25,6 @@ _JOINED_DELTA_FIELDS = {
     "input_json_delta": "partial_json",
     "signature_delta": "signature",
 }
-# Stream chunk types whose text a consumer joins across the stream, each type on its own:
-# ``Branch.run`` joins the text of text chunks, and of thinking chunks.
-_JOINED_CHUNK_TYPES = frozenset({"text", "thinking"})
 
 
 class TextContentBlock(BaseModel):
@@ -598,12 +595,9 @@ class AnthropicMessagesEndpoint(Endpoint):
             places: list[tuple[Any, Any]] = []
             # The chunk a consumer receives for this event, read before any masking.
             shown = self._line_to_stream_chunk(data)
-            if (
-                shown is None
-                or shown.type not in _JOINED_CHUNK_TYPES
-                or not isinstance(shown.content, str)
-                or not shown.content
-            ):
+            # A consumer joins chunk text by type (``Branch.run`` joins text chunks, and
+            # thinking chunks) and may join every chunk's text in order.
+            if shown is None or not isinstance(shown.content, str) or not shown.content:
                 shown = None
             if not isinstance(event, dict):
                 # Not a JSON object: the whole data is matched, joined with the data of
@@ -628,13 +622,13 @@ class AnthropicMessagesEndpoint(Endpoint):
                 elif field is None and delta_type != "citations_delta":
                     # A delta type this module does not know: each of its text fields is
                     # joined like a known one, under the delta's type.
-                    kind = delta_type if isinstance(delta_type, str) and delta_type else "\x00delta"
+                    kind = delta_type if isinstance(delta_type, str) and delta_type else None
                     for name, value in delta.items():
                         if name != "type" and isinstance(value, str):
                             pieces.append((kind, value))
                             places.append((delta, name))
             # Every other string in the event is matched on its own: no consumer joins it,
-            # except as the text of the event's chunk.
+            # except as the text of the event's chunk, which is joined with other chunks' text.
             rewrite = mask_strings(event, {(id(holder), name) for holder, name in places})
             return push(event, data, places, rewrite, pieces, shown)
 
@@ -654,7 +648,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             return text_redactor.push(
                 (event, data, places, rewrite, shown.type),
                 pieces,
-                ("\x00" + shown.type + " chunks", source),
+                (shown.type, source),
             )
 
         async def emit_ready(ready: list):

@@ -1940,12 +1940,13 @@ _TEXT_CHUNK_MIDDLES = {
 
 @pytest.mark.parametrize("middle", list(_TEXT_CHUNK_MIDDLES))
 @pytest.mark.asyncio
-async def test_a_key_across_text_chunks_of_every_shape_never_reaches_the_joined_text(
+async def test_the_middle_of_a_key_across_text_chunks_of_every_shape_is_masked_when_joined(
     monkeypatch, tmp_path, middle
 ):
     """Text deltas around another event whose chunk is text: a consumer that joins the
-    text chunks sees the key's end whole, so the join is matched as one and all of it is
-    masked, the middle chunk's text included."""
+    text chunks sees the key's end whole, so the join is matched as one and the key is
+    masked, the middle chunk's text included. With a thinking delta between, the text
+    join pauses there, so the seven held characters before it are sent."""
     start, cut, end, render = _TEXT_CHUNK_MIDDLES[middle]
     _install_accounts(monkeypatch, tmp_path)
     body = (
@@ -1976,7 +1977,7 @@ def test_a_chunk_join_links_a_piece_and_takes_text_no_piece_holds(cut):
     from lionagi.service.accounts._router import StreamTextRedactor
 
     redactor = StreamTextRedactor(SecretStr(_RUN_KEY))
-    join = "\x00text chunks"
+    join = "text"
     run = _RUN_KEY[10:22]
     out = redactor.push("a", [("text_delta", "ab" + run[:cut])], (join, 0))
     out += redactor.push("b", [(StreamTextRedactor.RAW, "x")], (join, run[cut:] + "zz"))
@@ -1987,6 +1988,143 @@ def test_a_chunk_join_links_a_piece_and_takes_text_no_piece_holds(cut):
     assert piece == linked == "ab[REDACTED]"
     assert raw == "x"
     assert standalone == "zz"
+
+
+def _all_chunk_text(chunks) -> str:
+    """The text of every chunk a consumer receives, joined in order across types."""
+    return "".join(chunk.content for chunk in chunks if isinstance(chunk.content, str))
+
+
+def _signature(index, signature: str) -> dict:
+    return {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "signature_delta", "signature": signature},
+    }
+
+
+# Two chunk texts that hold the middle of the key, with what sits between them.
+_ACROSS_CHUNK_TYPES = {
+    "thinking-signature-text": [
+        _thinking(0, CANARY[13:20]),
+        _signature(0, "sig"),
+        _text(1, CANARY[20:27]),
+    ],
+    "thinking-citation-text": [
+        _thinking(0, CANARY[13:20]),
+        _citation(1, "quoted"),
+        _text(1, CANARY[20:27]),
+    ],
+    "text-error-text": [
+        _text(0, CANARY[13:20]),
+        {"type": "error", "error": CANARY[20:21]},
+        _text(0, CANARY[21:27]),
+    ],
+}
+
+
+@pytest.mark.parametrize("between", list(_ACROSS_CHUNK_TYPES))
+@pytest.mark.asyncio
+async def test_a_key_across_chunks_of_different_types_never_reaches_their_joined_text(
+    monkeypatch, tmp_path, between
+):
+    """A consumer that joins the text of every chunk it receives, whatever the type, sees
+    the key's middle whole: that join is matched too."""
+    _install_accounts(monkeypatch, tmp_path)
+    body = _sse([_MESSAGE_START, *_ACROSS_CHUNK_TYPES[between], *_MESSAGE_END])
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[body])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    joined = _all_chunk_text(chunks)
+    assert "[REDACTED]" in joined
+    assert _no_run_of_the_key(joined, CANARY)
+    assert _no_run_of_the_key(_seen(chunks), CANARY)
+
+
+@pytest.mark.parametrize("delta_type", ["\x00text chunks", "text", "chunks", "all", "data"])
+@pytest.mark.asyncio
+async def test_no_delta_type_names_a_chunk_join(monkeypatch, tmp_path, delta_type):
+    """A textless delta is a pause for the text chunks' join, whatever type it names. A
+    thinking chunk breaks the join of all chunks and the tail is no text delta, so only
+    the text chunks' join can see the key's middle: the held run before the pause is
+    sent and the rest of the key masked."""
+    _install_accounts(monkeypatch, tmp_path)
+    middle = {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": delta_type, "future": "Z"},
+    }
+    body = _sse(
+        [
+            _MESSAGE_START,
+            _text_block(0),
+            _text(0, CANARY[13:20]),
+            _thinking(1, "zz"),
+            middle,
+            {"type": "response.output_text.delta", "delta": CANARY[20:27]},
+            *_MESSAGE_END,
+        ]
+    )
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[body])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert _text_chunks(chunks) == CANARY[13:20] + "[REDACTED]"
+
+
+@pytest.mark.parametrize("chunk_type", ["text", "thinking"])
+@pytest.mark.asyncio
+async def test_a_chunk_types_join_holds_its_delta_and_its_standalone_text(
+    monkeypatch, tmp_path, chunk_type
+):
+    """A delta's chunk and a chunk no delta field holds, of one type, with a chunk of the
+    other type between: only that type's chunk join sees the key's middle whole."""
+    _install_accounts(monkeypatch, tmp_path)
+    other = "thinking" if chunk_type == "text" else "text"
+    deltas = {"text": _text, "thinking": _thinking}
+    if chunk_type == "text":
+        # A bare data line is a text chunk whose text no delta field holds.
+        tail = b"data: " + CANARY[20:27].encode() + b"\n\n"
+    else:
+        # A thinking delta whose chunk shows a field its type does not name, so no
+        # piece holds the text.
+        tail = _sse(
+            [
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "text": CANARY[20:27]},
+                }
+            ]
+        )
+    body = (
+        _sse([_MESSAGE_START, deltas[chunk_type](0, CANARY[13:20]), deltas[other](1, "zz")])
+        + tail
+        + _sse(_MESSAGE_END)
+    )
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[body])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    joined = "".join(chunk.content or "" for chunk in chunks if chunk.type == chunk_type)
+    assert joined == CANARY[13:20] + "[REDACTED]"
+
+
+def test_an_events_raw_data_is_joined_only_with_other_raw_data():
+    """The data of an event with no known text field is not joined with the pieces: its
+    chunk's text is, once, so the data is not matched twice in a row."""
+    from pydantic import SecretStr
+
+    from lionagi.service.accounts._router import StreamTextRedactor
+
+    key = "sk-ant-QWXVJKPZ" + "wxabcdabcd" + "MNHTRLYC"
+    redactor = StreamTextRedactor(SecretStr(key))
+    out = redactor.push("a", [("text_delta", "wx")])
+    out += redactor.push("b", [(StreamTextRedactor.RAW, "abcd")], ("text", "abcd"))
+    out += redactor.finish()
+
+    assert _sent(out) == "wx" + "abcd" + "abcd"
 
 
 @pytest.mark.parametrize("cut", [1, 5, 12, 19])
