@@ -22,10 +22,12 @@ Three layers enforce this, because each alone has a known way around it:
 
 The authorizer does not see how SQLite resolves a conflict: a row a REPLACE resolution deletes
 reaches it as no DELETE, and a ROLLBACK resolution ends the transaction without a callback. So
-admission refuses a store whose tables declare any conflict resolution but ABORT, the statement
-check refuses a statement that names one, and a write is refused once the transaction its operation
-opened is no longer open. A statement sent to the driver directly, past the statement check, can
-still name a conflict clause the authorizer cannot see.
+admission refuses a store whose tables declare any conflict resolution but ABORT, or whose
+triggers and views name one, the statement check refuses a statement that names one, and a write
+is refused once the transaction its operation opened is no longer open: SQLite ending it leaves
+the connection out of a transaction, and any BEGIN the guard did not send clears its mark. A
+statement sent to the driver directly, past the statement check, can still name a conflict
+clause the authorizer cannot see.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
     """A compatibility-mode StateDB refused an operation.
 
     ``committed`` names the transactions of the refused operation that had already committed when
-    it was refused. Empty means the refused operation left the store unchanged.
+    it was refused. Empty means the refused operation left the store's contents unchanged.
     """
 
     def __init__(
@@ -183,7 +185,39 @@ _CONFLICT_EFFECTS = {
     "rollback": "ends the transaction the operation opened, and its earlier writes with it",
     "ignore": "skips a conflicting row without an error",
     "fail": "keeps what a statement changed before the conflict",
+    # The same resolutions as a trigger's RAISE() spells them.
+    "raise(rollback)": "ends the transaction the operation opened, and its earlier writes with it",
+    "raise(ignore)": "drops the row being written without an error",
+    "raise(fail)": "keeps what a statement changed before it",
 }
+
+
+def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Each conflict resolution but ABORT that a trigger or view names: ``(spelling, action)``."""
+    found: list[tuple[str, str]] = []
+    for index, token in enumerate(tokens):
+        after = tokens[index + 1 : index + 3]
+        if (
+            token in ((_WORD, "insert"), (_WORD, "update"))
+            and len(after) == 2
+            and after[0] == (_WORD, "or")
+            and after[1][1] != "abort"
+        ):
+            found.append((f"{token[1].upper()} OR {after[1][1].upper()}", after[1][1]))
+        elif (
+            token == (_WORD, "replace")
+            and after[:1] == [(_WORD, "into")]
+            and tokens[index - 1 : index] != [(_WORD, "or")]
+        ):
+            found.append(("REPLACE INTO", "replace"))
+        elif (
+            token == (_WORD, "raise")
+            and len(after) == 2
+            and after[0] == (_PUNCT, "(")
+            and after[1][1] != "abort"
+        ):
+            found.append((f"RAISE({after[1][1].upper()})", f"raise({after[1][1]})"))
+    return found
 
 
 def _pragma_reads(tokens: list[tuple[str, str]]) -> bool:
@@ -280,13 +314,20 @@ class ColumnShape:
 class TableShape:
     """A table's columns in order, its unique keys, CHECK constraints, table options and conflicts.
 
-    A unique key lists its columns in index order, with ``"<expression>"`` for an indexed
-    expression; a partial unique index appends ``"where <predicate>"``. Options are drawn from
+    A unique key lists its terms in index order. A key a CREATE INDEX made spells each term as
+    its SQL does, an expression or a ``COLLATE`` included; a key the table's own constraints
+    made lists column names, with ``"<expression>"`` for an indexed expression. A partial
+    unique index appends ``"where <predicate>"``. Options are drawn from
     ``"strict"``, ``"without rowid"`` and ``"virtual"``. ``conflicts`` holds every conflict
     resolution other than ABORT, SQLite's default, that the table's constraints declare
     (``"replace"``, ``"rollback"``, ``"ignore"``, ``"fail"``); admission refuses a table that has
-    one. Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
-    a store built by the managing application.
+    one. ``definitions`` holds each column and table-constraint definition of the table's SQL in
+    one spelling (case, whitespace, comments and identifier quotes aside), so what PRAGMA output
+    leaves out is compared too: a collation, a generated column's expression, a ``DEFERRABLE``
+    foreign key, ``AUTOINCREMENT``. Two definitions SQLite reads alike but spells differently,
+    such as ``REFERENCES runs`` and ``REFERENCES runs(id)``, differ. Values compare as
+    :func:`read_closure` spells them, so a profile's shapes come from reading a store built by the
+    managing application.
     """
 
     name: str
@@ -295,6 +336,7 @@ class TableShape:
     checks: frozenset[str] = frozenset()
     options: frozenset[str] = frozenset()
     conflicts: frozenset[str] = frozenset()
+    definitions: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -395,6 +437,58 @@ def _options(tokens: list[tuple[str, str]]) -> frozenset[str]:
     return frozenset(options)
 
 
+def _groups(tokens: list[tuple[str, str]], start: int) -> list[list[tuple[str, str]]]:
+    """The comma-separated items of the parenthesized list opening at ``tokens[start]``."""
+    groups: list[list[tuple[str, str]]] = [[]]
+    depth = 0
+    for token in tokens[start + 1 :]:
+        if token == (_PUNCT, ")") and depth == 0:
+            break
+        if token == (_PUNCT, ",") and depth == 0:
+            groups.append([])
+            continue
+        if token == (_PUNCT, "("):
+            depth += 1
+        elif token == (_PUNCT, ")"):
+            depth -= 1
+        groups[-1].append(token)
+    return [group for group in groups if group]
+
+
+def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
+    """Each column and table-constraint definition of a CREATE TABLE, in one spelling.
+
+    An explicit ``ON CONFLICT ABORT`` is dropped: it spells SQLite's default.
+    """
+    start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), None)
+    if start is None:
+        return frozenset()
+    found: set[str] = set()
+    for group in _groups(tokens, start):
+        kept: list[tuple[str, str]] = []
+        index = 0
+        while index < len(group):
+            if group[index : index + 3] == [(_WORD, "on"), (_WORD, "conflict"), (_WORD, "abort")]:
+                index += 3
+                continue
+            kept.append(group[index])
+            index += 1
+        found.add(_joined(kept))
+    return frozenset(found)
+
+
+def _indexed_terms(index_sql: str) -> list[str]:
+    """The terms of a CREATE INDEX, each in one spelling: a column, an expression, a COLLATE."""
+    tokens = _sql_tokens(index_sql)
+    on = next((i for i, token in enumerate(tokens) if token == (_WORD, "on")), None)
+    if on is None:
+        return []
+    start = next((i for i in range(on, len(tokens)) if tokens[i] == (_PUNCT, "(")), None)
+    if start is None:
+        return []
+    return [_joined(group) for group in _groups(tokens, start)]
+
+
 def _predicate(index_sql: str) -> str:
     tokens = _sql_tokens(index_sql)
     depth = 0
@@ -429,13 +523,16 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
         index_name, is_unique, partial = str(row[1]), row[2], row[4]
         if not is_unique:
             continue
-        key = [
+        entry = entries.get(("index", index_name.lower()))
+        index_sql = (entry[3] if entry else None) or ""
+        # An index a CREATE INDEX made is read from its SQL, which keeps what PRAGMA output
+        # does not: an indexed expression's text and a term's collation.
+        key = _indexed_terms(index_sql) or [
             "<expression>" if column is None else str(column).lower()
             for _, _, column in sorted(fetch(f"PRAGMA index_info({_quote(index_name)})"))
         ]
         if partial:
-            entry = entries.get(("index", index_name.lower()))
-            key.append("where " + _predicate((entry[3] if entry else None) or ""))
+            key.append("where " + _predicate(index_sql))
         unique.add(tuple(key))
     tokens = _sql_tokens(sql)
     return TableShape(
@@ -445,6 +542,7 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
         _checks(tokens),
         _options(tokens),
         _conflicts(tokens),
+        _definitions(tokens),
     )
 
 
@@ -532,6 +630,12 @@ def _closure_differences(expected: Closure, observed: Closure) -> list[str]:
                     f"{label} of {table.name}: store has {sorted(getattr(actual, label))}, "
                     f"the profile has {sorted(getattr(table, label))}"
                 )
+        if table.definitions != actual.definitions:
+            found.append(
+                f"definitions of {table.name}: store has "
+                f"{sorted(actual.definitions - table.definitions)}, the profile has "
+                f"{sorted(table.definitions - actual.definitions)}"
+            )
     for key in sorted(observed.foreign_keys - expected.foreign_keys, key=repr):
         found.append(f"foreign key not in the profile: {key}")
     for key in sorted(expected.foreign_keys - observed.foreign_keys, key=repr):
@@ -700,7 +804,7 @@ class _ConnectionState:
     """Enforcement state of one connection, shared by its authorizer and the engine listeners.
 
     ``write_txn`` is set only by the guard's begin listener, once it has reserved the writer and
-    checked the schema, and cleared when the transaction's COMMIT or ROLLBACK is prepared.
+    checked the schema, and cleared when any BEGIN, COMMIT or ROLLBACK is prepared.
     ``denied`` poisons the current write transaction: its COMMIT is denied.
     """
 
@@ -717,12 +821,22 @@ class _ConnectionState:
 class _Scope:
     name: str
     committed: list[str]
+    active: bool = True
 
 
 # The operation running in this task. A StateDB operation sets it for its own duration; a write
 # outside it is refused. Code an operation calls inherits it, so an operation never calls code
 # it does not own while it runs.
 _SCOPE: ContextVar[_Scope | None] = ContextVar("lionagi_state_compat_operation", default=None)
+
+
+def _current_scope() -> _Scope | None:
+    """The running operation's scope; one whose operation has returned is no scope.
+
+    A task an operation starts copies the context, scope included, and can outlive it.
+    """
+    scope = _SCOPE.get()
+    return scope if scope is not None and scope.active else None
 
 
 def _is_auth_error(exc: BaseException) -> bool:
@@ -747,7 +861,7 @@ class _Guard:
         )
 
     def refusal(self, reason: str, operation: str | None = None) -> StateCompatibilityRefused:
-        scope = _SCOPE.get()
+        scope = _current_scope()
         if operation is None:
             operation = scope.name if scope is not None else "statement"
         committed = tuple(scope.committed) if scope is not None else ()
@@ -755,14 +869,15 @@ class _Guard:
 
     # operations
 
-    def enter(self, name: str) -> Token:
+    def enter(self, name: str) -> tuple[Token, _Scope]:
         if name not in self.profile.operations:
             raise self.refusal("the profile does not name this operation", operation=name)
-        outer = _SCOPE.get()
-        return _SCOPE.set(_Scope(name, outer.committed if outer is not None else []))
+        outer = _current_scope()
+        scope = _Scope(name, outer.committed if outer is not None else [])
+        return _SCOPE.set(scope), scope
 
     def require_scope(self, operation: str) -> _Scope:
-        scope = _SCOPE.get()
+        scope = _current_scope()
         if scope is None:
             raise self.refusal(
                 "compatibility mode writes only inside an operation the profile names",
@@ -777,17 +892,28 @@ class _Guard:
         return _closure_differences(expected, _read_closure(fetch, expected.table_names))
 
     def _check_store(self, fetch: _Fetch, when: str, operation: str | None) -> None:
-        declared = sorted(
-            (table.name, action)
-            for table in self.profile.closure.tables
-            for action in table.conflicts
-        )
-        if declared:
-            shown = "; ".join(
-                f"{table} declares ON CONFLICT {action.upper()}, which "
-                f"{_CONFLICT_EFFECTS.get(action, 'the guard does not admit')}"
-                for table, action in declared
+        declared = [
+            f"{table} declares ON CONFLICT {action.upper()}, which "
+            f"{_CONFLICT_EFFECTS.get(action, 'the guard does not admit')}"
+            for table, action in sorted(
+                (table.name, action)
+                for table in self.profile.closure.tables
+                for action in table.conflicts
             )
+        ]
+        # A trigger runs inside the write that fires it, so a resolution it names acts on the
+        # operation's transaction as one the table declares would.
+        declared += [
+            f"{kind} {name} names {spelling}, which "
+            f"{_CONFLICT_EFFECTS.get(action, 'the guard does not admit')}"
+            for kind, name, spelling, action in sorted(
+                (item.type, item.name, spelling, action)
+                for item in self.profile.closure.objects
+                for spelling, action in _resolutions(_sql_tokens(item.sql))
+            )
+        ]
+        if declared:
+            shown = "; ".join(declared)
             raise self.refusal(
                 f"{when}: compatibility mode admits only ABORT, SQLite's default conflict "
                 f"resolution: {shown}",
@@ -902,6 +1028,10 @@ class _Guard:
             if action == sqlite3.SQLITE_TRANSACTION:
                 verb = (arg1 or "").upper()
                 if verb == "BEGIN":
+                    # The begin listener sets the mark after its own BEGIN, so a transaction
+                    # anything else opens, including after SQLite ended an operation's
+                    # transaction by itself, never carries it.
+                    state.write_txn = False
                     return ok
                 if verb == "COMMIT" and state.denied:
                     return denied("COMMIT of a transaction in which a statement was refused")
@@ -979,7 +1109,7 @@ class _Guard:
             return
         if kind == "savepoint":
             reason = "savepoints are not admitted"
-        elif _SCOPE.get() is None:
+        elif _current_scope() is None:
             reason = "compatibility mode runs no write outside an operation the profile names"
         elif not state.write_txn:
             reason = "a write runs only inside the transaction its operation opened"
@@ -1030,10 +1160,12 @@ def _operation(name: str):
             guard = self._compat
             if guard is None:
                 return await method(self, *args, **kwargs)
-            token = guard.enter(name)
+            token, scope = guard.enter(name)
             try:
                 return await method(self, *args, **kwargs)
             finally:
+                # A task the operation started holds this scope in its copied context.
+                scope.active = False
                 _SCOPE.reset(token)
 
         return wrapper

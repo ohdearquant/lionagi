@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import pickle
 import sqlite3
@@ -18,6 +19,7 @@ import lionagi.state as state_pkg
 from lionagi.state import db as db_mod
 from lionagi.state.compat import (
     _SQLITE_AUTH,
+    _STATE_KEY,
     CompatibilityProfile,
     StateCompatibilityRefused,
     TableWrites,
@@ -70,6 +72,9 @@ _OPERATIONS = {
     "rolled_back",
     "rolled_back_raw",
     "rolled_back_then_commit",
+    "rolled_back_then_begin",
+    "rolled_back_and_left",
+    "spawns_writer",
 }
 
 
@@ -228,6 +233,51 @@ class _RunsDB(StateDB):
                 await conn.exec_driver_sql("COMMIT")
             await conn.rollback()
 
+    @_operation("rolled_back_then_begin")
+    async def rolled_back_then_begin(self, run_id: str, raw: bool) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
+            )
+            driver = (await conn.get_raw_connection()).driver_connection
+            with pytest.raises(sqlite3.IntegrityError):
+                await driver.execute(
+                    "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
+                )
+            # A transaction the guard did not open, on the connection SQLite took the
+            # operation's transaction away from.
+            await conn.exec_driver_sql("BEGIN")
+            if raw:
+                with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                    await driver.execute(
+                        "INSERT INTO runs (id, status) VALUES ('after', 'running')"
+                    )
+            else:
+                with pytest.raises(StateCompatibilityRefused, match="inside the transaction"):
+                    await conn.execute(
+                        text("INSERT INTO runs (id, status) VALUES ('after', 'running')")
+                    )
+
+    @_operation("rolled_back_and_left")
+    async def rolled_back_and_left(self, run_id: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
+            )
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute(
+                "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
+            )
+
+    @_operation("spawns_writer")
+    async def spawns_writer(self, release: asyncio.Event) -> asyncio.Task:
+        async def late() -> None:
+            await release.wait()
+            async with self._tx() as conn:
+                await conn.execute(text("INSERT INTO runs (id, status) VALUES ('late', 'running')"))
+
+        return asyncio.create_task(late())
+
     @_operation("not_in_profile")
     async def not_in_profile(self) -> None:
         self.entered.append("not_in_profile")
@@ -323,6 +373,13 @@ _REBUILT = {
     "without rowid": ("    updated_at REAL\n);", "    updated_at REAL\n) WITHOUT ROWID;"),
     "conflict replace": ("id TEXT PRIMARY KEY,", "id TEXT PRIMARY KEY ON CONFLICT REPLACE,"),
     "conflict rollback": ("UNIQUE (run_id, body)", "UNIQUE (run_id, body) ON CONFLICT ROLLBACK"),
+    "collation": ("id TEXT PRIMARY KEY,", "id TEXT PRIMARY KEY COLLATE NOCASE,"),
+    "deferrable foreign key": (
+        "REFERENCES runs(id)",
+        "REFERENCES runs(id) DEFERRABLE INITIALLY DEFERRED",
+    ),
+    "autoincrement": ("INTEGER PRIMARY KEY AUTOINCREMENT", "INTEGER PRIMARY KEY"),
+    "implicit parent key": ("REFERENCES runs(id)", "REFERENCES runs"),
 }
 
 
@@ -356,6 +413,120 @@ async def test_a_profile_whose_tables_resolve_conflicts_is_refused(old, new, tmp
         await db.open()
     assert f"ON CONFLICT {new.rsplit(' ', 1)[-1].rstrip(',')}" in caught.value.reason
     assert db._engine is None
+
+
+_TAG = "    updated_at REAL,\n    tag TEXT GENERATED ALWAYS AS (status || '?') VIRTUAL\n);"
+
+
+@pytest.mark.parametrize(
+    ("old", "reference_new", "store_new"),
+    [
+        ("    updated_at REAL\n);", _TAG, _TAG.replace("'?'", "'!'")),
+        (
+            "INSERT INTO other",
+            "CREATE UNIQUE INDEX note_key ON runs (lower(note));\nINSERT INTO other",
+            "CREATE UNIQUE INDEX note_key ON runs (upper(note));\nINSERT INTO other",
+        ),
+        (
+            "INSERT INTO other",
+            "CREATE UNIQUE INDEX note_key ON runs (note);\nINSERT INTO other",
+            "CREATE UNIQUE INDEX note_key ON runs (note COLLATE NOCASE);\nINSERT INTO other",
+        ),
+    ],
+    ids=["generated expression", "indexed expression", "indexed collation"],
+)
+async def test_a_difference_pragma_output_leaves_out_is_refused(
+    old, reference_new, store_new, tmp_path
+):
+    assert old in _SCHEMA
+    reference = _store(tmp_path / "reference.db", _SCHEMA.replace(old, reference_new, 1))
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(old, store_new, 1))
+    writes = {
+        **_WRITES,
+        "runs": TableWrites(
+            insert=_WRITES["runs"].insert,
+            update=_WRITES["runs"].update,
+            unwritten={**_WRITES["runs"].unwritten, "tag": "SQLite computes it"}
+            if "tag" in reference_new
+            else _WRITES["runs"].unwritten,
+        ),
+    }
+    profile = _profile(reference, writes=writes)
+    # The same store as the profile's is admitted, so only the difference refuses.
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="does not match the profile"):
+        await db.open()
+    assert db._engine is None
+
+
+async def test_a_column_added_later_matches_one_the_table_was_created_with(tmp_path, reference):
+    """A store the managing application migrated is compared by definition, not by text."""
+    migrated = _SCHEMA.replace("    note TEXT,\n    updated_at REAL\n);", "    note TEXT\n);", 1)
+    assert migrated != _SCHEMA
+    store = _store(
+        tmp_path / "migrated.db", migrated + "ALTER TABLE runs ADD COLUMN updated_at REAL;\n"
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_TRIGGER_RESOLUTIONS = {
+    "insert or replace": (
+        "AFTER INSERT ON runs BEGIN INSERT OR REPLACE INTO events (seq, run_id, body) "
+        "VALUES (1, NEW.id, 'mirrored'); END",
+        "INSERT OR REPLACE",
+    ),
+    "replace into": (
+        "AFTER INSERT ON runs BEGIN REPLACE INTO events (seq, run_id, body) "
+        "VALUES (1, NEW.id, 'mirrored'); END",
+        "REPLACE INTO",
+    ),
+    "insert or ignore": (
+        "AFTER INSERT ON runs BEGIN INSERT OR IGNORE INTO events (run_id, body) "
+        "VALUES (NEW.id, 'mirrored'); END",
+        "INSERT OR IGNORE",
+    ),
+    "update or rollback": (
+        "AFTER UPDATE ON runs BEGIN UPDATE OR ROLLBACK runs SET note = 'x' WHERE id = NEW.id; END",
+        "UPDATE OR ROLLBACK",
+    ),
+    "raise ignore": (
+        "BEFORE INSERT ON runs WHEN NEW.note = 'skip' BEGIN SELECT RAISE(IGNORE); END",
+        "RAISE(IGNORE)",
+    ),
+    "raise rollback": (
+        "BEFORE INSERT ON runs WHEN NEW.note = 'stop' BEGIN SELECT RAISE(ROLLBACK, 'no'); END",
+        "RAISE(ROLLBACK)",
+    ),
+}
+
+
+@pytest.mark.parametrize("change", sorted(_TRIGGER_RESOLUTIONS))
+async def test_a_trigger_that_names_a_resolution_but_abort_is_refused(change, tmp_path):
+    """A REPLACE in a trigger deletes a row the authorizer never sees, as a table's would."""
+    body, spelling = _TRIGGER_RESOLUTIONS[change]
+    schema = _SCHEMA + f"CREATE TRIGGER managed {body};\n"
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused, match="admits only ABORT") as caught:
+        await db.open()
+    assert f"trigger managed names {spelling}" in caught.value.reason
+    assert db._engine is None
+
+
+async def test_a_trigger_that_raises_abort_or_writes_plainly_is_admitted(tmp_path):
+    schema = _SCHEMA + (
+        "CREATE TRIGGER guarded BEFORE UPDATE ON runs WHEN NEW.status = 'lost' "
+        "BEGIN SELECT RAISE(ABORT, 'no'); END;\n"
+        "CREATE TRIGGER mirrored AFTER INSERT ON runs "
+        "BEGIN INSERT INTO events (run_id, body) VALUES (NEW.id, 'mirrored'); END;\n"
+    )
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = await _open(store, _profile(reference))
+    await db.close()
 
 
 async def test_an_explicit_on_conflict_abort_is_only_a_spelling(tmp_path, reference):
@@ -545,6 +716,60 @@ async def test_a_commit_after_a_refusal_for_a_rolled_back_transaction_is_refused
     finally:
         await db.close()
     assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r2",)]
+
+
+@pytest.mark.parametrize("raw", [False, True], ids=["through the engine", "to the driver"])
+async def test_a_write_in_a_transaction_begun_after_sqlite_rolled_back_is_refused(
+    raw, store, reference
+):
+    db = await _open(store, _profile(reference))
+    try:
+        if raw:
+            # The denial poisons the transaction the raw BEGIN opened.
+            with pytest.raises(StateCompatibilityRefused, match="COMMIT of a transaction"):
+                await db.rolled_back_then_begin("r1", raw=True)
+        else:
+            await db.rolled_back_then_begin("r1", raw=False)
+        await db.start_run("r2")
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r2",)]
+
+
+async def test_a_raw_transaction_after_sqlite_ended_an_operations_cannot_write(store, reference):
+    """No ROLLBACK reaches SQLite for a transaction it already ended, so the mark outlives it."""
+    db = await _open(store, _profile(reference))
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            await db.rolled_back_and_left("r1")
+        async with db._engine.connect() as conn:
+            raw = await conn.get_raw_connection()
+            # The connection the operation used, still carrying the mark.
+            assert raw.info[_STATE_KEY].write_txn
+            driver = raw.driver_connection
+            await driver.execute("BEGIN")
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                await driver.execute("INSERT INTO runs (id, status) VALUES ('raw', 'running')")
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                await driver.execute("COMMIT")
+            await driver.execute("ROLLBACK")
+        await db.start_run("r2")
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r2",)]
+
+
+async def test_a_task_an_operation_started_cannot_write_once_it_returns(store, reference):
+    db = await _open(store, _profile(reference))
+    try:
+        release = asyncio.Event()
+        task = await db.spawns_writer(release)
+        release.set()
+        with pytest.raises(StateCompatibilityRefused, match="only inside an operation"):
+            await task
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT count(*) FROM runs") == [(0,)]
 
 
 async def test_the_function_named_replace_is_not_the_conflict_clause(store, reference):
