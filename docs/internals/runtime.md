@@ -84,8 +84,8 @@ whose schema another application manages, and never migrates, stamps or reconfig
   `committed` names the operation's transactions that had already committed. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.
 - Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
-  `(url, mode, profile)`, so a native and a compatibility handle on one file are never the same
-  object.
+  `(url, mode, profile, owner)`, so a native and a compatibility handle on one file, and two
+  compatibility handles writing different owners, are never the same object.
 
 ### `state/health.py`
 

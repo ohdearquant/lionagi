@@ -457,19 +457,72 @@ def _update_owner_values(
         )
     cuts = [where, *(index for index in clause if tokens[index] == (_WORD, "and")), end]
     found = [
-        (first + 3, last)
+        value
         for first, last in zip(cuts[:-1], cuts[1:], strict=True)
-        if last - first > 3
-        and tokens[first + 1][0] in (_WORD, _IDENT)
-        and tokens[first + 1][1] == column
-        and tokens[first + 2] == (_PUNCT, "=")
+        if (value := _owner_value(tokens, first + 1, last, column)) is not None
     ]
     return found or f"does not restrict its rows by the owner column {column}"
 
 
+def _enclosing(tokens: list[tuple[str, str]], first: int, last: int) -> tuple[int, int]:
+    """*first* and *last* with each parenthesis pair that encloses the whole span removed."""
+    while last - first >= 2 and tokens[first] == (_PUNCT, "("):
+        depth, close = 0, None
+        for index in range(first, last):
+            if tokens[index] == (_PUNCT, "("):
+                depth += 1
+            elif tokens[index] == (_PUNCT, ")"):
+                depth -= 1
+                if depth == 0:
+                    close = index
+                    break
+        if close != last - 1:
+            break
+        first, last = first + 1, last - 1
+    return first, last
+
+
+def _names_column(tokens: list[tuple[str, str]], first: int, last: int, column: str) -> bool:
+    """Whether the span is exactly the owner column's name, parentheses aside."""
+    first, last = _enclosing(tokens, first, last)
+    return last - first == 1 and tokens[first][0] in (_WORD, _IDENT) and tokens[first][1] == column
+
+
+def _owner_value(
+    tokens: list[tuple[str, str]], first: int, last: int, column: str
+) -> tuple[int, int] | None:
+    """What the term between *first* and *last* compares *column* with, as a token span.
+
+    The comparison is read in either order (``column = value`` and ``value = column``) and through
+    parentheses that enclose the term or the value. None when the term does not compare the column
+    with one value: an operator other than ``=``, several, or a term that is not a comparison.
+    """
+    first, last = _enclosing(tokens, first, last)
+    at, depth = None, 0
+    for index in range(first, last):
+        token = tokens[index]
+        if token == (_PUNCT, "("):
+            depth += 1
+        elif token == (_PUNCT, ")"):
+            depth -= 1
+        elif token == (_PUNCT, "=") and depth == 0:
+            if at is not None:
+                return None
+            at = index
+    if at is None:
+        return None
+    if _names_column(tokens, first, at, column):
+        return _enclosing(tokens, at + 1, last)
+    if _names_column(tokens, at + 1, last, column):
+        return _enclosing(tokens, first, at)
+    return None
+
+
 def _placeholders(tokens: list[tuple[str, str]]) -> list[int] | None:
     """The index of each ``?`` placeholder in order, or None when the statement binds a value in
-    another form (``?NNN``, ``:name``, ``@name``, ``$name``), which a position cannot be read for.
+    another form (``?NNN``, ``:name``, ``@name``, ``$name``, ``#name``), which a position cannot be
+    read for. SQLite numbers a named parameter as it numbers ``?``, so a ``?`` after one takes a
+    later argument than the position it sits at.
     """
     found: list[int] = []
     for index, (kind, text) in enumerate(tokens):
@@ -478,7 +531,7 @@ def _placeholders(tokens: list[tuple[str, str]]) -> list[int] | None:
             if after and after[0][0] == _WORD and after[0][1][:1].isdigit():
                 return None
             found.append(index)
-        elif kind == _PUNCT and text in ":@" and after and after[0][0] in (_WORD, _IDENT):
+        elif kind == _PUNCT and text in ":@#" and after and after[0][0] in (_WORD, _IDENT):
             return None
         elif kind == _WORD and text.startswith("$"):
             return None
@@ -491,28 +544,61 @@ def _parameter_rows(parameters: Any, many: bool) -> list[tuple | list] | None:
     return rows if all(isinstance(row, (tuple, list)) for row in rows) else None
 
 
-def _copies_owner(value: list[tuple[str, str]], column: str) -> bool:
+def _copies_owner(value: list[tuple[str, str]], column: str, rows: tuple[str, ...]) -> bool:
+    """Whether *value* reads *column* from a row a trigger's event makes readable (`NEW`, `OLD`)."""
     return (
         len(value) == 3
-        and value[0] in ((_WORD, "new"), (_WORD, "old"))
+        and value[0][0] == _WORD
+        and value[0][1] in rows
         and value[1] == (_PUNCT, ".")
         and value[2][0] in (_WORD, _IDENT)
         and value[2][1] == column
     )
 
 
+def _trigger_event(tokens: list[tuple[str, str]], top: list[int], on: int | None) -> str | None:
+    """The event a trigger fires on: the last of INSERT, UPDATE and DELETE before its ``ON``.
+
+    The event word sits just before the ON that names the table, so the last one wins and a
+    trigger whose name is one of the three is not mistaken for it.
+    """
+    if on is None:
+        return None
+    return next(
+        (
+            tokens[index][1]
+            for index in reversed(top)
+            if index < on and tokens[index][1] in ("insert", "update", "delete")
+        ),
+        None,
+    )
+
+
 def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> list[str]:
     """How a trigger's statements write an owned table other than with the owner of the row that
-    fired it: an INSERT must copy ``NEW.<column>`` (or ``OLD.``) into every row, and an UPDATE must
-    restrict its rows by a term comparing the column with one of them.
+    fired it: an INSERT must copy ``NEW.<column>`` (``OLD.<column>`` in a DELETE trigger) into
+    every row, and an UPDATE must restrict its rows by a term comparing the column with one of
+    the rows its event makes readable.
     """
     tokens = _sql_tokens(sql)
     depths = _depths(tokens)
+    top = [index for index in range(len(tokens)) if depths[index] == 0]
+    # The trigger's own name may be the keyword BEGIN, so the body starts at the first BEGIN
+    # after the ON that names the table the trigger fires on.
+    on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
     begin = next(
-        (i for i, token in enumerate(tokens) if depths[i] == 0 and token == (_WORD, "begin")), None
+        (
+            index
+            for index in top
+            if tokens[index] == (_WORD, "begin") and (on is None or index > on)
+        ),
+        None,
     )
     if begin is None:
         return []
+    # An INSERT trigger's OLD and a DELETE trigger's NEW are NULL, so neither is an owner.
+    event = _trigger_event(tokens, top, on)
+    rows = {"insert": ("new",), "delete": ("old",)}.get(event, ("new", "old"))
     statements: list[list[tuple[str, str]]] = [[]]
     for index in range(begin + 1, len(tokens)):
         if depths[index] == 0 and tokens[index] == (_PUNCT, ";"):
@@ -536,11 +622,11 @@ def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> lis
         if isinstance(values, str):
             problems.append(f"{what} and {values}")
             continue
-        written = [_copies_owner(statement[first:end], column) for first, end in values]
+        written = [_copies_owner(statement[first:end], column, rows) for first, end in values]
         if not (all(written) if verb == "insert" else any(written)):
+            owner = " or ".join(f"{name.upper()}.{column}" for name in rows)
             problems.append(
-                f"{what} with an owner other than NEW.{column} or OLD.{column}, the owner of "
-                "the row that fired it"
+                f"{what} with an owner other than {owner}, the owner of the row that fired it"
             )
     return problems
 
@@ -805,6 +891,32 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
     return frozenset(found)
 
 
+def _column_collation(definition: str) -> str:
+    """The collation a column's definition declares, ``BINARY`` when it declares none."""
+    tokens = _sql_tokens(definition)
+    for index, token in enumerate(tokens):
+        if token == (_WORD, "collate") and tokens[index + 1 : index + 2]:
+            return tokens[index + 1][1].upper()
+    return "BINARY"
+
+
+_TABLE_CONSTRAINTS = frozenset({"constraint", "primary", "unique", "check", "foreign"})
+
+
+def _ordered_collation(table: TableShape, column: str) -> str:
+    """The collation *column* compares under in *table*, read from its column definition."""
+    for definition in sorted(table.definitions):
+        tokens = _sql_tokens(definition)
+        if (
+            len(tokens) > 1
+            and tokens[0][0] in (_WORD, _IDENT)
+            and tokens[0][1] == column
+            and tokens[1][1] not in _TABLE_CONSTRAINTS
+        ):
+            return _column_collation(definition)
+    return "BINARY"
+
+
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
     """The terms of a CREATE INDEX, each in one spelling: a column, an expression, a COLLATE."""
     tokens = _sql_tokens(index_sql, spelled=True, columns=columns)
@@ -1016,9 +1128,10 @@ class OwnerRule:
     column and bind it, in every row, to a ``?`` parameter whose value is the owner, and must not
     be an upsert that updates; an UPDATE of one must have a WHERE clause that is a conjunction
     with a term ``column = ?`` bound to the owner. A table it cannot read refuses. Admission
-    refuses a store whose triggers write an owned table without copying the owner of the row
-    that fired them (``NEW.column`` or ``OLD.column``). The owner must exist as a ``key`` value
-    of the ``principals`` table, read at admission and again in every write transaction.
+    refuses a store whose triggers write an owned table without copying the owner of the row that
+    fired them (``NEW.column``, or ``OLD.column`` in a DELETE trigger). The owner must exist as a
+    ``key`` value of the ``principals`` table, read at admission and again in every write
+    transaction.
     """
 
     column: str
@@ -1332,6 +1445,20 @@ class _Guard:
             )
         rule = self.profile.owner
         if rule is not None:
+            # `owner = ?` compares under the column's collation, so an owner that is not BINARY
+            # takes a variant of the owner's name as the owner, and writes another owner's row.
+            variants = [
+                f"{table.name}.{rule.column} compares under {_ordered_collation(table, rule.column)}"
+                for table in self.profile.closure.tables
+                if rule.column in {column.name for column in table.columns}
+                and _ordered_collation(table, rule.column) != "BINARY"
+            ]
+            if variants:
+                raise self.refusal(
+                    f"{when}: the owner column compares under a collation, not BINARY, so its "
+                    f"rows cannot be told from a variant's: {'; '.join(variants)}",
+                    operation,
+                )
             # A trigger's statements pass no statement check, so what they write is read here.
             unowned = [
                 f"trigger {item.name} {problem}"
