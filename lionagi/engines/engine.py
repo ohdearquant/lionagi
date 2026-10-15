@@ -1018,12 +1018,18 @@ class EngineRun:
         spawned node may be placed on either, so ``reactive`` is refused. Every
         node must name a branch operation (``chat``, ``operate``, ``communicate``,
         ``parse``, ``ReAct``, ``ReActStream``, ``interpret``, ``act``, ``run`` or
-        ``chat_and_record``), and no node may pass a model: not under
-        ``chat_model``, ``parse_model``, ``imodel``, ``interpret_model`` or
-        ``analysis_model``, nor an ``iModel`` under any other keyword. The node's
-        calls run on such a model, and ``run`` leaves it on the branch for every
-        later node. With ``agent_env`` set, no node may pass ``env``, which
-        replaces the overlay for that node's calls. Each of these raises
+        ``chat_and_record``), and no node may pass a model: not a value other
+        than ``None`` under ``chat_model``, ``parse_model``, ``imodel``,
+        ``interpret_model`` or ``analysis_model``, nor an ``iModel`` under any
+        other keyword, found inside mappings, lists, tuples, sets, frozensets and
+        pydantic models. The node's calls run on such a model, and ``run`` on a CLI
+        model leaves it on the branch for every later node. Nor may a node pass,
+        among its own keywords or in the ones it hands on to a model call
+        (``interpret_kwargs``, ``response_kwargs``, and an ``imodel_kw`` in any of
+        them), ``env`` with ``agent_env`` set, which replaces the overlay for that
+        call, or, with ``contain_account_integrations`` set, that keyword as
+        anything but ``True`` or a non-empty ``account_connectors``, either of
+        which lifts the containment for that call. Each of these raises
         ``ConfigurationError`` before any node runs. The check is made once,
         before the first node: a model the caller's own code puts on a built
         branch while the DAG runs is not seen.
@@ -1032,10 +1038,9 @@ class EngineRun:
         model it builds for them. The run's ``session`` used directly
         (``session.flow``, a branch the caller built) does not carry them; a change
         made inside that model after it was built (its endpoint or its config) is
-        not checked; and what a graph's author sets on a node or a branch is kept
-        as written: a node parameter ``contain_account_integrations=False`` or
-        ``account_connectors``, or a branch built with ``make_agent(env={})``, runs
-        that way.
+        not checked; and a branch built with an explicit ``make_agent(env=...)``
+        runs with that env, as the code that built it wrote, while its record
+        holds the engine's settings, so this check accepts it.
         """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
 
@@ -1081,15 +1086,39 @@ class EngineRun:
                 # model put on the built branch, does not carry the settings.
                 return held is built and built.chat_model is chat and built.parse_model is parse
 
-            def _passed(op: Operation) -> Any:
+            def _passed(op: Operation) -> Mapping[str, Any]:
                 params = op.parameters
+                if isinstance(params, Mapping):
+                    return params
+                return {
+                    name: getattr(params, name, None)
+                    for name in getattr(params, "model_fields_set", ())
+                }
+
+            def _call_keywords(op: Operation) -> list[Mapping[str, Any]]:
+                # The node's keywords, and those it hands on to a model call: ReAct's
+                # interpret_kwargs and response_kwargs, and an imodel_kw in any of them.
+                passed = _passed(op)
+                found = [passed]
+                for name in ("interpret_kwargs", "response_kwargs", "imodel_kw"):
+                    inner = passed.get(name)
+                    if isinstance(inner, Mapping):
+                        found.append(inner)
+                        nested = inner.get("imodel_kw")
+                        if isinstance(nested, Mapping):
+                            found.append(nested)
+                return found
+
+            def _lifts_containment(keywords: Mapping[str, Any]) -> bool:
                 return (
-                    params if isinstance(params, dict) else getattr(params, "model_fields_set", ())
-                )
+                    "contain_account_integrations" in keywords
+                    and keywords["contain_account_integrations"] is not True
+                ) or bool(keywords.get("account_connectors"))
 
             def _holds_a_model(value: Any) -> bool:
                 # An operation passes keywords it does not name on to the model call,
-                # so a model under any keyword is looked for, at any depth.
+                # so a model under any keyword is looked for, inside mappings, lists,
+                # tuples, sets, frozensets and pydantic models, at any depth.
                 stack, seen = [value], set()
                 while stack:
                     item = stack.pop()
@@ -1121,10 +1150,20 @@ class EngineRun:
             modelled = [
                 op
                 for op in operations
-                if any(key in _passed(op) for key in model_keys) or _holds_a_model(op.request)
+                if any(_passed(op).get(key) is not None for key in model_keys)
+                or _holds_a_model(op.request)
             ]
-            enved = [op for op in operations if in_force[0] is not None and "env" in _passed(op)]
-            if unbuilt or unknown or modelled or enved:
+            enved = [
+                op
+                for op in operations
+                if in_force[0] is not None and any("env" in kw for kw in _call_keywords(op))
+            ]
+            uncontained = [
+                op
+                for op in operations
+                if in_force[1] and any(_lifts_containment(kw) for kw in _call_keywords(op))
+            ]
+            if unbuilt or unknown or modelled or enved or uncontained:
                 total = len(operations)
                 problems = []
                 if unbuilt:
@@ -1141,12 +1180,18 @@ class EngineRun:
                 if modelled:
                     problems.append(
                         f"{len(modelled)} of {total} nodes pass a model, which the node's "
-                        "calls run on and run() leaves on the branch"
+                        "calls run on and run() on a CLI model leaves on the branch"
                     )
                 if enved:
                     problems.append(
                         f"{len(enved)} of {total} nodes pass env, which replaces the "
                         "agent_env overlay for the node's calls"
+                    )
+                if uncontained:
+                    problems.append(
+                        f"{len(uncontained)} of {total} nodes pass "
+                        "contain_account_integrations other than True or name "
+                        "account_connectors, which lifts the containment for the node's calls"
                     )
                 raise ConfigurationError(
                     f"run_dag with {' or '.join(settings)} runs only on branches make_agent "

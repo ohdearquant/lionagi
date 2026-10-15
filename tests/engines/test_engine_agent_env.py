@@ -357,7 +357,9 @@ async def test_run_dag_refuses_another_branch_included_under_a_built_id(settings
 
 
 def _model_keywords():
-    """Every keyword a branch operation takes a model under, read off the signatures."""
+    """Every keyword a branch operation takes a model under, read off the signatures: an
+    annotation naming iModel, or an unannotated model slot, as ``Branch.interpret``'s
+    ``interpret_model`` is."""
     import inspect
     from typing import get_args
 
@@ -367,7 +369,10 @@ def _model_keywords():
     keys = set()
     for name in get_args(BranchOperations):
         for param in inspect.signature(getattr(Branch, name)).parameters.values():
-            if "iModel" in str(param.annotation):
+            unannotated = param.annotation is inspect.Parameter.empty
+            if "iModel" in str(param.annotation) or (
+                unannotated and (param.name == "imodel" or param.name.endswith("_model"))
+            ):
                 keys.add(param.name)
     return sorted(keys)
 
@@ -376,8 +381,8 @@ def _model_keywords():
 @pytest.mark.parametrize("key", _model_keywords())
 @pytest.mark.parametrize("given_as", ["model", "spec"])
 async def test_run_dag_refuses_a_node_that_passes_a_model(settings, key, given_as, monkeypatch):
-    """The node's calls run on the model, and run() leaves it on the branch for later nodes.
-    A spec string names a model the operation builds, so the keyword alone is refused."""
+    """The node's calls run on the model, and run() on a CLI model leaves it on the branch
+    for later nodes. The keyword is refused whatever it holds but None, a spec string too."""
     from lionagi._errors import ConfigurationError
     from lionagi.operations.builder import OperationGraphBuilder
 
@@ -475,6 +480,101 @@ async def test_run_dag_with_agent_env_refuses_a_node_that_passes_env(monkeypatch
         await run.run_dag(builder.get_graph())
     assert "leg-7" not in str(exc.value)
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    [
+        {"interpret_kwargs": {"env": {"ONLY": "node"}}},
+        {"response_kwargs": {"imodel_kw": {"env": {"ONLY": "node"}}}},
+        {"imodel_kw": {"env": {"ONLY": "node"}}},
+    ],
+    ids=["interpret_kwargs", "response_kwargs-imodel_kw", "imodel_kw"],
+)
+async def test_run_dag_with_agent_env_refuses_env_handed_on_to_a_model_call(keywords, monkeypatch):
+    """ReAct hands interpret_kwargs, and response_kwargs' imodel_kw, to its model calls."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(agent_env={"LEG_ID": "leg-7"}).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("ReAct", branch=built, instruct={"instruction": "a"}, **keywords)
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass env"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+async def test_run_dag_with_agent_env_runs_a_node_whose_context_names_env(monkeypatch):
+    """Control: env in data the node carries, not in a model call's keywords, is not refused."""
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(agent_env={"LEG_ID": "leg-7"}).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", context={"env": "staging"})
+    await run.run_dag(builder.get_graph())
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    [
+        {"contain_account_integrations": False},
+        {"contain_account_integrations": None},
+        {"account_connectors": ["github"]},
+        {"interpret_kwargs": {"account_connectors": ["github"]}},
+        {"response_kwargs": {"imodel_kw": {"contain_account_integrations": False}}},
+    ],
+    ids=["false", "none", "connectors", "interpret_kwargs", "response_kwargs-imodel_kw"],
+)
+async def test_run_dag_with_containment_refuses_a_node_that_lifts_it(keywords, monkeypatch):
+    """Either keyword lifts the containment for the call it reaches."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(contain_account_integrations=True).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("ReAct", branch=built, instruct={"instruction": "a"}, **keywords)
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass contain_account_integrations"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    [{"contain_account_integrations": True}, {"account_connectors": []}],
+    ids=["true", "no-connectors"],
+)
+async def test_run_dag_with_containment_runs_a_node_that_keeps_it(keywords, monkeypatch):
+    """Control: a node that restates the containment, or names no connector, runs."""
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(contain_account_integrations=True).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", **keywords)
+    await run.run_dag(builder.get_graph())
+    assert len(calls) == 1
+
+
+@_SETTINGS
+async def test_run_dag_runs_a_node_that_passes_none_for_a_model(settings, monkeypatch):
+    """None in a model slot leaves the branch's own model in place."""
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", chat_model=None)
+    await run.run_dag(builder.get_graph())
+    assert len(calls) == 1
 
 
 async def test_run_dag_with_containment_alone_runs_a_node_that_passes_env(monkeypatch):
