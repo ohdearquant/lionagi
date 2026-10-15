@@ -1255,7 +1255,9 @@ class TestReportedServedModel:
         assert model.provider_metadata["served_model"] == "gpt-served-2"
 
     @pytest.mark.asyncio
-    async def test_an_invoke_cancelled_before_it_returns_records_no_model(self, base_imodel):
+    async def test_an_invoke_cancelled_while_its_call_is_in_flight_records_no_model(
+        self, base_imodel
+    ):
         base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
         started = asyncio.Event()
         never = asyncio.Event()
@@ -1379,7 +1381,7 @@ class TestReportedServedModel:
                 assert sent == ["A"]
 
                 # Room for one more request, so the queue sends the call nobody waits for.
-                model.executor.processor._available_requests = 2
+                model.executor.processor._available_requests = 1
                 await model.executor.processor.process()
         finally:
             await model.close()

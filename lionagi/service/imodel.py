@@ -425,18 +425,19 @@ class iModel:  # noqa: N801
         """Record the provider's report on the call and on the model.
 
         ``APICalling.metadata`` is the call-correlated evidence. The model-level
-        value reflects whichever call last finished while its invoke waited for it,
-        so under concurrency it is never evidence about a particular call. A call that failed records none.
-        A stream its consumer closed early, and a stream cancelled after the
-        provider named its model (a timeout that cancels it included), have not
-        failed: each keeps the model read from what it delivered. A timeout
-        raised inside the stream fails the call, so it records none, and an invoke
-        cancelled before it returns has read no response, so it records none. An
-        invoke that fails or is cancelled before its call exists sends nothing and
-        leaves both values as they were, and so does a call still pending, which has
-        not been sent. The queue can still send such a call after its invoke stopped
-        waiting for it (the invoke's ten-second wait ended, or it was cancelled);
-        nothing reads that response, so the model it was served is recorded nowhere.
+        value holds what the last invoke or stream on this model to write it
+        wrote, so under concurrency it is never evidence about a particular call.
+        Recording none clears both values. A call that failed records none. A
+        stream its consumer closed early, and a stream cancelled after the provider
+        named its model (a timeout that cancels it included), have not failed: each
+        keeps the model read from what it delivered. A timeout raised inside the
+        stream fails the call, so it records none. An invoke cancelled before it
+        returns has read no response, so it records none, and so does a call still
+        in flight when its invoke's wait ends. An invoke that fails or is cancelled
+        before its call exists sends nothing and leaves both values as they were,
+        and so does a call still pending, which has not been sent. If the queue
+        sends that call later, nothing reads the response, so the model it was
+        served is recorded nowhere.
         """
         if api_call is not None and api_call.status == EventStatus.PENDING:
             return
