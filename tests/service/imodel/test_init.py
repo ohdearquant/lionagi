@@ -1090,6 +1090,20 @@ class TestReportedServedModel:
         assert iModel._event_failed({"type": "response.output_item.done", **carried}) is True
 
     @pytest.mark.parametrize(
+        "carried",
+        [
+            {"error": {"code": "tool_error", "message": "x"}},
+            {"is_error": True},
+            {"status": "failed"},
+        ],
+        ids=["error", "is_error", "status"],
+    )
+    @pytest.mark.parametrize("event_type", ["tool_failed", "turn_failed", "stream_failed"])
+    def test_a_failure_name_without_a_dot_is_read_by_what_it_carries(self, event_type, carried):
+        assert iModel._event_failed({"type": event_type, **carried}) is True
+        assert iModel._event_failed({"type": event_type}) is False
+
+    @pytest.mark.parametrize(
         "response,expected",
         [
             ({"model": "gpt-served-1", "error": None}, "gpt-served-1"),
@@ -1247,12 +1261,14 @@ class TestReportedServedModel:
         never = asyncio.Event()
 
         async def mock_call(*_args, **_kwargs):
+            # Written during the call, after invoke cleared the field at its start.
+            api_call.metadata["served_model"] = "written-during-the-call"
+            base_imodel.provider_metadata["served_model"] = "written-during-the-call"
             started.set()
             await never.wait()
             return {"model": "unreachable", "response": "x"}
 
         api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
-        api_call.metadata["served_model"] = "stale-event-evidence"
         try:
             with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
                 task = asyncio.create_task(base_imodel.invoke(api_call=api_call))
@@ -1265,6 +1281,32 @@ class TestReportedServedModel:
 
         assert "served_model" not in api_call.metadata
         assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.parametrize("failure", ["cancelled", "raised"])
+    @pytest.mark.asyncio
+    async def test_an_invoke_stopped_before_its_call_exists_keeps_the_last_model(
+        self, base_imodel, failure
+    ):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        started = asyncio.Event()
+
+        async def create_event(**_kwargs):
+            started.set()
+            if failure == "raised":
+                raise RuntimeError("the request could not be built")
+            await asyncio.Event().wait()
+
+        with patch.object(base_imodel, "create_event", side_effect=create_event):
+            task = asyncio.create_task(
+                base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            )
+            await started.wait()
+            if failure == "cancelled":
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError if failure == "cancelled" else ValueError):
+                await task
+
+        assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
 
     @pytest.mark.parametrize("concurrency_limit", [None, 2])
     @pytest.mark.asyncio
