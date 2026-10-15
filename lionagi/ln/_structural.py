@@ -73,9 +73,10 @@ class _IdentityKey:
     `on_collect` is called with the key when its weakly-held target is collected, while
     the key itself is still alive, so a `BoundedLRUCache` can remove the entry stored
     under it; the dataclass projection cache gives it to every key it stores. The key's
-    weakref holds `on_collect` for as long as the target lives, so a bound method such as
-    `cache.forget` keeps its cache alive that long; the projection cache passes its removal
-    queue's `append`, which does not hold the cache. A plain
+    weakref holds `on_collect` until the target is collected, so a bound method such as
+    `cache.forget` would put the cache in a reference cycle with every key it stores, freed
+    only by the cycle collector or once those targets are collected; the projection cache
+    passes its removal queue's `append`, which does not hold the cache. A plain
     dict keyed by `_IdentityKey`, such as `_SingletonMeta._cache`, gives none and keeps
     a dead entry until it is deleted. A key nested inside a larger key, such as a tuple,
     is not the entry's key, so `on_collect` cannot remove that entry when the target is
@@ -604,8 +605,8 @@ def _project(
                 ):
                     # The queue's own append rather than `forget`, a bound method that would
                     # hold the cache and put every stored key in a cycle with it.
-                    forget = _stable_dataclass_keys._pending_removals.append
-                    _stable_dataclass_keys.put(_IdentityKey(value, on_collect=forget), result)
+                    remove_later = _stable_dataclass_keys._pending_removals.append
+                    _stable_dataclass_keys.put(_IdentityKey(value, on_collect=remove_later), result)
                 return result
             return dataclasses.replace(
                 combined,

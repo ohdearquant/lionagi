@@ -817,6 +817,17 @@ def test_a_dropped_cache_frees_its_keys_and_values_without_the_cycle_collector()
             gc.enable()
 
 
+def _held_by(func) -> list:
+    """What a callable holds directly: closure cells, defaults, and a bound owner."""
+    held = [cell.cell_contents for cell in getattr(func, "__closure__", None) or ()]
+    held += list(getattr(func, "__defaults__", None) or ())
+    held += list((getattr(func, "__kwdefaults__", None) or {}).values())
+    owner = getattr(func, "__self__", None)
+    if owner is not None:
+        held.append(owner)
+    return held
+
+
 def test_the_projection_cache_hands_its_keys_a_callback_that_does_not_hold_it():
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
@@ -824,11 +835,12 @@ def test_the_projection_cache_hands_its_keys_a_callback_that_does_not_hold_it():
     _structural_key(payload)
     (key,) = [key for key in _stable_dataclass_keys._cache if key.target is payload]
 
-    cells = [cell.cell_contents for cell in key._ref.__callback__.__closure__]
-    held = [getattr(contents, "__self__", None) for contents in cells]
-    assert not any(contents is _stable_dataclass_keys for contents in cells)
-    assert not any(owner is _stable_dataclass_keys for owner in held)
-    assert any(owner is _stable_dataclass_keys._pending_removals for owner in held)
+    # The weakref callback and, one level down, each callable it holds: their closure
+    # cells, default arguments and bound owners.
+    direct = _held_by(key._ref.__callback__)
+    reached = direct + [item for value in direct if callable(value) for item in _held_by(value)]
+    assert not any(value is _stable_dataclass_keys for value in reached)
+    assert any(value is _stable_dataclass_keys._pending_removals for value in reached)
 
 
 def test_forget_removes_an_entry_at_the_next_read():
