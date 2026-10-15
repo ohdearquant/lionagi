@@ -356,12 +356,64 @@ async def test_run_dag_refuses_another_branch_included_under_a_built_id(settings
     assert calls == []
 
 
+def _model_keywords():
+    """Every keyword a branch operation takes a model under, read off the signatures."""
+    import inspect
+    from typing import get_args
+
+    from lionagi.operations.node import BranchOperations
+    from lionagi.session.branch import Branch
+
+    keys = set()
+    for name in get_args(BranchOperations):
+        for param in inspect.signature(getattr(Branch, name)).parameters.values():
+            if "iModel" in str(param.annotation):
+                keys.add(param.name)
+    return sorted(keys)
+
+
 @_SETTINGS
-@pytest.mark.parametrize("key", ["chat_model", "imodel"])
-async def test_run_dag_refuses_a_node_that_puts_another_model_on_its_branch(
-    settings, key, monkeypatch
+@pytest.mark.parametrize("key", _model_keywords())
+@pytest.mark.parametrize("given_as", ["model", "spec"])
+async def test_run_dag_refuses_a_node_that_passes_a_model(settings, key, given_as, monkeypatch):
+    """The node's calls run on the model, and run() leaves it on the branch for later nodes.
+    A spec string names a model the operation builds, so the keyword alone is refused."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    other = await _uncontained_model() if given_as == "model" else _CLI_MODEL
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", **{key: other})
+    builder.add_operation("operate", branch=built, instruction="b")
+    with pytest.raises(ConfigurationError, match=r"1 of 2 nodes pass a model"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+async def test_the_model_keywords_read_off_the_signatures_are_the_known_five():
+    """Control for the table above: an empty or partial reading would test nothing."""
+    assert _model_keywords() == [
+        "analysis_model",
+        "chat_model",
+        "imodel",
+        "interpret_model",
+        "parse_model",
+    ]
+
+
+@_SETTINGS
+@pytest.mark.parametrize(
+    "value",
+    [lambda m: m, lambda m: {"nested": [m]}, lambda m: (m,)],
+    ids=["bare", "in-a-mapping", "in-a-tuple"],
+)
+async def test_run_dag_refuses_a_model_under_a_keyword_the_operation_does_not_name(
+    settings, value, monkeypatch
 ):
-    """operate(chat_model=...) and run(imodel=...) leave the model on the branch for later nodes."""
+    """An operation hands keywords it does not name on to the model call."""
     from lionagi._errors import ConfigurationError
     from lionagi.operations.builder import OperationGraphBuilder
 
@@ -370,11 +422,72 @@ async def test_run_dag_refuses_a_node_that_puts_another_model_on_its_branch(
     built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
     other = await _uncontained_model()
     builder = OperationGraphBuilder()
-    builder.add_operation("operate", branch=built, instruction="a", **{key: other})
-    builder.add_operation("operate", branch=built, instruction="b")
-    with pytest.raises(ConfigurationError, match=r"1 of 2 nodes set chat_model or imodel"):
+    builder.add_operation("operate", branch=built, instruction="a", helper=value(other))
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass a model"):
         await run.run_dag(builder.get_graph())
     assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_refuses_a_branch_whose_parse_model_was_replaced(settings, monkeypatch):
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    branch = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    branch.parse_model = await _uncontained_model()
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=branch, instruction="a")
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes name no branch"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+@_SETTINGS
+async def test_run_dag_refuses_an_operation_that_is_not_a_branch_operation(settings, monkeypatch):
+    """A name the branch resolves to another method, connect here, builds its own model."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("connect", branch=built, provider="openai", name="side")
+    builder.add_operation("operate", branch=built, instruction="b")
+    with pytest.raises(ConfigurationError, match=r"1 of 2 nodes name an operation"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+async def test_run_dag_with_agent_env_refuses_a_node_that_passes_env(monkeypatch):
+    """The node's env replaces the overlay for its calls rather than adding to it."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(agent_env={"LEG_ID": "leg-7"}).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", env={"OTHER": "1"})
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass env") as exc:
+        await run.run_dag(builder.get_graph())
+    assert "leg-7" not in str(exc.value)
+    assert calls == []
+
+
+async def test_run_dag_with_containment_alone_runs_a_node_that_passes_env(monkeypatch):
+    """Control: env is refused only where an overlay is in force."""
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(contain_account_integrations=True).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("operate", branch=built, instruction="a", env={"OTHER": "1"})
+    await run.run_dag(builder.get_graph())
+    assert len(calls) == 1
 
 
 async def test_a_setting_changed_while_make_agent_builds_is_not_recorded_as_the_builds(

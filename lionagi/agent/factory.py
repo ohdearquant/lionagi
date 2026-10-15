@@ -26,7 +26,6 @@ __all__ = (
     "CREATE_AGENT_BRANCH_ORIGIN_KEY",
     "_chain_pre_hooks",
     "_chain_post_hooks",
-    "_AgentSettingError",
 )
 
 # Durable `branch.metadata` marker: a resumed leg checks this key on the

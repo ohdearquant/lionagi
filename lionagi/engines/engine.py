@@ -339,12 +339,15 @@ class EngineRun:
         # namespace so recall/writeback never crosses runs or projects.
         self.run_id: str = uuid.uuid4().hex[:12]
         self.agents_made: int = 0
-        # Each branch make_agent built: the engine's agent_env and containment as
-        # make_agent read them before building it, the branch, and the model it was
-        # built with. With either set, run_dag runs a node only on such a branch,
-        # built under the settings now in force, still the one the session holds
-        # under its id, and still on that model.
-        self._agent_branches: dict[str, tuple[tuple[dict[str, str] | None, bool], Any, Any]] = {}
+        # Each branch make_agent built while either setting was on: the engine's
+        # agent_env and containment as make_agent read them before building it, the
+        # branch, and the chat and parse models it was built with. With either set,
+        # run_dag runs a node only on such a branch, built under the settings now in
+        # force, still the one the session holds under its id, and still on those
+        # models.
+        self._agent_branches: dict[
+            str, tuple[tuple[dict[str, str] | None, bool], Any, Any, Any]
+        ] = {}
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         # Populated at the shared CLI spawn boundary through a run-scoped
@@ -522,7 +525,13 @@ class EngineRun:
         # AgentSpec has no env field, so the overlay goes to create_agent, which
         # hands it to the CLI endpoint it builds: the carrier that reaches the child.
         branch = await create_agent(spec, load_settings=False, agent_env=env)
-        self._agent_branches[str(branch.id)] = (built_under, branch, branch.chat_model)
+        if built_under[0] is not None or built_under[1]:
+            self._agent_branches[str(branch.id)] = (
+                built_under,
+                branch,
+                branch.chat_model,
+                branch.parse_model,
+            )
         if name:
             branch.name = name
         self.session.include_branches(branch)
@@ -1003,13 +1012,21 @@ class EngineRun:
         With the engine's ``agent_env`` or ``contain_account_integrations`` set,
         every node must name a branch ``make_agent`` built while the engine's
         settings were what they are now, that the session still holds under that
-        id, and whose model is still the one it was built with; no node may set
-        ``chat_model`` or ``imodel``, which puts another model on the branch for
-        that node and every later one; and ``reactive`` is refused. A node with no
-        branch runs on the session's default branch or a clone of it, a node whose
-        branch was removed runs on the default branch, and a spawned node may be
-        placed on either, so each would run without the setting. Each raises
-        ``ConfigurationError`` before any node runs.
+        id, and whose chat and parse models are still the ones it was built with.
+        A node with no branch runs on the session's default branch or a clone of
+        it, a node whose branch was removed runs on the default branch, and a
+        spawned node may be placed on either, so ``reactive`` is refused. Every
+        node must name a branch operation (``chat``, ``operate``, ``communicate``,
+        ``parse``, ``ReAct``, ``ReActStream``, ``interpret``, ``act``, ``run`` or
+        ``chat_and_record``), and no node may pass a model: not under
+        ``chat_model``, ``parse_model``, ``imodel``, ``interpret_model`` or
+        ``analysis_model``, nor an ``iModel`` under any other keyword. The node's
+        calls run on such a model, and ``run`` leaves it on the branch for every
+        later node. With ``agent_env`` set, no node may pass ``env``, which
+        replaces the overlay for that node's calls. Each of these raises
+        ``ConfigurationError`` before any node runs. The check is made once,
+        before the first node: a model the caller's own code puts on a built
+        branch while the DAG runs is not seen.
 
         The settings reach only the branches ``make_agent`` builds, through the
         model it builds for them. The run's ``session`` used directly
@@ -1045,47 +1062,96 @@ class EngineRun:
                 bool(self.engine.contain_account_integrations),
             )
 
+            from typing import get_args  # noqa: PLC0415
+
+            from lionagi.operations.node import BranchOperations  # noqa: PLC0415
+            from lionagi.service.imodel import iModel  # noqa: PLC0415
+
             def _carries(op: Operation) -> bool:
                 record = self._agent_branches.get(str(op.branch_id)) if op.branch_id else None
                 if record is None or record[0] != in_force:
                     return False
-                _, built, model = record
+                _, built, chat, parse = record
                 # The lookup the flow makes; a branch it cannot find runs on the default.
                 try:
                     held = self.session.branches[op.branch_id]
                 except Exception:
                     return False
-                # Another branch included under the same id, or another model put on
-                # the built branch, does not carry the settings.
-                return held is built and built.chat_model is model
+                # Another branch included under the same id, or another chat or parse
+                # model put on the built branch, does not carry the settings.
+                return held is built and built.chat_model is chat and built.parse_model is parse
 
-            def _swaps_model(op: Operation) -> bool:
+            def _passed(op: Operation) -> Any:
                 params = op.parameters
-                keys = (
+                return (
                     params if isinstance(params, dict) else getattr(params, "model_fields_set", ())
                 )
-                return any(key in keys for key in ("chat_model", "imodel"))
 
+            def _holds_a_model(value: Any) -> bool:
+                # An operation passes keywords it does not name on to the model call,
+                # so a model under any keyword is looked for, at any depth.
+                stack, seen = [value], set()
+                while stack:
+                    item = stack.pop()
+                    if isinstance(item, iModel):
+                        return True
+                    if id(item) in seen:
+                        continue
+                    seen.add(id(item))
+                    if isinstance(item, Mapping):
+                        stack.extend(item.values())
+                    elif isinstance(item, list | tuple | set | frozenset):
+                        stack.extend(item)
+                    elif isinstance(item, BaseModel):
+                        stack.extend(vars(item).values())
+                return False
+
+            # Every keyword a branch operation takes a model under.
+            model_keys = (
+                "chat_model",
+                "parse_model",
+                "imodel",
+                "interpret_model",
+                "analysis_model",
+            )
+            branch_operations = get_args(BranchOperations)
             operations = [n for n in graph.internal_nodes.values() if isinstance(n, Operation)]
             unbuilt = [op for op in operations if not _carries(op)]
-            swapping = [op for op in operations if _swaps_model(op)]
-            if unbuilt or swapping:
+            unknown = [op for op in operations if op.operation not in branch_operations]
+            modelled = [
+                op
+                for op in operations
+                if any(key in _passed(op) for key in model_keys) or _holds_a_model(op.request)
+            ]
+            enved = [op for op in operations if in_force[0] is not None and "env" in _passed(op)]
+            if unbuilt or unknown or modelled or enved:
+                total = len(operations)
                 problems = []
                 if unbuilt:
                     problems.append(
-                        f"{len(unbuilt)} of {len(operations)} nodes name no branch make_agent "
-                        "built under the settings now in force, or one the session no longer "
-                        "holds under that id, or one whose model was replaced"
+                        f"{len(unbuilt)} of {total} nodes name no branch make_agent built "
+                        "under the settings now in force, or one the session no longer holds "
+                        "under that id, or one whose chat or parse model was replaced"
                     )
-                if swapping:
+                if unknown:
                     problems.append(
-                        f"{len(swapping)} of {len(operations)} nodes set chat_model or imodel, "
-                        "which puts another model on the branch"
+                        f"{len(unknown)} of {total} nodes name an operation that is not a "
+                        "branch operation, whose model this check cannot see"
+                    )
+                if modelled:
+                    problems.append(
+                        f"{len(modelled)} of {total} nodes pass a model, which the node's "
+                        "calls run on and run() leaves on the branch"
+                    )
+                if enved:
+                    problems.append(
+                        f"{len(enved)} of {total} nodes pass env, which replaces the "
+                        "agent_env overlay for the node's calls"
                     )
                 raise ConfigurationError(
                     f"run_dag with {' or '.join(settings)} runs only on branches make_agent "
-                    "built under the settings now in force, on the model it built: "
-                    f"{'; '.join(problems)}. Each would run without the setting."
+                    "built under the settings now in force, on the models it built: "
+                    f"{'; '.join(problems)}. Each could run without the setting."
                 )
 
         async with flow_progress_signals(
