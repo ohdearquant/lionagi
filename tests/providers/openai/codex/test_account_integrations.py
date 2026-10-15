@@ -359,9 +359,10 @@ def test_build_chat_model_hands_both_fields_to_codex(captor):
 
 
 # ── a profile under containment ─────────────────────────────────────────
-# `--disable` sets the features in the root config; codex through 0.130 applies
+# `--disable` sets the features in the root config; codex before 0.135 applies
 # the active profile's `[features]` after it, so a profile could turn either back
-# on. The active profile is `-p`, else the config's root `profile` key.
+# on. The active profile is `-p`, else a root `profile` key in the user config or
+# in a project `.codex/config.toml`.
 
 
 @pytest.mark.parametrize(
@@ -510,3 +511,96 @@ def test_the_codex_config_profile_is_read_only_under_containment(fields, tmp_pat
     env = _codex_home(tmp_path, "profile = \n")
     args = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, **fields).as_cmd_args()
     assert "-p" not in args
+
+
+def _repo(tmp_path, marker: str = "dir"):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if marker == "dir":
+        (repo / ".git").mkdir()
+    else:
+        (repo / ".git").write_text("gitdir: elsewhere\n")
+    return repo
+
+
+def _project_config(directory, config: str) -> None:
+    (directory / ".codex").mkdir(parents=True, exist_ok=True)
+    (directory / ".codex" / "config.toml").write_text(config)
+
+
+@pytest.mark.parametrize("at", ["", "a", "a/b"], ids=["git-root", "between", "cwd"])
+def test_containment_refuses_a_profile_a_project_codex_config_selects(tmp_path, at):
+    """A trusted project's config is merged too, so its root profile key selects the active
+    profile; every file from the working directory up to the git root is read."""
+    repo = _repo(tmp_path)
+    cwd = repo / "a" / "b"
+    cwd.mkdir(parents=True)
+    _project_config(repo / at, 'profile = "w"\n[profiles.w.features]\napps = true\n')
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=cwd, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match=r"the project codex config .*'s profile = 'w'"):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize("marker", ["dir", "file"])
+def test_containment_reads_no_project_codex_config_above_the_git_root(tmp_path, marker):
+    repo = _repo(tmp_path, marker)
+    _project_config(tmp_path, 'profile = "w"\n')
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    args = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True
+    ).as_cmd_args()
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+def test_containment_without_a_git_root_reads_every_ancestors_project_codex_config(tmp_path):
+    cwd = tmp_path / "plain" / "x"
+    cwd.mkdir(parents=True)
+    _project_config(tmp_path, 'profile = "w"\n')
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=cwd, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="the project codex config"):
+        req.as_cmd_args()
+
+
+def test_containment_refuses_a_project_codex_config_it_cannot_read(tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "profile = \n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=repo, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"contain_account_integrations": True, "account_connectors": ["github"]},
+        {
+            "contain_account_integrations": True,
+            "profile": CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2,
+        },
+    ],
+    ids=["uncontained", "granted", "generated-profile"],
+)
+def test_a_project_codex_config_is_read_only_under_containment_with_no_profile(fields, tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "profile = \n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    CodexCodeRequest(prompt="hi", repo=repo, env=env, **fields).as_cmd_args()
+
+
+@pytest.mark.parametrize("where", ["user", "project"])
+def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, where):
+    config = '[profile]\nname = "not-echoed"\n'
+    repo = _repo(tmp_path)
+    if where == "user":
+        env = _codex_home(tmp_path, config)
+    else:
+        env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+        _project_config(repo, config)
+    req = CodexCodeRequest(prompt="hi", repo=repo, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="a root profile key of type dict") as raised:
+        req.as_cmd_args()
+    assert "not-echoed" not in str(raised.value)

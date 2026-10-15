@@ -29,6 +29,7 @@ __all__ = (
     "configured_codex_profile",
     "global_codex_reasoning_effort",
     "is_generated_codex_profile",
+    "project_codex_profile",
     "resolve_codex_config_profile",
 )
 
@@ -250,16 +251,7 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
     return value if isinstance(value, str) and value else None
 
 
-def configured_codex_profile(env: Mapping[str, str] | None = None) -> Any:
-    """Return the root ``profile`` key of the codex config, or None when it has none.
-
-    Codex through 0.130 makes that profile the active one when no ``-p`` is given; from 0.135
-    codex refuses to start on the key. ``env`` is the environment the spawned process will run
-    under, as for :func:`global_codex_reasoning_effort`. An absent config answers None. A config
-    that cannot be read or parsed raises ValueError: a caller deciding which profile codex will
-    apply cannot read it as one that names none.
-    """
-    config_path = codex_home_for_env(env) / "config.toml"
+def _root_profile(config_path: Path) -> Any:
     try:
         if not config_path.is_file():
             return None
@@ -267,3 +259,35 @@ def configured_codex_profile(env: Mapping[str, str] | None = None) -> Any:
     except (OSError, UnicodeError, _tomllib.TOMLDecodeError) as e:
         raise ValueError(f"cannot read the codex config {str(config_path)!r}: {e}") from None
     return data.get("profile")
+
+
+def configured_codex_profile(env: Mapping[str, str] | None = None) -> Any:
+    """Return the root ``profile`` key of the codex config, or None when it has none.
+
+    Codex before 0.135 makes that profile the active one when no ``-p`` is given; from 0.135
+    codex refuses to start on the key. ``env`` is the environment the spawned process will run
+    under, as for :func:`global_codex_reasoning_effort`. An absent config answers None. A config
+    that cannot be read or parsed raises ValueError: a caller deciding which profile codex will
+    apply cannot read it as one that names none.
+    """
+    return _root_profile(codex_home_for_env(env) / "config.toml")
+
+
+def project_codex_profile(cwd: Path) -> tuple[Path, Any] | None:
+    """The nearest project ``.codex/config.toml`` that sets a root ``profile`` key, and the key.
+
+    Codex before 0.135 merges a trusted project's ``.codex/config.toml`` files over the user
+    config, so a root ``profile`` key there selects the active profile too. Every such file from
+    ``cwd`` up to its git root is read, and every ancestor's when there is no git root; trust is
+    not read. None when no file sets the key. A file that cannot be read or parsed raises
+    ValueError, as in :func:`configured_codex_profile`.
+    """
+    start = Path(cwd).absolute()
+    for directory in (start, *start.parents):
+        config_path = directory / ".codex" / "config.toml"
+        profile = _root_profile(config_path)
+        if profile is not None:
+            return config_path, profile
+        if (directory / ".git").exists():
+            return None
+    return None

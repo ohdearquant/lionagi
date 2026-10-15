@@ -44,7 +44,11 @@ from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
-from ._codex_profile import configured_codex_profile, is_generated_codex_profile
+from ._codex_profile import (
+    configured_codex_profile,
+    is_generated_codex_profile,
+    project_codex_profile,
+)
 from ._config import CodexConfigs
 
 try:
@@ -381,9 +385,9 @@ class CodexCodeRequest(BaseModel):
             "`enable_features` and from `features` entries in `config_overrides`. "
             "A profile other than the one lionagi writes for MCP server secrets is "
             "refused, named by `profile`, by a `profile` or `profiles` override, or "
-            "by a root `profile` key in the codex config, because codex through "
-            "0.130 applies a profile's features after `--disable`. A project "
-            "`.codex/config.toml` is not read. "
+            "by a root `profile` key in the codex config or in a project "
+            "`.codex/config.toml` from the working directory up to its git root, "
+            "because codex before 0.135 applies a profile's features after `--disable`. "
             "Off by default: the request reaches whatever the account and the "
             "config give it. Lifted by naming `account_connectors`."
         ),
@@ -725,16 +729,17 @@ class CodexCodeRequest(BaseModel):
         return self.contain_account_integrations and not self.account_connectors
 
     def _refuse_a_profile_under_containment(self) -> None:
-        # `--disable` sets the features in the root config. Codex through 0.130 applies
-        # the active profile's `[features]` after it, so a profile can turn either one
-        # back on; the active profile is `-p`, else the config's root `profile` key. From
-        # 0.135 a profile is a config file layered under `-c`, and codex refuses a root
-        # `profile` key itself. The profile lionagi writes for MCP server secrets holds
-        # only `mcp_servers`.
+        # `--disable` sets the features in the root config. Codex before 0.135 (read at
+        # the 0.120.0 and 0.130.0 tags) applies the active profile's `[features]` after
+        # it, so a profile can turn either one back on; the active profile is `-p`, else a
+        # root `profile` key in the user config or a trusted project's `.codex/config.toml`.
+        # From 0.135 a profile is a config file layered under `-c`, and codex refuses a
+        # root `profile` key itself. The profile lionagi writes for MCP server secrets
+        # holds only `mcp_servers`.
         if self.profile is not None and not is_generated_codex_profile(self.profile):
             raise ValueError(
                 f"contain_account_integrations cannot be combined with profile={self.profile!r}: "
-                "codex through 0.130 applies a profile's features after --disable, so the "
+                "codex before 0.135 applies a profile's features after --disable, so the "
                 "profile could turn apps or plugins back on"
             )
         for key in self.config_overrides:
@@ -742,15 +747,25 @@ class CodexCodeRequest(BaseModel):
                 raise ValueError(
                     "contain_account_integrations cannot be combined with the config "
                     f"override {key!r}: it selects or changes a profile, and codex "
-                    "through 0.130 applies a profile's features after --disable"
+                    "before 0.135 applies a profile's features after --disable"
                 )
         if self.profile is None:
-            configured = configured_codex_profile(self.env)
-            if configured is not None:
+            sources = [("the codex config", configured_codex_profile(self.env))]
+            project = project_codex_profile(self.cwd())
+            if project is not None:
+                sources.append((f"the project codex config {str(project[0])!r}", project[1]))
+            for where, value in sources:
+                if value is None:
+                    continue
+                # A key that is not a string is named by its type: its content is not echoed.
+                if isinstance(value, str):
+                    named = f"profile = {value!r}"
+                else:
+                    named = f"a root profile key of type {type(value).__name__}"
                 raise ValueError(
-                    "contain_account_integrations cannot be combined with the codex config's "
-                    f"profile = {configured!r}: with no -p, codex through 0.130 makes it the "
-                    "active profile and applies its features after --disable"
+                    f"contain_account_integrations cannot be combined with {where}'s {named}: "
+                    "with no -p, codex before 0.135 makes it the active profile and applies "
+                    "its features after --disable (from 0.135 codex refuses the key itself)"
                 )
 
     def _build_declarative_args(self) -> list[str]:
