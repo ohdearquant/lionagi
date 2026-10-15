@@ -168,9 +168,15 @@ def _refuse(code: RouterErrorCode) -> AccountRoutingError:
 
 
 def _has_header(headers: Mapping[str, Any] | None, names: frozenset[str]) -> bool:
-    if not isinstance(headers, Mapping):
+    # Headers whose names this check cannot read are refused, not passed: a list of pairs
+    # still reaches the HTTP client as headers, and a name that is not a string fails there
+    # only after an account was reserved. An underscore is read as a hyphen, since a server
+    # may read the two alike.
+    if headers is None:
         return False
-    return any(isinstance(name, str) and name.strip().lower() in names for name in headers)
+    if not isinstance(headers, Mapping) or not all(isinstance(name, str) for name in headers):
+        raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
+    return any(name.strip().lower().replace("_", "-") in names for name in headers)
 
 
 def validate_routed_request(
@@ -325,8 +331,11 @@ class StreamTextRedactor:
     and may join every piece in order. Each of those joins is matched against the key,
     and a character is masked when it lies in a run of ``MIN_RUN`` or more characters
     that occurs anywhere in the key, in any join it belongs to. A whole key and any
-    part of ``MIN_RUN`` or more characters of one are masked however the message's
-    events split them. Pieces of kind ``RAW`` (the data of an event that carries no
+    part of ``MIN_RUN`` or more characters of one are masked in each of those joins
+    however the message's events split them. A consumer that joins the text of some
+    chunk types and not others (text and thinking, without an error chunk between them)
+    makes a join that is not matched, and such a run split across its parts can be sent
+    there. Pieces of kind ``RAW`` (the data of an event that carries no
     known text field) are joined only with each other; the text a chunk shows for such
     an event is a piece of its own (see ``push``). Joins are keyed by tuples, so no
     type name an event carries can name another join.

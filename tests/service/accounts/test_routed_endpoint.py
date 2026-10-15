@@ -299,9 +299,12 @@ async def test_configuration_conflicts_refuse_before_key_resolution(monkeypatch,
     with pytest.raises(AccountRoutingError) as caught:
         models[2].endpoint.create_payload({**REQUEST, "api_key": CANARY})
     assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
-    with pytest.raises(AccountRoutingError) as caught:
-        models[1].endpoint.create_payload(REQUEST, extra_headers={"Authorization": "Bearer x"})
-    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
+    # On a model with nothing else to refuse, so only the header can refuse it.
+    plain = iModel(provider="anthropic", model=MODEL)
+    for name in ("Authorization", "X_Api_Key"):
+        with pytest.raises(AccountRoutingError) as caught:
+            plain.endpoint.create_payload(REQUEST, extra_headers={name: "x"})
+        assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
     models.append(iModel(provider="anthropic", model=MODEL))
     models[-1].endpoint.config.client_kwargs = {"allow_redirects": True}
     with pytest.raises(AccountRoutingError) as caught:
@@ -312,7 +315,9 @@ async def test_configuration_conflicts_refuse_before_key_resolution(monkeypatch,
 
 
 @pytest.mark.parametrize("where", ["extra_headers", "default_headers", "client_headers"])
-@pytest.mark.parametrize("name", ["anthropic-beta", "Anthropic-Beta", " ANTHROPIC-BETA "])
+@pytest.mark.parametrize(
+    "name", ["anthropic-beta", "Anthropic-Beta", " ANTHROPIC-BETA ", "anthropic_beta"]
+)
 def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, where, name):
     path = _install_accounts(monkeypatch, tmp_path)
     lookups = []
@@ -335,6 +340,42 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
     assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
     assert not lookups
     assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [("anthropic-beta", "context-management-2025-06-27")],
+        {b"anthropic-beta": "context-management-2025-06-27"},
+        {1: "x"},
+    ],
+    ids=["pairs", "bytes-name", "int-name"],
+)
+@pytest.mark.parametrize("where", ["extra_headers", "default_headers", "client_headers"])
+@pytest.mark.asyncio
+async def test_headers_whose_names_cannot_be_read_are_refused_before_a_reservation(
+    monkeypatch, tmp_path, headers, where
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    lookups = []
+    monkeypatch.setattr(router_module, "resolve_account_key", lambda *args: lookups.append(args))
+    model, transport = _model(monkeypatch, [_response()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if where == "extra_headers":
+            payload, _ = model.endpoint.create_payload(REQUEST)
+            await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=headers)
+        else:
+            if where == "default_headers":
+                model.endpoint.config.default_headers = headers
+            else:
+                model.endpoint.config.client_kwargs = {"headers": headers}
+            await model.endpoint.call(REQUEST)
+
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
+    assert not lookups
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
 
 
 @pytest.mark.asyncio
@@ -1258,8 +1299,27 @@ async def test_a_stream_ending_before_message_stop_records_why(
             ],
             ("settled", 250_000, "complete"),
         ),
+        (
+            [{"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}}],
+            ("open", None, "usage_incomplete"),
+        ),
+        (
+            [{"type": "message_delta", "usage": {"input_tokens": 100}}],
+            ("open", None, "usage_incomplete"),
+        ),
+        (
+            [{"type": "message_delta", "usage": {"output_tokens": True}}],
+            ("open", None, "usage_incomplete"),
+        ),
     ],
-    ids=["no_message_delta", "delta_without_usage", "delta_with_usage"],
+    ids=[
+        "no_message_delta",
+        "delta_without_usage",
+        "delta_with_usage",
+        "delta_with_empty_usage",
+        "delta_usage_without_output_count",
+        "delta_with_boolean_output_count",
+    ],
 )
 @pytest.mark.asyncio
 async def test_a_stream_settles_at_message_stop_only_with_a_message_deltas_usage(
@@ -1277,6 +1337,32 @@ async def test_a_stream_settles_at_message_stop_only_with_a_message_deltas_usage
 
     assert chunks
     assert _attempts(path)[0][2:] == row
+
+
+@pytest.mark.asyncio
+async def test_a_second_message_stop_settles_nothing(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["usage"]["output_tokens"] = 1
+    final = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn"},
+        "usage": {"output_tokens": 5},
+    }
+    later = {"type": "message_delta", "usage": {"output_tokens": 500}}
+    events = [start, _PARTIAL_TEXT, final, {"type": "message_stop"}, later]
+    events.append({"type": "message_stop"})
+    model, transport = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert chunks
+    assert _attempts(path)[0][2:] == ("settled", 250_000, "complete")
+    with sqlite3.connect(path) as connection:
+        reason = connection.execute(
+            "SELECT block_reason FROM account WHERE name = 'primary'"
+        ).fetchone()[0]
+    assert reason is None
 
 
 @pytest.mark.asyncio

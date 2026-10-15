@@ -627,8 +627,10 @@ class AnthropicMessagesEndpoint(Endpoint):
                         if name != "type" and isinstance(value, str):
                             pieces.append((kind, value))
                             places.append((delta, name))
-            # Every other string in the event is matched on its own: no consumer joins it,
-            # except as the text of the event's chunk, which is joined with other chunks' text.
+            # Every other string value in the event is matched on its own: no consumer joins
+            # it, except as the text of the event's chunk, which is joined with other chunks'
+            # text. An object's names are not matched for runs; the chunk masks a whole key in
+            # one.
             rewrite = mask_strings(event, {(id(holder), name) for holder, name in places})
             return push(event, data, places, rewrite, pieces, shown)
 
@@ -682,12 +684,15 @@ class AnthropicMessagesEndpoint(Endpoint):
                     delta_usage = event.get("usage")
                     if isinstance(delta_usage, dict):
                         usage.update(delta_usage)
-                        saw_final_usage = True
+                        output_tokens = delta_usage.get("output_tokens")
+                        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+                            saw_final_usage = True
                 elif event_type == "error":
                     saw_error_event = True
-                elif event_type == "message_stop":
+                elif event_type == "message_stop" and not settled:
                     # message_start's output count is a placeholder; only a
-                    # message_delta's usage completes it.
+                    # message_delta's output count completes it. The attempt settles once,
+                    # so a later message_stop settles nothing.
                     priced = (
                         price_usage(
                             router.revision,

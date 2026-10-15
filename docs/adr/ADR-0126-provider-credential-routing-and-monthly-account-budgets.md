@@ -12,15 +12,16 @@
 D2 requires stream chunks scrubbed of the chosen key, including a key split across chunks, with
 masks that reveal no key characters. A masker cannot tell a few characters of the key from other
 text, so the stream path matches runs: a character is masked when it lies in a run of eight or more
-characters that occurs anywhere in the key, in any join a consumer can make of one message's text.
-The joins are each delta kind across the message, the quoted text of its citations, the text of
-the chunks a consumer receives, by chunk type and all of it in order, and every piece in order.
-Every other string of an event is matched on its own.
+characters that occurs anywhere in the key, in one of the joins the stream path makes of one
+message's text. The joins are each delta kind across the message, the quoted text of its citations,
+the text of the chunks a consumer receives, by chunk type and all of it in order, and every piece in
+order. Every other string value of an event is matched on its own.
 
-Decision: D2's scrubbing is met for every run of eight or more characters of the key (the whole key,
-for a shorter key) and for every beginning of the key longer than its public `sk-ant-` prefix. Three
-limits follow and are accepted: closing the first two would mean masking ordinary text that shares a
-few characters with the key, or holding text until the stream ends.
+Decision: D2's scrubbing is met, in those joins, for every run of eight or more characters of the
+key (the whole key, for a shorter key) and for every beginning of the key longer than its public
+`sk-ant-` prefix. Five limits follow and are accepted: closing the first two would mean masking
+ordinary text that shares a few characters with the key, or holding text until the stream ends, and
+closing the fourth would mean a join for every set of chunk types a consumer might join.
 
 - A key whose runs of fewer than eight characters have other characters between them, such as the
   key written in seven-character pieces separated by spaces, within one event or across events, is
@@ -32,6 +33,11 @@ few characters with the key, or holding text until the stream ends.
   `sk-ant-` has its first character masked wherever it appears.
 - Text that is not the key is masked where it holds a run of eight characters from the key, or a
   beginning of the key past `sk-ant-` such as `sk-ant-api03-`.
+- A consumer that joins the text of some chunk types and not others, such as text and thinking
+  without the error chunk between them, makes a join the stream path does not match, so a run of
+  the key split across that join's parts can be sent.
+- The names in an event's objects are not matched for runs; a whole key in a name is masked in the
+  chunks a consumer receives.
 
 A response that is not streamed reaches its caller only with status 200, with every whole key in it
 masked; it is not matched for runs.
