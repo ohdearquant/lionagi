@@ -550,6 +550,11 @@ _TRIGGER_RESOLUTIONS = {
         "VALUES (1, NEW.id, 'mirrored'); END",
         "INSERT OR REPLACE",
     ),
+    "string literal names": (
+        "AFTER INSERT ON 'runs' BEGIN INSERT OR REPLACE INTO 'events' (seq, run_id, body) "
+        "VALUES (1, NEW.id, 'mirrored'); END",
+        "INSERT OR REPLACE",
+    ),
 }
 
 

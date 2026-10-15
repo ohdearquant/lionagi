@@ -205,6 +205,15 @@ _CONFLICT_EFFECTS = {
 }
 
 
+def _names(tokens: list[tuple[str, str]]) -> set[str]:
+    """Every token that can name a table, lowercased; SQLite also takes a string literal as one."""
+    return {
+        text[1:-1].replace("''", "'").lower() if kind == _STRING else text
+        for kind, text in tokens
+        if kind in (_WORD, _IDENT, _STRING)
+    }
+
+
 def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Each conflict resolution but ABORT that a trigger or view names: ``(spelling, action)``."""
     found: list[tuple[str, str]] = []
@@ -604,10 +613,10 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
                 if key.table in wanted or key.parent in wanted
             )
         elif kind in ("trigger", "view") and row[3]:
-            # A table is named without regard to case, as SQLite matches it; the SQL is kept
-            # as a definition is, the case of a double-quoted token included.
-            tokens = _sql_tokens(row[3])
-            if wanted.intersection(text for k, text in tokens if k in (_WORD, _IDENT)):
+            # A table is named without regard to case, as SQLite matches it, and can be named
+            # by a string literal; the SQL is kept as a definition is, the case of a
+            # double-quoted token included.
+            if wanted.intersection(_names(_sql_tokens(row[3]))):
                 objects.add(SchemaObject(kind, name, _normalize_sql(row[3])))
     return Closure(tuple(shapes), frozenset(keys), frozenset(objects))
 
