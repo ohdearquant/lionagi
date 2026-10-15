@@ -1416,7 +1416,8 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, except a judge agent that cannot carry the engine's agent_env or containment, which is raised: no judge ran, so there is no verdict to read as a pass."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, except a judge agent that cannot carry the engine's agent_env or containment, which is raised, whether its build refuses it or the provider refuses the contained call before it runs: no judge ran, so there is no verdict to read as a pass."""
+        from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
         if not self.judge_model:
@@ -1447,6 +1448,14 @@ class Engine:
         except _AgentSettingError:
             raise
         except Exception as exc:
+            # The model layer wraps a provider's refusal in its own error, so the refusal is
+            # found on the cause chain. It refuses every call this judge makes; read as a pass,
+            # it would turn the gate off for the whole run.
+            cause: BaseException | None = exc
+            while cause is not None and not isinstance(cause, ContainmentRefusedError):
+                cause = cause.__cause__
+            if cause is not None:
+                raise cause from cause.__cause__
             run.notify("judge_error", eid=eid, error=str(exc))
             return True
 

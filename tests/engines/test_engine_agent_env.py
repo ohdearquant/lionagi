@@ -10,6 +10,7 @@ from.
 """
 
 import os
+import re
 from typing import Any
 
 import pytest
@@ -750,3 +751,31 @@ async def test_the_judge_fails_open_on_any_other_configuration_error(monkeypatch
     assert events == [
         ("judge_error", {"eid": "e1", "error": "an mcp config this judge cannot use"})
     ]
+
+
+@pytest.mark.parametrize(
+    ("config", "refusal"),
+    [
+        ('profile = "work"\n', "profile = 'work'"),
+        ("profile = \n", "cannot read the codex config"),
+    ],
+    ids=["config-selects-a-profile", "config-unreadable"],
+)
+async def test_the_judge_raises_when_codex_refuses_its_containment(
+    config, refusal, tmp_path, monkeypatch
+):
+    """Codex refuses a contained call whose config could select a profile, before it
+    runs and on every call; no judge ran, so the refusal is raised, never read as a pass."""
+    from lionagi._errors import ContainmentRefusedError
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(config)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    engine = Engine(contain_account_integrations=True, judge_model=_CLI_MODEL)
+    run = engine.new_run()
+    events: list[tuple] = []
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
+    with pytest.raises(ContainmentRefusedError, match=re.escape(refusal)):
+        await engine.judge(run, "e1", "a subject")
+    assert events == []

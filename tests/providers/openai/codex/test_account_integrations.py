@@ -16,6 +16,7 @@ import re
 
 import pytest
 
+from lionagi._errors import ContainmentRefusedError
 from lionagi.cli._providers import (
     AgentProfile,
     _parse_profile,
@@ -461,6 +462,33 @@ def test_containment_refuses_a_profile_the_codex_config_selects(tmp_path):
     env = _codex_home(tmp_path, 'profile = "work"\n[profiles.work.features]\napps = true\n')
     req = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True)
     with pytest.raises(ValueError, match=re.escape("profile = 'work'")):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    ("config", "fields"),
+    [
+        (None, {"profile": "work"}),
+        (None, {"config_overrides": {"profile": "work"}}),
+        (None, {"config_overrides": {"a b": 1}}),
+        ('profile = "work"\n', {}),
+        ("profile = \n", {}),
+    ],
+    ids=[
+        "profile",
+        "override-selects-a-profile",
+        "override-key-unreadable",
+        "config-selects-a-profile",
+        "config-unreadable",
+    ],
+)
+def test_every_containment_refusal_carries_its_own_type(config, fields, tmp_path):
+    """A caller tells a containment refusal from any other ValueError by its type."""
+    env = _codex_home(tmp_path, config) if config is not None else None
+    req = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True, **fields
+    )
+    with pytest.raises(ContainmentRefusedError):
         req.as_cmd_args()
 
 

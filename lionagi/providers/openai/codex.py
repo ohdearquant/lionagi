@@ -18,6 +18,7 @@ import toml
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from lionagi._errors import ContainmentRefusedError
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -771,7 +772,12 @@ class CodexCodeRequest(BaseModel):
     def _build_declarative_args(self) -> list[str]:
         if not self._contains_account_integrations():
             return build_declarative_cli_args(self)
-        self._refuse_a_profile_under_containment()
+        try:
+            self._refuse_a_profile_under_containment()
+        except ValueError as exc:
+            # A combination that could let a profile turn a feature back on, and an override
+            # key or a codex config the check cannot read to rule that out, are both refused.
+            raise ContainmentRefusedError(str(exc)) from exc
         disabled = list(self.disable_features or ())
         settled = self.model_copy(
             update={
