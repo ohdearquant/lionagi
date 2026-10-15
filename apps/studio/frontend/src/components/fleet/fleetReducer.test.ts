@@ -15,7 +15,7 @@ import { resolveRunLabel } from "@/lib/runLabel";
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: string }): RunSummary {
-  const base: Omit<RunSummary, "run_id" | "status"> = {
+  const base: Omit<RunSummary, "id" | "run_id" | "status"> = {
     playbook_name: null,
     agent_name: null,
     invocation_kind: null,
@@ -30,7 +30,7 @@ function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: stri
     branch_count: 0,
     message_count: 0,
   };
-  return { ...base, ...overrides };
+  return { ...base, id: overrides.id ?? overrides.run_id, ...overrides };
 }
 
 function makeInvocation(
@@ -173,6 +173,22 @@ describe("fleetReducer — invocation join", () => {
     expect(s.orgUnits).toHaveLength(1);
     expect(s.orgUnits[0].id).toBe("__direct__");
     expect(s.orgUnits[0].agents).toHaveLength(1);
+  });
+
+  it("keeps Sessions distinct when they share one CLI run id", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({ id: "session-1", run_id: "shared-cli-run", status: "running" }),
+        makeRun({ id: "session-2", run_id: "shared-cli-run", status: "running" }),
+      ],
+    );
+
+    expect(s.orgUnits[0].agents.map((agent) => agent.id).sort()).toEqual([
+      "session-1",
+      "session-2",
+    ]);
   });
 
   it("an agent row's name matches the shared resolver, never a raw playbook/agent fallback", () => {

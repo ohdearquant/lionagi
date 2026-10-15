@@ -76,8 +76,12 @@ export type ArtifactVerification = ArtifactVerificationResult | ArtifactVerifica
 // list_runs() (services/runs.py). Fields worker_name/finished_at were stale
 // filesystem-run remnants; the real fields are playbook_name/ended_at etc.
 export interface RunSummary {
-  run_id: string;
-  id?: string;
+  /** Session-projection identity used by Studio routes, controls, and row keys. */
+  id: string;
+  /** Explicit Session identity for consumers that need the route key by name. */
+  session_id?: string;
+  /** Nullable, non-unique CLI-run provenance; never use as Session identity. */
+  run_id: string | null;
   name?: string | null;
   playbook_name?: string | null;
   agent_name?: string | null;

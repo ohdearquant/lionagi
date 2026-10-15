@@ -409,6 +409,63 @@ describe("Operator stream cursor", () => {
       urls.map((url) => new URL(url, "http://studio.test").searchParams.get("after_sequence")),
     ).toEqual(["0", "0", "4"]);
   });
+
+  it("abandons a silent pre-restart stream and replays from the durable cursor", async () => {
+    vi.useFakeTimers();
+    const urls: string[] = [];
+    const signals: AbortSignal[] = [];
+    const delivered: OperatorFrame[] = [];
+    const errors: { message: string; fatal: boolean }[] = [];
+    let attempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        attempts += 1;
+        urls.push(url);
+        signals.push(init?.signal as AbortSignal);
+        if (attempts === 1) {
+          // This is the failure shape seen through the dev proxy when daemon A
+          // dies: the upstream produces neither EOF nor the five-second
+          // heartbeat, so reader.read() otherwise waits forever while a turn
+          // submitted to daemon B is already durable.
+          return Promise.resolve(
+            new Response(new ReadableStream({ start() {} }), {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(`data: ${JSON.stringify(frame(5))}\n\n`, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }),
+    );
+
+    const close = streamOperatorConversation("conversation-1", 4, {
+      onFrame: (value) => delivered.push(value),
+      onError: (error, fatal) => errors.push({ message: error.message, fatal }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(urls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(signals[0].aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(750);
+    close();
+
+    expect(delivered.map((value) => value.sequence)).toEqual([5]);
+    expect(errors).toEqual([
+      expect.objectContaining({ fatal: false, message: expect.stringContaining("timed out") }),
+    ]);
+    expect(
+      urls
+        .slice(0, 2)
+        .map((url) => new URL(url, "http://studio.test").searchParams.get("after_sequence")),
+    ).toEqual(["4", "4"]);
+  });
 });
 
 describe("Operator SSE framing", () => {
