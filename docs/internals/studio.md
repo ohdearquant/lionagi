@@ -80,6 +80,17 @@ thread stops parsing lines and only keeps draining. It's a daemon thread with
 no explicit join, so it exits with the process rather than needing shutdown
 wiring.
 
+## lionagi/studio/config.py
+
+**System timezone fallback** — When the localtime symlink points outside
+`zoneinfo.TZPATH`, a `zoneinfo` component in its path can still supply a
+loadable IANA name. This fallback refuses a name that refers to distinct
+files in multiple search roots: search order could select different rules
+from the host's. Roots resolving to the same file are not ambiguous. A
+readable localtime file with no accepted name raises
+`SystemTimezoneUnreadableError`; `LIONAGI_SCHEDULER_TZ` can select the desired
+zone explicitly.
+
 ## lionagi/studio/scheduler/engine.py
 
 **`_reserve_max_runs_budget` / `_release_max_runs_claim`** — The single-process

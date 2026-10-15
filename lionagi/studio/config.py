@@ -135,8 +135,9 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
     The name is whatever follows a component spelled exactly ``zoneinfo`` —
     a suffixed directory like ``zoneinfo.backup`` stays a refusal, keeping
     the containment rule's judgment that unrelated lookalike trees are not
-    zone sources — and it is accepted only if the stdlib can load it, so
-    this never invents a zone.
+    zone sources — and it is accepted only if the stdlib can load it. When
+    several search roots contain the name, they must resolve to the same file
+    so that search order cannot silently select different timezone rules.
     """
     # Resolved first, link text second. The primary path already derives the
     # name from where the link resolves rather than from what it says, and this
@@ -168,6 +169,13 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
             try:
                 zoneinfo.ZoneInfo(name)
             except Exception:  # noqa: BLE001
+                break
+            zone_files = {
+                _resolved(candidate)
+                for entry in zoneinfo.TZPATH
+                if (candidate := Path(entry) / name).is_file()
+            }
+            if len(zone_files) > 1:
                 break
             return name
     return None

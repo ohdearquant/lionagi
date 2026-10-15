@@ -220,6 +220,46 @@ def test_unshadowed_key_still_resolves_with_several_roots(tz_host):
     assert config._system_local_tz_name() == "America/New_York"
 
 
+@pytest.mark.parametrize("opaque_target", [False, True])
+def test_link_structure_fallback_refuses_shadowed_keys(tz_host, tmp_path, opaque_target):
+    """A loadable name must not select different rules from an earlier root."""
+    link, set_roots, zone_file = tz_host
+    zone_file("first", "America/New_York", data_from="Asia/Tokyo")
+    zone_file("second", "America/New_York")
+    outside = zone_file("outside/zoneinfo", "America/New_York")
+    if opaque_target:
+        target = tmp_path / "local-zone"
+        outside.rename(target)
+        outside.symlink_to(target)
+    link.symlink_to(outside)
+    set_roots("first", "second")
+
+    assert config._zone_name_from_path(link.resolve(), config._tz_search_roots()) is None
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+
+
+def test_link_structure_fallback_accepts_unshadowed_key_with_several_roots(tz_host):
+    link, set_roots, zone_file = tz_host
+    zone_file("first", "Asia/Tokyo")
+    zone_file("second", "America/New_York")
+    link.symlink_to(zone_file("outside/zoneinfo", "America/New_York"))
+    set_roots("first", "second")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+def test_link_structure_fallback_accepts_roots_pointing_to_the_same_file(tz_host, tmp_path):
+    """Two root spellings that reopen the same tzfile do not shadow each other."""
+    link, set_roots, zone_file = tz_host
+    zone_file("first", "America/New_York")
+    (tmp_path / "second").symlink_to(tmp_path / "first")
+    link.symlink_to(zone_file("outside/zoneinfo", "America/New_York"))
+    set_roots("first", "second")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
 def test_malformed_zone_data_raises_rather_than_defaulting(tz_host, tmp_path):
     """The link opens, so the host stated a zone; the bytes behind it just
     don't load. Substituting UTC there misreads an answer that exists."""
