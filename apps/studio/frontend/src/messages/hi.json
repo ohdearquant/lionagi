@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "हाल के रन उपलब्ध नहीं हैं",
     "title": "शेड्यूल",
     "subtitle": "cron, इंटरवल और GitHub ट्रिगर पर स्थायी ऑटोमेशन",
     "calendar": "कैलेंडर",

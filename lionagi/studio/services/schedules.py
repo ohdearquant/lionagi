@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -474,8 +475,10 @@ async def list_schedules(
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
         streaks_by_id = await db.schedule_run_streaks(ids)
         health_evidence_by_id = await db.schedule_health_evidence(ids)
+        recent_by_id = await _recent_run_summaries(db, ids)
         now = time.time()
         for row in rows:
+            row["recent_runs_summary"] = recent_by_id[row["id"]]
             if row.get("max_runs"):
                 row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
             if row.get("budget_usd") or row.get("budget_tokens"):
@@ -558,6 +561,95 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
     summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
     summary["error_class"] = _error_class_for(row)
     return summary
+
+
+_RECENT_RUN_LIMIT = 25
+
+
+def _unavailable_run_summary() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "status": "unavailable",
+        "limit": _RECENT_RUN_LIMIT,
+        "has_next": None,
+        "runs": [],
+    }
+
+
+async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """One recent slice per definition, with bounded occurrence reads and batched joins.
+
+    The extra occurrence detects longer history without a lifetime count. Linked
+    session evidence must include every child: the shared reducer only grades a
+    session outcome when all children are terminal. No per-run reads are performed.
+    """
+    result = {sid: _unavailable_run_summary() for sid in schedule_ids}
+    if not schedule_ids:
+        return result
+    try:
+        rows = await db.fetch_all(
+            "SELECT * FROM ("
+            " SELECT id, schedule_id, invocation_id, action_kind, status, exit_code,"
+            " chain_depth, fired_at, ended_at, error_detail,"
+            " ROW_NUMBER() OVER (PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC) AS rn"
+            " FROM schedule_runs WHERE schedule_id IN (SELECT value FROM json_each(?))"
+            ") WHERE rn <= ? ORDER BY schedule_id, rn",
+            (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1),
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
+        for row in rows:
+            grouped[row["schedule_id"]].append(row)
+        invocation_ids = list(
+            {
+                row["invocation_id"]
+                for runs in grouped.values()
+                for row in runs[:_RECENT_RUN_LIMIT]
+                if row["invocation_id"]
+            }
+        )
+        invocations: dict[str, dict[str, Any]] = {}
+        sessions: dict[str, list[dict[str, Any]]] = {}
+        if invocation_ids:
+            ids = (json.dumps(invocation_ids),)
+            invocations = {
+                row["id"]: row
+                for row in await db.fetch_all(
+                    "SELECT id, status, status_reason_code, status_reason_summary FROM invocations"
+                    " WHERE id IN (SELECT value FROM json_each(?))",
+                    ids,
+                )
+            }
+            for row in await db.fetch_all(
+                "SELECT id, invocation_id, status, status_reason_code, status_reason_summary,"
+                " created_at, artifacts_path FROM sessions"
+                " WHERE invocation_id IN (SELECT value FROM json_each(?))",
+                ids,
+            ):
+                sessions.setdefault(row["invocation_id"], []).append(row)
+    except Exception:
+        _log.exception("Recent schedule run summary query failed")
+        return result
+
+    for sid, runs in grouped.items():
+        try:
+            summaries = []
+            for run in runs[:_RECENT_RUN_LIMIT]:
+                iid = run["invocation_id"]
+                view = run_view.build_run_view(run, invocations.get(iid), sessions.get(iid, []))
+                summaries.append(_run_summary({**run, **view}))
+            # Isolate a malformed projection before the transport serializes the
+            # whole page. One bad definition must not hide the other definitions.
+            json.dumps(summaries, allow_nan=False)
+            result[sid] = {
+                "version": 1,
+                "status": "available",
+                "limit": _RECENT_RUN_LIMIT,
+                "has_next": len(runs) > _RECENT_RUN_LIMIT,
+                "runs": summaries,
+            }
+        except Exception:
+            _log.exception("Recent run summary unavailable for schedule %s", sid)
+    return result
 
 
 # A run view adds the reconciled outcome and the joined session facts on top of the
@@ -686,6 +778,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "health_last_outcome",
     "health_last_outcome_at",
     "health_since",
+    "recent_runs_summary",
     "created_at",
     "updated_at",
 )

@@ -436,6 +436,8 @@ export interface ScheduleSummary {
   health_last_outcome?: string | null;
   health_last_outcome_at?: number | null;
   health_since?: number;
+  /** Optional for older daemons; absence means the recent slice is unavailable. */
+  recent_runs_summary?: ScheduleRecentRunsSummary;
   created_at: number;
   updated_at: number;
 }
@@ -467,7 +469,7 @@ export interface ScheduleRunSummary {
 }
 
 /**
- * A run as the /schedules/summary slice serves it. Narrower than ScheduleRunSummary on
+ * A run as a schedule's recent summary slice serves it. Narrower than ScheduleRunSummary on
  * purpose: the summary surface carries no error_detail, only a translatable
  * classification of the failure.
  */
@@ -483,6 +485,15 @@ export interface ScheduleRunSliceRow {
   ended_at: number | null;
   error_class: string | null;
 }
+
+/** Newest 25 occurrences, ordered by fired_at DESC then id DESC, including chains. */
+export type ScheduleRecentRunsSummary = {
+  version: 1;
+  limit: 25;
+} & (
+  | { status: "available"; has_next: boolean; runs: ScheduleRunSliceRow[] }
+  | { status: "unavailable"; has_next: null; runs: [] }
+);
 
 export interface ScheduleDetail extends ScheduleSummary {
   // Served by the single-schedule route only. The list surfaces withhold them:

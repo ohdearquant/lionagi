@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Execuções recentes indisponíveis",
     "title": "Agendamentos",
     "subtitle": "Automações permanentes em acionadores cron, intervalo e GitHub",
     "calendar": "Calendário",

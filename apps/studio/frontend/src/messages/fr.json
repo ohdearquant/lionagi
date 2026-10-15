@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Exécutions récentes indisponibles",
     "title": "Planifications",
     "subtitle": "Automatisations permanentes sur déclencheurs cron, intervalle et GitHub",
     "calendar": "Calendrier",

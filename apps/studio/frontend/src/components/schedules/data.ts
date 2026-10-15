@@ -3,8 +3,8 @@
  * schedule; run history lives on the schedule detail page, not here.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listScheduleRuns, listSchedules } from "@/lib/api";
-import type { ScheduleRunSliceRow, ScheduleSummary } from "@/lib/types";
+import { listSchedules } from "@/lib/api";
+import type { ScheduleRecentRunsSummary, ScheduleRunSliceRow, ScheduleSummary } from "@/lib/types";
 
 // Statuses with a history.status translation; unknown values fall back to
 // StatusPill's built-in humanization.
@@ -75,11 +75,31 @@ export interface SchedulesData {
 }
 
 const POLL_MS = 30_000;
-const RUNS_PER_SCHEDULE = 25;
+
+function recentSummary(schedule: ScheduleSummary): ScheduleRecentRunsSummary {
+  const summary = schedule.recent_runs_summary;
+  if (
+    summary?.version === 1 &&
+    summary.limit === 25 &&
+    summary.status === "available" &&
+    typeof summary.has_next === "boolean" &&
+    Array.isArray(summary.runs) &&
+    summary.runs.length <= 25 &&
+    (!summary.has_next || summary.runs.length === 25) &&
+    summary.runs.every((run) => run && run.schedule_id === schedule.id)
+  ) {
+    return summary;
+  }
+  return { version: 1, limit: 25, status: "unavailable", has_next: null, runs: [] };
+}
+
+export function recentRunsUnavailable(schedule: ScheduleSummary): boolean {
+  return recentSummary(schedule).status === "unavailable";
+}
 
 /**
- * Fetches all schedules plus each schedule's recent runs (the API exposes
- * runs per schedule only), and re-polls every 30s so the Running lane is live.
+ * One list request includes recent run slices. Overlapping polls and explicit
+ * refreshes share the in-flight request and queue at most one trailing refresh.
  */
 export function useSchedulesData(): SchedulesData {
   const [schedules, setSchedules] = useState<ScheduleSummary[]>([]);
@@ -87,52 +107,61 @@ export function useSchedulesData(): SchedulesData {
   const [nowMs, setNowMs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const aliveRef = useRef(true);
+  const refreshRef = useRef<() => void>(() => {});
+  const refresh = useCallback(() => refreshRef.current(), []);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await listSchedules();
-      if (!aliveRef.current) return;
-      const list = res.schedules;
-      const settled = await Promise.allSettled(
-        list.map((s) => listScheduleRuns(s.id, { limit: RUNS_PER_SCHEDULE })),
-      );
-      if (!aliveRef.current) return;
-      const nameById = new Map(list.map((s) => [s.id, s.name]));
-      const allRuns: RunRow[] = [];
-      for (const r of settled) {
-        if (r.status === "fulfilled") {
-          for (const run of r.value.runs) {
-            allRuns.push({
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    let pending = false;
+    const load = async () => {
+      if (!active) return;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = true;
+      try {
+        const res = await listSchedules();
+        if (!active) return;
+        const list = res.schedules.map((schedule) => ({
+          ...schedule,
+          recent_runs_summary: recentSummary(schedule),
+        }));
+        setSchedules(list);
+        setRuns(
+          list.flatMap((schedule) =>
+            schedule.recent_runs_summary.runs.map((run) => ({
               ...run,
-              scheduleName: nameById.get(run.schedule_id) ?? run.schedule_id,
-            });
+              scheduleName: schedule.name,
+            })),
+          ),
+        );
+        setNowMs(Date.now());
+        setError(false);
+      } catch {
+        if (active) setError(true);
+      } finally {
+        inFlight = false;
+        if (active) {
+          setLoading(false);
+          if (pending) {
+            pending = false;
+            void load();
           }
         }
       }
-      setSchedules(list);
-      setRuns(allRuns);
-      setNowMs(Date.now());
-      setError(false);
-    } catch {
-      if (aliveRef.current) setError(true);
-    } finally {
-      if (aliveRef.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    aliveRef.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState, but this is a data-fetch pattern matching the rest of the codebase
+    };
+    refreshRef.current = () => void load();
     void load();
     const id = setInterval(() => void load(), POLL_MS);
     return () => {
-      aliveRef.current = false;
+      active = false;
       clearInterval(id);
     };
-  }, [load]);
+  }, []);
 
-  return { schedules, runs, nowMs, loading, error, refresh: () => void load() };
+  return { schedules, runs, nowMs, loading, error, refresh };
 }
 
 // ─── Next-fire derivation ─────────────────────────────────────────────────────
