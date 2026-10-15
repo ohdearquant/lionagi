@@ -113,7 +113,15 @@ _INSERTS = {
     },
 }
 _UPDATES = {
-    "sessions": {"status_reason_code", "status_reason_summary", "status_evidence_refs"},
+    "sessions": {
+        "status_reason_code",
+        "status_reason_summary",
+        "status_evidence_refs",
+        "last_message_at",
+        "updated_at",
+    },
+    "progressions": {"collection"},
+    "branches": {"system_msg_id"},
     "messages": {
         "node_metadata",
         "content",
@@ -126,7 +134,13 @@ _UPDATES = {
     },
     "invocations": {"session_count", "updated_at"},
 }
-_OPERATIONS = {"create_progression", "create_session", "create_branch", "insert_message"}
+_OPERATIONS = {
+    "create_progression",
+    "create_session",
+    "create_branch",
+    "insert_message",
+    "persist_live_message",
+}
 
 
 async def _managed_store(path: Path) -> Path:
@@ -559,3 +573,180 @@ async def test_another_handle_on_the_store_did_not_create_this_runs_rows(db, sto
             await other.create_branch({"id": "b1", "session_id": "s1", "progression_id": "bp"})
     finally:
         await other.close()
+
+
+def _live_message(message_id: str = "m1", content: str = "hello", role: str = "user") -> dict:
+    return {
+        "id": message_id,
+        "created_at": 2.0,
+        "content": {"text": content},
+        "role": role,
+        "node_metadata": {"lion_class": "Instruction"},
+    }
+
+
+async def test_a_live_message_joins_the_runs_session_branch_and_progressions(db, store):
+    await _setup_run(db)
+    ((started,),) = _rows(store, "SELECT last_message_at FROM sessions WHERE id = 's1'")
+
+    await db._persist_live_message(
+        _live_message(),
+        session_id="s1",
+        branch_progression_id="bp",
+        session_progression_id="sp",
+        activity_at=started + 10,
+    )
+    await db._persist_live_message(
+        _live_message("m-sys2", role="system"),
+        session_id="s1",
+        branch_progression_id="bp",
+        system_branch_id="b1",
+        activity_at=started + 5,
+    )
+
+    assert _rows(store, f"SELECT {OWNER} FROM messages WHERE id IN ('m1', 'm-sys2')") == [
+        ("principal:a",),
+        ("principal:a",),
+    ]
+    assert _rows(store, "SELECT id, collection FROM progressions ORDER BY id") == [
+        ("bp", '["m1","m-sys2"]'),
+        ("sp", '["m1"]'),
+    ]
+    assert _rows(store, "SELECT system_msg_id FROM branches WHERE id = 'b1'") == [("m-sys2",)]
+    assert _rows(store, "SELECT last_message_at FROM sessions WHERE id = 's1'") == [(started + 10,)]
+
+
+async def test_a_live_message_written_again_is_rewritten_and_listed_once(db, store):
+    await _setup_run(db)
+    for content in ("first", "second"):
+        await db._persist_live_message(
+            _live_message(content=content), session_id="s1", branch_progression_id="bp"
+        )
+
+    assert _rows(store, "SELECT content FROM messages WHERE id = 'm1'") == [('{"text": "second"}',)]
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'bp'") == [('["m1"]',)]
+
+
+def _foreign_run(store: Path) -> None:
+    """A session, branch and progression another principal's run wrote."""
+    _foreign_rows(store)
+    _execute(
+        store,
+        f"INSERT INTO sessions (id, created_at, updated_at, progression_id, {OWNER}) "
+        "VALUES ('s-other', 0, 0, 'p-other', 'principal:b')",
+    )
+    _execute(
+        store,
+        f"INSERT INTO branches (id, created_at, session_id, progression_id, {OWNER}) "
+        "VALUES ('b-other', 0, 's-other', 'p-other', 'principal:b')",
+    )
+
+
+@pytest.mark.parametrize(
+    "link, value",
+    [
+        ("session_id", "s-other"),
+        ("branch_progression_id", "p-other"),
+        ("session_progression_id", "p-other"),
+        ("system_branch_id", "b-other"),
+    ],
+)
+async def test_a_live_message_links_only_rows_its_run_created(db, store, link, value):
+    await _setup_run(db)
+    _foreign_run(store)
+    links = {"session_id": "s1", "branch_progression_id": "bp", "session_progression_id": "sp"}
+    links[link] = value
+    before = {
+        table: _rows(store, f"SELECT * FROM {table} ORDER BY id")
+        for table in ("sessions", "branches", "progressions", "messages")
+    }
+
+    with pytest.raises(StateCompatibilityRefused, match="was not created by this run"):
+        await db._persist_live_message(_live_message(role="system"), **links)
+
+    for table, rows in before.items():
+        assert _rows(store, f"SELECT * FROM {table} ORDER BY id") == rows, table
+
+
+@pytest.mark.parametrize(
+    "table, row_id", [("sessions", "s1"), ("progressions", "bp"), ("branches", "b1")]
+)
+async def test_a_live_message_refuses_a_row_that_no_longer_carries_the_owner(
+    db, store, table, row_id
+):
+    await _setup_run(db)
+    # The managing application handed one of the run's rows to another principal.
+    _execute(store, f"UPDATE {table} SET {OWNER} = 'principal:b' WHERE id = ?", (row_id,))
+    before = {
+        name: _rows(store, f"SELECT * FROM {name} ORDER BY id")
+        for name in ("sessions", "branches", "progressions", "messages")
+    }
+
+    with pytest.raises(StateCompatibilityRefused, match="does not belong to 'principal:a'"):
+        await db._persist_live_message(
+            _live_message(role="system"),
+            session_id="s1",
+            branch_progression_id="bp",
+            system_branch_id="b1",
+        )
+
+    for name, rows in before.items():
+        assert _rows(store, f"SELECT * FROM {name} ORDER BY id") == rows, name
+
+
+async def test_every_update_a_live_message_makes_carries_the_owner(db, store):
+    """Beside the check before them, the updates themselves carry the owner predicate (D5)."""
+    from sqlalchemy import event
+
+    await _setup_run(db)
+    updates = []
+
+    def spy(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE"):
+            updates.append((statement, parameters))
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", spy)
+    try:
+        await db._persist_live_message(
+            _live_message(role="system"),
+            session_id="s1",
+            branch_progression_id="bp",
+            session_progression_id="sp",
+            system_branch_id="b1",
+        )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", spy)
+
+    assert sorted(statement.split()[1] for statement, _ in updates) == [
+        "branches",
+        "progressions",
+        "progressions",
+        "sessions",
+    ]
+    for statement, parameters in updates:
+        values = parameters.values() if isinstance(parameters, dict) else parameters
+        assert f'"{OWNER}" = ' in statement, statement
+        assert "principal:a" in values, statement
+
+
+async def test_a_refused_setup_stops_the_run(store, monkeypatch):
+    """A refusal at setup is raised, not turned into a run without persistence (ADR-0128 D6)."""
+    from lionagi.cli import _runs
+    from lionagi.session.branch import Branch
+
+    profile = _profile(store, operations=_OPERATIONS - {"create_session"})
+    handle = StateDB(store, compatibility=profile, owner="principal:a")
+    await handle.open()
+
+    async def compatibility_store(*args, **kwargs):
+        return handle
+
+    monkeypatch.setattr(_runs, "_open_shared_db", compatibility_store)
+    degraded = []
+    monkeypatch.setattr(_runs, "_record_persistence_degraded", lambda *a, **k: degraded.append(a))
+
+    with pytest.raises(StateCompatibilityRefused, match="create_session refused"):
+        await _runs.setup_agent_persist(Branch(), share_db=False)
+
+    assert degraded == []
+    assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(0,)]

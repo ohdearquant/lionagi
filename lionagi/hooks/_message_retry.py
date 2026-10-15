@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from lionagi.state.compat import StateCompatibilityRefused
+
 
 @dataclass(slots=True)
 class PendingMessageEvent:
@@ -125,6 +127,10 @@ class MessagePersistRetryQueue:
                     ),
                     activity_at=event.activity_at,
                 )
+            except StateCompatibilityRefused:
+                # The store refuses the same write on every retry, and the run stops instead
+                # of going on without it (ADR-0128 D6); the event stays at the head.
+                raise
             except ValueError as exc:
                 # StateDB._validate_message raises ValueError for a
                 # deterministically malformed message (missing content/role);

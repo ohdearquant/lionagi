@@ -140,6 +140,28 @@ async def test_handler_exception_is_logged_and_swallowed(caplog):
     assert record.exc_info is not None
 
 
+async def test_a_write_the_store_refuses_passes_through_hook_isolation():
+    """A refused compatibility-mode write stops the run instead of leaving it unpersisted
+    (ADR-0128 D6), so it is the one handler failure an emit raises."""
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    bus = HookBus()
+    fired_after: list[str] = []
+
+    async def refused(**kw):
+        raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+    async def after(**kw):
+        fired_after.append("after")
+
+    bus.on(HookPoint.MESSAGE_ADD, refused)
+    bus.on(HookPoint.MESSAGE_ADD, after)
+
+    with pytest.raises(StateCompatibilityRefused):
+        await bus.emit(HookPoint.MESSAGE_ADD, message={}, session_id="s")
+    assert fired_after == []
+
+
 async def test_sync_handler_exception_is_logged_and_swallowed(caplog):
     bus = HookBus()
     fired_after: list[str] = []

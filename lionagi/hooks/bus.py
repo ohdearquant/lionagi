@@ -176,7 +176,13 @@ class HookBus:
                     await maybe_await(handler(**kwargs))
                 except StopHook:
                     break
-                except Exception:  # noqa: BLE001 — hook isolation invariant
+                except Exception as exc:  # noqa: BLE001 — hook isolation invariant
+                    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
+                    if isinstance(exc, StateCompatibilityRefused):
+                        # A write the store refused in compatibility mode stops the run
+                        # instead of leaving it unpersisted (ADR-0128 D6).
+                        raise
                     logger.exception("Hook failed: %s", point.value)
         finally:
             _emitting_bus.reset(token)

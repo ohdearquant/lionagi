@@ -788,6 +788,23 @@ class StateDB:
                 "rows its run creates"
             )
 
+    async def _require_owned(self, conn, table: str, row_id: Any, what: str) -> None:
+        """Refuse, inside the writing transaction, when the row no longer carries the owner."""
+        clause, owner = self._owner_predicate(table)
+        if not clause:
+            return
+        found = (
+            await conn.execute(
+                text(f"SELECT 1 FROM {_quote_identifier(table)} WHERE id = :_id{clause}"),  # noqa: S608
+                {"_id": row_id, **owner},
+            )
+        ).first()
+        if found is None:
+            raise self._compat.refusal(
+                f"{what} {row_id!r} does not belong to {self._compat.owner!r}; an update never "
+                "reaches another owner's row"
+            )
+
     async def _insert_new_row(
         self, conn, table: str, values: dict[str, Any], json_columns: tuple[str, ...] = ()
     ) -> None:
@@ -2525,9 +2542,10 @@ class StateDB:
     async def _append_to_progression_in_tx(
         self, conn, progression_id: str, message_id: str
     ) -> None:
+        clause, owner = self._owner_predicate("progressions")
         await conn.execute(
-            text(self._progression_append_sql(self.dialect)),
-            {"v": message_id, "id": progression_id},
+            text(self._progression_append_sql(self.dialect) + clause),
+            {"v": message_id, "id": progression_id, **owner},
         )
 
     # Sessions
@@ -3121,11 +3139,13 @@ class StateDB:
         at: float | None = None,
     ) -> None:
         ts = at if at is not None else time.time()
+        clause, owner = self._owner_predicate("sessions")
         await conn.execute(
-            text(self._touch_activity_sql(self.dialect)),
-            {"ts": ts, "id": session_id},
+            text(self._touch_activity_sql(self.dialect) + clause),
+            {"ts": ts, "id": session_id, **owner},
         )
 
+    @_operation("persist_live_message")
     async def _persist_live_message(
         self,
         msg: dict[str, Any],
@@ -3139,7 +3159,25 @@ class StateDB:
     ) -> None:
         """Atomically persist one live message and its immediate bookkeeping."""
         self._validate_message(msg)
+        if self._compat is not None:
+            # A live message joins only the session, progressions and branch this run
+            # created.
+            self._require_created("sessions", session_id, "session")
+            for progression_id in (branch_progression_id, session_progression_id):
+                if progression_id is not None:
+                    self._require_created("progressions", progression_id, "progression")
+            if system_branch_id is not None:
+                self._require_created("branches", system_branch_id, "branch")
         async with self._tx() as conn:
+            if self._compat is not None:
+                for table, row_id, what in (
+                    ("sessions", session_id, "session"),
+                    ("progressions", branch_progression_id, "progression"),
+                    ("progressions", session_progression_id, "progression"),
+                    ("branches", system_branch_id, "branch"),
+                ):
+                    if row_id is not None:
+                        await self._require_owned(conn, table, row_id, what)
             await self._insert_message_in_tx(conn, msg)
             if branch_progression_id is not None:
                 await self._append_to_progression_in_tx(conn, branch_progression_id, msg["id"])
@@ -5293,9 +5331,10 @@ class StateDB:
             sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
-        params = dict(fields)
+        clause, owner = self._owner_predicate("branches")
+        params = {**fields, **owner}
         params["_id"] = branch_id
-        stmt = text(f"UPDATE branches SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
+        stmt = text(f"UPDATE branches SET {', '.join(sets_parts)} WHERE id = :_id{clause}")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         await conn.execute(stmt, params)

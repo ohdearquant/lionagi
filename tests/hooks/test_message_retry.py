@@ -405,3 +405,35 @@ async def test_a_lock_refusal_whose_repr_spans_lines_is_still_one_line(caplog):
         assert rec.exc_info is None
         assert "\n" not in rec.getMessage()
         assert "Refusal( 'database is locked')" in rec.getMessage()
+
+
+async def test_a_write_the_store_refuses_is_raised_and_stays_queued():
+    """A compatibility-mode refusal is the same on every retry, and the run must not go on as
+    if the message were written (ADR-0128 D6): it is raised, the event stays at the head, and
+    the teardown flush raises it again."""
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    class _RefusingDB:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+            self.calls += 1
+            raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+    db = _RefusingDB()
+    queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")
+
+    async def submit() -> bool:
+        return await queue.submit(_event("m1"))
+
+    for attempt in (submit, queue.flush_final):
+        try:
+            await attempt()
+        except StateCompatibilityRefused:
+            pass
+        else:
+            raise AssertionError("the refusal was not raised")
+
+    assert db.calls == 2
+    assert queue.pending_count == 1

@@ -1627,12 +1627,18 @@ async def setup_agent_persist(
         ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
     except Exception as exc:
-        _log.warning(
-            "live persist setup failed (%r) — disabling persistence for this run",
-            exc,
-            exc_info=True,
-        )
-        _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
+        from lionagi.state.compat import StateCompatibilityRefused
+
+        # A store that refuses a write in compatibility mode stops the run instead of
+        # letting it go on without persistence (ADR-0128 D6); it is raised after cleanup.
+        refused = isinstance(exc, StateCompatibilityRefused)
+        if not refused:
+            _log.warning(
+                "live persist setup failed (%r) — disabling persistence for this run",
+                exc,
+                exc_info=True,
+            )
+            _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:
@@ -1650,6 +1656,8 @@ async def setup_agent_persist(
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
+        if refused:
+            raise
         return None
 
 
