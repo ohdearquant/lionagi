@@ -6633,12 +6633,12 @@ class StateDB:
 
 # Shared singleton accessor: one open StateDB per DB URL, reused across hook firings, which avoids
 # the per-firing connect and schema-check cost. Keyed by normalized URL so tests redirecting
-# DEFAULT_DB_PATH get their own isolated instance, and by open mode and profile, so a native and a
-# compatibility handle on one file are never the same object.
+# DEFAULT_DB_PATH get their own isolated instance, and a compatibility handle by its profile
+# and owner too, so a native and a compatibility handle on one file are never the same object.
 
-# A native handle is keyed by its url alone, as it always was; a read-only or compatibility handle
-# by (url, mode, profile), so it is never the shared native handle on the same file.
-_SHARED: dict[str | tuple[str, str, CompatibilityProfile | None], StateDB] = {}
+# A native or read-only handle is keyed by its url alone, as it always was; a compatibility
+# handle by (url, mode, profile, owner), so it is never the shared handle of the same file.
+_SHARED: dict[str | tuple[str, str, CompatibilityProfile | None, str | None], StateDB] = {}
 # Guards the lazy-open window; created on first async call (anyio.Lock
 # must be instantiated inside an active backend task context).
 _SHARED_OPEN_LOCK: Lock | None = None
@@ -6652,7 +6652,7 @@ _SHARED_TEARDOWN_RACE = (
 
 
 def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None, str | None]:
-    if db.mode == "native":
+    if db.mode != "compatibility":
         return db.url
     owner = None if db._compat is None else db._compat.owner
     return (db.url, db.mode, db.compatibility, owner)

@@ -49,8 +49,9 @@ whose schema another application manages, and never migrates, stamps or reconfig
   failed admission disposes the engine, so the object stays unopened. A write transaction compares
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
   closure when it moved: a change elsewhere in the store re-admits, a change to the closure
-  refuses. Each table's definitions are also compared as its SQL spells them (case, whitespace,
-  comments and identifier quotes aside), so a collation, a generated column's expression, a
+  refuses. Each table's definitions are also compared as its SQL spells them (whitespace,
+  comments, identifier quotes and the case of words aside; a double-quoted token keeps its case,
+  since SQLite can read it as a string literal), so a collation, a generated column's expression, a
   `DEFERRABLE` key or `AUTOINCREMENT` that PRAGMA output leaves out is compared too, and a unique
   index a CREATE INDEX made is compared by its terms' SQL. A table whose constraints declare any
   conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a
@@ -67,18 +68,20 @@ whose schema another application manages, and never migrates, stamps or reconfig
   `WITH`), never with a conflict clause but `OR ABORT` or with `RETURNING`; savepoints are
   refused. A write is refused once SQLite has rolled back the transaction its operation opened.
   A statement sent to the driver directly passes none of these checks, and only the authorizer
-  sees it, without its conflict clause.
+  sees it, without its conflict clause: an INSERT OR REPLACE sent that way inside an operation's
+  transaction deletes the row it conflicts with, and nothing refuses it.
 - **Authorizer.** The ceiling on every connection, seeing statements that reach SQLite by any
   path: INSERT only into tables the profile inserts into, UPDATE only of its update columns, both
-  only on `main` and only inside a transaction the guard opened and that is still open (any
-  BEGIN the guard did not send clears its mark); reads; a short PRAGMA list; any function but
+  only on `main` and only inside a transaction the guard opened and that is still open (a BEGIN
+  the guard did not send clears its mark or, inside an open transaction, is denied and poisons
+  it); reads; a short PRAGMA list; any function but
   `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
 - **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
   its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
   `committed` names the operation's transactions that had already committed. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.
-- Native handles are shared by url, as before; a read-only or compatibility handle is keyed by
+- Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
   `(url, mode, profile)`, so a native and a compatibility handle on one file are never the same
   object.
 
