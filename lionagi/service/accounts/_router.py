@@ -41,6 +41,10 @@ _CANONICAL_MESSAGES_URL = f"{_CANONICAL_BASE_URL}/messages"
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key"})
 # A beta header turns on features no price revision covers.
 _BETA_HEADERS = frozenset({"anthropic-beta"})
+# The headers a routed request may carry, by lowercase name: those lionagi writes on a Messages
+# call. Any other name is refused, since a header can change where or how the keyed request is
+# delivered (`Host` names a site to a shared front end), and a list of names to refuse never closes.
+_ROUTED_HEADERS = frozenset({"anthropic-version", "content-type", "idempotency-key"})
 # Every other client option can change where or how the keyed request goes (a connector, a
 # proxy taken from the environment, cookies, auth, trace hooks), and the session sets its own
 # timeout, so headers are the only client option a routed call takes.
@@ -280,6 +284,12 @@ def validate_routed_request(
         for source in (config.default_headers, headers, client_kwargs.get("headers"))
     ):
         raise _refuse(RouterErrorCode.UNSUPPORTED_PRICING)
+    if any(
+        name.lower() not in _ROUTED_HEADERS
+        for source in (config.default_headers, headers, client_kwargs.get("headers"))
+        for name, _ in header_pairs(source)
+    ):
+        raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
     # A routed call takes no request keyword. Each one reaches the HTTP client, where a name it
     # does not know fails only after an account was reserved, and one it does know (ssl, proxy)
     # can move the keyed request off the verified connection. A tier keeps its own code: routed

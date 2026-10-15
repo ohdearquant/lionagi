@@ -79,9 +79,11 @@ class StubTransport:
         self.responses = deque(responses)
         self.calls: list[dict] = []
         self.client_kwargs: list = []
+        self.timeouts: list = []
 
-    def session(self, client_kwargs=None):
+    def session(self, client_kwargs=None, *, timeout=None):
         self.client_kwargs.append(client_kwargs)
+        self.timeouts.append(timeout)
         return StubSession(self)
 
 
@@ -350,21 +352,25 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
     [
         {b"anthropic-beta": "context-management-2025-06-27"},
         {1: "x"},
-        {"x-trace": 5},
-        {"x-trace": b"5"},
-        {"x-trace": "a\r\nx-api-key: b"},
-        {"x-trace\n": "a"},
-        {("x-trace", "a")},
+        {"anthropic-version": 5},
+        {"anthropic-version": b"5"},
+        {"anthropic-version": "a\r\nx-api-key: b"},
+        {"anthropic-version\n": "a"},
+        {("anthropic-version", "a")},
         {"x bad": "1"},
         {"x:trace": "1"},
-        {"x-trace ": "1"},
+        {"anthropic-version ": "1"},
         {" anthropic-beta ": "files-api-2025-04-14"},
         {"": "1"},
         {"x-api-key:": "caller-fake"},
-        "x-trace: 1",
-        ["x-trace", "1"],
-        [("x-trace", "1"), ("X-Trace", "2")],
-        [("x_trace", "1"), ("x-trace", "2")],
+        "anthropic-version: 1",
+        ["anthropic-version", "1"],
+        [("anthropic-version", "1"), ("Anthropic-Version", "2")],
+        [("anthropic_version", "1"), ("anthropic-version", "2")],
+        {"Host": "attacker.example"},
+        {"X-Forwarded-Host": "attacker.example"},
+        {"x-trace": "1"},
+        {"anthropic_version": "2023-06-01"},
     ],
     ids=[
         "bytes-name",
@@ -384,6 +390,10 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
         "list-of-strings",
         "repeated-name",
         "repeated-name-with-underscore",
+        "host",
+        "forwarded-host",
+        "unlisted-name",
+        "underscore-spelling-of-a-listed-name",
     ],
 )
 @pytest.mark.parametrize(
@@ -420,7 +430,7 @@ async def test_headers_a_routed_call_will_not_send_are_refused_before_a_reservat
 @pytest.mark.parametrize(
     ("pair", "code"),
     [
-        (("x-trace", "1"), None),
+        (("anthropic-version", "2023-01-01"), None),
         (("anthropic-beta", "files-api-2025-04-14"), RouterErrorCode.UNSUPPORTED_PRICING),
         (("Authorization", "x"), RouterErrorCode.CREDENTIAL_CONFLICT),
     ],
@@ -473,9 +483,9 @@ async def test_a_list_of_header_pairs_is_read_pair_by_pair(
     assert result["model"] == MODEL
     if where == "client_headers":
         assert transport.client_kwargs == [{"headers": [pair]}]
-        assert "x-trace" not in transport.calls[0]["headers"]
+        assert transport.calls[0]["headers"]["anthropic-version"] == "2023-06-01"
     else:
-        assert transport.calls[0]["headers"]["x-trace"] == "1"
+        assert transport.calls[0]["headers"]["anthropic-version"] == "2023-01-01"
     assert _attempts(path)[0][2] == "settled"
 
 
@@ -486,7 +496,7 @@ async def test_a_header_item_that_is_not_a_pair_is_refused(monkeypatch, tmp_path
     # every path, so only the two places that carry it as given are routed cases.
     path = _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_response()])
-    headers = [("x-trace", "a", "b")]
+    headers = [("anthropic-version", "a", "b")]
 
     with pytest.raises(AccountRoutingError) as caught:
         if where == "prebuilt_headers":
@@ -554,11 +564,11 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
         model, transport = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
     else:
         model, transport = _model(monkeypatch, [_response()])
-    call_headers = {"x-trace": "1"}
-    client_headers = {"x-client": "1"}
+    call_headers = {"anthropic-version": "2023-01-01"}
+    client_headers = {"idempotency-key": "client-1"}
     model.endpoint.config.client_kwargs = {"headers": client_headers}
     # The header mapping the attempt itself is handed: building the payload copies the
-    # caller's, so only this one is still read when the request is written.
+    # caller's, so this is the one a change made while the account is reserved could reach.
     held = []
     name = "_routed_stream_attempt" if stream else "_request_attempt"
     attempt = getattr(model.endpoint, name)
@@ -588,15 +598,15 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
 
     assert len(held) == 1
     sent = transport.calls[0]["headers"]
-    assert sent["x-trace"] == "1"
+    assert sent["anthropic-version"] == "2023-01-01"
     assert not {name.lower() for name in sent} & {"anthropic-beta", "authorization"}
-    assert transport.client_kwargs == [{"headers": [("x-client", "1")]}]
+    assert transport.client_kwargs == [{"headers": [("idempotency-key", "client-1")]}]
     assert len(_attempts(path)) == 1
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["call", "stream"])
 @pytest.mark.asyncio
-async def test_a_url_or_method_set_while_the_account_is_reserved_is_not_used(
+async def test_a_url_method_or_timeout_set_while_the_account_is_reserved_is_not_used(
     monkeypatch, tmp_path, stream
 ):
     from lionagi.service.accounts._ledger import CredentialLedger
@@ -608,6 +618,7 @@ async def test_a_url_or_method_set_while_the_account_is_reserved_is_not_used(
     else:
         model, transport = _model(monkeypatch, [_response()])
     config = model.endpoint.config
+    timeout = config.timeout
     real_reserve = CredentialLedger.reserve
 
     async def reserve_then_change(self, *args):
@@ -615,6 +626,7 @@ async def test_a_url_or_method_set_while_the_account_is_reserved_is_not_used(
         config.base_url = "https://attacker.invalid/v1"
         config.endpoint = "other"
         config.method = "PUT"
+        config.timeout = timeout + 7
         return await real_reserve(self, *args)
 
     monkeypatch.setattr(CredentialLedger, "reserve", reserve_then_change)
@@ -628,6 +640,7 @@ async def test_a_url_or_method_set_while_the_account_is_reserved_is_not_used(
     (sent,) = transport.calls
     assert sent["url"] == "https://api.anthropic.com/v1/messages"
     assert sent["method"] == "POST"
+    assert transport.timeouts == [timeout]
     assert len(_attempts(path)) == 1
 
 
@@ -641,7 +654,12 @@ async def test_a_url_or_method_set_while_the_account_is_reserved_is_not_used(
         {"client_kwargs": {"cookies": {"session": "x"}}},
         {"client_kwargs": {"trust_env": True}},
         {"client_kwargs": {"timeout": 5}},
-        {"client_kwargs": {"headers": {"x-client": "1"}, "connector_owner": False}},
+        {
+            "client_kwargs": {
+                "headers": {"anthropic-version": "2023-06-01"},
+                "connector_owner": False,
+            }
+        },
     ],
     ids=[
         "other-path",
@@ -679,12 +697,96 @@ async def test_a_list_of_header_pairs_takes_an_idempotency_key(monkeypatch, tmp_
     model.endpoint.config.idempotent_retries = True
     payload, _ = model.endpoint.create_payload(REQUEST)
 
-    await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=[("x-trace", "1")])
+    await model.endpoint.call(
+        payload, skip_payload_creation=True, extra_headers=[("anthropic-version", "2023-01-01")]
+    )
 
     (sent,) = transport.calls
-    assert sent["headers"]["x-trace"] == "1"
+    assert sent["headers"]["anthropic-version"] == "2023-01-01"
     assert sent["headers"]["Idempotency-Key"]
     assert len(_attempts(path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_default_header_outside_the_list_is_refused_on_a_prebuilt_call(
+    monkeypatch, tmp_path
+):
+    """A prebuilt call sends none of the endpoint's default headers and is refused all the same."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    payload, _ = model.endpoint.create_payload(REQUEST)
+    model.endpoint.config.default_headers = {"Host": "attacker.example"}
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(payload, skip_payload_creation=True)
+
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.asyncio
+async def test_a_session_is_opened_with_the_timeout_it_is_given(monkeypatch, tmp_path):
+    _install_accounts(monkeypatch, tmp_path)
+    endpoint = iModel(provider="anthropic", model=MODEL).endpoint
+    endpoint.config.timeout = 30
+
+    async with endpoint._create_http_session({}, timeout=5) as session:
+        assert session.timeout.total == 5
+    async with endpoint._create_http_session({}) as session:
+        assert session.timeout.total == 30
+
+
+@pytest.mark.asyncio
+async def test_a_callers_header_replaces_the_default_of_the_same_name(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    await model.endpoint.call(
+        REQUEST,
+        extra_headers={"content-type": "application/json", "Anthropic-Version": "2023-01-01"},
+    )
+
+    (sent,) = transport.calls
+    names = [name.lower() for name in sent["headers"]]
+    assert names.count("anthropic-version") == 1
+    assert names.count("content-type") == 1
+    assert sent["headers"]["Anthropic-Version"] == "2023-01-01"
+    assert _attempts(path)[0][2] == "settled"
+
+
+@pytest.mark.asyncio
+async def test_a_callers_idempotency_key_is_the_one_sent(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    model.endpoint.config.idempotent_retries = True
+
+    await model.endpoint.call(REQUEST, extra_headers={"idempotency-key": "caller-key"})
+
+    (sent,) = transport.calls
+    keys = [value for name, value in sent["headers"].items() if name.lower() == "idempotency-key"]
+    assert keys == ["caller-key"]
+    assert len(_attempts(path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_call_header_replaces_a_client_header_of_the_same_name_on_the_wire(
+    monkeypatch, tmp_path
+):
+    """The HTTP client sends a request header in place of a session header of the same name."""
+    import aiohttp
+
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    model.endpoint.config.client_kwargs = {"headers": {"anthropic-version": "2023-01-01"}}
+
+    await model.endpoint.call(REQUEST, extra_headers={"Anthropic-Version": "2023-02-02"})
+
+    (client_kwargs,) = transport.client_kwargs
+    (sent,) = transport.calls
+    async with aiohttp.ClientSession(**client_kwargs) as session:
+        wire = session._prepare_headers(sent["headers"])
+    assert wire.getall("anthropic-version") == ["2023-02-02"]
 
 
 @pytest.mark.asyncio
@@ -934,7 +1036,7 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
         async def request(self, **_):
             raise AssertionError("transport must not be entered")
 
-    model.endpoint._create_http_session = lambda client_kwargs=None: WaitingSession()
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: WaitingSession()
     task = asyncio.create_task(model.endpoint.call(REQUEST))
     await entered_context.wait()
     task.cancel()
@@ -962,7 +1064,7 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
             entered_request.set()
             await never_finish.wait()
 
-    model.endpoint._create_http_session = lambda client_kwargs=None: SendingSession()
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: SendingSession()
     task = asyncio.create_task(model.endpoint.call(REQUEST))
     await entered_request.wait()
     task.cancel()
@@ -1074,7 +1176,7 @@ async def test_a_refusal_during_the_owners_send_leaves_that_send_alone(monkeypat
             await release.wait()
             return _response()
 
-    model.endpoint._create_http_session = lambda client_kwargs=None: HeldSession()
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: HeldSession()
     owner = uuid4()
     with _branch_routing_context(owner, model):
         call = await model.create_event(**QUEUED_REQUEST)

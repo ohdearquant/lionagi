@@ -246,6 +246,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             # whatever changes them while the account is reserved.
             url = self.config.full_url
             method = self.config.method
+            timeout = self.config.timeout
             request_pairs = header_pairs(headers)
             session_kwargs = routed_client_kwargs(self.config.client_kwargs)
             validate_routed_request(
@@ -288,7 +289,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_entered = False
         failure: Exception | None = None
         try:
-            async with self._create_http_session(session_kwargs) as session:
+            async with self._create_http_session(session_kwargs, timeout=timeout) as session:
                 request_entered = True
                 response = await session.request(
                     method=method,
@@ -517,6 +518,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         # whatever changes them while the account is reserved.
         url = self.config.full_url
         method = self.config.method
+        timeout = self.config.timeout
         request_pairs = header_pairs(headers)
         session_kwargs = routed_client_kwargs(self.config.client_kwargs)
         validate_routed_request(
@@ -747,7 +749,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                     yield chunk
 
         try:
-            async with self._create_http_session(session_kwargs) as session:
+            async with self._create_http_session(session_kwargs, timeout=timeout) as session:
                 request_entered = True
                 response = await session.request(
                     method=method,

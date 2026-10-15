@@ -17,6 +17,8 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
+_CONFIGURED_TIMEOUT = object()
+
 
 class _NonRetryableClientError(Exception):
     """Sentinel: 4xx (non-429) error that must not be retried. Wraps the original
@@ -124,11 +126,15 @@ class Endpoint:
             f"retry_config={retry_config is not None}"
         )
 
-    def _create_http_session(self, client_kwargs: dict[str, Any] | None = None):
+    def _create_http_session(
+        self, client_kwargs: dict[str, Any] | None = None, *, timeout: Any = _CONFIGURED_TIMEOUT
+    ):
         import aiohttp
 
+        if timeout is _CONFIGURED_TIMEOUT:
+            timeout = self.config.timeout
         return aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(self.config.timeout),
+            timeout=aiohttp.ClientTimeout(timeout),
             **(self.config.client_kwargs if client_kwargs is None else client_kwargs),
         )
 
@@ -164,12 +170,18 @@ class Endpoint:
 
             # Read as every routed path reads headers, so a form the merge cannot read is
             # refused as a credential conflict rather than failing inside the merge.
+            # A later pair replaces an earlier one of the same name, compared case-insensitively,
+            # so a caller's `content-type` or `anthropic-version` takes the default's place.
             headers = HeaderFactory.get_header(
-                auth_type="none",
-                content_type=self.config.content_type,
-                default_headers=dict(header_pairs(self.config.default_headers)),
+                auth_type="none", content_type=self.config.content_type
             )
-            headers.update(header_pairs(extra_headers))
+            for name, value in (
+                *header_pairs(self.config.default_headers),
+                *header_pairs(extra_headers),
+            ):
+                for same in [key for key in headers if key.lower() == name.lower()]:
+                    del headers[same]
+                headers[name] = value
         else:
             headers = HeaderFactory.get_header(
                 auth_type=self.config.auth_type,
@@ -315,7 +327,7 @@ class Endpoint:
         if (
             self.config.idempotent_retries
             and self.config.method.upper() == "POST"
-            and "Idempotency-Key" not in headers
+            and not any(name.lower() == "idempotency-key" for name in headers)
         ):
             import uuid
 
