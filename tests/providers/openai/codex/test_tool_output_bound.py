@@ -375,7 +375,7 @@ def _nested(depth: int, leaf, kind: str = "dict"):
         [],
         "plain",
         'quote " backslash \\ newline \n tab \t nul \x00',
-        "漢字 é 👨‍👩‍👧",
+        "漢字 é \U0001f468\u200d\U0001f469\u200d\U0001f467",
         [1, 2.5, None, True, False, float("inf"), -0.0, 10**30],
         {"a": [1, {"b": []}], "é": "x\ny", 1: "one", 2.5: [], None: {}, False: "f"},
         [[[[[]]]], {"k": {"k": {"k": "v"}}}],
@@ -456,6 +456,86 @@ async def test_a_list_cuts_the_first_item_that_does_not_fit_and_stops_there():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"k0": "\x01" * 30_000},
+        json.dumps({"k0": '"' * 30_000}),
+        ["\n" * 30_000],
+    ],
+    ids=["control-characters", "quotes-in-json-text", "newlines-in-a-list"],
+)
+async def test_strings_are_cut_by_their_length_as_json_writes_them(arguments):
+    """A control character is six characters of JSON and a quote or a newline two, so a
+    string cut by its characters alone would echo several times the bound."""
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    text = echoed if isinstance(echoed, str) else json.dumps(echoed, ensure_ascii=False)
+    assert len(text) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    if isinstance(echoed, str):
+        assert json.loads(echoed)
+
+
+@pytest.mark.asyncio
+async def test_a_file_change_path_of_control_characters_is_cut_by_its_json_length():
+    changes = [{"path": "\x01" * 30_000, "kind": "add"}]
+
+    chunks, _, _ = await _run(
+        {"type": "file_change", "id": "fc-1", "changes": changes, "status": "completed"}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input["changes"]
+    assert len(json.dumps(echoed, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+
+
+@pytest.mark.asyncio
+async def test_a_key_is_measured_as_json_writes_it():
+    """Five thousand control characters are thirty thousand characters of JSON, so a key
+    measured by its characters would be kept and the echo would be over the bound."""
+    arguments = {"\x01" * 5_000: "v", "path": "a.txt"}
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert echoed == {"path": "a.txt", "[omitted]": "1 of 2 keys not shown"}
+
+
+@pytest.mark.asyncio
+async def test_an_entry_cut_to_fit_keeps_its_note_within_the_bound():
+    """The value of an entry cut to fit is given the room less its note's share, so the
+    entry, its cut line included, stays within the bound."""
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": {"a": "x" * 30_000}}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert len(json.dumps(echoed, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS
+    assert _parts(echoed["a"])[2] == 30_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leaf", ["q" * 25_000, "q"], ids=["long-leaf", "short-leaf"])
+async def test_a_list_of_changes_nested_too_deep_to_measure_is_echoed_bounded(leaf):
+    changes = _nested(5_000, leaf, "list")
+
+    chunks, _, _ = await _run(
+        {"type": "file_change", "id": "fc-1", "changes": changes, "status": "completed"}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input["changes"]
+    if echoed is not changes:
+        assert isinstance(echoed, str)
+        assert len(echoed) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    else:
+        assert len(json.dumps(changes)) <= CODEX_TOOL_OUTPUT_MAX_CHARS
+
+
+@pytest.mark.asyncio
 async def test_an_entry_whose_key_does_not_fit_is_left_out_whole():
     """A key is never cut: a redactor classifies an entry by its key, and a cut can drop the
     part that names a credential, so the entry is left out and counted."""
@@ -477,9 +557,9 @@ async def test_an_entry_whose_key_does_not_fit_is_left_out_whole():
 @pytest.mark.parametrize("kind", ["dict", "list"])
 @pytest.mark.parametrize("leaf", ["q" * 25_000, "q"], ids=["long-leaf", "short-leaf"])
 async def test_arguments_nested_too_deep_to_measure_are_echoed_bounded(kind, leaf):
-    """No exception leaves the stream: the arguments are bounded as a result is. Their
-    JSON text, where this Python can encode it, is kept when within the bound and cut when
-    over it; otherwise a line says they are nested too deep to show."""
+    """No exception leaves the stream: the arguments are bounded as a result is, their JSON
+    text kept when within the bound and cut when over it. Where this Python's JSON encoder
+    cannot go this deep (it can from 3.12), a line says they are nested too deep to show."""
     arguments = _nested(5_000, leaf, kind)
 
     chunks, uses, _ = await _run(
@@ -539,7 +619,7 @@ async def test_file_changes_given_as_a_mapping_stay_a_mapping():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "base,mark",
-    [("\U0001f44d", "\U0001f3fd"), ("❤", "️"), ("❤", "︎")],
+    [("\U0001f44d", "\U0001f3fd"), ("\u2764", "\ufe0f"), ("\u2764", "\ufe0e")],
     ids=["skin-tone", "emoji-selector", "text-selector"],
 )
 async def test_a_cut_keeps_a_modifier_or_selector_with_its_character(base, mark):

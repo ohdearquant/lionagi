@@ -796,41 +796,76 @@ def _continues_previous(text: str, i: int) -> bool:
     ch = text[i]
     return (
         unicodedata.combining(ch) != 0
-        or ch in "‍︎️"
+        or ch in "\u200d\ufe0e\ufe0f"
         or "\U0001f3fb" <= ch <= "\U0001f3ff"
-        or (i > 0 and text[i - 1] == "‍")
+        or (i > 0 and text[i - 1] == "\u200d")
     )
 
 
-def _cut_text(text: str, limit: int) -> str:
-    """``text`` when it has at most ``limit`` characters; otherwise its head and tail, half
-    of ``limit`` each, with a line between them naming how many characters were cut.
+def _escaped_length(text: str) -> int:
+    """The length of ``text`` as JSON writes it inside a string, escapes included."""
+    return len(json.dumps(text, ensure_ascii=False)) - 2
+
+
+def _longest_within(text: str, budget: int, *, from_end: bool) -> int:
+    """How many characters from the start (or the end) of ``text`` fit in ``budget`` as JSON
+    writes them. An escape is never shorter than its character, so the answer is at most
+    ``budget``; that is tried first, and text with nothing to escape needs no search."""
+
+    def fits(count: int) -> bool:
+        part = text[len(text) - count :] if from_end else text[:count]
+        return _escaped_length(part) <= budget
+
+    lo, hi = 0, min(budget, len(text))
+    if fits(hi):
+        return hi
+    hi -= 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _cut_text(text: str, limit: int, *, escaped: bool = False) -> str:
+    """``text`` when its length is at most ``limit``; otherwise its head and tail, half of
+    ``limit`` each, with a line between them naming how many characters were cut. With
+    ``escaped``, a length is that of the text as JSON writes it inside a string, so a
+    character JSON escapes counts as its escape does (a quote or a newline two, a control
+    character six).
 
     Each cut moves up to ``_CUT_BACKOFF_CHARS`` characters so as not to separate a
     character from the ones ``_continues_previous`` joins to it, and cuts where the bound
     falls when the run is longer than that. Other clusters (spacing marks, Hangul jamo,
     tag sequences, flag pairs) can be split."""
-    if len(text) <= limit:
+    if len(text) <= limit and (not escaped or _escaped_length(text) <= limit):
         return text
     half = max(limit, 0) // 2
-    head_end = half
+    if escaped:
+        head_len = _longest_within(text, half, from_end=False)
+        tail_len = _longest_within(text, half, from_end=True)
+    else:
+        head_len = tail_len = half
+    head_end = head_len
     while (
         head_end > 0
-        and half - head_end < _CUT_BACKOFF_CHARS
+        and head_len - head_end < _CUT_BACKOFF_CHARS
         and _continues_previous(text, head_end)
     ):
         head_end -= 1
     if _continues_previous(text, head_end):
-        head_end = half
-    tail_start = len(text) - half
+        head_end = head_len
+    tail_start = len(text) - tail_len
     while (
         tail_start < len(text)
-        and tail_start - (len(text) - half) < _CUT_BACKOFF_CHARS
+        and tail_start - (len(text) - tail_len) < _CUT_BACKOFF_CHARS
         and _continues_previous(text, tail_start)
     ):
         tail_start += 1
     if tail_start < len(text) and _continues_previous(text, tail_start):
-        tail_start = len(text) - half
+        tail_start = len(text) - tail_len
     return (
         f"{text[:head_end]}\n[output truncated: {tail_start - head_end:,} of {len(text):,} "
         f"characters omitted here]\n{text[tail_start:]}"
@@ -876,7 +911,8 @@ _MIN_CUT_CHARS = 256
 
 
 def _key_text(key: Any) -> str:
-    """A mapping key as JSON text spells it."""
+    """The string a mapping key becomes in JSON: a string key as it is, and None, a bool or a
+    number as ``json.dumps`` spells it."""
     if isinstance(key, str):
         return key
     if key is None or isinstance(key, (bool, int, float)):
@@ -913,22 +949,25 @@ def _bounded_leaves(
 ) -> Any:
     """``value`` with its JSON text brought within about ``limit`` characters, keeping its
     shape so a reader that expects a mapping or a list still gets one. A value within the
-    bound is returned as it came, and a string over it is cut by ``_cut_text``.
+    bound is returned as it came, and a string over it is cut by ``_cut_text``, measured
+    as JSON writes it, escapes included.
 
     A list keeps its items in order up to the first that does not fit. That item is cut to
     the room left when the room is worth it, and an item naming how many were left out
     comes last. A mapping keeps every entry that fits whole, in order; then the entries
     that did not fit are cut, in order, to the room left while it is worth it, and an
     ``"[omitted]"`` entry names how many entries were left out. A key is never cut, since a
-    reader can classify an entry by its key (a redactor looking for a credential name in it):
-    an entry whose key takes more than half the room left is left out whole. An entry cut to fit keeps its own note inside the room it was given, so only the
-    outermost note and a cut line inside it come on top of ``limit``. Strings are measured
-    in characters, so text with many characters JSON escapes can render longer.
+    reader can classify an entry by its key (a redactor looking for a credential name in
+    it): an entry whose key, as JSON writes it, takes more than half the room left is left
+    out whole. An entry cut to fit keeps its own note inside the room it was given, so only
+    the outermost note and a cut line inside it come on top of ``limit``. Each level keeps
+    that room for its own note, so in a chain of one-entry mappings or one-item lists more
+    than about 190 levels deep the leaf is left out, with a note saying so.
     """
     if sizes is None:
         sizes = {}
     if isinstance(value, str):
-        return _cut_text(value, limit)
+        return _cut_text(value, max(limit - 2, 0), escaped=True)  # less the quotes
     if not isinstance(value, (dict, list)):
         return value
     if _json_size(value, sizes) <= limit:
@@ -967,10 +1006,9 @@ def _bounded_leaves(
         room = limit - used - 2
         if room < _MIN_CUT_CHARS:
             break
-        key_text = _key_text(key)
-        if len(key_text) > room // 2:
+        key_size = _json_size(_key_text(key), sizes) + 2
+        if key_size > room // 2:
             continue
-        key_size = _json_size(key_text, sizes) + 2
         item = _bounded_leaves(item, room - key_size - _CUT_NOTE_CHARS, sizes)
         cut[key] = item
         used += 2 + key_size + _json_size(item, sizes)
@@ -1015,9 +1053,10 @@ def _bounded_arguments(arguments: Any) -> Any:
 
 def _bounded_changes(changes: Any) -> Any:
     """A file change's ``changes`` as echoed for the call's input. A list over the bound
-    keeps, in order, the entries that fit within it whole, so a reader of the list still
-    finds each kept entry's ``path``; when the first entry alone is over, it is cut as
-    ``_bounded_leaves`` cuts a value. An entry naming how many were left out comes last.
+    keeps its entries in order up to the first that does not fit whole, so a reader of the
+    list still finds each kept entry's ``path``; when the first entry alone is over, it is
+    cut as ``_bounded_leaves`` cuts a value. An entry naming how many were left out comes
+    last.
     Anything else is bounded as ``_bounded_leaves`` bounds a value, and a value nested too
     deep to measure is bounded as a result is."""
     try:
