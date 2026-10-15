@@ -75,7 +75,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     # across every provider's table, so these give a name containing them this window
     # on any provider unless a longer row matches it: the `gemini-4` and `argon`
     # aliases, the "Gemini 4 Argon (...)" display names, but also `gemini-4-flash`, or
-    # `gemini-4.5-flash` on `gemini`; `gemini-2.5-pro-argon` keeps the 2.5 Pro window.
+    # `gemini-4.5-flash` on `gemini`; `gemini-2.5-pro-argon` keeps its provider's 2.5 Pro
+    # window.
     # The windows follow these substrings, not resolve_agy_model's token rules, so
     # `gemini-4k-flash` reads the `gemini-4` row while it resolves to 3.5 Flash.
     "gemini-4": 1_048_576,
@@ -170,20 +171,25 @@ _MODEL_ALIASES: dict[str, str] = {
 
 
 # A delimited 3.6 version token, not a bare substring: matches the "3.6" in
-# "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash" or
-# "gemini-3.60-flash", where a neighbouring digit means it is a different number.
-_GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
-_GEMINI_38_TOKEN = re.compile(r"(?<!\d)3\.8(?!\d)")
+# "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash", "gemini-3.60-flash"
+# or "gemini-2.3.6-flash", where a neighbouring digit, or a dot before it, makes it
+# part of a different number.
+_GEMINI_36_TOKEN = re.compile(r"(?<![\d.])3\.6(?!\d)")
+_GEMINI_38_TOKEN = re.compile(r"(?<![\d.])3\.8(?!\d)")
 # A major version 4 that is not part of a longer number and is not followed by a
-# letter ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash"). A dotted 4
-# ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash") is a version this table
-# does not list, the 4 in "gemini-14-flash" or "gemini-40-flash" is a different
+# letter ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash"). A 4 followed by a
+# dot ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash") names a release this
+# table does not list, the 4 in "gemini-14-flash" or "gemini-40-flash" is a different
 # number, and the 4 in "gemini-4k-flash" is a size: none of them is the 4 family.
 _GEMINI_4_TOKEN = re.compile(r"(?<![\d.])4(?![\d.a-z])")
 # A dotted version with a one- or two-digit major and one or more dotted parts ("3.5",
 # "2.5", "4.5", "3.5.1"). A four-digit major ("2026.10") is a date and a three-digit
-# one ("100.5") is not a model version.
-_DOTTED_VERSION = re.compile(r"(?<![\d.])\d{1,2}(?:\.\d+)+(?![\d.])")
+# one ("100.5") is not a model version. A trailing dot ("3.5.") ends the version.
+_DOTTED_VERSION = re.compile(r"(?<![\d.])\d{1,2}(?:\.\d+)+(?!\d|\.\d)")
+# A tier word in a free-form name stands alone: a tier inside a longer word
+# ("argon-highlights", "argon-allow") is no tier.
+_TIER_LOW = re.compile(r"(?<![a-z])low(?![a-z])")
+_TIER_HIGH = re.compile(r"(?<![a-z])(?:x?high|max)(?![a-z])")
 
 
 def _gemini_flash_family(key: str) -> str:
@@ -193,9 +199,9 @@ def _gemini_flash_family(key: str) -> str:
     3.6 pick that Flash family, and any other (2.5, 3.1, 3.5, 3.5.1, 4.5) falls back to
     3.5 Flash. A name with no dotted version is the 4 Argon family when it contains
     ``argon`` or a major version 4 that is not part of a longer number or followed by
-    a letter, and 3.5 Flash otherwise. A version embedded in a different number is
-    never a family match. ``resolve_agy_model`` checks for Pro before this, so a Pro
-    name is 3.1 Pro whatever else it says.
+    a letter, and 3.5 Flash otherwise. A version inside a longer number or dotted
+    string (13.6, 3.60, 2.3.6) is never a family match. ``resolve_agy_model`` checks
+    for Pro before this, so a Pro name is 3.1 Pro whatever else it says.
     """
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
@@ -259,10 +265,11 @@ def resolve_agy_model(
         return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
 
     # Heuristic fallback: derive (family, effort) from a free-form string so
-    # e.g. "gemini-3-pro-low" or "flash high" still resolve.
-    if "low" in key:
+    # e.g. "gemini-3-pro-low" or "flash high" still resolve. The tier is a word in
+    # the name: `low`, else `high`, `xhigh` or `max`, else Medium (Low for Pro).
+    if _TIER_LOW.search(key):
         heuristic = "Low"
-    elif "high" in key or "xhigh" in key or "max" in key:
+    elif _TIER_HIGH.search(key):
         heuristic = "High"
     else:
         heuristic = "Low" if is_pro else "Medium"

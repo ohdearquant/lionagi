@@ -419,6 +419,13 @@ async def test_on_text_loop_closed_error_propagates():
         ("Argon High", "Gemini 4 Argon (High)"),
         ("argon-max", "Gemini 4 Argon (High)"),
         ("argon-4-high", "Gemini 4 Argon (High)"),
+        ("argon_high", "Gemini 4 Argon (High)"),
+        ("argon-xhigh", "Gemini 4 Argon (High)"),
+        # a tier inside a longer word is no tier
+        ("argon-highlights", "Gemini 4 Argon (Medium)"),
+        ("argon-maxim", "Gemini 4 Argon (Medium)"),
+        ("argon-allow", "Gemini 4 Argon (Medium)"),
+        ("argon-lowrider", "Gemini 4 Argon (Medium)"),
         # with no tier word a free-form name takes Medium; only the aliases default to High
         ("Gemini 4 Argon", "Gemini 4 Argon (Medium)"),
         # ...unless it names Pro (3.1 Pro) or a dotted version, which it keeps, as before
@@ -431,6 +438,8 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-3.5.1-flash-argon", "Gemini 3.5 Flash (Medium)"),
         ("gemini-1.5.2-argon", "Gemini 3.5 Flash (Medium)"),
         ("gemini-4-flash-3.5.1", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-flash-3.5.", "Gemini 3.5 Flash (Medium)"),
+        ("argon 3.5.", "Gemini 3.5 Flash (Medium)"),
         ("gemini-argon-pro", "Gemini 3.1 Pro (Low)"),
         ("gemini-3.8-flash-pro-argon", "Gemini 3.1 Pro (Low)"),
         # an undotted major version 4 is the 4 family, unless a dotted version is named;
@@ -467,6 +476,10 @@ async def test_on_text_loop_closed_error_propagates():
         # version match is a delimited token, so 13.6 / 3.60 do not upgrade.
         ("gemini-13.6-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.60-flash", "Gemini 3.5 Flash (Medium)"),
+        # ...nor is a 3.8 or 3.6 that follows a dot: it is part of a longer version
+        ("gemini-1.3.8-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-2.3.6-flash", "Gemini 3.5 Flash (Medium)"),
+        ("2.3.6-argon", "Gemini 3.5 Flash (Medium)"),
     ],
 )
 def test_resolve_agy_model(spec, expected):
@@ -538,12 +551,14 @@ def test_resolve_agy_model_effort_folding(spec, effort, expected):
 @pytest.mark.parametrize(
     "spec,expected",
     [
-        # each name's own tier differs from Medium, the tier an unknown effort clamps to
+        # each name's own tier differs from the one an unknown effort clamps to (Medium,
+        # or High on Pro)
         ("gemini-argon-high", "Gemini 4 Argon (High)"),
         ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
         ("gemini-4-argon", "Gemini 4 Argon (High)"),
         ("gemini-3.6-flash", "Gemini 3.6 Flash (High)"),
         ("Gemini 4 Argon (Low)", "Gemini 4 Argon (Low)"),
+        ("gemini-argon-pro", "Gemini 3.1 Pro (Low)"),
     ],
 )
 def test_resolve_agy_model_ignores_an_effort_that_is_not_a_string(spec, expected, effort):
