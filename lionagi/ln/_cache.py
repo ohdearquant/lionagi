@@ -44,8 +44,10 @@ class BoundedLRUCache(Generic[K, V]):
         It only queues the key, so it is safe from a weakref callback, which can run in
         any thread and in the middle of this cache's own work. A callback stored inside
         this cache that must not keep the cache alive passes ``_pending_removals.append``
-        instead of this bound method, which holds the cache.
+        instead of this bound method, which holds the cache. An unhashable key raises
+        ``TypeError`` here rather than at the next read or write.
         """
+        hash(key)
         self._pending_removals.append(key)
 
     def _remove_forgotten_unlocked(self) -> None:

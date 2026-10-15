@@ -62,7 +62,8 @@ class _IdentityKey:
     after the target dies; equality demands both referents still be live, so an id the
     interpreter has reused cannot collide with a dead entry, and the dead entry matches
     nothing until it leaves the cache: for a key given `on_collect`, at the cache's next
-    read or write after its target is collected, and for any other when it is evicted.
+    read or write after its target is collected, and for any other when the cache evicts it
+    (a plain dict never does).
     A target that cannot be weakly referenced is held strongly, which keeps it and
     everything it carries alive for as long as the key lives; `holds_weakly` says which
     of the two a key is, so a caller storing one past the call can decide whether to.
@@ -71,7 +72,10 @@ class _IdentityKey:
     later object allocated at the same address, and each lookup there compares against it.
     `on_collect` is called with the key when its weakly-held target is collected, while
     the key itself is still alive, so a `BoundedLRUCache` can remove the entry stored
-    under it; the dataclass projection cache gives it to every key it stores. A plain
+    under it; the dataclass projection cache gives it to every key it stores. The key's
+    weakref holds `on_collect` for as long as the target lives, so a bound method such as
+    `cache.forget` keeps its cache alive that long; the projection cache passes its removal
+    queue's `append`, which does not hold the cache. A plain
     dict keyed by `_IdentityKey`, such as `_SingletonMeta._cache`, gives none and keeps
     a dead entry until it is deleted. A key nested inside a larger key, such as a tuple,
     is not the entry's key, so `on_collect` cannot remove that entry when the target is

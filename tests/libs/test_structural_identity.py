@@ -824,9 +824,9 @@ def test_the_projection_cache_hands_its_keys_a_callback_that_does_not_hold_it():
     _structural_key(payload)
     (key,) = [key for key in _stable_dataclass_keys._cache if key.target is payload]
 
-    held = [
-        getattr(cell.cell_contents, "__self__", None) for cell in key._ref.__callback__.__closure__
-    ]
+    cells = [cell.cell_contents for cell in key._ref.__callback__.__closure__]
+    held = [getattr(contents, "__self__", None) for contents in cells]
+    assert not any(contents is _stable_dataclass_keys for contents in cells)
     assert not any(owner is _stable_dataclass_keys for owner in held)
     assert any(owner is _stable_dataclass_keys._pending_removals for owner in held)
 
@@ -843,6 +843,18 @@ def test_forget_removes_an_entry_at_the_next_read():
     assert list(cache._cache) == ["kept", "forgotten"]
     assert cache.get("forgotten") is None
     assert list(cache._cache) == ["kept"]
+
+
+def test_forget_refuses_an_unhashable_key_when_called():
+    from lionagi.ln._cache import BoundedLRUCache
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    cache.put("kept", 1)
+
+    with pytest.raises(TypeError):
+        cache.forget([1])
+
+    assert cache.get("kept") == 1
 
 
 def test_an_empty_cache_is_truthy():
