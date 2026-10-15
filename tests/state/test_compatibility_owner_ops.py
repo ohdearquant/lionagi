@@ -16,12 +16,14 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 from lionagi.state.compat import (
     CompatibilityProfile,
     OwnerRule,
     StateCompatibilityRefused,
     TableWrites,
+    _operation,
     read_closure,
 )
 from lionagi.state.db import StateDB
@@ -192,12 +194,13 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")')]
 
 
-def _profile(store: Path, **changes) -> CompatibilityProfile:
+def _profile(store: Path, inserts: dict | None = None, **changes) -> CompatibilityProfile:
+    inserts = _INSERTS if inserts is None else inserts
     with closing(sqlite3.connect(store)) as conn:
         closure = read_closure(conn, _TABLES)
         writes = {}
-        for table in set(_INSERTS) | set(_UPDATES):
-            insert = _INSERTS.get(table, set())
+        for table in set(inserts) | set(_UPDATES):
+            insert = inserts.get(table, set())
             unwritten = (
                 {c: "left to the store's default" for c in _columns(conn, table) if c not in insert}
                 if insert
@@ -493,6 +496,22 @@ async def test_a_progression_lists_only_messages_its_run_created(db, store):
     ]
 
 
+@pytest.mark.parametrize(
+    "taken",
+    ["DELETE FROM messages WHERE id = 'm-sys'", f"UPDATE messages SET {OWNER} = 'principal:b'"],
+    ids=["deleted", "given to another owner"],
+)
+async def test_a_message_the_store_took_back_is_never_rewritten(db, store, taken):
+    await db.insert_message(_system_message(content="first"))
+    _execute(store, taken)
+    before = _rows(store, f"SELECT id, content, {OWNER} FROM messages")
+
+    with pytest.raises(StateCompatibilityRefused, match="is gone or no longer belongs"):
+        await db.insert_message(_system_message(content="second"))
+
+    assert _rows(store, f"SELECT id, content, {OWNER} FROM messages") == before
+
+
 async def test_a_message_this_run_wrote_is_rewritten_and_any_other_refused(db, store):
     await db.insert_message(_system_message(content="first"))
     await db.insert_message(_system_message(content="second"))
@@ -532,6 +551,94 @@ async def test_an_invocation_must_belong_to_the_owner(db, store):
         ("inv-a", 1),
         ("inv-b", 0),
     ]
+
+
+async def test_an_empty_invocation_id_is_checked_like_any_other(db, store):
+    _execute(
+        store,
+        f"INSERT INTO invocations (id, skill, started_at, created_at, updated_at, {OWNER}) "
+        "VALUES ('', 'review', 0, 0, 0, 'principal:b')",
+    )
+    await db.create_progression("sp")
+
+    with pytest.raises(StateCompatibilityRefused, match="does not belong to 'principal:a'"):
+        await db.create_session(_session(invocation_id=""))
+
+    assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(0,)]
+    assert _rows(store, "SELECT session_count FROM invocations WHERE id = ''") == [(0,)]
+
+
+async def test_a_link_by_an_id_that_is_not_a_string_is_refused(db, store):
+    """A set lookup by Python equality would take 1.0 for the 1 this run created."""
+    await db.insert_message(_system_message(1))
+    _execute(
+        store,
+        f"INSERT INTO messages (id, created_at, content, role, lion_class, {OWNER}) "
+        "VALUES ('1.0', 0, '{}', 'system', 1, 'principal:b')",
+    )
+
+    with pytest.raises(StateCompatibilityRefused, match="1.0 is not a string id"):
+        await db.create_progression("pn", [1.0])
+
+    assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+
+
+async def test_an_owner_removed_after_open_is_refused_at_the_next_write(db, store):
+    await db.create_progression("sp")
+    _execute(store, "DELETE FROM principals WHERE id = 'principal:a'")
+
+    with pytest.raises(StateCompatibilityRefused, match="the write transaction: the owner"):
+        await db.create_progression("sp2")
+
+    assert _rows(store, "SELECT id FROM progressions") == [("sp",)]
+
+
+@pytest.mark.parametrize(
+    "default", ["", " NOT NULL DEFAULT 'principal:default'"], ids=["nullable", "defaulted"]
+)
+async def test_an_owned_message_type_is_written_with_the_owner(tmp_path, default):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, f"ALTER TABLE message_types ADD COLUMN {OWNER} TEXT{default}")
+    profile = _profile(store, inserts={**_INSERTS, "message_types": {"lion_class", OWNER}})
+    handle = StateDB(store, compatibility=profile, owner="principal:a")
+    await handle.open()
+    try:
+        await handle.insert_message(_system_message())
+    finally:
+        await handle.close()
+
+    assert _rows(store, f"SELECT {OWNER} FROM message_types WHERE lion_class = 'System'") == [
+        ("principal:a",)
+    ]
+
+
+class _LeavesOutTheOwner(StateDB):
+    @_operation("create_progression")
+    async def create_progression(self, progression_id: str, collection=None) -> None:
+        async with self._tx() as conn:
+            await conn.execute(text(self.statement), {"id": progression_id})
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO progressions (id, created_at, collection) VALUES (:id, 1.0, '[]')",
+        "INSERT INTO progressions VALUES (:id, 1.0, '[]', 'principal:a')",
+    ],
+    ids=["columns without the owner", "no column list"],
+)
+async def test_an_insert_into_an_owned_table_that_leaves_out_the_owner_is_refused(store, statement):
+    """The authorizer sees the table an INSERT writes, never its columns."""
+    handle = _LeavesOutTheOwner(store, compatibility=_profile(store), owner="principal:a")
+    handle.statement = statement
+    await handle.open()
+    try:
+        with pytest.raises(StateCompatibilityRefused, match="leaves out the owner column"):
+            await handle.create_progression("p1")
+    finally:
+        await handle.close()
+
+    assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
 
 
 async def test_an_invocation_is_refused_when_the_profile_records_no_owner(store):
@@ -774,3 +881,87 @@ async def test_a_refused_setup_stops_the_run(store, monkeypatch):
 
     assert degraded == []
     assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(0,)]
+
+
+class _Message:
+    """What a branch hands its live hook: a message with ``to_dict(mode=...)``."""
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def to_dict(self, mode: str = "python") -> dict:
+        return dict(self._data)
+
+
+async def test_the_runs_live_hook_raises_a_refusal(db, store):
+    """The CLI's live hook lets a refusal through instead of logging it (ADR-0128 D6)."""
+    from lionagi.cli._runs import _make_message_handler
+
+    await _setup_run(db)
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+    queues: list = []
+    on_message = _make_message_handler(db, "b1", "s1", "bp", "sp", message_retry_queues=queues)
+
+    with pytest.raises(StateCompatibilityRefused, match="does not belong to 'principal:a'"):
+        await on_message(_Message(_live_message()))
+
+    assert queues[0].pending_count == 1
+    assert _rows(store, "SELECT COUNT(*) FROM messages WHERE id = 'm1'") == [(0,)]
+
+
+async def test_a_refused_teardown_fails_the_run_with_the_refusal(db, store):
+    """Teardown neither swallows a refusal nor reads back a status it could not write."""
+    from lionagi.cli._runs import _make_message_handler, teardown_persist
+    from lionagi.hooks import route_message_persistence
+    from lionagi.hooks.bus import HookPoint
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    await _setup_run(db)
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+    queues: list = []
+    on_message = _make_message_handler(db, "b1", "s1", "bp", "sp", message_retry_queues=queues)
+    with pytest.raises(StateCompatibilityRefused):
+        await on_message(_Message(_live_message()))
+    session, branch = Session(), Branch()
+    hook = route_message_persistence(session, branch, on_message)
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "branch": branch,
+        "hook": hook,
+        "message_retry_queues": queues,
+        "shared_db_registered": False,
+    }
+
+    assert await teardown_persist(ctx, status="completed") == "failed"
+
+    status, reason = ctx["terminal_reason"]
+    assert status == "failed"
+    assert "persist_live_message refused" in reason
+    assert hook not in session.hooks.handlers_for(HookPoint.MESSAGE_ADD)
+    assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("running",)]
+
+
+class _FlushQueue:
+    def __init__(self, refuse: bool) -> None:
+        self.refuse = refuse
+        self.attempts = 0
+
+    async def flush_final(self) -> bool:
+        self.attempts += 1
+        if self.refuse:
+            raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+        return True
+
+
+async def test_teardown_flushes_every_queue_before_it_raises_a_refusal():
+    from lionagi.cli._runs import _flush_pending_message_events
+
+    first, second = _FlushQueue(refuse=True), _FlushQueue(refuse=False)
+
+    with pytest.raises(StateCompatibilityRefused):
+        await _flush_pending_message_events({"message_retry_queues": [first, second]})
+
+    assert (first.attempts, second.attempts) == (1, 1)

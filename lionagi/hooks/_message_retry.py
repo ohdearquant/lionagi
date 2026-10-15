@@ -92,6 +92,9 @@ class MessagePersistRetryQueue:
         deduped by pending count rather than re-logged every call: a repeated
         identical count is the same incident restated, a changed count is new
         information. See docs/internals/plugin-runtime.md#hook-lifecycle.
+
+        A write the store refuses in compatibility mode is raised, with its event
+        kept at the head, and is not reported as lost.
         """
         flushed = await self.flush()
         if flushed:
