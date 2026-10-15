@@ -598,7 +598,8 @@ async def test_an_entry_whose_key_does_not_fit_is_left_out_whole():
 async def test_arguments_nested_too_deep_to_measure_are_echoed_bounded(kind, leaf):
     """No exception leaves the stream: the arguments are bounded as a result is, their JSON
     text kept when within the bound and cut when over it. Where this Python's JSON encoder
-    cannot go this deep (it can from 3.12), a line says they are nested too deep to show."""
+    cannot go this deep (how deep it goes depends on the Python version and the stack), a line
+    says they are nested too deep to show."""
     arguments = _nested(5_000, leaf, kind)
 
     chunks, uses, _ = await _run(
