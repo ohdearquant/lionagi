@@ -14,8 +14,8 @@ masks that reveal no key characters. A masker cannot tell a few characters of th
 text, so the stream path matches runs: a character is masked when it lies in a run of eight or more
 characters that occurs anywhere in the key, in any join a consumer can make of one message's text.
 The joins are each delta kind across the message, the quoted text of its citations, the text of
-the chunks a consumer receives, by chunk type, and every piece in order. Every other string of an
-event is matched on its own.
+the chunks a consumer receives, by chunk type and all of it in order, and every piece in order.
+Every other string of an event is matched on its own.
 
 Decision: D2's scrubbing is met for every run of eight or more characters of the key (the whole key,
 for a shorter key) and for every beginning of the key longer than its public `sk-ant-` prefix. Three
