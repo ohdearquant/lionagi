@@ -15,3 +15,8 @@ package-lock.json
 # native style. Committing the generator's own output is what keeps `git status`
 # clean after a build.
 src/routeTree.gen.ts
+
+# The Umami tracker build the integrity pin was computed from. It is kept
+# verbatim as the bytes the pin covers; reformatting it would change those bytes
+# and break the pin, so the formatter must leave it alone.
+analytics/umami-script.pinned.js

@@ -4,12 +4,18 @@
  * The tracker calls `window[data-before-send](type, payload)` before every
  * send and awaits the result: a falsy value drops the send, any other value is
  * sent as the payload. The hook rebuilds the payload from an allowlist of
- * page-view fields, so a value another script hands the tracker (an `id` from
- * `umami.identify(...)` or the `data` given to `umami.track({...})`) never
- * rides along on a later page view; ids, search strings, and hashes never leave
- * the browser. It is injected inline into the hosted `index.html` by
- * `hostedAnalyticsInjector` in vite.config.mts, ahead of the tracker loader,
- * and is never present in local, source, Docker, or packaged builds.
+ * page-view fields, so the payload holds those fields and nothing else. Each
+ * value comes from the page rather than from the caller's object: `hostname`
+ * from `location.hostname`, `screen` from the screen's width and height,
+ * `language` from `navigator.language`, and `website` from the tracker
+ * element's `data-website-id`. So a `hostname`, `screen`, `language`, or
+ * `website` that a caller passed to `umami.track({...})` is replaced by the
+ * page's own value. `url` and `title` are replaced by the route template, and a
+ * referrer is reduced to the previous route's template or to its origin. The
+ * hook sends nothing for any send type other than `event`, and nothing for an
+ * `event` payload that carries a `name`. It is injected inline into the hosted
+ * `index.html` by `hostedAnalyticsInjector` in vite.config.mts, ahead of the
+ * tracker loader, and is present only in the hosted Vercel build.
  */
 (function () {
   "use strict";
@@ -52,6 +58,11 @@
   // The only page-view fields the tracker is allowed to send.
   var ALLOWED_FIELDS = ["website", "hostname", "screen", "language", "url", "referrer", "title"];
 
+  // The attribute the loader points at this hook, so the hook can find the
+  // tracker element and read the website id it was built with.
+  var LOADER_ATTRIBUTE = "data-before-send";
+  var HOOK_NAME = "__studioAnalyticsBeforeSend";
+
   var ONE_SEGMENT = "[^/]+";
 
   // Dynamic routes collapse to a fixed template so an id never reaches the
@@ -87,6 +98,18 @@
     return "/(other)";
   }
 
+  // The tracker element the loader added, found by the attribute that names
+  // this hook. Null when the page holds no such element.
+  function trackerElement() {
+    var elements = document.querySelectorAll("script[" + LOADER_ATTRIBUTE + "]");
+    for (var i = 0; i < elements.length; i += 1) {
+      if (elements[i].getAttribute(LOADER_ATTRIBUTE) === HOOK_NAME) {
+        return elements[i];
+      }
+    }
+    return null;
+  }
+
   window.__studioAnalyticsBeforeSend = function (type, payload) {
     try {
       // The tracker sends page views, and page views only; anything else —
@@ -96,8 +119,8 @@
         return false;
       }
 
-      // Copy only the allowlisted page-view fields, so a key another script
-      // added to the tracker's internal payload state is not sent.
+      // Copy only the allowlisted page-view fields, so every other key the
+      // caller's object carried is not sent.
       var result = {};
       for (var i = 0; i < ALLOWED_FIELDS.length; i += 1) {
         var key = ALLOWED_FIELDS[i];
@@ -109,6 +132,24 @@
       if (typeof payload.url !== "string") {
         return false;
       }
+
+      // The tracker's own defaults are absent from the payload it hands the
+      // hook for a call like `umami.track({...})`, so the page values are read
+      // here. Without the tracker element there is no website id to send, and
+      // the hook sends nothing at all.
+      var element = trackerElement();
+      if (!element) {
+        return false;
+      }
+      var website = element.getAttribute("data-website-id");
+      if (typeof website !== "string" || website === "") {
+        return false;
+      }
+      result.website = website;
+      result.hostname = location.hostname;
+      result.screen = screen.width + "x" + screen.height;
+      result.language = navigator.language;
+
       // The URL and the title both carry the route template, never the raw
       // path. The tracker sends page views with an absolute URL; a path is
       // resolved against the page the same way. The title is replaced by the
@@ -117,8 +158,12 @@
       result.url = location.origin + route;
       result.title = route;
 
-      if (typeof payload.referrer === "string" && payload.referrer !== "") {
-        var referrer = new URL(payload.referrer, location.href);
+      // A referrer that is not a string is dropped before the rule below, so
+      // the object or array a caller passed is not sent.
+      if (typeof result.referrer !== "string") {
+        delete result.referrer;
+      } else if (result.referrer !== "") {
+        var referrer = new URL(result.referrer, location.href);
         if (referrer.origin === location.origin) {
           // Same-origin means a client-side navigation; the previous route's
           // path is templated so its ids do not leak.
