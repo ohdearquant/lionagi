@@ -24,6 +24,7 @@ import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
+import { useReportOperatorProject } from "@/components/operator/OperatorProjectContext";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
@@ -1934,6 +1935,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   // every unrelated RunDetail rerender.
   const noopLayoutHeight = useCallback(() => {}, []);
   const [error, setError] = useState<string | null>(null);
+  useReportOperatorProject(session?.id === id && !error ? id : null, session?.project);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   // Cross-view selection (ADR-0113 D6): the step a graph-node click resolved
@@ -2033,6 +2035,7 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
     setRunGraph(null);
@@ -2065,6 +2068,8 @@ export default function RunDetail({ id }: RunDetailProps) {
     }
     getSession(id)
       .then((s) => {
+        if (cancelled) return;
+        if (s.id !== id) throw new Error("Session response does not match the selected session");
         setSession(s);
         setOlderCursor(s.message_next_cursor ?? null);
         const ss = (s.status ?? "").toLowerCase();
@@ -2117,7 +2122,12 @@ export default function RunDetail({ id }: RunDetailProps) {
           });
         }
       })
-      .catch((e: unknown) => setError(String(e)));
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
   useEffect(() => {
