@@ -58,3 +58,43 @@ no token-entry UI today — it only attaches a token injected as
 non-loopback daemon is currently for API/desktop-shell use; treat the hosted page as
 loopback-only until a token prompt ships. Rotate the token like any credential; never
 commit it.
+
+## Page analytics on the hosted deploy
+
+The hosted deploy reports aggregate, privacy-preserving page views to a
+self-hosted Umami tracker at `https://analytics.khive.ai`. It is gated on a build
+variable: `hostedAnalyticsInjector` in `vite.config.mts` adds the tracker tag to
+`index.html` only when `STUDIO_UMAMI_WEBSITE_ID` is set to a UUID in the build
+environment, so the Vercel project sets it and every other build does not. Local,
+source, Docker, and packaged builds contain no analytics tag and contact no
+analytics host. (The gate is the variable, not `VERCEL`, so a preview or a
+self-hosted static build stays silent unless it deliberately opts in.) A value
+that is not a UUID fails the build rather than landing in an HTML attribute.
+
+When the tag is present it injects two things, in this order: an inline
+before-send hook (a classic script, `analytics/before-send.js`) and then the
+deferred tracker, which is told the hook's name and is restricted to the hosted
+domain by `data-domains`. The tracker calls the hook before every send and drops
+the send when the hook returns a falsy value; the hook is what keeps ids, search
+strings and hashes out of every payload, and it sends nothing if it fails.
+
+A page view carries the route template as both its URL and its title, a
+same-origin referrer reduced to the previous route's template, plus the screen
+size, browser language, and hostname the tracker already collects. It never
+carries an id, a search string, or a hash: `/runs/abc-123?q=1#x` is reported as
+`/runs/[id]`. The templated routes are `/runs/<id>`, `/invocations/<id>`,
+`/playbooks/<name>`, and `/playbooks/<name>/edit`; every other path that is not
+a known static route collapses to `/(other)`. Studio makes no `identify` calls and
+sends no custom events, and the hook drops both if anything tries, so no visitor
+identity and no click stream leave the page.
+
+A new route needs a template entry. Adding a route under `src/routes/` without
+adding its path to the hook's static list, or without a dynamic pattern if it
+carries an id, breaks the route-coverage test in
+`src/lib/hostedAnalytics.test.ts`, which walks `src/routes/` and fails naming the
+file until the template exists.
+
+If a Content-Security-Policy is ever added to this deploy, `https://analytics.khive.ai`
+belongs in both `script-src` (for `script.js`) and `connect-src` (for the send
+beacon), and the inline before-send script needs its hash in `script-src` since
+it is injected inline rather than served as a file.
