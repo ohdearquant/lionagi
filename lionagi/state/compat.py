@@ -317,10 +317,11 @@ def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 def _name(token: tuple[str, str]) -> str | None:
-    """The table or column a token names, lowercased; SQLite also takes a string literal as one."""
+    """The table or column a token names, folded as SQLite folds a name; SQLite also takes a
+    string literal as one."""
     kind, text = token
     if kind == _STRING:
-        return text[1:-1].replace("''", "'").lower()
+        return _fold(text[1:-1].replace("''", "'"))
     return text if kind in (_WORD, _IDENT) else None
 
 
@@ -1029,7 +1030,7 @@ class OwnerRule:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"OwnerRule.{name} names a column or table: {value!r}")
-            object.__setattr__(self, name, value.lower())
+            object.__setattr__(self, name, _fold(value))
 
 
 def _rowid_alias(column: ColumnShape, table: TableShape) -> bool:
