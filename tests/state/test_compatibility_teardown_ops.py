@@ -293,9 +293,11 @@ async def test_a_status_and_its_transition_record_land_together_or_not_at_all(
     owner_insert = service.SQLAlchemyLifecycleService._owner_insert
 
     def broken(self, table):
+        columns, placeholders, values = owner_insert(self, table)
         if table != "status_transitions":
-            return owner_insert(self, table)
-        return ', "no_such_column"', ", :_owner0", {"_owner0": "principal:a"}
+            return columns, placeholders, values
+        # The owner is named, so the statement check admits it and SQLite fails it.
+        return f'{columns}, "no_such_column"', f"{placeholders}, :_owner0", values
 
     monkeypatch.setattr(service.SQLAlchemyLifecycleService, "_owner_insert", broken)
     before = _dump(store)
