@@ -349,3 +349,19 @@ async def test_teardown_hands_a_compatibility_store_only_its_own_metadata_keys(d
         f"SELECT previous_status, {OWNER} FROM status_transitions "
         "WHERE entity_id = 's1' AND previous_status IS NOT NULL",
     ) == [("running", "principal:a")]
+
+
+async def test_the_reason_code_warning_still_names_the_caller(tmp_path):
+    """The operation wrapper adds a frame, and a deprecation warning still points at the caller."""
+    from tests.state.test_db import _make_session
+
+    native = StateDB(tmp_path / "native.db")
+    await native.open()
+    try:
+        session = await _make_session(native, status="running")
+        with pytest.warns(DeprecationWarning, match="called without reason_code") as caught:
+            await native.update_session(session["id"], status="completed")
+    finally:
+        await native.close()
+
+    assert [warning.filename for warning in caught] == [__file__]

@@ -3279,6 +3279,8 @@ class StateDB:
             override=override,
             override_actor=override_actor,
             override_justification=override_justification,
+            # The operation wrapper adds a frame between this method and its caller.
+            warn_stacklevel=4,
         )
 
         if fields:
@@ -3486,6 +3488,7 @@ class StateDB:
         override: bool = False,
         override_actor: str | None = None,
         override_justification: str | None = None,
+        warn_stacklevel: int = 3,
     ) -> None:
         status_value = fields.pop("status", None)
         if status_value is None:
@@ -3510,7 +3513,7 @@ class StateDB:
                 f"{reason_code!r}. Pass reason_code explicitly "
                 "(this fallback is deprecated).",
                 DeprecationWarning,
-                stacklevel=3,
+                stacklevel=warn_stacklevel,
             )
         await self.update_status(
             entity_type,
