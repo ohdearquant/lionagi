@@ -123,6 +123,16 @@ def test_a_setting_that_is_not_a_boolean_is_refused_from_yaml(tmp_path):
         AgentSpec.from_yaml(path)
 
 
+@pytest.mark.parametrize(
+    "line", ["contain_account_integrations:\n", "contain_account_integrations: null\n"]
+)
+def test_a_setting_present_with_no_value_reads_as_unset_from_yaml(tmp_path, line):
+    path = tmp_path / "spec.yaml"
+    AgentSpec.compose("reviewer").to_yaml(path)
+    path.write_text(path.read_text() + line)
+    assert AgentSpec.from_yaml(path).contain_account_integrations is False
+
+
 def test_an_unset_setting_is_not_written_to_yaml(tmp_path):
     """A spec saved without it reads exactly as one saved before it existed."""
     path = tmp_path / "spec.yaml"

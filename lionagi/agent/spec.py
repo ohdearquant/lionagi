@@ -159,7 +159,10 @@ class AgentSpec(HooksMixin):
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        contain = data.get("contain_account_integrations", False)
+        contain = data.get("contain_account_integrations")
+        if contain is None:
+            # absent, or present with no value
+            contain = False
         if not isinstance(contain, bool):
             # bool("false") is True; a quoted value is a mistake to report, not to read.
             raise ValueError(

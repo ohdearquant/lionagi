@@ -1074,6 +1074,7 @@ class EngineRun:
             from typing import get_args  # noqa: PLC0415
 
             from lionagi.operations.node import BranchOperations  # noqa: PLC0415
+            from lionagi.service.connections.api_calling import APICalling  # noqa: PLC0415
             from lionagi.service.imodel import iModel  # noqa: PLC0415
 
             def _carries(op: Operation) -> bool:
@@ -1159,8 +1160,16 @@ class EngineRun:
                 if any(_passed(op).get(key) is not None for key in model_keys)
                 or _holds_a_model(op.request)
             ]
+            # A prebuilt call, or an event type other than the one the model builds its request
+            # with, reaches the CLI without the settings; None for api_call means "build one".
             prebuilt = [
-                op for op in operations if any("api_call" in kw for kw in _call_keywords(op))
+                op
+                for op in operations
+                if any(
+                    kw.get("api_call") is not None
+                    or kw.get("create_event_type", APICalling) is not APICalling
+                    for kw in _call_keywords(op)
+                )
             ]
             enved = [
                 op
@@ -1193,8 +1202,9 @@ class EngineRun:
                     )
                 if prebuilt:
                     problems.append(
-                        f"{len(prebuilt)} of {total} nodes pass api_call, a prebuilt call the "
-                        "model sends as it was built"
+                        f"{len(prebuilt)} of {total} nodes pass api_call or create_event_type, "
+                        "a prebuilt call the model sends as it was built or an event type that "
+                        "builds its own"
                     )
                 if enved:
                     problems.append(

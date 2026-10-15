@@ -539,25 +539,86 @@ async def test_run_dag_with_agent_env_refuses_env_handed_on_to_a_model_call(keyw
         {"api_call": "prebuilt"},
         {"imodel_kw": {"api_call": "prebuilt"}},
         {"interpret_kwargs": {"api_call": "prebuilt"}},
+        {"response_kwargs": {"api_call": "prebuilt"}},
         {"response_kwargs": {"imodel_kw": {"api_call": "prebuilt"}}},
+        {"create_event_type": "own-event"},
+        {"imodel_kw": {"create_event_type": "own-event"}},
+        {"interpret_kwargs": {"create_event_type": "own-event"}},
     ],
-    ids=["own", "imodel_kw", "interpret_kwargs", "response_kwargs-imodel_kw"],
+    ids=[
+        "own",
+        "imodel_kw",
+        "interpret_kwargs",
+        "response_kwargs",
+        "response_kwargs-imodel_kw",
+        "event-type-own",
+        "event-type-imodel_kw",
+        "event-type-interpret_kwargs",
+    ],
 )
 async def test_run_dag_refuses_a_node_that_passes_a_prebuilt_api_call(
     settings, keywords, monkeypatch
 ):
-    """A model sends a prebuilt call as it was built, without the settings."""
+    """A model sends a prebuilt call as it was built, and an event type of the caller's builds
+    its own request, both without the settings."""
     from lionagi._errors import ConfigurationError
     from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.service.connections.api_calling import APICalling
+
+    class OwnEvent(APICalling):
+        pass
+
+    def resolved(value):
+        if isinstance(value, dict):
+            return {k: resolved(v) for k, v in value.items()}
+        return OwnEvent if value == "own-event" else value
 
     calls = _record_flow(monkeypatch)
     run = Engine(**settings).new_run()
     built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
     builder = OperationGraphBuilder()
-    builder.add_operation("ReAct", branch=built, instruct={"instruction": "a"}, **keywords)
-    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass api_call"):
+    builder.add_operation(
+        "ReAct", branch=built, instruct={"instruction": "a"}, **resolved(keywords)
+    )
+    with pytest.raises(
+        ConfigurationError, match=r"1 of 1 nodes pass api_call or create_event_type"
+    ):
         await run.run_dag(builder.get_graph())
     assert calls == []
+
+
+@_SETTINGS
+@pytest.mark.parametrize(
+    "keywords",
+    [
+        {"api_call": None},
+        {"imodel_kw": {"api_call": None}},
+        {"imodel_kw": {"create_event_type": "default-event"}},
+    ],
+    ids=["api_call-none", "imodel_kw-api_call-none", "imodel_kw-default-event-type"],
+)
+async def test_run_dag_runs_a_node_that_passes_the_default_call_or_event_type(
+    settings, keywords, monkeypatch
+):
+    """Control: None for api_call builds the call, and the default event type is the one the
+    model builds its request with."""
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.service.connections.api_calling import APICalling
+
+    def resolved(value):
+        if isinstance(value, dict):
+            return {k: resolved(v) for k, v in value.items()}
+        return APICalling if value == "default-event" else value
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation(
+        "ReAct", branch=built, instruct={"instruction": "a"}, **resolved(keywords)
+    )
+    await run.run_dag(builder.get_graph())
+    assert len(calls) == 1
 
 
 async def test_run_dag_with_agent_env_runs_a_node_whose_context_names_env(monkeypatch):
