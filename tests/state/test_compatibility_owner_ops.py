@@ -145,15 +145,16 @@ _OPERATIONS = {
 }
 
 
-async def _managed_store(path: Path) -> Path:
+_OWNER_COLUMN = "TEXT NOT NULL DEFAULT 'principal:default'"
+
+
+async def _managed_store(path: Path, owner_sql: str = _OWNER_COLUMN) -> Path:
     native = StateDB(path)
     await native.open()
     await native.close()
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
-            conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN {OWNER} TEXT NOT NULL DEFAULT 'principal:default'"
-            )
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {OWNER} {owner_sql}")
         conn.executescript(
             """
             CREATE TABLE principals (id TEXT PRIMARY KEY, kind TEXT NOT NULL);
@@ -1390,3 +1391,213 @@ async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compa
         await coordinator.shutdown()
 
     assert status == recorded
+
+
+class _DriverWrite(StateDB):
+    """Runs one statement with its parameters exactly as given, never re-spelled by the driver."""
+
+    @_operation("create_progression")
+    async def create_progression(self, progression_id: str, collection=None) -> None:
+        async with self._tx() as conn:
+            await conn.exec_driver_sql(self.statement, self.params)
+
+
+async def _driver_write(store: Path, statement: str, params) -> None:
+    handle = _DriverWrite(store, compatibility=_profile(store), owner="principal:a")
+    handle.statement, handle.params = statement, params
+    await handle.open()
+    try:
+        await handle.create_progression("p-probe")
+    finally:
+        await handle.close()
+
+
+_NAMED_INSERT = "INSERT INTO progressions (id, created_at, collection, owner_principal_id) "
+
+
+@pytest.mark.parametrize(
+    "named", ["#id", ":id", "@id", "$id", "?1"], ids=["hash", "colon", "at", "dollar", "numbered"]
+)
+async def test_an_insert_whose_owner_slot_follows_a_named_parameter_is_refused(store, named):
+    """SQLite numbers a named parameter like ``?``, so the ``?`` slot is not the first argument."""
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id")
+
+    with pytest.raises(StateCompatibilityRefused, match="binds its values in a form"):
+        await _driver_write(
+            store, _NAMED_INSERT + f"VALUES ({named}, 1.0, '[]', ?)", ("principal:a", "principal:b")
+        )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == before
+    assert before == [("p-other", "principal:b")]
+
+
+async def test_an_update_whose_owner_term_follows_a_named_parameter_is_refused(store):
+    """The ``?`` after ``#c`` is the second argument, not the first the guard reads it as."""
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, content, {OWNER} FROM messages ORDER BY id")
+
+    with pytest.raises(StateCompatibilityRefused, match="binds its values in a form"):
+        await _driver_write(
+            store,
+            "UPDATE messages SET content = #c WHERE owner_principal_id = ?",
+            ("principal:a", "principal:b"),
+        )
+
+    assert _rows(store, f"SELECT id, content, {OWNER} FROM messages ORDER BY id") == before
+    assert before == [("m-other", "{}", "principal:b")]
+
+
+async def test_an_update_that_binds_a_column_other_than_the_owner_is_refused(store):
+    """A WHERE term on another column, even bound to the owner, does not restrict the owner."""
+    _first_owned_message(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="does not restrict its rows"):
+        await _driver_write(
+            store, "UPDATE messages SET content = ? WHERE sender = ?", ("taken", "principal:a")
+        )
+
+    assert _rows(store, "SELECT content FROM messages WHERE id = 'm-sys'") == [("first",)]
+
+
+async def test_an_executemany_whose_later_row_writes_another_owner_is_refused(store):
+    with pytest.raises(StateCompatibilityRefused, match="other than the owner"):
+        await _driver_write(
+            store,
+            _NAMED_INSERT + "VALUES (?, 1.0, '[]', ?)",
+            [("p1", "principal:a"), ("p2", "principal:b")],
+        )
+
+    assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+
+
+async def test_an_executemany_bound_to_the_owner_in_every_row_is_admitted(store):
+    await _driver_write(
+        store,
+        _NAMED_INSERT + "VALUES (?, 1.0, '[]', ?)",
+        [("p1", "principal:a"), ("p2", "principal:a")],
+    )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == [
+        ("p1", "principal:a"),
+        ("p2", "principal:a"),
+    ]
+
+
+def _first_owned_message(store: Path) -> None:
+    _execute(
+        store,
+        f"INSERT INTO messages (id, created_at, content, role, lion_class, {OWNER}) "
+        "VALUES ('m-sys', 0, 'first', 'system', 1, 'principal:a')",
+    )
+
+
+async def test_a_trigger_named_begin_is_read_from_the_begin_after_its_table(tmp_path):
+    """The trigger's name is the BEGIN keyword, so the first BEGIN is not the body's."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER begin AFTER UPDATE ON messages BEGIN "
+        "INSERT INTO progressions (id, created_at, collection) VALUES (NEW.id || '-x', 1.0, '[]'); "
+        "END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger begin"):
+        await handle.open()
+    assert handle._engine is None
+
+
+async def test_a_trigger_named_begin_that_copies_the_owner_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER begin AFTER UPDATE ON messages BEGIN "
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (NEW.id || '-x', 1.0, '[]', NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+async def test_a_trigger_that_reads_old_in_an_insert_is_refused(tmp_path):
+    """OLD is NULL in an INSERT trigger, so a trigger that copies it fails every insert."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
+    _execute(
+        store,
+        "CREATE TRIGGER copy_old AFTER INSERT ON messages BEGIN "
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (NEW.id || '-p', 1.0, '[]', OLD.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger copy_old"):
+        await handle.open()
+    assert handle._engine is None
+
+
+async def test_a_trigger_that_reads_new_in_a_delete_is_refused(tmp_path):
+    """NEW is NULL in a DELETE trigger, so the copy it writes is no owner either."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
+    _execute(
+        store,
+        "CREATE TRIGGER copy_new AFTER DELETE ON messages BEGIN "
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (OLD.id || '-p', 1.0, '[]', NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger copy_new"):
+        await handle.open()
+    assert handle._engine is None
+
+
+_NOCASE_OWNER = "TEXT NOT NULL DEFAULT 'principal:default' COLLATE NOCASE"
+
+
+async def test_an_owner_column_that_does_not_compare_under_binary_is_refused(tmp_path):
+    """A NOCASE owner compares a case variant as the owner, so the WHERE term does not hold."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql=_NOCASE_OWNER)
+    before = _rows(store, "SELECT COUNT(*) FROM messages")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="NOCASE") as caught:
+        await handle.open()
+
+    assert "collation" in caught.value.reason.lower()
+    assert handle._engine is None
+    assert _rows(store, "SELECT COUNT(*) FROM messages") == before
+
+
+async def test_an_owner_column_that_compares_under_binary_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT COLLATE BINARY")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+async def test_a_trigger_whose_owner_term_is_reversed_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER rev AFTER INSERT ON messages BEGIN "
+        "UPDATE progressions SET collection = '[]' WHERE id = NEW.sender "
+        f"AND NEW.{OWNER} = {OWNER}; END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+async def test_a_trigger_whose_owner_term_is_parenthesised_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER par AFTER INSERT ON messages BEGIN "
+        "UPDATE progressions SET collection = '[]' WHERE id = NEW.sender "
+        f"AND ({OWNER} = NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
