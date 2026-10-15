@@ -43,6 +43,16 @@ experience, use `li studio --dev`.
 Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 `/admin/maintenance` remain routed to their current space.
 
+## Library catalogs
+
+Each Library tab loads only its own catalog; Playbook loads both bundled templates
+and custom playbooks. All loads the visible catalogs. Hidden workflow and engine
+catalogs are loaded only for an explicit tab or detail deep link. Hooks owns its
+configuration requests independently. Switching tabs reloads the selected sources;
+a late response from the previous tab cannot replace the active list or its errors.
+Unavailable sources are identified in the error banner and can be retried. The
+`tab` and `sel` query parameters remain the links to a tab and selected item.
+
 ## API resolution
 
 The runtime chooses an API base in this order:

@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
 import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
@@ -85,7 +85,10 @@ interface LibraryItem {
 
 type KindLoadStatus = "loaded" | "failed";
 
-function useLibraryData() {
+function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
+  const scope = `${tab}:${selectedHiddenKind ?? ""}`;
+  const requestVersion = useRef(0);
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -94,19 +97,22 @@ function useLibraryData() {
   const [kindStatus, setKindStatus] = useState<Partial<Record<LibraryKind, KindLoadStatus>>>({});
 
   const reload = useCallback(() => {
-    let alive = true;
+    const version = ++requestVersion.current;
+    const wants = (kind: LibraryKind) =>
+      tab === kind ||
+      (tab === "all" && (!UNFINISHED_KINDS.has(kind) || selectedHiddenKind === kind));
     setLoading(true);
     setError(null);
 
     Promise.allSettled([
-      listAgents(),
-      listBuiltinPlaybooks(),
-      listPlaybooks(),
-      listWorkflowDefs(),
-      listSkills(),
-      listPlugins(),
-      listEngineDefs(),
-      listMcpServers(),
+      wants("agent") ? listAgents() : undefined,
+      wants("playbook") ? listBuiltinPlaybooks() : undefined,
+      wants("playbook") ? listPlaybooks() : undefined,
+      wants("workflow") ? listWorkflowDefs() : undefined,
+      wants("skill") ? listSkills() : undefined,
+      wants("plugin") ? listPlugins() : undefined,
+      wants("engine") ? listEngineDefs() : undefined,
+      wants("mcp") ? listMcpServers() : undefined,
     ]).then(
       ([
         agentsRes,
@@ -118,7 +124,7 @@ function useLibraryData() {
         enginesRes,
         mcpRes,
       ]) => {
-        if (!alive) return;
+        if (version !== requestVersion.current) return;
 
         const out: LibraryItem[] = [];
         const results = [
@@ -132,7 +138,7 @@ function useLibraryData() {
           mcpRes,
         ];
 
-        if (agentsRes.status === "fulfilled") {
+        if (agentsRes.status === "fulfilled" && agentsRes.value) {
           setAllAgents(agentsRes.value.agents);
           for (const a of agentsRes.value.agents) {
             out.push({
@@ -149,7 +155,7 @@ function useLibraryData() {
         // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
         // they live under the "playbook" kind, separate from "workflow"
         // (DB-backed graph designs, edited inline via the Library drawer).
-        if (builtinsRes.status === "fulfilled") {
+        if (builtinsRes.status === "fulfilled" && builtinsRes.value) {
           for (const p of builtinsRes.value.playbooks) {
             out.push({
               key: `playbook:builtin:${p.name}`,
@@ -161,7 +167,7 @@ function useLibraryData() {
             });
           }
         }
-        if (playbooksRes.status === "fulfilled") {
+        if (playbooksRes.status === "fulfilled" && playbooksRes.value) {
           for (const p of playbooksRes.value.playbooks) {
             out.push({
               key: `playbook:custom:${p.name}`,
@@ -173,7 +179,7 @@ function useLibraryData() {
             });
           }
         }
-        if (workflowsRes.status === "fulfilled") {
+        if (workflowsRes.status === "fulfilled" && workflowsRes.value) {
           for (const w of workflowsRes.value) {
             out.push({
               key: `workflow:${w.id}`,
@@ -184,7 +190,7 @@ function useLibraryData() {
             });
           }
         }
-        if (skillsRes.status === "fulfilled") {
+        if (skillsRes.status === "fulfilled" && skillsRes.value) {
           for (const s of skillsRes.value.skills) {
             out.push({
               key: `skill:${s.name}`,
@@ -194,7 +200,7 @@ function useLibraryData() {
             });
           }
         }
-        if (pluginsRes.status === "fulfilled") {
+        if (pluginsRes.status === "fulfilled" && pluginsRes.value) {
           // The same plugin can be listed by several sources (marketplace +
           // installed cache); detail lookup is by name, so one row suffices.
           const seenPlugins = new Set<string>();
@@ -210,7 +216,7 @@ function useLibraryData() {
             });
           }
         }
-        if (enginesRes.status === "fulfilled") {
+        if (enginesRes.status === "fulfilled" && enginesRes.value) {
           setAllEngines(enginesRes.value);
           for (const e of enginesRes.value) {
             out.push({
@@ -223,7 +229,7 @@ function useLibraryData() {
           }
         }
 
-        if (mcpRes.status === "fulfilled") {
+        if (mcpRes.status === "fulfilled" && mcpRes.value) {
           for (const s of mcpRes.value.servers) {
             out.push({
               key: `mcp:${s.name}`,
@@ -239,38 +245,54 @@ function useLibraryData() {
         if (results.some((result) => result.status === "rejected")) {
           setError("degraded");
         }
-        setKindStatus({
-          agent: agentsRes.status === "fulfilled" ? "loaded" : "failed",
-          // "playbook" items come from two sources (builtin templates,
-          // custom playbooks); either failing means the kind's list can't
-          // be asserted complete or empty.
-          playbook:
-            builtinsRes.status === "fulfilled" && playbooksRes.status === "fulfilled"
+        const status = (
+          kind: LibraryKind,
+          ...sources: PromiseSettledResult<unknown>[]
+        ): KindLoadStatus | undefined =>
+          wants(kind)
+            ? sources.every((source) => source.status === "fulfilled")
               ? "loaded"
-              : "failed",
-          workflow: workflowsRes.status === "fulfilled" ? "loaded" : "failed",
-          skill: skillsRes.status === "fulfilled" ? "loaded" : "failed",
-          plugin: pluginsRes.status === "fulfilled" ? "loaded" : "failed",
-          engine: enginesRes.status === "fulfilled" ? "loaded" : "failed",
-          mcp: mcpRes.status === "fulfilled" ? "loaded" : "failed",
+              : "failed"
+            : undefined;
+        setKindStatus({
+          agent: status("agent", agentsRes),
+          // Either playbook source failing leaves the combined catalog incomplete.
+          playbook: status("playbook", builtinsRes, playbooksRes),
+          workflow: status("workflow", workflowsRes),
+          skill: status("skill", skillsRes),
+          plugin: status("plugin", pluginsRes),
+          engine: status("engine", enginesRes),
+          mcp: status("mcp", mcpRes),
         });
+        setLoadedScope(scope);
         setLoading(false);
       },
     );
 
     return () => {
-      alive = false;
+      requestVersion.current += 1;
     };
-  }, []);
+  }, [tab, selectedHiddenKind, scope]);
 
   useEffect(() => {
-    // Return reload()'s cleanup so an unmount mid-flight flips its alive flag
-    // and the resolved fetch can't setState on the stale component.
+    // Invalidate every outstanding reload when the tab changes or unmounts,
+    // including retries whose cleanup is not owned by this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reload() calls setState inside async callbacks; synchronous reset is needed to clear stale items before the fetch resolves
     return reload();
   }, [reload]);
 
-  return { items, loading, error, reload, allAgents, allEngines, kindStatus };
+  // A new URL can render before its loading effect runs. Keep the previous
+  // tab's rows and status from changing that URL's selection in the meantime.
+  const current = loadedScope === scope;
+  return {
+    items: current ? items : [],
+    loading: loading || !current,
+    error: current ? error : null,
+    reload,
+    allAgents: current ? allAgents : [],
+    allEngines: current ? allEngines : [],
+    kindStatus: current ? kindStatus : {},
+  };
 }
 
 const PLAYBOOK_SUB_KINDS: PlaybookSubKind[] = ["builtin", "custom"];
@@ -365,10 +387,16 @@ function CatalogSkeleton() {
 function LibraryPage() {
   const t = useTranslations("library");
   const tDaemon = useTranslations("daemon");
-  const { items, loading, error, reload, allAgents, allEngines, kindStatus } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
+  const parsed = parseSel(sel);
+  const selectedHiddenKind =
+    kindFilter === "all" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+  const { items, loading, error, reload, allAgents, allEngines, kindStatus } = useLibraryData(
+    kindFilter,
+    selectedHiddenKind,
+  );
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -421,12 +449,14 @@ function LibraryPage() {
       const parsed = parseSel(sel);
       const isOptimisticWorkflow =
         parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
-      const isHiddenWorkflow =
-        parsed?.kind === "workflow" &&
-        items.some((item) => item.kind === "workflow" && item.name === parsed.name);
+      const isHiddenSelection =
+        parsed &&
+        UNFINISHED_KINDS.has(parsed.kind) &&
+        items.some((item) => item.kind === parsed.kind && item.name === parsed.name);
       if (
         isOptimisticWorkflow ||
-        isHiddenWorkflow ||
+        isHiddenSelection ||
+        (parsed && kindStatus[parsed.kind] === "failed") ||
         (parsed &&
           filtered.some(
             (i) =>
@@ -470,8 +500,6 @@ function LibraryPage() {
     },
     [navigate],
   );
-
-  const parsed = parseSel(sel);
 
   // Resolve the agent/engine objects from the selection.
   const selectedAgent =
@@ -567,7 +595,12 @@ function LibraryPage() {
           role="alert"
           className="flex shrink-0 items-center justify-between gap-3 border-b border-edge bg-status-error-bg px-3 py-2 text-body text-content-secondary"
         >
-          <span>{t("loadError")}</span>
+          <span>
+            {t("loadError")}{" "}
+            {ALL_KIND_TABS.filter((tab) => kindStatus[tab.value as LibraryKind] === "failed")
+              .map((tab) => tab.label)
+              .join(", ")}
+          </span>
           <Button size="sm" variant="secondary" onClick={reload}>
             {tDaemon("retry")}
           </Button>

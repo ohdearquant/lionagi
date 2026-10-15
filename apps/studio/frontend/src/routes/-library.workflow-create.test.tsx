@@ -148,12 +148,13 @@ describe("Library workflow creation identity", () => {
   });
 
   async function createWhileReloadIsPending(reload: Deferred<unknown[]>) {
-    api.listWorkflowDefs.mockResolvedValueOnce([]).mockReturnValueOnce(reload.promise);
+    api.listWorkflowDefs.mockReturnValueOnce(reload.promise);
 
     await act(async () => {
       root.render(<LibraryPage />);
     });
     await flush();
+    expect(api.listWorkflowDefs).not.toHaveBeenCalled();
 
     const newButton = [...container.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("newWorkflow"),
