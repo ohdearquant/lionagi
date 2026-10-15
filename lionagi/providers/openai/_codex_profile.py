@@ -18,9 +18,15 @@ from typing import Any
 
 from lionagi.libs.path_safety import validate_bare_name
 
+try:
+    import tomllib as _tomllib
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
+    import tomli as _tomllib  # type: ignore[no-redef]
+
 __all__ = (
     "CODEX_MCP_PROFILE_PREFIX",
     "codex_home_for_env",
+    "configured_codex_profile",
     "global_codex_reasoning_effort",
     "is_generated_codex_profile",
     "resolve_codex_config_profile",
@@ -37,9 +43,9 @@ _GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(CODEX_MCP_PROFILE_PREFIX
 
 
 def is_generated_codex_profile(name: object) -> bool:
-    """Whether *name* is a profile name lionagi minted for MCP server secrets.
+    """Whether *name* has the shape lionagi gives the profiles it writes for MCP server secrets.
 
-    That profile file holds only ``mcp_servers``.
+    lionagi writes those with only ``mcp_servers``. The check reads the name, not the file.
     """
     return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
@@ -242,3 +248,22 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
         return None
     value = data.get("model_reasoning_effort")
     return value if isinstance(value, str) and value else None
+
+
+def configured_codex_profile(env: Mapping[str, str] | None = None) -> Any:
+    """Return the root ``profile`` key of the codex config, or None when it has none.
+
+    Codex through 0.130 makes that profile the active one when no ``-p`` is given; from 0.135
+    codex refuses to start on the key. ``env`` is the environment the spawned process will run
+    under, as for :func:`global_codex_reasoning_effort`. An absent config answers None. A config
+    that cannot be read or parsed raises ValueError: a caller deciding which profile codex will
+    apply cannot read it as one that names none.
+    """
+    config_path = codex_home_for_env(env) / "config.toml"
+    try:
+        if not config_path.is_file():
+            return None
+        data = _tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, _tomllib.TOMLDecodeError) as e:
+        raise ValueError(f"cannot read the codex config {str(config_path)!r}: {e}") from None
+    return data.get("profile")

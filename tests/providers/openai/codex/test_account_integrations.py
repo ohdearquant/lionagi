@@ -359,8 +359,9 @@ def test_build_chat_model_hands_both_fields_to_codex(captor):
 
 
 # ── a profile under containment ─────────────────────────────────────────
-# `--disable` sets the features in the root config; codex applies the active
-# profile's `[features]` after it, so a profile could turn either back on.
+# `--disable` sets the features in the root config; codex through 0.130 applies
+# the active profile's `[features]` after it, so a profile could turn either back
+# on. The active profile is `-p`, else the config's root `profile` key.
 
 
 @pytest.mark.parametrize(
@@ -446,3 +447,66 @@ def test_containment_refuses_a_profile_a_model_profile_file_selects(tmp_path):
     assert req.config_overrides == {"profile": "work"}
     with pytest.raises(ValueError, match=re.escape("override 'profile'")):
         req.as_cmd_args()
+
+
+def _codex_home(tmp_path, config: str) -> dict[str, str]:
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(config)
+    return {"CODEX_HOME": str(home)}
+
+
+def test_containment_refuses_a_profile_the_codex_config_selects(tmp_path):
+    env = _codex_home(tmp_path, 'profile = "work"\n[profiles.work.features]\napps = true\n')
+    req = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match=re.escape("profile = 'work'")):
+        req.as_cmd_args()
+
+
+def test_containment_reads_the_codex_config_of_the_home_the_child_runs_under(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text('profile = ""\n')
+    req = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env={"HOME": str(home)}, contain_account_integrations=True
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = ''")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_a_codex_config_without_a_root_profile(tmp_path):
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n[profiles.work.features]\napps = true\n')
+    args = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True
+    ).as_cmd_args()
+    assert "-p" not in args
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+def test_containment_with_the_profile_lionagi_writes_leaves_the_config_profile_to_codex(tmp_path):
+    """`-p` names the active profile, so the config's root key is not the one applied."""
+    env = _codex_home(tmp_path, 'profile = "work"\n')
+    name = CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2
+    args = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True, profile=name
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == name
+
+
+def test_containment_refuses_a_codex_config_it_cannot_read(tmp_path):
+    env = _codex_home(tmp_path, "profile = \n")
+    req = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"contain_account_integrations": True, "account_connectors": ["github"]}],
+    ids=["uncontained", "granted"],
+)
+def test_the_codex_config_profile_is_read_only_under_containment(fields, tmp_path):
+    """A config that cannot be parsed is refused only when containment reads it."""
+    env = _codex_home(tmp_path, "profile = \n")
+    args = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, **fields).as_cmd_args()
+    assert "-p" not in args
