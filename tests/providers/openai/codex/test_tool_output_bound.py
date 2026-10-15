@@ -492,6 +492,28 @@ async def test_a_file_change_path_of_control_characters_is_cut_by_its_json_lengt
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    ["a" * 20_000 + "\x01" * 20_000, "\x01" * 20_000 + "a" * 20_000],
+    ids=["escapes-at-the-end", "escapes-at-the-start"],
+)
+async def test_the_head_and_the_tail_of_a_cut_string_are_measured_apart(text):
+    """Each end keeps as much as fits its half of the room: a plain end about 10,000
+    characters, and an end of control characters about a sixth of that."""
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": {"k0": text}}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert len(json.dumps(echoed, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
+    head, _, total, tail = _parts(echoed["k0"])
+    plain, escaped = (head, tail) if text[0] == "a" else (tail, head)
+    assert total == 40_000
+    assert set(plain) == {"a"} and len(plain) > 9_000
+    assert set(escaped) == {"\x01"} and 1_000 < len(escaped) < 2_000
+
+
+@pytest.mark.asyncio
 async def test_a_key_is_measured_as_json_writes_it():
     """Five thousand control characters are thirty thousand characters of JSON, so a key
     measured by its characters would be kept and the echo would be over the bound."""
