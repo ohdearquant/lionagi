@@ -37,12 +37,14 @@ from ._types import (
 __all__ = ("AccountRouter",)
 
 _CANONICAL_BASE_URL = "https://api.anthropic.com/v1"
+_CANONICAL_MESSAGES_URL = f"{_CANONICAL_BASE_URL}/messages"
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key"})
 # A beta header turns on features no price revision covers.
 _BETA_HEADERS = frozenset({"anthropic-beta"})
-_FORBIDDEN_CLIENT_OPTIONS = frozenset(
-    {"auth", "trace_configs", "allow_redirects", "follow_redirects", "raise_for_status"}
-)
+# Every other client option can change where or how the keyed request goes (a connector, a
+# proxy taken from the environment, cookies, auth, trace hooks), and the session sets its own
+# timeout, so headers are the only client option a routed call takes.
+_ALLOWED_CLIENT_OPTIONS = frozenset({"headers"})
 _UNSET = object()
 _router: AccountRouter | None = None
 _router_lock = threading.Lock()
@@ -90,6 +92,8 @@ class AccountRouter:
         request_kwargs: Mapping[str, Any],
         body_kwargs: Mapping[str, Any],
         client_kwargs: Mapping[str, Any] | None = None,
+        url: str | None = None,
+        method: str | None = None,
     ) -> RouterAttempt:
         validate_routed_request(
             endpoint,
@@ -98,6 +102,8 @@ class AccountRouter:
             body_kwargs=body_kwargs,
             payload=payload,
             client_kwargs=client_kwargs,
+            url=url,
+            method=method,
         )
         if scope.provider != "anthropic":
             raise _refuse(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT)
@@ -170,17 +176,27 @@ def _refuse(code: RouterErrorCode) -> AccountRoutingError:
     return AccountRoutingError(code)
 
 
-# The HTTP client refuses a header name or value holding one of these when it writes the request.
+# The HTTP client refuses a header value holding one of these when it writes the request.
 _FORBIDDEN_HEADER_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+# A header name is an RFC 9110 token. The HTTP client writes any other name as given, so a name
+# with a space or a colon in it reaches the wire as a line a server may read differently.
+_HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+
+
+def _header_key(name: str) -> str:
+    # An underscore is read as a hyphen, since a server may read the two alike.
+    return name.lower().replace("_", "-")
 
 
 def header_pairs(headers: Any) -> list[tuple[str, str]]:
-    """Headers as name-value pairs, read once and as the HTTP client reads them, or a refusal.
+    """Headers as name-value pairs, read once, or a refusal.
 
     A mapping is read by its items and a list or tuple pair by pair. Anything else is refused as
-    a credential conflict, and so is a name or value that is not a string or that holds a control
-    character other than a tab: the HTTP client fails on those only when it writes the request,
-    after an account was reserved, and the call then keeps its ceiling.
+    a credential conflict, and so is a name that is not an RFC 9110 token, a value that is not a
+    string or that holds a control character other than a tab, and a name given twice (compared
+    case-insensitively, with an underscore read as a hyphen): the HTTP client would write the
+    first three as given or fail on them only when it writes the request, after an account was
+    reserved, and a repeated name is sent as more than one header line.
     """
     if headers is None:
         return []
@@ -198,11 +214,13 @@ def header_pairs(headers: Any) -> list[tuple[str, str]]:
         if (
             not isinstance(name, str)
             or not isinstance(value, str)
-            or _FORBIDDEN_HEADER_CHARS.search(name)
+            or not _HEADER_NAME.fullmatch(name)
             or _FORBIDDEN_HEADER_CHARS.search(value)
         ):
             raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
         pairs.append((name, value))
+    if len({_header_key(name) for name, _ in pairs}) != len(pairs):
+        raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
     return pairs
 
 
@@ -215,8 +233,7 @@ def routed_client_kwargs(client_kwargs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _has_header(headers: Any, names: frozenset[str]) -> bool:
-    # An underscore is read as a hyphen, since a server may read the two alike.
-    return any(name.strip().lower().replace("_", "-") in names for name, _ in header_pairs(headers))
+    return any(_header_key(name) in names for name, _ in header_pairs(headers))
 
 
 def validate_routed_request(
@@ -227,12 +244,25 @@ def validate_routed_request(
     body_kwargs: Mapping[str, Any] | None = None,
     payload: Mapping[str, Any] | None = None,
     client_kwargs: Mapping[str, Any] | None = None,
+    url: str | None = None,
+    method: str | None = None,
 ) -> None:
+    """Refuse a routed request that could send the key anywhere but the Messages endpoint.
+
+    ``url`` and ``method`` are the ones the request will use; a caller that reads them once
+    before reserving an account passes them, so the values checked are the values sent.
+    """
     config = endpoint.config
+    if url is None:
+        url = config.full_url
+    if method is None:
+        method = config.method
     if (
         getattr(config, "_api_key_explicit", False)
         or config.auth_type != "x-api-key"
-        or config.base_url != _CANONICAL_BASE_URL
+        or url != _CANONICAL_MESSAGES_URL
+        or not isinstance(method, str)
+        or method.upper() != "POST"
         or _has_header(config.default_headers, _AUTH_HEADERS)
         or _has_header(headers, _AUTH_HEADERS)
         or (payload is not None and "api_key" in payload)
@@ -241,10 +271,9 @@ def validate_routed_request(
 
     if client_kwargs is None:
         client_kwargs = config.client_kwargs
-    if any(
-        isinstance(name, str) and name.lower() in _FORBIDDEN_CLIENT_OPTIONS
-        for name in client_kwargs
-    ) or _has_header(client_kwargs.get("headers"), _AUTH_HEADERS):
+    if any(name not in _ALLOWED_CLIENT_OPTIONS for name in client_kwargs) or _has_header(
+        client_kwargs.get("headers"), _AUTH_HEADERS
+    ):
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
     if any(
         _has_header(source, _BETA_HEADERS)

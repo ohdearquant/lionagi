@@ -319,7 +319,7 @@ async def test_configuration_conflicts_refuse_before_key_resolution(monkeypatch,
 
 @pytest.mark.parametrize("where", ["extra_headers", "default_headers", "client_headers"])
 @pytest.mark.parametrize(
-    "name", ["anthropic-beta", "Anthropic-Beta", " ANTHROPIC-BETA ", "anthropic_beta"]
+    "name", ["anthropic-beta", "Anthropic-Beta", "ANTHROPIC-BETA", "anthropic_beta"]
 )
 def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, where, name):
     path = _install_accounts(monkeypatch, tmp_path)
@@ -355,6 +355,16 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
         {"x-trace": "a\r\nx-api-key: b"},
         {"x-trace\n": "a"},
         {("x-trace", "a")},
+        {"x bad": "1"},
+        {"x:trace": "1"},
+        {"x-trace ": "1"},
+        {" anthropic-beta ": "files-api-2025-04-14"},
+        {"": "1"},
+        {"x-api-key:": "caller-fake"},
+        "x-trace: 1",
+        ["x-trace", "1"],
+        [("x-trace", "1"), ("X-Trace", "2")],
+        [("x_trace", "1"), ("x-trace", "2")],
     ],
     ids=[
         "bytes-name",
@@ -364,11 +374,23 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
         "line-break-in-value",
         "line-break-in-name",
         "set-of-pairs",
+        "space-in-name",
+        "colon-in-name",
+        "trailing-space-in-name",
+        "spaced-beta-name",
+        "empty-name",
+        "auth-name-with-colon",
+        "a-string",
+        "list-of-strings",
+        "repeated-name",
+        "repeated-name-with-underscore",
     ],
 )
-@pytest.mark.parametrize("where", ["extra_headers", "default_headers", "client_headers"])
+@pytest.mark.parametrize(
+    "where", ["extra_headers", "prebuilt_headers", "default_headers", "client_headers"]
+)
 @pytest.mark.asyncio
-async def test_headers_the_http_client_cannot_send_are_refused_before_a_reservation(
+async def test_headers_a_routed_call_will_not_send_are_refused_before_a_reservation(
     monkeypatch, tmp_path, headers, where
 ):
     path = _install_accounts(monkeypatch, tmp_path)
@@ -378,6 +400,8 @@ async def test_headers_the_http_client_cannot_send_are_refused_before_a_reservat
 
     with pytest.raises(AccountRoutingError) as caught:
         if where == "extra_headers":
+            await model.endpoint.call(REQUEST, extra_headers=headers)
+        elif where == "prebuilt_headers":
             payload, _ = model.endpoint.create_payload(REQUEST)
             await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=headers)
         else:
@@ -499,9 +523,7 @@ class _ItemsDisagree(Mapping):
 
 @pytest.mark.parametrize("where", ["prebuilt_headers", "client_headers"])
 @pytest.mark.asyncio
-async def test_headers_are_read_by_their_items_as_the_http_client_reads_them(
-    monkeypatch, tmp_path, where
-):
+async def test_a_mapping_of_headers_is_read_by_its_items(monkeypatch, tmp_path, where):
     path = _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_response()])
     headers = _ItemsDisagree(["x-other"], [("anthropic-beta", "files-api-2025-04-14")])
@@ -535,11 +557,22 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
     call_headers = {"x-trace": "1"}
     client_headers = {"x-client": "1"}
     model.endpoint.config.client_kwargs = {"headers": client_headers}
+    # The header mapping the attempt itself is handed: building the payload copies the
+    # caller's, so only this one is still read when the request is written.
+    held = []
+    name = "_routed_stream_attempt" if stream else "_request_attempt"
+    attempt = getattr(model.endpoint, name)
+
+    def hold(*args, **kwargs):
+        held.append(kwargs["headers"] if "headers" in kwargs else args[1])
+        return attempt(*args, **kwargs)
+
+    monkeypatch.setattr(model.endpoint, name, hold)
     real_reserve = CredentialLedger.reserve
 
     async def reserve_then_change(self, *args):
         # another task changes both while the account is being reserved
-        for headers in (call_headers, client_headers):
+        for headers in (*held, client_headers):
             headers["anthropic-beta"] = "files-api-2025-04-14"
             headers["Authorization"] = "Bearer late"
         return await real_reserve(self, *args)
@@ -553,10 +586,104 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
         payload, _ = model.endpoint.create_payload(REQUEST)
         await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=call_headers)
 
+    assert len(held) == 1
     sent = transport.calls[0]["headers"]
     assert sent["x-trace"] == "1"
     assert not {name.lower() for name in sent} & {"anthropic-beta", "authorization"}
     assert transport.client_kwargs == [{"headers": [("x-client", "1")]}]
+    assert len(_attempts(path)) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["call", "stream"])
+@pytest.mark.asyncio
+async def test_a_url_or_method_set_while_the_account_is_reserved_is_not_used(
+    monkeypatch, tmp_path, stream
+):
+    from lionagi.service.accounts._ledger import CredentialLedger
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    if stream:
+        events = [_MESSAGE_START, _PARTIAL_TEXT, {"type": "message_stop"}]
+        model, transport = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    else:
+        model, transport = _model(monkeypatch, [_response()])
+    config = model.endpoint.config
+    real_reserve = CredentialLedger.reserve
+
+    async def reserve_then_change(self, *args):
+        # another task points the endpoint elsewhere while the account is being reserved
+        config.base_url = "https://attacker.invalid/v1"
+        config.endpoint = "other"
+        config.method = "PUT"
+        return await real_reserve(self, *args)
+
+    monkeypatch.setattr(CredentialLedger, "reserve", reserve_then_change)
+
+    if stream:
+        async for _ in model.endpoint.stream(REQUEST):
+            pass
+    else:
+        await model.endpoint.call(REQUEST)
+
+    (sent,) = transport.calls
+    assert sent["url"] == "https://api.anthropic.com/v1/messages"
+    assert sent["method"] == "POST"
+    assert len(_attempts(path)) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"endpoint": "messages/batches"},
+        {"base_url": "https://api.anthropic.com/v1/"},
+        {"method": "GET"},
+        {"client_kwargs": {"connector": object()}},
+        {"client_kwargs": {"cookies": {"session": "x"}}},
+        {"client_kwargs": {"trust_env": True}},
+        {"client_kwargs": {"timeout": 5}},
+        {"client_kwargs": {"headers": {"x-client": "1"}, "connector_owner": False}},
+    ],
+    ids=[
+        "other-path",
+        "trailing-slash",
+        "get",
+        "connector",
+        "cookies",
+        "trust-env",
+        "timeout",
+        "headers-and-another",
+    ],
+)
+def test_a_target_or_a_client_option_other_than_headers_is_refused_before_key_resolution(
+    monkeypatch, tmp_path, change
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    lookups = []
+    monkeypatch.setattr(router_module, "resolve_account_key", lambda *args: lookups.append(args))
+    model = iModel(provider="anthropic", model=MODEL)
+    for name, value in change.items():
+        setattr(model.endpoint.config, name, value)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        model.endpoint.create_payload(REQUEST)
+
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
+    assert not lookups
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_list_of_header_pairs_takes_an_idempotency_key(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    model.endpoint.config.idempotent_retries = True
+    payload, _ = model.endpoint.create_payload(REQUEST)
+
+    await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=[("x-trace", "1")])
+
+    (sent,) = transport.calls
+    assert sent["headers"]["x-trace"] == "1"
+    assert sent["headers"]["Idempotency-Key"]
     assert len(_attempts(path)) == 1
 
 

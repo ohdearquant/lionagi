@@ -242,8 +242,10 @@ class AnthropicMessagesEndpoint(Endpoint):
         )
 
         try:
-            # Read once: the headers and client options checked are the ones sent, whatever
-            # changes them while the account is reserved.
+            # Read once: the URL, method, headers and client options checked are the ones sent,
+            # whatever changes them while the account is reserved.
+            url = self.config.full_url
+            method = self.config.method
             request_pairs = header_pairs(headers)
             session_kwargs = routed_client_kwargs(self.config.client_kwargs)
             validate_routed_request(
@@ -253,6 +255,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                 body_kwargs=body_kwargs,
                 payload=payload,
                 client_kwargs=session_kwargs,
+                url=url,
+                method=method,
             )
         except AccountRoutingError as exc:
             raise _RoutedNoRetryError(
@@ -271,6 +275,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             request_kwargs=request_kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
+            url=url,
+            method=method,
         )
         request_headers = {
             name: value for name, value in request_pairs if name.strip().lower() != "content-type"
@@ -285,8 +291,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             async with self._create_http_session(session_kwargs) as session:
                 request_entered = True
                 response = await session.request(
-                    method=self.config.method,
-                    url=self.config.full_url,
+                    method=method,
+                    url=url,
                     headers=request_headers,
                     data=attempt.body,
                     allow_redirects=False,
@@ -507,8 +513,10 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         self._assert_ssrf_safe_url()
         payload["stream"] = True
-        # Read once: the headers and client options checked are the ones sent, whatever changes
-        # them while the account is reserved.
+        # Read once: the URL, method, headers and client options checked are the ones sent,
+        # whatever changes them while the account is reserved.
+        url = self.config.full_url
+        method = self.config.method
         request_pairs = header_pairs(headers)
         session_kwargs = routed_client_kwargs(self.config.client_kwargs)
         validate_routed_request(
@@ -517,6 +525,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             request_kwargs=kwargs,
             payload=payload,
             client_kwargs=session_kwargs,
+            url=url,
+            method=method,
         )
         router = get_router()
         scope = self._account_scope(_routing_scope)
@@ -529,6 +539,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             request_kwargs=kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
+            url=url,
+            method=method,
         )
         request_headers = {
             name: value for name, value in request_pairs if name.strip().lower() != "content-type"
@@ -738,8 +750,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             async with self._create_http_session(session_kwargs) as session:
                 request_entered = True
                 response = await session.request(
-                    method=self.config.method,
-                    url=self.config.full_url,
+                    method=method,
+                    url=url,
                     headers=request_headers,
                     data=attempt.body,
                     allow_redirects=False,

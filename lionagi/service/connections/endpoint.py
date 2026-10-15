@@ -160,11 +160,16 @@ class Endpoint:
     ):
         routed = self._account_routing_enabled()
         if routed:
+            from lionagi.service.accounts._router import header_pairs
+
+            # Read as every routed path reads headers, so a form the merge cannot read is
+            # refused as a credential conflict rather than failing inside the merge.
             headers = HeaderFactory.get_header(
                 auth_type="none",
                 content_type=self.config.content_type,
-                default_headers=self.config.default_headers,
+                default_headers=dict(header_pairs(self.config.default_headers)),
             )
+            headers.update(header_pairs(extra_headers))
         else:
             headers = HeaderFactory.get_header(
                 auth_type=self.config.auth_type,
@@ -172,8 +177,8 @@ class Endpoint:
                 api_key=self.config._api_key,
                 default_headers=self.config.default_headers,
             )
-        if extra_headers:
-            headers.update(extra_headers)
+            if extra_headers:
+                headers.update(extra_headers)
 
         request = request if isinstance(request, dict) else request.model_dump(exclude_none=True)
         if routed and ("api_key" in request or "api_key" in kwargs):
@@ -298,6 +303,12 @@ class Endpoint:
             # Treat request as the ready payload
             payload = request if isinstance(request, dict) else request.model_dump()
             headers = extra_headers or {}
+            if routed:
+                from lionagi.service.accounts._router import header_pairs
+
+                # A list of pairs becomes the mapping the steps below expect; any other form is
+                # refused as a credential conflict before anything is reserved.
+                headers = dict(header_pairs(headers))
         else:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
