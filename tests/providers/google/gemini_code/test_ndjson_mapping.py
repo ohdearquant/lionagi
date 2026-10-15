@@ -206,12 +206,103 @@ async def _run_chunks(objects: list[dict], request: GeminiCodeRequest | None = N
 
 
 @pytest.mark.asyncio
-async def test_system_chunk_carries_session_id_and_model():
-    chunks = await _run_chunks([_success_obj()])
+async def test_system_chunk_carries_session_id_and_no_model_agy_did_not_report():
+    """The system chunk is where a served model is read from, so it carries
+    only a model agy itself reported, never the requested one."""
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj()], request)
     system_chunks = [c for c in chunks if c.type == "system"]
     assert len(system_chunks) == 1
     assert system_chunks[0].metadata["session_id"] == "conv-123"
-    assert system_chunks[0].metadata["model"]
+    assert system_chunks[0].metadata["model"] is None
+    session = await _run_objects([_success_obj()], request)
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_system_chunk_carries_the_model_agy_reported():
+    chunks = await _run_chunks([_success_obj(model="gemini-served-x")])
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reported", [None, "", "   ", "\n\t", 42, ["gemini-x"], {"name": "x"}])
+async def test_a_model_field_that_is_not_a_name_is_not_recorded(reported):
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj(model=reported)], request)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] is None
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert result_chunks[0].metadata["model"] == resolve_agy_model("gemini-3.8-flash")
+
+
+@pytest.mark.asyncio
+async def test_a_reported_name_is_recorded_without_surrounding_whitespace():
+    chunks = await _run_chunks([_success_obj(model="  gemini-served-x\n")])
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] == "gemini-served-x"
+    session = await _run_objects([_success_obj(model="  gemini-served-x\n")])
+    assert session.model == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+async def test_a_model_reported_without_a_conversation_id_is_on_a_system_chunk():
+    """The stream and the invoke result name the same model."""
+    objects = [_success_obj(conversation_id=None, model="gemini-served-x")]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-served-x"]
+    assert system_chunks[0].metadata["session_id"] is None
+    session = await _run_objects(objects)
+    assert session.model == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+async def test_an_object_that_names_no_model_keeps_the_last_one_reported():
+    objects = [_success_obj(model="gemini-A"), _success_obj()]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-A", "gemini-A"]
+    session = await _run_objects(objects)
+    assert session.model == "gemini-A"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_names_no_model():
+    """The model a failed turn names produced no output, so it is not read as served."""
+    objects = [_success_obj(status="FAILED", model="gemini-failed-x", error="quota")]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["session_id"] == "conv-123"
+    assert system_chunks[0].metadata["model"] is None
+    assert [c.type for c in chunks].count("error") == 1
+    session = await _run_objects(objects)
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_clears_the_model_an_earlier_turn_reported():
+    objects = [
+        _success_obj(model="gemini-A"),
+        _success_obj(status="FAILED", model="gemini-failed-x", error="quota"),
+    ]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-A", None]
+    session = await _run_objects(objects)
+    assert session.is_error
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_result_record_keeps_the_requested_model_when_agy_reports_none():
+    """The run record read from the result chunk still names a model; result
+    chunks are never read as the served model."""
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj()], request)
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert result_chunks[0].metadata["model"] == resolve_agy_model("gemini-3.8-flash")
 
 
 @pytest.mark.asyncio
@@ -303,6 +394,23 @@ async def test_loop_closed_during_teardown_preserves_text_and_is_retryable():
     error = classify_provider_error(error_chunks[0].content)
     assert isinstance(error, ProviderTeardownError)
     assert error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_a_teardown_failure_after_a_reported_model_clears_it():
+    async def events_then_teardown_failure(_request):
+        yield _success_obj(model="gemini-A")
+        raise RuntimeError("Event loop is closed")
+
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=events_then_teardown_failure,
+    ):
+        yielded = [item async for item in stream_gemini_cli(_make_request())]
+
+    session = next(item for item in yielded if isinstance(item, GeminiSession))
+    assert session.is_error is True
+    assert session.model is None
 
 
 @pytest.mark.asyncio
