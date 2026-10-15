@@ -110,6 +110,21 @@ _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # begin with the retry prefix, e.g. "Reconnecting... 5/5 failed".
 _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 
+# Models served through the CLI can write a tool call into their reply as text
+# in their own call markup instead of emitting a real call. The CLI takes that
+# text as the turn's final message and ends the turn normally, so a run whose
+# last agent message carries call markup is treated as failed below. Each entry
+# matches markup tags only — never the word DSML or a bare "|" in prose — so a
+# new model's markup can be supported by adding one compiled pattern here.
+_TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"</?\s*[\uff5c|]\s*DSML\s*[\uff5c|]\s*(?:invoke|calls)(?:\s[^<>]*)?/?>"),
+)
+
+
+def _has_tool_call_markup(text: str) -> bool:
+    """True when ``text`` carries a tool-call markup tag written as plain text."""
+    return bool(text) and any(p.search(text) for p in _TOOL_CALL_MARKUP_PATTERNS)
+
 
 def _toml_scalar(value: str | int | float | bool) -> str:
     """Render a single TOML scalar (or its quoted-string form), via the
@@ -834,6 +849,9 @@ async def stream_codex_cli(
     _prev_output_tokens = 0
     _prev_cost: float = 0.0
     _seen_cost = False
+    # Text of the most recent agent_message seen since the last turn end; the
+    # call-markup check on turn.completed reads only this one message.
+    _last_agent_text: str | None = None
 
     stream = stream_codex_cli_events(request)
     try:
@@ -861,6 +879,7 @@ async def stream_codex_cli(
                 if item_type == "agent_message":
                     text = item.get("text", "")
                     session.messages.append(item)
+                    _last_agent_text = text
                     if on_text:
                         await maybe_await(on_text(text))
                     if request.verbose_output:
@@ -1044,6 +1063,27 @@ async def stream_codex_cli(
                 rsc = StreamChunk(type="result", metadata=result_meta)
                 session.chunks.append(rsc)
                 yield rsc
+
+                # A model that writes a tool call into its reply as text has
+                # stopped mid-task: the CLI accepts that text as the turn's
+                # final message, no call is made, and the turn still completes.
+                # Only the last message of the turn is read — markup in an
+                # earlier message was already superseded by a later one.
+                if _has_tool_call_markup(_last_agent_text or ""):
+                    session.is_error = True
+                    session.result = (
+                        "The model wrote a tool call as text in its final message "
+                        "instead of making the call; the run stopped before the call ran."
+                    )
+                    ec = StreamChunk(
+                        type="error",
+                        content=session.result,
+                        is_error=True,
+                        metadata={"call_markup_in_text": True, **obj},
+                    )
+                    session.chunks.append(ec)
+                    yield ec
+                _last_agent_text = None
 
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):

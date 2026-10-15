@@ -289,6 +289,26 @@ nobody reads, and would pass cleanly forever if it did. Only a recorded
 transcript is evidence about the real CLI; an authored one is evidence
 about the model of it encoded in the parser.
 
+## Codex call markup in a turn's final message
+
+**`providers/openai/codex.py`**
+
+A model served through the CLI can write a tool call into its reply as text,
+in the model's own call markup, instead of making the call. The CLI accepts
+that text as the turn's final message and still ends the turn with
+`turn.completed`, so the run would otherwise be recorded as completed although
+the agent stopped mid-task and the call never ran. When a turn ends and the
+last `agent_message` of that turn carries call markup, the parser instead ends
+the run as a failure — `session.is_error`, a `session.result` saying the model
+wrote a call as text and the run stopped before it ran, and an error
+`StreamChunk` whose metadata carries `call_markup_in_text: True` — while the
+usage `result` chunk is still emitted. Only the last message of the turn is
+read: markup in an earlier message was superseded by a later one. The markup
+itself is the tuple `_TOOL_CALL_MARKUP_PATTERNS`, one compiled pattern per call
+markup the CLI can surface; another model's markup is supported by adding one
+entry there. The patterns match markup tags only, never the word DSML or a
+bare `|` in ordinary prose.
+
 ## Codex turn-completed usage delta
 
 **`providers/openai/codex.py`**
