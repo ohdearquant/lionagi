@@ -1271,6 +1271,20 @@ async def test_a_response_keeps_both_values_when_its_masked_name_is_taken(
     }
 
 
+@pytest.mark.asyncio
+async def test_a_renamed_name_keeps_its_place_in_the_object(monkeypatch, tmp_path):
+    """A name replaced by its masked text stays where its entry was, so the order of the
+    object's other entries is unchanged."""
+    run = CANARY[4:20]
+    content = [{"type": "tool_use", "name": "lookup", "input": {"first": 1, run: 2, "third": 3}}]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert list(result["content"][0]["input"]) == ["first", "[REDACTED]", "third"]
+    assert result["content"][0]["input"] == {"first": 1, "[REDACTED]": 2, "third": 3}
+
+
 @pytest.mark.parametrize("value", [123456789, 123456789.0], ids=["int", "float"])
 @pytest.mark.asyncio
 async def test_a_response_masks_a_key_run_in_a_numbers_own_text(monkeypatch, tmp_path, value):
@@ -3244,3 +3258,167 @@ async def test_a_transport_error_is_not_chained_to_the_error(
 
     linked = _every_linked_error(caught.value)
     assert not any(isinstance(error, ClientError) for error in linked)
+
+
+def _chunk_raw_dicts(chunks) -> list[dict]:
+    raw = []
+    for chunk in chunks:
+        metadata = chunk.metadata
+        if isinstance(metadata, dict) and isinstance(metadata.get("raw"), dict):
+            raw.append(metadata["raw"])
+    return raw
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_delta_types_field_name_is_masked_in_the_consumer_chunk(
+    monkeypatch, tmp_path
+):
+    """A field name of a delta this module does not know holds a run of the key: the name
+    the consumer's chunk carries is the masked one, and the value stays under it."""
+    run = CANARY[4:20]
+    events = [
+        _MESSAGE_START,
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "future_delta", run: "x"},
+        },
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    seen = _seen(chunks)
+    assert _no_run_of_the_key(seen, CANARY)
+    deltas = [
+        raw.get("delta")
+        for raw in _chunk_raw_dicts(chunks)
+        if raw.get("type") == "content_block_delta"
+    ]
+    assert any(
+        isinstance(delta, dict)
+        and delta.get("type") == "future_delta"
+        and delta.get("[REDACTED]") == "x"
+        and run not in delta
+        for delta in deltas
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_run_in_a_name_outside_an_unknown_delta_is_still_masked(monkeypatch, tmp_path):
+    """A name holding a run in a delta this module knows, and in an event with no delta,
+    is masked where it stands."""
+    run = CANARY[4:20]
+    events = [
+        _MESSAGE_START,
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "hi", run: "x"},
+        },
+        {"type": "ping", run: "x"},
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    seen = _seen(chunks)
+    assert _no_run_of_the_key(seen, CANARY)
+    raw = _chunk_raw_dicts(chunks)
+    delta = next(item["delta"] for item in raw if item.get("type") == "content_block_delta")
+    assert delta == {"type": "text_delta", "text": "hi", "[REDACTED]": "x"}
+    ping = next(item for item in raw if item.get("type") == "ping")
+    assert ping == {"type": "ping", "[REDACTED]": "x"}
+
+
+@pytest.mark.asyncio
+async def test_a_whole_key_as_an_unknown_delta_field_name_is_masked(monkeypatch, tmp_path):
+    """A field name of an unknown delta that is the whole key is replaced by the mask,
+    and the value stays under it."""
+    events = [
+        _MESSAGE_START,
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "future_delta", CANARY: "x"},
+        },
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    assert _no_run_of_the_key(_seen(chunks), CANARY)
+    delta = next(
+        item["delta"]
+        for item in _chunk_raw_dicts(chunks)
+        if item.get("type") == "content_block_delta"
+    )
+    assert delta == {"type": "future_delta", "[REDACTED]": "x"}
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_delta_types_renamed_field_name_keeps_the_taken_masked_name(
+    monkeypatch, tmp_path
+):
+    """A name that masks to one the delta already has is numbered, so both values stay
+    reachable under the mask."""
+    run = CANARY[4:20]
+    events = [
+        _MESSAGE_START,
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "future_delta", "[REDACTED]": "y", run: "x"},
+        },
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    seen = _seen(chunks)
+    assert _no_run_of_the_key(seen, CANARY)
+    deltas = [
+        raw.get("delta")
+        for raw in _chunk_raw_dicts(chunks)
+        if raw.get("type") == "content_block_delta"
+    ]
+    assert any(
+        isinstance(delta, dict)
+        and delta.get("type") == "future_delta"
+        and delta.get("[REDACTED]") == "y"
+        and delta.get("[REDACTED] (2)") == "x"
+        and run not in delta
+        for delta in deltas
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_input_count_holding_a_run_still_settles(monkeypatch, tmp_path):
+    """A usage count whose digits hold a run of the key is masked in what the consumer
+    receives, but the attempt is priced from the provider's own count, exactly as the same
+    count settles on a non-streamed body."""
+    key = "sk-ant-api03-ab34567890123cd"
+    # The count's digits contain an eight-character run of the key.
+    count = 345678901
+    path = _install_accounts(monkeypatch, tmp_path, key=key)
+
+    stream_events = [copy.deepcopy(_MESSAGE_START)]
+    stream_events[0]["message"]["usage"]["input_tokens"] = count
+    stream_events += [
+        _PARTIAL_TEXT,
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 5},
+        },
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(stream_events)])])
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+    streamed = _attempts(path)[0]
+
+    body = _response(usage={"input_tokens": count, "output_tokens": 5}).body
+    body["id"] = "msg_body"
+    plain_model, _ = _model(monkeypatch, [StubResponse(body=body)])
+    await plain_model.endpoint.call(REQUEST)
+    plain = _attempts(path)[-1]
+
+    assert _no_run_of_the_key(_seen(chunks), key)
+    assert streamed[2:] == ("settled", plain[3], "complete"), (streamed, plain)

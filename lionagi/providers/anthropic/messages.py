@@ -185,14 +185,43 @@ CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 
+def _replace_name(value: dict, name: Any, taken: Any) -> None:
+    """Rename one entry of ``value`` to ``taken``, in the place it already holds."""
+    items = [(taken if key == name else key, item) for key, item in value.items()]
+    value.clear()
+    value.update(items)
+
+
+def _rename_masked_name(value: dict, name: Any, key: Any) -> Any:
+    """``name`` in ``value`` replaced by its masked text, or ``name`` itself when its text
+    holds no run of the key. A name whose masked text is already a name of ``value`` is
+    numbered, so both entries stay reachable. Only a string name is matched.
+    """
+    from lionagi.service.accounts._router import mask_key_runs
+
+    if not isinstance(name, str):
+        return name
+    masked = mask_key_runs(name, key)
+    if masked == name:
+        return name
+    taken = masked
+    suffix = 2
+    while taken in value:
+        taken = f"{masked} ({suffix})"
+        suffix += 1
+    _replace_name(value, name, taken)
+    return taken
+
+
 def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) -> bool:
     """Mask long runs of the key in every string of ``value`` not in ``skip``, in
     place; return whether any string changed.
 
     A string is matched on its own, and a name and a number are matched as their text.
-    A name whose text holds a run is replaced by that text, and where the masked name
-    is already taken it is numbered too, so both values stay reachable; a number whose
-    text holds a run is replaced by that text. A bool and None are never matched.
+    A name whose text holds a run is replaced by its masked text and keeps its place in
+    the object, and where the masked name is already taken it is numbered too, so both
+    values stay reachable; a number whose text holds a run is replaced by its masked
+    text. A bool and None are never matched.
     """
     from lionagi.service.accounts._router import mask_key_runs
 
@@ -206,17 +235,10 @@ def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) 
     for name, item in items:
         if (id(value), name) in skip:
             continue
-        if isinstance(name, str):
-            masked = mask_key_runs(name, key)
-            if masked != name:
-                taken = masked
-                suffix = 2
-                while taken in value:
-                    taken = f"{masked} ({suffix})"
-                    suffix += 1
-                value[taken] = value.pop(name)
-                name = taken
-                changed = True
+        renamed = _rename_masked_name(value, name, key)
+        if renamed != name:
+            name = renamed
+            changed = True
         if isinstance(item, str):
             masked = mask_key_runs(item, key)
             if masked != item:
@@ -233,6 +255,34 @@ def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) 
         elif isinstance(item, (dict, list)):
             changed = _mask_key_runs_in_strings(item, key, skip) or changed
     return changed
+
+
+def _settlement_reading(event: Any) -> dict | None:
+    """What an event says about the attempt, read before any masking rewrites its text.
+
+    The counts a settlement prices are the provider's own, so they are copied out of the
+    event before a count whose text holds a run of the key is replaced by its masked text
+    in place; the event itself is masked as usual. A ``message_start`` yields the model,
+    the id and the usage of its message, a ``message_delta`` its usage; None is yielded
+    for anything else.
+    """
+    import copy
+
+    if not isinstance(event, dict):
+        return None
+    event_type = event.get("type")
+    if event_type == "message_start":
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return {}
+        return {
+            "model": message.get("model"),
+            "id": message.get("id"),
+            "usage": copy.deepcopy(message.get("usage")),
+        }
+    if event_type == "message_delta":
+        return {"usage": copy.deepcopy(event.get("usage"))}
+    return None
 
 
 def _mask_content_runs(body: Any, key: Any) -> Any:
@@ -703,7 +753,11 @@ class AnthropicMessagesEndpoint(Endpoint):
                 # of the other chunks of that type.
                 pieces.append((StreamTextRedactor.RAW, data))
                 places.append((None, None))
-                return push(event, data, places, False, pieces, shown)
+                return push(event, data, places, False, pieces, shown, None)
+            # What the event says about the attempt, read before the walk masks its text:
+            # a count whose text holds a run is masked in place, and the attempt is priced
+            # from the provider's own count.
+            settlement = _settlement_reading(event)
             delta = event.get("delta")
             if event.get("type") == "content_block_delta" and isinstance(delta, dict):
                 delta_type = delta.get("type")
@@ -719,10 +773,16 @@ class AnthropicMessagesEndpoint(Endpoint):
                     places.append((citation, "cited_text"))
                 elif field is None and delta_type != "citations_delta":
                     # A delta type this module does not know: each of its text fields is
-                    # joined like a known one, under the delta's type.
+                    # joined like a known one, under the delta's type. A name holding a
+                    # run is renamed before its place is recorded, and the write-back
+                    # uses that name, since a place in ``skip`` is never rematched.
                     kind = delta_type if isinstance(delta_type, str) and delta_type else None
-                    for name, value in delta.items():
+                    for name, value in list(delta.items()):
                         if name != "type" and isinstance(value, str):
+                            renamed = _rename_masked_name(delta, name, attempt.key)
+                            if renamed != name:
+                                value = delta[renamed]
+                                name = renamed
                             pieces.append((kind, value))
                             places.append((delta, name))
             # Every other string value in the event is matched on its own: no consumer joins
@@ -732,11 +792,11 @@ class AnthropicMessagesEndpoint(Endpoint):
             rewrite = _mask_key_runs_in_strings(
                 event, attempt.key, {(id(holder), name) for holder, name in places}
             )
-            return push(event, data, places, rewrite, pieces, shown)
+            return push(event, data, places, rewrite, pieces, shown, settlement)
 
-        def push(event, data, places, rewrite, pieces, shown) -> list:
+        def push(event, data, places, rewrite, pieces, shown, settlement=None) -> list:
             if shown is None:
-                return text_redactor.push((event, data, places, rewrite, None), pieces)
+                return text_redactor.push((event, data, places, rewrite, None, settlement), pieces)
             # A piece whose text the chunk shows takes the chunk's join too; other text
             # the chunk shows is a piece of its own.
             source = next(
@@ -748,14 +808,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                 shown.content,
             )
             return text_redactor.push(
-                (event, data, places, rewrite, shown.type),
+                (event, data, places, rewrite, shown.type, settlement),
                 pieces,
                 (shown.type, source),
             )
 
         async def emit_ready(ready: list):
             nonlocal served_model, request_id, settled, saw_error_event, saw_final_usage
-            for (event, data, places, rewrite, shown_type), texts in ready:
+            for (event, data, places, rewrite, shown_type, settlement), texts in ready:
                 shown_text = texts.pop() if shown_type is not None else None
                 raw = None
                 for (holder, field), text in zip(places, texts, strict=True):
@@ -773,15 +833,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                     data = json.dumps(event)
                 event_type = event.get("type") if isinstance(event, dict) else None
                 if event_type == "message_start":
-                    message = event.get("message")
-                    if isinstance(message, dict):
-                        served_model = message.get("model")
-                        request_id = message.get("id")
-                        initial_usage = message.get("usage")
-                        if isinstance(initial_usage, dict):
-                            usage.update(initial_usage)
+                    reading = settlement or {}
+                    served_model = reading.get("model")
+                    request_id = reading.get("id")
+                    initial_usage = reading.get("usage")
+                    if isinstance(initial_usage, dict):
+                        usage.update(initial_usage)
                 elif event_type == "message_delta":
-                    delta_usage = event.get("usage")
+                    delta_usage = settlement.get("usage") if settlement else None
                     if isinstance(delta_usage, dict):
                         usage.update(delta_usage)
                         output_tokens = delta_usage.get("output_tokens")
