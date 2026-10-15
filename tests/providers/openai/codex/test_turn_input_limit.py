@@ -114,9 +114,9 @@ def test_a_system_message_too_long_for_one_argument_is_refused(tmp_path):
 
 
 def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
-    """The bound is on developer_instructions=<system prompt>, in the bytes the process
-    receives, which is what the operating system measures; the turn input is bounded in
-    characters."""
+    """The bound is on developer_instructions=<system prompt>, in its UTF-8 bytes, which is
+    what the operating system measures for text that holds no surrogate; the turn input is
+    bounded in characters."""
     just_under = "s" * (ARGUMENT_MAX_BYTES - PREFIX - 1)
     request = CodexCodeRequest(prompt="hi", system_prompt=just_under, repo=tmp_path)
     assert request.system_prompt == just_under
@@ -236,14 +236,35 @@ async def test_every_argument_is_measured_before_the_cli_starts(
 
 
 def test_an_argument_is_measured_in_the_bytes_the_process_receives():
-    """A path byte that is not UTF-8 is measured as the byte exec passes; a lone surrogate,
-    which exec cannot pass, is still refused before anything starts."""
+    """A path byte that is not UTF-8 is measured as the one byte exec passes; a lone
+    surrogate exec cannot pass is refused before anything starts."""
     import os
 
     codex_mod._refuse_oversized_command(["codex", "-C", os.fsdecode(b"/tmp/not-utf8-\xff")])
+    under = os.fsdecode(b"/" + b"\xff" * (ARGUMENT_MAX_BYTES - 2))
+    codex_mod._refuse_oversized_command(["codex", "-C", under])
+    with pytest.raises(ValueError, match=f"argument of {ARGUMENT_MAX_BYTES:,} bytes"):
+        codex_mod._refuse_oversized_command(["codex", "-C", under + os.fsdecode(b"\xff")])
 
     with pytest.raises(ValueError):
         codex_mod._refuse_oversized_command(["codex", "-C", "/tmp/lone-\ud800"])
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"system_prompt": "hi \udcff"},
+        {"config_overrides": {"k\udcff": 1}},
+    ],
+    ids=["system-prompt", "override-key"],
+)
+def test_a_lone_surrogate_in_a_prompt_or_an_override_is_refused_while_the_request_validates(
+    tmp_path, fields
+):
+    """Text is not a path: a surrogate escape there would reach the CLI as a raw byte. (An
+    override value is written as a TOML string, which escapes it.)"""
+    with pytest.raises(ValueError):
+        CodexCodeRequest(prompt="hi", repo=tmp_path, **fields)
 
 
 @pytest.mark.skipif(
@@ -255,6 +276,27 @@ def test_an_override_value_toml_cannot_encode_is_refused_while_the_request_valid
     the request, so no request exists whose repr or dump would raise on it."""
     with pytest.raises(ValueError):
         CodexCodeRequest(prompt="hi", config_overrides={"k": 10**5000}, repo=tmp_path)
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "set_int_max_str_digits"),
+    reason="only Pythons with an integer digit limit refuse to encode this value",
+)
+@pytest.mark.parametrize(
+    "overrides",
+    [{"features.apps": 10**5000}, {"features": {"apps": 10**5000}}, {"a b": 10**5000}],
+    ids=["dropped-key", "dropped-table-entry", "unreadable-key"],
+)
+def test_an_unencodable_value_is_refused_under_containment_too(tmp_path, overrides):
+    """Containment dropping the key, or failing to read it, does not leave a request whose
+    repr raises."""
+    with pytest.raises(ValueError):
+        CodexCodeRequest(
+            prompt="hi",
+            config_overrides=overrides,
+            contain_account_integrations=True,
+            repo=tmp_path,
+        )
 
 
 @pytest.mark.asyncio
@@ -283,3 +325,15 @@ async def test_an_override_containment_drops_is_not_measured(tmp_path, monkeypat
 
     (cmd,) = started
     assert not any(argument.startswith(key) for argument in cmd)
+
+
+def test_a_features_table_is_measured_as_containment_leaves_it(tmp_path):
+    """An oversized apps entry containment removes from an inline table refuses nothing; the
+    table that reaches the command line is what is measured."""
+    request = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides={"features": {"apps": "v" * ARGUMENT_MAX_BYTES, "web_search": True}},
+    )
+    assert "features={ web_search = true }" in request.as_cmd_args()

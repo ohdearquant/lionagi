@@ -126,10 +126,8 @@ CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 _CLI_ARGUMENT_MAX_BYTES = 1_048_576
 
 
-def _refuse_oversized_argument(argument: str, what: str) -> None:
-    # Measured as the bytes the process receives: os.fsencode is how an argument is encoded
-    # for exec, a byte that is not UTF-8 in a path included.
-    size = len(os.fsencode(argument))
+def _refuse_oversized_argument(argument: bytes, what: str) -> None:
+    size = len(argument)
     if size >= _CLI_ARGUMENT_MAX_BYTES:
         raise ValueError(
             f"{what} reaches the Codex CLI as one command-line argument of {size:,} bytes, "
@@ -149,7 +147,9 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
             what = f"The value of {flag}"
         else:
             what = f"Command-line argument {position}"
-        _refuse_oversized_argument(argument, what)
+        # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
+        # exec, so a path holding a byte that is not UTF-8 counts that byte once.
+        _refuse_oversized_argument(os.fsencode(argument), what)
 
 
 def _contain_override(key: str, value: Any) -> tuple[bool, Any]:
@@ -182,21 +182,29 @@ def _refuse_oversized_cli_inputs(
         )
     # The system prompt's and each override's argument, measured as as_cmd_args builds them,
     # so the refusal names them; every argument is measured again where the process starts.
+    # Encoded as strict UTF-8: a lone surrogate here is refused (UnicodeEncodeError is a
+    # ValueError) rather than passed to the CLI as a raw byte.
     if system_prompt:
-        _refuse_oversized_argument(f"developer_instructions={system_prompt}", "The system prompt")
+        _refuse_oversized_argument(
+            f"developer_instructions={system_prompt}".encode(), "The system prompt"
+        )
     for key, value in (config_overrides or {}).items():
-        if contained:
-            try:
-                kept, value = _contain_override(key, value)
-            except (TypeError, ValueError):
-                continue  # as_cmd_args refuses the key itself
-            if not kept:
-                continue
+        # Encoded before containment reads the key, so a value the encoder refuses with
+        # ValueError refuses the request whether or not containment would drop it.
         try:
             encoded = toml_override_value(value)
         except TypeError:
             continue  # as_cmd_args refuses the value itself
-        _refuse_oversized_argument(f"{key}={encoded}", f"The config override {key!r}")
+        if contained:
+            try:
+                kept, kept_value = _contain_override(key, value)
+            except ValueError:
+                continue  # as_cmd_args refuses the key itself
+            if not kept:
+                continue
+            if kept_value is not value:
+                encoded = toml_override_value(kept_value)
+        _refuse_oversized_argument(f"{key}={encoded}".encode(), f"The config override {key!r}")
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
