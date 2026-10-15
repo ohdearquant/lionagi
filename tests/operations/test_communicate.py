@@ -108,8 +108,7 @@ def test_prepare_communicate_kw_high_retries_capped():
     branch = make_mocked_branch_for_communicate()
     with pytest.warns(UserWarning, match="num_parse_retries"):
         kw = prepare_communicate_kw(branch, num_parse_retries=10, response_format=SomeModel)
-    # parse_param should be set (response_format provided)
-    assert kw["parse_param"] is not None
+    assert kw["parse_param"].alcall_params.retry_attempts == 5
 
 
 @pytest.mark.asyncio
@@ -123,15 +122,28 @@ async def test_communicate_updates_metadata_when_res2_is_assistant_response():
     fake_out = SomeModel(data="parsed")
     fake_res2 = AssistantResponse.from_response("parsed")
 
+    original_responses = []
+
+    async def parsed_response(branch, text, parse_param, **kwargs):
+        response = next(m for m in branch.messages if isinstance(m, AssistantResponse))
+        original_responses.append((response, response.model_response))
+        return fake_out, fake_res2
+
     with patch(
         "lionagi.operations.parse.parse.parse",
-        new=AsyncMock(return_value=(fake_out, fake_res2)),
+        new=AsyncMock(side_effect=parsed_response),
     ):
         result = await branch.communicate(
             instruction="test",
             response_format=SomeModel,
         )
     assert result == fake_out
+    assert len(original_responses) == 1
+    stored, original = original_responses[0]
+    assert original != fake_res2.model_response
+    assert stored.metadata["original_model_response"] == original
+    assert stored.metadata["model_response"] == fake_res2.model_response
+    assert branch.messages[stored.id] is stored
 
 
 @pytest.mark.asyncio

@@ -3,13 +3,16 @@
 
 """Tests for ReAct multi-step reasoning rounds, extensions, and state."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
-from lionagi.session.branch import Branch
+from lionagi.protocols.messages import ActionResponse
 from lionagi.testing import LionAGIMockFactory
+from lionagi.testing import TestBranch as ScriptedBranch
+
+from ._tool_trace import tool_branch
 
 # Helper Functions and Fixtures
 
@@ -210,36 +213,41 @@ async def test_max_extensions_clamped_to_100():
 
 @pytest.mark.asyncio
 async def test_react_with_real_tools_integration():
-    """Test ReAct with real tool registration and execution."""
-    branch = Branch(user="test_user")
+    """Each model round invokes its registered tool and stores the actual output."""
+    trace = []
 
-    # Register real tools
-    branch.acts.register_tool(multiply)
-    branch.acts.register_tool(divide)
+    def multiply(a: float, b: float) -> float:
+        """Multiply two numbers."""
+        trace.append(("multiply", a, b))
+        return a * b
 
-    # Verify tools are registered
-    assert "multiply" in branch.acts.registry
-    assert "divide" in branch.acts.registry
+    def divide(a: float, b: float) -> float:
+        """Divide two numbers."""
+        trace.append(("divide", a, b))
+        return a / b
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        # Simulate realistic ReAct flow
-        analysis = ReActAnalysis(
-            analysis="Calculate (20 * 3) / 4",
-            extension_needed=False,
-        )
-
-        final = Analysis(answer="15")
-
-        mock_operate.side_effect = [analysis, final]
-
-        # Execute with real tools (though operate is mocked)
-        result = await branch.ReAct(
-            instruct={"instruction": "Calculate (20 * 3) / 4"},
-            tools=True,  # Use registered tools
-            max_extensions=1,
-        )
-
-        assert result == "15"
+    branch = tool_branch(
+        [
+            {
+                "extension_needed": True,
+                "action_requests": [{"function": "multiply", "arguments": {"a": 20, "b": 3}}],
+            },
+            {"action_requests": [{"function": "divide", "arguments": {"a": 60, "b": 4}}]},
+        ],
+        [multiply, divide],
+        "15",
+    )
+    assert (
+        await branch.ReAct(instruction="Calculate (20 * 3) / 4", tools=True, max_extensions=1)
+        == "15"
+    )
+    assert trace == [("multiply", 20, 3), ("divide", 60, 4)]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert [(m.function, m.output) for m in responses] == [("multiply", 60), ("divide", 15)]
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 3
+    assert "60" in str(api_calls[1].payload["messages"])
+    assert "15" in str(api_calls[2].payload["messages"])
 
 
 @pytest.mark.asyncio
@@ -291,27 +299,25 @@ async def test_clear_messages_parameter():
 
 @pytest.mark.asyncio
 async def test_react_with_async_tool_registration():
-    """Test ReAct can register and reference async tools."""
-    branch = make_mocked_branch_for_react()
-    branch.acts.register_tool(async_search)
+    """The async registered function is awaited with the model's arguments."""
+    queries = []
 
-    # Verify async tool was registered
-    assert "async_search" in branch.acts.registry
+    async def search(query: str) -> str:
+        """Search a local fixture."""
+        queries.append(query)
+        return "fixture search result"
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        analysis = ReActAnalysis(
-            analysis="Search for information",
-            extension_needed=False,
-        )
-
-        final = Analysis(answer="Search results found")
-
-        mock_operate.side_effect = [analysis, final]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "Search for test"},
-            tools=[async_search],
-            max_extensions=0,
-        )
-
-        assert "Search results found" in result
+    branch = tool_branch(
+        [{"action_requests": [{"function": "search", "arguments": {"query": "test"}}]}],
+        [search],
+        "Search results found",
+    )
+    assert (
+        await branch.ReAct(instruction="Search for test", tools=[search], max_extensions=0)
+        == "Search results found"
+    )
+    assert queries == ["test"]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(responses) == 1
+    assert responses[0].function == "search"
+    assert responses[0].output == "fixture search result"

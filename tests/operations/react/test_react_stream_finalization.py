@@ -9,9 +9,12 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
+from lionagi.protocols.messages import ActionResponse
 from lionagi.providers._provider_errors import ProviderContextError
-from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
+from lionagi.testing import TestBranch as ScriptedBranch
+
+from ._tool_trace import tool_branch
 
 # Helper Functions and Fixtures
 
@@ -57,32 +60,26 @@ async def async_search(query: str) -> str:
 
 @pytest.mark.asyncio
 async def test_invalid_tool_response_handling():
-    """Test handling of invalid/malformed tool responses."""
-    branch = make_mocked_branch_for_react()
-    branch.acts.register_tool(multiply)
-
-    with (
-        patch("lionagi.operations.operate.operate.operate") as mock_operate,
-        patch("lionagi.operations.act.act.act") as mock_act,
-    ):
-        analysis = ReActAnalysis(
-            analysis="Call tool",
-            extension_needed=False,
-        )
-
-        final = Analysis(answer="Handled error")
-
-        mock_operate.side_effect = [analysis, final]
-        # Return None simulating invalid response
-        mock_act.return_value = [None]
-
+    """A malformed action result reaches operate's filter before finalization."""
+    request = {"function": "multiply", "arguments": {"a": 6, "b": 7}}
+    branch = tool_branch([{"action_requests": [request]}], [multiply], "Handled error")
+    with patch("lionagi.operations.act.act.act", new=AsyncMock(return_value=[None])) as mock_act:
         result = await branch.ReAct(
-            instruct={"instruction": "Test invalid response"},
-            tools=[multiply],
+            instruction="Test invalid action response",
+            tools=True,
             max_extensions=0,
+            return_analysis=True,
         )
-
-        assert "Handled error" in result
+    assert len(result) == 2
+    assert isinstance(result[0], ReActAnalysis)
+    assert not getattr(result[0], "action_responses", None)
+    assert result[-1].answer == "Handled error"
+    mock_act.assert_awaited_once()
+    requests = mock_act.await_args.args[1]
+    assert len(requests) == 1
+    assert requests[0].function == "multiply"
+    assert requests[0].arguments == {"a": 6, "b": 7}
+    assert len(ScriptedBranch.calls(branch)) == 2
 
 
 @pytest.mark.asyncio
@@ -161,30 +158,22 @@ async def test_cli_provider_error_on_final_answer_is_raised():
 
 @pytest.mark.asyncio
 async def test_empty_planned_actions():
-    """Test ReAct when analysis has no planned actions."""
-    branch = make_mocked_branch_for_react()
+    """An explicit empty request list does not invoke a registered tool."""
+    calls = []
 
-    with (
-        patch("lionagi.operations.operate.operate.operate") as mock_operate,
-        patch("lionagi.operations.act.act.act") as mock_act,
-    ):
-        analysis = ReActAnalysis(
-            analysis="No actions needed",
-            extension_needed=False,
-        )
+    def unused() -> str:
+        """A tool that should not run."""
+        calls.append(True)
+        return "unexpected"
 
-        final = Analysis(answer="Direct answer")
-
-        mock_operate.side_effect = [analysis, final]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "Simple question"},
-            max_extensions=0,
-        )
-
-        assert result == "Direct answer"
-        # act should not be called if no planned actions
-        assert mock_act.call_count == 0
+    branch = tool_branch([{"action_requests": []}], [unused], "Direct answer")
+    assert (
+        await branch.ReAct(instruction="Simple question", tools=True, max_extensions=0)
+        == "Direct answer"
+    )
+    assert calls == []
+    assert not any(isinstance(m, ActionResponse) for m in branch.messages)
+    assert len(ScriptedBranch.calls(branch)) == 2
 
 
 @pytest.mark.asyncio

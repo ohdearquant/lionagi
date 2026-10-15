@@ -3,13 +3,17 @@
 
 """Tests for ReAct tool execution flows and initial invocation."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import patch
 
 import pytest
 
 from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
-from lionagi.session.branch import Branch
+from lionagi.protocols.messages import ActionResponse
 from lionagi.testing import LionAGIMockFactory
+from lionagi.testing import TestBranch as ScriptedBranch
+
+from ._tool_trace import tool_branch
 
 # Helper Functions and Fixtures
 
@@ -52,31 +56,31 @@ async def async_search(query: str) -> str:
 
 @pytest.mark.asyncio
 async def test_single_tool_invocation():
-    """Test ReAct with single tool call - verifies tool integration."""
-    branch = make_mocked_branch_for_react()
-    branch.acts.register_tool(multiply)
+    """A model action reaches the real tool and its result reaches the next turn."""
+    calls = []
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        # First: ReActAnalysis with tool call
-        first_analysis = ReActAnalysis(
-            analysis="Need to calculate 6 * 7",
-            extension_needed=False,
-        )
+    def multiply(a: float, b: float) -> float:
+        """Multiply two numbers."""
+        calls.append((a, b))
+        return a * b
 
-        # Second: Final answer
-        final_analysis = Analysis(answer="42")
+    request = {"function": "multiply", "arguments": {"a": 6, "b": 7}}
+    branch = tool_branch([{"action_requests": [request]}], [multiply], "42")
+    result = await branch.ReAct(
+        instruction="What is 6 times 7?", tools=[multiply], max_extensions=0
+    )
 
-        mock_operate.side_effect = [first_analysis, final_analysis]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "What is 6 times 7?"},
-            tools=[multiply],
-            max_extensions=0,
-        )
-
-        assert result == "42"
-        # Verify operate was called twice (analysis + final answer)
-        assert mock_operate.call_count == 2
+    assert result == "42"
+    assert calls == [(6, 7)]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(responses) == 1
+    assert responses[0].function == "multiply"
+    assert responses[0].arguments == {"a": 6, "b": 7}
+    assert responses[0].output == 42
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 2
+    final_messages = str(api_calls[-1].payload["messages"])
+    assert "multiply" in final_messages and "42" in final_messages
 
 
 @pytest.mark.asyncio
@@ -120,55 +124,38 @@ async def test_multiple_tool_calls_sequential_strategy():
 
 @pytest.mark.asyncio
 async def test_concurrent_action_strategy():
-    """Test ReAct with concurrent action strategy specification."""
-    branch = make_mocked_branch_for_react()
+    """Both real tools enter before either is released by the concurrent batch."""
+    entered = []
+    both_entered = asyncio.Event()
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        # Analysis requesting concurrent execution
-        analysis = ReActAnalysis(
-            analysis="Check weather in multiple cities",
-            extension_needed=False,
-            action_strategy="concurrent",  # Concurrent strategy
-        )
+    async def weather(city: str) -> str:
+        """Read a city's local weather fixture."""
+        entered.append(city)
+        if len(entered) == 2:
+            both_entered.set()
+        await asyncio.wait_for(both_entered.wait(), timeout=2)
+        return f"{city}: sunny"
 
-        final = Analysis(answer="NYC: 72°F sunny, SF: 65°F cloudy")
-
-        mock_operate.side_effect = [analysis, final]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "Compare weather in NYC and SF"},
-            max_extensions=0,
-        )
-
-        assert result == "NYC: 72°F sunny, SF: 65°F cloudy"
-        assert mock_operate.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_planned_actions_structure():
-    """Test that PlannedAction structure is properly handled."""
-    branch = make_mocked_branch_for_react()
-
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        # Analysis with detailed planned actions
-        analysis = ReActAnalysis(
-            analysis="Need to perform multiple actions",
-            extension_needed=False,
-        )
-
-        final = Analysis(answer="Actions completed")
-
-        mock_operate.side_effect = [analysis, final]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "Perform research"},
-            max_extensions=0,
-        )
-
-        assert result == "Actions completed"
-        # Verify operate was called with the analysis
-        initial_call = mock_operate.call_args_list[0]
-        assert initial_call is not None
+    branch = tool_branch(
+        [
+            {
+                "action_requests": [
+                    {"function": "weather", "arguments": {"city": city}} for city in ("NYC", "SF")
+                ]
+            }
+        ],
+        [weather],
+        "Both cities are sunny",
+    )
+    result = await branch.ReAct(instruction="Compare weather", tools=True, max_extensions=0)
+    assert result == "Both cities are sunny"
+    assert sorted(entered) == ["NYC", "SF"]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(responses) == 2
+    assert {response.arguments["city"]: response.output for response in responses} == {
+        "NYC": "NYC: sunny",
+        "SF": "SF: sunny",
+    }
 
 
 @pytest.mark.asyncio
