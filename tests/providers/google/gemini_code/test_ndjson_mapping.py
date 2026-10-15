@@ -26,6 +26,7 @@ from lionagi.providers.google.gemini_code import (
     resolve_agy_model,
     stream_gemini_cli,
 )
+from lionagi.service.token_budget import lookup_context_window
 
 
 def _make_request(**kw) -> GeminiCodeRequest:
@@ -205,12 +206,103 @@ async def _run_chunks(objects: list[dict], request: GeminiCodeRequest | None = N
 
 
 @pytest.mark.asyncio
-async def test_system_chunk_carries_session_id_and_model():
-    chunks = await _run_chunks([_success_obj()])
+async def test_system_chunk_carries_session_id_and_no_model_agy_did_not_report():
+    """The system chunk is where a served model is read from, so it carries
+    only a model agy itself reported, never the requested one."""
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj()], request)
     system_chunks = [c for c in chunks if c.type == "system"]
     assert len(system_chunks) == 1
     assert system_chunks[0].metadata["session_id"] == "conv-123"
-    assert system_chunks[0].metadata["model"]
+    assert system_chunks[0].metadata["model"] is None
+    session = await _run_objects([_success_obj()], request)
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_system_chunk_carries_the_model_agy_reported():
+    chunks = await _run_chunks([_success_obj(model="gemini-served-x")])
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reported", [None, "", "   ", "\n\t", 42, ["gemini-x"], {"name": "x"}])
+async def test_a_model_field_that_is_not_a_name_is_not_recorded(reported):
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj(model=reported)], request)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] is None
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert result_chunks[0].metadata["model"] == resolve_agy_model("gemini-3.8-flash")
+
+
+@pytest.mark.asyncio
+async def test_a_reported_name_is_recorded_without_surrounding_whitespace():
+    chunks = await _run_chunks([_success_obj(model="  gemini-served-x\n")])
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["model"] == "gemini-served-x"
+    session = await _run_objects([_success_obj(model="  gemini-served-x\n")])
+    assert session.model == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+async def test_a_model_reported_without_a_conversation_id_is_on_a_system_chunk():
+    """The stream and the invoke result name the same model."""
+    objects = [_success_obj(conversation_id=None, model="gemini-served-x")]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-served-x"]
+    assert system_chunks[0].metadata["session_id"] is None
+    session = await _run_objects(objects)
+    assert session.model == "gemini-served-x"
+
+
+@pytest.mark.asyncio
+async def test_an_object_that_names_no_model_keeps_the_last_one_reported():
+    objects = [_success_obj(model="gemini-A"), _success_obj()]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-A", "gemini-A"]
+    session = await _run_objects(objects)
+    assert session.model == "gemini-A"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_names_no_model():
+    """The model a failed turn names produced no output, so it is not read as served."""
+    objects = [_success_obj(status="FAILED", model="gemini-failed-x", error="quota")]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert system_chunks[0].metadata["session_id"] == "conv-123"
+    assert system_chunks[0].metadata["model"] is None
+    assert [c.type for c in chunks].count("error") == 1
+    session = await _run_objects(objects)
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_clears_the_model_an_earlier_turn_reported():
+    objects = [
+        _success_obj(model="gemini-A"),
+        _success_obj(status="FAILED", model="gemini-failed-x", error="quota"),
+    ]
+    chunks = await _run_chunks(objects)
+    system_chunks = [c for c in chunks if c.type == "system"]
+    assert [c.metadata["model"] for c in system_chunks] == ["gemini-A", None]
+    session = await _run_objects(objects)
+    assert session.is_error
+    assert session.model is None
+
+
+@pytest.mark.asyncio
+async def test_result_record_keeps_the_requested_model_when_agy_reports_none():
+    """The run record read from the result chunk still names a model; result
+    chunks are never read as the served model."""
+    request = _make_request(model="gemini-3.8-flash")
+    chunks = await _run_chunks([_success_obj()], request)
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert result_chunks[0].metadata["model"] == resolve_agy_model("gemini-3.8-flash")
 
 
 @pytest.mark.asyncio
@@ -302,6 +394,23 @@ async def test_loop_closed_during_teardown_preserves_text_and_is_retryable():
     error = classify_provider_error(error_chunks[0].content)
     assert isinstance(error, ProviderTeardownError)
     assert error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_a_teardown_failure_after_a_reported_model_clears_it():
+    async def events_then_teardown_failure(_request):
+        yield _success_obj(model="gemini-A")
+        raise RuntimeError("Event loop is closed")
+
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=events_then_teardown_failure,
+    ):
+        yielded = [item async for item in stream_gemini_cli(_make_request())]
+
+    session = next(item for item in yielded if isinstance(item, GeminiSession))
+    assert session.is_error is True
+    assert session.model is None
 
 
 @pytest.mark.asyncio
@@ -398,7 +507,92 @@ async def test_on_text_loop_closed_error_propagates():
         ("pro", "Gemini 3.1 Pro (High)"),
         ("gemini-pro", "Gemini 3.1 Pro (High)"),
         ("Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (High)"),  # exact passthrough
-        (None, "Gemini 3.8 Flash (Medium)"),
+        (None, "Gemini 4 Argon (High)"),
+        ("gemini-4-argon", "Gemini 4 Argon (High)"),
+        ("gemini-4", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+        ("Gemini 4 Argon (Low)", "Gemini 4 Argon (Low)"),  # exact passthrough
+        ("argon", "Gemini 4 Argon (High)"),
+        ("ARGON", "Gemini 4 Argon (High)"),
+        ("argon-low", "Gemini 4 Argon (Low)"),
+        ("argon-medium", "Gemini 4 Argon (Medium)"),
+        ("argon-high", "Gemini 4 Argon (High)"),
+        # a free-form name with argon in it is on the 4 family by its name
+        ("gemini-4-argon-preview", "Gemini 4 Argon (Medium)"),
+        ("gemini-argon-high", "Gemini 4 Argon (High)"),
+        ("gemini-14-argon", "Gemini 4 Argon (Medium)"),
+        # argon alone is enough, and a tier word in the name picks the tier
+        ("argon high", "Gemini 4 Argon (High)"),
+        ("Argon High", "Gemini 4 Argon (High)"),
+        ("argon-max", "Gemini 4 Argon (High)"),
+        ("argon-4-high", "Gemini 4 Argon (High)"),
+        ("argon_high", "Gemini 4 Argon (High)"),
+        ("argon-xhigh", "Gemini 4 Argon (High)"),
+        # a tier inside a longer word is no tier
+        ("argon-highlights", "Gemini 4 Argon (Medium)"),
+        ("argon-maxim", "Gemini 4 Argon (Medium)"),
+        ("argon-allow", "Gemini 4 Argon (Medium)"),
+        ("argon-lowrider", "Gemini 4 Argon (Medium)"),
+        # ...in any script, while a separator ends the word
+        ("argon-lowé", "Gemini 4 Argon (Medium)"),
+        ("argonélow", "Gemini 4 Argon (Medium)"),
+        ("gemini-highé", "Gemini 3.5 Flash (Medium)"),
+        ("argon-low-é", "Gemini 4 Argon (Low)"),
+        # a decimal digit next to it is no letter; a numeral that is not one counts as a letter
+        ("argon-low2", "Gemini 4 Argon (Low)"),
+        ("argon-low\u00b2", "Gemini 4 Argon (Medium)"),
+        # a combining mark is neither, so it ends the word; composed, the letter does not
+        ("argon-low\u0301", "Gemini 4 Argon (Low)"),
+        ("argon-lo\u1e83", "Gemini 4 Argon (Medium)"),
+        ("gemini-flash-lowest", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.8-flash-maximum", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-allow-high", "Gemini 3.5 Flash (High)"),
+        ("gemini-pro-highlights", "Gemini 3.1 Pro (Low)"),
+        # with no tier word a free-form name takes Medium; only the aliases default to High
+        ("Gemini 4 Argon", "Gemini 4 Argon (Medium)"),
+        # ...unless it names Pro (3.1 Pro) or a dotted version, which it keeps, as before
+        ("gemini-3.8-flash-argon", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-argon-3.8-flash", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-3.6-flash-argon", "Gemini 3.6 Flash (Medium)"),
+        ("gemini-3.5-flash-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-argon-2.5-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.5-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.5.1-flash-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-1.5.2-argon", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-flash-3.5.1", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-flash-3.5.", "Gemini 3.5 Flash (Medium)"),
+        ("argon 3.5.", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-argon-pro", "Gemini 3.1 Pro (Low)"),
+        ("gemini-3.8-flash-pro-argon", "Gemini 3.1 Pro (Low)"),
+        # an undotted major version 4 is the 4 family, unless a dotted version is named;
+        # a date is not a version, and 4k is a size, not a version
+        ("gemini-4-flash", "Gemini 4 Argon (Medium)"),
+        ("gemini-v4-flash", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash-2026.10", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash-100.5", "Gemini 4 Argon (Medium)"),
+        ("gemini-4k-flash", "Gemini 3.5 Flash (Medium)"),
+        # ...and a numeral of any script after the 4 makes it part of a longer word
+        ("gemini4\u00b2", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.8-flash-4", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-3.6-flash-4", "Gemini 3.6 Flash (Medium)"),
+        ("gemini-3.5-flash-4", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.1-flash-4", "Gemini 3.5 Flash (Medium)"),
+        # 4.0 / 4.5 / 4.x / 14 / 40 are not major version 4
+        ("gemini-4.0-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.5-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.x-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-14-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-40-flash", "Gemini 3.5 Flash (Medium)"),
+        # a dot after the 4 with no letter or numeral after it ends the 4, as a trailing dot
+        # ends a dotted version
+        ("gemini-4.", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash.", "Gemini 4 Argon (Medium)"),
+        ("gemini-4.-flash", "Gemini 4 Argon (Medium)"),
+        # a dot and a letter or numeral of any script after the 4 name a release the table
+        # does not list
+        ("gemini-4.\u00e9", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.\u00b2", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
@@ -416,6 +610,17 @@ async def test_on_text_loop_closed_error_propagates():
         # version match is a delimited token, so 13.6 / 3.60 do not upgrade.
         ("gemini-13.6-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.60-flash", "Gemini 3.5 Flash (Medium)"),
+        # ...nor is a 3.8 or 3.6 that follows a dot: it is part of a longer version
+        ("gemini-1.3.8-flash", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-2.3.6-flash", "Gemini 3.5 Flash (Medium)"),
+        ("2.3.6-argon", "Gemini 3.5 Flash (Medium)"),
+        # ...and a date is no version, so the name's argon decides
+        ("gemini-2026.3.8-argon", "Gemini 4 Argon (Medium)"),
+        # ...but a dot after anything else separates the version, which it keeps
+        ("gemini-4-flash.3.5", "Gemini 3.5 Flash (Medium)"),
+        ("argon.3.5", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-flash.3.8", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-4-flash.3.6-x", "Gemini 3.6 Flash (Medium)"),
     ],
 )
 def test_resolve_agy_model(spec, expected):
@@ -458,10 +663,48 @@ def test_resolve_agy_model(spec, expected):
         ("gemini-3.6-flash", "high", "Gemini 3.6 Flash (High)"),
         ("gemini-3.6-flash", "xhigh", "Gemini 3.6 Flash (High)"),
         ("gemini-3.6-flash", None, "Gemini 3.6 Flash (High)"),
+        # Gemini 4 Argon: effort folds onto its three tiers, whatever tier the
+        # id or alias carried.
+        ("gemini-4-argon", "minimal", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon", "medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-argon", "max", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-high", "low", "Gemini 4 Argon (Low)"),
+        ("argon", "medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4", "xhigh", "Gemini 4 Argon (High)"),
+        ("gemini-argon-preview", "low", "Gemini 4 Argon (Low)"),
+        ("argon high", "low", "Gemini 4 Argon (Low)"),
+        ("argon 4", "high", "Gemini 4 Argon (High)"),
+        ("argon-3.5", "high", "Gemini 3.5 Flash (High)"),
+        ("Gemini 4 Argon (Low)", "high", "Gemini 4 Argon (Low)"),
+        # an effort is matched as a lowercase word, and a blank one is no effort
+        ("gemini-4-argon", "High", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon", " low ", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon", "", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon", "  ", "Gemini 4 Argon (High)"),
+        ("gemini-3.8-flash", "LOW", "Gemini 3.8 Flash (Low)"),
     ],
 )
 def test_resolve_agy_model_effort_folding(spec, effort, expected):
     assert resolve_agy_model(spec, effort=effort) == expected
+
+
+@pytest.mark.parametrize("effort", [0, 1.5, ["high"], {"high": 1}])
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        # each name's own tier differs from the one an unknown effort clamps to (Medium,
+        # or High on Pro)
+        ("gemini-argon-high", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-4-argon", "Gemini 4 Argon (High)"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash (High)"),
+        ("Gemini 4 Argon (Low)", "Gemini 4 Argon (Low)"),
+        ("gemini-argon-pro", "Gemini 3.1 Pro (Low)"),
+    ],
+)
+def test_resolve_agy_model_ignores_an_effort_that_is_not_a_string(spec, expected, effort):
+    assert resolve_agy_model(spec, effort=effort) == expected
+    assert resolve_agy_model(spec, effort=effort, reapply_effort=True) == expected
 
 
 def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
@@ -486,8 +729,28 @@ def test_resolve_agy_model_36_flash_defaults_high_never_downgrades():
         assert not resolve_agy_model(spec).startswith("Gemini 3.6 Flash"), spec
 
 
+def test_resolve_agy_model_4_argon_is_the_default_and_stays_on_family():
+    assert resolve_agy_model(None) == "Gemini 4 Argon (High)"
+    assert resolve_agy_model("gemini-4-argon", effort="low") == "Gemini 4 Argon (Low)"
+    for spec in ("gemini-4-argon", "gemini-4", "gemini-4-argon-preview"):
+        assert resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
+    for spec in ("gemini-14-flash", "gemini-4.5-flash"):
+        assert not resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["gemini-4-argon", "gemini-4", "argon", "Gemini 4 Argon (High)", "Gemini 4 Argon (Low)"],
+)
+def test_an_argon_name_has_the_argon_context_window(spec):
+    assert lookup_context_window(spec, "gemini_code") == 1_048_576
+
+
+def test_a_longer_window_row_still_wins_over_the_argon_rows():
+    assert lookup_context_window("gemini-2.5-pro-argon", "gemini_code") == 2_097_152
+
+
 def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
-    assert resolve_agy_model(None) == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("flash") == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("gemini-3.8-flash") == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("gemini-3.8-flash", effort="high") == "Gemini 3.8 Flash (High)"
@@ -512,6 +775,10 @@ def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
         # reapply on a persisted 3.6 model stays on the 3.6 family.
         ("Gemini 3.6 Flash (Low)", "high", "Gemini 3.6 Flash (High)"),
         ("Gemini 3.6 Flash (High)", "low", "Gemini 3.6 Flash (Low)"),
+        ("Gemini 4 Argon (High)", "low", "Gemini 4 Argon (Low)"),
+        ("Gemini 4 Argon (Low)", "max", "Gemini 4 Argon (High)"),
+        ("Gemini 4 Argon (Low)", "High", "Gemini 4 Argon (High)"),
+        ("Gemini 4 Argon (Low)", "", "Gemini 4 Argon (Low)"),
     ],
 )
 def test_resolve_agy_model_reapply_effort_overrides_persisted_suffix(spec, effort, expected):

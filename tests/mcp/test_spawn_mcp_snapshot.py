@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from lionagi.cli._mcp_resolve import McpConfigError, resolve_spawn_mcp_servers
+from lionagi.cli._mcp_resolve import McpConfigError, discover_mcp_config, resolve_spawn_mcp_servers
 from lionagi.mcp import config, dispatch, jobs
 
 
@@ -215,8 +215,12 @@ def test_the_generated_snapshot_still_wins_when_the_caller_says_nothing(
     assert _child_config(captured["argv"]) == str(snapshot)
     assert handle["mcp_config"] == str(snapshot)
     assert handle["mcp_config_source"] == str(submit_dir / ".mcp.json")
-    seen = resolve_spawn_mcp_servers(str(snapshot), launch_dir=submit_dir)
+    # Read as the child reads it, from a directory of its own: the snapshot still names
+    # where the submission searched, so the pair rediscovers the same file.
+    seen = resolve_spawn_mcp_servers(str(snapshot), launch_dir=snapshot.parent)
     assert set(seen.servers) == {"ambient"}
+    assert seen.searched_from == submit_dir.resolve()
+    assert discover_mcp_config(seen.searched_from) == seen.source
 
 
 def test_a_caller_who_asks_for_no_servers_is_not_handed_a_snapshot(

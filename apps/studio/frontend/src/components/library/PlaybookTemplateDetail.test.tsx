@@ -42,6 +42,7 @@ const { PlaybookTemplateDetail } = await import("./PlaybookTemplateDetail");
 
 function run(overrides: Partial<RunSummary> & { run_id: string }): RunSummary {
   return {
+    id: overrides.id ?? overrides.run_id,
     status: "completed",
     started_at: 100,
     ended_at: 160,

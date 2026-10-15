@@ -734,7 +734,7 @@ class OperatorCoordinator:
                                 request_id,
                                 exc_info=failure,
                             )
-                with suppress(Exception):
+                try:
                     final_provider, final_model = resolve_operator_provider_model(engine_turn)
                     await asyncio.to_thread(
                         run_dir.write_manifest,
@@ -749,6 +749,15 @@ class OperatorCoordinator:
                             "started_at": started_at or time.time(),
                             "ended_at": time.time(),
                         },
+                    )
+                except Exception:
+                    # The run's record keeps its last status; say why, as the opening
+                    # write's failure is said. A cancel that lands while this write is in
+                    # flight propagates instead, and the write's outcome goes unobserved.
+                    _log.error(
+                        "Operator turn %s: its terminal run.json write failed",
+                        request_id,
+                        exc_info=True,
                     )
             ready.set()
 
