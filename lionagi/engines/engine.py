@@ -1022,17 +1022,21 @@ class EngineRun:
         than ``None`` under ``chat_model``, ``parse_model``, ``imodel``,
         ``interpret_model`` or ``analysis_model``, nor an ``iModel`` under any
         other keyword, found inside mappings, lists, tuples, sets, frozensets and
-        pydantic models. The node's calls run on such a model, and ``run`` on a CLI
-        model leaves it on the branch for every later node. Nor may a node pass,
-        among its own keywords or in the ones it hands on to a model call
-        (``interpret_kwargs``, ``response_kwargs``, and an ``imodel_kw`` in any of
-        them), ``env`` with ``agent_env`` set, which replaces the overlay for that
-        call, or, with ``contain_account_integrations`` set, that keyword as
-        anything but ``True`` or a non-empty ``account_connectors``, either of
-        which lifts the containment for that call. Each of these raises
-        ``ConfigurationError`` before any node runs. The check is made once,
-        before the first node: a model the caller's own code puts on a built
-        branch while the DAG runs is not seen.
+        the declared fields and extras of pydantic models. The node's calls run on
+        such a model, and ``run`` leaves the model it is given on the branch for
+        every later node: it sets the model before it refuses one that is not a
+        CLI model. Nor may a node pass, among its own keywords, in
+        ``interpret_kwargs`` or ``response_kwargs``, or in an ``imodel_kw`` in any
+        of them: ``api_call``, a prebuilt call the model sends as it was built;
+        ``env`` with ``agent_env`` set, which replaces the overlay for that call;
+        or, with ``contain_account_integrations`` set, that keyword as anything but
+        ``True`` or a non-empty ``account_connectors``, either of which lifts the
+        containment for that call. Not every operation passes each of these
+        keyword sets on to a model call; a keyword is refused in any of them all
+        the same. Each of these raises ``ConfigurationError`` before any node
+        runs. The check is made once, before the first node: a model the caller's
+        own code puts on a built branch, or a keyword it sets on a later node,
+        while the DAG runs is not seen.
 
         The settings reach only the branches ``make_agent`` builds, through the
         model it builds for them. The run's ``session`` used directly
@@ -1096,8 +1100,8 @@ class EngineRun:
                 }
 
             def _call_keywords(op: Operation) -> list[Mapping[str, Any]]:
-                # The node's keywords, and those it hands on to a model call: ReAct's
-                # interpret_kwargs and response_kwargs, and an imodel_kw in any of them.
+                # The node's keywords, and the sets an operation may hand on to a model
+                # call: interpret_kwargs, response_kwargs, and an imodel_kw in any of them.
                 passed = _passed(op)
                 found = [passed]
                 for name in ("interpret_kwargs", "response_kwargs", "imodel_kw"):
@@ -1118,7 +1122,8 @@ class EngineRun:
             def _holds_a_model(value: Any) -> bool:
                 # An operation passes keywords it does not name on to the model call,
                 # so a model under any keyword is looked for, inside mappings, lists,
-                # tuples, sets, frozensets and pydantic models, at any depth.
+                # tuples, sets, frozensets and the declared fields and extras of
+                # pydantic models, at any depth.
                 stack, seen = [value], set()
                 while stack:
                     item = stack.pop()
@@ -1133,6 +1138,7 @@ class EngineRun:
                         stack.extend(item)
                     elif isinstance(item, BaseModel):
                         stack.extend(vars(item).values())
+                        stack.extend((item.model_extra or {}).values())
                 return False
 
             # Every keyword a branch operation takes a model under.
@@ -1153,6 +1159,9 @@ class EngineRun:
                 if any(_passed(op).get(key) is not None for key in model_keys)
                 or _holds_a_model(op.request)
             ]
+            prebuilt = [
+                op for op in operations if any("api_call" in kw for kw in _call_keywords(op))
+            ]
             enved = [
                 op
                 for op in operations
@@ -1163,7 +1172,7 @@ class EngineRun:
                 for op in operations
                 if in_force[1] and any(_lifts_containment(kw) for kw in _call_keywords(op))
             ]
-            if unbuilt or unknown or modelled or enved or uncontained:
+            if unbuilt or unknown or modelled or prebuilt or enved or uncontained:
                 total = len(operations)
                 problems = []
                 if unbuilt:
@@ -1180,7 +1189,12 @@ class EngineRun:
                 if modelled:
                     problems.append(
                         f"{len(modelled)} of {total} nodes pass a model, which the node's "
-                        "calls run on and run() on a CLI model leaves on the branch"
+                        "calls run on and run() leaves on the branch"
+                    )
+                if prebuilt:
+                    problems.append(
+                        f"{len(prebuilt)} of {total} nodes pass api_call, a prebuilt call the "
+                        "model sends as it was built"
                     )
                 if enved:
                     problems.append(

@@ -10,8 +10,10 @@ from.
 """
 
 import os
+from typing import Any
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from lionagi.engines import Engine
 from lionagi.providers._cli_subprocess import reveal_redacted
@@ -381,7 +383,7 @@ def _model_keywords():
 @pytest.mark.parametrize("key", _model_keywords())
 @pytest.mark.parametrize("given_as", ["model", "spec"])
 async def test_run_dag_refuses_a_node_that_passes_a_model(settings, key, given_as, monkeypatch):
-    """The node's calls run on the model, and run() on a CLI model leaves it on the branch
+    """The node's calls run on the model, and run() leaves the model it is given on the branch
     for later nodes. The keyword is refused whatever it holds but None, a spec string too."""
     from lionagi._errors import ConfigurationError
     from lionagi.operations.builder import OperationGraphBuilder
@@ -409,11 +411,35 @@ async def test_the_model_keywords_read_off_the_signatures_are_the_known_five():
     ]
 
 
+class _Holder(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    held: Any = None
+
+
+class _Open(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
 @_SETTINGS
 @pytest.mark.parametrize(
     "value",
-    [lambda m: m, lambda m: {"nested": [m]}, lambda m: (m,)],
-    ids=["bare", "in-a-mapping", "in-a-tuple"],
+    [
+        lambda m: m,
+        lambda m: {"nested": [m]},
+        lambda m: (m,),
+        lambda m: frozenset([m]),
+        lambda m: _Holder(held=[m]),
+        lambda m: _Open(held=m),
+    ],
+    ids=[
+        "bare",
+        "in-a-mapping",
+        "in-a-tuple",
+        "in-a-frozenset",
+        "in-a-pydantic-field",
+        "in-a-pydantic-extra",
+    ],
 )
 async def test_run_dag_refuses_a_model_under_a_keyword_the_operation_does_not_name(
     settings, value, monkeypatch
@@ -502,6 +528,34 @@ async def test_run_dag_with_agent_env_refuses_env_handed_on_to_a_model_call(keyw
     builder = OperationGraphBuilder()
     builder.add_operation("ReAct", branch=built, instruct={"instruction": "a"}, **keywords)
     with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass env"):
+        await run.run_dag(builder.get_graph())
+    assert calls == []
+
+
+@_SETTINGS
+@pytest.mark.parametrize(
+    "keywords",
+    [
+        {"api_call": "prebuilt"},
+        {"imodel_kw": {"api_call": "prebuilt"}},
+        {"interpret_kwargs": {"api_call": "prebuilt"}},
+        {"response_kwargs": {"imodel_kw": {"api_call": "prebuilt"}}},
+    ],
+    ids=["own", "imodel_kw", "interpret_kwargs", "response_kwargs-imodel_kw"],
+)
+async def test_run_dag_refuses_a_node_that_passes_a_prebuilt_api_call(
+    settings, keywords, monkeypatch
+):
+    """A model sends a prebuilt call as it was built, without the settings."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    calls = _record_flow(monkeypatch)
+    run = Engine(**settings).new_run()
+    built = await run.make_agent("researcher", name="r1", model=_CLI_MODEL)
+    builder = OperationGraphBuilder()
+    builder.add_operation("ReAct", branch=built, instruct={"instruction": "a"}, **keywords)
+    with pytest.raises(ConfigurationError, match=r"1 of 1 nodes pass api_call"):
         await run.run_dag(builder.get_graph())
     assert calls == []
 
