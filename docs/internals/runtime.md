@@ -1145,7 +1145,8 @@ compat even though the underlying binary is `agy`.
   this order: Pro (3.1 Pro); a dotted version it spells out, with a one- or two-digit major and
   any number of dotted parts (3.8 or 3.6 Flash, any other 3.5 Flash; a date such as `2026.10` or
   a three-digit number is not a version); `argon` or a major version 4 that is not part of a
-  longer number or followed by a letter (4 Argon); otherwise 3.5 Flash. Its tier comes from a
+  longer number and is followed by neither a letter or numeral of any script nor a dot and one
+  (4 Argon); otherwise 3.5 Flash. Its tier comes from a
   `low` / `high` / `xhigh` / `max` word in the name, else Medium (Low for Pro). Any other name
   passes through unchanged for agy to reject.
 - **No per-tool stdout events.** `stream_gemini_cli`'s `on_tool_use`/`on_tool_result`

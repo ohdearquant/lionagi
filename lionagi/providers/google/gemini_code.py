@@ -171,7 +171,8 @@ _MODEL_ALIASES: dict[str, str] = {
 
 
 # A letter in any script, or a numeral that is not a decimal digit ("\u00b2", "\u00bd", "\u216b"):
-# a word character that is neither a decimal digit nor an underscore.
+# a word character that is neither a decimal digit nor an underscore. A combining mark
+# ("\u0301") is neither: it is not a word character, so it ends a word like a separator.
 _LETTER = r"[^\W\d_]"
 # A number starts here unless a digit, or a digit and a dot, comes right before it:
 # then it is part of a longer number ("13.6", "2.3.6", "2026.3.8"). A dot after
@@ -183,9 +184,10 @@ _NUMBER_START = r"(?<!\d)(?<!\d\.)"
 _GEMINI_36_TOKEN = re.compile(_NUMBER_START + r"3\.6(?!\d)")
 _GEMINI_38_TOKEN = re.compile(_NUMBER_START + r"3\.8(?!\d)")
 # A major version 4 that is not part of a longer number and is not followed by a
-# letter ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash"). A 4 followed by a
-# dot and a letter or digit ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash")
-# names a release this table does not list, while a trailing dot ("gemini-4.") ends
+# letter or numeral of any script ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash";
+# not "gemini4\u00b2"). A 4 followed by a dot and a letter or numeral of any script, a
+# decimal digit included ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash",
+# "gemini-4.\u00b2"), names a release this table does not list, while a trailing dot ("gemini-4.") ends
 # it as it ends a dotted version. The 4 in "gemini-14-flash" or "gemini-40-flash" is a
 # different number, and the 4 in "gemini-4k-flash" is a size: neither is the 4 family.
 _GEMINI_4_TOKEN = re.compile(_NUMBER_START + r"4(?!\d|" + _LETTER + r"|\.[^\W_])")

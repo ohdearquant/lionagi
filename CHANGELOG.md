@@ -17,8 +17,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (3.8 and 3.6 pick their family, any other, such as `gemini-3.5-flash-argon`,
   `gemini-3.5.1-flash-argon` or `gemini-4.5-flash`, resolves to 3.5 Flash); otherwise a name
   containing `argon` or a major version 4 that is not part of a longer number or followed by a
-  letter (`gemini-4-flash`, `gemini-v4-flash`, `argon high`, but not `gemini-4k-flash`,
-  `gemini-14-flash` or `gemini-40-flash`) resolves to the 4 Argon family. A version has a one- or
+  letter or numeral of any script (`gemini-4-flash`, `gemini-v4-flash`, `argon high`, but not
+  `gemini-4k-flash`, `gemini4²`, `gemini-14-flash` or `gemini-40-flash`) resolves to the 4 Argon
+  family. A version has a one- or
   two-digit major, so a date such as `2026.10` or a three-digit number such as `100.5` is not one. A
   free-form name with no tier word takes Medium (Low for Pro), as free-form names did before, so
   `Gemini 4 Argon` without a suffix gives `Gemini 4 Argon (Medium)` while the `gemini-4-argon` alias
@@ -28,18 +29,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   3.5 Flash where earlier releases gave 3.8 and 3.6 Flash; a dot after anything else separates, so
   `gemini-4-flash.3.8` keeps 3.8 as before and `gemini.4-flash` reads the 4 family. A trailing dot
   ends a version (`gemini-4-flash-3.5.` keeps 3.5 Flash), and a 4 followed by a dot and anything but
-  a letter or digit reads the 4 family (`gemini-4.` and `gemini-4.-flash`, 3.5 Flash in earlier
-  releases, resolve to Argon), while a 4 followed by a dot and a letter of any script or a digit
-  (`gemini-4.x-flash`, `gemini-4.é`) names a release this table does not list. A tier word stands
-  alone: a letter of any script, or a numeral that is not a decimal digit (`²`, `½`), next to it
-  makes it part of a longer word, which carries no tier, while a decimal digit does not
-  (`argon-low2` reads Low). So `flash-highlights`, `flash-allow`, `flash-lowest` and
-  `gemini-3.8-flash-maximum` read Medium where earlier releases read a tier from them,
-  `gemini-allow-high` reads High where they read Low, and `gemini-pro-highlights` reads Pro's
-  default Low where they read High. It is the default model for the gemini-code aliases and for
-  `GeminiCodeRequest`, so a request that names no model runs `Gemini 4 Argon (High)` where it ran
-  `Gemini 3.8 Flash (Medium)`, and it appears first among the Studio operator's gemini-code models;
-  the 3.8, 3.6 and 3.5 Flash and 3.1 Pro entries are unchanged.
+  a letter or numeral of any script reads the 4 family (`gemini-4.` and `gemini-4.-flash`, 3.5
+  Flash in earlier releases, resolve to Argon), while a 4 followed by a dot and a letter or numeral
+  of any script, a decimal digit included (`gemini-4.x-flash`, `gemini-4.é`, `gemini-4.²`), names
+  a release this table does not list. A tier word stands alone: a letter of any script, or a
+  numeral that is not a decimal digit (`²`, `½`), next to it makes it part of a longer word, which
+  carries no tier, while a decimal digit does not (`argon-low2` reads Low). So `flash-highlights`,
+  `flash-allow`, `flash-lowest` and `gemini-3.8-flash-maximum` read Medium where earlier releases
+  read a tier from them, `gemini-allow-high` reads High where they read Low, and
+  `gemini-pro-highlights` reads Pro's default Low where they read High. A combining mark is neither
+  a letter nor a numeral, so `argon-low` followed by U+0301 COMBINING ACUTE ACCENT reads Low, while
+  the same text composed (`argon-loẃ`) reads Medium. It is the default model for the gemini-code
+  aliases and for `GeminiCodeRequest`, so a request that names no model runs `Gemini 4 Argon
+  (High)` where it ran `Gemini 3.8 Flash (Medium)`, and it appears first among the Studio
+  operator's gemini-code models; the 3.8, 3.6 and 3.5 Flash and 3.1 Pro entries are unchanged.
 - The gemini-code context window table gains `gemini-4-argon`, `gemini-4` and `argon` rows at
   1,048,576 tokens. Rows match as substrings, longest first, and the lookup falls back across
   every provider's table, so a model name containing `gemini-4` or `argon` now reads that window

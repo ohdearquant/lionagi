@@ -434,6 +434,9 @@ async def test_on_text_loop_closed_error_propagates():
         # a decimal digit next to it is no letter; a numeral that is not one counts as a letter
         ("argon-low2", "Gemini 4 Argon (Low)"),
         ("argon-low\u00b2", "Gemini 4 Argon (Medium)"),
+        # a combining mark is neither, so it ends the word; composed, the letter does not
+        ("argon-low\u0301", "Gemini 4 Argon (Low)"),
+        ("argon-lo\u1e83", "Gemini 4 Argon (Medium)"),
         ("gemini-flash-lowest", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash-maximum", "Gemini 3.8 Flash (Medium)"),
         ("gemini-allow-high", "Gemini 3.5 Flash (High)"),
@@ -461,6 +464,8 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-4-flash-2026.10", "Gemini 4 Argon (Medium)"),
         ("gemini-4-flash-100.5", "Gemini 4 Argon (Medium)"),
         ("gemini-4k-flash", "Gemini 3.5 Flash (Medium)"),
+        # ...and a numeral of any script after the 4 makes it part of a longer word
+        ("gemini4\u00b2", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash-4", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.6-flash-4", "Gemini 3.6 Flash (Medium)"),
         ("gemini-3.5-flash-4", "Gemini 3.5 Flash (Medium)"),
@@ -471,12 +476,15 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-4.x-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-14-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-40-flash", "Gemini 3.5 Flash (Medium)"),
-        # a trailing dot ends the 4 as it ends a dotted version
+        # a dot after the 4 with no letter or numeral after it ends the 4, as a trailing dot
+        # ends a dotted version
         ("gemini-4.", "Gemini 4 Argon (Medium)"),
         ("gemini-4-flash.", "Gemini 4 Argon (Medium)"),
         ("gemini-4.-flash", "Gemini 4 Argon (Medium)"),
-        # a dot and a letter of any script after the 4 name a release the table does not list
+        # a dot and a letter or numeral of any script after the 4 name a release the table
+        # does not list
         ("gemini-4.\u00e9", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4.\u00b2", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
