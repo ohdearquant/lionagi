@@ -114,8 +114,9 @@ def test_a_system_message_too_long_for_one_argument_is_refused(tmp_path):
 
 
 def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
-    """The bound is on developer_instructions=<system prompt>, in UTF-8 bytes, which is what
-    the operating system measures; the turn input is bounded in characters."""
+    """The bound is on developer_instructions=<system prompt>, in the bytes the process
+    receives, which is what the operating system measures; the turn input is bounded in
+    characters."""
     just_under = "s" * (ARGUMENT_MAX_BYTES - PREFIX - 1)
     request = CodexCodeRequest(prompt="hi", system_prompt=just_under, repo=tmp_path)
     assert request.system_prompt == just_under
@@ -128,7 +129,7 @@ def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
     wide = "漢" * ((ARGUMENT_MAX_BYTES - PREFIX) // 3 + 1)
     assert len(wide) < ARGUMENT_MAX_BYTES < len(wide.encode("utf-8")) + PREFIX
     size = len(wide.encode("utf-8")) + PREFIX
-    with pytest.raises(ValueError, match=f"argument of {size:,} bytes in UTF-8"):
+    with pytest.raises(ValueError, match=f"argument of {size:,} bytes,"):
         CodexCodeRequest(prompt="hi", system_prompt=wide, repo=tmp_path)
 
 
@@ -234,17 +235,26 @@ async def test_every_argument_is_measured_before_the_cli_starts(
             pass
 
 
+def test_an_argument_is_measured_in_the_bytes_the_process_receives():
+    """A path byte that is not UTF-8 is measured as the byte exec passes; a lone surrogate,
+    which exec cannot pass, is still refused before anything starts."""
+    import os
+
+    codex_mod._refuse_oversized_command(["codex", "-C", os.fsdecode(b"/tmp/not-utf8-\xff")])
+
+    with pytest.raises(ValueError):
+        codex_mod._refuse_oversized_command(["codex", "-C", "/tmp/lone-\ud800"])
+
+
 @pytest.mark.skipif(
     not hasattr(sys, "set_int_max_str_digits"),
     reason="only Pythons with an integer digit limit refuse to encode this value",
 )
-def test_an_override_value_toml_cannot_encode_is_left_to_the_command_builder(tmp_path):
-    """A value the encoder refuses with ValueError is not measured at construction; the
-    command builder refuses it where it is encoded, as it did before."""
-    request = CodexCodeRequest(prompt="hi", config_overrides={"k": 10**5000}, repo=tmp_path)
-
+def test_an_override_value_toml_cannot_encode_is_refused_while_the_request_validates(tmp_path):
+    """A value the encoder refuses with ValueError (an integer past the digit limit) refuses
+    the request, so no request exists whose repr or dump would raise on it."""
     with pytest.raises(ValueError):
-        request.as_cmd_args()
+        CodexCodeRequest(prompt="hi", config_overrides={"k": 10**5000}, repo=tmp_path)
 
 
 @pytest.mark.asyncio

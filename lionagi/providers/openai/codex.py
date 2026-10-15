@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import subprocess
 import warnings
@@ -126,17 +127,20 @@ _CLI_ARGUMENT_MAX_BYTES = 1_048_576
 
 
 def _refuse_oversized_argument(argument: str, what: str) -> None:
-    size = len(argument.encode("utf-8"))
+    # Measured as the bytes the process receives: os.fsencode is how an argument is encoded
+    # for exec, a byte that is not UTF-8 in a path included.
+    size = len(os.fsencode(argument))
     if size >= _CLI_ARGUMENT_MAX_BYTES:
         raise ValueError(
-            f"{what} reaches the Codex CLI as one command-line argument of {size:,} bytes "
-            f"in UTF-8, and an argument of {_CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not "
-            "start the CLI on macOS or on Linux with 4 KiB pages."
+            f"{what} reaches the Codex CLI as one command-line argument of {size:,} bytes, "
+            f"and an argument of {_CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not start the "
+            "CLI on macOS or on Linux with 4 KiB pages."
         )
 
 
 def _refuse_oversized_command(cmd: list[str]) -> None:
-    """Refuse ``cmd`` when any argument after the program is too long to start the CLI."""
+    """Refuse ``cmd`` when any argument after the program is ``_CLI_ARGUMENT_MAX_BYTES`` bytes
+    or more."""
     for position, argument in enumerate(cmd[1:], start=1):
         flag = cmd[position - 1] if position > 1 else ""
         if flag == "-c":
@@ -181,14 +185,17 @@ def _refuse_oversized_cli_inputs(
     if system_prompt:
         _refuse_oversized_argument(f"developer_instructions={system_prompt}", "The system prompt")
     for key, value in (config_overrides or {}).items():
-        try:
-            if contained:
+        if contained:
+            try:
                 kept, value = _contain_override(key, value)
-                if not kept:
-                    continue
+            except (TypeError, ValueError):
+                continue  # as_cmd_args refuses the key itself
+            if not kept:
+                continue
+        try:
             encoded = toml_override_value(value)
-        except (TypeError, ValueError):
-            continue  # as_cmd_args refuses the key or the value itself, as before
+        except TypeError:
+            continue  # as_cmd_args refuses the value itself
         _refuse_oversized_argument(f"{key}={encoded}", f"The config override {key!r}")
 
 
