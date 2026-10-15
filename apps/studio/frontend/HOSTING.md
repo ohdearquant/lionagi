@@ -7,14 +7,17 @@ S3 + CDN, etc.) can serve as-is. On Vercel, set the project root directory to
 declared in `vercel.json` alongside a catch-all rewrite to `index.html` (client-side
 routing) and long-lived immutable caching for the hashed `/assets/*` bundle files.
 
-At runtime the app resolves its API base URL in this order: an injected
-`window.__STUDIO_API_BASE__` (highest priority), a build-time `VITE_STUDIO_API_BASE`
-env var, a same-hostname `:8765` guess when served from a Vite dev port, and otherwise
-the same origin the page was loaded from. Same-origin is the right default for a
-single-origin deploy where one server (a Docker image or reverse proxy) serves both the
-SPA and the API. It is the wrong default for a hosted _static_ deploy, whose origin
-has no API at all — so those deploys must set the base explicitly, via either of the
-first two overrides.
+At runtime the app resolves its API base URL in this order: a `?api=` query override
+(highest priority, persisted per browser tab), an injected `window.__STUDIO_API_BASE__`,
+a build-time `VITE_STUDIO_API_BASE` env var, and otherwise the same origin the page was
+loaded from. The query override accepts HTTP(S) origins on `localhost`, any IPv4
+loopback address in `127.0.0.0/8`, or IPv6 `::1`. For example,
+`?api=http://127.0.0.2:8766` selects a daemon bound to that loopback address and port.
+
+Same-origin is the right default for a single-origin deploy where one server (a Docker
+image or reverse proxy) serves both the SPA and the API. It is the wrong default for a
+hosted _static_ deploy, whose origin has no API at all — so those deploys must set the
+base explicitly via one of these overrides.
 
 The lion-studio hosted deploy is one of those static deploys, and it is local-first:
 the hosted page has no backend of its own. It is a static client that talks directly to

@@ -108,8 +108,9 @@ function resolveApiOverride(): string | undefined {
     } catch {
       return undefined;
     }
+    // URL canonicalizes valid IPv4 literals to dotted decimal; all of 127/8 is loopback.
     const loopback =
-      parsed.hostname === "127.0.0.1" ||
+      /^127(?:\.\d{1,3}){3}$/.test(parsed.hostname) ||
       parsed.hostname === "localhost" ||
       parsed.hostname === "[::1]" ||
       parsed.hostname === "::1";

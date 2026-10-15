@@ -969,10 +969,50 @@ describe("resolveApiBase ?api= override", () => {
     expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
   });
 
-  it("a non-loopback ?api= is ignored", () => {
-    stubLocation("?api=https://evil.example");
+  it.each([
+    ["http://127.0.0.0:8766", "http://127.0.0.0:8766"],
+    ["http://127.0.0.2:8766", "http://127.0.0.2:8766"],
+    ["https://127.42.0.1:8766", "https://127.42.0.1:8766"],
+    ["http://127.255.255.255:8766", "http://127.255.255.255:8766"],
+    ["http://127.2:8766", "http://127.0.0.2:8766"],
+    ["http://2130706434:8766", "http://127.0.0.2:8766"],
+    ["http://localhost:8766", "http://localhost:8766"],
+    ["http://[::1]:8766", "http://[::1]:8766"],
+    ["http://[0:0:0:0:0:0:0:1]:8766", "http://[::1]:8766"],
+  ])("accepts and persists the loopback origin %s", (raw, origin) => {
+    stubLocation(`?${new URLSearchParams({ api: raw })}`);
     (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
       "http://127.0.0.1:8765";
+    expect(resolveApiBase()).toBe(origin);
+    expect(storage.get("studio.apiBaseOverride")).toBe(origin);
+    stubLocation("");
+    expect(resolveApiBase()).toBe(origin);
+  });
+
+  it.each([
+    "https://evil.example",
+    "http://127.0.0.2.evil.example:8766",
+    "http://127.0.0.2@evil.example:8766",
+    "http://localhost.evil.example:8766",
+    "http://126.255.255.255:8766",
+    "http://128.0.0.0:8766",
+    "http://192.168.1.5:8766",
+    "http://0.0.0.0:8766",
+    "http://[::]:8766",
+    "http://[::2]:8766",
+    "http://[::ffff:127.0.0.2]:8766",
+    "http://127.0.0.256:8766",
+    "ftp://127.0.0.2:8766",
+    "ws://127.0.0.2:8766",
+  ])("ignores an unsafe override from either query or storage: %s", (raw) => {
+    stubLocation(`?${new URLSearchParams({ api: raw })}`);
+    (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
+      "http://127.0.0.1:8765";
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    expect(storage.has("studio.apiBaseOverride")).toBe(false);
+
+    storage.set("studio.apiBaseOverride", raw);
+    stubLocation("");
     expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
   });
 
@@ -1038,13 +1078,16 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     storage.clear();
   });
 
-  it("withholds the token when the override names a different daemon", () => {
-    stubLocation("?api=http://127.0.0.1:8766");
-    setInjected("http://127.0.0.1:8765", "shell-token");
-    // Precondition, so this is not asserting against a base that never moved.
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
-    expect(resolveAuthToken()).toBeUndefined();
-  });
+  it.each(["127.0.0.1", "127.0.0.2"])(
+    "withholds the token when the override names a different daemon on %s",
+    (host) => {
+      stubLocation(`?api=http://${host}:8766`);
+      setInjected("http://127.0.0.1:8765", "shell-token");
+      // Precondition, so this is not asserting against a base that never moved.
+      expect(resolveApiBase()).toBe(`http://${host}:8766`);
+      expect(resolveAuthToken()).toBeUndefined();
+    },
+  );
 
   it("still sends the token when the override names the issuing origin", () => {
     // The documented workaround: a viewer pasting the address of the very
