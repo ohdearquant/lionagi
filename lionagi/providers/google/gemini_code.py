@@ -170,7 +170,8 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
-# A letter in any script: a word character that is neither a digit nor an underscore.
+# A letter in any script, or a numeral that is not a decimal digit ("\u00b2", "\u00bd", "\u216b"):
+# a word character that is neither a decimal digit nor an underscore.
 _LETTER = r"[^\W\d_]"
 # A number starts here unless a digit, or a digit and a dot, comes right before it:
 # then it is part of a longer number ("13.6", "2.3.6", "2026.3.8"). A dot after
@@ -192,9 +193,9 @@ _GEMINI_4_TOKEN = re.compile(_NUMBER_START + r"4(?!\d|" + _LETTER + r"|\.[^\W_])
 # "2.5", "4.5", "3.5.1"). A four-digit major ("2026.10") is a date and a three-digit
 # one ("100.5") is not a model version. A trailing dot ("3.5.") ends the version.
 _DOTTED_VERSION = re.compile(_NUMBER_START + r"\d{1,2}(?:\.\d+)+(?!\d|\.\d)")
-# A tier word in a free-form name stands alone: a letter of any script next to it
-# makes it part of a longer word ("argon-highlights", "argon-allow", "argon-lowé"),
-# which carries no tier.
+# A tier word in a free-form name stands alone: a letter of any script, or a numeral
+# that is not a decimal digit, next to it makes it part of a longer word
+# ("argon-highlights", "argon-allow", "argon-lowé"), which carries no tier.
 _TIER_LOW = re.compile(f"(?<!{_LETTER})low(?!{_LETTER})")
 _TIER_HIGH = re.compile(f"(?<!{_LETTER})(?:x?high|max)(?!{_LETTER})")
 

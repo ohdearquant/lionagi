@@ -26,11 +26,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `argon high` passed through unresolved; both resolve to Argon now. A version that follows a digit
   and a dot is part of a longer version, so `gemini-1.3.8-flash` and `gemini-2.3.6-flash` resolve to
   3.5 Flash where earlier releases gave 3.8 and 3.6 Flash; a dot after anything else separates, so
-  `gemini-4-flash.3.8` keeps 3.8 as before and `gemini.4-flash` reads the 4 family. A version or a 4
-  followed by a trailing dot (`gemini-4-flash-3.5.`, `gemini-4.`) still counts as one, while a 4
-  followed by a dot and a letter or digit (`gemini-4.x-flash`) names a release this table does not
-  list. A tier word stands alone: a letter of any script next to it makes it part of a longer word,
-  which carries no tier. So `flash-highlights`, `flash-allow`, `flash-lowest` and
+  `gemini-4-flash.3.8` keeps 3.8 as before and `gemini.4-flash` reads the 4 family. A trailing dot
+  ends a version (`gemini-4-flash-3.5.` keeps 3.5 Flash), and a 4 followed by a dot and anything but
+  a letter or digit reads the 4 family (`gemini-4.` and `gemini-4.-flash`, 3.5 Flash in earlier
+  releases, resolve to Argon), while a 4 followed by a dot and a letter of any script or a digit
+  (`gemini-4.x-flash`, `gemini-4.é`) names a release this table does not list. A tier word stands
+  alone: a letter of any script, or a numeral that is not a decimal digit (`²`, `½`), next to it
+  makes it part of a longer word, which carries no tier, while a decimal digit does not
+  (`argon-low2` reads Low). So `flash-highlights`, `flash-allow`, `flash-lowest` and
   `gemini-3.8-flash-maximum` read Medium where earlier releases read a tier from them,
   `gemini-allow-high` reads High where they read Low, and `gemini-pro-highlights` reads Pro's
   default Low where they read High. It is the default model for the gemini-code aliases and for

@@ -431,6 +431,9 @@ async def test_on_text_loop_closed_error_propagates():
         ("argonélow", "Gemini 4 Argon (Medium)"),
         ("gemini-highé", "Gemini 3.5 Flash (Medium)"),
         ("argon-low-é", "Gemini 4 Argon (Low)"),
+        # a decimal digit next to it is no letter; a numeral that is not one counts as a letter
+        ("argon-low2", "Gemini 4 Argon (Low)"),
+        ("argon-low\u00b2", "Gemini 4 Argon (Medium)"),
         ("gemini-flash-lowest", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash-maximum", "Gemini 3.8 Flash (Medium)"),
         ("gemini-allow-high", "Gemini 3.5 Flash (High)"),
@@ -471,6 +474,9 @@ async def test_on_text_loop_closed_error_propagates():
         # a trailing dot ends the 4 as it ends a dotted version
         ("gemini-4.", "Gemini 4 Argon (Medium)"),
         ("gemini-4-flash.", "Gemini 4 Argon (Medium)"),
+        ("gemini-4.-flash", "Gemini 4 Argon (Medium)"),
+        # a dot and a letter of any script after the 4 name a release the table does not list
+        ("gemini-4.\u00e9", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
@@ -492,6 +498,8 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-1.3.8-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-2.3.6-flash", "Gemini 3.5 Flash (Medium)"),
         ("2.3.6-argon", "Gemini 3.5 Flash (Medium)"),
+        # ...and a date is no version, so the name's argon decides
+        ("gemini-2026.3.8-argon", "Gemini 4 Argon (Medium)"),
         # ...but a dot after anything else separates the version, which it keeps
         ("gemini-4-flash.3.5", "Gemini 3.5 Flash (Medium)"),
         ("argon.3.5", "Gemini 3.5 Flash (Medium)"),
