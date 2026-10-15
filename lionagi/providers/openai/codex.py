@@ -781,7 +781,8 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
 #: and results recorded here can be part of it, so one broad search recorded whole could fill
 #: a later prompt on its own. The bound is per record and on the recorded text: a turn with
 #: many results still renders all of them, and the rendering can be longer than the text it
-#: renders.
+#: renders: up to four times for control characters and six for lone surrogates or U+FFFE,
+#: which it escapes, and a nested value's indentation grows with the square of its depth.
 CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
 
 #: How far a cut moves to keep a character with its marks before it gives up and cuts where
@@ -952,17 +953,19 @@ def _bounded_leaves(
     bound is returned as it came, and a string over it is cut by ``_cut_text``, measured
     as JSON writes it, escapes included.
 
-    A list keeps its items in order up to the first that does not fit. That item is cut to
-    the room left when the room is worth it, and an item naming how many were left out
-    comes last. A mapping keeps every entry that fits whole, in order; then the entries
-    that did not fit are cut, in order, to the room left while it is worth it, and an
+    A list keeps its items in order up to the first that does not fit. When the room left
+    is worth it, that item is cut to the room less the share its note keeps, and an item
+    naming how many were left out comes last. A mapping keeps every entry that fits whole,
+    in order; then, while the room left is worth it, the entries that did not fit are cut,
+    in order, each to that room less its key and its note's share, and an
     ``"[omitted]"`` entry names how many entries were left out. A key is never cut, since a
     reader can classify an entry by its key (a redactor looking for a credential name in
     it): an entry whose key, as JSON writes it, takes more than half the room left is left
     out whole. An entry cut to fit keeps its own note inside the room it was given, so only
     the outermost note and a cut line inside it come on top of ``limit``. Each level keeps
-    that room for its own note, so in a chain of one-entry mappings or one-item lists more
-    than about 190 levels deep the leaf is left out, with a note saying so.
+    that room for its own note, so the leaf of a chain of one-entry mappings more than about
+    190 levels deep (fewer with longer keys), or of one-item lists more than about 200, is
+    left out, with a note saying so.
     """
     if sizes is None:
         sizes = {}

@@ -541,6 +541,22 @@ async def test_an_entry_cut_to_fit_keeps_its_note_within_the_bound():
 
 
 @pytest.mark.asyncio
+async def test_a_list_item_cut_to_fit_keeps_its_note_within_the_bound():
+    """The item a list cuts is given the room left less its note's share, so the list, the
+    item's cut line included, stays within the bound."""
+    arguments = ["a" * 100, "x" * 30_000]
+
+    chunks, _, _ = await _run(
+        {"type": "function_call", "id": "fc-1", "name": "put", "arguments": arguments}
+    )
+
+    echoed = next(c for c in chunks if c.type == "tool_use").tool_input
+    assert len(json.dumps(echoed, ensure_ascii=False)) <= CODEX_TOOL_OUTPUT_MAX_CHARS
+    assert echoed[0] == "a" * 100
+    assert _parts(echoed[1])[2] == 30_000
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("leaf", ["q" * 25_000, "q"], ids=["long-leaf", "short-leaf"])
 async def test_a_list_of_changes_nested_too_deep_to_measure_is_echoed_bounded(leaf):
     changes = _nested(5_000, leaf, "list")
@@ -609,6 +625,29 @@ async def test_a_structured_result_nested_very_deep_is_recorded_as_bounded_text(
     assert isinstance(kept, str)
     assert len(kept) <= CODEX_TOOL_OUTPUT_MAX_CHARS + 200
     assert callback[0]["content"] == kept
+
+
+@pytest.mark.asyncio
+async def test_a_structured_result_the_json_encoder_cannot_reach_says_it_is_too_deep(
+    monkeypatch,
+):
+    """Where this Python's JSON encoder cannot go as deep as a result (before 3.12), the
+    result is recorded as a line saying it is nested too deep to show."""
+    import types
+
+    from lionagi.providers.openai import codex
+
+    def dumps(obj, *args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded while encoding a JSON object")
+
+    monkeypatch.setattr(codex, "json", types.SimpleNamespace(dumps=dumps, loads=json.loads))
+
+    chunks, callback = await _tool_results(
+        {"type": "function_call_output", "call_id": "call-1", "output": {"rows": [1, 2]}}
+    )
+
+    assert chunks[0].tool_output == "[dict nested too deep to show]"
+    assert callback[0]["content"] == chunks[0].tool_output
 
 
 @pytest.mark.asyncio
