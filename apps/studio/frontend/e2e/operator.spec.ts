@@ -209,11 +209,14 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     status: "succeeded",
     result: { executed: true },
   });
-  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible();
+  // The decision response can arrive before the stream delivers the completed turn.
+  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(
     page.getByText("Demo action allowed and completed safely.", { exact: true }),
-  ).toBeVisible();
-  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1);
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1, { timeout: 15_000 });
 
   // Both decisions and outcomes are durable daemon history, not client-only UI.
   await page.reload();
