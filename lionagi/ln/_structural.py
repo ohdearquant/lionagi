@@ -56,8 +56,11 @@ class _IdentityKey:
 
     A dead entry is never hit, but until it is removed it shares a hash bucket with every
     later object allocated at the same address, and each lookup there compares against it.
-    A key stored in a cache is therefore given `on_collect`, which is called with the key
-    when its weakly-held target is collected, while the key itself is still alive.
+    A key a cache stores as an entry's whole key is therefore given `on_collect`, which is
+    called with the key when its weakly-held target is collected, while the key itself is
+    still alive, so the cache can remove the entry stored under it. A key nested inside a
+    larger key, such as a tuple, is not the entry's key, so `on_collect` cannot remove that
+    entry when the target is collected.
     """
 
     __slots__ = ("__weakref__", "_hash", "_ref", "_strong")
