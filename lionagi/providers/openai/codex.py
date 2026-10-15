@@ -19,6 +19,7 @@ import toml
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from lionagi._errors import CLIInputRefusedError
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -167,6 +168,39 @@ def _contain_override(key: str, value: Any) -> tuple[bool, Any]:
     return True, value
 
 
+def _refuse_text_strict_utf8_cannot_encode(what: str) -> ValueError:
+    """The refusal for text holding a character strict UTF-8 cannot encode — a lone
+    surrogate, which a child process cannot decode. Returned rather than raised so the
+    caller names the input at the point it encodes it."""
+    return ValueError(
+        f"{what} holds a character strict UTF-8 cannot encode: a lone surrogate cannot "
+        "be passed to the Codex CLI."
+    )
+
+
+# U+0000-U+001F and U+007F: the control characters a TOML basic string may not hold
+# raw, and the ones the `toml` package renders wrongly (or refuses with IndexError).
+_TOML_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _toml_string(value: str) -> str:
+    r"""Render ``value`` as a single-line TOML basic string.
+
+    Rendered here rather than through the ``toml`` package: that encoder renders a
+    control character wrongly (``"a\x01b"`` comes back as ``"ax01b"``, a different value)
+    and raises IndexError on a leading one, which would escape where containment drops
+    the override. Every control character is written as a ``\uXXXX`` escape, which TOML
+    reads back as the same character; every other character is kept as it is.
+    """
+    # Strict UTF-8 first: a lone surrogate has no encoding a child process can decode,
+    # so it is refused here rather than reaching the CLI as a raw byte. Escapes are
+    # added after the quote and backslash escapes so the escape they introduce survives.
+    value.encode("utf-8")
+    body = value.replace("\\", "\\\\").replace('"', '\\"')
+    body = _TOML_CONTROL_CHAR_RE.sub(lambda match: f"\\u{ord(match.group()):04X}", body)
+    return f'"{body}"'
+
+
 def _refuse_oversized_cli_inputs(
     prompt: str,
     system_prompt: str | None = None,
@@ -180,14 +214,22 @@ def _refuse_oversized_cli_inputs(
             f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A long branch sends its rendered history as "
             "the input: start a new session and hand it the earlier result as a file."
         )
+    # The turn input travels over the child's stdin, where it is encoded strictly; a
+    # lone surrogate is refused here rather than after the process has started.
+    try:
+        prompt.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _refuse_text_strict_utf8_cannot_encode("The turn prompt") from None
     # The system prompt's and each override's argument, measured as as_cmd_args builds them,
     # so the refusal names them; every argument is measured again where the process starts.
-    # Encoded as strict UTF-8: a lone surrogate here is refused (UnicodeEncodeError is a
-    # ValueError) rather than passed to the CLI as a raw byte.
+    # Encoded as strict UTF-8: a lone surrogate here is refused rather than passed to the
+    # CLI as a raw byte, and the refusal names the input rather than the codec alone.
     if system_prompt:
-        _refuse_oversized_argument(
-            f"developer_instructions={system_prompt}".encode(), "The system prompt"
-        )
+        try:
+            argument = f"developer_instructions={system_prompt}".encode()
+        except UnicodeEncodeError:
+            raise _refuse_text_strict_utf8_cannot_encode("The system prompt") from None
+        _refuse_oversized_argument(argument, "The system prompt")
     for key, value in (config_overrides or {}).items():
         # Encoded before containment reads the key, so a value the encoder refuses with
         # ValueError refuses the request whether or not containment would drop it.
@@ -195,6 +237,12 @@ def _refuse_oversized_cli_inputs(
             encoded = toml_override_value(value)
         except TypeError:
             continue  # as_cmd_args refuses the value itself
+        except UnicodeEncodeError:
+            # A str value with a lone surrogate: named here rather than left to the
+            # codec's own message, which names neither the override nor the request.
+            raise _refuse_text_strict_utf8_cannot_encode(
+                f"The value of the config override {key[:80]!r}"
+            ) from None
         if contained:
             try:
                 kept, kept_value = _contain_override(key, value)
@@ -204,14 +252,23 @@ def _refuse_oversized_cli_inputs(
                 continue
             if kept_value is not value:
                 encoded = toml_override_value(kept_value)
-        _refuse_oversized_argument(f"{key}={encoded}".encode(), f"The config override {key!r}")
+        try:
+            argument = f"{key}={encoded}".encode()
+        except UnicodeEncodeError:
+            raise _refuse_text_strict_utf8_cannot_encode(
+                f"The config override key {key[:80]!r}"
+            ) from None
+        _refuse_oversized_argument(argument, f"The config override {key[:80]!r}")
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
-    """Render a single TOML scalar (or its quoted-string form), via the
-    vendored ``toml`` encoder so quoting/escaping stays spec-correct."""
+    """Render a single TOML scalar (or its quoted-string form): a str through
+    ``_toml_string``, numbers through the ``toml`` encoder so its literal stays
+    spec-correct."""
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, str):
+        return _toml_string(value)
     # toml.dumps({"x": value}) always renders "x = <literal>\n" for scalars;
     # strip the synthetic key so only the literal remains.
     dumped = toml.dumps({"x": value})
@@ -684,12 +741,19 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="after")
     def _refuse_a_turn_input_past_the_cli_limit(self):
         # A long branch sends its rendered history with every turn, which can exceed the limit.
-        _refuse_oversized_cli_inputs(
-            self.prompt,
-            self.system_prompt,
-            self.config_overrides,
-            contained=self._contains_account_integrations(),
-        )
+        try:
+            _refuse_oversized_cli_inputs(
+                self.prompt,
+                self.system_prompt,
+                self.config_overrides,
+                contained=self._contains_account_integrations(),
+            )
+        except ValueError as exc:
+            # Pydantic wraps a ValueError from a validator in a ValidationError, whose
+            # `.json()` and `.errors()` carry the whole input — config overrides included,
+            # so a secret in one override would reach the wrapper. CLIInputRefusedError is
+            # not a ValueError, so it passes through unwrapped.
+            raise CLIInputRefusedError(str(exc)) from None
         return self
 
     @model_validator(mode="after")

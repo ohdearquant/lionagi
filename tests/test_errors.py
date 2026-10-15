@@ -8,6 +8,7 @@ import importlib
 import pytest
 
 from lionagi._errors import (
+    CLIInputRefusedError,
     ConfigurationError,
     EmptyOutgoingContentError,
     ExecutionError,
@@ -38,6 +39,7 @@ _EXPECTED_ALL = (
     "ConfigurationError",
     "TimeoutError",
     "EmptyOutgoingContentError",
+    "CLIInputRefusedError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -295,6 +297,29 @@ class TestPublicSurface:
         error = EmptyOutgoingContentError()
         assert isinstance(error, LionError)
         assert isinstance(error, ValueError)
+
+
+class TestCLIInputRefusedError:
+    def test_default_message(self):
+        error = CLIInputRefusedError()
+        assert error.message == "CLI input cannot be passed"
+        assert error.status_code == 400
+
+    def test_custom_message(self):
+        error = CLIInputRefusedError("the turn input is too long")
+        assert error.message == "the turn input is too long"
+
+    def test_inheritance(self):
+        error = CLIInputRefusedError()
+        assert isinstance(error, LionError)
+        assert isinstance(error, Exception)
+        # Not a ValueError, so a pydantic validator raising it is not wrapped.
+        assert not isinstance(error, ValueError)
+
+    def test_is_not_a_value_error(self):
+        """A ValueError raised in a model validator is wrapped in a validation error
+        that carries the whole input; this refusal must not be."""
+        assert not issubclass(CLIInputRefusedError, ValueError)
 
 
 class TestAliases:

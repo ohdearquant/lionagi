@@ -1,20 +1,33 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Codex rejects an oversized turn input or system prompt before starting the CLI.
+"""Codex rejects an oversized or unencodable input before starting the CLI.
 
 A long branch sends its rendered history with each turn, so its input can exceed the CLI limit
-even when the new instruction is short.
+even when the new instruction is short. A refusal at construction is raised as a
+``CLIInputRefusedError``, not a ValueError, so pydantic does not wrap it in a validation
+error that carries the whole input.
 """
 
 from __future__ import annotations
 
 import sys
 
+import pydantic
 import pytest
 
+from lionagi._errors import CLIInputRefusedError
 from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai.codex import CODEX_MAX_TURN_INPUT_CHARS, CodexCodeRequest
+from lionagi.providers.openai.codex import (
+    CODEX_MAX_TURN_INPUT_CHARS,
+    CodexCodeRequest,
+    toml_override_value,
+)
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 has no tomllib
+    tomllib = None  # type: ignore[assignment]
 
 ARGUMENT_MAX_BYTES = codex_mod._CLI_ARGUMENT_MAX_BYTES
 # developer_instructions=<system prompt> is one argument; the prefix counts toward it.
@@ -31,7 +44,7 @@ def test_a_prompt_at_the_limit_is_taken_and_one_past_it_is_refused(tmp_path):
         CODEX_MAX_TURN_INPUT_CHARS
     )
 
-    with pytest.raises(ValueError) as info:
+    with pytest.raises(CLIInputRefusedError) as info:
         CodexCodeRequest(prompt="x" * (CODEX_MAX_TURN_INPUT_CHARS + 1), repo=tmp_path)
 
     message = str(info.value)
@@ -55,7 +68,7 @@ def test_the_limit_is_measured_on_the_input_the_messages_join_into(tmp_path):
         {"role": "user", "content": half},
         {"role": "assistant", "content": half},
     ]
-    with pytest.raises(ValueError, match="past the CLI's limit"):
+    with pytest.raises(CLIInputRefusedError, match="past the CLI's limit"):
         CodexCodeRequest(messages=messages, repo=tmp_path)
 
     # the same two halves less one character each fit, with the newline that joins them
@@ -103,7 +116,7 @@ async def test_a_copied_large_system_prompt_is_refused_before_the_cli_starts(tmp
 
 
 def test_a_system_message_too_long_for_one_argument_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="system prompt.*command-line argument"):
+    with pytest.raises(CLIInputRefusedError, match="system prompt.*command-line argument"):
         CodexCodeRequest(
             messages=[
                 {"role": "system", "content": "s" * (ARGUMENT_MAX_BYTES - PREFIX)},
@@ -123,13 +136,13 @@ def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
     argument = next(a for a in request.as_cmd_args() if a.startswith("developer_instructions="))
     assert len(argument.encode("utf-8")) == ARGUMENT_MAX_BYTES - 1
 
-    with pytest.raises(ValueError, match=f"argument of {ARGUMENT_MAX_BYTES:,} bytes"):
+    with pytest.raises(CLIInputRefusedError, match=f"argument of {ARGUMENT_MAX_BYTES:,} bytes"):
         CodexCodeRequest(prompt="hi", system_prompt=just_under + "s", repo=tmp_path)
 
     wide = "漢" * ((ARGUMENT_MAX_BYTES - PREFIX) // 3 + 1)
     assert len(wide) < ARGUMENT_MAX_BYTES < len(wide.encode("utf-8")) + PREFIX
     size = len(wide.encode("utf-8")) + PREFIX
-    with pytest.raises(ValueError, match=f"argument of {size:,} bytes,"):
+    with pytest.raises(CLIInputRefusedError, match=f"argument of {size:,} bytes,"):
         CodexCodeRequest(prompt="hi", system_prompt=wide, repo=tmp_path)
 
 
@@ -142,7 +155,7 @@ def test_a_config_override_too_long_for_one_argument_is_refused(tmp_path):
     argument = next(a for a in request.as_cmd_args() if a.startswith(f"{key}="))
     assert len(argument.encode("utf-8")) == ARGUMENT_MAX_BYTES - 1
 
-    with pytest.raises(ValueError, match="config override 'developer_instructions'"):
+    with pytest.raises(CLIInputRefusedError, match="config override 'developer_instructions'"):
         CodexCodeRequest(prompt="hi", config_overrides={key: fits + "s"}, repo=tmp_path)
 
 
@@ -191,7 +204,7 @@ async def test_a_branch_whose_transcript_is_past_the_limit_starts_nothing_and_ga
         branch.msgs.add_message(assistant_response="y" * quarter)
     prior = list(branch.messages)
 
-    with pytest.raises(ValueError, match="past the CLI's limit"):
+    with pytest.raises(CLIInputRefusedError, match="past the CLI's limit"):
         await branch.operate(instruction="go on")
 
     messages = list(branch.messages)
@@ -261,21 +274,54 @@ def test_an_argument_is_measured_in_the_bytes_the_process_receives():
 def test_a_lone_surrogate_in_a_prompt_or_an_override_is_refused_while_the_request_validates(
     tmp_path, fields
 ):
-    """Text is not a path: a surrogate escape there would reach the CLI as a raw byte. (An
-    override value is written as a TOML string, which escapes it.)"""
-    with pytest.raises(ValueError):
+    """Text is not a path: a surrogate escape there would reach the CLI as a raw byte, so
+    text the CLI cannot decode is refused by name while the request validates."""
+    with pytest.raises(CLIInputRefusedError):
         CodexCodeRequest(prompt="hi", repo=tmp_path, **fields)
 
 
-@pytest.mark.skipif(
-    not hasattr(sys, "set_int_max_str_digits"),
-    reason="only Pythons with an integer digit limit refuse to encode this value",
+# ── a refusal at construction carries none of the request's input ─────────────
+
+SECRET_OVERRIDE = "sentinel-in-another-override"
+SECRET_PROMPT = "sentinel-in-the-turn-prompt"
+
+
+def _fields_with_two_secrets(fields: dict) -> dict:
+    """The parametrized fields, plus a sentinel in a second override and one in the turn
+    prompt. The prompt stays past the CLI's limit when it was, and under it when it was."""
+    overrides = {**(fields.get("config_overrides") or {}), "other": SECRET_OVERRIDE}
+    prompt = fields.get("prompt", "hi")
+    if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
+        prompt = prompt[: CODEX_MAX_TURN_INPUT_CHARS + 1 - len(SECRET_PROMPT) - 1]
+    return {**fields, "prompt": f"{prompt} {SECRET_PROMPT}", "config_overrides": overrides}
+
+
+def _everything_the_error_shows(error: BaseException) -> str:
+    return " ".join([str(error), repr(error), *(repr(part) for part in error.args)])
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"prompt": "x" * (CODEX_MAX_TURN_INPUT_CHARS + 1)},
+        {"prompt": "hi", "config_overrides": {"k": "v" * ARGUMENT_MAX_BYTES}},
+        {"prompt": "hi \udcff"},
+    ],
+    ids=["over-limit-prompt", "oversized-override", "unencodable-prompt"],
 )
-def test_an_override_value_toml_cannot_encode_is_refused_while_the_request_validates(tmp_path):
-    """A value the encoder refuses with ValueError (an integer past the digit limit) refuses
-    the request, so no request exists whose repr or dump would raise on it."""
-    with pytest.raises(ValueError):
-        CodexCodeRequest(prompt="hi", config_overrides={"k": 10**5000}, repo=tmp_path)
+@pytest.mark.parametrize("contained", [False, True], ids=["uncontained", "contained"])
+def test_a_refusal_at_construction_carries_no_other_part_of_the_input(tmp_path, fields, contained):
+    """Pydantic wraps a ValueError from a model validator in a ValidationError whose
+    `.json()` and `.errors()` carry the whole input, so a secret in another override would
+    reach them. The refusal is not a ValueError, so it passes through unwrapped."""
+    fields = {**fields, "contain_account_integrations": contained}
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(repo=tmp_path, **_fields_with_two_secrets(fields))
+
+    assert not isinstance(caught.value, pydantic.ValidationError)
+    shown = _everything_the_error_shows(caught.value)
+    assert SECRET_OVERRIDE not in shown
+    assert SECRET_PROMPT not in shown
 
 
 @pytest.mark.skipif(
@@ -284,19 +330,29 @@ def test_an_override_value_toml_cannot_encode_is_refused_while_the_request_valid
 )
 @pytest.mark.parametrize(
     "overrides",
-    [{"features.apps": 10**5000}, {"features": {"apps": 10**5000}}, {"a b": 10**5000}],
-    ids=["dropped-key", "dropped-table-entry", "unreadable-key"],
+    [
+        {"k": 10**5000},
+        {"features.apps": 10**5000},
+        {"features": {"apps": 10**5000}},
+        {"a b": 10**5000},
+    ],
+    ids=["value", "contained-key", "contained-table-entry", "unreadable-key"],
 )
-def test_an_unencodable_value_is_refused_under_containment_too(tmp_path, overrides):
-    """Containment dropping the key, or failing to read it, does not leave a request whose
-    repr raises."""
-    with pytest.raises(ValueError):
-        CodexCodeRequest(
-            prompt="hi",
-            config_overrides=overrides,
-            contain_account_integrations=True,
-            repo=tmp_path,
-        )
+def test_an_unencodable_value_refuses_without_carrying_the_input(tmp_path, overrides):
+    """A value the encoder refuses with ValueError refuses the request even under
+    containment, and the refusal carries none of the other overrides."""
+    fields = _fields_with_two_secrets(
+        {
+            "prompt": "hi",
+            "contain_account_integrations": True,
+            "config_overrides": overrides,
+        }
+    )
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(repo=tmp_path, **fields)
+
+    assert not isinstance(caught.value, pydantic.ValidationError)
+    assert SECRET_OVERRIDE not in _everything_the_error_shows(caught.value)
 
 
 @pytest.mark.asyncio
@@ -337,3 +393,105 @@ def test_a_features_table_is_measured_as_containment_leaves_it(tmp_path):
         config_overrides={"features": {"apps": "v" * ARGUMENT_MAX_BYTES, "web_search": True}},
     )
     assert "features={ web_search = true }" in request.as_cmd_args()
+
+
+# ── text the TOML encoder changes or cannot take ─────────────────────────────
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib landed in Python 3.11")
+@pytest.mark.parametrize(
+    "value",
+    ["a\x01b", "\x01", "\x1b[0m", 'say "hi" \\ there', "tab\there", "名前", "🙂"],
+    ids=["interior-control", "leading-control", "ansi-escape", "quotes", "tab", "cjk", "emoji"],
+)
+def test_a_string_override_reads_back_as_the_same_string(value):
+    """The `toml` package renders a control character wrongly (`"a\\x01b"` came back as
+    `"ax01b"`) and raises IndexError on a leading one, so a string override is rendered
+    here. TOML reads every one of these back unchanged."""
+    assert tomllib.loads("k = " + toml_override_value(value))["k"] == value
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"k": "hi \udcff"}, {"outer": {"inner\udcff": 1}}],
+    ids=["value", "nested-table-key"],
+)
+def test_a_lone_surrogate_a_rendered_string_cannot_hold_is_refused(tmp_path, overrides):
+    with pytest.raises(CLIInputRefusedError, match="lone surrogate"):
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides=overrides)
+
+
+def test_an_override_containment_drops_may_hold_a_control_character(tmp_path):
+    """The dropped override is not rendered, so a character the encoder cannot take does
+    not reach it."""
+    request = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides={"features.apps": "\x01"},
+    )
+
+    assert not any(argument.startswith("features.apps") for argument in request.as_cmd_args())
+
+
+# ── an encoding refusal names the field ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "fields,named",
+    [
+        ({"prompt": "hi", "system_prompt": "hi \udcff"}, "system prompt"),
+        ({"prompt": "hi", "config_overrides": {"k\udcff": 1}}, "config override key"),
+        ({"prompt": "hi", "config_overrides": {"k": "hi \udcff"}}, "config override"),
+    ],
+    ids=["system-prompt", "override-key", "override-value"],
+)
+def test_an_encoding_refusal_names_the_field(tmp_path, fields, named):
+    """A bare UnicodeEncodeError names neither the input nor the request."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(repo=tmp_path, **fields)
+
+    assert named in str(caught.value)
+
+
+def test_an_override_key_refusal_cuts_the_key_like_the_argument_refusal(tmp_path):
+    key = "k" * 200 + "\udcff"
+
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={key: 1})
+
+    assert "k" * 200 not in str(caught.value)
+
+
+# ── the turn prompt ──────────────────────────────────────────────────────────
+
+
+def test_a_lone_surrogate_in_the_turn_prompt_is_refused_while_the_request_validates(tmp_path):
+    """The turn prompt travels over the child's stdin; a prompt the child cannot decode is
+    refused before the process starts, not when it is written to the pipe."""
+    with pytest.raises(CLIInputRefusedError, match="turn prompt"):
+        CodexCodeRequest(prompt="hi \udcff", repo=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_a_copied_turn_prompt_the_cli_cannot_decode_is_refused_before_the_cli_starts(
+    tmp_path, monkeypatch
+):
+    _refuse_a_spawn(monkeypatch)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"prompt": "hi \udcff"}
+    )
+
+    with pytest.raises(ValueError, match="turn prompt"):
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
+
+
+# ── a value the encoder refuses with TypeError ───────────────────────────────
+
+
+def test_a_value_the_encoder_refuses_with_a_type_error_reaches_the_command_builder(tmp_path):
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={"k": None})
+
+    with pytest.raises(TypeError):
+        request.as_cmd_args()
