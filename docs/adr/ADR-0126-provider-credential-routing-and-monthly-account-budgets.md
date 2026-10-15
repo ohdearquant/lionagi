@@ -225,7 +225,7 @@ are replaced with sanitized errors without raw request-info,
 header objects or exception chains. Responses/chunks are scrubbed of the chosen
 key before hooks, logging or yield, including a key split across stream chunks;
 the stream redactor must retain enough boundary context. Masks reveal no key
-characters. Verify with a
+characters (for the stream path, as bounded by Amendment 1). Verify with a
 canary in validation errors, repr/dumps, cache keys, HTTP errors and echoed bodies.
 
 ### D3 — One binding per conversation and provider
