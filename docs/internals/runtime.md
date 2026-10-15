@@ -1204,8 +1204,11 @@ file on retry without this snapshot.
   `type == "error"` exactly (`"turn.failed"` is never considered benign); the *raw* payload is
   exactly `{}` (an explicit `null`, once normalised to `{}`, must NOT qualify, hence checking
   `_raw_err` pre-normalization); and no other failure-indicating keys (`code`/`message`/
-  `status`) are present in the outer event. Getting any of these three conditions wrong either
-  misclassifies a real failure as benign or vice versa.
+  `status`) are present in the outer event. The classification runs before the session is
+  touched: a benign sentinel leaves the session's outcome and result exactly as they were and
+  only emits its non-error chunk, where every other error event still fails the session.
+  Getting any of these three conditions wrong either misclassifies a real failure as benign or
+  vice versa.
 
 ### `pi/cli.py`
 

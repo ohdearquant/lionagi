@@ -297,17 +297,22 @@ A model served through the CLI can write a tool call into its reply as text,
 in the model's own call markup, instead of making the call. The CLI accepts
 that text as the turn's final message and still ends the turn with
 `turn.completed`, so the run would otherwise be recorded as completed although
-the agent stopped mid-task and the call never ran. When a turn ends and the
-last `agent_message` of that turn carries call markup, the parser instead ends
-the run as a failure — `session.is_error`, a `session.result` saying the model
-wrote a call as text and the run stopped before it ran, and an error
-`StreamChunk` whose metadata carries `call_markup_in_text: True` — while the
-usage `result` chunk is still emitted. Only the last message of the turn is
-read: markup in an earlier message was superseded by a later one. The markup
-itself is the tuple `_TOOL_CALL_MARKUP_PATTERNS`, one compiled pattern per call
-markup the CLI can surface; another model's markup is supported by adding one
-entry there. The patterns match markup tags only, never the word DSML or a
-bare `|` in ordinary prose.
+the agent stopped mid-task and the call never ran. When a turn ends — or the
+stream ends without a turn end — and the turn's last non-empty agent text
+carries call markup outside code, the parser marks the session failed
+(`session.is_error`, with a `session.result` saying the model wrote a call as
+text and the run stopped before it ran) and emits an error `StreamChunk` whose
+metadata carries `call_markup_in_text: True` — while the usage `result` chunk
+is still emitted. A streamed run raises on that error chunk; a non-streamed
+call returns the session marked failed, as it does for any failed turn, and
+does not raise. Only the turn's last text is read: markup in an earlier message
+was superseded by a later one, a completed call after the message clears it,
+and text inside a fenced code block or an inline code span is a quotation of
+the markup rather than a call. The markup itself is the tuple
+`_TOOL_CALL_MARKUP_PATTERNS`, one compiled pattern per call markup the CLI can
+surface; another model's markup is supported by adding one entry there. The
+patterns match markup tags only — never the word DSML or a bare `|` in
+ordinary prose.
 
 ## Codex turn-completed usage delta
 

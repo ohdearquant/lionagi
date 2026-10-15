@@ -112,18 +112,86 @@ _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 
 # Models served through the CLI can write a tool call into their reply as text
 # in their own call markup instead of emitting a real call. The CLI takes that
-# text as the turn's final message and ends the turn normally, so a run whose
-# last agent message carries call markup is treated as failed below. Each entry
-# matches markup tags only — never the word DSML or a bare "|" in prose — so a
-# new model's markup can be supported by adding one compiled pattern here.
+# text as the turn's final message and ends the turn normally; the session is
+# marked failed (``is_error``, with a result naming the cause) and an error
+# chunk is emitted, read when a turn completes or the stream ends, over the
+# turn's last non-empty agent text outside code. Each entry matches markup tags
+# only — never the word DSML or a bare "|" in prose — so a new model's markup
+# can be supported by adding one compiled pattern here.
 _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"</?\s*[\uff5c|]\s*DSML\s*[\uff5c|]\s*(?:invoke|calls)(?:\s[^<>]*)?/?>"),
+    re.compile(
+        r"</?\s*[\uff5c|]+\s*DSML\s*[\uff5c|]+\s*"
+        r"(?:function_calls|parameter|invoke|calls)(?:\s[^<>]*)?/?>"
+    ),
 )
+
+# A fenced code block: a line opening with ``` or ~~~ through the closing line
+# of the same fence. Its contents are a quotation of the markup, not a call.
+_FENCED_CODE_RE = re.compile(
+    r"^[ \t]*(?P<fence>```|~~~)[^\n]*\n.*?^[ \t]*(?P=fence)[ \t]*$",
+    re.M | re.S,
+)
+# An inline code span: text between matching runs of backticks.
+_INLINE_CODE_RE = re.compile(r"(`+)[^`]*\1")
+
+# Completed items that are a call the CLI ran, or a call's result. One of these
+# after a message means the turn went on past that message, so the message is
+# no longer the turn's last text. Any other item (a plan update, a notice, a
+# type not named here) leaves the turn's last text as it was.
+_CALL_ITEM_TYPES = frozenset(
+    {
+        "command_execution",
+        "file_change",
+        "mcp_tool_call",
+        "web_search",
+        "function_call",
+        "tool_call",
+        "function_call_output",
+    }
+)
+
+# The failure recorded when the turn's last text carries call markup.
+_TOOL_CALL_MARKUP_FAILURE = (
+    "The model wrote a tool call as text in its final message "
+    "instead of making the call; the run stopped before the call ran."
+)
+
+
+def _strip_code_regions(text: str) -> str:
+    """Remove fenced code blocks and inline code spans from ``text``.
+
+    Markup inside code is being shown, not written as a call, so the regions
+    are dropped before the markup patterns are matched.
+    """
+    without_blocks = _FENCED_CODE_RE.sub(" ", text)
+    return _INLINE_CODE_RE.sub(" ", without_blocks)
 
 
 def _has_tool_call_markup(text: str) -> bool:
     """True when ``text`` carries a tool-call markup tag written as plain text."""
-    return bool(text) and any(p.search(text) for p in _TOOL_CALL_MARKUP_PATTERNS)
+    if not text:
+        return False
+    visible = _strip_code_regions(text)
+    return any(p.search(visible) for p in _TOOL_CALL_MARKUP_PATTERNS)
+
+
+def _call_markup_error_chunk(session: CLISession, event: Mapping[str, Any]) -> StreamChunk:
+    """Mark ``session`` failed for call markup written as text and build its chunk.
+
+    The session is marked failed the way any failed turn marks it -- ``is_error``
+    and a result naming the cause -- and the returned chunk says the same thing
+    in its content, carries ``call_markup_in_text``, and is a real error chunk.
+    """
+    session.is_error = True
+    session.result = _TOOL_CALL_MARKUP_FAILURE
+    sc = StreamChunk(
+        type="error",
+        content=session.result,
+        is_error=True,
+        metadata={"call_markup_in_text": True, **event},
+    )
+    session.chunks.append(sc)
+    return sc
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
@@ -849,8 +917,9 @@ async def stream_codex_cli(
     _prev_output_tokens = 0
     _prev_cost: float = 0.0
     _seen_cost = False
-    # Text of the most recent agent_message seen since the last turn end; the
-    # call-markup check on turn.completed reads only this one message.
+    # Text of the turn's last non-empty agent text since the last turn end; the
+    # call-markup check reads only the last one, when a turn completes or the
+    # stream ends. Code regions of that text are removed before matching.
     _last_agent_text: str | None = None
 
     stream = stream_codex_cli_events(request)
@@ -876,10 +945,19 @@ async def stream_codex_cli(
                 item = obj.get("item", {})
                 item_type = item.get("type", "")
 
+                # A completed call (or its result) after a message means the
+                # turn went on past it, so a markup message is superseded and
+                # must not fail the turn. Other items leave the text as it was.
+                if item_type in _CALL_ITEM_TYPES:
+                    _last_agent_text = None
+
                 if item_type == "agent_message":
                     text = item.get("text", "")
                     session.messages.append(item)
-                    _last_agent_text = text
+                    # An empty message does not become the turn's last text;
+                    # it does not replace a message that carried one.
+                    if text:
+                        _last_agent_text = text
                     if on_text:
                         await maybe_await(on_text(text))
                     if request.verbose_output:
@@ -1067,22 +1145,10 @@ async def stream_codex_cli(
                 # A model that writes a tool call into its reply as text has
                 # stopped mid-task: the CLI accepts that text as the turn's
                 # final message, no call is made, and the turn still completes.
-                # Only the last message of the turn is read — markup in an
-                # earlier message was already superseded by a later one.
+                # Only the turn's last non-empty agent text is read — markup in
+                # an earlier message was already superseded by a later one.
                 if _has_tool_call_markup(_last_agent_text or ""):
-                    session.is_error = True
-                    session.result = (
-                        "The model wrote a tool call as text in its final message "
-                        "instead of making the call; the run stopped before the call ran."
-                    )
-                    ec = StreamChunk(
-                        type="error",
-                        content=session.result,
-                        is_error=True,
-                        metadata={"call_markup_in_text": True, **obj},
-                    )
-                    session.chunks.append(ec)
-                    yield ec
+                    yield _call_markup_error_chunk(session, obj)
                 _last_agent_text = None
 
             # -- turn.failed / error --
@@ -1129,28 +1195,41 @@ async def stream_codex_cli(
                     yield sc
                     continue
 
-                session.is_error = True
-                session.result = _err_message
                 # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
-                # for the exact 3-condition classification.
+                # for the exact 3-condition classification. Classified before the
+                # session is touched: a benign sentinel leaves the session's
+                # outcome and result exactly as they were, and only emits its
+                # non-error chunk with the empty-payload message.
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
                     and _raw_err == {}  # null normalised to {} must NOT qualify
                     and not any(k in obj for k in ("code", "message", "status"))
                 )
-                chunk_meta = dict(obj)
                 if _is_benign_eos:
-                    chunk_meta["benign_eos"] = True
-                    session.is_error = False  # retract: not a real error
-                else:
-                    if request.verbose_output:
-                        log.error("Codex error: %s", session.result)
+                    sc = StreamChunk(
+                        type="error",
+                        content=_err_message,
+                        is_error=False,
+                        metadata={**obj, "benign_eos": True},
+                    )
+                    session.chunks.append(sc)
+                    yield sc
+                    continue
+
+                session.is_error = True
+                session.result = _err_message
+                # The turn is over: a real failure replaces the turn's pending
+                # text, as turn.completed does, so a later turn's end does not
+                # read a message this failing turn left behind.
+                _last_agent_text = None
+                if request.verbose_output:
+                    log.error("Codex error: %s", session.result)
                 sc = StreamChunk(
                     type="error",
                     content=session.result,
-                    is_error=not _is_benign_eos,
-                    metadata=chunk_meta,
+                    is_error=True,
+                    metadata=dict(obj),
                 )
                 session.chunks.append(sc)
                 yield sc
@@ -1162,6 +1241,8 @@ async def stream_codex_cli(
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
+                    if content:
+                        _last_agent_text = content
                     if on_text:
                         await maybe_await(on_text(content))
                     if request.verbose_output:
@@ -1176,6 +1257,8 @@ async def stream_codex_cli(
                         btype = blk.get("type")
                         if btype == "text":
                             text = blk.get("text", "")
+                            if text:
+                                _last_agent_text = text
                             if on_text:
                                 await maybe_await(on_text(text))
                             if request.verbose_output:
@@ -1184,6 +1267,9 @@ async def stream_codex_cli(
                             session.chunks.append(sc)
                             yield sc
                         elif btype in ("tool_use", "function_call"):
+                            # A written block is a real call block, so any
+                            # message seen before it is not the turn's last text.
+                            _last_agent_text = None
                             tu = {
                                 "id": blk.get("id", ""),
                                 "name": blk.get("name", blk.get("function", {}).get("name", "")),
@@ -1235,6 +1321,13 @@ async def stream_codex_cli(
                 break
     finally:
         await stream.aclose()
+
+    # A stream that ends without a turn end leaves the turn's last text unread;
+    # if it carries markup, the run stopped before the call ran, so fail it the
+    # same way a turn end would.
+    if _has_tool_call_markup(_last_agent_text or ""):
+        yield _call_markup_error_chunk(session, {})
+        _last_agent_text = None
 
     if not session.result:
         parts = [c.content for c in session.chunks if c.type == "text" and c.content]
