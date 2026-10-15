@@ -13,11 +13,19 @@ Three layers enforce this, because each alone has a known way around it:
 
 - the operation layer: a write runs only inside a StateDB method marked as an operation the profile
   names, and only in a transaction the guard opened for it;
-- a statement check on every statement SQLAlchemy sends, which refuses REPLACE forms, RETURNING and
-  anything but INSERT and UPDATE inside an operation, and anything but a read outside one;
+- a statement check on every statement SQLAlchemy sends, which refuses REPLACE forms, every
+  conflict clause but ABORT, RETURNING and anything but INSERT and UPDATE inside an operation, and
+  anything but a read outside one;
 - the authorizer, a ceiling on every connection that sees what reaches SQLite by any path: INSERT
   only into the profile's tables, UPDATE only of its columns, a short list of PRAGMAs, and no commit
   of a transaction in which anything was denied.
+
+The authorizer does not see how SQLite resolves a conflict: a row a REPLACE resolution deletes
+reaches it as no DELETE, and a ROLLBACK resolution ends the transaction without a callback. So
+admission refuses a store whose tables declare any conflict resolution but ABORT, the statement
+check refuses a statement that names one, and a write is refused once the transaction its operation
+opened is no longer open. A statement sent to the driver directly, past the statement check, can
+still name a conflict clause the authorizer cannot see.
 """
 
 from __future__ import annotations
@@ -169,6 +177,13 @@ _TABLE_PRAGMAS = frozenset(
     {"table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "foreign_key_list"}
 )
 _DML = frozenset({"insert", "update", "delete", "replace"})
+# What each conflict resolution but ABORT does that the guard cannot see or undo.
+_CONFLICT_EFFECTS = {
+    "replace": "deletes the row a write conflicts with, and no DELETE reaches the authorizer",
+    "rollback": "ends the transaction the operation opened, and its earlier writes with it",
+    "ignore": "skips a conflicting row without an error",
+    "fail": "keeps what a statement changed before the conflict",
+}
 
 
 def _pragma_reads(tokens: list[tuple[str, str]]) -> bool:
@@ -227,6 +242,15 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
             and tokens[index + 1 : index + 2] != [(_PUNCT, "(")]
         ):
             return "the OR REPLACE conflict clause deletes the conflicting row"
+    for index in range(len(tokens) - 2):
+        if tokens[index] in ((_WORD, "insert"), (_WORD, "update")) and tokens[index + 1] == (
+            _WORD,
+            "or",
+        ):
+            action = tokens[index + 2][1]
+            if action != "abort":
+                effect = _CONFLICT_EFFECTS.get(action, "is not admitted")
+                return f"the OR {action.upper()} conflict clause {effect}"
     if "returning" in top:
         return "RETURNING is not admitted"
     return None
@@ -254,12 +278,15 @@ class ColumnShape:
 
 @dataclass(frozen=True)
 class TableShape:
-    """A table's columns in order, its unique keys, CHECK constraints and table options.
+    """A table's columns in order, its unique keys, CHECK constraints, table options and conflicts.
 
     A unique key lists its columns in index order, with ``"<expression>"`` for an indexed
     expression; a partial unique index appends ``"where <predicate>"``. Options are drawn from
-    ``"strict"``, ``"without rowid"`` and ``"virtual"``. Values compare as :func:`read_closure`
-    spells them, so a profile's shapes come from reading a store built by the managing application.
+    ``"strict"``, ``"without rowid"`` and ``"virtual"``. ``conflicts`` holds every conflict
+    resolution other than ABORT, SQLite's default, that the table's constraints declare
+    (``"replace"``, ``"rollback"``, ``"ignore"``, ``"fail"``); admission refuses a table that has
+    one. Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
+    a store built by the managing application.
     """
 
     name: str
@@ -267,6 +294,7 @@ class TableShape:
     unique: frozenset[tuple[str, ...]] = frozenset()
     checks: frozenset[str] = frozenset()
     options: frozenset[str] = frozenset()
+    conflicts: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -336,6 +364,16 @@ def _checks(tokens: list[tuple[str, str]]) -> frozenset[str]:
     return frozenset(found)
 
 
+def _conflicts(tokens: list[tuple[str, str]]) -> frozenset[str]:
+    found: set[str] = set()
+    for index in range(len(tokens) - 2):
+        if tokens[index : index + 2] == [(_WORD, "on"), (_WORD, "conflict")]:
+            kind, action = tokens[index + 2]
+            if kind == _WORD and action != "abort":
+                found.add(action)
+    return frozenset(found)
+
+
 def _options(tokens: list[tuple[str, str]]) -> frozenset[str]:
     words = [text for kind, text in tokens if kind == _WORD]
     options: set[str] = set()
@@ -400,7 +438,14 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
             key.append("where " + _predicate((entry[3] if entry else None) or ""))
         unique.add(tuple(key))
     tokens = _sql_tokens(sql)
-    return TableShape(name.lower(), columns, frozenset(unique), _checks(tokens), _options(tokens))
+    return TableShape(
+        name.lower(),
+        columns,
+        frozenset(unique),
+        _checks(tokens),
+        _options(tokens),
+        _conflicts(tokens),
+    )
 
 
 def _foreign_keys(fetch: _Fetch, table: str) -> list[ForeignKeyShape]:
@@ -481,7 +526,7 @@ def _closure_differences(expected: Closure, observed: Closure) -> list[str]:
                 )
         if want.keys() == have.keys() and table.columns != actual.columns and not found:
             found.append(f"the columns of {table.name} are in a different order")
-        for label in ("unique", "checks", "options"):
+        for label in ("unique", "checks", "options", "conflicts"):
             if getattr(table, label) != getattr(actual, label):
                 found.append(
                     f"{label} of {table.name}: store has {sorted(getattr(actual, label))}, "
@@ -732,6 +777,22 @@ class _Guard:
         return _closure_differences(expected, _read_closure(fetch, expected.table_names))
 
     def _check_store(self, fetch: _Fetch, when: str, operation: str | None) -> None:
+        declared = sorted(
+            (table.name, action)
+            for table in self.profile.closure.tables
+            for action in table.conflicts
+        )
+        if declared:
+            shown = "; ".join(
+                f"{table} declares ON CONFLICT {action.upper()}, which "
+                f"{_CONFLICT_EFFECTS.get(action, 'the guard does not admit')}"
+                for table, action in declared
+            )
+            raise self.refusal(
+                f"{when}: compatibility mode admits only ABORT, SQLite's default conflict "
+                f"resolution: {shown}",
+                operation,
+            )
         versions = self.profile.store_versions
         if versions is not None:
             present = fetch(
@@ -916,6 +977,14 @@ class _Guard:
             reason = "compatibility mode runs no write outside an operation the profile names"
         elif not state.write_txn:
             reason = "a write runs only inside the transaction its operation opened"
+        elif not connection.connection.driver_connection.in_transaction:
+            # SQLite ended the transaction by itself (a ROLLBACK conflict resolution, a full disk)
+            # without a callback the authorizer sees, so the flag is stale.
+            state.write_txn = False
+            reason = (
+                "SQLite rolled back the transaction this operation opened, and its earlier writes "
+                "with it; no later write runs outside a transaction"
+            )
         else:
             reason = _write_refusal(tokens)
             if reason is None:

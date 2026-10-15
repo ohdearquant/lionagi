@@ -6423,7 +6423,9 @@ class StateDB:
 # DEFAULT_DB_PATH get their own isolated instance, and by open mode and profile, so a native and a
 # compatibility handle on one file are never the same object.
 
-_SHARED: dict[tuple[str, str, CompatibilityProfile | None], StateDB] = {}
+# A native handle is keyed by its url alone, as it always was; a read-only or compatibility handle
+# by (url, mode, profile), so it is never the shared native handle on the same file.
+_SHARED: dict[str | tuple[str, str, CompatibilityProfile | None], StateDB] = {}
 # Guards the lazy-open window; created on first async call (anyio.Lock
 # must be instantiated inside an active backend task context).
 _SHARED_OPEN_LOCK: Lock | None = None
@@ -6436,8 +6438,8 @@ _SHARED_TEARDOWN_RACE = (
 )
 
 
-def _shared_key(db: StateDB) -> tuple[str, str, CompatibilityProfile | None]:
-    return (db.url, db.mode, db.compatibility)
+def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None]:
+    return db.url if db.mode == "native" else (db.url, db.mode, db.compatibility)
 
 
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
@@ -6446,7 +6448,7 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
     # Resolve the key through StateDB's own cascade so a monkeypatched DEFAULT_DB_PATH is honored;
     # normalize_state_db_url(None) would bypass it to the real home db.
     url = StateDB(path).url
-    key = (url, "native", None)
+    key = url
     if key in _SHARED:
         return _SHARED[key]
     if _SHARED_OPEN_LOCK is None:

@@ -67,6 +67,7 @@ _OPERATIONS = {
     "caught",
     "raw_commit",
     "autocommit_write",
+    "rolled_back",
 }
 
 
@@ -175,6 +176,20 @@ class _RunsDB(StateDB):
                 text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
             )
 
+    @_operation("rolled_back")
+    async def rolled_back(self, run_id: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
+            )
+            driver = (await conn.get_raw_connection()).driver_connection
+            # Past the statement check: a conflict SQLite resolves by rolling the transaction back.
+            with pytest.raises(sqlite3.IntegrityError):
+                await driver.execute(
+                    "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
+                )
+            await conn.execute(text("INSERT INTO runs (id, status) VALUES ('after', 'running')"))
+
     @_operation("not_in_profile")
     async def not_in_profile(self) -> None:
         self.entered.append("not_in_profile")
@@ -268,6 +283,8 @@ _REBUILT = {
     "outgoing foreign key": ("REFERENCES runs(id)", ""),
     "unique key": ("UNIQUE (run_id, body)", "UNIQUE (body, run_id)"),
     "without rowid": ("    updated_at REAL\n);", "    updated_at REAL\n) WITHOUT ROWID;"),
+    "conflict replace": ("id TEXT PRIMARY KEY,", "id TEXT PRIMARY KEY ON CONFLICT REPLACE,"),
+    "conflict rollback": ("UNIQUE (run_id, body)", "UNIQUE (run_id, body) ON CONFLICT ROLLBACK"),
 }
 
 
@@ -280,6 +297,36 @@ async def test_a_table_built_differently_is_refused(change, tmp_path, reference)
     with pytest.raises(StateCompatibilityRefused, match="does not match the profile"):
         await db.open()
     assert db._engine is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("id TEXT PRIMARY KEY,", "id TEXT PRIMARY KEY ON CONFLICT REPLACE,"),
+        ("UNIQUE (run_id, body)", "UNIQUE (run_id, body) ON CONFLICT ROLLBACK"),
+        ("body TEXT NOT NULL,", "body TEXT NOT NULL ON CONFLICT IGNORE,"),
+        ("UNIQUE (run_id, body)", "UNIQUE (run_id, body) ON CONFLICT FAIL"),
+    ],
+    ids=["replace", "rollback", "ignore", "fail"],
+)
+async def test_a_profile_whose_tables_resolve_conflicts_is_refused(old, new, tmp_path):
+    schema = _SCHEMA.replace(old, new, 1)
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused, match="admits only ABORT") as caught:
+        await db.open()
+    assert f"ON CONFLICT {new.rsplit(' ', 1)[-1].rstrip(',')}" in caught.value.reason
+    assert db._engine is None
+
+
+async def test_an_explicit_on_conflict_abort_is_only_a_spelling(tmp_path, reference):
+    store = _store(
+        tmp_path / "abort.db",
+        _SCHEMA.replace("id TEXT PRIMARY KEY,", "id TEXT PRIMARY KEY ON CONFLICT ABORT,", 1),
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
 
 
 async def test_spelling_differences_alone_do_not_refuse(tmp_path, reference):
@@ -390,6 +437,9 @@ async def test_an_operation_the_profile_does_not_name_never_runs(store, referenc
         ("INSERT OR REPLACE INTO runs (id, status) VALUES ('r1', 'done')", "OR REPLACE"),
         ("REPLACE INTO runs (id, status) VALUES ('r1', 'done')", "REPLACE is not"),
         ("UPDATE OR REPLACE runs SET status = 'done'", "OR REPLACE"),
+        ("INSERT OR ROLLBACK INTO runs (id, status) VALUES ('r1', 'done')", "OR ROLLBACK"),
+        ("INSERT OR IGNORE INTO runs (id, status) VALUES ('r1', 'done')", "OR IGNORE"),
+        ("UPDATE OR FAIL runs SET status = 'done'", "OR FAIL"),
         ("INSERT INTO runs (id, status) VALUES ('r2', 'running') RETURNING id", "RETURNING"),
         ("DELETE FROM runs", "DELETE is not"),
         ("CREATE TEMP TABLE scratch (x)", "CREATE is not"),
@@ -415,6 +465,26 @@ async def test_an_operation_cannot_write_outside_its_profile(statement, reason, 
         await db.close()
     assert _rows(store, "SELECT id, status, note FROM runs") == [("r1", "running", None)]
     assert _rows(store, "SELECT * FROM other") == [("keep", "untouched")]
+
+
+async def test_an_or_abort_conflict_clause_is_admitted(store, reference):
+    db = await _open(store, _profile(reference))
+    try:
+        await db.run_sql("INSERT OR ABORT INTO runs (id, status) VALUES ('r1', 'running')")
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT id, status FROM runs") == [("r1", "running")]
+
+
+async def test_a_write_after_sqlite_rolled_the_transaction_back_is_refused(store, reference):
+    db = await _open(store, _profile(reference))
+    try:
+        with pytest.raises(StateCompatibilityRefused, match="SQLite rolled back") as caught:
+            await db.rolled_back("r1")
+        assert caught.value.operation == "rolled_back"
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT count(*) FROM runs") == [(0,)]
 
 
 async def test_the_function_named_replace_is_not_the_conflict_clause(store, reference):
@@ -607,6 +677,8 @@ async def test_a_compatibility_handle_is_never_the_shared_native_handle(store, r
     try:
         await db_mod.register_shared_db(compat)
         assert db_mod._shared_key(compat) != db_mod._shared_key(native)
+        # a native handle keeps the key it always had
+        assert db_mod._shared_key(native) == native.url
         assert db_mod._SHARED.get(db_mod._shared_key(native)) is None
         db_mod.unregister_shared_db(native)
         assert db_mod._SHARED.get(db_mod._shared_key(compat)) is compat

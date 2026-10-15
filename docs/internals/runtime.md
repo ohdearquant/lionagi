@@ -49,14 +49,20 @@ whose schema another application manages, and never migrates, stamps or reconfig
   failed admission disposes the engine, so the object stays unopened. A write transaction compares
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
   closure when it moved: a change elsewhere in the store re-admits, a change to the closure
-  refuses.
+  refuses. A table whose constraints declare any conflict resolution but ABORT (`ON CONFLICT
+  REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`) is refused, in the store or in the profile: the
+  authorizer cannot see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution
+  ends.
 - **Operations.** A StateDB method marked as an operation the profile names runs inside that
   operation's scope (a context variable, so code the operation calls inherits it). `_tx()` and the
   engine's begin listener refuse a transaction outside a scope; `execute()` and `transaction()`
   refuse, and `fetch_all()`/`fetch_one()` refuse anything but a read.
 - **Statements.** Every statement SQLAlchemy sends is checked: outside an operation only reads,
   read PRAGMAs and transaction control pass; inside one only INSERT and UPDATE (directly or after a
-  `WITH`), never with an `OR REPLACE` conflict clause or `RETURNING`; savepoints are refused.
+  `WITH`), never with a conflict clause but `OR ABORT` or with `RETURNING`; savepoints are
+  refused. A write is refused once SQLite has rolled back the transaction its operation opened.
+  A statement sent to the driver directly passes none of these checks, and only the authorizer
+  sees it, without its conflict clause.
 - **Authorizer.** The ceiling on every connection, seeing statements that reach SQLite by any
   path: INSERT only into tables the profile inserts into, UPDATE only of its update columns, both
   only on `main` and only inside a transaction the guard opened; reads; a short PRAGMA list; any
@@ -66,8 +72,9 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
   `committed` names the operation's transactions that had already committed. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.
-- Handles are shared by `(url, mode, profile)`, so a native and a compatibility handle on one
-  file are never the same object.
+- Native handles are shared by url, as before; a read-only or compatibility handle is keyed by
+  `(url, mode, profile)`, so a native and a compatibility handle on one file are never the same
+  object.
 
 ### `state/health.py`
 
