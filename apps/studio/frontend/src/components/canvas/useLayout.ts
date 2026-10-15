@@ -462,6 +462,73 @@ export function computeReservedHeight(
   return bboxHeight * zoom;
 }
 
+// Bound dagre's normalized rank work before it allocates edge dummy nodes.
+// Its edge-label pass doubles minlen. Counting those spans as well as real
+// nodes catches both long carried-forward edges and dense short-edge graphs.
+// These are structural admission limits, not a wall-clock deadline.
+const DAGRE_WORK_LIMIT = 192;
+const DAGRE_NODE_LIMIT = 128;
+
+function fitsDagreBudget(nodes: Node[], edges: Edge[], ranks: Map<string, number>): boolean {
+  if (nodes.length > DAGRE_NODE_LIMIT) return false;
+  let work = nodes.length;
+  for (const edge of edges) {
+    const source = ranks.get(edge.source);
+    const target = ranks.get(edge.target);
+    if (source === undefined || target === undefined) continue;
+    work += 2 * Math.max(1, target - source);
+    if (work > DAGRE_WORK_LIMIT) return false;
+  }
+  return true;
+}
+
+// Large graphs retain exact ASAP ranks but use stable sibling order instead
+// of dagre's crossing optimization. Final edge routes use these endpoints;
+// dagre's polylines are not part of the returned graph.
+function placeAsapRanks(
+  nodes: Node[],
+  ranks: Map<string, number>,
+  direction: "LR" | "TB",
+  ranksep: number,
+): Node[] {
+  const byRank = new Map<number, Node[]>();
+  for (const node of nodes) {
+    const rank = ranks.get(node.id)!;
+    const group = byRank.get(rank);
+    if (group) group.push(node);
+    else byRank.set(rank, [node]);
+  }
+  const horizontal = direction === "LR";
+  const groups = [...byRank.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, members]) => {
+      members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const crossSize =
+        members.reduce(
+          (sum, node) => sum + (horizontal ? estimateNodeHeight(node) : NODE_WIDTH),
+          0,
+        ) +
+        NODE_SEP * (members.length - 1);
+      const depthSize = horizontal ? NODE_WIDTH : Math.max(...members.map(estimateNodeHeight));
+      return { members, crossSize, depthSize };
+    });
+  const maxCrossSize = Math.max(0, ...groups.map((group) => group.crossSize));
+  const positions = new Map<string, { x: number; y: number }>();
+  let depthOffset = horizontal ? 28 : 24;
+  for (const { members, crossSize, depthSize } of groups) {
+    let crossOffset = (horizontal ? 24 : 28) + (maxCrossSize - crossSize) / 2;
+    for (const node of members) {
+      positions.set(
+        node.id,
+        horizontal ? { x: depthOffset, y: crossOffset } : { x: crossOffset, y: depthOffset },
+      );
+      crossOffset += (horizontal ? estimateNodeHeight(node) : NODE_WIDTH) + NODE_SEP;
+    }
+    depthOffset += depthSize + ranksep;
+  }
+  return nodes.map((node) => ({ ...node, position: positions.get(node.id)! }));
+}
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
@@ -470,80 +537,85 @@ export function getLayoutedElements(
   const ranks = computeNodeDepths(nodes, edges);
   const maxDepth = ranks.size ? Math.max(...ranks.values()) : 0;
 
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({
-    rankdir: direction,
-    nodesep: NODE_SEP,
-    ranksep: rankSepForDepth(maxDepth),
-    marginx: 28,
-    marginy: 24,
-  });
+  let layoutedNodes: Node[];
+  if (!fitsDagreBudget(nodes, edges, ranks)) {
+    layoutedNodes = placeAsapRanks(nodes, ranks, direction, rankSepForDepth(maxDepth));
+  } else {
+    const g = new dagre.graphlib.Graph();
+    g.setDefaultEdgeLabel(() => ({}));
+    g.setGraph({
+      rankdir: direction,
+      nodesep: NODE_SEP,
+      ranksep: rankSepForDepth(maxDepth),
+      marginx: 28,
+      marginy: 24,
+    });
 
-  for (const node of nodes) {
-    g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
-  }
-  // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
-  // computed each node's ASAP depth. dagre's own rankers — network-simplex
-  // included, which is the untouched default here — minimize total edge
-  // length instead, which is a different objective and disagrees with ASAP
-  // whenever a node's result is consumed much later than it is produced (the
-  // P2 case). Rather than fight that objective with a `ranker` option (the
-  // ADR is explicit that no ranker choice changes the outcome), pin every
-  // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
-  // satisfies every constraint with equality, so its total edge span equals
-  // the sum of the minlens, which is the lower bound any feasible assignment
-  // can reach — and reaching it requires every edge to be tight, which only
-  // ASAP is. dagre still does the ordering and routing, just not the ranking.
-  //
-  // Note what that argument rests on: ASAP is the unique MINIMUM-COST
-  // assignment here, not the unique feasible one. Slack-free constraints do
-  // not by themselves pin a solution — on the graph the decision was measured
-  // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
-  // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
-  // this depends on the ranker minimizing total edge length, which every dagre
-  // ranker does. A future ranker with a different objective would need this
-  // revisited rather than trusted.
-  for (const edge of edges) {
-    const sourceRank = ranks.get(edge.source);
-    const targetRank = ranks.get(edge.target);
-    if (sourceRank !== undefined && targetRank !== undefined) {
-      g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
-      continue;
+    for (const node of nodes) {
+      g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
     }
-    // An endpoint is missing from `ranks`, which happens exactly when the edge
-    // names a node that never arrived: computeNodeDepths ranks every node it
-    // was given and skips edges pointing outside that set. Skip the edge here
-    // too, so the layout and the rank map describe the same graph.
+    // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
+    // computed each node's ASAP depth. dagre's own rankers — network-simplex
+    // included, which is the untouched default here — minimize total edge
+    // length instead, which is a different objective and disagrees with ASAP
+    // whenever a node's result is consumed much later than it is produced (the
+    // P2 case). Rather than fight that objective with a `ranker` option (the
+    // ADR is explicit that no ranker choice changes the outcome), pin every
+    // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
+    // satisfies every constraint with equality, so its total edge span equals
+    // the sum of the minlens, which is the lower bound any feasible assignment
+    // can reach — and reaching it requires every edge to be tight, which only
+    // ASAP is. dagre still does the ordering and routing, just not the ranking.
     //
-    // Handing it to dagre instead is worse than useless. graphlib's setEdge
-    // CREATES an endpoint it has not seen, so the absent node gets a rank and
-    // a slot of its own, and dagre pushes the real node that depends on it out
-    // of the rank this function just computed — positions contradicting the
-    // `ranks` map returned beside them, on behalf of a node nothing draws. It
-    // also costs real time at scale, since dagre lays out every phantom.
-    //
-    // If a future change does need one of these to reach dagre, call setEdge
-    // with no label rather than passing `undefined` for one: graphlib stores an
-    // explicit `undefined` AS the label, and dagre dereferences it while
-    // routing — "Cannot set properties of undefined (setting 'points')", which
-    // takes the whole layout down.
+    // Note what that argument rests on: ASAP is the unique MINIMUM-COST
+    // assignment here, not the unique feasible one. Slack-free constraints do
+    // not by themselves pin a solution — on the graph the decision was measured
+    // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
+    // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
+    // this depends on the ranker minimizing total edge length, which every dagre
+    // ranker does. A future ranker with a different objective would need this
+    // revisited rather than trusted.
+    for (const edge of edges) {
+      const sourceRank = ranks.get(edge.source);
+      const targetRank = ranks.get(edge.target);
+      if (sourceRank !== undefined && targetRank !== undefined) {
+        g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
+        continue;
+      }
+      // An endpoint is missing from `ranks`, which happens exactly when the edge
+      // names a node that never arrived: computeNodeDepths ranks every node it
+      // was given and skips edges pointing outside that set. Skip the edge here
+      // too, so the layout and the rank map describe the same graph.
+      //
+      // Handing it to dagre instead is worse than useless. graphlib's setEdge
+      // CREATES an endpoint it has not seen, so the absent node gets a rank and
+      // a slot of its own, and dagre pushes the real node that depends on it out
+      // of the rank this function just computed — positions contradicting the
+      // `ranks` map returned beside them, on behalf of a node nothing draws. It
+      // also costs real time at scale, since dagre lays out every phantom.
+      //
+      // If a future change does need one of these to reach dagre, call setEdge
+      // with no label rather than passing `undefined` for one: graphlib stores an
+      // explicit `undefined` AS the label, and dagre dereferences it while
+      // routing — "Cannot set properties of undefined (setting 'points')", which
+      // takes the whole layout down.
+    }
+
+    dagre.layout(g);
+
+    layoutedNodes = nodes.map((node) => {
+      const pos = g.node(node.id);
+      // dagre reports a centre, so each node is offset by its OWN height. Using a
+      // shared constant here would re-introduce the overlap from the other side.
+      return {
+        ...node,
+        position: {
+          x: pos.x - NODE_WIDTH / 2,
+          y: pos.y - estimateNodeHeight(node) / 2,
+        },
+      };
+    });
   }
-
-  dagre.layout(g);
-
-  const layoutedNodes = nodes.map((node) => {
-    const pos = g.node(node.id);
-    // dagre reports a centre, so each node is offset by its OWN height. Using a
-    // shared constant here would re-introduce the overlap from the other side.
-    return {
-      ...node,
-      position: {
-        x: pos.x - NODE_WIDTH / 2,
-        y: pos.y - estimateNodeHeight(node) / 2,
-      },
-    };
-  });
 
   // The wrap keys ranks by their shared x, which holds only for LR (constant
   // node width). TB ranks share y instead; no caller lays out TB today.

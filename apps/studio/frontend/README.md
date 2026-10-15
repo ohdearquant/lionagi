@@ -43,6 +43,22 @@ experience, use `li studio --dev`.
 Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 `/admin/maintenance` remain routed to their current space.
 
+## Canvas layout
+
+Small execution graphs use Dagre with exact ASAP ranks: a node's column is its
+longest dependency path from a source. Before layout, the client estimates work
+as the node count plus twice the sum of pinned edge-rank spans. Graphs above
+192 work units or 128 nodes use deterministic placement within the same ASAP
+ranks, with siblings ordered by node ID. This avoids expanding long edges into
+large numbers of Dagre dummy nodes. All nodes and dependency edges remain
+available; larger graphs trade crossing optimization for bounded layout work.
+
+Both paths retain the existing wrapping, chain folding, rank-gap spacing, and
+viewport sizing. The wrap threshold remains a visual choice after placement;
+it does not control the cost of Dagre. Resize reuses the stored graph bounds,
+and expanding a graph applies the same layout policy. The limits target typical
+interactive layout time, rather than promising a fixed deadline on every device.
+
 ## API resolution
 
 The runtime chooses an API base in this order:
