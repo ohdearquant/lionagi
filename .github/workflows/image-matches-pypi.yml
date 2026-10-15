@@ -76,7 +76,8 @@ jobs:
             exit 1
           fi
 
-          has_tag() { printf '%s\n' "${tags}" | grep -qx "$1"; }
+          # Version punctuation is literal, so similar tag spellings cannot match.
+          has_tag() { printf '%s\n' "${tags}" | grep -qxF -- "$1"; }
 
           # Only version-shaped tags, so that moving labels like `latest` cannot
           # show up in a row whose heading says "newest versions".
