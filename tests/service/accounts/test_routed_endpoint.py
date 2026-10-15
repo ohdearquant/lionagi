@@ -9,6 +9,7 @@ import copy
 import json
 import sqlite3
 from collections import deque
+from collections.abc import Mapping
 from uuid import uuid4
 
 import pytest
@@ -77,8 +78,10 @@ class StubTransport:
     def __init__(self, responses) -> None:
         self.responses = deque(responses)
         self.calls: list[dict] = []
+        self.client_kwargs: list = []
 
-    def session(self):
+    def session(self, client_kwargs=None):
+        self.client_kwargs.append(client_kwargs)
         return StubSession(self)
 
 
@@ -345,15 +348,27 @@ def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, w
 @pytest.mark.parametrize(
     "headers",
     [
-        [("anthropic-beta", "context-management-2025-06-27")],
         {b"anthropic-beta": "context-management-2025-06-27"},
         {1: "x"},
+        {"x-trace": 5},
+        {"x-trace": b"5"},
+        {"x-trace": "a\r\nx-api-key: b"},
+        {"x-trace\n": "a"},
+        {("x-trace", "a")},
     ],
-    ids=["pairs", "bytes-name", "int-name"],
+    ids=[
+        "bytes-name",
+        "int-name",
+        "int-value",
+        "bytes-value",
+        "line-break-in-value",
+        "line-break-in-name",
+        "set-of-pairs",
+    ],
 )
 @pytest.mark.parametrize("where", ["extra_headers", "default_headers", "client_headers"])
 @pytest.mark.asyncio
-async def test_headers_whose_names_cannot_be_read_are_refused_before_a_reservation(
+async def test_headers_the_http_client_cannot_send_are_refused_before_a_reservation(
     monkeypatch, tmp_path, headers, where
 ):
     path = _install_accounts(monkeypatch, tmp_path)
@@ -376,6 +391,173 @@ async def test_headers_whose_names_cannot_be_read_are_refused_before_a_reservati
     assert not lookups
     assert not transport.calls
     assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.parametrize(
+    ("pair", "code"),
+    [
+        (("x-trace", "1"), None),
+        (("anthropic-beta", "files-api-2025-04-14"), RouterErrorCode.UNSUPPORTED_PRICING),
+        (("Authorization", "x"), RouterErrorCode.CREDENTIAL_CONFLICT),
+    ],
+    ids=["plain", "beta", "auth"],
+)
+@pytest.mark.parametrize(
+    "where", ["prebuilt_headers", "extra_headers", "default_headers", "client_headers"]
+)
+@pytest.mark.asyncio
+async def test_a_list_of_header_pairs_is_read_pair_by_pair(
+    monkeypatch, tmp_path, pair, code, where
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    lookups = []
+    real_resolve = router_module.resolve_account_key
+
+    async def resolve(*args):
+        lookups.append(args)
+        return await real_resolve(*args)
+
+    monkeypatch.setattr(router_module, "resolve_account_key", resolve)
+    model, transport = _model(monkeypatch, [_response()])
+    headers = [pair]
+
+    async def send():
+        if where == "prebuilt_headers":
+            payload, _ = model.endpoint.create_payload(REQUEST)
+            return await model.endpoint.call(
+                payload, skip_payload_creation=True, extra_headers=headers
+            )
+        if where == "extra_headers":
+            return await model.endpoint.call(REQUEST, extra_headers=headers)
+        if where == "default_headers":
+            model.endpoint.config.default_headers = headers
+        else:
+            model.endpoint.config.client_kwargs = {"headers": headers}
+        return await model.endpoint.call(REQUEST)
+
+    if code is not None:
+        with pytest.raises(AccountRoutingError) as caught:
+            await send()
+        assert caught.value.code is code
+        assert not lookups
+        assert not transport.calls
+        assert not path.exists() or not _attempts(path)
+        return
+
+    result = await send()
+
+    assert result["model"] == MODEL
+    if where == "client_headers":
+        assert transport.client_kwargs == [{"headers": [pair]}]
+        assert "x-trace" not in transport.calls[0]["headers"]
+    else:
+        assert transport.calls[0]["headers"]["x-trace"] == "1"
+    assert _attempts(path)[0][2] == "settled"
+
+
+@pytest.mark.parametrize("where", ["prebuilt_headers", "client_headers"])
+@pytest.mark.asyncio
+async def test_a_header_item_that_is_not_a_pair_is_refused(monkeypatch, tmp_path, where):
+    # Defaults are built into the call's headers with dict.update, which refuses this shape on
+    # every path, so only the two places that carry it as given are routed cases.
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    headers = [("x-trace", "a", "b")]
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if where == "prebuilt_headers":
+            payload, _ = model.endpoint.create_payload(REQUEST)
+            await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=headers)
+        else:
+            model.endpoint.config.client_kwargs = {"headers": headers}
+            await model.endpoint.call(REQUEST)
+
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_CONFLICT
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+class _ItemsDisagree(Mapping):
+    """A mapping whose keys and items name different headers."""
+
+    def __init__(self, keys, items) -> None:
+        self._keys = list(keys)
+        self._items = list(items)
+
+    def __getitem__(self, name):
+        return dict(self._items)[name]
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self):
+        return len(self._keys)
+
+    def items(self):
+        return list(self._items)
+
+
+@pytest.mark.parametrize("where", ["prebuilt_headers", "client_headers"])
+@pytest.mark.asyncio
+async def test_headers_are_read_by_their_items_as_the_http_client_reads_them(
+    monkeypatch, tmp_path, where
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    headers = _ItemsDisagree(["x-other"], [("anthropic-beta", "files-api-2025-04-14")])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if where == "prebuilt_headers":
+            payload, _ = model.endpoint.create_payload(REQUEST)
+            await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=headers)
+        else:
+            model.endpoint.config.client_kwargs = {"headers": headers}
+            await model.endpoint.call(REQUEST)
+
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["call", "stream"])
+@pytest.mark.asyncio
+async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
+    monkeypatch, tmp_path, stream
+):
+    from lionagi.service.accounts._ledger import CredentialLedger
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    if stream:
+        events = [_MESSAGE_START, _PARTIAL_TEXT, {"type": "message_stop"}]
+        model, transport = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    else:
+        model, transport = _model(monkeypatch, [_response()])
+    call_headers = {"x-trace": "1"}
+    client_headers = {"x-client": "1"}
+    model.endpoint.config.client_kwargs = {"headers": client_headers}
+    real_reserve = CredentialLedger.reserve
+
+    async def reserve_then_change(self, *args):
+        # another task changes both while the account is being reserved
+        for headers in (call_headers, client_headers):
+            headers["anthropic-beta"] = "files-api-2025-04-14"
+            headers["Authorization"] = "Bearer late"
+        return await real_reserve(self, *args)
+
+    monkeypatch.setattr(CredentialLedger, "reserve", reserve_then_change)
+
+    if stream:
+        async for _ in model.endpoint.stream(REQUEST, extra_headers=call_headers):
+            pass
+    else:
+        payload, _ = model.endpoint.create_payload(REQUEST)
+        await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=call_headers)
+
+    sent = transport.calls[0]["headers"]
+    assert sent["x-trace"] == "1"
+    assert not {name.lower() for name in sent} & {"anthropic-beta", "authorization"}
+    assert transport.client_kwargs == [{"headers": [("x-client", "1")]}]
+    assert len(_attempts(path)) == 1
 
 
 @pytest.mark.asyncio
@@ -625,7 +807,7 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
         async def request(self, **_):
             raise AssertionError("transport must not be entered")
 
-    model.endpoint._create_http_session = WaitingSession
+    model.endpoint._create_http_session = lambda client_kwargs=None: WaitingSession()
     task = asyncio.create_task(model.endpoint.call(REQUEST))
     await entered_context.wait()
     task.cancel()
@@ -653,7 +835,7 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
             entered_request.set()
             await never_finish.wait()
 
-    model.endpoint._create_http_session = SendingSession
+    model.endpoint._create_http_session = lambda client_kwargs=None: SendingSession()
     task = asyncio.create_task(model.endpoint.call(REQUEST))
     await entered_request.wait()
     task.cancel()
@@ -765,7 +947,7 @@ async def test_a_refusal_during_the_owners_send_leaves_that_send_alone(monkeypat
             await release.wait()
             return _response()
 
-    model.endpoint._create_http_session = HeldSession
+    model.endpoint._create_http_session = lambda client_kwargs=None: HeldSession()
     owner = uuid4()
     with _branch_routing_context(owner, model):
         call = await model.create_event(**QUEUED_REQUEST)
@@ -1311,6 +1493,32 @@ async def test_a_stream_ending_before_message_stop_records_why(
             [{"type": "message_delta", "usage": {"output_tokens": True}}],
             ("open", None, "usage_incomplete"),
         ),
+        (
+            [{"type": "message_delta", "usage": {"output_tokens": 0}}],
+            ("settled", 200_000, "complete"),
+        ),
+        (
+            [{"type": "message_delta", "usage": {"output_tokens": -1}}],
+            ("open", None, "usage_incomplete"),
+        ),
+        (
+            [{"type": "message_delta", "usage": {"output_tokens": 5.0}}],
+            ("open", None, "usage_incomplete"),
+        ),
+        (
+            [
+                {"type": "message_delta", "usage": {"output_tokens": 5}},
+                {"type": "message_delta", "usage": {}},
+            ],
+            ("settled", 250_000, "complete"),
+        ),
+        (
+            [
+                {"type": "message_delta", "usage": {"output_tokens": 5}},
+                {"type": "message_delta", "usage": {"output_tokens": 7}},
+            ],
+            ("settled", 270_000, "complete"),
+        ),
     ],
     ids=[
         "no_message_delta",
@@ -1319,6 +1527,11 @@ async def test_a_stream_ending_before_message_stop_records_why(
         "delta_with_empty_usage",
         "delta_usage_without_output_count",
         "delta_with_boolean_output_count",
+        "delta_with_zero_output_count",
+        "delta_with_negative_output_count",
+        "delta_with_float_output_count",
+        "count_then_empty_usage",
+        "two_counts_the_last_one_kept",
     ],
 )
 @pytest.mark.asyncio

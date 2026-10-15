@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -83,11 +84,12 @@ class AccountRouter:
         self,
         scope: Scope,
         payload: Mapping[str, Any],
-        headers: Mapping[str, str],
+        headers: Any,
         *,
         endpoint: Any,
         request_kwargs: Mapping[str, Any],
         body_kwargs: Mapping[str, Any],
+        client_kwargs: Mapping[str, Any] | None = None,
     ) -> RouterAttempt:
         validate_routed_request(
             endpoint,
@@ -95,6 +97,7 @@ class AccountRouter:
             request_kwargs=request_kwargs,
             body_kwargs=body_kwargs,
             payload=payload,
+            client_kwargs=client_kwargs,
         )
         if scope.provider != "anthropic":
             raise _refuse(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT)
@@ -167,25 +170,63 @@ def _refuse(code: RouterErrorCode) -> AccountRoutingError:
     return AccountRoutingError(code)
 
 
-def _has_header(headers: Mapping[str, Any] | None, names: frozenset[str]) -> bool:
-    # Headers whose names this check cannot read are refused, not passed: a list of pairs
-    # still reaches the HTTP client as headers, and a name that is not a string fails there
-    # only after an account was reserved. An underscore is read as a hyphen, since a server
-    # may read the two alike.
+# The HTTP client refuses a header name or value holding one of these when it writes the request.
+_FORBIDDEN_HEADER_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def header_pairs(headers: Any) -> list[tuple[str, str]]:
+    """Headers as name-value pairs, read once and as the HTTP client reads them, or a refusal.
+
+    A mapping is read by its items and a list or tuple pair by pair. Anything else is refused as
+    a credential conflict, and so is a name or value that is not a string or that holds a control
+    character other than a tab: the HTTP client fails on those only when it writes the request,
+    after an account was reserved, and the call then keeps its ceiling.
+    """
     if headers is None:
-        return False
-    if not isinstance(headers, Mapping) or not all(isinstance(name, str) for name in headers):
+        return []
+    if isinstance(headers, Mapping):
+        items = list(headers.items())
+    elif isinstance(headers, (list, tuple)):
+        items = list(headers)
+    else:
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
-    return any(name.strip().lower().replace("_", "-") in names for name in headers)
+    pairs: list[tuple[str, str]] = []
+    for item in items:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
+        name, value = item
+        if (
+            not isinstance(name, str)
+            or not isinstance(value, str)
+            or _FORBIDDEN_HEADER_CHARS.search(name)
+            or _FORBIDDEN_HEADER_CHARS.search(value)
+        ):
+            raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
+        pairs.append((name, value))
+    return pairs
+
+
+def routed_client_kwargs(client_kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    """The client options copied once, with their headers read as ``header_pairs`` reads them."""
+    snapshot = dict(client_kwargs)
+    if snapshot.get("headers") is not None:
+        snapshot["headers"] = header_pairs(snapshot["headers"])
+    return snapshot
+
+
+def _has_header(headers: Any, names: frozenset[str]) -> bool:
+    # An underscore is read as a hyphen, since a server may read the two alike.
+    return any(name.strip().lower().replace("_", "-") in names for name, _ in header_pairs(headers))
 
 
 def validate_routed_request(
     endpoint: Any,
-    headers: Mapping[str, Any] | None,
+    headers: Any,
     *,
     request_kwargs: Mapping[str, Any],
     body_kwargs: Mapping[str, Any] | None = None,
     payload: Mapping[str, Any] | None = None,
+    client_kwargs: Mapping[str, Any] | None = None,
 ) -> None:
     config = endpoint.config
     if (
@@ -198,7 +239,8 @@ def validate_routed_request(
     ):
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
 
-    client_kwargs = config.client_kwargs
+    if client_kwargs is None:
+        client_kwargs = config.client_kwargs
     if any(
         isinstance(name, str) and name.lower() in _FORBIDDEN_CLIENT_OPTIONS
         for name in client_kwargs

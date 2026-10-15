@@ -227,7 +227,9 @@ class AnthropicMessagesEndpoint(Endpoint):
         from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._router import (
             get_router,
+            header_pairs,
             redact_value,
+            routed_client_kwargs,
             validate_routed_request,
         )
         from lionagi.service.accounts._types import (
@@ -240,12 +242,17 @@ class AnthropicMessagesEndpoint(Endpoint):
         )
 
         try:
+            # Read once: the headers and client options checked are the ones sent, whatever
+            # changes them while the account is reserved.
+            request_pairs = header_pairs(headers)
+            session_kwargs = routed_client_kwargs(self.config.client_kwargs)
             validate_routed_request(
                 self,
-                headers,
+                request_pairs,
                 request_kwargs=request_kwargs,
                 body_kwargs=body_kwargs,
                 payload=payload,
+                client_kwargs=session_kwargs,
             )
         except AccountRoutingError as exc:
             raise _RoutedNoRetryError(
@@ -259,13 +266,14 @@ class AnthropicMessagesEndpoint(Endpoint):
         attempt = await router.begin(
             scope,
             payload,
-            headers,
+            request_pairs,
             endpoint=self,
             request_kwargs=request_kwargs,
             body_kwargs=body_kwargs,
+            client_kwargs=session_kwargs,
         )
         request_headers = {
-            name: value for name, value in headers.items() if name.strip().lower() != "content-type"
+            name: value for name, value in request_pairs if name.strip().lower() != "content-type"
         }
         request_headers["Content-Type"] = "application/json"
         request_headers["x-api-key"] = attempt.key.get_secret_value()
@@ -274,7 +282,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_entered = False
         failure: Exception | None = None
         try:
-            async with self._create_http_session() as session:
+            async with self._create_http_session(session_kwargs) as session:
                 request_entered = True
                 response = await session.request(
                     method=self.config.method,
@@ -482,8 +490,10 @@ class AnthropicMessagesEndpoint(Endpoint):
             StreamingSecretRedactor,
             StreamTextRedactor,
             get_router,
+            header_pairs,
             mask_key_runs,
             redact_value,
+            routed_client_kwargs,
             validate_routed_request,
         )
         from lionagi.service.accounts._types import (
@@ -497,11 +507,16 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         self._assert_ssrf_safe_url()
         payload["stream"] = True
+        # Read once: the headers and client options checked are the ones sent, whatever changes
+        # them while the account is reserved.
+        request_pairs = header_pairs(headers)
+        session_kwargs = routed_client_kwargs(self.config.client_kwargs)
         validate_routed_request(
             self,
-            headers,
+            request_pairs,
             request_kwargs=kwargs,
             payload=payload,
+            client_kwargs=session_kwargs,
         )
         router = get_router()
         scope = self._account_scope(_routing_scope)
@@ -509,13 +524,14 @@ class AnthropicMessagesEndpoint(Endpoint):
         attempt = await router.begin(
             scope,
             payload,
-            headers,
+            request_pairs,
             endpoint=self,
             request_kwargs=kwargs,
             body_kwargs=body_kwargs,
+            client_kwargs=session_kwargs,
         )
         request_headers = {
-            name: value for name, value in headers.items() if name.strip().lower() != "content-type"
+            name: value for name, value in request_pairs if name.strip().lower() != "content-type"
         }
         request_headers["Content-Type"] = "application/json"
         request_headers["x-api-key"] = attempt.key.get_secret_value()
@@ -719,7 +735,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                     yield chunk
 
         try:
-            async with self._create_http_session() as session:
+            async with self._create_http_session(session_kwargs) as session:
                 request_entered = True
                 response = await session.request(
                     method=self.config.method,

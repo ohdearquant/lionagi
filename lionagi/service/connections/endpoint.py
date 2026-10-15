@@ -124,12 +124,12 @@ class Endpoint:
             f"retry_config={retry_config is not None}"
         )
 
-    def _create_http_session(self):
+    def _create_http_session(self, client_kwargs: dict[str, Any] | None = None):
         import aiohttp
 
         return aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(self.config.timeout),
-            **self.config.client_kwargs,
+            **(self.config.client_kwargs if client_kwargs is None else client_kwargs),
         )
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
