@@ -366,6 +366,26 @@ def _write_target(tokens: list[tuple[str, str]]) -> tuple[str, str | None, int] 
     return verb, table, index + 1
 
 
+def _duplicate_column(names: list[str | None]) -> str | None:
+    """A column an INSERT's column list names more than once, or None when it names none twice.
+
+    SQLite takes the first value a statement binds for a column it names twice and raises no
+    error, so the columns an INSERT says it writes are not the columns it writes.
+    """
+    return next(
+        (name for name in names if name is not None and names.count(name) > 1),
+        None,
+    )
+
+
+def _insert_columns(tokens: list[tuple[str, str]], after: int) -> list[str | None] | None:
+    """The column names an INSERT's column list names, in order, or None when it has no list."""
+    if tokens[after : after + 1] != [(_PUNCT, "(")]:
+        return None
+    columns, _ = _spans(tokens, after)
+    return [_name(tokens[first]) if end == first + 1 else None for first, end in columns]
+
+
 def _insert_owner_values(
     tokens: list[tuple[str, str]], after: int, column: str
 ) -> list[tuple[int, int]] | str:
@@ -376,6 +396,9 @@ def _insert_owner_values(
         return f"leaves out the owner column {column}"
     columns, close = _spans(tokens, after)
     names = [_name(tokens[first]) if end == first + 1 else None for first, end in columns]
+    twice = _duplicate_column(names)
+    if twice is not None:
+        return f"names the column {twice} twice, so the value SQLite writes cannot be read"
     if column not in names:
         return f"leaves out the owner column {column}"
     at = names.index(column)
@@ -534,35 +557,42 @@ def _copies_owner(value: list[tuple[str, str]], column: str, rows: tuple[str, ..
     )
 
 
-def _trigger_event(tokens: list[tuple[str, str]], top: list[int], on: int | None) -> str | None:
-    """The event a trigger fires on: the last of INSERT, UPDATE and DELETE before its ``ON``.
-
-    The event word sits just before the ON that names the table, so the last one wins and a
-    trigger whose name is one of the three is not mistaken for it.
-    """
-    if on is None:
-        return None
-    return next(
-        (
-            tokens[index][1]
-            for index in reversed(top)
-            if index < on and tokens[index][1] in ("insert", "update", "delete")
-        ),
-        None,
-    )
+_TIMING_WORDS = frozenset({(_WORD, "before"), (_WORD, "after"), (_WORD, "instead")})
+_EVENT_WORDS = frozenset({(_WORD, "insert"), (_WORD, "update"), (_WORD, "delete")})
 
 
-def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> list[str]:
-    """How a trigger's statements write an owned table other than with the owner of the row that
-    fired it: an INSERT must copy ``NEW.<column>`` (``OLD.<column>`` in a DELETE trigger) into
-    every row, and an UPDATE must restrict its rows by a term comparing the column with one of
-    the rows its event makes readable.
+def _trigger_event(sql: str) -> str | None:
+    """The event a trigger fires on: INSERT, UPDATE or DELETE.
+
+    A created trigger names exactly one event, and SQLite refuses a trigger that names more than
+    one (``AFTER DELETE OR INSERT ON t`` is a syntax error), so one event word is read. It is the
+    first such word after the trigger's timing (BEFORE, AFTER or INSTEAD OF) and before the ``ON``
+    that names the table, never the first one in the statement: a trigger's name may itself be an
+    event word, and it sits before the timing.
     """
     tokens = _sql_tokens(sql)
     depths = _depths(tokens)
     top = [index for index in range(len(tokens)) if depths[index] == 0]
-    # The trigger's own name may be the keyword BEGIN, so the body starts at the first BEGIN
-    # after the ON that names the table the trigger fires on.
+    on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
+    if on is None:
+        return None
+    before = [index for index in top if index < on]
+    timing = [index for index in before if tokens[index] in _TIMING_WORDS]
+    if timing:
+        before = [index for index in before if index > timing[-1]]
+    return next((tokens[index][1] for index in before if tokens[index] in _EVENT_WORDS), None)
+
+
+def _trigger_statements(sql: str) -> list[list[tuple[str, str]]]:
+    """The statements of a trigger body, each as its tokens, or none when there is no body.
+
+    The trigger's own name may be the keyword BEGIN, so the body starts at the first BEGIN after
+    the ON that names the table the trigger fires on, and the statements it holds are separated
+    by the semicolons at parenthesis depth zero.
+    """
+    tokens = _sql_tokens(sql)
+    depths = _depths(tokens)
+    top = [index for index in range(len(tokens)) if depths[index] == 0]
     on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
     begin = next(
         (
@@ -574,15 +604,49 @@ def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> lis
     )
     if begin is None:
         return []
-    # An INSERT trigger's OLD and a DELETE trigger's NEW are NULL, so neither is an owner.
-    event = _trigger_event(tokens, top, on)
-    rows = {"insert": ("new",), "delete": ("old",)}.get(event, ("new", "old"))
     statements: list[list[tuple[str, str]]] = [[]]
     for index in range(begin + 1, len(tokens)):
         if depths[index] == 0 and tokens[index] == (_PUNCT, ";"):
             statements.append([])
         else:
             statements[-1].append(tokens[index])
+    return statements
+
+
+def _trigger_deletions(sql: str) -> list[str]:
+    """What each top-level DELETE of a trigger's body deletes, as ``DELETE FROM <table>``, or
+    ``DELETE`` when the table it names cannot be read.
+
+    The authorizer refuses every DELETE on a compatibility connection, so a trigger that runs one
+    is refused at admission rather than at the write that fires it.
+    """
+    found: list[str] = []
+    for statement in _trigger_statements(sql):
+        depths = _depths(statement)
+        for index, token in enumerate(statement):
+            if depths[index] or token != (_WORD, "delete"):
+                continue
+            rest = statement[index + 1 :]
+            name = None
+            if rest[:1] == [(_WORD, "from")] and len(rest) > 1:
+                name = _name(rest[1])
+            # Text for the refusal message; it is never executed.
+            found.append(f"DELETE FROM {name}" if name else "DELETE")  # noqa: S608
+    return found
+
+
+def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> list[str]:
+    """How a trigger's statements write an owned table other than with the owner of the row that
+    fired it: an INSERT must copy ``NEW.<column>`` (``OLD.<column>`` in a DELETE trigger) into
+    every row, and an UPDATE must restrict its rows by a term comparing the column with one of
+    the rows its event makes readable.
+    """
+    statements = _trigger_statements(sql)
+    if not statements:
+        return []
+    # A DELETE trigger reads OLD and an INSERT trigger reads NEW; a trigger names exactly one
+    # event, so the other of the two is not a column of it at all.
+    rows = {"insert": ("new",), "delete": ("old")}.get(_trigger_event(sql), ("new", "old"))
     problems: list[str] = []
     for statement in statements:
         target = _write_target(statement)
@@ -676,6 +740,12 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
                 return f"the OR {action.upper()} conflict clause {effect}"
     if "returning" in top:
         return "RETURNING is not admitted"
+    if verb == "insert":
+        target = _write_target(tokens)
+        names = None if target is None else _insert_columns(tokens, target[2])
+        twice = None if names is None else _duplicate_column(names)
+        if twice is not None:
+            return f"the INSERT names the column {twice} twice"
     return None
 
 
@@ -872,12 +942,25 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
 
 
 def _column_collation(definition: str) -> str:
-    """The collation a column's definition declares, ``BINARY`` when it declares none."""
+    """The collation a column's definition declares, its name folded as SQLite folds a name.
+
+    ``binary`` is the answer for a definition that declares none. Only a clause at parenthesis
+    depth zero of the definition counts: a ``COLLATE`` inside a CHECK, a DEFAULT or a GENERATED
+    expression collates one comparison of that expression, not the column. When the definition
+    carries several such clauses SQLite compares the column under the last of them, so the last
+    one is read. Folding is by ASCII letters only, so a name spelled with another character in
+    the place of one, ``bınary``, is not the folded ``binary``.
+    """
     tokens = _sql_tokens(definition)
+    depths = _depths(tokens)
+    collation = "binary"
     for index, token in enumerate(tokens):
-        if token == (_WORD, "collate") and tokens[index + 1 : index + 2]:
-            return tokens[index + 1][1].upper()
-    return "BINARY"
+        if depths[index] or token != (_WORD, "collate"):
+            continue
+        name = _name(tokens[index + 1]) if index + 1 < len(tokens) else None
+        if name is not None:
+            collation = name
+    return collation
 
 
 _TABLE_CONSTRAINTS = frozenset({"constraint", "primary", "unique", "check", "foreign"})
@@ -894,7 +977,7 @@ def _ordered_collation(table: TableShape, column: str) -> str:
             and tokens[1][1] not in _TABLE_CONSTRAINTS
         ):
             return _column_collation(definition)
-    return "BINARY"
+    return "binary"
 
 
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
@@ -1424,19 +1507,33 @@ class _Guard:
                 f"resolution: {shown}",
                 operation,
             )
+        # A trigger runs inside the write that fires it, and every DELETE is refused there by
+        # the authorizer, so a trigger that runs one is refused when the store is admitted.
+        deletions = [
+            f"trigger {item.name} {problem}"
+            for item in sorted(self.profile.closure.objects, key=lambda o: o.name)
+            if item.type == "trigger"
+            for problem in _trigger_deletions(item.sql)
+        ]
+        if deletions:
+            raise self.refusal(
+                f"{when}: compatibility mode admits no DELETE, and a trigger's DELETE runs "
+                f"inside the write that fires it: " + "; ".join(deletions),
+                operation,
+            )
         rule = self.profile.owner
         if rule is not None:
-            # `owner = ?` compares under the column's collation, so an owner that is not BINARY
+            # `owner = ?` compares under the column's collation, so an owner that is not binary
             # takes a variant of the owner's name as the owner, and writes another owner's row.
             variants = [
                 f"{table.name}.{rule.column} compares under {_ordered_collation(table, rule.column)}"
                 for table in self.profile.closure.tables
                 if rule.column in {column.name for column in table.columns}
-                and _ordered_collation(table, rule.column) != "BINARY"
+                and _ordered_collation(table, rule.column) != "binary"
             ]
             if variants:
                 raise self.refusal(
-                    f"{when}: the owner column compares under a collation, not BINARY, so its "
+                    f"{when}: the owner column compares under a collation, not binary, so its "
                     f"rows cannot be told from a variant's: {'; '.join(variants)}",
                     operation,
                 )
@@ -1493,8 +1590,12 @@ class _Guard:
         rule = self.profile.owner
         if rule is None:
             return
+        # BINARY, whatever the key column's collation is: a key that names an owner only through
+        # case folding names one whose rows the statement check, which compares the owner column
+        # under that column's own collation, would then treat as another owner's.
         found = connection.exec_driver_sql(
-            f"SELECT 1 FROM {_quote(rule.principals)} WHERE {_quote(rule.key)} = ?",  # noqa: S608
+            f"SELECT 1 FROM {_quote(rule.principals)} "  # noqa: S608 -- the names are the rule's
+            f"WHERE {_quote(rule.key)} = ? COLLATE BINARY",
             (self.owner,),
         ).fetchall()
         if not found:
