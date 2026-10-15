@@ -868,7 +868,7 @@ class _Guard:
             )
         state = _ConnectionState()
         connection_record.info[_STATE_KEY] = state
-        authorizer = self._authorizer(state)
+        authorizer = self._authorizer(state, driver)
         dbapi_connection.run_async(lambda conn: conn.set_authorizer(authorizer))
         # Positive control: a statement prepared after installation must reach the authorizer.
         cursor = dbapi_connection.cursor()
@@ -880,7 +880,7 @@ class _Guard:
         if not state.seen:
             raise self.refusal("the authorizer did not run once installed", operation="open")
 
-    def _authorizer(self, state: _ConnectionState) -> Callable[..., int]:
+    def _authorizer(self, state: _ConnectionState, driver: Any) -> Callable[..., int]:
         inserts, updates = self._inserts, self._updates
         ok, deny = sqlite3.SQLITE_OK, sqlite3.SQLITE_DENY
 
@@ -916,6 +916,12 @@ class _Guard:
                     return ok
                 return denied(f"PRAGMA {name}" + ("" if arg2 is None else f" = {arg2}"))
             table = (arg1 or "").lower()
+            if state.write_txn and not driver.in_transaction:
+                # SQLite ended the operation's transaction by itself (a ROLLBACK conflict
+                # resolution) without a callback, so the flag is stale. A write prepared now
+                # would run in a transaction the driver opens for it, which the operation's
+                # COMMIT would then commit.
+                state.write_txn = False
             if action == sqlite3.SQLITE_INSERT:
                 if db_name == "main" and state.write_txn and table in inserts:
                     return ok
@@ -981,6 +987,7 @@ class _Guard:
             # SQLite ended the transaction by itself (a ROLLBACK conflict resolution, a full disk)
             # without a callback the authorizer sees, so the flag is stale.
             state.write_txn = False
+            state.denied = True
             reason = (
                 "SQLite rolled back the transaction this operation opened, and its earlier writes "
                 "with it; no later write runs outside a transaction"

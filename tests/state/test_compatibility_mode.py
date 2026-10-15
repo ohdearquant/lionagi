@@ -68,6 +68,8 @@ _OPERATIONS = {
     "raw_commit",
     "autocommit_write",
     "rolled_back",
+    "rolled_back_raw",
+    "rolled_back_then_commit",
 }
 
 
@@ -189,6 +191,42 @@ class _RunsDB(StateDB):
                     "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
                 )
             await conn.execute(text("INSERT INTO runs (id, status) VALUES ('after', 'running')"))
+
+    @_operation("rolled_back_raw")
+    async def rolled_back_raw(self, run_id: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
+            )
+            driver = (await conn.get_raw_connection()).driver_connection
+            with pytest.raises(sqlite3.IntegrityError):
+                await driver.execute(
+                    "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
+                )
+            # Past the statement check too: only the authorizer sees this write, which would
+            # otherwise run in a transaction the driver opens and this operation commits.
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                await driver.execute("INSERT INTO runs (id, status) VALUES ('after', 'running')")
+
+    @_operation("rolled_back_then_commit")
+    async def rolled_back_then_commit(self, run_id: str) -> None:
+        async with self._engine.connect() as conn:
+            await conn.begin()
+            await conn.execute(
+                text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
+            )
+            driver = (await conn.get_raw_connection()).driver_connection
+            with pytest.raises(sqlite3.IntegrityError):
+                await driver.execute(
+                    "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
+                )
+            with pytest.raises(StateCompatibilityRefused, match="SQLite rolled back"):
+                await conn.execute(
+                    text("INSERT INTO runs (id, status) VALUES ('after', 'running')")
+                )
+            with pytest.raises(StateCompatibilityRefused, match="COMMIT of a transaction"):
+                await conn.exec_driver_sql("COMMIT")
+            await conn.rollback()
 
     @_operation("not_in_profile")
     async def not_in_profile(self) -> None:
@@ -485,6 +523,28 @@ async def test_a_write_after_sqlite_rolled_the_transaction_back_is_refused(store
     finally:
         await db.close()
     assert _rows(store, "SELECT count(*) FROM runs") == [(0,)]
+
+
+async def test_a_raw_write_after_sqlite_rolled_the_transaction_back_is_refused(store, reference):
+    db = await _open(store, _profile(reference))
+    try:
+        await db.rolled_back_raw("r1")
+        # The next operation opens its own transaction and writes as usual.
+        await db.start_run("r2")
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r2",)]
+
+
+async def test_a_commit_after_a_refusal_for_a_rolled_back_transaction_is_refused(store, reference):
+    """The refusal is the guard's own, as for any other refused write."""
+    db = await _open(store, _profile(reference))
+    try:
+        await db.rolled_back_then_commit("r1")
+        await db.start_run("r2")
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r2",)]
 
 
 async def test_the_function_named_replace_is_not_the_conflict_clause(store, reference):
