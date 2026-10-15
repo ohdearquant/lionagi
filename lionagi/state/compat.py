@@ -93,7 +93,9 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
 
 _WORD, _IDENT, _STRING, _PUNCT = "word", "ident", "string", "punct"
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
-# Words after which SQLite reads a double-quoted token as a name, never as a string literal.
+# Words after which SQLite reads a double-quoted token as a name, never as a string literal. The
+# rule belongs to *spelled* below, which compares a table's or index's definition; a trigger body,
+# a view body and a column's DEFAULT are compared verbatim, as they are written.
 _NAME_POSITIONS = frozenset(
     {"references", "collate", "into", "from", "update", "on", "join", "table", "index", "trigger"}
 )
@@ -110,7 +112,11 @@ def _identifier_char(ch: str) -> bool:
 
 
 def _sql_tokens(
-    sql: str, *, spelled: bool = False, columns: frozenset[str] = frozenset()
+    sql: str,
+    *,
+    spelled: bool = False,
+    columns: frozenset[str] = frozenset(),
+    verbatim: bool = False,
 ) -> list[tuple[str, str]]:
     """Split SQL into ``(kind, text)`` tokens, dropping comments and whitespace.
 
@@ -120,9 +126,15 @@ def _sql_tokens(
     SQLite, only ASCII whitespace separates tokens and every character past ASCII belongs to an
     identifier.
 
+    *verbatim* keeps every token as written, its quotes and the case of its letters included.
+    That is how a trigger body, a view body and a column's DEFAULT are compared: whether SQLite
+    reads a quoted token as a name or as a string literal depends on the scope it sits in and on
+    the connection's double-quoted-string setting, so the text as written is the only safe unit.
+
     *spelled* keeps the case of a double-quoted token that SQLite may read as a string literal,
-    for comparing definitions: one that names no column is one, so ``DEFAULT "Open"`` and
-    ``DEFAULT "open"`` differ. A double-quoted token after a dot or a word that takes a name
+    for comparing a table's definition and an index's terms as PRAGMA output leaves them: one
+    that names no column is a literal, so ``WHERE status = "running"`` differs from
+    ``WHERE status = "Running"``. A double-quoted token after a dot or a word that takes a name
     (``REFERENCES "Runs"``, ``ON "Runs"``, ``COLLATE "NOCASE"``), or one naming one of *columns*,
     is a name, and is folded.
     """
@@ -158,16 +170,19 @@ def _sql_tokens(
                 parts.append(sql[j])
                 j += 1
             name = "".join(parts)
-            last = tokens[-1] if tokens else (_PUNCT, "")
-            named = last == (_PUNCT, ".") or (last[0] == _WORD and last[1] in _NAME_POSITIONS)
-            literal = spelled and ch == '"' and not named and _fold(name) not in columns
-            tokens.append((_IDENT, name if literal else _fold(name)))
+            if verbatim:
+                tokens.append((_IDENT, sql[i : j + 1]))
+            else:
+                last = tokens[-1] if tokens else (_PUNCT, "")
+                named = last == (_PUNCT, ".") or (last[0] == _WORD and last[1] in _NAME_POSITIONS)
+                literal = spelled and ch == '"' and not named and _fold(name) not in columns
+                tokens.append((_IDENT, name if literal else _fold(name)))
             i = j + 1
         elif _identifier_char(ch):
             j = i + 1
             while j < n and _identifier_char(sql[j]):
                 j += 1
-            tokens.append((_WORD, _fold(sql[i:j])))
+            tokens.append((_WORD, sql[i:j] if verbatim else _fold(sql[i:j])))
             i = j
         else:
             tokens.append((_PUNCT, ch))
@@ -188,8 +203,9 @@ def _joined(tokens: list[tuple[str, str]]) -> str:
     return "".join(out)
 
 
-def _normalize_sql(sql: str, columns: frozenset[str] = frozenset()) -> str:
-    return _joined(_sql_tokens(sql, spelled=True, columns=columns))
+def _spelled_sql(sql: str) -> str:
+    """*sql* as written: every token its own text, one space apart, comments and layout aside."""
+    return _joined(_sql_tokens(sql, verbatim=True))
 
 
 def _top_level_words(tokens: list[tuple[str, str]]) -> list[str]:
@@ -227,65 +243,27 @@ _CONFLICT_EFFECTS = {
 }
 
 
-# Words after which SQLite reads a string literal as a table's name, and the conflict actions an
-# ``UPDATE OR <action>`` names before one.
-_TABLE_BEFORE = frozenset({"into", "update", "from", "join", "on", "table", "in"})
-_ACTIONS = frozenset({"replace", "rollback", "abort", "fail", "ignore"})
-# Words that end a FROM list, after which a comma no longer separates table names.
-_FROM_ENDS = frozenset(
-    {
-        "where",
-        "group",
-        "order",
-        "limit",
-        "having",
-        "window",
-        "union",
-        "intersect",
-        "except",
-        "set",
-        "select",
-        "values",
-        "returning",
-    }
-)
+def _name_of(kind: str, text: str) -> str:
+    """The name a token may carry, folded as SQLite folds a name.
+
+    A word and a quoted identifier arrive already folded; a string literal carries its quotes, so
+    its text is read between them, a doubled quote standing for the character itself.
+    """
+    if kind == _STRING:
+        return _fold(text[1:-1].replace("''", "'"))
+    return _fold(text)
 
 
 def _names(tokens: list[tuple[str, str]]) -> set[str]:
-    """Every token that can name a table, folded as SQLite folds a name.
+    """Every token of a trigger or view body that may name a table, folded as SQLite folds names.
 
-    A word or quoted identifier always counts. A string literal counts only where SQLite's grammar
-    reads one as a table's name: after INTO, UPDATE, FROM, JOIN, ON, TABLE or IN, after a dot,
-    after ``OR <action>``, or after a comma in a FROM list. A literal value counts nowhere.
+    A bare word, a quoted identifier and a quoted string all count, wherever in the body they sit.
+    Whether SQLite reads a quoted token as a name or as a string literal depends on the scope it
+    appears in and on the connection's double-quoted-string setting, so a quoted token is taken as
+    a possible name of a closure table wherever it appears. An object that may name a closure
+    table belongs to the closure, and a profile that does not list it refuses the store.
     """
-    names: set[str] = set()
-    in_from = [False]
-    for index, (kind, text) in enumerate(tokens):
-        if kind == _PUNCT:
-            if text == "(":
-                in_from.append(False)
-            elif text == ")" and len(in_from) > 1:
-                in_from.pop()
-            elif text == ";":
-                in_from = [False]
-            continue
-        if kind == _WORD and text in ("from", "join"):
-            in_from[-1] = True
-        elif kind == _WORD and text in _FROM_ENDS:
-            in_from[-1] = False
-        if kind != _STRING:
-            names.add(text)
-            continue
-        last = tokens[index - 1] if index else (_PUNCT, "")
-        before = tokens[index - 2] if index > 1 else (_PUNCT, "")
-        if (
-            last == (_PUNCT, ".")
-            or (last[0] == _WORD and last[1] in _TABLE_BEFORE)
-            or (last[0] == _WORD and last[1] in _ACTIONS and before == (_WORD, "or"))
-            or (last == (_PUNCT, ",") and in_from[-1])
-        ):
-            names.add(_fold(text[1:-1].replace("''", "'")))
-    return names
+    return {_name_of(kind, text) for kind, text in tokens if kind != _PUNCT}
 
 
 def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -708,9 +686,10 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
 class ColumnShape:
     """One column as ``PRAGMA table_xinfo`` reports it.
 
-    ``type`` is uppercased with single spaces and ``default`` is normalized SQL text. ``pk`` is the
-    column's position in the primary key (0 when it is not part of it); ``hidden`` is 2 for a
-    virtual and 3 for a stored generated column.
+    ``type`` is uppercased with single spaces and ``default`` is the SQL of the column's
+    definition as it is written, whitespace and comments set aside. ``pk`` is the column's
+    position in the primary key (0 when it is not part of it); ``hidden`` is 2 for a virtual and
+    3 for a stored generated column.
     """
 
     name: str
@@ -733,13 +712,14 @@ class TableShape:
     resolution other than ABORT, SQLite's default, that the table's constraints declare
     (``"replace"``, ``"rollback"``, ``"ignore"``, ``"fail"``); admission refuses a table that has
     one. ``definitions`` holds each column and table-constraint definition of the table's SQL in
-    one spelling (whitespace, comments, identifier quotes and the case of words aside; a
-    double-quoted token keeps its case, since SQLite can read it as a string literal), so what
-    PRAGMA output leaves out is compared too: a collation, a generated column's expression, a
-    ``DEFERRABLE`` foreign key, ``AUTOINCREMENT``. Two definitions SQLite reads alike but spells
-    differently differ: ``REFERENCES runs`` and ``REFERENCES runs(id)``, a constraint with and
-    without a name, a default spelled out (``NO ACTION``, ``COLLATE BINARY``, ``ASC``),
-    constraints in another order, a column's ``UNIQUE`` and the table's, ``<>`` and ``!=``.
+    one spelling (whitespace, comments, identifier quotes and the case of words aside, since
+    SQLite resolves names that way), so what PRAGMA output leaves out is compared too: a
+    collation, a generated column's expression, a ``DEFERRABLE`` foreign key, ``AUTOINCREMENT``.
+    Two definitions SQLite reads alike but spells differently differ: ``REFERENCES runs`` and
+    ``REFERENCES runs(id)``, a constraint with and without a name, a default spelled out
+    (``NO ACTION``, ``COLLATE BINARY``, ``ASC``), constraints in another order, a column's
+    ``UNIQUE`` and the table's, ``<>`` and ``!=``. A column's ``default`` is compared as written,
+    since SQLite stores the word as given: ``DEFAULT open`` and ``DEFAULT Open`` differ.
     Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
     a store built by the managing application.
     """
@@ -770,7 +750,7 @@ class ForeignKeyShape:
 
 @dataclass(frozen=True)
 class SchemaObject:
-    """A trigger or view whose SQL names a closure table, with that SQL normalized."""
+    """A trigger or view whose SQL names a closure table, with that SQL as it is written."""
 
     type: str
     name: str
@@ -952,7 +932,7 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
             name=_fold(str(row[1])),
             type=" ".join(str(row[2] or "").upper().split()),
             notnull=bool(row[3]),
-            default=None if row[4] is None else _normalize_sql(str(row[4])),
+            default=None if row[4] is None else _spelled_sql(str(row[4])),
             pk=int(row[5]),
             hidden=int(row[6]),
         )
@@ -1019,7 +999,6 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
         for name in sorted(wanted)
         if (row := entries.get(("table", name))) is not None
     ]
-    columns = frozenset(column.name for shape in shapes for column in shape.columns)
     keys: set[ForeignKeyShape] = set()
     objects: set[SchemaObject] = set()
     for (kind, name), row in entries.items():
@@ -1030,11 +1009,13 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
                 if key.table in wanted or key.parent in wanted
             )
         elif kind in ("trigger", "view") and row[3]:
-            # A table is named with its ASCII letters in either case, as SQLite matches it,
-            # and can be named by a string literal where a name is read; the SQL is kept as a
-            # definition is, with the case of a double-quoted token SQLite may read as a literal.
+            # A table is named with its ASCII letters in either case, as SQLite matches it, and
+            # a quoted token may be read as a name or as a string literal depending on its scope
+            # and on the connection's setting, so every spelling the body carries counts: an
+            # object that may name a closure table belongs to the closure, and the profile has
+            # to list it. The body itself is kept as written.
             if wanted.intersection(_names(_sql_tokens(row[3]))):
-                objects.add(SchemaObject(kind, name, _normalize_sql(row[3], columns)))
+                objects.add(SchemaObject(kind, name, _spelled_sql(row[3])))
     return Closure(tuple(shapes), frozenset(keys), frozenset(objects))
 
 
