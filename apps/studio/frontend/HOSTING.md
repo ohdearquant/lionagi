@@ -11,13 +11,17 @@ At runtime the app resolves its API base URL in this order: a `?api=` query over
 (highest priority, persisted per browser tab), an injected `window.__STUDIO_API_BASE__`,
 a build-time `VITE_STUDIO_API_BASE` env var, and otherwise the same origin the page was
 loaded from. The query override accepts HTTP(S) origins on `localhost`, any IPv4
-loopback address in `127.0.0.0/8`, or IPv6 `::1`. For example,
+loopback address in `127.0.0.0/8`, or IPv6 `::1`. Hostnames under `*.localhost`
+and IPv4-mapped IPv6 addresses are deliberately excluded from this browser override;
+use an explicit supported loopback address instead. For example,
 `?api=http://127.0.0.2:8766` selects a daemon bound to that loopback address and port.
 
 Same-origin is the right default for a single-origin deploy where one server (a Docker
 image or reverse proxy) serves both the SPA and the API. It is the wrong default for a
 hosted _static_ deploy, whose origin has no API at all — so those deploys must set the
-base explicitly via one of these overrides.
+base explicitly through injected `window.__STUDIO_API_BASE__` or the build-time
+`VITE_STUDIO_API_BASE` environment variable. The `?api=` option is a viewer-selected
+loopback override, not deployment configuration.
 
 The lion-studio hosted deploy is one of those static deploys, and it is local-first:
 the hosted page has no backend of its own. It is a static client that talks directly to
@@ -61,3 +65,8 @@ no token-entry UI today — it only attaches a token injected as
 non-loopback daemon is currently for API/desktop-shell use; treat the hosted page as
 loopback-only until a token prompt ships. Rotate the token like any credential; never
 commit it.
+
+For a configured API base, the shell token is sent only when the request destination
+selected at page load has the same origin as the injected `__STUDIO_API_BASE__`.
+Changing the query string or session storage after page load does not change that
+destination or authorize a different daemon to receive the token.

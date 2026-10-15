@@ -994,6 +994,7 @@ describe("resolveApiBase ?api= override", () => {
     "http://127.0.0.2.evil.example:8766",
     "http://127.0.0.2@evil.example:8766",
     "http://localhost.evil.example:8766",
+    "http://app.localhost:8766",
     "http://126.255.255.255:8766",
     "http://128.0.0.0:8766",
     "http://192.168.1.5:8766",
@@ -1067,75 +1068,135 @@ describe("the shell token does not follow a ?api= override to another daemon", (
   };
 
   beforeEach(() => {
+    vi.resetModules();
     vi.unstubAllGlobals();
+    vi.stubEnv("VITE_STUDIO_API_BASE", "");
     setInjected(undefined, undefined);
     storage.clear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.resetModules();
     setInjected(undefined, undefined);
     storage.clear();
   });
 
   it.each(["127.0.0.1", "127.0.0.2"])(
     "withholds the token when the override names a different daemon on %s",
-    (host) => {
+    async (host) => {
       stubLocation(`?api=http://${host}:8766`);
       setInjected("http://127.0.0.1:8765", "shell-token");
+      const { resolveAuthToken } = await import("./api");
       // Precondition, so this is not asserting against a base that never moved.
       expect(resolveApiBase()).toBe(`http://${host}:8766`);
       expect(resolveAuthToken()).toBeUndefined();
     },
   );
 
-  it("still sends the token when the override names the issuing origin", () => {
-    // The documented workaround: a viewer pasting the address of the very
-    // daemon the shell started must not be punished for it.
-    stubLocation("?api=http://127.0.0.1:8765");
-    setInjected("http://127.0.0.1:8765", "shell-token");
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
-    expect(resolveAuthToken()).toBe("shell-token");
-  });
+  it.each(["127.0.0.1", "127.0.0.2"])(
+    "still sends the token to its issuing origin on %s",
+    async (host) => {
+      // The documented workaround: a viewer pasting the address of the very
+      // daemon the shell started must not be punished for it.
+      stubLocation(`?api=http://${host}:8765`);
+      setInjected(`http://${host}:8765`, "shell-token");
+      const { resolveAuthToken } = await import("./api");
+      expect(resolveApiBase()).toBe(`http://${host}:8765`);
+      expect(resolveAuthToken()).toBe("shell-token");
+      const { listInvocations } = await import("./api");
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(new Response("{}", { headers: { "Content-Type": "application/json" } }));
+      vi.stubGlobal("fetch", fetchMock);
+      await listInvocations();
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(new URL(url).origin).toBe(`http://${host}:8765`);
+      expect(new Headers(init.headers).get("Authorization")).toBe("Bearer shell-token");
+    },
+  );
 
-  it("withholds the token when no issuing origin was injected", () => {
+  it("withholds the token when no issuing origin was injected", async () => {
     // Fail closed: with nothing declaring which daemon the token belongs to,
     // an override cannot be shown to be that daemon.
     stubLocation("?api=http://127.0.0.1:8766");
     setInjected(undefined, "shell-token");
+    const { resolveAuthToken } = await import("./api");
     expect(resolveAuthToken()).toBeUndefined();
   });
 
-  it("withholds the token when the injected base is unparseable", () => {
+  it("withholds the token when the injected base is unparseable", async () => {
     stubLocation("?api=http://127.0.0.1:8766");
     setInjected("not a url", "shell-token");
+    const { resolveAuthToken } = await import("./api");
     expect(resolveAuthToken()).toBeUndefined();
   });
 
-  it("is unchanged when no override is active", () => {
+  it("is unchanged when no override is active", async () => {
     // The arm that would catch this fix over-reaching into the ordinary path.
     stubLocation("");
     setInjected("http://127.0.0.1:8765", "shell-token");
+    const { resolveAuthToken } = await import("./api");
     expect(resolveAuthToken()).toBe("shell-token");
   });
 
-  it("is unchanged when a rejected override leaves the baked base in place", () => {
+  it("is unchanged when a rejected override leaves the baked base in place", async () => {
     // A non-loopback ?api= never becomes the base, so nothing was redirected
     // and there is no reason to withhold.
     stubLocation("?api=https://evil.example");
     setInjected("http://127.0.0.1:8765", "shell-token");
+    const { resolveAuthToken } = await import("./api");
     expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
     expect(resolveAuthToken()).toBe("shell-token");
   });
 
-  it("keeps withholding after the query param is gone", () => {
+  it("keeps withholding after the query param is gone", async () => {
     // The override persists per-tab, so the suppression has to persist with it
     // rather than lapsing on the next SPA navigation.
     stubLocation("?api=http://127.0.0.1:8766");
     setInjected("http://127.0.0.1:8765", "shell-token");
+    const { resolveAuthToken } = await import("./api");
     expect(resolveAuthToken()).toBeUndefined();
     stubLocation("");
     expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
     expect(resolveAuthToken()).toBeUndefined();
   });
+  it.each(["unavailable storage", "rewritten query"] as const)(
+    "keeps the frozen request destination unauthenticated after navigation with %s",
+    async (navigation) => {
+      stubLocation("?api=http://127.0.0.2:8766");
+      setInjected("http://127.0.0.1:8765", "shell-token");
+      if (navigation === "unavailable storage") {
+        vi.stubGlobal("window", {
+          ...window,
+          sessionStorage: {
+            getItem: () => {
+              throw new Error("Storage unavailable");
+            },
+            setItem: () => {
+              throw new Error("Storage unavailable");
+            },
+          },
+        });
+      }
+      const client = await import("./api");
+      expect(client.API_BASE).toBe("http://127.0.0.2:8766");
+      expect(client.resolveAuthToken()).toBeUndefined();
+      window.location.search =
+        navigation === "unavailable storage" ? "" : "?api=http://127.0.0.1:8765";
+      // Re-resolving the current URL no longer describes the loaded client.
+      expect(client.resolveApiBase()).toBe("http://127.0.0.1:8765");
+      expect(client.API_BASE).toBe("http://127.0.0.2:8766");
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(new Response("{}", { headers: { "Content-Type": "application/json" } }));
+      vi.stubGlobal("fetch", fetchMock);
+      await client.listInvocations();
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(new URL(url).origin).toBe("http://127.0.0.2:8766");
+      expect(new Headers(init.headers).has("Authorization")).toBe(false);
+      expect(client.resolveAuthToken()).toBeUndefined();
+    },
+  );
 });

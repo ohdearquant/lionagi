@@ -44,38 +44,26 @@ declare global {
 }
 
 /**
- * Return the per-launch bearer token injected by the desktop shell, if any.
+ * Return the desktop shell's bearer token only for its issuing API origin.
+ * Requests use the base selected when this module loaded. Later SPA query or
+ * storage changes cannot change that destination, so credential admission must
+ * use the same frozen base. A loopback address alone does not establish trust:
+ * another local process can listen on a different address or port.
  *
- * The token authenticates against the daemon the shell started, and the shell
- * names that daemon in `__STUDIO_API_BASE__` when it injects the token. A
- * `?api=` override takes priority over that base, so without a check here the
- * page would keep sending the token after being pointed at a *different*
- * daemon. Restricting the override to loopback bounds who that can be; it does
- * not make them trusted, since any process able to listen on a local port would
- * then be handed the credential by the next request.
- *
- * So the token travels only to the origin it was issued for. If an override is
- * active and that origin cannot be established, the token is withheld:
- * withholding costs an unauthenticated request against a daemon the viewer
- * redirected the page to deliberately, and sending costs the credential itself.
- *
- * Decided here rather than at the call sites because there are several of them,
- * and a rule about where a credential may travel should not be re-implemented
- * once per request builder.
+ * Same-origin requests retain their existing token behavior. For a configured
+ * API base, withhold the token if either origin cannot be established.
  */
 export function resolveAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const token = window.__STUDIO_AUTH_TOKEN__;
   if (!token) return undefined;
 
-  const override = resolveApiOverride();
-  if (!override) return token;
+  if (!API_BASE) return token;
 
   const issuedFor = window.__STUDIO_API_BASE__;
   if (!issuedFor) return undefined;
   try {
-    // resolveApiOverride already returns a bare origin, so both sides normalize.
-    return new URL(issuedFor).origin === override ? token : undefined;
+    return new URL(issuedFor).origin === new URL(API_BASE).origin ? token : undefined;
   } catch {
     return undefined;
   }
