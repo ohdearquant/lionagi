@@ -1318,7 +1318,7 @@ class TestReportedServedModel:
         sent = []
 
         async def forward():
-            # The call exists and is queued; nothing has been sent.
+            # The call exists and is in executor.pending; nothing has been sent.
             started.set()
             if failure == "raised":
                 raise RuntimeError("the queue could not be forwarded")
@@ -1354,6 +1354,39 @@ class TestReportedServedModel:
 
         assert "served_model" not in api_call.metadata
         assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
+
+    @pytest.mark.asyncio
+    async def test_a_call_the_queue_sends_after_its_invoke_was_cancelled_records_nothing(self):
+        # One request per replenish interval, so the second call waits in the queue.
+        model = iModel(
+            provider="openai", model="gpt-4.1-mini", api_key="test-key", limit_requests=1
+        )
+        sent = []
+
+        async def call(request, **_kwargs):
+            sent.append(request["messages"][0]["content"])
+            return {"model": "gpt-" + request["messages"][0]["content"], "response": "x"}
+
+        try:
+            with patch.object(model.endpoint, "call", side_effect=call):
+                await model.invoke(messages=[{"role": "user", "content": "A"}])
+                task = asyncio.create_task(
+                    model.invoke(messages=[{"role": "user", "content": "B"}])
+                )
+                await asyncio.sleep(0.3)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert sent == ["A"]
+
+                # The next replenish lets the queue send the call nobody waits for.
+                model.executor.processor._available_requests = 2
+                await model.executor.processor.process()
+        finally:
+            await model.close()
+
+        assert sent == ["A", "B"]
+        assert model.provider_metadata["served_model"] == "gpt-A"
 
     @pytest.mark.parametrize("concurrency_limit", [None, 2])
     @pytest.mark.asyncio
