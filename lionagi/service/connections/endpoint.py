@@ -325,25 +325,25 @@ class Endpoint:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
         if self.config.idempotent_retries and self.config.method.upper() == "POST":
-            # A name that is not a string is left to the HTTP client, which refuses it as before.
-            named = [
-                name
-                for name in headers
-                if isinstance(name, str) and name.lower() == "idempotency-key"
-            ]
-            # An empty value names no request, so it is replaced rather than sent.
-            if not any(str(headers[name]).strip() for name in named):
-                import uuid
+            import uuid
 
-                # Minted once per logical request, here -- before either retry path
-                # (native _call_aiohttp or the opt-in RetryConfig wrapper below) is
-                # entered -- and reused verbatim across every attempt, so the
-                # provider can recognize a lost-response replay as the same request.
-                # It also takes the place of a client-level key: one key shared by
-                # every request would let the provider answer a new request with an
-                # earlier one's response.
-                headers = {name: value for name, value in headers.items() if name not in named}
-                headers["Idempotency-Key"] = str(uuid.uuid4())
+            # Minted once per logical request, here -- before either retry path
+            # (native _call_aiohttp or the opt-in RetryConfig wrapper below) is
+            # entered -- and reused verbatim across every attempt, so the
+            # provider can recognize a lost-response replay as the same request.
+            # It also takes the place of a client-level key: one key shared by
+            # every request would let the provider answer a new request with an
+            # earlier one's response.
+            if routed:
+                # Routed headers were read as name-value pairs: each name is a token given once
+                # and each value a string. A caller's key is kept whatever the case of its name,
+                # and an empty one, which names no request, is replaced.
+                named = [name for name in headers if name.lower() == "idempotency-key"]
+                if not any(headers[name].strip() for name in named):
+                    headers = {name: value for name, value in headers.items() if name not in named}
+                    headers["Idempotency-Key"] = str(uuid.uuid4())
+            elif "Idempotency-Key" not in headers:
+                headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
 
         call_func = self._call
 

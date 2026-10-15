@@ -188,6 +188,23 @@ async def test_unconfigured_messages_keep_the_direct_key_path(monkeypatch, tmp_p
     assert not path.exists()
 
 
+@pytest.mark.asyncio
+async def test_an_unrouted_request_keeps_its_idempotency_key_handling(monkeypatch, tmp_path):
+    """Without accounts a key is minted unless a header is named exactly `Idempotency-Key`, as
+    before routing existed; the handling of other spellings is for routed requests."""
+    _install_unconfigured(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response(), _response()])
+    model.endpoint.config.idempotent_retries = True
+
+    await model.endpoint.call(REQUEST, extra_headers={"Idempotency-Key": "caller"})
+    await model.endpoint.call(REQUEST, extra_headers={"idempotency-key": "caller"})
+
+    exact, lower = (call["headers"] for call in transport.calls)
+    assert exact["Idempotency-Key"] == "caller"
+    assert lower["idempotency-key"] == "caller"
+    assert lower["Idempotency-Key"] not in ("", "caller")
+
+
 @pytest.mark.parametrize("accounts", [False, True])
 @pytest.mark.asyncio
 async def test_an_unrouted_endpoint_call_hands_its_call_no_new_keyword(
@@ -806,6 +823,30 @@ async def test_a_call_header_replaces_a_client_header_of_the_same_name_on_the_wi
     async with aiohttp.ClientSession(**client_kwargs) as session:
         wire = session._prepare_headers(sent["headers"])
     assert wire.getall("anthropic-version") == ["2023-02-02"]
+
+
+@pytest.mark.asyncio
+async def test_an_idempotency_key_in_the_client_options_is_replaced_on_the_wire(
+    monkeypatch, tmp_path
+):
+    """A client-level key would be shared by every request, so each request's minted key is
+    sent in its place."""
+    import aiohttp
+
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    model.endpoint.config.idempotent_retries = True
+    model.endpoint.config.client_kwargs = {"headers": {"idempotency-key": "client-1"}}
+
+    await model.endpoint.call(REQUEST)
+
+    (client_kwargs,) = transport.client_kwargs
+    (sent,) = transport.calls
+    async with aiohttp.ClientSession(**client_kwargs) as session:
+        wire = session._prepare_headers(sent["headers"])
+    (key,) = wire.getall("idempotency-key")
+    assert key.strip()
+    assert key != "client-1"
 
 
 @pytest.mark.asyncio
