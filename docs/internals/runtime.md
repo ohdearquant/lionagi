@@ -49,12 +49,17 @@ whose schema another application manages, and never migrates, stamps or reconfig
   failed admission disposes the engine, so the object stays unopened. A write transaction compares
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
   closure when it moved: a change elsewhere in the store re-admits, a change to the closure
-  refuses. A table whose constraints declare any conflict resolution but ABORT (`ON CONFLICT
-  REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`) is refused, in the store or in the profile: the
-  authorizer cannot see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution
-  ends.
+  refuses. Each table's definitions are also compared as its SQL spells them (case, whitespace,
+  comments and identifier quotes aside), so a collation, a generated column's expression, a
+  `DEFERRABLE` key or `AUTOINCREMENT` that PRAGMA output leaves out is compared too, and a unique
+  index a CREATE INDEX made is compared by its terms' SQL. A table whose constraints declare any
+  conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a
+  trigger or view that names one (`INSERT OR REPLACE`, `REPLACE INTO`, `RAISE(IGNORE)` and the
+  like), is refused, in the store or in the profile: the authorizer cannot see a row a REPLACE
+  resolution deletes or a transaction a ROLLBACK resolution ends.
 - **Operations.** A StateDB method marked as an operation the profile names runs inside that
-  operation's scope (a context variable, so code the operation calls inherits it). `_tx()` and the
+  operation's scope (a context variable, so code the operation calls inherits it). The scope ends
+  when the operation returns, even for a task the operation started. `_tx()` and the
   engine's begin listener refuse a transaction outside a scope; `execute()` and `transaction()`
   refuse, and `fetch_all()`/`fetch_one()` refuse anything but a read.
 - **Statements.** Every statement SQLAlchemy sends is checked: outside an operation only reads,
@@ -65,8 +70,9 @@ whose schema another application manages, and never migrates, stamps or reconfig
   sees it, without its conflict clause.
 - **Authorizer.** The ceiling on every connection, seeing statements that reach SQLite by any
   path: INSERT only into tables the profile inserts into, UPDATE only of its update columns, both
-  only on `main` and only inside a transaction the guard opened; reads; a short PRAGMA list; any
-  function but `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
+  only on `main` and only inside a transaction the guard opened and that is still open (any
+  BEGIN the guard did not send clears its mark); reads; a short PRAGMA list; any function but
+  `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
 - **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
   its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
