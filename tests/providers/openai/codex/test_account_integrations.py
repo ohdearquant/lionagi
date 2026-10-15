@@ -711,7 +711,8 @@ def test_containment_walks_the_resolved_path_beside_the_spelled_one(tmp_path):
     only the spelled path misses one codex will read for the child's own directory.
     """
     (tmp_path / "x").mkdir()
-    (tmp_path / "far" / "deep").mkdir(parents=True)
+    (tmp_path / "far" / ".git").mkdir(parents=True)
+    (tmp_path / "far" / "deep").mkdir()
     (tmp_path / "far" / "c").mkdir()
     _project_config(tmp_path / "far", 'profile = "w"\n')
     (tmp_path / "x" / "link").symlink_to(tmp_path / "far" / "deep", target_is_directory=True)
@@ -748,3 +749,33 @@ def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, 
     with pytest.raises(ValueError, match="a root profile key of type dict") as raised:
         req.as_cmd_args()
     assert "not-echoed" not in str(raised.value)
+
+
+def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp_path):
+    """The config walk cannot resolve such a directory, so it cannot read the configs
+    codex would apply. The refusal names the directory and the reason it cannot be used."""
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))) as raised:
+        CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
+    assert "cannot be resolved" in str(raised.value)
+
+
+def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
+    missing = tmp_path / "missing"
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))) as raised:
+        CodexCodeRequest(prompt="hi", repo=missing, contain_account_integrations=True)
+    assert "does not exist or is not a directory" in str(raised.value)
+
+
+def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp_path):
+    """Control: the refusal is containment's, not a new restriction on every request."""
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    missing = tmp_path / "missing"
+
+    with pytest.raises(RuntimeError, match="Symlink loop"):
+        CodexCodeRequest(prompt="hi", repo=loop)
+    req = CodexCodeRequest(prompt="hi", repo=missing)
+    with pytest.raises(ValueError, match="does not exist or is not a directory"):
+        req.as_cmd_args()

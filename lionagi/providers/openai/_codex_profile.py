@@ -107,7 +107,10 @@ def resolve_codex_config_profile(
 
     try:
         data = toml.loads(profile_path.read_text())
-    except (OSError, UnicodeError, toml.TomlDecodeError) as exc:
+    except (OSError, UnicodeError, RecursionError, toml.TomlDecodeError) as exc:
+        # UnicodeError: read_text() decodes. RecursionError: the parser recurses
+        # per nesting level. Either way the file is unreadable, and the refusal
+        # below names it rather than letting the error escape request building.
         raise ValueError(
             f"codex config profile {str(profile_path)!r} could not be read "
             f"({type(exc).__name__}: {exc}). Fix or remove the file; running "

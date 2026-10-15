@@ -390,6 +390,9 @@ class CodexCodeRequest(BaseModel):
             "by a root `profile` key in the codex config or in a project "
             "`.codex/config.toml` from the working directory up to its git root, "
             "because codex before 0.135 applies a profile's features after `--disable`. "
+            "A working directory those configs cannot be read from -- one that cannot "
+            "be resolved or does not exist -- is refused too, since containment cannot "
+            "be enforced without knowing which configs apply. "
             "Off by default: the request reaches whatever the account and the "
             "config give it. Lifted by naming `account_connectors`."
         ),
@@ -581,9 +584,53 @@ class CodexCodeRequest(BaseModel):
         check_path_safe(str(v), "output_schema/output_last_message")
         return v
 
+    def __init__(self, **data: Any) -> None:
+        # The working directory decides which codex configs apply, so under
+        # containment it is checked here, where the refusal is raised whole:
+        # a ContainmentRefusedError raised inside a validator would be wrapped
+        # in pydantic's ValidationError, and nothing downstream could tell the
+        # refusal from an ordinary malformed request.
+        super().__init__(**data)
+        self._refuse_an_unusable_working_directory()
+
+    def _refuse_an_unusable_working_directory(self) -> None:
+        """Refuse a working directory containment cannot read the configs of.
+
+        A directory the walk cannot resolve (a symlink loop) or that does not
+        exist leaves the walk with nothing to read, so a caller cannot tell
+        which codex configs apply and containment cannot be enforced. Both are
+        refused before the request is used, naming the directory and the
+        reason, chained from the error the filesystem raised.
+        """
+        if not self._contains_account_integrations():
+            return
+        repo = str(self.repo)
+        try:
+            self.repo.resolve()
+        except RuntimeError as exc:
+            raise ContainmentRefusedError(
+                f"contain_account_integrations cannot use the working directory "
+                f"{repo!r}: it cannot be resolved ({exc})"
+            ) from exc
+        # The same validation the spawn path uses, so the refusal names the
+        # directory the same way and is chained from the value error it raises.
+        try:
+            resolve_cli_workspace(self.repo, None)
+        except ValueError as exc:
+            raise ContainmentRefusedError(
+                f"contain_account_integrations cannot use the working directory: {exc}"
+            ) from exc
+
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
-        repo_root = self.repo.resolve()
+        try:
+            repo_root = self.repo.resolve()
+        except RuntimeError:
+            if self._contains_account_integrations():
+                # Deferred to __init__, which raises the refusal outside
+                # pydantic's validation and so keeps its own type.
+                return self
+            raise
         if self.images:
             contain_paths_in_repo(self.images, repo_root, "images")
         if self.output_schema is not None:

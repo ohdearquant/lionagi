@@ -779,3 +779,110 @@ async def test_the_judge_raises_when_codex_refuses_its_containment(
     with pytest.raises(ContainmentRefusedError, match=re.escape(refusal)):
         await engine.judge(run, "e1", "a subject")
     assert events == []
+
+
+def _record_cli_spawns(monkeypatch):
+    """Fail the spawn seam if any CLI process is started."""
+    import lionagi.providers._cli_subprocess as cli_sub
+
+    started: list[tuple] = []
+
+    async def _spawn(*args, **kwargs):
+        started.append((args, kwargs))
+        raise AssertionError("no CLI process may start for this judge")
+
+    monkeypatch.setattr(cli_sub.asyncio, "create_subprocess_exec", _spawn)
+    return started
+
+
+async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse(
+    tmp_path, monkeypatch
+):
+    """A CODEX_HOME config nested past the parser's limit must not read as a pass.
+
+    The allowlist discovery cannot parse the config, so it falls back to
+    `codex mcp list --json` (stubbed here, so no process starts); the containment
+    walk then reads the same config, cannot, and refuses. The judge raises that
+    refusal, and no CLI process is ever started."""
+    import subprocess
+
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi._errors import ContainmentRefusedError
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+
+    calls: list[tuple] = []
+
+    def _run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+    started = _record_cli_spawns(monkeypatch)
+
+    engine = Engine(
+        contain_account_integrations=True, judge_model=_CLI_MODEL, agent_cwd=str(tmp_path)
+    )
+    run = engine.new_run()
+    real = run.make_agent
+
+    async def make_agent(*args, **kwargs):
+        return await real(*args, mcp_servers=[], **kwargs)
+
+    monkeypatch.setattr(run, "make_agent", make_agent)
+
+    with pytest.raises(ContainmentRefusedError, match="cannot read the codex config"):
+        await engine.judge(run, "e1", "a subject")
+    # The discovery reached its documented fallback rather than raising RecursionError.
+    assert [argv for argv, _ in calls if argv[0] == "codex"] == [["codex", "mcp", "list", "--json"]]
+    assert started == []
+
+
+async def test_the_judge_refuses_a_working_directory_that_is_a_symlink_to_itself(
+    tmp_path, monkeypatch
+):
+    """The containment walk cannot resolve such a cwd; a judge that could not read the
+    configs of its working directory has no verdict to give, so the refusal is raised."""
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi._errors import ContainmentRefusedError
+
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+    started = _record_cli_spawns(monkeypatch)
+
+    engine = Engine(contain_account_integrations=True, judge_model=_CLI_MODEL, agent_cwd=str(loop))
+    run = engine.new_run()
+    events: list[tuple] = []
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
+
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
+        await engine.judge(run, "e1", "a subject")
+    assert started == []
+    assert events == []
+
+
+async def test_the_judge_refuses_a_working_directory_that_does_not_exist(tmp_path, monkeypatch):
+    """Same as above for a cwd that is absent: the refusal names the directory."""
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi._errors import ContainmentRefusedError
+
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+    started = _record_cli_spawns(monkeypatch)
+
+    engine = Engine(
+        contain_account_integrations=True, judge_model=_CLI_MODEL, agent_cwd=str(missing)
+    )
+    run = engine.new_run()
+    events: list[tuple] = []
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
+
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))):
+        await engine.judge(run, "e1", "a subject")
+    assert started == []
+    assert events == []

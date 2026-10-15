@@ -1068,7 +1068,11 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
     config_path = codex_home / "config.toml"
     try:
         data = toml.loads(config_path.read_text())
-    except (OSError, toml.TomlDecodeError):
+    except (OSError, UnicodeError, RecursionError, toml.TomlDecodeError):
+        # UnicodeError: read_text() decodes, so a config that is not UTF-8 is
+        # as unreadable as an unparseable one. RecursionError: the parser
+        # recurses per nesting level, so a config nested past the limit is too.
+        # Both fall through to the fallback rather than escaping discovery.
         pass
     else:
         mcp_servers = data.get("mcp_servers") if isinstance(data, dict) else None
