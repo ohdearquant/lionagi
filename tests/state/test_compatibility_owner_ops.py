@@ -1327,6 +1327,7 @@ async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compa
     import anyio
 
     import lionagi.cli._runs as runs_mod
+    from lionagi.state.compat import Closure
     from lionagi.studio.operator.coordinator import OperatorCoordinator
     from lionagi.studio.operator.store import OperatorStore
     from lionagi.studio.operator.types import OperatorEngineEvent
@@ -1334,8 +1335,20 @@ async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compa
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
 
+    profile = (
+        CompatibilityProfile(
+            name="operator-records",
+            version=1,
+            closure=Closure(tables=()),
+            writes={},
+            operations={"run"},
+        )
+        if compatibility == "profile"
+        else None
+    )
+
     async def setup(*args, **kwargs):
-        return {"session_id": "s1", "db": SimpleNamespace(compatibility=compatibility)}
+        return {"session_id": "s1", "db": SimpleNamespace(compatibility=profile)}
 
     async def teardown(ctx, *, status="completed", **kwargs):
         return "failed"
