@@ -185,22 +185,53 @@ CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 
-def _mask_content_runs(body: Any, key: Any) -> Any:
-    """``body`` with the key masked in the text a consumer joins out of its content blocks.
+def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) -> bool:
+    """Mask long runs of the key in every string of ``value`` not in ``skip``, in
+    place; return whether any string changed."""
+    from lionagi.service.accounts._router import mask_key_runs
 
-    A consumer joins text across text blocks, thinking across thinking blocks and the quoted
-    text of citations, so a key split across blocks, or a run of it as a stream would mask
-    it, is masked in each block that holds part of it (see ``StreamTextRedactor``). The
-    body is a response this request just parsed, and is changed in place.
+    if isinstance(value, dict):
+        items = list(value.items())
+    elif isinstance(value, list):
+        items = list(enumerate(value))
+    else:
+        return False
+    changed = False
+    for name, item in items:
+        if (id(value), name) in skip:
+            continue
+        if isinstance(item, str):
+            masked = mask_key_runs(item, key)
+            if masked != item:
+                value[name] = masked
+                changed = True
+        elif isinstance(item, (dict, list)):
+            changed = _mask_key_runs_in_strings(item, key, skip) or changed
+    return changed
+
+
+def _mask_content_runs(body: Any, key: Any) -> Any:
+    """``body`` with the key masked in every string of a response this request parsed.
+
+    The text, thinking and quoted text of its content are each matched as a join of their
+    kind, and all of them in order, a bare string item counting as text; a key split
+    across those is masked in each piece that holds part of it. Every other string, such
+    as a tool input value, a tool result text or a citation title, is matched on its own
+    (see ``StreamTextRedactor``). The body is changed in place.
     """
     from lionagi.service.accounts._router import mask_joined_key_runs
 
-    content = body.get("content") if isinstance(body, dict) else None
-    if not isinstance(content, list):
-        return body
+    raw = body.get("content") if isinstance(body, dict) else None
+    content = raw if isinstance(raw, list) else [raw] if raw is not None else []
     pieces: list[tuple[str, str]] = []
-    places: list[tuple[dict, str]] = []
-    for block in content:
+    places: list[tuple[Any, Any]] = []
+    for index, block in enumerate(content):
+        if isinstance(block, str):
+            # A bare string item is text: a list item in place, or the body's content.
+            holder, field = (raw, index) if isinstance(raw, list) else (body, "content")
+            pieces.append(("text", block))
+            places.append((holder, field))
+            continue
         if not isinstance(block, dict):
             continue
         for field in ("text", "thinking"):
@@ -214,6 +245,7 @@ def _mask_content_runs(body: Any, key: Any) -> Any:
                 places.append((citation, "cited_text"))
     for (holder, field), text in zip(places, mask_joined_key_runs(pieces, key), strict=True):
         holder[field] = text
+    _mask_key_runs_in_strings(body, key, {(id(holder), field) for holder, field in places})
     return body
 
 
@@ -291,6 +323,11 @@ class AnthropicMessagesEndpoint(Endpoint):
                 url=url,
                 method=method,
             )
+            if response_mode != "json":
+                # A routed call is settled from the usage in its JSON body and its key is
+                # masked in that body as parsed; a mode that returns anything else could do
+                # neither.
+                raise AccountRoutingError(RouterErrorCode.UNSUPPORTED_PRICING)
         except AccountRoutingError as exc:
             raise _RoutedNoRetryError(
                 exc.code.value,
@@ -365,11 +402,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                         attempt_id=attempt.attempt_id,
                         http_status=status,
                     )
-
-                if response_mode == "bytes":
-                    body = await response.read()
-                    await router.settle_unknown(attempt, "usage_incomplete")
-                    return redact_value(body, attempt.key)
 
                 # The decode error is dropped, not chained: it can quote the body.
                 try:
@@ -530,7 +562,6 @@ class AnthropicMessagesEndpoint(Endpoint):
             StreamTextRedactor,
             get_router,
             header_pairs,
-            mask_key_runs,
             redact_value,
             routed_client_kwargs,
             validate_routed_request,
@@ -624,28 +655,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                 return [data, stripped]
             return [stripped]
 
-        def mask_strings(value: Any, skip: set[tuple[int, Any]]) -> bool:
-            """Mask long runs of the key in every string of ``value`` not in ``skip``, in
-            place; return whether any string changed."""
-            if isinstance(value, dict):
-                items = list(value.items())
-            elif isinstance(value, list):
-                items = list(enumerate(value))
-            else:
-                return False
-            changed = False
-            for name, item in items:
-                if (id(value), name) in skip:
-                    continue
-                if isinstance(item, str):
-                    masked = mask_key_runs(item, attempt.key)
-                    if masked != item:
-                        value[name] = masked
-                        changed = True
-                elif isinstance(item, (dict, list)):
-                    changed = mask_strings(item, skip) or changed
-            return changed
-
         def queue_data(data: str) -> list:
             """Hand one event to the text redactor; return the events now ready."""
             event = None
@@ -693,7 +702,9 @@ class AnthropicMessagesEndpoint(Endpoint):
             # it, except as the text of the event's chunk, which is joined with other chunks'
             # text. An object's names are not matched for runs; the chunk masks a whole key in
             # one.
-            rewrite = mask_strings(event, {(id(holder), name) for holder, name in places})
+            rewrite = _mask_key_runs_in_strings(
+                event, attempt.key, {(id(holder), name) for holder, name in places}
+            )
             return push(event, data, places, rewrite, pieces, shown)
 
         def push(event, data, places, rewrite, pieces, shown) -> list:

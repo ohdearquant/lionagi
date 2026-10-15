@@ -39,8 +39,12 @@ closing the fourth would mean a join for every set of chunk types a consumer mig
 - The names in an event's objects are not matched for runs; a whole key in a name is masked in the
   chunks a consumer receives.
 
-A response that is not streamed reaches its caller only with status 200, with every whole key in it
-masked; it is not matched for runs.
+A response that is not streamed reaches its caller only with status 200 and only as parsed JSON;
+every whole key in it is masked, the text, thinking and quoted text of its content are matched for
+runs as joins of each kind and all in order (a bare string item counts as text), and every other
+string is matched for runs on its own. Unlike a stream it does not mask a beginning of the key
+shorter than eight characters, since it can read the whole text first. A routed call that asks for
+another response mode is refused with `unsupported_pricing` before it is sent.
 
 ## Requirements
 

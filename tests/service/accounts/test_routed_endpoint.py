@@ -1057,7 +1057,7 @@ async def test_a_routed_stream_sends_a_callers_idempotency_key(monkeypatch, tmp_
 )
 @pytest.mark.asyncio
 async def test_a_response_masks_the_key_in_the_text_its_blocks_join(monkeypatch, tmp_path, texts):
-    """A non-streamed response is masked as a stream of the same text would be."""
+    """A routed response masks a key split across its text blocks, and a run inside one."""
     _install_accounts(monkeypatch, tmp_path)
     body = _response().body
     body["content"] = [{"type": "text", "text": text} for text in texts]
@@ -1069,6 +1069,181 @@ async def test_a_response_masks_the_key_in_the_text_its_blocks_join(monkeypatch,
     assert "[REDACTED]" in joined
     for start in range(len(CANARY) - 7):
         assert CANARY[start : start + 8] not in joined
+
+
+def _walked_strings(value) -> list[str]:
+    """Every string in ``value``, an object's names included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        found = [name for name in value if isinstance(name, str)]
+        for item in value.values():
+            found.extend(_walked_strings(item))
+        return found
+    if isinstance(value, list):
+        found = []
+        for item in value:
+            found.extend(_walked_strings(item))
+        return found
+    return []
+
+
+def _masked_in_every_string(result) -> None:
+    """No run of the key survives anywhere in the body, and a mask is in it."""
+    for text in _walked_strings(result):
+        assert _no_run_of_the_key(text, CANARY), text
+    assert "[REDACTED]" in " ".join(_walked_strings(result))
+
+
+async def _routed_call_on_content(monkeypatch, tmp_path, content):
+    _install_accounts(monkeypatch, tmp_path)
+    body = _response().body
+    body["content"] = content
+    model, _ = _model(monkeypatch, [StubResponse(body=body)])
+    return await model.endpoint.call(REQUEST)
+
+
+_RUN_IN_OTHER_STRINGS = {
+    "tool_use input": lambda run: {
+        "type": "tool_use",
+        "name": "lookup",
+        "input": {"query": run},
+    },
+    "nested list in input": lambda run: {
+        "type": "tool_use",
+        "name": "lookup",
+        "input": {"items": [{"value": run}]},
+    },
+    "tool_result content text": lambda run: {
+        "type": "tool_result",
+        "tool_use_id": "toolu_1",
+        "content": [{"type": "text", "text": run}],
+    },
+    "mcp_tool_result content text": lambda run: {
+        "type": "mcp_tool_result",
+        "content": [{"type": "text", "text": run}],
+    },
+    "citation title": lambda run: {
+        "type": "text",
+        "text": "quoted",
+        "citations": [{"type": "char_location", "cited_text": "quote", "title": run}],
+    },
+}
+
+
+@pytest.mark.parametrize("place", list(_RUN_IN_OTHER_STRINGS), ids=list(_RUN_IN_OTHER_STRINGS))
+@pytest.mark.asyncio
+async def test_a_response_masks_a_key_run_in_any_other_string(monkeypatch, tmp_path, place):
+    run = CANARY[4:20]
+    content = [{"type": "text", "text": "before"}, _RUN_IN_OTHER_STRINGS[place](run)]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert "[REDACTED]" in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_a_response_masks_a_key_run_in_a_bare_string_item(monkeypatch, tmp_path):
+    run = CANARY[4:20]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, ["plain", run])
+
+    _masked_in_every_string(result)
+    assert result["content"] == ["plain", "[REDACTED]"]
+
+
+@pytest.mark.asyncio
+async def test_a_response_masks_a_run_split_across_a_text_block_and_a_bare_string(
+    monkeypatch,
+    tmp_path,
+):
+    run = CANARY[4:20]
+    content = [{"type": "text", "text": run[:8]}, run[8:]]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert result["content"][0]["text"] == "[REDACTED]"
+    assert result["content"][1] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_a_response_masks_a_key_run_when_its_content_is_one_block(monkeypatch, tmp_path):
+    run = CANARY[4:20]
+
+    result = await _routed_call_on_content(
+        monkeypatch, tmp_path, {"type": "text", "text": "see " + run + " here"}
+    )
+
+    _masked_in_every_string(result)
+    assert result["content"]["text"] == "see [REDACTED] here"
+
+
+@pytest.mark.asyncio
+async def test_a_response_leaves_text_sharing_short_pieces_with_the_key(
+    monkeypatch,
+    tmp_path,
+):
+    text = "start " + CANARY[4:11] + " end"
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, [{"type": "text", "text": text}])
+
+    assert result["content"][0]["text"] == text
+    assert "[REDACTED]" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_a_response_masks_a_run_that_only_its_text_blocks_join_holds(
+    monkeypatch,
+    tmp_path,
+):
+    """Each text block holds six characters of the key, separated by a thinking block:
+    only the join of the text pieces holds a run, not the join of every piece."""
+    first, second = CANARY[10:16], CANARY[16:22]
+    content = [
+        {"type": "text", "text": first},
+        {"type": "thinking", "thinking": "junk"},
+        {"type": "text", "text": second},
+    ]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert result["content"][0]["text"] == "[REDACTED]"
+    assert result["content"][2]["text"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_a_response_masks_a_run_split_across_two_citations(monkeypatch, tmp_path):
+    first, second = CANARY[6:14], CANARY[14:22]
+    content = [
+        {"type": "text", "text": "one", "citations": [{"cited_text": first, "title": "t1"}]},
+        {"type": "text", "text": "two", "citations": [{"cited_text": second, "title": "t2"}]},
+    ]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert result["content"][0]["citations"][0]["cited_text"] == "[REDACTED]"
+    assert result["content"][1]["citations"][0]["cited_text"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_a_routed_call_asking_for_bytes_is_refused_before_it_is_sent(
+    monkeypatch,
+    tmp_path,
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+    payload, headers = model.endpoint.create_payload(REQUEST)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint._call_aiohttp(payload, headers, response_mode="bytes")
+
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
 
 
 @pytest.mark.asyncio

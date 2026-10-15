@@ -312,7 +312,7 @@ class Endpoint:
         if routed:
             # Routed headers were read as name-value pairs: each name is a token given once
             # and each value a string. A caller's key is kept whatever the case of its name,
-            # and an empty one, which names no request, is replaced.
+            # and an empty or blank one, which names no request, is replaced.
             named = [name for name in headers if name.lower() == "idempotency-key"]
             if not any(headers[name].strip() for name in named):
                 headers = {name: value for name, value in headers.items() if name not in named}
