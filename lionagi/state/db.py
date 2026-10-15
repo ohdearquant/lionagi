@@ -782,6 +782,12 @@ class StateDB:
         return f" AND {_quote_identifier(column)} = :_compat_owner", {"_compat_owner": owner}
 
     def _require_created(self, table: str, row_id: Any, what: str) -> None:
+        if not isinstance(row_id, str):
+            # A set lookup is by Python equality, under which 1 and 1.0 are one id.
+            raise self._compat.refusal(
+                f"{what} {row_id!r} is not a string id; compatibility mode links rows by "
+                "their string ids"
+            )
         if row_id not in self._compat_created.get(table, ()):
             raise self._compat.refusal(
                 f"{what} {row_id!r} was not created by this run; compatibility mode writes only "
@@ -2360,15 +2366,16 @@ class StateDB:
         )
 
     async def _write_message_compat(self, conn, values: dict[str, Any]) -> None:
-        # A message this run wrote is rewritten in place, as a re-emitted hook does natively; any
-        # other existing id refuses, and a new one is inserted with its owner.
+        # A message this run wrote is rewritten in place, as a re-emitted hook does natively, and
+        # refuses when the store has deleted it or given it to another owner; any other existing
+        # id refuses, and a new one is inserted with its owner.
         if values["id"] not in self._compat_created.get("messages", ()):
             await self._insert_new_row(
                 conn, "messages", values, json_columns=("node_metadata", "content")
             )
             return
         clause, owner = self._owner_predicate("messages")
-        await conn.execute(
+        result = await conn.execute(
             text(
                 "UPDATE messages SET node_metadata = :node_metadata, content = :content, "  # noqa: S608 -- the clause is this module's
                 "embedding = :embedding, sender = :sender, recipient = :recipient, "
@@ -2380,6 +2387,12 @@ class StateDB:
             ),
             {**values, **owner},
         )
+        if result.rowcount == 0:
+            raise self._compat.refusal(
+                f"message {values['id']!r}, which this run wrote, is gone or no longer "
+                f"belongs to {self._compat.owner!r}; compatibility mode rewrites only its own "
+                "rows"
+            )
 
     @_operation("insert_message")
     async def insert_message(self, msg: dict[str, Any]) -> None:
@@ -2420,12 +2433,18 @@ class StateDB:
         """Get or create a message_types row within an existing transaction."""
         if not lion_class_str:
             return self._UNKNOWN_TYPE_ID
+        # In compatibility mode an owned lookup table gets its owner like any other insert.
+        params = {"lc": lion_class_str}
+        owner_column = owner_value = ""
+        for name, owner in self._owner_values("message_types").items():
+            owner_column, owner_value = f", {_quote_identifier(name)}", ", :_compat_owner"
+            params["_compat_owner"] = owner
         await conn.execute(
             text(
-                "INSERT INTO message_types (lion_class) VALUES (:lc) "
+                f"INSERT INTO message_types (lion_class{owner_column}) VALUES (:lc{owner_value}) "  # noqa: S608 -- the column is this module's
                 "ON CONFLICT (lion_class) DO NOTHING"
             ),
-            {"lc": lion_class_str},
+            params,
         )
         row = (
             (
@@ -2681,14 +2700,14 @@ class StateDB:
             if params[link] is not None:
                 self._require_created("messages", params[link], "message")
         invocation_id = params["invocation_id"]
-        if invocation_id and "invocations" not in self._compat.owned_tables:
+        if invocation_id is not None and "invocations" not in self._compat.owned_tables:
             raise self._compat.refusal(
                 f"the session names invocation {invocation_id!r}, which this run did not create, "
                 "and the profile records no owner to admit it by"
             )
         clause, owner = self._owner_predicate("invocations")
         async with self._tx() as conn:
-            if invocation_id:
+            if invocation_id is not None:
                 found = (
                     await conn.execute(
                         text(f"SELECT 1 FROM invocations WHERE id = :inv_id{clause}"),  # noqa: S608
@@ -2717,7 +2736,7 @@ class StateDB:
                     status=session["status"],
                     actor_id="create_session",
                 )
-            if invocation_id:
+            if invocation_id is not None:
                 await conn.execute(
                     text(
                         "UPDATE invocations SET session_count = session_count + 1, "  # noqa: S608 -- the clause is this module's
@@ -6632,8 +6651,11 @@ _SHARED_TEARDOWN_RACE = (
 )
 
 
-def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None]:
-    return db.url if db.mode == "native" else (db.url, db.mode, db.compatibility)
+def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None, str | None]:
+    if db.mode == "native":
+        return db.url
+    owner = None if db._compat is None else db._compat.owner
+    return (db.url, db.mode, db.compatibility, owner)
 
 
 async def get_shared_db(path: str | Path | None = None) -> StateDB:

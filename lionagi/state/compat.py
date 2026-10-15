@@ -221,6 +221,28 @@ def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return found
 
 
+def _insert_target(tokens: list[tuple[str, str]]) -> tuple[str, frozenset[str] | None] | None:
+    """The table an INSERT writes and the columns it names; None for the columns when it
+    names none, and None in all when the statement is not an INSERT.
+    """
+    top = _top_level_words(tokens)
+    verb = next((word for word in top if word in _DML), None)
+    if verb != "insert":
+        return None
+    into = next((i for i, token in enumerate(tokens) if token == (_WORD, "into")), None)
+    if into is None:
+        return None
+    rest = tokens[into + 1 :]
+    if len(rest) >= 3 and rest[1] == (_PUNCT, "."):
+        rest = rest[2:]  # a schema prefix
+    if not rest or rest[0][0] not in (_WORD, _IDENT):
+        return None
+    if rest[1:2] != [(_PUNCT, "(")]:
+        return rest[0][1], None
+    columns = frozenset(_joined(group) for group in _groups(rest, 1) if len(group) == 1)
+    return rest[0][1], columns
+
+
 def _pragma_reads(tokens: list[tuple[str, str]]) -> bool:
     rest = tokens[1:]
     if len(rest) >= 2 and rest[1] == (_PUNCT, "."):
@@ -680,7 +702,9 @@ class OwnerRule:
 
     Every table in the profile's closure that has a column named ``column`` is owned. Compatibility
     mode writes the configured owner into that column on every insert, never leaving it to the
-    column's default, and the owner must exist as a ``key`` value of the ``principals`` table.
+    column's default (the statement check refuses an INSERT into an owned table that does not
+    name the column), and the owner must exist as a ``key`` value of the ``principals`` table,
+    read at admission and again in every write transaction.
     """
 
     column: str
@@ -1018,14 +1042,14 @@ class _Guard:
 
         try:
             self._check_store(fetch, "admission", "open")
-            self._check_owner(connection)
+            self._check_owner(connection, "admission", "open")
             self.schema_version = int(fetch("PRAGMA schema_version")[0][0])
         except StateCompatibilityRefused:
             raise
         except (sqlite3.Error, DBAPIError) as exc:
             raise self.refusal(f"the store could not be read: {exc}", operation="open") from exc
 
-    def _check_owner(self, connection) -> None:
+    def _check_owner(self, connection, when: str, operation: str | None) -> None:
         rule = self.profile.owner
         if rule is None:
             return
@@ -1035,7 +1059,7 @@ class _Guard:
         ).fetchall()
         if not found:
             raise self.refusal(
-                f"admission: the owner {self.owner!r} is not in {rule.principals}", operation="open"
+                f"{when}: the owner {self.owner!r} is not in {rule.principals}", operation
             )
 
     def _recheck(self, connection) -> None:
@@ -1174,6 +1198,9 @@ class _Guard:
         state.last_denial = None
         try:
             self._recheck(connection)
+            # Under the writer's lock, so the principal cannot go between this read and the
+            # transaction's writes.
+            self._check_owner(connection, "the write transaction", None)
         except BaseException:
             try:
                 connection.exec_driver_sql("ROLLBACK")
@@ -1207,12 +1234,27 @@ class _Guard:
                 "with it; no later write runs outside a transaction"
             )
         else:
-            reason = _write_refusal(tokens)
+            reason = _write_refusal(tokens) or self._owner_refusal(tokens)
             if reason is None:
                 return
         if state.write_txn:
             state.denied = True
         raise self.refusal(reason)
+
+    def _owner_refusal(self, tokens: list[tuple[str, str]]) -> str | None:
+        # The authorizer sees an INSERT's table, never its columns, so an insert that leaves
+        # the owner column to its default is caught here.
+        rule = self.profile.owner
+        target = None if rule is None else _insert_target(tokens)
+        if target is None or target[0] not in self.owned_tables:
+            return None
+        table, columns = target
+        if columns is None or rule.column not in columns:
+            return (
+                f"an INSERT into {table} leaves out the owner column {rule.column}; a default is "
+                "never the owner"
+            )
+        return None
 
     def _on_error(self, context) -> None:
         if isinstance(context.original_exception, StateCompatibilityRefused):
