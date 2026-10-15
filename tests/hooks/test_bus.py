@@ -162,6 +162,71 @@ async def test_a_write_the_store_refuses_passes_through_hook_isolation():
     assert fired_after == []
 
 
+class _RecordingObserver:
+    def __init__(self) -> None:
+        self.signals: list = []
+
+    async def emit(self, signal) -> None:
+        self.signals.append(signal)
+
+
+async def test_a_refused_handler_write_is_recorded_before_it_is_raised():
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    observer = _RecordingObserver()
+    bus = HookBus(observer)
+
+    async def refused(**kw):
+        raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+    bus.on(HookPoint.MESSAGE_ADD, refused)
+
+    with pytest.raises(StateCompatibilityRefused):
+        await bus.emit(HookPoint.MESSAGE_ADD, message={}, session_id="s")
+    (signal,) = observer.signals
+    assert signal.point == HookPoint.MESSAGE_ADD
+    assert signal.kwargs["exception"].startswith(
+        "StateCompatibilityRefused: persist_live_message refused"
+    )
+
+
+async def test_a_refused_session_end_flush_flushes_every_queue_and_runs_no_handler():
+    """Every queue gets its attempt before the first refusal is raised; the SESSION_END
+    handlers, which write, do not run after it (ADR-0128 D6)."""
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    class _Queue:
+        def __init__(self, refuse: bool) -> None:
+            self.refuse = refuse
+            self.attempts = 0
+
+        async def flush_final(self) -> bool:
+            self.attempts += 1
+            if self.refuse:
+                raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+            return True
+
+    observer = _RecordingObserver()
+    bus = HookBus(observer)
+    ended: list = []
+
+    async def persist_session_end(**kw):
+        ended.append(kw)
+
+    bus.on(HookPoint.SESSION_END, persist_session_end)
+    first, second = _Queue(refuse=True), _Queue(refuse=False)
+    bus._message_retry_queues = {"first": first, "second": second}
+
+    with pytest.raises(StateCompatibilityRefused):
+        await bus.emit(HookPoint.SESSION_END, session_id="s", status="completed")
+
+    assert (first.attempts, second.attempts) == (1, 1)
+    assert ended == []
+    (signal,) = observer.signals
+    assert signal.point == HookPoint.SESSION_END
+    assert "persist_live_message refused" in signal.kwargs["exception"]
+
+
 async def test_sync_handler_exception_is_logged_and_swallowed(caplog):
     bus = HookBus()
     fired_after: list[str] = []

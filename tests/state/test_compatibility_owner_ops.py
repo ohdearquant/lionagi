@@ -857,3 +857,87 @@ async def test_a_refused_setup_stops_the_run(store, monkeypatch):
 
     assert degraded == []
     assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(0,)]
+
+
+class _Message:
+    """What a branch hands its live hook: a message with ``to_dict(mode=...)``."""
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def to_dict(self, mode: str = "python") -> dict:
+        return dict(self._data)
+
+
+async def test_the_runs_live_hook_raises_a_refusal(db, store):
+    """The CLI's live hook lets a refusal through instead of logging it (ADR-0128 D6)."""
+    from lionagi.cli._runs import _make_message_handler
+
+    await _setup_run(db)
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+    queues: list = []
+    on_message = _make_message_handler(db, "b1", "s1", "bp", "sp", message_retry_queues=queues)
+
+    with pytest.raises(StateCompatibilityRefused, match="does not belong to 'principal:a'"):
+        await on_message(_Message(_live_message()))
+
+    assert queues[0].pending_count == 1
+    assert _rows(store, "SELECT COUNT(*) FROM messages WHERE id = 'm1'") == [(0,)]
+
+
+async def test_a_refused_teardown_fails_the_run_with_the_refusal(db, store):
+    """Teardown neither swallows a refusal nor reads back a status it could not write."""
+    from lionagi.cli._runs import _make_message_handler, teardown_persist
+    from lionagi.hooks import route_message_persistence
+    from lionagi.hooks.bus import HookPoint
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    await _setup_run(db)
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+    queues: list = []
+    on_message = _make_message_handler(db, "b1", "s1", "bp", "sp", message_retry_queues=queues)
+    with pytest.raises(StateCompatibilityRefused):
+        await on_message(_Message(_live_message()))
+    session, branch = Session(), Branch()
+    hook = route_message_persistence(session, branch, on_message)
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "branch": branch,
+        "hook": hook,
+        "message_retry_queues": queues,
+        "shared_db_registered": False,
+    }
+
+    assert await teardown_persist(ctx, status="completed") == "failed"
+
+    status, reason = ctx["terminal_reason"]
+    assert status == "failed"
+    assert "persist_live_message refused" in reason
+    assert hook not in session.hooks.handlers_for(HookPoint.MESSAGE_ADD)
+    assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("running",)]
+
+
+class _FlushQueue:
+    def __init__(self, refuse: bool) -> None:
+        self.refuse = refuse
+        self.attempts = 0
+
+    async def flush_final(self) -> bool:
+        self.attempts += 1
+        if self.refuse:
+            raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+        return True
+
+
+async def test_teardown_flushes_every_queue_before_it_raises_a_refusal():
+    from lionagi.cli._runs import _flush_pending_message_events
+
+    first, second = _FlushQueue(refuse=True), _FlushQueue(refuse=False)
+
+    with pytest.raises(StateCompatibilityRefused):
+        await _flush_pending_message_events({"message_retry_queues": [first, second]})
+
+    assert (first.attempts, second.attempts) == (1, 1)

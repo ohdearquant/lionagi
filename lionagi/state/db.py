@@ -613,7 +613,8 @@ class StateDB:
         self.compatibility = compatibility
         self._compat: _CompatibilityGuard | None = None
         # The rows this handle's compatibility-mode operations created, by table: the first
-        # profile writes only rows its run creates (ADR-0128 D4).
+        # profile writes only rows its run creates (ADR-0128 D4). A handle shared by several
+        # runs of one owner counts their rows together.
         self._compat_created: dict[str, set[Any]] = {}
         if compatibility is None and owner is not None:
             raise ValueError("an owner is written in compatibility mode only")

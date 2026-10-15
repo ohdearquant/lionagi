@@ -161,7 +161,16 @@ class HookBus:
         await self._record(point, kwargs)
 
     async def emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
-        """Fire handlers sequentially; exceptions logged, not propagated."""
+        """Fire handlers sequentially; exceptions logged, not propagated.
+
+        A write the store refused in compatibility mode
+        (``StateCompatibilityRefused``, from a handler or from the message retry
+        flush before ``SESSION_END``) is the one exception raised: it ends the
+        emit, so later handlers do not run, and the signal is recorded with the
+        refusal first.
+        """
+        from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
         point = _normalize_point(point)
         if point in _BLOCKING_POINTS:
             await self.blocking_emit(point, **kwargs)
@@ -176,14 +185,15 @@ class HookBus:
                     await maybe_await(handler(**kwargs))
                 except StopHook:
                     break
-                except Exception as exc:  # noqa: BLE001 — hook isolation invariant
-                    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
-
-                    if isinstance(exc, StateCompatibilityRefused):
-                        # A write the store refused in compatibility mode stops the run
-                        # instead of leaving it unpersisted (ADR-0128 D6).
-                        raise
+                except StateCompatibilityRefused:
+                    # A write the store refused in compatibility mode stops the run
+                    # instead of leaving it unpersisted (ADR-0128 D6).
+                    raise
+                except Exception:  # noqa: BLE001 — hook isolation invariant
                     logger.exception("Hook failed: %s", point.value)
+        except StateCompatibilityRefused as exc:
+            await self._record(point, {**kwargs, "exception": f"{type(exc).__name__}: {exc}"})
+            raise
         finally:
             _emitting_bus.reset(token)
         # MESSAGE_ADD is represented on the signal bus by MessageAdded (emitted
@@ -197,12 +207,21 @@ class HookBus:
 
         Returns whether every queue emptied. The queues report their own losses,
         so this is for a caller that can do something about it rather than the
-        record that it happened.
+        record that it happened. A queue the store refuses in compatibility mode
+        raises that refusal, once every queue has been flushed.
         """
+        from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
         flushed = True
+        refusal = None
         for retry_queue in getattr(self, "_message_retry_queues", {}).values():
-            if not await retry_queue.flush_final():
-                flushed = False
+            try:
+                if not await retry_queue.flush_final():
+                    flushed = False
+            except StateCompatibilityRefused as exc:
+                refusal = refusal or exc
+        if refusal is not None:
+            raise refusal
         return flushed
 
 

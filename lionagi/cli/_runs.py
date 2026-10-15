@@ -1058,14 +1058,9 @@ async def teardown_persist(
             reason_out=ctx,
         )
 
-        from lionagi.hooks import unroute_message_persistence
         from lionagi.hooks.bus import HookPoint
 
-        hook = ctx.get("hook")
-        if hook is not None:
-            unroute_message_persistence(ctx["branch"], hook)
-        for branch, h in ctx.get("hooks", []):
-            unroute_message_persistence(branch, h)
+        _unroute_message_hooks(ctx)
 
         session_obj = ctx.get("session")
         # Skip SESSION_END here when deferred: the resumed leg's own (non-deferred)
@@ -1116,6 +1111,17 @@ async def teardown_persist(
 
         return final_status
     except Exception as exc:
+        from lionagi.state.compat import StateCompatibilityRefused
+
+        if isinstance(exc, StateCompatibilityRefused):
+            # The store refused a write in compatibility mode, so the run fails with that
+            # refusal as its reason instead of reading back a status it could not write
+            # (ADR-0128 D6). Nothing more is written: the message hooks are detached, and
+            # SESSION_END, whose handlers write, is not emitted.
+            _log.error("live persist teardown refused: %s", exc)
+            _unroute_message_hooks(ctx)
+            ctx["terminal_reason"] = ("failed", f"The store refused a write: {exc}")
+            return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's
         # separate write transactions, or the bookkeeping around them) must
@@ -1167,6 +1173,16 @@ async def teardown_persist(
             from lionagi.state.db import close_shared_db
 
             await close_shared_db()
+
+
+def _unroute_message_hooks(ctx: dict) -> None:
+    from lionagi.hooks import unroute_message_persistence
+
+    hook = ctx.get("hook")
+    if hook is not None:
+        unroute_message_persistence(ctx["branch"], hook)
+    for branch, h in ctx.get("hooks", []):
+        unroute_message_persistence(branch, h)
 
 
 # Keep old names as aliases so callers don't break.
@@ -1222,6 +1238,7 @@ def _make_message_handler(
     from copy import deepcopy
 
     from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+    from lionagi.state.compat import StateCompatibilityRefused
 
     retry_queue = MessagePersistRetryQueue(
         db,
@@ -1256,6 +1273,9 @@ def _make_message_handler(
                     on_persisted=on_persisted,
                 )
             )
+        except StateCompatibilityRefused:
+            # A write the store refused in compatibility mode stops the run (ADR-0128 D6).
+            raise
         except Exception as exc:
             _log.warning(
                 "live persist write failed for branch %s: %s",
@@ -1272,12 +1292,22 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
 
     Returns whether every queue emptied. What follows this reads the run's
     completion evidence, so a queue that gave up here means that evidence is
-    being read against a transcript missing messages the run produced.
+    being read against a transcript missing messages the run produced. A queue
+    the store refuses in compatibility mode raises that refusal, once every
+    queue has been flushed.
     """
+    from lionagi.state.compat import StateCompatibilityRefused
+
     flushed = True
+    refusal = None
     for retry_queue in ctx.get("message_retry_queues", []):
-        if not await retry_queue.flush_final():
-            flushed = False
+        try:
+            if not await retry_queue.flush_final():
+                flushed = False
+        except StateCompatibilityRefused as exc:
+            refusal = refusal or exc
+    if refusal is not None:
+        raise refusal
     return flushed
 
 
