@@ -37,6 +37,8 @@ __all__ = ("AccountRouter",)
 
 _CANONICAL_BASE_URL = "https://api.anthropic.com/v1"
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key"})
+# A beta header turns on features no price revision covers.
+_BETA_HEADERS = frozenset({"anthropic-beta"})
 _FORBIDDEN_CLIENT_OPTIONS = frozenset(
     {"auth", "trace_configs", "allow_redirects", "follow_redirects", "raise_for_status"}
 )
@@ -165,10 +167,10 @@ def _refuse(code: RouterErrorCode) -> AccountRoutingError:
     return AccountRoutingError(code)
 
 
-def _has_auth_header(headers: Mapping[str, Any] | None) -> bool:
+def _has_header(headers: Mapping[str, Any] | None, names: frozenset[str]) -> bool:
     if not isinstance(headers, Mapping):
         return False
-    return any(isinstance(name, str) and name.strip().lower() in _AUTH_HEADERS for name in headers)
+    return any(isinstance(name, str) and name.strip().lower() in names for name in headers)
 
 
 def validate_routed_request(
@@ -184,8 +186,8 @@ def validate_routed_request(
         getattr(config, "_api_key_explicit", False)
         or config.auth_type != "x-api-key"
         or config.base_url != _CANONICAL_BASE_URL
-        or _has_auth_header(config.default_headers)
-        or _has_auth_header(headers)
+        or _has_header(config.default_headers, _AUTH_HEADERS)
+        or _has_header(headers, _AUTH_HEADERS)
         or (payload is not None and "api_key" in payload)
     ):
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
@@ -194,8 +196,13 @@ def validate_routed_request(
     if any(
         isinstance(name, str) and name.lower() in _FORBIDDEN_CLIENT_OPTIONS
         for name in client_kwargs
-    ) or _has_auth_header(client_kwargs.get("headers")):
+    ) or _has_header(client_kwargs.get("headers"), _AUTH_HEADERS):
         raise _refuse(RouterErrorCode.CREDENTIAL_CONFLICT)
+    if any(
+        _has_header(source, _BETA_HEADERS)
+        for source in (config.default_headers, headers, client_kwargs.get("headers"))
+    ):
+        raise _refuse(RouterErrorCode.UNSUPPORTED_PRICING)
     # A routed call takes no request keyword. Each one reaches the HTTP client, where a name it
     # does not know fails only after an account was reserved, and one it does know (ssl, proxy)
     # can move the keyed request off the verified connection. A tier keeps its own code: routed

@@ -540,6 +540,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_id = None
         settled = False
         saw_error_event = False
+        saw_final_usage = False
 
         def finish_line(line: str) -> list[str]:
             text = line.rstrip("\r")
@@ -657,7 +658,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             )
 
         async def emit_ready(ready: list):
-            nonlocal served_model, request_id, settled, saw_error_event
+            nonlocal served_model, request_id, settled, saw_error_event, saw_final_usage
             for (event, data, places, rewrite, shown_type), texts in ready:
                 shown_text = texts.pop() if shown_type is not None else None
                 raw = None
@@ -687,15 +688,22 @@ class AnthropicMessagesEndpoint(Endpoint):
                     delta_usage = event.get("usage")
                     if isinstance(delta_usage, dict):
                         usage.update(delta_usage)
+                        saw_final_usage = True
                 elif event_type == "error":
                     saw_error_event = True
                 elif event_type == "message_stop":
-                    priced = price_usage(
-                        router.revision,
-                        attempt.ttls,
-                        served_model,
-                        usage,
-                        request_id if isinstance(request_id, str) else None,
+                    # message_start's output count is a placeholder; only a
+                    # message_delta's usage completes it.
+                    priced = (
+                        price_usage(
+                            router.revision,
+                            attempt.ttls,
+                            served_model,
+                            usage,
+                            request_id if isinstance(request_id, str) else None,
+                        )
+                        if saw_final_usage
+                        else None
                     )
                     await router.settle_stream_end(attempt, priced)
                     settled = True

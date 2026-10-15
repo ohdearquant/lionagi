@@ -311,6 +311,32 @@ async def test_configuration_conflicts_refuse_before_key_resolution(monkeypatch,
     assert not path.exists()
 
 
+@pytest.mark.parametrize("where", ["extra_headers", "default_headers", "client_headers"])
+@pytest.mark.parametrize("name", ["anthropic-beta", "Anthropic-Beta", " ANTHROPIC-BETA "])
+def test_a_beta_header_is_refused_before_key_resolution(monkeypatch, tmp_path, where, name):
+    path = _install_accounts(monkeypatch, tmp_path)
+    lookups = []
+    monkeypatch.setattr(router_module, "resolve_account_key", lambda *args: lookups.append(args))
+    model = iModel(provider="anthropic", model=MODEL)
+    extra = None
+    if where == "extra_headers":
+        extra = {name: "context-management-2025-06-27"}
+    elif where == "default_headers":
+        model.endpoint.config.default_headers = {
+            **model.endpoint.config.default_headers,
+            name: "context-management-2025-06-27",
+        }
+    else:
+        model.endpoint.config.client_kwargs = {"headers": {name: "files-api-2025-04-14"}}
+
+    with pytest.raises(AccountRoutingError) as caught:
+        model.endpoint.create_payload(REQUEST, extra_headers=extra)
+
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not lookups
+    assert not path.exists()
+
+
 @pytest.mark.asyncio
 async def test_auth_failure_blocks_the_bound_account_without_retrying(monkeypatch, tmp_path):
     path = _install_accounts(monkeypatch, tmp_path)
@@ -1212,6 +1238,45 @@ async def test_a_stream_ending_before_message_stop_records_why(
     assert chunks
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, reason)
+
+
+@pytest.mark.parametrize(
+    ("ending", "row"),
+    [
+        ([], ("open", None, "usage_incomplete")),
+        (
+            [{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}],
+            ("open", None, "usage_incomplete"),
+        ),
+        (
+            [
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 5},
+                }
+            ],
+            ("settled", 250_000, "complete"),
+        ),
+    ],
+    ids=["no_message_delta", "delta_without_usage", "delta_with_usage"],
+)
+@pytest.mark.asyncio
+async def test_a_stream_settles_at_message_stop_only_with_a_message_deltas_usage(
+    monkeypatch, tmp_path, ending, row
+):
+    # message_start carries a placeholder output count; settling on it would record
+    # less than the call cost.
+    path = _install_accounts(monkeypatch, tmp_path)
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["usage"]["output_tokens"] = 1
+    events = [start, _PARTIAL_TEXT, *ending, {"type": "message_stop"}]
+    model, transport = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert chunks
+    assert _attempts(path)[0][2:] == row
 
 
 @pytest.mark.asyncio
