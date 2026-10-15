@@ -991,6 +991,62 @@ async def test_stream_retries_before_yield_with_a_new_reservation(monkeypatch, t
     assert rows[1][2] == "settled", rows
 
 
+def _stream_pieces() -> list[bytes]:
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_stream_key",
+                "model": MODEL,
+                "usage": {"input_tokens": 100, "output_tokens": 0},
+            },
+        },
+        {"type": "message_delta", "usage": {"output_tokens": 5}},
+        {"type": "message_stop"},
+    ]
+    return [b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)]
+
+
+def _sent_keys(call: dict) -> list[str]:
+    return [value for name, value in call["headers"].items() if name.lower() == "idempotency-key"]
+
+
+@pytest.mark.asyncio
+async def test_a_routed_stream_sends_one_idempotency_key_on_every_attempt(monkeypatch, tmp_path):
+    """A retried stream is the same logical request, so the provider sees one key."""
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(
+        monkeypatch, [StubResponse(429), StubResponse(pieces=_stream_pieces())]
+    )
+    model.endpoint.config.idempotent_retries = True
+    model.endpoint.retry_config = RetryConfig(max_retries=1, base_delay=0.01, jitter=False)
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert chunks
+    first, second = (_sent_keys(call) for call in transport.calls)
+    assert len(first) == 1 and first[0].strip()
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_a_routed_stream_sends_a_callers_idempotency_key(monkeypatch, tmp_path):
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [StubResponse(pieces=_stream_pieces())])
+    model.endpoint.config.idempotent_retries = True
+
+    chunks = [
+        chunk
+        async for chunk in model.endpoint.stream(
+            REQUEST, extra_headers={"idempotency-key": "caller-key"}
+        )
+    ]
+
+    assert chunks
+    (sent,) = transport.calls
+    assert _sent_keys(sent) == ["caller-key"]
+
+
 @pytest.mark.asyncio
 async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_path):
     from aiohttp import ClientError

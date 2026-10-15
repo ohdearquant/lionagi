@@ -295,6 +295,32 @@ class Endpoint:
     async def _call(self, payload: dict, headers: dict, **kwargs):
         return await self._call_aiohttp(payload=payload, headers=headers, **kwargs)
 
+    def _with_idempotency_key(self, headers: dict, *, routed: bool) -> dict:
+        """*headers* with the key one logical request sends on every attempt, when retries are
+        idempotent.
+
+        Minted once per logical request, before any retry path (native _call_aiohttp, the
+        opt-in RetryConfig wrapper, or a routed stream's attempts) is entered, and reused
+        verbatim across every attempt, so the provider can recognize a lost-response replay as
+        the same request. It also takes the place of a client-level key: one key shared by every
+        request would let the provider answer a new request with an earlier one's response.
+        """
+        if not (self.config.idempotent_retries and self.config.method.upper() == "POST"):
+            return headers
+        import uuid
+
+        if routed:
+            # Routed headers were read as name-value pairs: each name is a token given once
+            # and each value a string. A caller's key is kept whatever the case of its name,
+            # and an empty one, which names no request, is replaced.
+            named = [name for name in headers if name.lower() == "idempotency-key"]
+            if not any(headers[name].strip() for name in named):
+                headers = {name: value for name, value in headers.items() if name not in named}
+                headers["Idempotency-Key"] = str(uuid.uuid4())
+        elif "Idempotency-Key" not in headers:
+            headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+        return headers
+
     async def call(
         self,
         request: dict | BaseModel,
@@ -324,26 +350,7 @@ class Endpoint:
         else:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
-        if self.config.idempotent_retries and self.config.method.upper() == "POST":
-            import uuid
-
-            # Minted once per logical request, here -- before either retry path
-            # (native _call_aiohttp or the opt-in RetryConfig wrapper below) is
-            # entered -- and reused verbatim across every attempt, so the
-            # provider can recognize a lost-response replay as the same request.
-            # It also takes the place of a client-level key: one key shared by
-            # every request would let the provider answer a new request with an
-            # earlier one's response.
-            if routed:
-                # Routed headers were read as name-value pairs: each name is a token given once
-                # and each value a string. A caller's key is kept whatever the case of its name,
-                # and an empty one, which names no request, is replaced.
-                named = [name for name in headers if name.lower() == "idempotency-key"]
-                if not any(headers[name].strip() for name in named):
-                    headers = {name: value for name, value in headers.items() if name not in named}
-                    headers["Idempotency-Key"] = str(uuid.uuid4())
-            elif "Idempotency-Key" not in headers:
-                headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+        headers = self._with_idempotency_key(headers, routed=routed)
 
         call_func = self._call
 
@@ -616,6 +623,10 @@ class Endpoint:
         routed = self._account_routing_enabled()
         scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
         payload, headers = self.create_payload(request, extra_headers, **kwargs)
+        if routed:
+            # A routed stream retries before its first chunk, so its attempts share one key
+            # as a routed call's do.
+            headers = self._with_idempotency_key(headers, routed=True)
 
         stream = self._stream_aiohttp(
             payload=payload,
