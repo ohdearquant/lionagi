@@ -1451,11 +1451,14 @@ class Engine:
             # The model layer wraps a provider's refusal in its own error, so the refusal is
             # found on the cause chain. It refuses every call this judge makes; read as a pass,
             # it would turn the gate off for the whole run.
-            cause: BaseException | None = exc
-            while cause is not None and not isinstance(cause, ContainmentRefusedError):
+            cause, seen = exc, set()
+            while cause is not None and id(cause) not in seen:
+                if isinstance(cause, ContainmentRefusedError):
+                    raise cause from cause.__cause__
+                seen.add(id(cause))
                 cause = cause.__cause__
-            if cause is not None:
-                raise cause from cause.__cause__
+            # No refusal on the chain. A chain that loops back on itself lands
+            # here too, instead of walking forever.
             run.notify("judge_error", eid=eid, error=str(exc))
             return True
 

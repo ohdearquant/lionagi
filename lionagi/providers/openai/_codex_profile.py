@@ -244,9 +244,11 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
 
     try:
         data = toml.loads(config_path.read_text())
-    except (OSError, UnicodeError, toml.TomlDecodeError):
+    except (OSError, UnicodeError, RecursionError, toml.TomlDecodeError):
         # UnicodeError: read_text() decodes; a non-UTF-8 config is as
         # unreadable as an unparseable one and must not crash the spawn.
+        # RecursionError: the parser recurses per nesting level, so a deeply
+        # nested config must read as unreadable rather than crash the spawn.
         return None
     value = data.get("model_reasoning_effort")
     return value if isinstance(value, str) and value else None

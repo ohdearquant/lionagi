@@ -703,6 +703,29 @@ def test_containment_walks_the_spelled_path_beside_the_resolved_one(tmp_path):
         req.as_cmd_args()
 
 
+def test_containment_walks_the_resolved_path_beside_the_spelled_one(tmp_path):
+    """The mirror of the case above: the config sits only on the resolved chain.
+
+    `x/link/../c`, with `link` pointing into a git root at `far`, is `x/c` as spelled and
+    `far/c` as resolved. The spelled tree holds no config here, so a walk that covers
+    only the spelled path misses one codex will read for the child's own directory.
+    """
+    (tmp_path / "x").mkdir()
+    (tmp_path / "far" / "deep").mkdir(parents=True)
+    (tmp_path / "far" / "c").mkdir()
+    _project_config(tmp_path / "far", 'profile = "w"\n')
+    (tmp_path / "x" / "link").symlink_to(tmp_path / "far" / "deep", target_is_directory=True)
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path / "x" / "link" / ".." / "c",
+        env=env,
+        contain_account_integrations=True,
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
 def test_containment_refuses_a_project_codex_config_nested_too_deep_to_parse(tmp_path):
     repo = _repo(tmp_path)
     _project_config(repo, "x = " + "[" * 3000 + "]" * 3000 + "\n")
