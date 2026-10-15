@@ -45,6 +45,8 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
                 payload["updated_at"] = s["updated_at"]
             if "invocation_kind" in s:
                 payload["invocation_kind"] = s["invocation_kind"]
+            if "run_id" in s:
+                payload["run_id"] = s["run_id"]
             await db.create_session(payload)
 
 
@@ -74,6 +76,44 @@ def test_runs_list_paginates_with_default_shape(tmp_path, monkeypatch):
     assert data["total_pages"] == 2
     assert data["has_next"] is True
     assert data["has_prev"] is False
+
+
+def test_runs_list_keeps_session_and_cli_run_identities_distinct(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    session_id = str(uuid.uuid4())
+    cli_run_id = "20260829T120000-linked"
+    _run(
+        _seed_sessions(
+            db_path,
+            [{"id": session_id, "run_id": cli_run_id, "status": "completed"}],
+        )
+    )
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    response = client.get("/api/runs")
+
+    assert response.status_code == 200
+    row = response.json()["runs"][0]
+    assert row["id"] == session_id
+    assert row["session_id"] == session_id
+    assert row["run_id"] == cli_run_id
+    assert client.get(f"/api/runs/{row['session_id']}").status_code == 200
+    assert client.get(f"/api/runs/{row['run_id']}").status_code == 404
+
+
+def test_runs_list_does_not_fabricate_cli_run_id_for_unlinked_session(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    session_id = str(uuid.uuid4())
+    _run(_seed_sessions(db_path, [{"id": session_id, "status": "completed"}]))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    response = client.get("/api/runs")
+
+    assert response.status_code == 200
+    row = response.json()["runs"][0]
+    assert row["id"] == session_id
+    assert row["session_id"] == session_id
+    assert row["run_id"] is None
 
 
 def test_runs_list_second_page(tmp_path, monkeypatch):

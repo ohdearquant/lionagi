@@ -2,8 +2,9 @@ import { describe, it, expect } from "vitest";
 import { resolveRunLabel } from "./runLabel";
 import type { RunSummary } from "./types";
 
-function makeRun(overrides: Partial<RunSummary> & { run_id: string }): RunSummary {
+function makeRun(overrides: Partial<RunSummary> & { run_id: string | null }): RunSummary {
   return {
+    id: overrides.id ?? overrides.run_id ?? "unlinked-session",
     status: "running",
     playbook_name: null,
     agent_name: null,
@@ -41,8 +42,8 @@ describe("resolveRunLabel", () => {
     expect(resolveRunLabel(run)).toBe("implementer");
   });
 
-  it("falls back to the last 12 chars of run_id when every field is empty", () => {
-    const run = makeRun({ run_id: "0123456789abcdef" });
+  it("falls back to the last 12 chars of the Session id when every field is empty", () => {
+    const run = makeRun({ id: "session-0123456789abcdef", run_id: null });
     expect(resolveRunLabel(run)).toBe("456789abcdef");
   });
 

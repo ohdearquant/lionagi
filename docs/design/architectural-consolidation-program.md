@@ -376,10 +376,9 @@ after the condition is met, not before.
    half: a declared policy is read correctly and then dropped on write, always toward fewer
    restrictions.
 5. **Run as one durable attempt, Session reusable state, resume always a new Run, one writer
-   lease, PlanDelta only.** Yes on all four. The database already models the one-Run-to-many-
-   Sessions relation through a distinct `sessions.run_id` column, while the API overwrites that
-   field with the session id, so the two values disagree in one system today. That is a live
-   defect with its own issue, independent of this program.
+   lease, PlanDelta only.** Yes on all four. The database models the one-Run-to-many-Sessions
+   relation through `sessions.run_id`. Run list and detail rows preserve that CLI-run provenance
+   as `run_id` and expose the Session identity as `id` and `session_id`.
 6. **One-distribution import-boundary phase before deciding a wheel split.** Yes, and the evidence
    is stronger than an inversion. `cli` and `studio` import each other, which is a cycle: no
    ordering of two distributions satisfies it, so breaking it is a precondition of the split

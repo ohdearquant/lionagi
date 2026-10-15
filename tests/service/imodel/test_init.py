@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import contextlib
 import os
 from unittest.mock import patch
 
+import anyio
 import pytest
 
 from lionagi.protocols.generic.event import EventStatus
@@ -937,3 +939,575 @@ class TestEffortSuffixIsNotStrippedFromVendorModelIds:
             api_key="dummy",
         )
         assert m.endpoint.config.kwargs["model"] == "deepseek/deepseek-v4-flash-0731"
+
+
+_CREATED = (
+    'data: {"type":"response.created","response":{"id":"r1","model":"gpt-served-2",'
+    '"status":"in_progress"}}'
+)
+
+
+class TestReportedServedModel:
+    """Where a provider's own model name is read from, per chunk shape."""
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            # Chat completion chunk: model at the event's top level.
+            (
+                'data: {"id":"c1","model":"gpt-served-1","choices":[{"delta":{"content":"hi"}}]}',
+                "gpt-served-1",
+            ),
+            # Anthropic message_start: model under "message".
+            (
+                'data: {"type":"message_start","message":{"id":"m1","model":"claude-served-1"}}',
+                "claude-served-1",
+            ),
+            # Responses created event: model under "response".
+            (
+                'data: {"type":"response.created","response":{"id":"r1","model":"gpt-served-2"}}',
+                "gpt-served-2",
+            ),
+            # A result chunk is never read.
+            (
+                'data: {"type":"response.completed","response":{"model":"gpt-served-3"}}',
+                None,
+            ),
+            ('data: {"id":"c2","choices":[{"delta":{"content":"hi"}}]}', None),
+            # A failed response, an in-stream error chunk and an error event name a
+            # model that produced no output.
+            (
+                'data: {"type":"response.failed","response":{"id":"r2","model":"gpt-failed-4",'
+                '"status":"failed","error":{"code":"server_error","message":"x"}}}',
+                None,
+            ),
+            (
+                'data: {"id":"c3","model":"routed-7","choices":[{"delta":{"content":""},'
+                '"finish_reason":"error"}],"error":{"message":"upstream"}}',
+                None,
+            ),
+            ('data: {"error":{"message":"x"},"model":"gpt-err-8"}', None),
+            # A failure named without an error key, or nested under a live event.
+            (
+                'data: {"id":"c8","model":"routed-14","choices":[{"delta":{"content":""},'
+                '"finish_reason":"error"}]}',
+                None,
+            ),
+            (
+                'data: {"type":"response.in_progress","response":{"id":"r6",'
+                '"model":"gpt-nested-11","status":"in_progress","error":{"message":"x"}}}',
+                None,
+            ),
+            (
+                'data: {"type":"response.created","response":{"id":"r8",'
+                '"model":"gpt-status-13","status":"failed"}}',
+                None,
+            ),
+            # An empty error is no error.
+            (
+                'data: {"id":"c9","model":"gpt-ok-3","error":{},'
+                '"choices":[{"delta":{"content":"x"}}]}',
+                "gpt-ok-3",
+            ),
+            # An incomplete response was cut short, not refused: the model it names ran.
+            (
+                'data: {"type":"response.incomplete","response":{"id":"r3",'
+                '"model":"gpt-served-5","status":"incomplete"}}',
+                "gpt-served-5",
+            ),
+        ],
+    )
+    def test_api_stream_chunk_through_the_converter(self, base_imodel, line, expected):
+        chunk = base_imodel.endpoint._line_to_stream_chunk(line)
+        assert iModel._reported_served_model(chunk) == expected
+
+    @pytest.mark.parametrize(
+        "chunk,expected",
+        [
+            (StreamChunk(type="system", metadata={"model": "cli-served"}), "cli-served"),
+            # A CLI text or result chunk carrying a model is not a report.
+            (StreamChunk(type="text", content="x", metadata={"model": "echoed"}), None),
+            (StreamChunk(type="result", metadata={"model": "requested"}), None),
+            (StreamChunk(type="system", metadata={"model": "  "}), None),
+            (StreamChunk(type="system", metadata={"raw": {"model": 7}}), None),
+            (StreamChunk(type="system", metadata={"model": "cli-x", "status": "failed"}), None),
+        ],
+    )
+    def test_chunk_shapes(self, chunk, expected):
+        assert iModel._reported_served_model(chunk) == expected
+
+    @pytest.mark.parametrize(
+        "chunk,expected",
+        [
+            (StreamChunk(type="error", content="x", is_error=True), True),
+            # A Codex reconnect notice is an error chunk that is not an error.
+            (
+                StreamChunk(
+                    type="error",
+                    content="Reconnecting... 1/5",
+                    is_error=False,
+                    metadata={"reconnect_notice": True},
+                ),
+                False,
+            ),
+            # A tool that failed is not the call failing.
+            (StreamChunk(type="tool_result", content="x", is_error=True), False),
+            (StreamChunk(type="text", content="x"), False),
+        ],
+    )
+    def test_only_a_chunk_marked_as_an_error_reports_a_failed_call(self, chunk, expected):
+        assert iModel._reports_failure(chunk) is expected
+
+    @pytest.mark.parametrize(
+        "event_type,expected",
+        [
+            ("response.failed", True),
+            ("turn.failed", True),
+            ("failed", True),
+            ("response.mcp_call.failed", False),
+            ("response.mcp_list_tools.failed", False),
+            ("item.failed", False),
+            ("tool_failed", False),
+            ("response.completed", False),
+        ],
+    )
+    def test_only_the_calls_own_failure_event_reports_a_failed_call(self, event_type, expected):
+        assert iModel._event_failed({"type": event_type}) is expected
+
+    @pytest.mark.parametrize(
+        "carried",
+        [
+            {"error": {"code": "mcp_error", "message": "x"}},
+            {"is_error": True},
+            {"status": "failed"},
+        ],
+        ids=["error", "is_error", "status"],
+    )
+    @pytest.mark.parametrize("event_type", ["response.mcp_call.failed", "item.failed"])
+    def test_an_item_failure_is_not_the_call_failing_whatever_it_carries(self, event_type, carried):
+        assert iModel._event_failed({"type": event_type, **carried}) is False
+        # Control: the same fields on an event of no failure type do fail the call.
+        assert iModel._event_failed({"type": "response.output_item.done", **carried}) is True
+
+    @pytest.mark.parametrize(
+        "carried",
+        [
+            {"error": {"code": "tool_error", "message": "x"}},
+            {"is_error": True},
+            {"status": "failed"},
+        ],
+        ids=["error", "is_error", "status"],
+    )
+    @pytest.mark.parametrize("event_type", ["tool_failed", "turn_failed", "stream_failed"])
+    def test_a_failure_name_without_a_dot_is_read_by_what_it_carries(self, event_type, carried):
+        assert iModel._event_failed({"type": event_type, **carried}) is True
+        assert iModel._event_failed({"type": event_type}) is False
+
+    @pytest.mark.parametrize(
+        "response,expected",
+        [
+            ({"model": "gpt-served-1", "error": None}, "gpt-served-1"),
+            ({"model": "gpt-err-8", "error": {"message": "x"}}, None),
+            ({"model": "gpt-status-21", "status": "failed", "error": None}, None),
+            ({"model": "cli-x", "is_error": True}, None),
+            ({"model": "gpt-ok-20", "status": "completed", "error": None}, "gpt-ok-20"),
+        ],
+    )
+    def test_a_response_that_carries_an_error_names_no_served_model(self, response, expected):
+        assert iModel._reported_served_model(response) == expected
+
+    def test_a_copy_carries_no_served_model_and_a_restore_keeps_it(self, base_imodel):
+        """A copy is a new model that has made no call; a restore is the same model."""
+        base_imodel.provider_metadata["served_model"] = "gpt-served-1"
+        base_imodel.provider_metadata["session_id"] = "s-1"
+
+        copied = base_imodel.copy()
+        restored = iModel.from_dict(base_imodel.to_dict())
+
+        assert copied.id != base_imodel.id
+        assert "served_model" not in copied.provider_metadata
+        assert copied.provider_metadata["session_id"] == "s-1"
+        assert restored.id == base_imodel.id
+        assert restored.provider_metadata["served_model"] == "gpt-served-1"
+        assert base_imodel.provider_metadata["served_model"] == "gpt-served-1"
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_record_the_model_an_error_chunk_names(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(
+                'data: {"id":"c3","model":"routed-7","choices":[{"delta":{"content":""},'
+                '"finish_reason":"error"}],"error":{"message":"upstream"}}'
+            )
+
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            'data: {"type":"response.failed","response":{"id":"r1","model":"gpt-failed-4",'
+            '"status":"failed","error":{"code":"server_error","message":"x"}}}',
+            'data: {"type":"error","code":"server_error","message":"x","model":"gpt-err-6"}',
+        ],
+    )
+    # CLI models stream under a concurrency limit, API models without one by
+    # default; the two paths read chunks in separate loops.
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_failure_later_in_the_stream_voids_the_model_read_before_it(
+        self, failure, concurrency_limit
+    ):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            yield model.endpoint._line_to_stream_chunk(failure)
+
+        model.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in model.provider_metadata
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_failed_tool_call_inside_a_completed_call_keeps_the_model(
+        self, concurrency_limit
+    ):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.mcp_call.failed","item_id":"mcp_1","output_index":0}'
+            )
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.output_text.delta","delta":"hi"}'
+            )
+
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-served-2"
+        assert model.provider_metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.parametrize("how", ["cancel", "timeout"])
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_call_cancelled_after_the_model_was_named_keeps_it(
+        self, how, concurrency_limit
+    ):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+        never = asyncio.Event()
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            await never.wait()
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.output_text.delta","delta":"unreachable"}'
+            )
+
+        model.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        named = asyncio.Event()
+
+        async def consume():
+            async for _chunk in model.stream(api_call=api_call):
+                named.set()
+
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            if how == "timeout":
+                with pytest.raises(TimeoutError):
+                    with anyio.fail_after(0.5):
+                        await consume()
+            else:
+                task = asyncio.create_task(consume())
+                await named.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        assert api_call.status == EventStatus.CANCELLED
+        assert api_call.metadata["served_model"] == "gpt-served-2"
+        assert model.provider_metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.asyncio
+    async def test_an_invoke_cancelled_while_its_call_is_in_flight_records_no_model(
+        self, base_imodel
+    ):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def mock_call(*_args, **_kwargs):
+            # Written during the call, after invoke cleared the field at its start.
+            api_call.metadata["served_model"] = "written-during-the-call"
+            base_imodel.provider_metadata["served_model"] = "written-during-the-call"
+            started.set()
+            await never.wait()
+            return {"model": "unreachable", "response": "x"}
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        try:
+            with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+                task = asyncio.create_task(base_imodel.invoke(api_call=api_call))
+                await started.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        finally:
+            never.set()
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.parametrize("failure", ["cancelled", "raised"])
+    @pytest.mark.asyncio
+    async def test_an_invoke_stopped_before_its_call_exists_keeps_the_last_model(
+        self, base_imodel, failure
+    ):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        started = asyncio.Event()
+
+        async def create_event(**_kwargs):
+            started.set()
+            if failure == "raised":
+                raise RuntimeError("the request could not be built")
+            await asyncio.Event().wait()
+
+        with patch.object(base_imodel, "create_event", side_effect=create_event):
+            task = asyncio.create_task(
+                base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            )
+            await started.wait()
+            if failure == "cancelled":
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError if failure == "cancelled" else ValueError):
+                await task
+
+        assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
+
+    @pytest.mark.parametrize("failure", ["cancelled", "raised"])
+    @pytest.mark.asyncio
+    async def test_an_invoke_stopped_before_its_call_is_sent_keeps_the_last_model(
+        self, base_imodel, failure
+    ):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        started = asyncio.Event()
+        sent = []
+
+        async def forward():
+            # The call exists and is in executor.pending; nothing has been sent.
+            started.set()
+            if failure == "raised":
+                raise RuntimeError("the queue could not be forwarded")
+            await asyncio.Event().wait()
+
+        async def call(*_args, **_kwargs):
+            sent.append(True)
+            return {"model": "unreachable", "response": "x"}
+
+        with (
+            patch.object(base_imodel.executor, "forward", side_effect=forward),
+            patch.object(base_imodel.endpoint, "call", side_effect=call),
+        ):
+            task = asyncio.create_task(
+                base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            )
+            await started.wait()
+            if failure == "cancelled":
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError if failure == "cancelled" else ValueError):
+                await task
+
+        assert sent == []
+        assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
+
+    @pytest.mark.asyncio
+    async def test_a_pending_call_records_no_model_and_keeps_the_last_one(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        assert api_call.status == EventStatus.PENDING
+
+        base_imodel._store_served_model(api_call, "never-served")
+
+        assert "served_model" not in api_call.metadata
+        assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
+
+    @pytest.mark.asyncio
+    async def test_a_call_the_queue_sends_after_its_invoke_was_cancelled_records_nothing(self):
+        # One request per replenish interval, so the second call waits in the queue.
+        model = iModel(
+            provider="openai", model="gpt-4.1-mini", api_key="test-key", limit_requests=1
+        )
+        sent = []
+
+        async def call(request, **_kwargs):
+            sent.append(request["messages"][0]["content"])
+            return {"model": "gpt-" + request["messages"][0]["content"], "response": "x"}
+
+        try:
+            with patch.object(model.endpoint, "call", side_effect=call):
+                await model.invoke(messages=[{"role": "user", "content": "A"}])
+                queued = await model.create_event(messages=[{"role": "user", "content": "B"}])
+                task = asyncio.create_task(model.invoke(api_call=queued))
+                await asyncio.sleep(0.3)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert sent == ["A"]
+
+                # Room for one more request, so the queue sends the call nobody waits for.
+                model.executor.processor._available_requests = 1
+                await model.executor.processor.process()
+        finally:
+            await model.close()
+
+        assert sent == ["A", "B"]
+        assert queued.status == EventStatus.COMPLETED
+        assert "served_model" not in queued.metadata
+        assert model.provider_metadata["served_model"] == "gpt-A"
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_timeout_raised_inside_the_stream_records_no_model(self, concurrency_limit):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(_CREATED)
+            raise asyncio.TimeoutError("read timed out")
+
+        model.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            with pytest.raises(ValueError):
+                [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.status == EventStatus.FAILED
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in model.provider_metadata
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_a_response_with_a_cancelled_status_is_read(self, concurrency_limit):
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield model.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.incomplete","response":{"id":"r1",'
+                '"model":"gpt-cancelled-7","status":"cancelled"}}'
+            )
+
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-cancelled-7"
+        assert model.provider_metadata["served_model"] == "gpt-cancelled-7"
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_fails_in_transport_records_no_model(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(_CREATED)
+            raise RuntimeError("connection reset")
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            with pytest.raises(ValueError):
+                [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert api_call.status == EventStatus.FAILED
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_a_reconnect_notice_does_not_void_the_model(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(_CREATED)
+            yield StreamChunk(
+                type="error",
+                content="Reconnecting... 1/5",
+                is_error=False,
+                metadata={"reconnect_notice": True},
+            )
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.asyncio
+    async def test_a_stream_closed_early_keeps_the_model_it_read(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(_CREATED)
+            yield base_imodel.endpoint._line_to_stream_chunk(
+                'data: {"type":"response.output_text.delta","delta":"hi"}'
+            )
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            async with contextlib.aclosing(base_imodel.stream(api_call=api_call)) as stream:
+                async for _chunk in stream:
+                    break
+
+        assert api_call.status != EventStatus.FAILED
+        assert api_call.metadata["served_model"] == "gpt-served-2"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_call_records_no_model(self, base_imodel):
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        api_call.status = EventStatus.FAILED
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+
+        base_imodel._store_served_model(api_call, "gpt-served-2")
+
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_stream_records_the_model_named_in_an_api_text_chunk(self, base_imodel):
+        async def mock_stream():
+            yield base_imodel.endpoint._line_to_stream_chunk(
+                'data: {"id":"c1","model":"gpt-served-1","choices":[{"delta":{"content":"hi"}}]}'
+            )
+
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+
+        assert api_call.metadata["served_model"] == "gpt-served-1"
+        assert base_imodel.provider_metadata["served_model"] == "gpt-served-1"

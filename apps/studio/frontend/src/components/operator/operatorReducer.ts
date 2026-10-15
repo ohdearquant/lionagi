@@ -143,7 +143,10 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         // response reaches the browser. Never let that later acceptance race
         // resurrect a request the durable frame log already closed.
         activeRequestId: activeRequestAfterFrames(action.requestId, state.frames),
-        error: null,
+        // Acceptance proves the POST reached the daemon; it does not prove the
+        // event subscription recovered. Keep a fatal stream error visible
+        // until CONNECTION(open) confirms the replacement stream is live.
+        error: state.connectionState === "error" ? state.error : null,
       };
     case "CONNECTION":
       return {

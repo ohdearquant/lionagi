@@ -91,7 +91,7 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
 
 # SQL tokens
 
-_WORD, _IDENT, _STRING, _PUNCT = "word", "ident", "string", "punct"
+_WORD, _IDENT, _STRING, _BLOB, _PUNCT = "word", "ident", "string", "blob", "punct"
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 # Words after which SQLite reads a double-quoted token as a name, never as a string literal. The
 # rule belongs to *spelled* below, which compares a table's or index's definition; a trigger body,
@@ -122,21 +122,24 @@ def _sql_tokens(
 
     Bare words are folded as SQLite folds a name, ASCII letters only. A quoted identifier ("x",
     `x`, [x]) is unquoted and folded but keeps its own kind, so a column named "returning" is
-    never read as the keyword. A string literal keeps its text verbatim, quotes included. As in
-    SQLite, only ASCII whitespace separates tokens and every character past ASCII belongs to an
-    identifier.
+    never read as the keyword. A string literal (``'x'``) and a blob literal (``x'41'``, a single
+    ``x`` or ``X`` immediately before the opening quote) each keep their text verbatim, quotes
+    included, so a literal equals only the same literal written the same way. As in SQLite, only
+    ASCII whitespace separates tokens and every character past ASCII belongs to an identifier.
 
     *verbatim* keeps every token as written, its quotes and the case of its letters included.
     That is how a trigger body, a view body and a column's DEFAULT are compared: whether SQLite
     reads a quoted token as a name or as a string literal depends on the scope it sits in and on
-    the connection's double-quoted-string setting, so the text as written is the only safe unit.
+    the connection's double-quoted-string setting, so the text as written is compared rather than
+    a reading of it that could differ from SQLite's.
 
     *spelled* keeps the case of a double-quoted token that SQLite may read as a string literal,
-    for comparing a table's definition and an index's terms as PRAGMA output leaves them: one
-    that names no column is a literal, so ``WHERE status = "running"`` differs from
-    ``WHERE status = "Running"``. A double-quoted token after a dot or a word that takes a name
-    (``REFERENCES "Runs"``, ``ON "Runs"``, ``COLLATE "NOCASE"``), or one naming one of *columns*,
-    is a name, and is folded.
+    for comparing a table's definition and an index's terms as ``sqlite_master`` holds them: one
+    that names no column is a literal, and keeps its quotes, so ``WHERE status = "running"``
+    differs from ``WHERE status = "Running"`` and neither equals the bare word ``running``. A
+    double-quoted token after a dot or a word that takes a name (``REFERENCES "Runs"``,
+    ``ON "Runs"``, ``COLLATE "NOCASE"``), or one naming one of *columns*, is a name, and is
+    folded.
     """
     tokens: list[tuple[str, str]] = []
     i, n = 0, len(sql)
@@ -150,6 +153,14 @@ def _sql_tokens(
         elif sql.startswith("/*", i):
             end = sql.find("*/", i + 2)
             i = n if end < 0 else end + 2
+        elif ch in "xX" and sql[i + 1 : i + 2] == "'":
+            # A single x or X immediately before a quote opens a blob literal, one token through
+            # its closing quote, kept as written.
+            j = i + 2
+            while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
+                j += 2 if sql[j] == "'" else 1
+            tokens.append((_BLOB, sql[i : j + 1]))
+            i = j + 1
         elif ch == "'":
             j = i + 1
             while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
@@ -176,7 +187,7 @@ def _sql_tokens(
                 last = tokens[-1] if tokens else (_PUNCT, "")
                 named = last == (_PUNCT, ".") or (last[0] == _WORD and last[1] in _NAME_POSITIONS)
                 literal = spelled and ch == '"' and not named and _fold(name) not in columns
-                tokens.append((_IDENT, name if literal else _fold(name)))
+                tokens.append((_IDENT, sql[i : j + 1] if literal else _fold(name)))
             i = j + 1
         elif _identifier_char(ch):
             j = i + 1
@@ -191,7 +202,8 @@ def _sql_tokens(
 
 
 def _joined(tokens: list[tuple[str, str]]) -> str:
-    """One canonical spelling of *tokens*: single spaces, none inside parentheses or around dots."""
+    """One canonical spelling of *tokens*: single spaces, none inside parentheses, after an
+    opening parenthesis or a dot, or before a closing parenthesis, a comma or a dot."""
     out: list[str] = []
     for index, (kind, text) in enumerate(tokens):
         tight = (kind == _PUNCT and text in (")", ",", ".")) or (
@@ -204,7 +216,8 @@ def _joined(tokens: list[tuple[str, str]]) -> str:
 
 
 def _spelled_sql(sql: str) -> str:
-    """*sql* as written: every token its own text, one space apart, comments and layout aside."""
+    """*sql* as written: every token its own text, joined by :func:`_joined`, comments and
+    whitespace aside."""
     return _joined(_sql_tokens(sql, verbatim=True))
 
 
@@ -255,13 +268,14 @@ def _name_of(kind: str, text: str) -> str:
 
 
 def _names(tokens: list[tuple[str, str]]) -> set[str]:
-    """Every token of a trigger or view body that may name a table, folded as SQLite folds names.
+    """Every token of a trigger or view body that may name an object, folded as SQLite folds names.
 
     A bare word, a quoted identifier and a quoted string all count, wherever in the body they sit.
     Whether SQLite reads a quoted token as a name or as a string literal depends on the scope it
     appears in and on the connection's double-quoted-string setting, so a quoted token is taken as
-    a possible name of a closure table wherever it appears. An object that may name a closure
-    table belongs to the closure, and a profile that does not list it refuses the store.
+    a possible name of a closure table or of another closure object wherever it appears. An object
+    that may name one belongs to the closure, and a profile that does not list it refuses the
+    store.
     """
     return {_name_of(kind, text) for kind, text in tokens if kind != _PUNCT}
 
@@ -756,8 +770,8 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
 class ColumnShape:
     """One column as ``PRAGMA table_xinfo`` reports it.
 
-    ``type`` is uppercased with single spaces and ``default`` is the SQL of the column's
-    definition as it is written, whitespace and comments set aside. ``pk`` is the column's
+    ``type`` is uppercased with single spaces and ``default`` is the DEFAULT expression as it is
+    written, with the tokens joined by :func:`_joined` and comments aside. ``pk`` is the column's
     position in the primary key (0 when it is not part of it); ``hidden`` is 2 for a virtual and
     3 for a stored generated column.
     """
@@ -820,11 +834,18 @@ class ForeignKeyShape:
 
 @dataclass(frozen=True)
 class SchemaObject:
-    """A trigger or view whose SQL names a closure table, with that SQL as it is written."""
+    """A trigger or view of the closure, with its SQL as it is written.
+
+    An object joins the closure when its SQL may name a closure table or another closure object.
+    ``position`` is a trigger's place among the closure triggers on its own table, in creation
+    order, since SQLite fires them in that order; it is 0 for a view and for a trigger that is
+    the only closure trigger on its table.
+    """
 
     type: str
     name: str
     sql: str
+    position: int = 0
 
 
 @dataclass(frozen=True)
@@ -832,7 +853,9 @@ class Closure:
     """The structure of a set of tables and of everything in the store that touches them.
 
     ``foreign_keys`` holds every key into or out of the tables; ``objects`` every trigger and view
-    whose SQL names one of them.
+    whose SQL may name one of the tables or of the other objects, and, in turn, whose own SQL may
+    bring in a view or a table of its own: the closure follows what its objects read, until
+    nothing new joins.
     """
 
     tables: tuple[TableShape, ...]
@@ -1075,30 +1098,62 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
     wanted = frozenset(_fold(name) for name in tables)
     entries = {
         (str(row[0]), _fold(str(row[1]))): row
-        for row in fetch("SELECT type, name, tbl_name, sql FROM sqlite_master")
+        for row in fetch("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY rowid")
     }
+    bodies = {
+        key: _sql_tokens(row[3])
+        for key, row in entries.items()
+        if key[0] in ("trigger", "view") and row[3]
+    }
+    # A table is named with its ASCII letters in either case, as SQLite matches it, and a quoted
+    # token may be read as a name or as a string literal depending on its scope and on the
+    # connection's setting, so every spelling a body carries counts: an object that may name a
+    # closure table or another closure object belongs to the closure, and what that object reads
+    # joins in turn, until nothing new joins. The body itself is kept as written.
+    known = {name for _, name in entries if not name.startswith("sqlite_")}
+    inside = set(wanted)
+    joined: set[tuple[str, str]] = set()
+    while True:
+        found = {
+            key
+            for key, tokens in bodies.items()
+            if key not in joined and inside.intersection(_names(tokens))
+        }
+        # An object whose own name the closure already holds joins too: what a closure object
+        # reads is part of the closure, and that includes an object it reads by name.
+        found |= {key for key in bodies if key not in joined and key[1] in inside}
+        if not found:
+            break
+        joined |= found
+        for key in found:
+            inside |= _names(bodies[key]) & known
     shapes = [
         _table_shape(fetch, str(row[1]), row[3] or "", entries)
-        for name in sorted(wanted)
+        for name in sorted(inside)
         if (row := entries.get(("table", name))) is not None
     ]
+    table_names = frozenset(shape.name for shape in shapes)
     keys: set[ForeignKeyShape] = set()
-    objects: set[SchemaObject] = set()
     for (kind, name), row in entries.items():
         if kind == "table" and not name.startswith("sqlite_"):
             keys.update(
                 key
                 for key in _foreign_keys(fetch, str(row[1]))
-                if key.table in wanted or key.parent in wanted
+                if key.table in table_names or key.parent in table_names
             )
-        elif kind in ("trigger", "view") and row[3]:
-            # A table is named with its ASCII letters in either case, as SQLite matches it, and
-            # a quoted token may be read as a name or as a string literal depending on its scope
-            # and on the connection's setting, so every spelling the body carries counts: an
-            # object that may name a closure table belongs to the closure, and the profile has
-            # to list it. The body itself is kept as written.
-            if wanted.intersection(_names(_sql_tokens(row[3]))):
-                objects.add(SchemaObject(kind, name, _spelled_sql(row[3])))
+    objects: set[SchemaObject] = set()
+    positions: dict[str, int] = {}
+    for (kind, name), row in entries.items():
+        if (kind, name) not in joined:
+            continue
+        position = 0
+        if kind == "trigger":
+            # SQLite fires a table's triggers in the order it created them, so a trigger's place
+            # among the closure triggers on its own table is part of the closure.
+            table_name = _fold(str(row[2]))
+            position = positions.get(table_name, 0)
+            positions[table_name] = position + 1
+        objects.add(SchemaObject(kind, name, _spelled_sql(row[3]), position))
     return Closure(tuple(shapes), frozenset(keys), frozenset(objects))
 
 
@@ -1148,8 +1203,16 @@ def _closure_differences(expected: Closure, observed: Closure) -> list[str]:
         found.append(f"foreign key not in the profile: {key}")
     for key in sorted(expected.foreign_keys - observed.foreign_keys, key=repr):
         found.append(f"foreign key missing: {key}")
+    expected_objects = {(item.type, item.name): item for item in expected.objects}
     for item in sorted(observed.objects - expected.objects, key=repr):
-        found.append(f"{item.type} {item.name} is not in the profile")
+        twin = expected_objects.get((item.type, item.name))
+        if item.type == "trigger" and twin is not None and twin.sql == item.sql:
+            found.append(
+                f"trigger {item.name} is in another position on its table than the profile's, "
+                "and SQLite fires a table's triggers in the order they were created"
+            )
+        else:
+            found.append(f"{item.type} {item.name} is not in the profile")
     for item in sorted(expected.objects - observed.objects, key=repr):
         found.append(f"{item.type} {item.name} is missing or changed")
     return found
