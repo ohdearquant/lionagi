@@ -208,12 +208,12 @@ def _gemini_flash_family(key: str) -> str:
     A name that spells out a dotted version keeps it, whatever else it says: 3.8 and
     3.6 pick that Flash family, and any other (2.5, 3.1, 3.5, 3.5.1, 4.5) falls back to
     3.5 Flash. A name with no dotted version is the 4 Argon family when it contains
-    ``argon`` or a major version 4 that is not part of a longer number or followed by
-    a letter or numeral of any script, and 3.5 Flash otherwise. A version inside a
-    longer number or dotted string (13.6, 3.60, 2.3.6) is never a family match; a dot
-    after anything but a digit separates, so ``gemini-4-flash.3.5`` names 3.5.
-    ``resolve_agy_model`` checks for Pro before this, so a Pro name is 3.1 Pro
-    whatever else it says.
+    ``argon`` or a major version 4 that is not part of a longer number and is followed
+    by neither a letter nor a numeral of any script, nor by a dot and one of those, and
+    3.5 Flash otherwise. A version inside a longer number or dotted string (13.6, 3.60,
+    2.3.6) is never a family match; a dot after anything but a digit separates, so
+    ``gemini-4-flash.3.5`` names 3.5. ``resolve_agy_model`` checks for Pro before this,
+    so a Pro name is 3.1 Pro whatever else it says.
     """
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
