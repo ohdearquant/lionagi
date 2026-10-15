@@ -61,6 +61,7 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    RunDir,
     allocate_run,
     find_branch,
     load_last_branch,
@@ -646,9 +647,10 @@ async def _run_agent(
     # Read from *this* process's directory, before --cwd is applied to anything.
     # The child's tool surface is meant to be a property of the submission, and
     # this is the only point at which the submitting directory is still known.
+    launch_dir = Path(os.getcwd()).resolve()
     mcp_resolution = resolve_spawn_mcp_servers(
         mcp_config,
-        launch_dir=os.getcwd(),
+        launch_dir=launch_dir,
         disabled=no_mcp_config,
     )
     if resume and continue_last:
@@ -1070,11 +1072,19 @@ async def _run_agent(
         # The file on the line is what a resume reads again, named or not: a
         # leg submitted through the MCP server is pointed at a snapshot of the
         # config its submission found, and that snapshot is its set.
+        # A snapshot's resolution reports the config it was taken from and the
+        # directory its search began in, both provenance; a resume must read the
+        # snapshot itself, from this process's own directory.
         named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
+        line_file = (
+            explicit_mcp_config_path(mcp_config, launch_dir=launch_dir)
+            if named_on_the_line
+            else None
+        )
         branch.metadata[_MCP_LAUNCH_KEY] = {
-            "mcp_config": str(mcp_resolution.source) if named_on_the_line else None,
+            "mcp_config": str(line_file) if line_file is not None else None,
             "no_mcp_config": no_mcp_config,
-            "launch_dir": str(mcp_resolution.searched_from),
+            "launch_dir": str(launch_dir),
         }
 
     if is_resumed_branch:
@@ -1091,6 +1101,12 @@ async def _run_agent(
         prompt = preamble + prompt
 
     run = allocate_run()
+    if isinstance(run, RunDir):
+        run = run.with_execution_provenance(
+            cwd=cwd or os.getcwd(),
+            mcp_resolution=mcp_resolution,
+            mcp_disabled=no_mcp_config,
+        )
     branch_id = str(branch.id)
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
     run_manifest = {

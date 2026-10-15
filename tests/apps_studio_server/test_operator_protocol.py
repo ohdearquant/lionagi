@@ -1673,6 +1673,40 @@ async def test_a_first_run_json_write_that_fails_is_logged_once_whether_or_not_i
 
 
 @pytest.mark.asyncio
+async def test_a_terminal_run_json_write_that_fails_is_logged(tmp_path, monkeypatch, caplog):
+    """The run's record keeps its opening status when the terminal write fails, so the
+    failure is logged rather than dropped."""
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    write_manifest = RunDir.write_manifest
+    failure = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    def failing(self, payload):
+        if payload["status"] != "running":
+            raise failure
+        write_manifest(self, payload)
+
+    monkeypatch.setattr(RunDir, "write_manifest", failing)
+    caplog.set_level(logging.ERROR, logger="lionagi.studio.operator.coordinator")
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="run it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    logged = [r for r in caplog.records if r.exc_info]
+    assert [r.exc_info[1] for r in logged] == [failure]
+    assert "terminal run.json write failed" in logged[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, monkeypatch):
     from lionagi.providers.anthropic import claude_code
     from lionagi.studio.operator.engine import BranchOperatorEngine
