@@ -2178,6 +2178,44 @@ async def test_adopt_reads_a_passed_instant_as_the_write_does(
     assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
 
 
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_live_one_shot_when_the_declared_instant_has_passed(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    manifest = _agent_manifest("nightly", cwd=agent_profile).replace(
+        '      cron:\n        expression: "0 2 * * *"\n        timezone: America/New_York\n',
+        '      at: "2020-01-01T00:00:00+00:00"\n',
+    )
+    doc = parse_schedule_set(manifest)
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="at",
+        cron_expr=None,
+        next_fire_at=time.time() + 365 * 86400,
+        max_runs=1,
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "next_fire_at: row=" in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_a_row_with_no_command_args_as_an_empty_list(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_command_args=None)
+        )
+        assert (await db.list_schedules())[0]["action_command_args"] is None
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
 def test_adopt_compares_a_column_only_under_the_trigger_that_reads_it():
     cron, github = {"trigger_type": "cron"}, {"trigger_type": "github_poll"}
     assert _adopt_comparable("cron_expr", cron, "0 2 * * *") == "0 2 * * *"

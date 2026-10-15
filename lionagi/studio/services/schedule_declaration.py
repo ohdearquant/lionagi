@@ -991,6 +991,10 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # The launch runs in the resolved directory, so two spellings of one
         # directory (a symlink, a trailing slash) act alike.
         return str(Path(value).resolve())
+    if name == "action_command_args":
+        # A row may store no list at all; the launch and the export read that as
+        # no arguments, and a member always declares a list.
+        return list(value or [])
     return value
 
 
@@ -1042,8 +1046,11 @@ async def _adopt_spec_differences(
             name == "next_fire_at"
             and declared_fields.get("trigger_type") == "at"
             and (declared or 0.0) <= time.time()
+            and row.get("next_fire_at") is None
         ):
-            # The write leaves the row's instant alone once the declared one has passed.
+            # The write leaves the row's instant alone once the declared one has passed,
+            # which is the same act only for a one-shot that already fired or was
+            # skipped. A row still holding an instant fires at it, so it is compared.
             continue
         current = row.get(name)
         if _adopt_comparable(name, row, current) != _adopt_comparable(
