@@ -1,72 +1,9 @@
-# Studio, Operator, and schedules
+# Use Operator
 
-Lion Studio is an operational UI backed by a local daemon. Operator
-conversations, Runs, and schedules use that daemon as their durable source, so
-keep it running while work is active.
-
-## Install the Studio dependencies
-
-In a project environment:
-
-```bash
-uv add "lionagi[studio]"
-```
-
-Or with an activated `pip` environment:
-
-```bash
-python -m pip install "lionagi[studio]"
-```
-
-## Prepare Claude Code for Operator
-
-Operator uses the locally installed Claude Code CLI by default. The
-`lionagi[studio]` extra installs Studio, but it does not install Claude Code or
-authenticate a Claude account.
-
-Install and authenticate Claude Code before sending the first Operator
-instruction:
-
-```bash
-npm install -g @anthropic-ai/claude-code
-claude --version
-claude auth login
-```
-
-Claude Code can also authenticate when you launch `claude` interactively. Its
-existing CLI login is used directly; no Anthropic API key is required in
-LionAGI for a subscription-backed login. See the
-[Claude Code setup guide](https://code.claude.com/docs/en/setup) for supported
-installation and enterprise authentication options.
-
-## Start Studio
-
-The default starts the local API daemon on port 8765 and opens the hosted web
-client at `https://lion-studio.khive.ai`:
-
-```bash
-li studio
-```
-
-The hosted page is the frontend; it connects to the local daemon at
-`http://127.0.0.1:8765`. Keep the command running. Use `--no-open` when you do
-not want LionAGI to open a browser.
-
-Other shipped modes are:
-
-```bash
-li studio --docker       # bundled frontend and backend through Docker
-li studio --no-frontend  # local API only
-li studio --dev          # source checkout with frontend hot reload
-```
-
-In a second terminal, confirm daemon reachability:
-
-```bash
-li doctor
-```
-
-The `studio_daemon` check should now be healthy.
+Operator is Studio's conversation dock for giving instructions to a local
+agent and following its work. First [install Studio and authenticate Claude
+Code](studio-getting-started.md#prepare-claude-code-for-operator), then keep
+`li studio` running.
 
 ## Work from the Operator dock
 
@@ -111,8 +48,8 @@ the conversation shows a **Permission required** card and Operator waits.
 - Each later gated operation requires its own decision. An Allow is not a
   blanket approval for the rest of the turn.
 
-Leaving the card unanswered leaves Operator waiting; it is not silently
-approved.
+Operator waits until you decide or the request expires, currently ten minutes
+after creation. Expiry denies the request; it never approves it.
 
 ### Follow work into Fleet and Runs
 
@@ -185,71 +122,5 @@ login is valid, or that a live Claude Code release can complete the native
 permission prompt. The real-local verification above is the release check for
 those provider-dependent behaviors.
 
-## Create a schedule
-
-Create a daily CLI-agent action:
-
-```bash
-li schedule create daily-review \
-  --cron "0 9 * * *" \
-  --action-kind agent \
-  --model codex \
-  --cwd . \
-  --prompt "Review the repository and summarize the highest-risk change."
-```
-
-The command prints `Created:` followed by the schedule ID and name. Save the ID:
-
-```bash
-SCHEDULE_ID=<id-from-create>
-```
-
-Inspect and trigger it without waiting for the next cron tick:
-
-```bash
-li schedule get "$SCHEDULE_ID"
-li schedule trigger "$SCHEDULE_ID"
-li schedule runs "$SCHEDULE_ID"
-```
-
-`trigger` prints a schedule-run ID when the daemon accepts the fire. Wait for
-that run in a script with:
-
-```bash
-li monitor run <schedule-run-id> --max-wait 900
-```
-
-The wait command exits when the schedule run reaches a terminal status and
-maps that status to its process exit code. By default it follows
-`on_success`/`on_fail` chain children; add `--no-chain` to wait only for the
-literal run ID.
-
-## Other trigger and safety options
-
-The live schedule API supports:
-
-- `--interval SECONDS` for fixed intervals.
-- `--trigger-type github --github-repo OWNER/NAME --github-filter JSON` for
-  polled GitHub events.
-- `--threshold-config JSON` for metric-threshold alerts evaluated on the
-  schedule's cadence.
-- `--once` or `--max-runs N` to bound the number of fires.
-- `--max-cost-usd` and `--max-tokens` to stop future fires after a cumulative
-  budget is reached.
-- `li schedule limits` to inspect the daemon-wide concurrent-fire cap.
-
-## Expected state
-
-- The schedule definition appears in `li schedule list` and Studio.
-- Each fire creates a schedule-run row visible through
-  `li schedule runs ID`.
-- The action creates its normal session, run state, and artifacts.
-- Disabling a schedule preserves its history; deleting removes the definition.
-
-If a schedule command reports a connection failure, start `li studio` or set
-`LIONAGI_STUDIO_URL` to the daemon you intend to use. If a trigger is accepted
-but no work completes, inspect `li schedule runs ID`, then use
-`li monitor run RUN_ID` and `li doctor`.
-
-Next, return to [durable operations](durable-operations.md) for live control and
-checkpoint recovery.
+See [Studio surfaces](../reference/studio-surfaces.md) for the surrounding
+pages and [durable operations](durable-operations.md) for CLI control.

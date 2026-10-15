@@ -142,7 +142,7 @@ stop the turn.
   ```
 
 For permission behavior, resume details, real-provider verification, and the
-CI stub boundary, see the [Studio guide](../../docs/guides/studio.md).
+CI stub boundary, see the [Operator guide](../../docs/guides/studio-operator.md).
 
 ## Development
 

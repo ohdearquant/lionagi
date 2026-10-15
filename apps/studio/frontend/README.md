@@ -71,4 +71,4 @@ The Playwright suite builds the SPA and launches an isolated seeded daemon; it
 does not use your normal `~/.lionagi/state.db`.
 
 For the backend, desktop shell, and product-level instructions, see the
-[Studio README](../README.md) and [Studio guide](../../../docs/guides/studio.md).
+[Studio README](../README.md) and [Operator guide](../../../docs/guides/studio-operator.md).
