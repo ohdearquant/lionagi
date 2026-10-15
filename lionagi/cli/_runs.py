@@ -641,16 +641,21 @@ async def _teardown_common(
         # kill.py closes; closing it safely needs a schema decision (flatten
         # khive_injection to scalar keys, or a merge-helper variant that
         # tolerates one level of nested object).
-        existing_metadata = session_before_teardown.get("node_metadata") or {}
-        if isinstance(existing_metadata, str):
-            try:
-                existing_metadata = json.loads(existing_metadata)
-            except (TypeError, ValueError):
-                existing_metadata = {}
-        if not isinstance(existing_metadata, dict):
-            existing_metadata = {}
         markers = identity_markers or {}
-        update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
+        if db.mode == "compatibility":
+            # A compatibility-mode store merges node_metadata by key inside its write, so it is
+            # handed only this run's keys and keeps any another writer added since the read above.
+            update_kwargs["node_metadata"] = {**extras, **markers}
+        else:
+            existing_metadata = session_before_teardown.get("node_metadata") or {}
+            if isinstance(existing_metadata, str):
+                try:
+                    existing_metadata = json.loads(existing_metadata)
+                except (TypeError, ValueError):
+                    existing_metadata = {}
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+            update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
     if update_kwargs:
         await db.update_session(session_id, **update_kwargs)

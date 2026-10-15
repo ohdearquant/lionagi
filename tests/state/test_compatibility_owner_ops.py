@@ -27,7 +27,16 @@ from lionagi.state.compat import (
 from lionagi.state.db import StateDB
 
 OWNER = "owner_principal_id"
-_OWNED = ("sessions", "branches", "progressions", "messages", "status_transitions", "invocations")
+_OWNED = (
+    "sessions",
+    "branches",
+    "progressions",
+    "messages",
+    "status_transitions",
+    "invocations",
+    "session_signals",
+    "admin_events",
+)
 _TABLES = (*_OWNED, "message_types", "principals")
 
 _INSERTS = {
@@ -111,14 +120,24 @@ _INSERTS = {
         "metadata",
         OWNER,
     },
+    "session_signals": {"id", "session_id", "seq", "kind", "op_id", "ts", "payload", OWNER},
+    "admin_events": {"id", "created_at", "action", "target_id", "details", "actor", OWNER},
 }
 _UPDATES = {
     "sessions": {
+        "status",
         "status_reason_code",
         "status_reason_summary",
         "status_evidence_refs",
         "last_message_at",
         "updated_at",
+        "first_msg_id",
+        "last_msg_id",
+        "node_metadata",
+        "artifact_verification_json",
+        "ended_at",
+        "ended_at_is_approximate",
+        "duration_ms",
     },
     "progressions": {"collection"},
     "branches": {"system_msg_id"},
@@ -140,6 +159,11 @@ _OPERATIONS = {
     "create_branch",
     "insert_message",
     "persist_live_message",
+    "insert_session_signal",
+    "update_session",
+    "update_artifact_verification",
+    "merge_session_node_metadata",
+    "update_status",
 }
 
 

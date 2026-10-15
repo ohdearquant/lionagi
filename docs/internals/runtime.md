@@ -69,6 +69,13 @@ whose schema another application manages, and never migrates, stamps or reconfig
   function but `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
 - **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
   its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
+- **A run's rows.** With an `OwnerRule`, a run writes only rows it creates: an insert refuses an
+  id that exists and writes the configured owner; a row an operation links to or updates must be
+  one this handle created in a transaction that committed, an update first checks inside its
+  transaction that the row still carries the owner, and the UPDATE itself carries the owner
+  predicate. `update_session` merges `node_metadata` by key inside its transaction instead of
+  writing it whole. `update_status` moves only the run's session, never by override, and writes the
+  owner on the transition and on any admin event it records.
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
   `committed` names the operation's transactions that had already committed. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.

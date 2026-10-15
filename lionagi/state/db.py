@@ -3197,6 +3197,7 @@ class StateDB:
                     system_msg_id=msg["id"],
                 )
 
+    @_operation("update_session")
     async def update_session(
         self,
         session_id: str,
@@ -3212,7 +3213,21 @@ class StateDB:
         set_if_null: frozenset[str] = frozenset(),
         **fields: Any,
     ) -> None:
-        """Update session fields; status changes route through update_status()."""
+        """Update session fields; status changes route through update_status().
+
+        In compatibility mode the session must be one this run created and still carry its owner,
+        and ``node_metadata`` is merged by key into the stored object inside the writing
+        transaction instead of being written whole, so keys another writer added are kept.
+        """
+        if self._compat is not None:
+            self._require_created("sessions", session_id, "session")
+            for link, table, what in (
+                ("progression_id", "progressions", "progression"),
+                ("first_msg_id", "messages", "message"),
+                ("last_msg_id", "messages", "message"),
+            ):
+                if fields.get(link) is not None:
+                    self._require_created(table, fields[link], what)
         _validate_columns(fields, _SESSION_COLUMNS)
         if "invocation_kind" in fields:
             _validate_enum(
@@ -3254,10 +3269,41 @@ class StateDB:
             )
             params = dict(fields)
             params["_id"] = session_id
+            clause, owner = self._owner_predicate("sessions")
             async with self._tx() as conn:
+                if self._compat is not None:
+                    await self._require_owned(conn, "sessions", session_id, "session")
+                    if "node_metadata" in params:
+                        stored = (
+                            await conn.execute(
+                                text("SELECT node_metadata FROM sessions WHERE id = :_id"),
+                                {"_id": session_id},
+                            )
+                        ).scalar()
+                        merged: dict[str, Any] = {}
+                        for which, value in (
+                            ("stored", stored),
+                            ("given", params["node_metadata"]),
+                        ):
+                            if isinstance(value, str):
+                                try:
+                                    value = json.loads(value)
+                                except ValueError:
+                                    pass
+                            # A stored NULL, or JSON null, holds no keys yet.
+                            if which == "stored" and value is None:
+                                continue
+                            if not isinstance(value, dict):
+                                raise self._compat.refusal(
+                                    f"the {which} node_metadata of session {session_id!r} is not "
+                                    "a JSON object; compatibility mode merges node_metadata by "
+                                    "key and never writes it whole"
+                                )
+                            merged.update(value)
+                        params["node_metadata"] = json.dumps(merged)
                 await conn.execute(
-                    text(f"UPDATE sessions SET {sets} WHERE id = :_id"),  # noqa: S608
-                    params,
+                    text(f"UPDATE sessions SET {sets} WHERE id = :_id{clause}"),  # noqa: S608
+                    {**params, **owner},
                 )
 
     @staticmethod
@@ -3315,13 +3361,19 @@ class StateDB:
                     "different state per backend. Flatten the patch or merge "
                     "the nested object yourself before calling this."
                 )
+        if self._compat is not None:
+            self._require_created(table, entity_id, table[:-1])
         now = time.time()
+        clause, owner = self._owner_predicate(table)
         async with self._tx() as conn:
-            stmt = text(self._merge_node_metadata_sql(self.dialect, table=table)).bindparams(
-                bindparam("patch", type_=JSON)
-            )
-            await conn.execute(stmt, {"patch": patch, "now": now, "id": entity_id})
+            if self._compat is not None:
+                await self._require_owned(conn, table, entity_id, table[:-1])
+            stmt = text(
+                self._merge_node_metadata_sql(self.dialect, table=table) + clause
+            ).bindparams(bindparam("patch", type_=JSON))
+            await conn.execute(stmt, {"patch": patch, "now": now, "id": entity_id, **owner})
 
+    @_operation("merge_session_node_metadata")
     async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
         """Atomically merge *patch* into the session's node_metadata column."""
         await self._merge_node_metadata("sessions", session_id, patch)
@@ -3332,19 +3384,26 @@ class StateDB:
         """Atomically merge *patch* into the invocation's node_metadata column."""
         await self._merge_node_metadata("invocations", invocation_id, patch)
 
+    @_operation("update_artifact_verification")
     async def update_artifact_verification(
         self,
         session_id: str,
         verification: dict[str, Any] | None,
     ) -> None:
+        if self._compat is not None:
+            self._require_created("sessions", session_id, "session")
+        clause, owner = self._owner_predicate("sessions")
         # Must hold _write_lock: teardown calls this while signal persistence is still bound, so a
         # late signal emit's _tx() can race this UPDATE on SQLite.
         async with self._tx() as conn:
+            if self._compat is not None:
+                await self._require_owned(conn, "sessions", session_id, "session")
             await conn.execute(
                 text(
-                    "UPDATE sessions SET artifact_verification_json = :v, updated_at = :now WHERE id = :id"
+                    "UPDATE sessions SET artifact_verification_json = :v, updated_at = :now "  # noqa: S608
+                    "WHERE id = :id" + clause
                 ).bindparams(bindparam("v", type_=JSON)),
-                {"v": verification, "now": time.time(), "id": session_id},
+                {"v": verification, "now": time.time(), "id": session_id, **owner},
             )
 
     async def set_session_provenance(
@@ -3448,6 +3507,7 @@ class StateDB:
             override_justification=override_justification,
         )
 
+    @_operation("update_status")
     async def update_status(
         self,
         entity_type: str,
@@ -3499,6 +3559,17 @@ class StateDB:
                     f"update_status() called with extra_fields keys {sorted(unknown)} for "
                     f"entity_type={canonical_type!r}; allowed keys are {sorted(allowed_extra)}."
                 )
+        if self._compat is not None:
+            # Compatibility mode moves only its own run's session, and never by override.
+            if canonical_type != "session":
+                raise self._compat.refusal(
+                    f"compatibility mode transitions only its run's session, not a {canonical_type}"
+                )
+            if override:
+                raise self._compat.refusal(
+                    "an override transition is refused in compatibility mode"
+                )
+            self._require_created("sessions", entity_id, "session")
 
         # The guarded read/CAS/edge-validation/history algorithm lives in LifecycleService; this
         # method keeps only its legacy-specific validation and the outcome-to-bool mapping.
@@ -5862,6 +5933,7 @@ class StateDB:
 
     # Session signals
 
+    @_operation("insert_session_signal")
     async def insert_session_signal(
         self,
         *,
@@ -5871,9 +5943,20 @@ class StateDB:
         ts: float,
         payload: dict[str, Any],
     ) -> int:
-        """Append one lifecycle signal row; returns the assigned seq number."""
+        """Append one lifecycle signal row; returns the assigned seq number.
+
+        In compatibility mode the session must be one this run created and still carry its owner,
+        and the row is written with the owner.
+        """
+        if self._compat is not None:
+            self._require_created("sessions", session_id, "session")
         sig_id = uuid.uuid4().hex
+        owned = self._owner_values("session_signals")
+        owner_columns = "".join(f", {_quote_identifier(name)}" for name in owned)
+        owner_params = "".join(f", :_owner{i}" for i in range(len(owned)))
         async with self._tx() as conn:
+            if self._compat is not None:
+                await self._require_owned(conn, "sessions", session_id, "session")
             if self.dialect != "sqlite":
                 await conn.execute(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:k,0))"),
@@ -5890,8 +5973,9 @@ class StateDB:
             seq: int = (row or 0) + 1
             await conn.execute(
                 text(
-                    "INSERT INTO session_signals (id, session_id, seq, kind, op_id, ts, payload) "
-                    "VALUES (:id, :sid, :seq, :kind, :op_id, :ts, :payload)"
+                    "INSERT INTO session_signals "  # noqa: S608 -- the owner column is quoted
+                    f"(id, session_id, seq, kind, op_id, ts, payload{owner_columns}) "
+                    f"VALUES (:id, :sid, :seq, :kind, :op_id, :ts, :payload{owner_params})"
                 ).bindparams(bindparam("payload", type_=JSON)),
                 {
                     "id": sig_id,
@@ -5901,6 +5985,7 @@ class StateDB:
                     "op_id": op_id,
                     "ts": ts,
                     "payload": payload,
+                    **{f"_owner{i}": value for i, value in enumerate(owned.values())},
                 },
             )
         return seq
