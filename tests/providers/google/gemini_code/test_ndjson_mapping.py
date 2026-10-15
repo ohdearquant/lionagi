@@ -426,6 +426,15 @@ async def test_on_text_loop_closed_error_propagates():
         ("argon-maxim", "Gemini 4 Argon (Medium)"),
         ("argon-allow", "Gemini 4 Argon (Medium)"),
         ("argon-lowrider", "Gemini 4 Argon (Medium)"),
+        # ...in any script, while a separator ends the word
+        ("argon-lowé", "Gemini 4 Argon (Medium)"),
+        ("argonélow", "Gemini 4 Argon (Medium)"),
+        ("gemini-highé", "Gemini 3.5 Flash (Medium)"),
+        ("argon-low-é", "Gemini 4 Argon (Low)"),
+        ("gemini-flash-lowest", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.8-flash-maximum", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-allow-high", "Gemini 3.5 Flash (High)"),
+        ("gemini-pro-highlights", "Gemini 3.1 Pro (Low)"),
         # with no tier word a free-form name takes Medium; only the aliases default to High
         ("Gemini 4 Argon", "Gemini 4 Argon (Medium)"),
         # ...unless it names Pro (3.1 Pro) or a dotted version, which it keeps, as before
@@ -459,6 +468,9 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-4.x-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-14-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-40-flash", "Gemini 3.5 Flash (Medium)"),
+        # a trailing dot ends the 4 as it ends a dotted version
+        ("gemini-4.", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash.", "Gemini 4 Argon (Medium)"),
         ("gemini-3.8-flash", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
@@ -480,6 +492,11 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-1.3.8-flash", "Gemini 3.5 Flash (Medium)"),
         ("gemini-2.3.6-flash", "Gemini 3.5 Flash (Medium)"),
         ("2.3.6-argon", "Gemini 3.5 Flash (Medium)"),
+        # ...but a dot after anything else separates the version, which it keeps
+        ("gemini-4-flash.3.5", "Gemini 3.5 Flash (Medium)"),
+        ("argon.3.5", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-flash.3.8", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-4-flash.3.6-x", "Gemini 3.6 Flash (Medium)"),
     ],
 )
 def test_resolve_agy_model(spec, expected):

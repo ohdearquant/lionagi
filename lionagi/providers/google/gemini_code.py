@@ -170,26 +170,33 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+# A letter in any script: a word character that is neither a digit nor an underscore.
+_LETTER = r"[^\W\d_]"
+# A number starts here unless a digit, or a digit and a dot, comes right before it:
+# then it is part of a longer number ("13.6", "2.3.6", "2026.3.8"). A dot after
+# anything else separates ("gemini-4-flash.3.5" names 3.5).
+_NUMBER_START = r"(?<!\d)(?<!\d\.)"
 # A delimited 3.6 version token, not a bare substring: matches the "3.6" in
 # "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash", "gemini-3.60-flash"
-# or "gemini-2.3.6-flash", where a neighbouring digit, or a dot before it, makes it
-# part of a different number.
-_GEMINI_36_TOKEN = re.compile(r"(?<![\d.])3\.6(?!\d)")
-_GEMINI_38_TOKEN = re.compile(r"(?<![\d.])3\.8(?!\d)")
+# or "gemini-2.3.6-flash", which are different numbers.
+_GEMINI_36_TOKEN = re.compile(_NUMBER_START + r"3\.6(?!\d)")
+_GEMINI_38_TOKEN = re.compile(_NUMBER_START + r"3\.8(?!\d)")
 # A major version 4 that is not part of a longer number and is not followed by a
 # letter ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash"). A 4 followed by a
-# dot ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash") names a release this
-# table does not list, the 4 in "gemini-14-flash" or "gemini-40-flash" is a different
-# number, and the 4 in "gemini-4k-flash" is a size: none of them is the 4 family.
-_GEMINI_4_TOKEN = re.compile(r"(?<![\d.])4(?![\d.a-z])")
+# dot and a letter or digit ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash")
+# names a release this table does not list, while a trailing dot ("gemini-4.") ends
+# it as it ends a dotted version. The 4 in "gemini-14-flash" or "gemini-40-flash" is a
+# different number, and the 4 in "gemini-4k-flash" is a size: neither is the 4 family.
+_GEMINI_4_TOKEN = re.compile(_NUMBER_START + r"4(?!\d|" + _LETTER + r"|\.[^\W_])")
 # A dotted version with a one- or two-digit major and one or more dotted parts ("3.5",
 # "2.5", "4.5", "3.5.1"). A four-digit major ("2026.10") is a date and a three-digit
 # one ("100.5") is not a model version. A trailing dot ("3.5.") ends the version.
-_DOTTED_VERSION = re.compile(r"(?<![\d.])\d{1,2}(?:\.\d+)+(?!\d|\.\d)")
-# A tier word in a free-form name stands alone: a tier inside a longer word
-# ("argon-highlights", "argon-allow") is no tier.
-_TIER_LOW = re.compile(r"(?<![a-z])low(?![a-z])")
-_TIER_HIGH = re.compile(r"(?<![a-z])(?:x?high|max)(?![a-z])")
+_DOTTED_VERSION = re.compile(_NUMBER_START + r"\d{1,2}(?:\.\d+)+(?!\d|\.\d)")
+# A tier word in a free-form name stands alone: a letter of any script next to it
+# makes it part of a longer word ("argon-highlights", "argon-allow", "argon-lowé"),
+# which carries no tier.
+_TIER_LOW = re.compile(f"(?<!{_LETTER})low(?!{_LETTER})")
+_TIER_HIGH = re.compile(f"(?<!{_LETTER})(?:x?high|max)(?!{_LETTER})")
 
 
 def _gemini_flash_family(key: str) -> str:
@@ -200,7 +207,8 @@ def _gemini_flash_family(key: str) -> str:
     3.5 Flash. A name with no dotted version is the 4 Argon family when it contains
     ``argon`` or a major version 4 that is not part of a longer number or followed by
     a letter, and 3.5 Flash otherwise. A version inside a longer number or dotted
-    string (13.6, 3.60, 2.3.6) is never a family match. ``resolve_agy_model`` checks
+    string (13.6, 3.60, 2.3.6) is never a family match; a dot after anything but a
+    digit separates, so ``gemini-4-flash.3.5`` names 3.5. ``resolve_agy_model`` checks
     for Pro before this, so a Pro name is 3.1 Pro whatever else it says.
     """
     if _GEMINI_38_TOKEN.search(key):
