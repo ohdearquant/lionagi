@@ -1116,16 +1116,20 @@ async def teardown_persist(
 
         return final_status
     except Exception as exc:
-        from lionagi.state.compat import StateCompatibilityRefused
+        from lionagi.state.compat import refusal_in
 
-        if isinstance(exc, StateCompatibilityRefused):
+        # Teardown writes run inside task groups, so the refusal can arrive wrapped beside
+        # another failure; it is still the reason this run fails.
+        refusal = refusal_in(exc)
+        if refusal is not None:
             # The store refused a write in compatibility mode, so the run fails with that
             # refusal as its reason instead of reading back a status it could not write
             # (ADR-0128 D6). Nothing more is written: the message hooks are detached, and
-            # SESSION_END, whose handlers write, is not emitted.
-            _log.error("live persist teardown refused: %s", exc)
+            # SESSION_END, whose handlers write, is not emitted -- the teardown refused before
+            # reaching it.
+            _log.error("live persist teardown refused: %s", refusal)
             _unroute_message_hooks(ctx)
-            ctx["terminal_reason"] = ("failed", f"The store refused a write: {exc}")
+            ctx["terminal_reason"] = ("failed", f"The store refused a write: {refusal}")
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's
@@ -1310,7 +1314,11 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
             if not await retry_queue.flush_final():
                 flushed = False
         except StateCompatibilityRefused as exc:
-            refusal = refusal or exc
+            if refusal is None:
+                refusal = exc
+            else:
+                # The first refusal is raised; each later one is logged, so none goes unreported.
+                _log.error("live persist flush refused another queue: %s", exc)
     if refusal is not None:
         raise refusal
     return flushed

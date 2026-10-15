@@ -75,6 +75,22 @@ async def _link_engine_child(db: Any, session_uid: str, *, parent_run_id: str) -
     return False
 
 
+def _in_compatibility_mode(db: Any) -> bool:
+    """True when *db* is a StateDB open in compatibility mode (ADR-0128)."""
+    from lionagi.state.compat import CompatibilityProfile
+
+    return isinstance(getattr(db, "compatibility", None), CompatibilityProfile)
+
+
+# The turn record's outcome for each terminal status teardown can decide: a run that did not
+# complete and was not stopped by a caller failed.
+_TURN_OUTCOME_BY_STATUS = {
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "aborted": "cancelled",
+}
+
+
 async def _link_engine_child_once(session_uid: str, *, parent_run_id: str) -> bool:
     """One last stamp attempt on a short-lived handle of our own, for turns
     that end before the borrowed-handle retries could land."""
@@ -372,6 +388,10 @@ class OperatorCoordinator:
         engine_link_task: asyncio.Task | None = None
         opening_write: asyncio.Future | None = None
         engine_session_uid: str | None = None
+        # Set on the turn's own completion path when its store is in compatibility
+        # mode: the turn record is written after teardown, so it can carry the
+        # status teardown decides rather than the one the engine reached.
+        turn_finish_deferred = False
         try:
             complete_turns = await self.store.list_complete_turn_frame_groups(
                 conversation_id,
@@ -606,7 +626,10 @@ class OperatorCoordinator:
                     await self.store.append_frame(
                         conversation_id, request_id, event.type, event.payload
                     )
-            await self.store.finish_turn(request_id, outcome="completed")
+            if live is not None and _in_compatibility_mode(live.get("db")):
+                turn_finish_deferred = True
+            else:
+                await self.store.finish_turn(request_id, outcome="completed")
         except asyncio.CancelledError:
             terminal_status = "cancelled"
             await self.store.finish_turn(
@@ -712,12 +735,30 @@ class OperatorCoordinator:
             if live is not None:
                 from lionagi.cli._runs import teardown_agent_persist
 
-                with suppress(Exception):
-                    await teardown_agent_persist(
-                        live,
-                        status=terminal_status,
-                        exception=terminal_exc,
-                    )
+                try:
+                    with suppress(Exception):
+                        status = await teardown_agent_persist(
+                            live,
+                            status=terminal_status,
+                            exception=terminal_exc,
+                        )
+                        if _in_compatibility_mode(live.get("db")):
+                            # In compatibility mode run.json records the status teardown
+                            # decided, as `li agent`'s does: a turn the engine finished fails
+                            # when the store refused one of its writes (ADR-0128 D6). Only a
+                            # terminal status takes over: teardown reads the session row back
+                            # when it fails with an ordinary error, and a row still `running`
+                            # must not land in run.json as a non-terminal status beside its
+                            # end time.
+                            from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+                            if status in SESSION_TERMINAL_STATUSES:
+                                terminal_status = status
+                finally:
+                    # In a finally so a cancel that lands during teardown still finishes the
+                    # turn, as the native path already has before teardown starts.
+                    if turn_finish_deferred:
+                        await self._finish_deferred_turn(request_id, terminal_status, live)
             if run_branch is not None and run_dir is not None:
                 if opening_write is not None:
                     # its thread writes whatever happens to this wait, so the wait holds through any
@@ -751,6 +792,33 @@ class OperatorCoordinator:
                         },
                     )
             ready.set()
+
+    async def _finish_deferred_turn(
+        self, request_id: str, terminal_status: str, live: dict[str, Any]
+    ) -> None:
+        """Write a compatibility-mode turn's record with the status its teardown decided.
+
+        The record follows the same decision as run.json, so a turn the engine finished whose
+        teardown the store refused does not read `completed` while its run reads `failed`. A
+        failure to write it is logged: run.json must still be written.
+        """
+        outcome = _TURN_OUTCOME_BY_STATUS.get(terminal_status, "failed")
+        error: dict[str, Any] | None = None
+        if outcome == "failed":
+            decided = live.get("terminal_reason")
+            error = {
+                "code": "service_failure",
+                "message": (
+                    decided[1]
+                    if decided and decided[0] == terminal_status
+                    else f"The turn's run ended {terminal_status} while it was torn down"
+                ),
+                "retryable": False,
+            }
+        try:
+            await self.store.finish_turn(request_id, outcome=outcome, error=error)
+        except Exception:  # noqa: BLE001 -- run.json must still be written
+            _log.exception("Operator turn %s: its record could not be finished", request_id)
 
     async def cancel(self, conversation_id: str, request_id: str) -> dict[str, Any]:
         await self.ensure_started()

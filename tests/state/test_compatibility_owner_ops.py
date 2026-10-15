@@ -169,15 +169,16 @@ _OPERATIONS = {
 }
 
 
-async def _managed_store(path: Path) -> Path:
+_OWNER_COLUMN = "TEXT NOT NULL DEFAULT 'principal:default'"
+
+
+async def _managed_store(path: Path, owner_sql: str = _OWNER_COLUMN) -> Path:
     native = StateDB(path)
     await native.open()
     await native.close()
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
-            conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN {OWNER} TEXT NOT NULL DEFAULT 'principal:default'"
-            )
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {OWNER} {owner_sql}")
         conn.executescript(
             """
             CREATE TABLE principals (id TEXT PRIMARY KEY, kind TEXT NOT NULL);
@@ -624,8 +625,10 @@ class _LeavesOutTheOwner(StateDB):
     [
         "INSERT INTO progressions (id, created_at, collection) VALUES (:id, 1.0, '[]')",
         "INSERT INTO progressions VALUES (:id, 1.0, '[]', 'principal:a')",
+        "INSERT INTO 'progressions' (id, created_at, collection) VALUES (:id, 1.0, '[]')",
+        "INSERT INTO main.'progressions' (id, created_at, collection) VALUES (:id, 1.0, '[]')",
     ],
-    ids=["columns without the owner", "no column list"],
+    ids=["columns without the owner", "no column list", "string name", "schema and string name"],
 )
 async def test_an_insert_into_an_owned_table_that_leaves_out_the_owner_is_refused(store, statement):
     """The authorizer sees the table an INSERT writes, never its columns."""
@@ -639,6 +642,193 @@ async def test_an_insert_into_an_owned_table_that_leaves_out_the_owner_is_refuse
         await handle.close()
 
     assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+
+
+class _RawWrite(StateDB):
+    @_operation("create_progression")
+    async def create_progression(self, progression_id: str, collection=None) -> None:
+        async with self._tx() as conn:
+            await conn.execute(text(self.statement), {"id": progression_id, **self.params})
+
+
+def _invocation(store: Path, owner: str) -> None:
+    _execute(
+        store,
+        f"INSERT INTO invocations (id, skill, started_at, created_at, updated_at, {OWNER}) "
+        "VALUES ('p1', 'skill', 0.0, 0.0, 0.0, ?)",
+        (owner,),
+    )
+
+
+async def _raw_write(store: Path, statement: str, params: dict) -> None:
+    handle = _RawWrite(store, compatibility=_profile(store), owner="principal:a")
+    handle.statement, handle.params = statement, params
+    await handle.open()
+    try:
+        await handle.create_progression("p1")
+    finally:
+        await handle.close()
+
+
+_PROGRESSION = f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+
+
+@pytest.mark.parametrize(
+    ("statement", "params", "reason"),
+    [
+        (_PROGRESSION + "VALUES (:id, 1.0, '[]', 'principal:b')", {}, "other than the owner"),
+        (_PROGRESSION + "VALUES (:id, 1.0, '[]', NULL)", {}, "other than the owner"),
+        (
+            _PROGRESSION
+            + "VALUES (:id, 1.0, '[]', (SELECT id FROM principals WHERE id = 'principal:b'))",
+            {},
+            "other than the owner",
+        ),
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :o)",
+            {"o": "principal:b"},
+            "other than the owner",
+        ),
+        # The owner sits in another column's slot: the owner's own slot is what is read.
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, :col, :o)",
+            {"col": "principal:a", "o": "principal:b"},
+            "other than the owner",
+        ),
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :a), ('p2', 1.0, '[]', :b)",
+            {"a": "principal:a", "b": "principal:b"},
+            "other than the owner",
+        ),
+        (_PROGRESSION + "SELECT :id, 1.0, '[]', 'principal:b'", {}, "from a query"),
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :o) ON CONFLICT (id) DO UPDATE SET "
+            "collection = excluded.collection",
+            {"o": "principal:a"},
+            "upsert",
+        ),
+        (
+            "UPDATE invocations SET updated_at = 1.0 WHERE id = :id",
+            {},
+            "does not restrict its rows",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id AND {OWNER} = :o",
+            {"o": "principal:b"},
+            "does not restrict its rows",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id OR {OWNER} = :o",
+            {"o": "principal:a"},
+            "not a plain conjunction",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE session_count BETWEEN 0 AND {OWNER} = :o",
+            {"o": "principal:a"},
+            "not a plain conjunction",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id AND NOT {OWNER} = :o",
+            {"o": "principal:a"},
+            "does not restrict its rows",
+        ),
+        (
+            f"UPDATE 'invocations' SET updated_at = 1.0 WHERE {OWNER} = :o",
+            {"o": "principal:b"},
+            "does not restrict its rows",
+        ),
+    ],
+    ids=[
+        "owner literal",
+        "owner null",
+        "owner from a query",
+        "owner bound to another",
+        "owner slot holds another",
+        "one row of two another",
+        "rows from a query",
+        "upsert that updates",
+        "update without the owner",
+        "update bound to another",
+        "update with or",
+        "update with between",
+        "update with not",
+        "update of a string name",
+    ],
+)
+async def test_a_write_that_does_not_bind_the_owner_is_refused(store, statement, params, reason):
+    """The authorizer sees neither the values a write binds nor the rows its WHERE clause picks."""
+    _invocation(store, "principal:b")
+    with pytest.raises(StateCompatibilityRefused, match=reason):
+        await _raw_write(store, statement, params)
+
+    assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+    assert _rows(store, "SELECT updated_at FROM invocations WHERE id = 'p1'") == [(0.0,)]
+
+
+@pytest.mark.parametrize(
+    ("statement", "written", "expected"),
+    [
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :o)",
+            f"SELECT {OWNER} FROM progressions WHERE id = 'p1'",
+            [("principal:a",)],
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id AND {OWNER} = :o",
+            "SELECT updated_at FROM invocations WHERE id = 'p1'",
+            [(1.0,)],
+        ),
+    ],
+    ids=["insert", "update"],
+)
+async def test_a_write_that_binds_the_owner_is_admitted(store, statement, written, expected):
+    _invocation(store, "principal:a")
+    await _raw_write(store, statement, {"o": "principal:a"})
+
+    assert _rows(store, written) == expected
+
+
+_MIRROR = "CREATE TRIGGER mirror AFTER INSERT ON messages BEGIN {body}; END"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "INSERT INTO progressions (id, created_at, collection) VALUES (NEW.id, 1.0, '[]')",
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        "VALUES (NEW.id, 1.0, '[]', 'principal:b')",
+        f"INSERT INTO 'progressions' (id, created_at, collection, {OWNER}) "
+        f"SELECT NEW.id, 1.0, '[]', NEW.{OWNER}",
+        "UPDATE progressions SET collection = '[]' WHERE id = NEW.id",
+        f"UPDATE progressions SET collection = '[]' WHERE id = NEW.id OR {OWNER} = NEW.{OWNER}",
+    ],
+    ids=["owner left out", "owner literal", "rows from a query", "update by id", "update with or"],
+)
+async def test_a_trigger_that_writes_an_owned_table_without_the_owner_is_refused(tmp_path, body):
+    """A trigger's statements pass no statement check, so admission reads them."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, _MIRROR.format(body=body))
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    with pytest.raises(StateCompatibilityRefused, match="trigger mirror"):
+        await handle.open()
+    assert handle._engine is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (NEW.id, 1.0, '[]', NEW.{OWNER})",
+        f"UPDATE progressions SET collection = '[]' WHERE id = NEW.id AND {OWNER} = NEW.{OWNER}",
+    ],
+    ids=["insert", "update"],
+)
+async def test_a_trigger_that_copies_the_owner_is_admitted(tmp_path, body):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, _MIRROR.format(body=body))
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
 
 
 async def test_an_invocation_is_refused_when_the_profile_records_no_owner(store):
@@ -965,3 +1155,486 @@ async def test_teardown_flushes_every_queue_before_it_raises_a_refusal():
         await _flush_pending_message_events({"message_retry_queues": [first, second]})
 
     assert (first.attempts, second.attempts) == (1, 1)
+
+
+class _RefusingFlushQueue:
+    def __init__(self, target: str) -> None:
+        self.target = target
+
+    async def flush_final(self) -> bool:
+        raise StateCompatibilityRefused("persist_live_message", self.target, "refused")
+
+
+async def test_teardown_logs_every_refusal_after_the_one_it_raises(caplog):
+    from lionagi.cli._runs import _flush_pending_message_events
+
+    queues = [_RefusingFlushQueue("messages@1"), _RefusingFlushQueue("messages@2")]
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        await _flush_pending_message_events({"message_retry_queues": queues})
+
+    (record,) = [r for r in caplog.records if "messages@2" in r.getMessage()]
+    assert record.levelname == "ERROR"
+
+
+@pytest.mark.parametrize("entry", ["dependency-aware", "reactive", "stream"])
+async def test_a_refused_write_in_a_flow_operation_stops_the_flow(entry):
+    """A refusal in one operation is raised from the flow, instead of failing that operation while
+    the others run on (ADR-0128 D6)."""
+    import anyio
+
+    from lionagi.operations import flow
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    ran = []
+
+    async def refused(**kw):
+        raise StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+
+    async def slow(**kw):
+        await anyio.sleep(0.5)
+        ran.append("slow")
+        return "slow"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("refused", refused)
+    session.register_operation("slow", slow)
+    builder = OperationGraphBuilder()
+    builder.add_operation("refused", depends_on=[])
+    builder.add_operation("slow", depends_on=[])
+
+    graph = builder.get_graph()
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        if entry == "stream":
+            async for _ in session.flow_stream(graph):
+                pass
+        else:
+            await flow(session, graph, reactive=entry == "reactive")
+    assert ran == []
+
+
+async def test_a_refused_message_write_in_a_stream_run_keeps_its_type(monkeypatch):
+    """A refusal is no provider failure: a stream run raises it as itself (ADR-0128 D6)."""
+    import types
+    from unittest.mock import AsyncMock
+
+    from lionagi.operations.run.run import RunParam, run
+    from lionagi.service.imodel import iModel
+    from lionagi.service.types.stream_chunk import StreamChunk
+    from lionagi.session.branch import Branch
+
+    model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    model.endpoint = types.SimpleNamespace(
+        is_cli=True, session_id=None, to_dict=lambda: {"type": "fake_cli", "session_id": None}
+    )
+    model.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    async def stream(api_call=None):
+        yield StreamChunk(type="text", content="reply")
+
+    model.create_event = create_event
+    model.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+    model.stream = stream
+    branch = Branch()
+    branch.chat_model = model
+    add_message = branch.msgs.a_add_message
+
+    async def refusing(**kwargs):
+        if "assistant_response" in kwargs:
+            raise StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+        return await add_message(**kwargs)
+
+    monkeypatch.setattr(branch.msgs, "a_add_message", refusing)
+
+    with pytest.raises(StateCompatibilityRefused, match="messages@1"):
+        async for _ in run(branch, "do something", RunParam()):
+            pass
+
+
+async def test_a_refused_setup_finishes_the_runs_record(tmp_path, monkeypatch):
+    """`li agent` stops at a refused setup, and its run.json reads `failed` with the refusal
+    instead of `running` (ADR-0128 D6)."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli._runs as runs_mod
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import allocate_run
+    from lionagi.service.manager import iModelManager
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/model")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}", agent_definition_hash=lambda n: "abc"
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="refused-setup")
+    monkeypatch.setattr(agent_mod, "allocate_run", lambda: run)
+
+    async def refused_setup(*args, **kwargs):
+        raise StateCompatibilityRefused("create_session", "sessions@1", "refused")
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", refused_setup)
+
+    from lionagi.cli.agent import _run_agent
+
+    with pytest.raises(StateCompatibilityRefused):
+        await _run_agent("codex/model", "do the thing")
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["ended_at"] is not None
+    assert manifest["error"].startswith("The store refused a write: create_session refused")
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "error"),
+    [(None, None), ("profile", "The store refused a write: x")],
+    ids=["native", "compatibility"],
+)
+async def test_an_orchestrate_run_json_names_the_reason_in_compatibility_mode(
+    monkeypatch, compatibility, error
+):
+    from types import SimpleNamespace
+
+    from lionagi.cli.orchestrate import _orchestration
+
+    async def teardown(ctx, **kwargs):
+        ctx["terminal_reason"] = ("failed", "The store refused a write: x")
+        return "failed"
+
+    from lionagi.state.compat import Closure
+
+    monkeypatch.setattr(_orchestration, "teardown_persist", teardown)
+    written: list = []
+    profile = (
+        CompatibilityProfile(
+            name="orchestrate-records",
+            version=1,
+            closure=Closure(tables=()),
+            writes={},
+            operations={"run"},
+        )
+        if compatibility == "profile"
+        else None
+    )
+    env = SimpleNamespace(
+        _live_persist={"db": SimpleNamespace(compatibility=profile)},
+        cwd=None,
+        _run_manifest={},
+        run=SimpleNamespace(write_manifest=written.append),
+    )
+
+    assert await _orchestration.stop_live_persist(env, status="failed") == "failed"
+    assert written[0]["status"] == "failed"
+    assert written[0].get("error") == error
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "recorded"),
+    [(None, "completed"), ("profile", "failed")],
+    ids=["native", "compatibility"],
+)
+async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compatibility_mode(
+    tmp_path, monkeypatch, compatibility, recorded
+):
+    """A turn the engine finished whose teardown the store refused reads `failed` in its run.json
+    in compatibility mode (ADR-0128 D6); natively run.json keeps the turn's own status."""
+    import json
+    import time
+    from types import SimpleNamespace
+
+    import anyio
+
+    import lionagi.cli._runs as runs_mod
+    from lionagi.state.compat import Closure
+    from lionagi.studio.operator.coordinator import OperatorCoordinator
+    from lionagi.studio.operator.store import OperatorStore
+    from lionagi.studio.operator.types import OperatorEngineEvent
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+
+    profile = (
+        CompatibilityProfile(
+            name="operator-records",
+            version=1,
+            closure=Closure(tables=()),
+            writes={},
+            operations={"run"},
+        )
+        if compatibility == "profile"
+        else None
+    )
+
+    async def setup(*args, **kwargs):
+        return {"session_id": "s1", "db": SimpleNamespace(compatibility=profile)}
+
+    async def teardown(ctx, *, status="completed", **kwargs):
+        return "failed"
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "teardown_agent_persist", teardown)
+
+    class _Engine:
+        async def _stream(self, _turn):
+            yield OperatorEngineEvent(
+                "text", {"content": "reply", "format": "plain", "role": "assistant"}
+            )
+
+        def stream(self, turn):
+            return self._stream(turn)
+
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_Engine
+    )
+    await coordinator.startup()
+    try:
+        cid = (await coordinator.create_conversation())["conversation"]["id"]
+        await coordinator.submit(
+            cid,
+            instruction="hello",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        deadline = time.monotonic() + 5
+        status = None
+        while time.monotonic() < deadline:
+            manifests = list((tmp_path / "runs").glob("operator-*/run.json"))
+            if manifests:
+                status = json.loads(manifests[0].read_text()).get("status")
+                if status != "running":
+                    break
+            await anyio.sleep(0.02)
+    finally:
+        await coordinator.shutdown()
+
+    assert status == recorded
+
+
+class _DriverWrite(StateDB):
+    """Runs one statement with its parameters exactly as given, never re-spelled by the driver."""
+
+    @_operation("create_progression")
+    async def create_progression(self, progression_id: str, collection=None) -> None:
+        async with self._tx() as conn:
+            await conn.exec_driver_sql(self.statement, self.params)
+
+
+async def _driver_write(store: Path, statement: str, params) -> None:
+    handle = _DriverWrite(store, compatibility=_profile(store), owner="principal:a")
+    handle.statement, handle.params = statement, params
+    await handle.open()
+    try:
+        await handle.create_progression("p-probe")
+    finally:
+        await handle.close()
+
+
+_NAMED_INSERT = "INSERT INTO progressions (id, created_at, collection, owner_principal_id) "
+
+
+@pytest.mark.parametrize(
+    "named", ["#id", ":id", "@id", "$id", "?1"], ids=["hash", "colon", "at", "dollar", "numbered"]
+)
+async def test_an_insert_whose_owner_slot_follows_a_named_parameter_is_refused(store, named):
+    """SQLite numbers a named parameter like ``?``, so the ``?`` slot is not the first argument."""
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id")
+
+    with pytest.raises(StateCompatibilityRefused, match="binds its values in a form"):
+        await _driver_write(
+            store, _NAMED_INSERT + f"VALUES ({named}, 1.0, '[]', ?)", ("principal:a", "principal:b")
+        )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == before
+    assert before == [("p-other", "principal:b")]
+
+
+async def test_an_update_whose_owner_term_follows_a_named_parameter_is_refused(store):
+    """The ``?`` after ``#c`` is the second argument, not the first the guard reads it as."""
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, content, {OWNER} FROM messages ORDER BY id")
+
+    with pytest.raises(StateCompatibilityRefused, match="binds its values in a form"):
+        await _driver_write(
+            store,
+            "UPDATE messages SET content = #c WHERE owner_principal_id = ?",
+            ("principal:a", "principal:b"),
+        )
+
+    assert _rows(store, f"SELECT id, content, {OWNER} FROM messages ORDER BY id") == before
+    assert before == [("m-other", "{}", "principal:b")]
+
+
+async def test_an_update_that_binds_a_column_other_than_the_owner_is_refused(store):
+    """A WHERE term on another column, even bound to the owner, does not restrict the owner."""
+    _first_owned_message(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="does not restrict its rows"):
+        await _driver_write(
+            store, "UPDATE messages SET content = ? WHERE sender = ?", ("taken", "principal:a")
+        )
+
+    assert _rows(store, "SELECT content FROM messages WHERE id = 'm-sys'") == [("first",)]
+
+
+async def test_an_executemany_whose_later_row_writes_another_owner_is_refused(store):
+    with pytest.raises(StateCompatibilityRefused, match="other than the owner"):
+        await _driver_write(
+            store,
+            _NAMED_INSERT + "VALUES (?, 1.0, '[]', ?)",
+            [("p1", "principal:a"), ("p2", "principal:b")],
+        )
+
+    assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+
+
+async def test_an_executemany_bound_to_the_owner_in_every_row_is_admitted(store):
+    await _driver_write(
+        store,
+        _NAMED_INSERT + "VALUES (?, 1.0, '[]', ?)",
+        [("p1", "principal:a"), ("p2", "principal:a")],
+    )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == [
+        ("p1", "principal:a"),
+        ("p2", "principal:a"),
+    ]
+
+
+def _first_owned_message(store: Path) -> None:
+    _execute(
+        store,
+        f"INSERT INTO messages (id, created_at, content, role, lion_class, {OWNER}) "
+        "VALUES ('m-sys', 0, 'first', 'system', 1, 'principal:a')",
+    )
+
+
+async def test_a_trigger_named_begin_is_read_from_the_begin_after_its_table(tmp_path):
+    """The trigger's name is the BEGIN keyword, so the first BEGIN is not the body's."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER begin AFTER UPDATE ON messages BEGIN "
+        "INSERT INTO progressions (id, created_at, collection) VALUES (NEW.id || '-x', 1.0, '[]'); "
+        "END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger begin"):
+        await handle.open()
+    assert handle._engine is None
+
+
+async def test_a_trigger_named_begin_that_copies_the_owner_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER begin AFTER UPDATE ON messages BEGIN "
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (NEW.id || '-x', 1.0, '[]', NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+async def test_a_trigger_that_reads_old_in_an_insert_is_refused(tmp_path):
+    """OLD is NULL in an INSERT trigger, so a trigger that copies it fails every insert."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
+    _execute(
+        store,
+        "CREATE TRIGGER copy_old AFTER INSERT ON messages BEGIN "
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (NEW.id || '-p', 1.0, '[]', OLD.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger copy_old"):
+        await handle.open()
+    assert handle._engine is None
+
+
+async def test_a_trigger_that_reads_new_in_a_delete_is_refused(tmp_path):
+    """NEW is NULL in a DELETE trigger, so the copy it writes is no owner either."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
+    _execute(
+        store,
+        "CREATE TRIGGER copy_new AFTER DELETE ON messages BEGIN "
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (OLD.id || '-p', 1.0, '[]', NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger copy_new"):
+        await handle.open()
+    assert handle._engine is None
+
+
+_NOCASE_OWNER = "TEXT NOT NULL DEFAULT 'principal:default' COLLATE NOCASE"
+
+
+async def test_an_owner_column_that_does_not_compare_under_binary_is_refused(tmp_path):
+    """A NOCASE owner compares a case variant as the owner, so the WHERE term does not hold."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql=_NOCASE_OWNER)
+    before = _rows(store, "SELECT COUNT(*) FROM messages")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="NOCASE") as caught:
+        await handle.open()
+
+    assert "collation" in caught.value.reason.lower()
+    assert handle._engine is None
+    assert _rows(store, "SELECT COUNT(*) FROM messages") == before
+
+
+async def test_an_owner_column_that_compares_under_binary_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT COLLATE BINARY")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+async def test_a_trigger_whose_owner_term_is_reversed_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER rev AFTER INSERT ON messages BEGIN "
+        "UPDATE progressions SET collection = '[]' WHERE id = NEW.sender "
+        f"AND NEW.{OWNER} = {OWNER}; END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+async def test_a_trigger_whose_owner_term_is_parenthesised_is_admitted(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER par AFTER INSERT ON messages BEGIN "
+        "UPDATE progressions SET collection = '[]' WHERE id = NEW.sender "
+        f"AND ({OWNER} = NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()

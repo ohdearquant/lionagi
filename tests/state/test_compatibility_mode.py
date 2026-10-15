@@ -74,6 +74,7 @@ _OPERATIONS = {
     "rolled_back_then_commit",
     "rolled_back_then_begin",
     "rolled_back_and_left",
+    "begin_inside",
     "spawns_writer",
 }
 
@@ -269,6 +270,16 @@ class _RunsDB(StateDB):
                 "INSERT OR ROLLBACK INTO runs (id, status) VALUES (?, 'running')", (run_id,)
             )
 
+    @_operation("begin_inside")
+    async def begin_inside(self, run_id: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                text("INSERT INTO runs (id, status) VALUES (:id, 'running')"), {"id": run_id}
+            )
+            # SQLite would refuse it too, and leave this transaction open.
+            with pytest.raises(StateCompatibilityRefused, match="BEGIN inside an open"):
+                await conn.exec_driver_sql("BEGIN")
+
     @_operation("spawns_writer")
     async def spawns_writer(self, release: asyncio.Event) -> asyncio.Task:
         async def late() -> None:
@@ -460,6 +471,110 @@ async def test_a_difference_pragma_output_leaves_out_is_refused(
     assert db._engine is None
 
 
+@pytest.mark.parametrize(
+    ("old", "reference_new", "store_new"),
+    [
+        ("IN ('running', 'done')", 'IN ("running", "done")', 'IN ("Running", "done")'),
+        (
+            "INSERT INTO other",
+            'CREATE UNIQUE INDEX open_note ON runs (note) WHERE status = "running";\n'
+            "INSERT INTO other",
+            'CREATE UNIQUE INDEX open_note ON runs (note) WHERE status = "Running";\n'
+            "INSERT INTO other",
+        ),
+    ],
+    ids=["check", "partial index"],
+)
+async def test_a_table_definition_keeps_sqlite_resolution_of_names(
+    old, reference_new, store_new, tmp_path
+):
+    """A table's definition is compared as SQLite resolves names, so a double-quoted token that
+    names no column is a string literal and its case is kept."""
+    assert old in _SCHEMA
+    reference = _store(tmp_path / "reference.db", _SCHEMA.replace(old, reference_new, 1))
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(old, store_new, 1))
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="does not match the profile"):
+        await db.open()
+    assert db._engine is None
+
+
+_DEFAULTS = [
+    ("open", "Open"),
+    ("'managed'", '"managed"'),
+    ('"managed"', '"Managed"'),
+]
+
+
+@pytest.mark.parametrize(
+    ("reference_default", "store_default"), _DEFAULTS, ids=["bare", "quotes", "case"]
+)
+async def test_a_default_value_is_compared_as_written(reference_default, store_default, tmp_path):
+    """A DEFAULT is compared as the column's definition writes it: SQLite stores the word as
+    given, so ``DEFAULT open`` and ``DEFAULT Open`` are two different defaults."""
+    old = "DEFAULT 'managed'"
+    assert old in _SCHEMA
+    reference = _store(
+        tmp_path / "reference.db", _SCHEMA.replace(old, f"DEFAULT {reference_default}", 1)
+    )
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(old, f"DEFAULT {store_default}", 1))
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="does not match the profile"):
+        await db.open()
+    assert db._engine is None
+
+
+_QUOTED_A_QUALIFIED_COLUMN = (
+    "CREATE VIEW live AS SELECT runs.id FROM runs;\n",
+    'CREATE VIEW live AS SELECT "runs.id" FROM runs;\n',
+)
+_QUOTED_A_LITERAL_IN_A_VIEW = (
+    'CREATE VIEW live AS SELECT runs.id FROM runs JOIN other ON "done" = runs.status;\n',
+    'CREATE VIEW live AS SELECT runs.id FROM runs JOIN other ON "DONE" = runs.status;\n',
+)
+_QUOTED_A_LITERAL_IN_A_TRIGGER = (
+    "CREATE TRIGGER fill AFTER INSERT ON events BEGIN "
+    "INSERT INTO runs (id, status, note) SELECT NEW.run_id || '-n', 'running', \"note\"; END;\n",
+    "CREATE TRIGGER fill AFTER INSERT ON events BEGIN "
+    "INSERT INTO runs (id, status, note) SELECT NEW.run_id || '-n', 'running', \"NOTE\"; END;\n",
+)
+_QUOTED_A_LITERAL_IN_A_TRIGGER_CONDITION = (
+    'CREATE TRIGGER finished AFTER UPDATE ON runs WHEN NEW.status = "done" BEGIN SELECT 1; END;\n',
+    'CREATE TRIGGER finished AFTER UPDATE ON runs WHEN NEW.status = "Done" BEGIN SELECT 1; END;\n',
+)
+
+
+@pytest.mark.parametrize(
+    ("reference_object", "store_object"),
+    [
+        _QUOTED_A_QUALIFIED_COLUMN,
+        _QUOTED_A_LITERAL_IN_A_VIEW,
+        _QUOTED_A_LITERAL_IN_A_TRIGGER,
+        _QUOTED_A_LITERAL_IN_A_TRIGGER_CONDITION,
+    ],
+    ids=["view column", "view literal", "trigger literal", "trigger condition"],
+)
+async def test_a_trigger_or_view_body_is_compared_as_written(
+    reference_object, store_object, tmp_path
+):
+    """A view's or a trigger's body is compared as written: whether SQLite reads a quoted token
+    as a name or as a string literal depends on its scope and on the connection's setting, so a
+    difference in quoting refuses."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + reference_object)
+    store = _store(tmp_path / "managed.db", _SCHEMA + store_object)
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="does not match the profile") as caught:
+        await db.open()
+    assert "missing or changed" in caught.value.reason
+    assert db._engine is None
+
+
 async def test_a_column_added_later_matches_one_the_table_was_created_with(tmp_path, reference):
     """A store the managing application migrated is compared by definition, not by text."""
     migrated = _SCHEMA.replace("    note TEXT,\n    updated_at REAL\n);", "    note TEXT\n);", 1)
@@ -498,6 +613,16 @@ _TRIGGER_RESOLUTIONS = {
     "raise rollback": (
         "BEFORE INSERT ON runs WHEN NEW.note = 'stop' BEGIN SELECT RAISE(ROLLBACK, 'no'); END",
         "RAISE(ROLLBACK)",
+    ),
+    "quoted names in another case": (
+        'AFTER INSERT ON "Runs" BEGIN INSERT OR REPLACE INTO "Events" (seq, run_id, body) '
+        "VALUES (1, NEW.id, 'mirrored'); END",
+        "INSERT OR REPLACE",
+    ),
+    "string literal names": (
+        "AFTER INSERT ON 'runs' BEGIN INSERT OR REPLACE INTO 'events' (seq, run_id, body) "
+        "VALUES (1, NEW.id, 'mirrored'); END",
+        "INSERT OR REPLACE",
     ),
 }
 
@@ -545,6 +670,31 @@ async def test_spelling_differences_alone_do_not_refuse(tmp_path, reference):
     store = _store(tmp_path / "respelled.db", respelled)
     db = await _open(store, _profile(reference))
     await db.close()
+
+
+_PAST_ASCII = (
+    "CREATE TABLE runs€ (id TEXT PRIMARY KEY);\n"
+    "CREATE TABLE tail€ (id TEXT PRIMARY KEY, value TEXT);\n"
+    "CREATE TRIGGER mirror AFTER INSERT ON runs€ BEGIN "
+    "INSERT OR REPLACE INTO tail€ (id, value) VALUES (NEW.id, 'mirrored'); END;\n"
+)
+
+
+async def test_tables_named_past_ascii_are_read_as_sqlite_reads_them(tmp_path):
+    """SQLite reads every character past ASCII as part of a bare name: ``runs€`` is one name."""
+    reference = _store(tmp_path / "reference.db", _PAST_ASCII)
+    store = _store(tmp_path / "managed.db", _PAST_ASCII)
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs€", "tail€"])
+    assert {(o.type, o.name) for o in closure.objects} == {("trigger", "mirror")}
+    profile = CompatibilityProfile(
+        name="past-ascii", version=1, closure=closure, writes={}, operations={"start_run"}
+    )
+    db = StateDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="admits only ABORT") as caught:
+        await db.open()
+    assert "trigger mirror names INSERT OR REPLACE" in caught.value.reason
+    assert db._engine is None
 
 
 async def test_a_store_not_in_wal_mode_is_refused_and_left_in_its_mode(tmp_path, reference):
@@ -810,6 +960,18 @@ async def test_a_caught_authorizer_denial_cannot_be_committed_even_by_a_raw_comm
     assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r0",), ("r3",)]
 
 
+async def test_a_begin_inside_the_operations_transaction_poisons_it(store, reference):
+    db = await _open(store, _profile(reference))
+    try:
+        with pytest.raises(StateCompatibilityRefused, match="COMMIT of a transaction"):
+            await db.begin_inside("r1")
+        # The connection is usable again once the poisoned transaction has ended.
+        await db.start_run("r2")
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT id FROM runs ORDER BY id") == [("r2",)]
+
+
 async def test_a_write_outside_the_operations_transaction_is_refused(store, reference):
     db = await _open(store, _profile(reference))
     try:
@@ -971,6 +1133,16 @@ async def test_a_compatibility_handle_is_never_the_shared_native_handle(store, r
         await db_mod.close_shared_db()
 
 
+async def test_a_read_only_handle_is_shared_by_its_url_as_before(store):
+    readonly = StateDB(store, readonly=True)
+    try:
+        await db_mod.register_shared_db(readonly)
+        assert db_mod._shared_key(readonly) == readonly.url
+        assert await db_mod.get_shared_db(store) is readonly
+    finally:
+        await db_mod.close_shared_db()
+
+
 # Profiles
 
 
@@ -1090,3 +1262,223 @@ def test_statements_are_classified_conservatively(statement, kind):
 )
 def test_write_shapes(statement, refused):
     assert (_write_refusal(_sql_tokens(statement)) is not None) is refused
+
+
+def test_tokens_split_where_sqlite_splits_them():
+    assert _sql_tokens("INSERT INTO tail€ VALUES (1)")[2] == ("word", "tail€")
+    # Only ASCII whitespace separates; a no-break space is part of the name.
+    assert _sql_tokens("SELECT a\u00a0b") == [("word", "select"), ("word", "a\u00a0b")]
+    assert _sql_tokens("(\u00a0runs)")[1] == ("word", "\u00a0runs")
+    assert _sql_tokens('"Open"') == [("ident", "open")]
+    # Only a double-quoted token can be a string literal, so only its case is kept.
+    assert _sql_tokens('"Open" `Open` [Open]', spelled=True) == [
+        ("ident", "Open"),
+        ("ident", "open"),
+        ("ident", "open"),
+    ]
+    # Verbatim, a trigger body, a view body or a DEFAULT keeps its text as written.
+    assert _sql_tokens('"Open" `Open` [Open] Open', verbatim=True) == [
+        ("ident", '"Open"'),
+        ("ident", "`Open`"),
+        ("ident", "[Open]"),
+        ("word", "Open"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("named", "twin"), [("ünits", "Ünits"), ("keys", "\u212aeys")], ids=["u-umlaut", "kelvin sign"]
+)
+async def test_a_name_that_differs_past_ascii_in_case_is_another_table(tmp_path, named, twin):
+    """SQLite folds only ASCII letters, so the two spellings name two tables."""
+    store = _store(
+        tmp_path / "managed.db",
+        f'CREATE TABLE "{named}" (id TEXT PRIMARY KEY, label TEXT);\n'
+        f'CREATE TABLE "{twin}" (id TEXT PRIMARY KEY, label TEXT, extra TEXT);\n',
+    )
+    with closing(sqlite3.connect(store)) as conn:
+        closure = read_closure(conn, [named])
+    (shape,) = closure.tables
+    assert [column.name for column in shape.columns] == ["id", "label"]
+    profile = CompatibilityProfile(
+        name="twins",
+        version=1,
+        closure=closure,
+        writes={named: TableWrites(insert={"id", "label"})},
+        operations={"run_sql"},
+    )
+    db = _RunsDB(store, compatibility=profile)
+    await db.open()
+    try:
+        await db.run_sql(f"INSERT INTO \"{named}\" (id, label) VALUES ('a', 'x')")
+        with pytest.raises(StateCompatibilityRefused):
+            await db.run_sql(f"INSERT INTO \"{twin}\" (id, label) VALUES ('b', 'x')")
+    finally:
+        await db.close()
+    assert _rows(store, f'SELECT id FROM "{named}"') == [("a",)]
+    assert _rows(store, f'SELECT id FROM "{twin}"') == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "INSERT INTO other (id, value) VALUES ('runs', NEW.id)",
+        "UPDATE other SET value = 'runs' WHERE id = NEW.id",
+        "DELETE FROM other WHERE value IN (SELECT id FROM other, 'runs')",
+        "DELETE FROM other WHERE value IN 'runs'",
+        "DELETE FROM other WHERE value IN (SELECT id FROM main.'runs')",
+        "UPDATE OR ABORT 'runs' SET note = NEW.value WHERE id = NEW.id",
+    ],
+    ids=["value", "set value", "from list", "in", "after a dot", "or action"],
+)
+async def test_a_quoted_name_anywhere_in_a_trigger_body_counts(tmp_path, body):
+    """A quoted token is a possible table name wherever it sits, so any spelling counts."""
+    store = _store(
+        tmp_path / "managed.db",
+        _SCHEMA + f"CREATE TRIGGER mirror AFTER INSERT ON other BEGIN {body}; END;\n",
+    )
+    with closing(sqlite3.connect(store)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert ("trigger", "mirror") in {(o.type, o.name) for o in closure.objects}
+
+
+@pytest.mark.parametrize(
+    "object_sql",
+    [
+        "CREATE VIEW v AS SELECT * FROM ('runs')",
+        "CREATE VIEW v AS SELECT x.id FROM (other, 'runs') AS x",
+        "CREATE VIEW v AS SELECT other.id FROM other JOIN ('runs') AS r ON r.id = other.id",
+        "CREATE VIEW v AS SELECT id FROM other UNION SELECT id FROM ('runs')",
+        "CREATE VIEW v AS SELECT n.id FROM (SELECT id FROM other), ('runs') AS n",
+        'CREATE VIEW v AS SELECT * FROM ("runs")',
+    ],
+    ids=["from", "from list", "join", "union", "subquery", "quoted"],
+)
+async def test_a_name_a_parenthesised_list_hides_is_still_in_the_closure(object_sql, tmp_path):
+    """A view or trigger that names a closure table only through a quoted token inside a
+    parenthesised list still belongs to the closure, so a profile that does not list it refuses."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA + object_sql + ";\n")
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="is not in the profile") as caught:
+        await db.open()
+    assert "view v" in caught.value.reason
+    assert db._engine is None
+
+
+async def test_a_view_that_names_no_closure_table_still_admits(tmp_path):
+    store = _store(
+        tmp_path / "managed.db",
+        _SCHEMA + "CREATE VIEW v AS SELECT value FROM other;\n",
+    )
+    db = await _open(store, _profile(_store(tmp_path / "reference.db", _SCHEMA)))
+    await db.close()
+
+
+_LAYOUTS = {
+    "trigger": (
+        "CREATE TRIGGER fill AFTER INSERT ON events BEGIN\n"
+        "  INSERT INTO runs (id, status, note)\n"
+        "  SELECT NEW.run_id || '-n', 'running', \"note\"; END;\n",
+        "CREATE TRIGGER fill\nAFTER INSERT ON events\nBEGIN -- writes the note\n"
+        "  INSERT INTO runs (id, status, note)\n"
+        "  SELECT NEW.run_id || '-n', 'running', \"note\";\nEND;\n",
+    ),
+    "view": (
+        "CREATE VIEW live AS SELECT runs.id FROM runs;\n",
+        "CREATE VIEW live AS\n  SELECT runs.id\n  /* the runs a reader sees */\n  FROM runs;\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("object_type", sorted(_LAYOUTS))
+async def test_a_body_that_differs_only_in_layout_is_admitted(object_type, tmp_path):
+    """Whitespace, comments and line breaks are set aside when a body is compared."""
+    reference_sql, store_sql = _LAYOUTS[object_type]
+    reference = _store(tmp_path / "reference.db", _SCHEMA + reference_sql)
+    store = _store(tmp_path / "managed.db", _SCHEMA + store_sql)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_default_that_differs_only_in_layout_is_admitted(tmp_path):
+    """Whitespace and comments are set aside when a DEFAULT is compared."""
+    old = "DEFAULT 'managed'"
+    assert old in _SCHEMA
+    reference = _store(
+        tmp_path / "reference.db", _SCHEMA.replace(old, "DEFAULT /* the owner */ 'managed'", 1)
+    )
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(old, "DEFAULT\n    'managed'", 1))
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_body_that_differs_only_in_the_case_of_a_keyword_is_refused(tmp_path):
+    """A body is compared as written, so a keyword in another case refuses the store.
+
+    This is the accepted cost of the rule: SQLite reads ``select`` and ``SELECT`` alike, and this
+    mode cannot tell every such spelling apart without reading the body as SQLite does. A refused
+    store is refused only, never written to.
+    """
+    reference = _store(
+        tmp_path / "reference.db", _SCHEMA + "CREATE VIEW live AS SELECT runs.id FROM runs;\n"
+    )
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA + "CREATE VIEW live AS select runs.id from runs;\n"
+    )
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="does not match the profile") as caught:
+        await db.open()
+    assert "view live is missing or changed" in caught.value.reason
+    assert db._engine is None
+
+
+@pytest.mark.parametrize(
+    ("old", "reference_new", "store_new"),
+    [
+        ("REFERENCES runs(id)", "REFERENCES runs(id)", 'REFERENCES "Runs"(id)'),
+        ("    owner TEXT", "    owner TEXT", '    "Owner" TEXT'),
+        ("CHECK (status IN", "CHECK (status IN", 'CHECK ("STATUS" IN'),
+        ("    note TEXT,", "    note TEXT COLLATE NOCASE,", '    note TEXT COLLATE "NOCASE",'),
+        (
+            "INSERT INTO other",
+            "CREATE UNIQUE INDEX open_note ON runs (note);\nINSERT INTO other",
+            'CREATE UNIQUE INDEX open_note ON "Runs" ("NOTE");\nINSERT INTO other',
+        ),
+    ],
+    ids=["references", "column", "check", "collate", "index"],
+)
+async def test_a_table_definition_quotes_a_name_in_another_case(
+    old, reference_new, store_new, tmp_path
+):
+    """SQLite resolves a double-quoted token that names a table, a column or a collation as that
+    name, so a table's definition quotes it in either case."""
+    assert old in _SCHEMA
+    reference = _store(tmp_path / "reference.db", _SCHEMA.replace(old, reference_new, 1))
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(old, store_new, 1))
+    await (await _open(store, _profile(reference))).close()
+
+
+@pytest.mark.parametrize(
+    "object_sql",
+    [
+        'CREATE TRIGGER finished AFTER UPDATE ON "Runs" BEGIN SELECT 1; END',
+        'CREATE TRIGGER finished AFTER UPDATE ON runs BEGIN UPDATE "Events" SET body = 1; END',
+        'CREATE VIEW live AS SELECT "runs".id FROM "runs"',
+    ],
+    ids=["table", "column", "view"],
+)
+async def test_a_body_that_quotes_a_name_in_another_case_is_refused(object_sql, tmp_path):
+    """A body is compared as written, so a quoted name in another case refuses the store even
+    where SQLite would resolve it as the profile's object does."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA + object_sql + ";\n")
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="is not in the profile"):
+        await db.open()
+    assert db._engine is None

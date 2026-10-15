@@ -118,6 +118,12 @@ async def _act(
             )
 
     except Exception as e:
+        from lionagi.state.compat import StateCompatibilityRefused
+
+        if isinstance(e, StateCompatibilityRefused):
+            # The store refused a write in compatibility mode (ADR-0128 D6), including one a
+            # TOOL_POST handler made: the run stops rather than recording it as a tool error.
+            raise
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
 

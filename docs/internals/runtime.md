@@ -44,19 +44,26 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - **Admission.** `open()` requires an existing store file. Inside one read snapshot it reads the
   structure of the profile's tables (`read_closure()`: columns from `PRAGMA table_xinfo`, unique
   keys, CHECK constraints, table options, every foreign key into or out of the tables, and every
-  trigger or view whose SQL names one of them) and refuses unless it equals the profile's closure.
+  trigger or view whose SQL names one of them in any spelling, a quoted string included) and
+  refuses unless it equals the profile's closure.
   `store_versions` narrows the stores a profile is tried on; a version never admits on its own. A
   failed admission disposes the engine, so the object stays unopened. A write transaction compares
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
   closure when it moved: a change elsewhere in the store re-admits, a change to the closure
-  refuses. Each table's definitions are also compared as its SQL spells them (case, whitespace,
-  comments and identifier quotes aside), so a collation, a generated column's expression, a
-  `DEFERRABLE` key or `AUTOINCREMENT` that PRAGMA output leaves out is compared too, and a unique
-  index a CREATE INDEX made is compared by its terms' SQL. A table whose constraints declare any
-  conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a
-  trigger or view that names one (`INSERT OR REPLACE`, `REPLACE INTO`, `RAISE(IGNORE)` and the
-  like), is refused, in the store or in the profile: the authorizer cannot see a row a REPLACE
-  resolution deletes or a transaction a ROLLBACK resolution ends.
+  refuses. Each table's definitions are also compared as its SQL spells them (whitespace,
+  comments, identifier quotes and the case of ASCII letters in names aside, as SQLite resolves
+  names), so a collation, a generated column's expression, a `DEFERRABLE` key or `AUTOINCREMENT`
+  that PRAGMA output leaves out is compared too, and a unique index a CREATE INDEX made is
+  compared by its terms' SQL. A `DEFAULT` value, a trigger body and a view body are instead
+  compared as written, with only whitespace and comments set aside: every token keeps its case and
+  its quote characters, and a store whose default, trigger or view differs from the profile's in
+  case or in quoting is refused even where SQLite would read the two alike. The mode fails closed,
+  since whether SQLite reads a quoted token as a name or as a string literal depends on the scope
+  it appears in and on the connection's double-quoted-string setting. A table whose constraints
+  declare any conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or
+  `FAIL`), or a trigger or view that names one (`INSERT OR REPLACE`, `REPLACE INTO`,
+  `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the authorizer cannot
+  see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution ends.
 - **Operations.** A StateDB method marked as an operation the profile names runs inside that
   operation's scope (a context variable, so code the operation calls inherits it). The scope ends
   when the operation returns, even for a task the operation started. `_tx()` and the
@@ -67,11 +74,13 @@ whose schema another application manages, and never migrates, stamps or reconfig
   `WITH`), never with a conflict clause but `OR ABORT` or with `RETURNING`; savepoints are
   refused. A write is refused once SQLite has rolled back the transaction its operation opened.
   A statement sent to the driver directly passes none of these checks, and only the authorizer
-  sees it, without its conflict clause.
+  sees it, without its conflict clause: an INSERT OR REPLACE sent that way inside an operation's
+  transaction deletes the row it conflicts with, and nothing refuses it.
 - **Authorizer.** The ceiling on every connection, seeing statements that reach SQLite by any
   path: INSERT only into tables the profile inserts into, UPDATE only of its update columns, both
-  only on `main` and only inside a transaction the guard opened and that is still open (any
-  BEGIN the guard did not send clears its mark); reads; a short PRAGMA list; any function but
+  only on `main` and only inside a transaction the guard opened and that is still open (a BEGIN
+  the guard did not send clears its mark or, inside an open transaction, is denied and poisons
+  it); reads; a short PRAGMA list; any function but
   `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
 - **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
   its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
@@ -85,9 +94,9 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
   `committed` names the operation's transactions that had already committed. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.
-- Native handles are shared by url, as before; a read-only or compatibility handle is keyed by
-  `(url, mode, profile)`, so a native and a compatibility handle on one file are never the same
-  object.
+- Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
+  `(url, mode, profile, owner)`, so a native and a compatibility handle on one file, and two
+  compatibility handles writing different owners, are never the same object.
 
 ### `state/health.py`
 

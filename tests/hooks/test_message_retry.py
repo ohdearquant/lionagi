@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import pytest
+
 from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
 
 
@@ -437,3 +439,51 @@ async def test_a_write_the_store_refuses_is_raised_and_stays_queued():
 
     assert db.calls == 2
     assert queue.pending_count == 1
+
+
+class _LockedThenRefusingDB:
+    def __init__(self, compatibility: Any) -> None:
+        self.compatibility = compatibility
+        self.calls = 0
+
+    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+        from lionagi.state.compat import StateCompatibilityRefused
+
+        self.calls += 1
+        if self.calls <= 3:
+            raise RuntimeError("database is locked")
+        raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+
+def _compatibility_profile():
+    """The type of object a store actually carries in its ``compatibility`` attribute."""
+    from lionagi.state.compat import Closure, CompatibilityProfile
+
+    return CompatibilityProfile(
+        name="synthetic", version=1, closure=Closure(tables=()), writes={}, operations={"op"}
+    )
+
+
+@pytest.mark.parametrize(
+    "compatibility", [None, _compatibility_profile()], ids=["native", "compatibility"]
+)
+async def test_a_deferred_queue_attempts_its_head_only_in_compatibility_mode(compatibility):
+    """Deferred after three ordinary failures, a queue on a compatibility-mode store still attempts
+    its head on each submit, so a refusal stops the run then rather than at teardown (ADR-0128 D6);
+    natively it waits for the teardown flush as before."""
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    db = _LockedThenRefusingDB(compatibility)
+    queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")
+    for n in range(3):
+        assert await queue.submit(_event(f"m{n}")) is False
+    assert db.calls == 3
+
+    if compatibility is None:
+        assert await queue.submit(_event("m3")) is False
+        assert db.calls == 3
+    else:
+        with pytest.raises(StateCompatibilityRefused):
+            await queue.submit(_event("m3"))
+        assert db.calls == 4
+    assert queue.pending_count == 4
