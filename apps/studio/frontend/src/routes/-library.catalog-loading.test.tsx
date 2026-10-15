@@ -7,6 +7,8 @@ const router = vi.hoisted(() => ({
   navigate: vi.fn(),
 }));
 
+const mutations = vi.hoisted(() => ({ createAgent: vi.fn() }));
+
 const api = vi.hoisted(() => ({
   listAgents: vi.fn(),
   listWorkflowDefs: vi.fn(),
@@ -27,11 +29,15 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
       useSearch: () => router.search,
     }),
     useNavigate: () => router.navigate,
-    Link: ({ children }: { children: ReactNode }) => children,
+    Link: ({ children, search }: { children: ReactNode; search: typeof router.search }) => (
+      <button type="button" onClick={() => router.navigate({ search: () => search })}>
+        {children}
+      </button>
+    ),
   };
 });
 vi.mock("use-intl", () => ({ useTranslations: () => (key: string) => key }));
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api", () => ({ ...api, ...mutations }));
 vi.mock("@/components/ui/SplitPane", () => ({
   default: ({ master, detail }: { master: ReactNode; detail: ReactNode }) => (
     <>
@@ -41,11 +47,34 @@ vi.mock("@/components/ui/SplitPane", () => ({
   ),
 }));
 vi.mock("@/components/library/AgentDetail", () => ({
-  AgentDetail: ({ agent }: { agent: { name: string } }) => (
-    <div data-testid="agent-detail">{agent.name}</div>
+  AgentDetail: ({
+    agent,
+    onDeleted,
+  }: {
+    agent: { name: string; model?: string };
+    onDeleted: () => void;
+  }) => (
+    <div>
+      <div data-testid="agent-detail" data-model={agent.model}>
+        {agent.name}
+      </div>
+      <button type="button" data-testid="delete-agent" onClick={onDeleted}>
+        delete agent
+      </button>
+    </div>
   ),
 }));
-vi.mock("@/components/library/CreateAgentPanel", () => ({ CreateAgentPanel: () => null }));
+vi.mock("@/components/AgentProfileForm", () => ({
+  default: ({ onSave }: { onSave: (data: { name: string }) => Promise<void> }) => (
+    <button
+      type="button"
+      data-testid="submit-agent"
+      onClick={() => void onSave({ name: "created-agent" })}
+    >
+      save agent
+    </button>
+  ),
+}));
 vi.mock("@/components/library/WorkflowDetail", () => ({
   WorkflowDetail: ({ id }: { id: string }) => <div data-testid="workflow-detail">{id}</div>,
   CreateWorkflowPanel: () => null,
@@ -92,11 +121,13 @@ describe("Library catalog loading", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     Object.values(api).forEach((mock) => mock.mockReset());
+    mutations.createAgent.mockReset();
     router.search = {};
     router.navigate.mockReset();
     router.navigate.mockImplementation(
       ({ search }: { search: (previous: typeof router.search) => typeof router.search }) => {
         router.search = search(router.search);
+        root.render(<LibraryPage />);
         return Promise.resolve();
       },
     );
@@ -146,8 +177,8 @@ describe("Library catalog loading", () => {
     ["plugin", ["listPlugins"]],
     ["mcp", ["listMcpServers"]],
     ["hooks", []],
-    ["workflow", ["listWorkflowDefs"]],
-    ["engine", ["listEngineDefs"]],
+    ["workflow", []],
+    ["engine", []],
     [
       "all",
       [
@@ -278,5 +309,141 @@ describe("Library catalog loading", () => {
     expect(container.querySelector('[data-testid="workflow-detail"]')?.textContent).toBe(
       "workflow-id",
     );
+  });
+
+  it("reloads the active tab when an agent create finishes after navigation", async () => {
+    const created = deferred<void>();
+    mutations.createAgent.mockReturnValue(created.promise);
+    api.listAgents.mockResolvedValue({ agents: [{ name: "existing-agent" }] });
+    api.listSkills.mockResolvedValue({ skills: [{ name: "active-skill" }] });
+    await renderLibrary({ tab: "agent" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    expect(mutations.createAgent).toHaveBeenCalledOnce();
+    const skillTab = [...container.querySelectorAll("nav button")].find(
+      (button) => button.textContent === "filterSkill",
+    );
+    await act(async () => (skillTab as HTMLButtonElement).click());
+    await flush();
+    expect(container.querySelector("tbody")?.textContent).toContain("active-skill");
+    created.resolve();
+    await flush();
+    expect(router.search).toEqual({ tab: "skill", sel: "skill:active-skill" });
+    expect(container.querySelector("tbody")?.textContent).toContain("active-skill");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(api.listAgents).toHaveBeenCalledOnce();
+    expect(api.listSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["workflow", "engine"] as const)(
+    "keeps an explicit %s detail on a visible agent tab without reloading visible rows",
+    async (kind) => {
+      api.listAgents.mockResolvedValue({
+        agents: [{ name: "visible-agent", model: "visible-model" }],
+      });
+      api.listWorkflowDefs.mockResolvedValue([{ id: "workflow-id", name: "saved-flow" }]);
+      api.listEngineDefs.mockResolvedValue([
+        { id: "engine-id", name: "saved-engine", kind: "local", model: "engine-model" },
+      ]);
+      const name = kind === "workflow" ? "saved-flow" : "saved-engine";
+      await renderLibrary({ tab: "agent", sel: `${kind}:${name}` });
+      expect(router.search).toEqual({ tab: "agent", sel: `${kind}:${name}` });
+      expect(api.listAgents).toHaveBeenCalledOnce();
+      expectRequests(["listAgents", kind === "workflow" ? "listWorkflowDefs" : "listEngineDefs"]);
+      if (kind === "workflow") {
+        expect(container.querySelector('[data-testid="workflow-detail"]')?.textContent).toBe(
+          "workflow-id",
+        );
+      } else {
+        expect(container.textContent).toContain("engine-model");
+      }
+      await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+      await flush();
+      expect(router.search).toEqual({ tab: "agent", sel: "agent:visible-agent" });
+      expect(api.listAgents).toHaveBeenCalledOnce();
+      expect(container.querySelector("tbody")?.textContent).toContain("visible-agent");
+      expect(
+        container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.dataset.model,
+      ).toBe("visible-model");
+    },
+  );
+
+  it("leaves a hidden detail without reloading the All catalog", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "visible-agent", model: "visible-model" }],
+    });
+    api.listWorkflowDefs.mockResolvedValue([{ id: "workflow-id", name: "saved-flow" }]);
+    await renderLibrary({ sel: "workflow:saved-flow" });
+    expect(container.querySelector('[data-testid="workflow-detail"]')?.textContent).toBe(
+      "workflow-id",
+    );
+    await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+    await flush();
+    expectRequests([
+      "listAgents",
+      "listBuiltinPlaybooks",
+      "listPlaybooks",
+      "listSkills",
+      "listPlugins",
+      "listMcpServers",
+      "listWorkflowDefs",
+    ]);
+    expect(router.search.sel).toBe("agent:visible-agent");
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.dataset.model,
+    ).toBe("visible-model");
+  });
+
+  it("ignores a previous tab's late success", async () => {
+    const agents = deferred<{ agents: { name: string }[] }>();
+    api.listAgents.mockReturnValue(agents.promise);
+    await renderLibrary({ tab: "agent" });
+    api.listSkills.mockResolvedValue({ skills: [{ name: "active-skill" }] });
+    await renderLibrary({ tab: "skill", sel: "skill:active-skill" });
+    agents.resolve({ agents: [{ name: "late-agent" }] });
+    await flush();
+    expect(container.querySelector("tbody")?.textContent).toContain("active-skill");
+    expect(container.textContent).not.toContain("late-agent");
+    expect(router.search).toEqual({ tab: "skill", sel: "skill:active-skill" });
+  });
+
+  it("clears agent model data when a same-tab reload fails", async () => {
+    api.listAgents.mockResolvedValueOnce({ agents: [{ name: "saved-agent", model: "old-model" }] });
+    await renderLibrary({ tab: "agent", sel: "agent:saved-agent" });
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.dataset.model,
+    ).toBe("old-model");
+    api.listAgents.mockRejectedValue(new Error("agent catalog unavailable"));
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-agent"]')!.click(),
+    );
+    await flush();
+    await renderLibrary({ tab: "agent", sel: "agent:saved-agent" });
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("filterAgent");
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.dataset.model,
+    ).toBe("");
+  });
+
+  it("clears engine model data when a same-selection retry fails", async () => {
+    api.listAgents.mockRejectedValue(new Error("agent catalog unavailable"));
+    api.listEngineDefs.mockResolvedValueOnce([
+      { id: "engine-id", name: "saved-engine", kind: "local", model: "old-engine-model" },
+    ]);
+    await renderLibrary({ sel: "engine:saved-engine" });
+    expect(container.textContent).toContain("old-engine-model");
+    api.listEngineDefs.mockRejectedValue(new Error("engine catalog unavailable"));
+    await act(async () => retry().click());
+    await flush();
+    expect(api.listEngineDefs).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("filterEngine");
+    expect(container.textContent).not.toContain("old-engine-model");
+    expect(router.search.sel).toBe("engine:saved-engine");
   });
 });

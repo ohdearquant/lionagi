@@ -85,8 +85,8 @@ interface LibraryItem {
 
 type KindLoadStatus = "loaded" | "failed";
 
-function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
-  const scope = `${tab}:${selectedHiddenKind ?? ""}`;
+function useLibraryData(tab: LibraryTab | undefined, reloadToken: number, hidden = false) {
+  const scope = `${tab ?? ""}:${hidden}`;
   const requestVersion = useRef(0);
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [items, setItems] = useState<LibraryItem[]>([]);
@@ -96,11 +96,12 @@ function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
   const [allEngines, setAllEngines] = useState<EngineDef[]>([]);
   const [kindStatus, setKindStatus] = useState<Partial<Record<LibraryKind, KindLoadStatus>>>({});
 
-  const reload = useCallback(() => {
+  useEffect(() => {
     const version = ++requestVersion.current;
     const wants = (kind: LibraryKind) =>
-      tab === kind ||
-      (tab === "all" && (!UNFINISHED_KINDS.has(kind) || selectedHiddenKind === kind));
+      (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
+      (tab === "all" && !UNFINISHED_KINDS.has(kind));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset while the selected catalog request is pending
     setLoading(true);
     setError(null);
 
@@ -138,8 +139,9 @@ function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
           mcpRes,
         ];
 
+        setAllAgents(agentsRes.status === "fulfilled" ? (agentsRes.value?.agents ?? []) : []);
+        setAllEngines(enginesRes.status === "fulfilled" ? (enginesRes.value ?? []) : []);
         if (agentsRes.status === "fulfilled" && agentsRes.value) {
-          setAllAgents(agentsRes.value.agents);
           for (const a of agentsRes.value.agents) {
             out.push({
               key: `agent:${a.name}`,
@@ -217,7 +219,6 @@ function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
           }
         }
         if (enginesRes.status === "fulfilled" && enginesRes.value) {
-          setAllEngines(enginesRes.value);
           for (const e of enginesRes.value) {
             out.push({
               key: `engine:${e.id}`,
@@ -272,14 +273,7 @@ function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
     return () => {
       requestVersion.current += 1;
     };
-  }, [tab, selectedHiddenKind, scope]);
-
-  useEffect(() => {
-    // Invalidate every outstanding reload when the tab changes or unmounts,
-    // including retries whose cleanup is not owned by this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reload() calls setState inside async callbacks; synchronous reset is needed to clear stale items before the fetch resolves
-    return reload();
-  }, [reload]);
+  }, [tab, hidden, scope, reloadToken]);
 
   // A new URL can render before its loading effect runs. Keep the previous
   // tab's rows and status from changing that URL's selection in the meantime.
@@ -288,7 +282,6 @@ function useLibraryData(tab: LibraryTab, selectedHiddenKind?: LibraryKind) {
     items: current ? items : [],
     loading: loading || !current,
     error: current ? error : null,
-    reload,
     allAgents: current ? allAgents : [],
     allEngines: current ? allEngines : [],
     kindStatus: current ? kindStatus : {},
@@ -391,12 +384,21 @@ function LibraryPage() {
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
   const parsed = parseSel(sel);
-  const selectedHiddenKind =
-    kindFilter === "all" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
-  const { items, loading, error, reload, allAgents, allEngines, kindStatus } = useLibraryData(
-    kindFilter,
-    selectedHiddenKind,
-  );
+  const selectedHiddenKind = parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+  const [reloadToken, setReloadToken] = useState(0);
+  // Completion callbacks can outlive the tab where they were created. Refresh
+  // the current effects instead of issuing requests for a captured tab.
+  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+  const visible = useLibraryData(kindFilter, reloadToken);
+  // Detail navigation must not reload or hide the visible catalog.
+  const hidden = useLibraryData(selectedHiddenKind, reloadToken, true);
+  const items = [...visible.items, ...hidden.items];
+  const { loading, allAgents } = visible;
+  const { allEngines } = hidden;
+  const error = visible.error || hidden.error;
+  const kindStatus = { ...visible.kindStatus };
+  if (selectedHiddenKind) kindStatus[selectedHiddenKind] = hidden.kindStatus[selectedHiddenKind];
+  const selectionLoading = !!selectedHiddenKind && hidden.loading;
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -440,7 +442,7 @@ function LibraryPage() {
 
   // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
   useEffect(() => {
-    if (loading) return;
+    if (loading || selectionLoading) return;
 
     // Keep any sel that resolves in the current filtered list — this is what
     // makes deep links into the Library work. A sel from another tab won't be
@@ -487,7 +489,7 @@ function LibraryPage() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs only on tab/items change
-  }, [tab, loading, items.length]);
+  }, [tab, loading, selectionLoading, items.length]);
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
@@ -498,7 +500,7 @@ function LibraryPage() {
         replace: false,
       });
     },
-    [navigate],
+    [navigate, setShowCreate, setDetailActive],
   );
 
   // Resolve the agent/engine objects from the selection.
