@@ -79,6 +79,23 @@ describe("operatorReducer", () => {
     expect(state.activeRequestId).toBeNull();
   });
 
+  it("preserves a fatal stream error when a late turn acceptance arrives", () => {
+    const state = operatorReducer(
+      {
+        ...initialOperatorState,
+        conversation,
+        loadState: "ready",
+        connectionState: "error",
+        error: "Connection lost — reload to continue.",
+      },
+      { type: "TURN_ACCEPTED", requestId: "request-after-restart" },
+    );
+
+    expect(state.activeRequestId).toBe("request-after-restart");
+    expect(state.connectionState).toBe("error");
+    expect(state.error).toBe("Connection lost — reload to continue.");
+  });
+
   it("ignores a frame from another conversation", () => {
     const foreign = { ...frame(2), conversationId: "conversation-2" };
     const state = operatorReducer(

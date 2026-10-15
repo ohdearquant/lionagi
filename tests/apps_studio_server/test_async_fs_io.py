@@ -138,7 +138,8 @@ def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.Monke
     r = client.get(f"/api/runs/{run_id}")
     assert r.status_code == 200
     data = r.json()
-    assert data["run_id"] == run_id
+    assert data["id"] == run_id
+    assert data["run_id"] is None
     assert data["worker_name"] == "my-worker"
 
 

@@ -50,5 +50,5 @@ export function resolveRunLabel(run: RunSummary): string {
     return local ? `${agentName} · ${local}` : agentName;
   }
 
-  return run.run_id.slice(-12);
+  return run.id.slice(-12);
 }
