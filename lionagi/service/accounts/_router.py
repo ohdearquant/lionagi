@@ -380,10 +380,9 @@ class _Join:
         self.pending: list[_Char] = []  # undecided characters, the join's last ones
 
 
-def mask_key_runs(text: str, key: SecretStr) -> str:
-    """``text`` with every run of ``StreamTextRedactor.MIN_RUN`` or more characters (the
-    whole key, for a shorter key) that occurs anywhere in the key masked, for text that
-    no other text continues."""
+def _key_runs(text: str, key: SecretStr) -> list[bool]:
+    """Which characters of ``text`` lie in a run of ``StreamTextRedactor.MIN_RUN`` or more
+    characters (the whole key, for a shorter key) that occurs anywhere in the key."""
     secret = key.get_secret_value()
     need = min(StreamTextRedactor.MIN_RUN, len(secret))
     masked = [False] * len(text)
@@ -394,6 +393,38 @@ def mask_key_runs(text: str, key: SecretStr) -> str:
             tail = tail[1:]
         if len(tail) >= need:
             masked[index - len(tail) + 1 : index + 1] = [True] * len(tail)
+    return masked
+
+
+def mask_joined_key_runs(pieces: list[tuple[Any, str]], key: SecretStr) -> list[str]:
+    """Each ``(kind, text)`` piece's text with every character masked that lies in a run
+    ``mask_key_runs`` masks in a join it belongs to: the pieces of its kind in order, or
+    every piece in order. A key split across pieces is masked in each piece that holds a
+    part of it, and each piece keeps its own boundaries."""
+    masked = [[False] * len(text) for _, text in pieces]
+    kinds: dict[Any, list[int]] = {}
+    for index, (kind, _) in enumerate(pieces):
+        kinds.setdefault(kind, []).append(index)
+    for members in (*kinds.values(), range(len(pieces))):
+        runs = _key_runs("".join(pieces[index][1] for index in members), key)
+        at = 0
+        for index in members:
+            size = len(pieces[index][1])
+            masked[index] = [
+                a or b for a, b in zip(masked[index], runs[at : at + size], strict=True)
+            ]
+            at += size
+    return [_masked_text(text, masked[index]) for index, (_, text) in enumerate(pieces)]
+
+
+def mask_key_runs(text: str, key: SecretStr) -> str:
+    """``text`` with every run of ``StreamTextRedactor.MIN_RUN`` or more characters (the
+    whole key, for a shorter key) that occurs anywhere in the key masked, for text that
+    no other text continues."""
+    return _masked_text(text, _key_runs(text, key))
+
+
+def _masked_text(text: str, masked: list[bool]) -> str:
     out: list[str] = []
     for index, ch in enumerate(text):
         if not masked[index]:

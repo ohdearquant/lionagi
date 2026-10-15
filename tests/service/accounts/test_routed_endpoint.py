@@ -1047,6 +1047,30 @@ async def test_a_routed_stream_sends_a_callers_idempotency_key(monkeypatch, tmp_
     assert _sent_keys(sent) == ["caller-key"]
 
 
+@pytest.mark.parametrize(
+    "texts",
+    [
+        [CANARY[start : start + 5] for start in range(0, len(CANARY), 5)],
+        ["see " + CANARY[3:20] + " here"],
+    ],
+    ids=["split across blocks", "a run in one block"],
+)
+@pytest.mark.asyncio
+async def test_a_response_masks_the_key_in_the_text_its_blocks_join(monkeypatch, tmp_path, texts):
+    """A non-streamed response is masked as a stream of the same text would be."""
+    _install_accounts(monkeypatch, tmp_path)
+    body = _response().body
+    body["content"] = [{"type": "text", "text": text} for text in texts]
+    model, _ = _model(monkeypatch, [StubResponse(body=body)])
+
+    result = await model.endpoint.call(REQUEST)
+
+    joined = "".join(block["text"] for block in result["content"])
+    assert "[REDACTED]" in joined
+    for start in range(len(CANARY) - 7):
+        assert CANARY[start : start + 8] not in joined
+
+
 @pytest.mark.asyncio
 async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_path):
     from aiohttp import ClientError

@@ -185,6 +185,38 @@ CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 
+def _mask_content_runs(body: Any, key: Any) -> Any:
+    """``body`` with the key masked in the text a consumer joins out of its content blocks.
+
+    A consumer joins text across text blocks, thinking across thinking blocks and the quoted
+    text of citations, so a key split across blocks, or a run of it as a stream would mask
+    it, is masked in each block that holds part of it (see ``StreamTextRedactor``). The
+    body is a response this request just parsed, and is changed in place.
+    """
+    from lionagi.service.accounts._router import mask_joined_key_runs
+
+    content = body.get("content") if isinstance(body, dict) else None
+    if not isinstance(content, list):
+        return body
+    pieces: list[tuple[str, str]] = []
+    places: list[tuple[dict, str]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        for field in ("text", "thinking"):
+            if block.get("type") == field and isinstance(block.get(field), str):
+                pieces.append((field, block[field]))
+                places.append((block, field))
+        citations = block.get("citations")
+        for citation in citations if isinstance(citations, list) else ():
+            if isinstance(citation, dict) and isinstance(citation.get("cited_text"), str):
+                pieces.append(("cited_text", citation["cited_text"]))
+                places.append((citation, "cited_text"))
+    for (holder, field), text in zip(places, mask_joined_key_runs(pieces, key), strict=True):
+        holder[field] = text
+    return body
+
+
 @AnthropicConfigs.MESSAGES.register
 class AnthropicMessagesEndpoint(Endpoint):
     _account_routing_provider = "anthropic"
@@ -364,7 +396,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                         )
                 await router.settle_response(attempt, body)
-                return redact_value(body, attempt.key)
+                return redact_value(_mask_content_runs(body, attempt.key), attempt.key)
         except get_cancelled_exc_class():
             if not request_entered:
                 await router.settle_not_sent(attempt)
