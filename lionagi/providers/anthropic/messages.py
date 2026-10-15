@@ -25,6 +25,9 @@ _JOINED_DELTA_FIELDS = {
     "input_json_delta": "partial_json",
     "signature_delta": "signature",
 }
+# Stream chunk types whose text a consumer joins across the stream, each type on its own:
+# ``Branch.run`` joins the text of text chunks, and of thinking chunks.
+_JOINED_CHUNK_TYPES = frozenset({"text", "thinking"})
 
 
 class TextContentBlock(BaseModel):
@@ -364,25 +367,12 @@ class AnthropicMessagesEndpoint(Endpoint):
         except (_RoutedNoRetryError, _RoutedRetryableError):
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError):
-            if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
-                failure = _RoutedRetryableError(
-                    RouterErrorCode.TRANSPORT_ERROR.value,
-                    account=attempt.account,
-                    attempt_id=attempt.attempt_id,
-                )
-            else:
-                await router.settle_not_sent(attempt)
-                failure = _RoutedNoRetryError(
-                    RouterErrorCode.TRANSPORT_ERROR.value,
-                    account=attempt.account,
-                    attempt_id=attempt.attempt_id,
-                )
+            failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
+                RouterErrorCode.TRANSPORT_ERROR.value,
+                account=attempt.account,
+                attempt_id=attempt.attempt_id,
+            )
         except Exception:
-            if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
-            else:
-                await router.settle_not_sent(attempt)
             failure = _RoutedNoRetryError(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,
@@ -391,9 +381,14 @@ class AnthropicMessagesEndpoint(Endpoint):
         finally:
             if response is not None and not response.closed:
                 response.release()
-        # Raised here, outside the handler, so the error carries no context: the
-        # exception it stands for can quote the request or the response.
+        # Settled and raised here, outside the handler, so neither a ledger error nor
+        # this error carries context: the exception it stands for can quote the request
+        # or the response.
         if failure is not None:
+            if request_entered:
+                await router.settle_unknown(attempt, "transport_error")
+            else:
+                await router.settle_not_sent(attempt)
             raise failure
 
     async def _stream_aiohttp(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
@@ -534,8 +529,8 @@ class AnthropicMessagesEndpoint(Endpoint):
         redactor = StreamingSecretRedactor(attempt.key)
         # The byte redactor sees the JSON framing between two deltas, so a key split
         # across them reaches a consumer that joins their text. The text redactor holds
-        # an event while its text ends in a beginning of the key the next event may
-        # continue, and events leave in the order they came.
+        # an event while its text ends in a run of the key shorter than MIN_RUN that the
+        # next event may continue, and events leave in the order they came.
         text_redactor = StreamTextRedactor(attempt.key)
         decoder = codecs.getincrementaldecoder("utf-8")()
         pending = ""
@@ -600,12 +595,22 @@ class AnthropicMessagesEndpoint(Endpoint):
                 pass
             pieces: list[tuple[str, str]] = []
             places: list[tuple[Any, Any]] = []
+            # The chunk a consumer receives for this event, read before any masking.
+            shown = self._line_to_stream_chunk(data)
+            if (
+                shown is None
+                or shown.type not in _JOINED_CHUNK_TYPES
+                or not isinstance(shown.content, str)
+                or not shown.content
+            ):
+                shown = None
             if not isinstance(event, dict):
-                # Not a JSON object, so it reaches a consumer as text: the whole data is
-                # matched, joined with the data of other such events.
+                # Not a JSON object: the whole data is matched, joined with the data of
+                # other such events, and the text its chunk shows is joined with the text
+                # of the other chunks of that type.
                 pieces.append((StreamTextRedactor.RAW, data))
                 places.append((None, None))
-                return text_redactor.push((event, data, places, False), pieces)
+                return push(event, data, places, False, pieces, shown)
             delta = event.get("delta")
             if event.get("type") == "content_block_delta" and isinstance(delta, dict):
                 delta_type = delta.get("type")
@@ -627,13 +632,34 @@ class AnthropicMessagesEndpoint(Endpoint):
                         if name != "type" and isinstance(value, str):
                             pieces.append((kind, value))
                             places.append((delta, name))
-            # Every other string in the event is matched on its own: no consumer joins it.
+            # Every other string in the event is matched on its own: no consumer joins it,
+            # except as the text of the event's chunk.
             rewrite = mask_strings(event, {(id(holder), name) for holder, name in places})
-            return text_redactor.push((event, data, places, rewrite), pieces)
+            return push(event, data, places, rewrite, pieces, shown)
+
+        def push(event, data, places, rewrite, pieces, shown) -> list:
+            if shown is None:
+                return text_redactor.push((event, data, places, rewrite, None), pieces)
+            # A piece whose text the chunk shows takes the chunk's join too; other text
+            # the chunk shows is a piece of its own.
+            source = next(
+                (
+                    index
+                    for index, (kind, text) in enumerate(pieces)
+                    if kind != StreamTextRedactor.RAW and text == shown.content
+                ),
+                shown.content,
+            )
+            return text_redactor.push(
+                (event, data, places, rewrite, shown.type),
+                pieces,
+                ("\x00" + shown.type + " chunks", source),
+            )
 
         async def emit_ready(ready: list):
             nonlocal served_model, request_id, settled, saw_error_event
-            for (event, data, places, rewrite), texts in ready:
+            for (event, data, places, rewrite, shown_type), texts in ready:
+                shown_text = texts.pop() if shown_type is not None else None
                 raw = None
                 for (holder, field), text in zip(places, texts, strict=True):
                     if holder is None:
@@ -675,6 +701,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                     settled = True
                 chunk = self._line_to_stream_chunk(data)
                 if chunk is not None:
+                    if shown_text is not None and chunk.type == shown_type:
+                        chunk.content = shown_text
                     chunk.content = redact_value(chunk.content, attempt.key)
                     chunk.tool_name = redact_value(chunk.tool_name, attempt.key)
                     chunk.tool_id = redact_value(chunk.tool_id, attempt.key)
@@ -777,26 +805,22 @@ class AnthropicMessagesEndpoint(Endpoint):
         except (_RoutedNoRetryError, _RoutedRetryableError):
             raise
         except Exception:
-            if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
-                failure = _RoutedRetryableError(
-                    RouterErrorCode.TRANSPORT_ERROR.value,
-                    account=attempt.account,
-                    attempt_id=attempt.attempt_id,
-                )
-            else:
-                await router.settle_not_sent(attempt)
-                failure = _RoutedNoRetryError(
-                    RouterErrorCode.TRANSPORT_ERROR.value,
-                    account=attempt.account,
-                    attempt_id=attempt.attempt_id,
-                )
+            failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
+                RouterErrorCode.TRANSPORT_ERROR.value,
+                account=attempt.account,
+                attempt_id=attempt.attempt_id,
+            )
         finally:
             if response is not None and not response.closed:
                 response.release()
-        # Raised here, outside the handler, so the error carries no context: the
-        # exception it stands for can quote the request or the response.
+        # Settled and raised here, outside the handler, so neither a ledger error nor
+        # this error carries context: the exception it stands for can quote the request
+        # or the response.
         if failure is not None:
+            if request_entered:
+                await router.settle_unknown(attempt, "transport_error")
+            else:
+                await router.settle_not_sent(attempt)
             raise failure
 
     def create_payload(

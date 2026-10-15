@@ -107,10 +107,15 @@ def _parse_accounts(value: Any) -> tuple[ProviderAccount, ...]:
                 value, object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant
             )
         except ValueError:
-            # The decoder's message quotes the document; raise without it.
+            malformed = True
+        else:
+            malformed = False
+        if malformed:
+            # Raised outside the handler, so the error carries no context: the decoder's
+            # error holds the document.
             raise AccountConfigError(
                 "ANTHROPIC_ACCOUNTS", "must be a JSON array of account objects"
-            ) from None
+            )
     if not isinstance(value, list | tuple):
         raise AccountConfigError("ANTHROPIC_ACCOUNTS", "must be an array of account objects")
     accounts: list[ProviderAccount] = []
@@ -118,10 +123,15 @@ def _parse_accounts(value: Any) -> tuple[ProviderAccount, ...]:
         if isinstance(item, ProviderAccount):
             item = {"name": item.name, "key_env": item.key_env, "budget_usd": str(item.budget_usd)}
         try:
-            accounts.append(ProviderAccount.from_declaration(item))
+            account = ProviderAccount.from_declaration(item)
         except AccountConfigError as exc:
-            path = f"ANTHROPIC_ACCOUNTS[{index}]" + (f".{exc.field}" if exc.field else "")
-            raise AccountConfigError(path, exc.rule) from None
+            field, rule = exc.field, exc.rule
+        else:
+            accounts.append(account)
+            continue
+        # Raised outside the handler, so the error chains nothing.
+        path = f"ANTHROPIC_ACCOUNTS[{index}]" + (f".{field}" if field else "")
+        raise AccountConfigError(path, rule)
     if len({a.name for a in accounts}) != len(accounts):
         raise AccountConfigError("ANTHROPIC_ACCOUNTS", "account names must be unique")
     if len({a.key_env for a in accounts}) != len(accounts):

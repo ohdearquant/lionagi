@@ -107,7 +107,7 @@ def test_invalid_declarations_refuse_without_repeating_the_input(clean_env, monk
     # Nothing chained: a parser or validator message could repeat the input.
     error = caught.value
     assert error.__cause__ is None
-    assert error.__context__ is None or error.__suppress_context__
+    assert error.__context__ is None
 
 
 def test_the_largest_representable_budget_is_accepted(clean_env, monkeypatch):

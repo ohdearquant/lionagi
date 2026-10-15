@@ -287,8 +287,9 @@ class _Join:
 
 
 def mask_key_runs(text: str, key: SecretStr) -> str:
-    """``text`` with every run of ``StreamTextRedactor.MIN_RUN`` or more characters that
-    occurs anywhere in the key masked, for text that no other text continues."""
+    """``text`` with every run of ``StreamTextRedactor.MIN_RUN`` or more characters (the
+    whole key, for a shorter key) that occurs anywhere in the key masked, for text that
+    no other text continues."""
     secret = key.get_secret_value()
     need = min(StreamTextRedactor.MIN_RUN, len(secret))
     masked = [False] * len(text)
@@ -312,13 +313,15 @@ class StreamTextRedactor:
     """Masks a key in the text a consumer joins out of one streamed message.
 
     A consumer joins the pieces of one kind across the message (text across blocks
-    and citations, thinking across signatures, the quoted text of citations) and may
-    join every piece in order. Each of those joins is matched against the key, and a
-    character is masked when it lies in a run of ``MIN_RUN`` or more characters that
-    occurs anywhere in the key, in any join it belongs to. A whole key and any long
-    part of one are masked wherever the message splits them. Pieces of kind ``RAW``
-    (the data of an event that carries no known text field) are joined only with
-    each other.
+    and citations, thinking across signatures, the quoted text of citations), joins
+    the text of the stream chunks it receives by chunk type, and may join every piece
+    in order. Each of those joins is matched against the key, and a character is
+    masked when it lies in a run of ``MIN_RUN`` or more characters that occurs
+    anywhere in the key, in any join it belongs to. A whole key and any part of
+    ``MIN_RUN`` or more characters of one are masked however the message's events
+    split them. Pieces of kind ``RAW`` (the data of an event that carries no known
+    text field) are joined only with each other; the text a chunk shows for such an
+    event is a piece of its own (see ``push``).
 
     A character in a beginning of the key longer than ``PUBLIC_PREFIX``, the
     ``sk-ant-`` every Anthropic key starts with, is masked as soon as the beginning
@@ -334,6 +337,14 @@ class StreamTextRedactor:
     beginning is sent: fewer than ``MIN_RUN`` characters cannot be told from other
     text. So from inside the key, up to ``MIN_RUN - 1`` characters can be sent
     before a pause the run continues after; from there the run is masked.
+
+    Masking is decided per run, which sets two limits. A key whose runs of fewer
+    than ``MIN_RUN`` characters have other characters between them, such as the key
+    written in seven-character pieces separated by spaces, is sent in those pieces,
+    within one event as across events: no run is long enough to tell it from other
+    text. And text that is not the key is masked where it holds a run of ``MIN_RUN``
+    characters that occurs in the key, or a beginning of the key past the public
+    prefix, as ``sk-ant-api03-`` is for a key that begins that way.
     """
 
     MIN_RUN = 8
@@ -351,36 +362,65 @@ class StreamTextRedactor:
         if self._release >= self.MIN_RUN:
             raise ValueError("PUBLIC_PREFIX must be shorter than MIN_RUN")
         self._joins: dict[str, _Join] = {self.ALL: _Join()}
+        self._holding: set[str] = set()  # joins with undecided characters
         self._queue: list[tuple[Any, list[tuple[str, list[_Char]]]]] = []
         self._last_masked: dict[str, bool] = {}
 
-    def push(self, item: Any, pieces: list[tuple[str, str]]) -> list[tuple[Any, list[str]]]:
+    def push(
+        self,
+        item: Any,
+        pieces: list[tuple[str, str]],
+        chunk: tuple[str, int | str] | None = None,
+    ) -> list[tuple[Any, list[str]]]:
         """Queue one event's text pieces as ``(kind, text)`` and return the events now
-        ready, in order, each with its pieces' text as sent."""
+        ready, in order, each with its pieces' text as sent.
+
+        ``chunk`` is ``(join, source)`` for an event a consumer receives as a chunk whose
+        text it joins with the text of the other chunks of its type: ``join`` names that
+        join, and ``source`` is the index of the piece whose text the chunk shows, or the
+        text itself when no piece holds it. The chunk's text as sent follows the pieces'.
+        Text no piece holds is also joined with every piece in order."""
         fed: set[str] = set()
-        entry = []
-        for kind, text in pieces:
-            joined = kind != self.RAW
-            chars = [_Char(ch, 2 if joined else 1) for ch in text]
-            entry.append((kind, chars))
-            join = self._joins.setdefault(kind, _Join())
-            for char in chars:
-                if joined:
-                    self._feed(self._joins[self.ALL], char)
-                self._feed(join, char)
-            if chars:
-                fed.update((self.ALL, kind) if joined else (kind,))
-        for name, join in self._joins.items():
-            if name not in fed:
-                self._decide(join)
+        entry: list[tuple[str, list[_Char]]] = []
+        linked = chunk[1] if chunk is not None and isinstance(chunk[1], int) else None
+        for index, (kind, text) in enumerate(pieces):
+            joins = (self.ALL, kind) if kind != self.RAW else (kind,)
+            if index == linked:
+                joins += (chunk[0],)
+            entry.append((kind, self._feed_text(text, joins, fed)))
+        if chunk is not None:
+            name, source = chunk
+            if isinstance(source, int):
+                entry.append((name, entry[source][1]))
+            else:
+                entry.append((name, self._feed_text(source, (self.ALL, name), fed)))
+        for name in fed:
+            if self._joins[name].pending:
+                self._holding.add(name)
+            else:
+                self._holding.discard(name)
+        for name in self._holding - fed:
+            self._decide(self._joins[name])
+        self._holding &= fed
         self._queue.append((item, entry))
         return self._ready()
 
     def finish(self) -> list[tuple[Any, list[str]]]:
         """Send everything held: the stream has ended, so no key continues."""
-        for join in self._joins.values():
-            self._decide(join)
+        for name in self._holding:
+            self._decide(self._joins[name])
+        self._holding.clear()
         return self._ready()
+
+    def _feed_text(self, text: str, joins: tuple[str, ...], fed: set[str]) -> list[_Char]:
+        chars = [_Char(ch, len(joins)) for ch in text]
+        for name in joins:
+            join = self._joins.setdefault(name, _Join())
+            for char in chars:
+                self._feed(join, char)
+        if chars:
+            fed.update(joins)
+        return chars
 
     def _feed(self, join: _Join, char: _Char) -> None:
         secret = self._secret

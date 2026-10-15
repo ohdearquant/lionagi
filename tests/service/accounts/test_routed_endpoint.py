@@ -1740,8 +1740,9 @@ def test_a_beginning_inside_a_longer_run_from_inside_the_key_is_still_masked():
 def test_no_join_ever_shows_a_run_of_the_key_or_a_secret_beginning(seed, prefixed):
     """Random texts holding whole keys, beginnings and runs from inside the key, split
     across kinds, citations, pauses and empty deltas: no join shows MIN_RUN characters
-    in a row from anywhere in the key, nor any part of a beginning past the public
-    prefix."""
+    in a row from anywhere in the key, which rules out a beginning past the
+    seven-character public prefix, and for a key without the prefix none shows its
+    first character."""
     import random
 
     rng = random.Random(seed)
@@ -1821,6 +1822,106 @@ async def test_a_line_that_is_not_a_json_object_is_masked(monkeypatch, tmp_path,
     seen = _seen(chunks)
     assert "[REDACTED]" in seen
     assert _no_run_of_the_key(seen, CANARY)
+
+
+def _text_chunks(chunks) -> str:
+    """The text a consumer joins out of the stream's text chunks, as ``Branch.run`` does."""
+    return "".join(chunk.content or "" for chunk in chunks if chunk.type == "text")
+
+
+def _thinking(index, thinking: str) -> dict:
+    return {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "thinking_delta", "thinking": thinking},
+    }
+
+
+# Each middle carries part of the key in an event a consumer receives as a text chunk
+# without a text delta's text field: the chunk text is joined with the text deltas'.
+_TEXT_CHUNK_MIDDLES = {
+    "bare": (13, 20, 27, lambda part: b"data: " + part.encode() + b"\n\n"),
+    "json-number": (14, 21, 28, lambda part: b"data: " + part.encode() + b"\n\n"),
+    "json-string": (13, 20, 27, lambda part: _sse([part])),
+    "data-prefixed": (13, 20, 27, lambda part: b"data: data: " + part.encode() + b"\n\n"),
+    "thinking-between": (
+        13,
+        20,
+        27,
+        lambda part: _sse([_thinking(1, "zz")]) + b"data: " + part.encode() + b"\n\n",
+    ),
+    "text-delta-without-text": (
+        13,
+        20,
+        27,
+        lambda part: _sse(
+            [
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "", "thinking": part},
+                }
+            ]
+        ),
+    ),
+    "output-text-delta": (
+        13,
+        20,
+        27,
+        lambda part: _sse([{"type": "response.output_text.delta", "delta": part}]),
+    ),
+}
+
+
+@pytest.mark.parametrize("middle", list(_TEXT_CHUNK_MIDDLES))
+@pytest.mark.asyncio
+async def test_a_key_across_text_chunks_of_every_shape_never_reaches_the_joined_text(
+    monkeypatch, tmp_path, middle
+):
+    """Text deltas around another event whose chunk is text: a consumer that joins the
+    text chunks sees the key's end whole, so the join is matched as one and all of it is
+    masked, the middle chunk's text included."""
+    start, cut, end, render = _TEXT_CHUNK_MIDDLES[middle]
+    _install_accounts(monkeypatch, tmp_path)
+    body = (
+        _sse([_MESSAGE_START, _text_block(0), _text(0, CANARY[start:cut])])
+        + render(CANARY[cut:end])
+        + _sse([_text(0, CANARY[end:]), *_MESSAGE_END])
+    )
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[body])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    joined = _text_chunks(chunks)
+    if middle == "thinking-between":
+        # The thinking event carries no text into the text join, so it is a pause: the
+        # held run of seven is sent, and the rest of the key after it is masked.
+        assert joined == CANARY[start:cut] + "[REDACTED]"
+    else:
+        assert joined == "[REDACTED]"
+    assert _no_run_of_the_key(_seen(chunks), CANARY)
+
+
+@pytest.mark.parametrize("cut", [1, 4, 9])
+def test_a_chunk_join_links_a_piece_and_takes_text_no_piece_holds(cut):
+    """The chunk join holds the linked piece's own characters and standalone text, in
+    order: a key split between them is masked in both the piece and the chunk."""
+    from pydantic import SecretStr
+
+    from lionagi.service.accounts._router import StreamTextRedactor
+
+    redactor = StreamTextRedactor(SecretStr(_RUN_KEY))
+    join = "\x00text chunks"
+    run = _RUN_KEY[10:22]
+    out = redactor.push("a", [("text_delta", "ab" + run[:cut])], (join, 0))
+    out += redactor.push("b", [(StreamTextRedactor.RAW, "x")], (join, run[cut:] + "zz"))
+    out += redactor.finish()
+
+    assert [name for name, _ in out] == ["a", "b"]
+    (_, (piece, linked)), (_, (raw, standalone)) = out
+    assert piece == linked == "ab[REDACTED]"
+    assert raw == "x"
+    assert standalone == "zz"
 
 
 @pytest.mark.parametrize("cut", [1, 5, 12, 19])
@@ -1915,18 +2016,30 @@ async def test_an_unreadable_body_is_not_chained_to_the_error(monkeypatch, tmp_p
         assert not any(CANARY in repr(item.args) for item in linked)
 
 
+@pytest.mark.parametrize("ledger", ["up", "down"])
 @pytest.mark.parametrize("streamed", [True, False], ids=["stream", "call"])
 @pytest.mark.asyncio
-async def test_a_transport_error_is_not_chained_to_the_error(monkeypatch, tmp_path, streamed):
+async def test_a_transport_error_is_not_chained_to_the_error(
+    monkeypatch, tmp_path, streamed, ledger
+):
+    """With the ledger down, its own error is what the caller gets, and it chains the
+    transport error no more than the routed error does."""
     from aiohttp import ClientError
 
     _install_accounts(monkeypatch, tmp_path)
+    if ledger == "down":
+
+        async def settle_unknown(self, *args, **kwargs):
+            raise RuntimeError("ledger unavailable")
+
+        monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", settle_unknown)
     failing = ClientError("x-api-key: " + CANARY)
     response = StubResponse(pieces=[failing]) if streamed else _FailingResponse(failing)
     model, _ = _model(monkeypatch, [response])
     model.endpoint.config.max_retries = 0
 
-    with pytest.raises(AccountRoutingError) as caught:
+    expected = AccountRoutingError if ledger == "up" else RuntimeError
+    with pytest.raises(expected) as caught:
         if streamed:
             async for _ in model.endpoint.stream(REQUEST):
                 pass
