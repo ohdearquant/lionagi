@@ -41,10 +41,10 @@ TZ_UTC_FALLBACK_SOURCES = frozenset({TZ_SOURCE_UTC_FALLBACK, TZ_SOURCE_UTC_UNLOA
 
 
 class SystemTimezoneUnreadableError(RuntimeError):
-    """The host's localtime file is readable but names no loadable zone.
+    """The host's localtime file is readable but has no unambiguous zone name.
 
     Raised while resolving the scheduler's default zone, which happens once at
-    import. A host in this state has a timezone opinion that could not be read,
+    import. A host in this state has a timezone that could not be identified,
     and interpreting cron expressions in UTC instead would shift every fire by
     the host's offset and drop a day from any row scheduled inside it — all of
     it silent. Refusing to start is the loud alternative.
@@ -101,18 +101,60 @@ def _zone_file_for_name(name: str) -> Path | None:
     """
     for entry in zoneinfo.TZPATH:
         candidate = Path(entry) / name
-        if candidate.is_file():
+        if os.path.isfile(candidate):
             return _resolved(candidate)
     return None
 
 
+def _same_zone_file(first: Path, second: Path) -> bool:
+    """Whether two paths identify the same tzfile or byte-identical copies."""
+    try:
+        return os.path.samefile(first, second) or first.read_bytes() == second.read_bytes()
+    except OSError:
+        return False
+
+
+def _zone_key_is_unambiguous(name: str) -> bool:
+    """Check a key and its resolved aliases against every configured root."""
+    roots = _tz_search_roots()
+    pending = [name]
+    checked: set[str] = set()
+    while pending:
+        key = pending.pop()
+        if key in checked:
+            continue
+        checked.add(key)
+        files = []
+        for entry in zoneinfo.TZPATH:
+            candidate = Path(entry) / key
+            if os.path.isfile(candidate):
+                resolved = _resolved(candidate)
+                if resolved is None:
+                    return False
+                files.append(resolved)
+        # Package-only loadability cannot establish which filesystem rules
+        # the host's link names. An explicit scheduler zone remains available.
+        if not files or any(not _same_zone_file(files[0], other) for other in files[1:]):
+            return False
+        for path in files:
+            for root in roots:
+                try:
+                    relative = path.relative_to(root)
+                except ValueError:
+                    continue
+                resolved_key = "/".join(relative.parts)
+                if resolved_key and resolved_key not in checked:
+                    pending.append(resolved_key)
+    return True
+
+
 def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
-    """Express *path* as a zone name that reopens *path*.
+    """Express *path* as a zone name that loads the same timezone rules.
 
     Containment alone isn't enough: with several roots configured, an
     earlier one holding the same key can shadow a later one, so a candidate
     is accepted only if resolving it the way the stdlib will arrives back at
-    the same file.
+    the same file or byte-identical rules.
     """
     for root in roots:
         try:
@@ -120,7 +162,8 @@ def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
         except ValueError:
             continue
         name = "/".join(relative.parts)
-        if name and _zone_file_for_name(name) == path:
+        selected = _zone_file_for_name(name) if name else None
+        if selected is not None and _same_zone_file(selected, path):
             return name
     return None
 
@@ -128,16 +171,16 @@ def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
 def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | None:
     """Zone name read from the shape of the localtime link itself.
 
-    Reached only after no search root contains the target: a Python whose
+    Reached when no search-root-relative key safely identifies the target: a Python whose
     ``TZPATH`` points elsewhere (conda and similar builds), or macOS mid
     tzdata-update, where the ``/etc/localtime`` chain and the
     ``/usr/share/zoneinfo`` chain resolve into different versioned trees.
     The name is whatever follows a component spelled exactly ``zoneinfo`` —
     a suffixed directory like ``zoneinfo.backup`` stays a refusal, keeping
     the containment rule's judgment that unrelated lookalike trees are not
-    zone sources — and it is accepted only if the stdlib can load it. When
-    several search roots contain the name, they must resolve to the same file
-    so that search order cannot silently select different timezone rules.
+    zone sources — and it is accepted only if the stdlib can load it from a
+    configured filesystem root. Duplicate names, including a configured
+    alias's resolved key, must identify the same file or byte-identical copies.
     """
     # Resolved first, link text second. The primary path already derives the
     # name from where the link resolves rather than from what it says, and this
@@ -147,7 +190,8 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
     # ``zoneinfo/America/New_York`` -- where both spellings load but only one is
     # the zone the host actually uses. Link text stays as the second candidate
     # for the case this fallback exists for, where the resolved path lands
-    # outside any component named ``zoneinfo`` and yields no name at all.
+    # outside any component named ``zoneinfo`` and supplies no path-derived key.
+    # An ambiguous resolved spelling is a refusal, never a reason to try an alias.
     candidates: list[Path] = []
     if resolved is not None:
         candidates.append(resolved)
@@ -170,13 +214,8 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
                 zoneinfo.ZoneInfo(name)
             except Exception:  # noqa: BLE001
                 break
-            zone_files = {
-                _resolved(candidate)
-                for entry in zoneinfo.TZPATH
-                if (candidate := Path(entry) / name).is_file()
-            }
-            if len(zone_files) > 1:
-                break
+            if not _zone_key_is_unambiguous(name):
+                return None
             return name
     return None
 
@@ -208,7 +247,7 @@ def _resolve_system_local_tz() -> TimezoneResolution:
     directory name.
 
     Falls back to UTC only when there was nothing to read. When the
-    localtime file reads fine but yields no loadable zone name, raises
+    localtime file reads fine but yields no unambiguous loadable zone name, raises
     instead — a silent UTC there would run every cron row on an hour nobody
     chose. ``LIONAGI_SCHEDULER_TZ`` short-circuits this whole path.
     """
@@ -240,8 +279,8 @@ def _resolve_system_local_tz() -> TimezoneResolution:
     if _localtime_is_readable():
         raise SystemTimezoneUnreadableError(
             f"{SYSTEM_LOCALTIME_LINK} is readable but does not resolve to a "
-            "loadable IANA timezone, so the host's own timezone could not be "
-            "read. Refusing to start rather than interpreting schedules in an "
+            "loadable, unambiguous IANA timezone. Refusing to start rather than "
+            "interpreting schedules in an "
             f"unrequested UTC. Set {SCHEDULER_TZ_ENV_VAR} to an IANA zone name "
             "(for example America/New_York) to choose one explicitly."
         )

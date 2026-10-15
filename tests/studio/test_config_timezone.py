@@ -260,6 +260,116 @@ def test_link_structure_fallback_accepts_roots_pointing_to_the_same_file(tz_host
     assert config._system_local_tz_name() == "America/New_York"
 
 
+@pytest.mark.parametrize("resolved_alias", [False, True])
+def test_link_structure_refuses_alias_of_a_shadowed_canonical_key(
+    tz_host, tmp_path, resolved_alias
+):
+    link, set_roots, zone_file = tz_host
+    first = zone_file("first", data_from="Asia/Tokyo")
+    zone_file("second")
+    alias = tmp_path / "first" / "US" / "Eastern"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to(first)
+    outside = zone_file("outside/zoneinfo", "US/Eastern", data_from="America/New_York")
+    if resolved_alias:
+        canonical = zone_file("outside/zoneinfo")
+        outside.unlink()
+        outside.symlink_to(canonical)
+    link.symlink_to(outside)
+    set_roots("first", "second")
+
+    with pytest.raises(config.SystemTimezoneUnreadableError, match="unambiguous"):
+        config._system_local_tz_name()
+
+
+@pytest.mark.parametrize("hard_link", [False, True])
+def test_link_structure_accepts_equivalent_zone_files(tz_host, tmp_path, hard_link):
+    link, set_roots, zone_file = tz_host
+    first = zone_file("first")
+    second = zone_file("second")
+    if hard_link:
+        second.unlink()
+        os.link(first, second)
+    link.symlink_to(zone_file("outside/zoneinfo"))
+    set_roots("first", "second")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+def test_ambiguous_resolved_spelling_cannot_fall_back_to_another_alias(tz_host):
+    link, set_roots, zone_file = tz_host
+    zone_file("first", data_from="Asia/Tokyo")
+    zone_file("second")
+    zone_file("first", "US/Eastern", data_from="Asia/Tokyo")
+    canonical = zone_file("outside/zoneinfo")
+    alias = zone_file("outside/zoneinfo", "US/Eastern", data_from="America/New_York")
+    alias.unlink()
+    alias.symlink_to(canonical)
+    link.symlink_to(alias)
+    set_roots("first", "second")
+
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+
+
+@pytest.mark.parametrize("hard_link", [False, True])
+def test_primary_path_accepts_equivalent_zone_files(tz_host, hard_link):
+    link, set_roots, zone_file = tz_host
+    first = zone_file("first")
+    second = zone_file("second")
+    if hard_link:
+        second.unlink()
+        os.link(first, second)
+    link.symlink_to(second)
+    set_roots("first", "second")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+@pytest.mark.parametrize("outside", [False, True])
+def test_inaccessible_search_root_does_not_escape_resolution(
+    tz_host, tmp_path, monkeypatch, outside
+):
+    link, set_roots, zone_file = tz_host
+    readable = zone_file("readable")
+    zone_file("locked")
+    link.symlink_to(zone_file("outside/zoneinfo") if outside else readable)
+    # In the primary path the inaccessible entry is encountered first; the
+    # fallback encounters it while comparing roots after loading a valid zone.
+    set_roots(*(("readable", "locked") if outside else ("locked", "readable")))
+    original_stat = os.stat
+    locked = str(tmp_path / "locked")
+
+    def guarded_stat(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and str(path).startswith(locked):
+            raise PermissionError("timezone search root is inaccessible")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", guarded_stat)
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+def test_link_structure_requires_filesystem_evidence_for_package_only_zone(tz_host, monkeypatch):
+    link, set_roots, zone_file = tz_host
+    target = zone_file("outside/zoneinfo")
+    link.symlink_to(target)
+    set_roots("empty")
+    # Supply the tzdata package's resource stream without installing a package.
+    # ZoneInfo still uses its real parser and filesystem-to-package fallback.
+    from zoneinfo import _common
+
+    requested = []
+
+    def package_loader(name):
+        requested.append(name)
+        return target.open("rb")
+
+    monkeypatch.setattr(_common, "load_tzdata", package_loader)
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+    assert requested == ["America/New_York"]
+
+
 def test_malformed_zone_data_raises_rather_than_defaulting(tz_host, tmp_path):
     """The link opens, so the host stated a zone; the bytes behind it just
     don't load. Substituting UTC there misreads an answer that exists."""
