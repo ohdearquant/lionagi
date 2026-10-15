@@ -1881,6 +1881,63 @@ async def test_a_failed_batch_is_re_read_with_the_tool_names_it_consumed(
 
 
 @pytest.mark.asyncio
+async def test_a_repeated_tool_result_in_a_later_batch_keeps_the_use_name(
+    temp_db_path: Path,
+) -> None:
+    # The first result consumes the use's entry; the repeat shares its row and must not
+    # blank the name the first one wrote. The name comes from the stored use row.
+    use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
+    names: dict[str, str] = {}
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[_user_text("u1", "run it"), use, _tool_result("u2", "tool_1", "first")],
+            tool_names=names,
+        )
+        assert names == {}
+        await mirror_session(
+            db, session_uid=SID, events=[_tool_result("u3", "tool_1", "again")], tool_names=names
+        )
+        contents = await _session_contents(db)
+    (response,) = [c for c in contents if "action_request_id" in c]
+    assert response["function"] == "Bash"
+    assert response["output"] == "again"
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_tool_result_in_the_same_batch_keeps_the_use_name(
+    temp_db_path: Path,
+) -> None:
+    use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
+    events = [
+        _user_text("u1", "run it"),
+        use,
+        _tool_result("u2", "tool_1", "first"),
+        _tool_result("u3", "tool_1", "again"),
+    ]
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=SID, events=events, tool_names={})
+        contents = await _session_contents(db)
+    assert _response_functions(contents) == ["Bash"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_whose_use_was_never_mirrored_keeps_an_empty_name(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[_user_text("u1", "hi"), _tool_result("u2", "tool_9", "out")],
+            tool_names={},
+        )
+        contents = await _session_contents(db)
+    assert _response_functions(contents) == [""]
+
+
+@pytest.mark.asyncio
 async def test_a_mirror_pass_rewrites_each_progression_once(temp_db_path: Path) -> None:
     from sqlalchemy import event
 

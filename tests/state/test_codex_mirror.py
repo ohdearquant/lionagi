@@ -105,6 +105,35 @@ async def _mirror(db, records, *, turn=None, unparseable=0, source_path="/tmp/ro
     )
 
 
+async def test_a_repeated_tool_output_in_a_later_batch_keeps_the_call_name(db):
+    """The repeat shares the first output's row; the name comes from the stored call row."""
+    call = _rec(
+        "response_item",
+        {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1", "id": "fc1"},
+    )
+
+    def output(text: str) -> dict:
+        return _rec(
+            "response_item", {"type": "function_call_output", "call_id": "c1", "output": text}
+        )
+
+    names: dict[str, str] = {}
+    meta = _rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"})
+    for records in ([meta, _user("q", "m1"), call, output("first")], [output("again")]):
+        await mirror_session(
+            db, rollout_uid=ROLLOUT_UID, records=records, tool_names=names, turn={}
+        )
+    assert names == {}
+    session = await db.get_session(session_db_id(ROLLOUT_UID))
+    responses = []
+    for mid in await db.get_progression(session["progression_id"]):
+        content = (await db.get_message(mid))["content"]
+        content = json.loads(content) if isinstance(content, str) else content
+        if "action_request_id" in content:
+            responses.append(content)
+    assert [(r["function"], r["output"]) for r in responses] == [("shell", "again")]
+
+
 async def test_mirrored_session_carries_codex_import_provenance(db):
     """The row records that it was imported, from which file, and on which id."""
     written, tally = await _mirror(db, _records())

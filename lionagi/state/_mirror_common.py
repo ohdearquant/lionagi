@@ -395,6 +395,43 @@ async def link_lineage(
     await db.set_session_provenance(child_sid, node_metadata=meta)
 
 
+async def _name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> None:
+    """Give each tool result row with no function name the name of the tool use it answers.
+
+    A mirror's tool-name map holds only uses still waiting for a result, so a second result
+    for a use already answered finds no name there, and its row, sharing the first result's
+    id, would replace that row with an empty name. The name comes from the use's own row
+    instead: one in this batch, else the stored one. A result whose use is in neither keeps
+    the empty name."""
+    # Rows are told apart by their fields, as _bound_content does: a result carries both
+    # function and output, a use function and arguments without output.
+    requested: dict[str, Any] = {}
+    for row in rows:
+        content = row.get("content")
+        if (
+            isinstance(content, dict)
+            and "function" in content
+            and "arguments" in content
+            and "output" not in content
+        ):
+            requested[row["id"]] = content["function"]
+    for row in rows:
+        content = row.get("content")
+        if not isinstance(content, dict) or "output" not in content or content.get("function"):
+            continue
+        link = content.get("action_request_id")
+        if not isinstance(link, str) or not link:
+            continue
+        name = requested.get(link)
+        if name is None:
+            stored = await db.get_message(link)
+            stored_content = stored.get("content") if stored is not None else None
+            if isinstance(stored_content, dict):
+                name = stored_content.get("function")
+        if isinstance(name, str) and name:
+            content["function"] = name
+
+
 async def write_mirrored_messages(
     db: StateDB,
     rows: Sequence[dict[str, Any]],
@@ -405,7 +442,9 @@ async def write_mirrored_messages(
 ) -> None:
     """Persist one mirrored batch, rewriting each progression once per chunk rather than once
     per message. The session's activity clock moves once, with the last chunk, as the
-    per-message loop moved it once after its last message."""
+    per-message loop moved it once after its last message. A tool result with no function
+    name first takes the name of the use it answers (``_name_answered_results``)."""
+    await _name_answered_results(db, rows)
     for start in range(0, len(rows), MIRROR_WRITE_CHUNK):
         chunk = rows[start : start + MIRROR_WRITE_CHUNK]
         last = start + MIRROR_WRITE_CHUNK >= len(rows)

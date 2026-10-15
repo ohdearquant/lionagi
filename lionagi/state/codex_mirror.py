@@ -293,8 +293,9 @@ def messages_for_record(
     """Map one codex rollout record to ordered lionagi messages. ``tool_names`` is
     read/written in place so a tool output can label its ActionResponse; the output
     consumes its entry, so the map holds only calls still awaiting an output. A second
-    output for a call already answered finds no entry: its ActionResponse has an empty
-    function name and, sharing the first output's message id, replaces that row.
+    output for a call already answered finds no entry, so its ActionResponse has an empty
+    function name here; ``write_mirrored_messages`` names it from the call's own row
+    before it replaces the row of the first output, whose message id it shares.
 
     ``turn`` is the most recent ``turn_context`` seen before this record; it is
     stamped onto every message produced so a mirrored turn stays attributable to

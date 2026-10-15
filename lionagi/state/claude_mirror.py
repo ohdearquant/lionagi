@@ -86,8 +86,9 @@ def messages_for_event(
     """Map one Claude JSONL event to ordered lionagi messages. ``tool_names`` is
     read/written in place so a matching tool_result can label its ActionResponse; the
     result consumes its entry, so the map holds only tool uses still awaiting a result. A
-    second result for a use already answered finds no entry: its ActionResponse has an empty
-    function name and, sharing the first result's message id, replaces that row."""
+    second result for a use already answered finds no entry, so its ActionResponse has an
+    empty function name here; ``write_mirrored_messages`` names it from the use's own row
+    before it replaces the row of the first result, whose message id it shares."""
     etype = event.get("type")
     if etype not in _MESSAGE_TYPES or event.get("isMeta"):
         return []

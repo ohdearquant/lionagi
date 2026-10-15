@@ -1165,8 +1165,8 @@ the key earlier releases read. Maps saved by earlier releases have only `tool_na
 every use ever seen; a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP` (64) entries of such a
 map, assuming a use still pending is among the newest, so a pending use with 64 or more later uses
 in the map is dropped. A second result for a use already answered
-finds no entry and is mirrored with an empty function name, replacing the row the first result
-wrote. The map, and for a Codex rollout the current turn, move with the cursor: a pass hands
+finds no entry; `write_mirrored_messages` names it from the use's own row, in the batch or
+already stored, before it replaces the row the first result wrote. The map, and for a Codex rollout the current turn, move with the cursor: a pass hands
 `mirror_session` copies and adopts them only after the batch is durable, so a re-read batch finds
 the names it consumed and the turn it started in. `_save_states`
 reads `offsets.json` and skips the write when the file already holds the content, so an idle
@@ -1178,7 +1178,9 @@ once and rewrites one that holds string ids at most once per chunk. Appending me
 session's progression arrays once per message, so a pass of k messages rewrote each array k
 times; now it rewrites each once per chunk. Each rewrite still writes the whole array, so the
 cost of a pass still grows with the session's length until progression storage changes
-(ADR-0117).
+(ADR-0117). Before writing, a tool result row with no function name takes the name stored on
+the row of the use it answers, from the batch or the store, so a repeated result keeps the
+name the first one wrote.
 
 **`_read_new_events`** — cursor-advance-after-durable-write contract. The cursor is NOT
 advanced inside this function — the caller sets `state.offset` to the returned offset only
