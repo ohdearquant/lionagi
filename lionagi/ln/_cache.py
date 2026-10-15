@@ -43,7 +43,7 @@ class BoundedLRUCache(Generic[K, V]):
 
         It takes no lock: it hashes the key and queues it, so it is safe from a weakref callback,
         which can run in any thread and in the middle of this cache's own work, as long as the
-        key's own ``__hash__`` does not read this cache. A callback stored inside this cache
+        key's own ``__hash__`` does not touch this cache. A callback stored inside this cache
         that must not keep the cache alive passes ``_pending_removals.append`` instead of this
         bound method, which holds the cache. An unhashable key raises ``TypeError`` here rather
         than at the next read or write; raised from a weakref callback, Python reports it as

@@ -828,7 +828,7 @@ def _held_by(func) -> list:
     return held
 
 
-def test_the_projection_cache_callback_holds_its_queue_and_not_the_cache():
+def test_the_projection_cache_callback_holds_its_queue_and_not_the_cache_one_level_down():
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
     payload = _Payload("held")
