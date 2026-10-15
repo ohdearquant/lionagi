@@ -267,8 +267,9 @@ class RunDir:
             )
         else:
             # A manifest that is gone, or that is malformed JSON (JSONDecodeError), holds
-            # nothing this code can read back; any other error reading it leaves a file
-            # that may hold provenance, so that error stops the write.
+            # nothing this code can read back, and one that is JSON but not an object holds
+            # no provenance; any other error reading it leaves a file that may hold
+            # provenance, so that error stops the write.
             try:
                 existing = self.read_manifest()
             except (FileNotFoundError, json.JSONDecodeError):
