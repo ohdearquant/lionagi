@@ -2446,6 +2446,9 @@ class StateDB:
         self, progression_id: str, collection: list[str] | None = None
     ) -> None:
         if self._compat is not None:
+            # The messages a progression lists are rows this run created.
+            for message_id in collection or ():
+                self._require_created("messages", message_id, "message")
             values = {
                 "id": progression_id,
                 "created_at": time.time(),
@@ -2668,9 +2671,15 @@ class StateDB:
         self, session: dict[str, Any], params: dict[str, Any], now: float
     ) -> None:
         # The id must not exist; the owner is written on the session and on its first transition.
-        # An invocation the session names must already belong to the owner. Project registration
-        # updates a row the run did not create, so it is left to the managing application and the
-        # project stays on the session row (ADR-0128 Appendix A).
+        # The progression and messages it links are rows this run created, and an invocation it
+        # names must already belong to the owner. Project registration updates a row the run did
+        # not create, so it is left to the managing application and the project stays on the
+        # session row (ADR-0128 Appendix A).
+        if params["progression_id"] is not None:
+            self._require_created("progressions", params["progression_id"], "progression")
+        for link in ("first_msg_id", "last_msg_id"):
+            if params[link] is not None:
+                self._require_created("messages", params[link], "message")
         invocation_id = params["invocation_id"]
         if invocation_id and "invocations" not in self._compat.owned_tables:
             raise self._compat.refusal(

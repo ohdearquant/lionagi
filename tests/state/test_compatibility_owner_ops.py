@@ -410,6 +410,51 @@ async def test_a_branch_links_only_rows_its_run_created(db, store, link, value):
     assert _rows(store, "SELECT COUNT(*) FROM branches") == [(0,)]
 
 
+def _foreign_rows(store: Path) -> None:
+    """A progression and a message another principal's run wrote."""
+    _execute(
+        store,
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        "VALUES ('p-other', 0, '[]', 'principal:b')",
+    )
+    _execute(
+        store,
+        f"INSERT INTO messages (id, created_at, content, role, lion_class, {OWNER}) "
+        "VALUES ('m-other', 0, '{}', 'system', 1, 'principal:b')",
+    )
+
+
+@pytest.mark.parametrize(
+    "link, value",
+    [("progression_id", "p-other"), ("first_msg_id", "m-other"), ("last_msg_id", "m-other")],
+)
+async def test_a_session_links_only_rows_its_run_created(db, store, link, value):
+    await db.create_progression("sp")
+    await db.insert_message(_system_message())
+    _foreign_rows(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="was not created by this run"):
+        await db.create_session(_session(**{link: value}))
+    await db.create_session(_session("s2", first_msg_id="m-sys", last_msg_id="m-sys"))
+
+    assert _rows(store, "SELECT id FROM sessions ORDER BY id") == [("s2",)]
+    assert _rows(store, "SELECT entity_id FROM status_transitions") == [("s2",)]
+
+
+async def test_a_progression_lists_only_messages_its_run_created(db, store):
+    await db.insert_message(_system_message())
+    _foreign_rows(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="'m-other' was not created by this run"):
+        await db.create_progression("p1", ["m-sys", "m-other"])
+    await db.create_progression("p2", ["m-sys"])
+
+    assert _rows(store, "SELECT id, collection FROM progressions ORDER BY id") == [
+        ("p-other", "[]"),
+        ("p2", '["m-sys"]'),
+    ]
+
+
 async def test_a_message_this_run_wrote_is_rewritten_and_any_other_refused(db, store):
     await db.insert_message(_system_message(content="first"))
     await db.insert_message(_system_message(content="second"))

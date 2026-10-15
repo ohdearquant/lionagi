@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
+from ..compat import _quote
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .callbacks import (
@@ -40,6 +41,8 @@ class _TxProvider(Protocol):
     dialect: str
 
     def _tx(self) -> Any: ...
+
+    def _owner_values(self, table: str) -> dict[str, str]: ...
 
 
 def _json_list(evidence_refs: tuple) -> list:
@@ -148,9 +151,8 @@ class SQLAlchemyLifecycleService:
         transition_id = uuid.uuid4().hex
         now = time.time()
         # A store whose rows carry an owner gets it written on the transition too (ADR-0128 D5).
-        owner_values = getattr(self._db, "_owner_values", None)
-        owned = owner_values("status_transitions") if owner_values is not None else {}
-        owner_columns = "".join(', "' + name.replace('"', '""') + '"' for name in owned)
+        owned = self._db._owner_values("status_transitions")
+        owner_columns = "".join(f", {_quote(name)}" for name in owned)
         owner_params = "".join(f", :_owner{i}" for i in range(len(owned)))
         await connection.execute(
             text(
