@@ -586,8 +586,10 @@ class _LeavesOutTheOwner(StateDB):
     [
         "INSERT INTO progressions (id, created_at, collection) VALUES (:id, 1.0, '[]')",
         "INSERT INTO progressions VALUES (:id, 1.0, '[]', 'principal:a')",
+        "INSERT INTO 'progressions' (id, created_at, collection) VALUES (:id, 1.0, '[]')",
+        "INSERT INTO main.'progressions' (id, created_at, collection) VALUES (:id, 1.0, '[]')",
     ],
-    ids=["columns without the owner", "no column list"],
+    ids=["columns without the owner", "no column list", "string name", "schema and string name"],
 )
 async def test_an_insert_into_an_owned_table_that_leaves_out_the_owner_is_refused(store, statement):
     """The authorizer sees the table an INSERT writes, never its columns."""
@@ -601,6 +603,193 @@ async def test_an_insert_into_an_owned_table_that_leaves_out_the_owner_is_refuse
         await handle.close()
 
     assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+
+
+class _RawWrite(StateDB):
+    @_operation("create_progression")
+    async def create_progression(self, progression_id: str, collection=None) -> None:
+        async with self._tx() as conn:
+            await conn.execute(text(self.statement), {"id": progression_id, **self.params})
+
+
+def _invocation(store: Path, owner: str) -> None:
+    _execute(
+        store,
+        f"INSERT INTO invocations (id, skill, started_at, created_at, updated_at, {OWNER}) "
+        "VALUES ('p1', 'skill', 0.0, 0.0, 0.0, ?)",
+        (owner,),
+    )
+
+
+async def _raw_write(store: Path, statement: str, params: dict) -> None:
+    handle = _RawWrite(store, compatibility=_profile(store), owner="principal:a")
+    handle.statement, handle.params = statement, params
+    await handle.open()
+    try:
+        await handle.create_progression("p1")
+    finally:
+        await handle.close()
+
+
+_PROGRESSION = f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+
+
+@pytest.mark.parametrize(
+    ("statement", "params", "reason"),
+    [
+        (_PROGRESSION + "VALUES (:id, 1.0, '[]', 'principal:b')", {}, "other than the owner"),
+        (_PROGRESSION + "VALUES (:id, 1.0, '[]', NULL)", {}, "other than the owner"),
+        (
+            _PROGRESSION
+            + "VALUES (:id, 1.0, '[]', (SELECT id FROM principals WHERE id = 'principal:b'))",
+            {},
+            "other than the owner",
+        ),
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :o)",
+            {"o": "principal:b"},
+            "other than the owner",
+        ),
+        # The owner sits in another column's slot: the owner's own slot is what is read.
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, :col, :o)",
+            {"col": "principal:a", "o": "principal:b"},
+            "other than the owner",
+        ),
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :a), ('p2', 1.0, '[]', :b)",
+            {"a": "principal:a", "b": "principal:b"},
+            "other than the owner",
+        ),
+        (_PROGRESSION + "SELECT :id, 1.0, '[]', 'principal:b'", {}, "from a query"),
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :o) ON CONFLICT (id) DO UPDATE SET "
+            "collection = excluded.collection",
+            {"o": "principal:a"},
+            "upsert",
+        ),
+        (
+            "UPDATE invocations SET updated_at = 1.0 WHERE id = :id",
+            {},
+            "does not restrict its rows",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id AND {OWNER} = :o",
+            {"o": "principal:b"},
+            "does not restrict its rows",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id OR {OWNER} = :o",
+            {"o": "principal:a"},
+            "not a plain conjunction",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE session_count BETWEEN 0 AND {OWNER} = :o",
+            {"o": "principal:a"},
+            "not a plain conjunction",
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id AND NOT {OWNER} = :o",
+            {"o": "principal:a"},
+            "does not restrict its rows",
+        ),
+        (
+            f"UPDATE 'invocations' SET updated_at = 1.0 WHERE {OWNER} = :o",
+            {"o": "principal:b"},
+            "does not restrict its rows",
+        ),
+    ],
+    ids=[
+        "owner literal",
+        "owner null",
+        "owner from a query",
+        "owner bound to another",
+        "owner slot holds another",
+        "one row of two another",
+        "rows from a query",
+        "upsert that updates",
+        "update without the owner",
+        "update bound to another",
+        "update with or",
+        "update with between",
+        "update with not",
+        "update of a string name",
+    ],
+)
+async def test_a_write_that_does_not_bind_the_owner_is_refused(store, statement, params, reason):
+    """The authorizer sees neither the values a write binds nor the rows its WHERE clause picks."""
+    _invocation(store, "principal:b")
+    with pytest.raises(StateCompatibilityRefused, match=reason):
+        await _raw_write(store, statement, params)
+
+    assert _rows(store, "SELECT COUNT(*) FROM progressions") == [(0,)]
+    assert _rows(store, "SELECT updated_at FROM invocations WHERE id = 'p1'") == [(0.0,)]
+
+
+@pytest.mark.parametrize(
+    ("statement", "written", "expected"),
+    [
+        (
+            _PROGRESSION + "VALUES (:id, 1.0, '[]', :o)",
+            f"SELECT {OWNER} FROM progressions WHERE id = 'p1'",
+            [("principal:a",)],
+        ),
+        (
+            f"UPDATE invocations SET updated_at = 1.0 WHERE id = :id AND {OWNER} = :o",
+            "SELECT updated_at FROM invocations WHERE id = 'p1'",
+            [(1.0,)],
+        ),
+    ],
+    ids=["insert", "update"],
+)
+async def test_a_write_that_binds_the_owner_is_admitted(store, statement, written, expected):
+    _invocation(store, "principal:a")
+    await _raw_write(store, statement, {"o": "principal:a"})
+
+    assert _rows(store, written) == expected
+
+
+_MIRROR = "CREATE TRIGGER mirror AFTER INSERT ON messages BEGIN {body}; END"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "INSERT INTO progressions (id, created_at, collection) VALUES (NEW.id, 1.0, '[]')",
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        "VALUES (NEW.id, 1.0, '[]', 'principal:b')",
+        f"INSERT INTO 'progressions' (id, created_at, collection, {OWNER}) "
+        f"SELECT NEW.id, 1.0, '[]', NEW.{OWNER}",
+        "UPDATE progressions SET collection = '[]' WHERE id = NEW.id",
+        f"UPDATE progressions SET collection = '[]' WHERE id = NEW.id OR {OWNER} = NEW.{OWNER}",
+    ],
+    ids=["owner left out", "owner literal", "rows from a query", "update by id", "update with or"],
+)
+async def test_a_trigger_that_writes_an_owned_table_without_the_owner_is_refused(tmp_path, body):
+    """A trigger's statements pass no statement check, so admission reads them."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, _MIRROR.format(body=body))
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    with pytest.raises(StateCompatibilityRefused, match="trigger mirror"):
+        await handle.open()
+    assert handle._engine is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        f"VALUES (NEW.id, 1.0, '[]', NEW.{OWNER})",
+        f"UPDATE progressions SET collection = '[]' WHERE id = NEW.id AND {OWNER} = NEW.{OWNER}",
+    ],
+    ids=["insert", "update"],
+)
+async def test_a_trigger_that_copies_the_owner_is_admitted(tmp_path, body):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, _MIRROR.format(body=body))
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
 
 
 async def test_an_invocation_is_refused_when_the_profile_records_no_owner(store):

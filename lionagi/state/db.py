@@ -658,17 +658,20 @@ class StateDB:
             # declared lifecycle initial states and must not get a fabricated creation event.
             return
         policy = _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type)
+        # In compatibility mode the row is this run's, so the update is restricted to its owner.
+        clause, owner = self._owner_predicate(policy.table)
         await conn.execute(
             text(
                 f"UPDATE {policy.table} SET status_reason_code = :reason_code, "  # noqa: S608
                 "status_reason_summary = :reason_summary, "
-                "status_evidence_refs = :evidence_refs WHERE id = :entity_id"
+                f"status_evidence_refs = :evidence_refs WHERE id = :entity_id{clause}"
             ).bindparams(bindparam("evidence_refs", type_=JSON)),
             {
                 "reason_code": reason_code,
                 "reason_summary": "",
                 "evidence_refs": [],
                 "entity_id": entity_id,
+                **owner,
             },
         )
         await self._lifecycle_service().initialize_in_transaction(
