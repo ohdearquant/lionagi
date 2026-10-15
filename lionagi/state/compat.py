@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import functools
 import sqlite3
+import string
 from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -88,6 +89,16 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
 # SQL tokens
 
 _WORD, _IDENT, _STRING, _PUNCT = "word", "ident", "string", "punct"
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+# Words after which SQLite reads a double-quoted token as a name, never as a string literal.
+_NAME_POSITIONS = frozenset(
+    {"references", "collate", "into", "from", "update", "on", "join", "table", "index", "trigger"}
+)
+
+
+def _fold(name: str) -> str:
+    """*name* as SQLite compares names: ASCII letters without regard to case, any other as it is."""
+    return name.translate(_ASCII_LOWER)
 
 
 def _identifier_char(ch: str) -> bool:
@@ -95,17 +106,22 @@ def _identifier_char(ch: str) -> bool:
     return not ch.isascii() or ch.isalnum() or ch in "_$"
 
 
-def _sql_tokens(sql: str, *, spelled: bool = False) -> list[tuple[str, str]]:
+def _sql_tokens(
+    sql: str, *, spelled: bool = False, columns: frozenset[str] = frozenset()
+) -> list[tuple[str, str]]:
     """Split SQL into ``(kind, text)`` tokens, dropping comments and whitespace.
 
-    Bare words are lowercased. A quoted identifier ("x", `x`, [x]) is unquoted and lowercased but
-    keeps its own kind, so a column named "returning" is never read as the keyword. A string
-    literal keeps its text verbatim, quotes included. As in SQLite, only ASCII whitespace
-    separates tokens and every character past ASCII belongs to an identifier.
+    Bare words are folded as SQLite folds a name, ASCII letters only. A quoted identifier ("x",
+    `x`, [x]) is unquoted and folded but keeps its own kind, so a column named "returning" is
+    never read as the keyword. A string literal keeps its text verbatim, quotes included. As in
+    SQLite, only ASCII whitespace separates tokens and every character past ASCII belongs to an
+    identifier.
 
-    *spelled* keeps the case of a double-quoted token, for comparing definitions: SQLite reads
-    one that names no column as a string literal, so ``DEFAULT "Open"`` and ``DEFAULT "open"``
-    differ.
+    *spelled* keeps the case of a double-quoted token that SQLite may read as a string literal,
+    for comparing definitions: one that names no column is one, so ``DEFAULT "Open"`` and
+    ``DEFAULT "open"`` differ. A double-quoted token after a dot or a word that takes a name
+    (``REFERENCES "Runs"``, ``ON "Runs"``, ``COLLATE "NOCASE"``), or one naming one of *columns*,
+    is a name, and is folded.
     """
     tokens: list[tuple[str, str]] = []
     i, n = 0, len(sql)
@@ -139,13 +155,16 @@ def _sql_tokens(sql: str, *, spelled: bool = False) -> list[tuple[str, str]]:
                 parts.append(sql[j])
                 j += 1
             name = "".join(parts)
-            tokens.append((_IDENT, name if spelled and ch == '"' else name.lower()))
+            last = tokens[-1] if tokens else (_PUNCT, "")
+            named = last == (_PUNCT, ".") or (last[0] == _WORD and last[1] in _NAME_POSITIONS)
+            literal = spelled and ch == '"' and not named and _fold(name) not in columns
+            tokens.append((_IDENT, name if literal else _fold(name)))
             i = j + 1
         elif _identifier_char(ch):
             j = i + 1
             while j < n and _identifier_char(sql[j]):
                 j += 1
-            tokens.append((_WORD, sql[i:j].lower()))
+            tokens.append((_WORD, _fold(sql[i:j])))
             i = j
         else:
             tokens.append((_PUNCT, ch))
@@ -166,8 +185,8 @@ def _joined(tokens: list[tuple[str, str]]) -> str:
     return "".join(out)
 
 
-def _normalize_sql(sql: str) -> str:
-    return _joined(_sql_tokens(sql, spelled=True))
+def _normalize_sql(sql: str, columns: frozenset[str] = frozenset()) -> str:
+    return _joined(_sql_tokens(sql, spelled=True, columns=columns))
 
 
 def _top_level_words(tokens: list[tuple[str, str]]) -> list[str]:
@@ -205,13 +224,65 @@ _CONFLICT_EFFECTS = {
 }
 
 
-def _names(tokens: list[tuple[str, str]]) -> set[str]:
-    """Every token that can name a table, lowercased; SQLite also takes a string literal as one."""
-    return {
-        text[1:-1].replace("''", "'").lower() if kind == _STRING else text
-        for kind, text in tokens
-        if kind in (_WORD, _IDENT, _STRING)
+# Words after which SQLite reads a string literal as a table's name, and the conflict actions an
+# ``UPDATE OR <action>`` names before one.
+_TABLE_BEFORE = frozenset({"into", "update", "from", "join", "on", "table", "in"})
+_ACTIONS = frozenset({"replace", "rollback", "abort", "fail", "ignore"})
+# Words that end a FROM list, after which a comma no longer separates table names.
+_FROM_ENDS = frozenset(
+    {
+        "where",
+        "group",
+        "order",
+        "limit",
+        "having",
+        "window",
+        "union",
+        "intersect",
+        "except",
+        "set",
+        "select",
+        "values",
+        "returning",
     }
+)
+
+
+def _names(tokens: list[tuple[str, str]]) -> set[str]:
+    """Every token that can name a table, folded as SQLite folds a name.
+
+    A word or quoted identifier always counts. A string literal counts only where SQLite's grammar
+    reads one as a table's name: after INTO, UPDATE, FROM, JOIN, ON, TABLE or IN, after a dot,
+    after ``OR <action>``, or after a comma in a FROM list. A literal value counts nowhere.
+    """
+    names: set[str] = set()
+    in_from = [False]
+    for index, (kind, text) in enumerate(tokens):
+        if kind == _PUNCT:
+            if text == "(":
+                in_from.append(False)
+            elif text == ")" and len(in_from) > 1:
+                in_from.pop()
+            elif text == ";":
+                in_from = [False]
+            continue
+        if kind == _WORD and text in ("from", "join"):
+            in_from[-1] = True
+        elif kind == _WORD and text in _FROM_ENDS:
+            in_from[-1] = False
+        if kind != _STRING:
+            names.add(text)
+            continue
+        last = tokens[index - 1] if index else (_PUNCT, "")
+        before = tokens[index - 2] if index > 1 else (_PUNCT, "")
+        if (
+            last == (_PUNCT, ".")
+            or (last[0] == _WORD and last[1] in _TABLE_BEFORE)
+            or (last[0] == _WORD and last[1] in _ACTIONS and before == (_WORD, "or"))
+            or (last == (_PUNCT, ",") and in_from[-1])
+        ):
+            names.add(_fold(text[1:-1].replace("''", "'")))
+    return names
 
 
 def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -502,9 +573,9 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
     return frozenset(found)
 
 
-def _indexed_terms(index_sql: str) -> list[str]:
+def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
     """The terms of a CREATE INDEX, each in one spelling: a column, an expression, a COLLATE."""
-    tokens = _sql_tokens(index_sql, spelled=True)
+    tokens = _sql_tokens(index_sql, spelled=True, columns=columns)
     on = next((i for i, token in enumerate(tokens) if token == (_WORD, "on")), None)
     if on is None:
         return []
@@ -514,8 +585,8 @@ def _indexed_terms(index_sql: str) -> list[str]:
     return [_joined(group) for group in _groups(tokens, start)]
 
 
-def _predicate(index_sql: str) -> str:
-    tokens = _sql_tokens(index_sql, spelled=True)
+def _predicate(index_sql: str, columns: frozenset[str]) -> str:
+    tokens = _sql_tokens(index_sql, spelled=True, columns=columns)
     depth = 0
     for index, (kind, text) in enumerate(tokens):
         if kind == _PUNCT and text == "(":
@@ -534,7 +605,7 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
     quoted = _quote(name)
     columns = tuple(
         ColumnShape(
-            name=str(row[1]).lower(),
+            name=_fold(str(row[1])),
             type=" ".join(str(row[2] or "").upper().split()),
             notnull=bool(row[3]),
             default=None if row[4] is None else _normalize_sql(str(row[4])),
@@ -543,25 +614,26 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
         )
         for row in fetch(f"PRAGMA table_xinfo({quoted})")
     )
+    names = frozenset(column.name for column in columns)
     unique: set[tuple[str, ...]] = set()
     for row in fetch(f"PRAGMA index_list({quoted})"):
         index_name, is_unique, partial = str(row[1]), row[2], row[4]
         if not is_unique:
             continue
-        entry = entries.get(("index", index_name.lower()))
+        entry = entries.get(("index", _fold(index_name)))
         index_sql = (entry[3] if entry else None) or ""
         # An index a CREATE INDEX made is read from its SQL, which keeps what PRAGMA output
         # does not: an indexed expression's text and a term's collation.
-        key = _indexed_terms(index_sql) or [
-            "<expression>" if column is None else str(column).lower()
+        key = _indexed_terms(index_sql, names) or [
+            "<expression>" if column is None else _fold(str(column))
             for _, _, column in sorted(fetch(f"PRAGMA index_info({_quote(index_name)})"))
         ]
         if partial:
-            key.append("where " + _predicate(index_sql))
+            key.append("where " + _predicate(index_sql, names))
         unique.add(tuple(key))
-    tokens = _sql_tokens(sql, spelled=True)
+    tokens = _sql_tokens(sql, spelled=True, columns=names)
     return TableShape(
-        name.lower(),
+        _fold(name),
         columns,
         frozenset(unique),
         _checks(tokens),
@@ -578,12 +650,12 @@ def _foreign_keys(fetch: _Fetch, table: str) -> list[ForeignKeyShape]:
     keys = []
     for rows in groups.values():
         rows.sort(key=lambda row: row[1])
-        parent_columns = tuple(str(row[4]).lower() for row in rows if row[4] is not None)
+        parent_columns = tuple(_fold(str(row[4])) for row in rows if row[4] is not None)
         keys.append(
             ForeignKeyShape(
-                table=table.lower(),
-                columns=tuple(str(row[3]).lower() for row in rows),
-                parent=str(rows[0][2]).lower(),
+                table=_fold(table),
+                columns=tuple(_fold(str(row[3])) for row in rows),
+                parent=_fold(str(rows[0][2])),
                 parent_columns=parent_columns if len(parent_columns) == len(rows) else (),
                 on_update=str(rows[0][5]).upper(),
                 on_delete=str(rows[0][6]).upper(),
@@ -593,9 +665,9 @@ def _foreign_keys(fetch: _Fetch, table: str) -> list[ForeignKeyShape]:
 
 
 def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
-    wanted = frozenset(name.lower() for name in tables)
+    wanted = frozenset(_fold(name) for name in tables)
     entries = {
-        (str(row[0]), str(row[1]).lower()): row
+        (str(row[0]), _fold(str(row[1]))): row
         for row in fetch("SELECT type, name, tbl_name, sql FROM sqlite_master")
     }
     shapes = [
@@ -603,6 +675,7 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
         for name in sorted(wanted)
         if (row := entries.get(("table", name))) is not None
     ]
+    columns = frozenset(column.name for shape in shapes for column in shape.columns)
     keys: set[ForeignKeyShape] = set()
     objects: set[SchemaObject] = set()
     for (kind, name), row in entries.items():
@@ -613,11 +686,11 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
                 if key.table in wanted or key.parent in wanted
             )
         elif kind in ("trigger", "view") and row[3]:
-            # A table is named without regard to case, as SQLite matches it, and can be named
-            # by a string literal; the SQL is kept as a definition is, the case of a
-            # double-quoted token included.
+            # A table is named with its ASCII letters in either case, as SQLite matches it,
+            # and can be named by a string literal where a name is read; the SQL is kept as a
+            # definition is, with the case of a double-quoted token SQLite may read as a literal.
             if wanted.intersection(_names(_sql_tokens(row[3]))):
-                objects.add(SchemaObject(kind, name, _normalize_sql(row[3])))
+                objects.add(SchemaObject(kind, name, _normalize_sql(row[3], columns)))
     return Closure(tuple(shapes), frozenset(keys), frozenset(objects))
 
 
@@ -691,12 +764,12 @@ class TableWrites:
     unwritten: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "insert", frozenset(c.lower() for c in self.insert))
-        object.__setattr__(self, "update", frozenset(c.lower() for c in self.update))
+        object.__setattr__(self, "insert", frozenset(_fold(c) for c in self.insert))
+        object.__setattr__(self, "update", frozenset(_fold(c) for c in self.update))
         object.__setattr__(
             self,
             "unwritten",
-            MappingProxyType({c.lower(): why for c, why in dict(self.unwritten).items()}),
+            MappingProxyType({_fold(c): why for c, why in dict(self.unwritten).items()}),
         )
 
 
@@ -736,7 +809,7 @@ class CompatibilityProfile:
         operations = frozenset(self.operations)
         if not operations:
             raise ValueError(f"profile {self.name} names no operation")
-        writes = {name.lower(): spec for name, spec in dict(self.writes).items()}
+        writes = {_fold(name): spec for name, spec in dict(self.writes).items()}
         tables = {table.name: table for table in self.closure.tables}
         for name, spec in writes.items():
             self._check_writes(name, spec, tables.get(name))
@@ -1071,14 +1144,14 @@ class _Guard:
                 state.write_txn = False
                 return ok
             if action == sqlite3.SQLITE_PRAGMA:
-                name = (arg1 or "").lower()
+                name = _fold(arg1 or "")
                 if name in _TABLE_PRAGMAS or (name in _READ_PRAGMAS and arg2 is None):
                     return ok
                 # SQLAlchemy sets this connection-local flag when it resets an isolation level.
                 if name == "read_uncommitted" and arg2 in (None, "0", "1"):
                     return ok
                 return denied(f"PRAGMA {name}" + ("" if arg2 is None else f" = {arg2}"))
-            table = (arg1 or "").lower()
+            table = _fold(arg1 or "")
             if state.write_txn and not driver.in_transaction:
                 # SQLite ended the operation's transaction by itself (a ROLLBACK conflict
                 # resolution) without a callback, so the flag is stale. A write prepared now
@@ -1090,11 +1163,7 @@ class _Guard:
                     return ok
                 return denied(f"INSERT INTO {db_name}.{table}")
             if action == sqlite3.SQLITE_UPDATE:
-                if (
-                    db_name == "main"
-                    and state.write_txn
-                    and (table, (arg2 or "").lower()) in updates
-                ):
+                if db_name == "main" and state.write_txn and (table, _fold(arg2 or "")) in updates:
                     return ok
                 return denied(f"UPDATE of {db_name}.{table}.{arg2}")
             name = _ACTION_NAMES.get(action, f"action {action}")

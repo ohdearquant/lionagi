@@ -50,8 +50,10 @@ whose schema another application manages, and never migrates, stamps or reconfig
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
   closure when it moved: a change elsewhere in the store re-admits, a change to the closure
   refuses. Each table's definitions are also compared as its SQL spells them (whitespace,
-  comments, identifier quotes and the case of words aside; a double-quoted token keeps its case,
-  since SQLite can read it as a string literal), so a collation, a generated column's expression, a
+  comments, identifier quotes and the case of ASCII letters in names aside, as SQLite compares
+  names; a double-quoted token keeps its case where SQLite can read it as a string literal, that
+  is, where it names no column and follows no dot or word that takes a name), so a collation, a
+  generated column's expression, a
   `DEFERRABLE` key or `AUTOINCREMENT` that PRAGMA output leaves out is compared too, and a unique
   index a CREATE INDEX made is compared by its terms' SQL. A table whose constraints declare any
   conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a
