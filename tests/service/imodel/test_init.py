@@ -1308,6 +1308,53 @@ class TestReportedServedModel:
 
         assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
 
+    @pytest.mark.parametrize("failure", ["cancelled", "raised"])
+    @pytest.mark.asyncio
+    async def test_an_invoke_stopped_before_its_call_is_sent_keeps_the_last_model(
+        self, base_imodel, failure
+    ):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        started = asyncio.Event()
+        sent = []
+
+        async def forward():
+            # The call exists and is queued; nothing has been sent.
+            started.set()
+            if failure == "raised":
+                raise RuntimeError("the queue could not be forwarded")
+            await asyncio.Event().wait()
+
+        async def call(*_args, **_kwargs):
+            sent.append(True)
+            return {"model": "unreachable", "response": "x"}
+
+        with (
+            patch.object(base_imodel.executor, "forward", side_effect=forward),
+            patch.object(base_imodel.endpoint, "call", side_effect=call),
+        ):
+            task = asyncio.create_task(
+                base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+            )
+            await started.wait()
+            if failure == "cancelled":
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError if failure == "cancelled" else ValueError):
+                await task
+
+        assert sent == []
+        assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
+
+    @pytest.mark.asyncio
+    async def test_a_pending_call_records_no_model_and_keeps_the_last_one(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
+        assert api_call.status == EventStatus.PENDING
+
+        base_imodel._store_served_model(api_call, "never-served")
+
+        assert "served_model" not in api_call.metadata
+        assert base_imodel.provider_metadata["served_model"] == "from-an-earlier-call"
+
     @pytest.mark.parametrize("concurrency_limit", [None, 2])
     @pytest.mark.asyncio
     async def test_a_timeout_raised_inside_the_stream_records_no_model(self, concurrency_limit):

@@ -433,8 +433,11 @@ class iModel:  # noqa: N801
         raised inside the stream fails the call, so it records none, and an invoke
         cancelled before it returns has read no response, so it records none. An
         invoke that fails or is cancelled before its call exists sends nothing and
-        leaves both values as they were.
+        leaves both values as they were, and so does a call still pending, which
+        was never sent.
         """
+        if api_call is not None and api_call.status == EventStatus.PENDING:
+            return
         if api_call is not None and api_call.status == EventStatus.FAILED:
             served_model = None
         if api_call is not None:
