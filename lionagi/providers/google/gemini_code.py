@@ -585,6 +585,9 @@ async def stream_gemini_cli(
                     "event loop is closed" in str(exc).casefold()
                 ):
                     session.is_error = True
+                    # Failed like a failed turn, so the invoke result names no
+                    # model, as the stream does once this error chunk voids it.
+                    session.model = None
                     error = ProviderTeardownError("agy teardown failed: Event loop is closed")
                     sc = StreamChunk(type="error", content=str(error), is_error=True)
                     session.chunks.append(sc)
@@ -601,7 +604,6 @@ async def stream_gemini_cli(
                 cli_error = str(obj.get("error") or "").strip()
 
                 session.session_id = obj.get("conversation_id") or session.session_id
-                session.model = resolve_agy_model(request.model)
                 session.result = response
                 session.usage = obj.get("usage", {}) or {}
                 session.num_turns = obj.get("num_turns")
@@ -617,9 +619,21 @@ async def stream_gemini_cli(
                 if empty_success:
                     session.is_error = True
 
+                # Only a model agy itself reports for a turn that succeeded is
+                # recorded, so the requested model never reads as the served one. A
+                # failed turn clears it, including a model an earlier turn reported;
+                # an object that succeeds and names no model keeps the last one.
+                reported = obj.get("model")
+                name = reported.strip() if isinstance(reported, str) else ""
+                if session.is_error:
+                    session.model = None
+                elif name:
+                    session.model = name
+
                 # Captured before the error branch: a failed turn can still report
-                # a live conversation id to resume into.
-                if session.session_id:
+                # a live conversation id to resume into. Emitted for a reported
+                # model too, so the stream and the invoke result name the same one.
+                if session.session_id or session.model:
                     sys_sc = StreamChunk(
                         type="system",
                         metadata={"session_id": session.session_id, "model": session.model},
@@ -661,7 +675,9 @@ async def stream_gemini_cli(
                     # Terminal usage/turns/duration — the only channel run.py reads
                     # provider-reported usage from (persisted onto model_response).
                     result_meta: dict[str, Any] = {
-                        "model": session.model,
+                        # The run record keeps the requested model when agy reports
+                        # none; result chunks are never read as the served model.
+                        "model": session.model or resolve_agy_model(request.model),
                         "conversation_id": session.session_id,
                         "status": status or "SUCCESS",
                     }
