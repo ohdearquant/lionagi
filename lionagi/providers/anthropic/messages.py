@@ -17,9 +17,8 @@ from ._config import AnthropicConfigs
 __all__ = ("CreateMessageRequest", "AnthropicMessagesEndpoint")
 
 # Delta fields a consumer joins, each kind across the whole message. A citations_delta is not
-# here: each one carries a whole citation, and holding part of its cited_text back would move
-# text from one citation into the next, so citations are masked whole, with the rest of a key
-# whose beginning ended the previous citation masked too.
+# here because its text is the cited_text of the citation it carries; the quoted texts of a
+# message's citations are joined like any other kind.
 _JOINED_DELTA_FIELDS = {
     "text_delta": "text",
     "thinking_delta": "thinking",
@@ -273,6 +272,7 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         response = None
         request_entered = False
+        failure: Exception | None = None
         try:
             async with self._create_http_session() as session:
                 request_entered = True
@@ -324,16 +324,20 @@ class AnthropicMessagesEndpoint(Endpoint):
                     await router.settle_unknown(attempt, "usage_incomplete")
                     return redact_value(body, attempt.key)
 
+                # The decode error is dropped, not chained: it can quote the body.
                 try:
                     body = await response.json()
+                    unreadable = False
                 except Exception:
+                    unreadable = True
+                if unreadable:
                     await router.settle_unknown(attempt, "usage_incomplete")
                     raise _RoutedNoRetryError(
                         RouterErrorCode.PROVIDER_ERROR.value,
                         account=attempt.account,
                         attempt_id=attempt.attempt_id,
                         http_status=status,
-                    ) from None
+                    )
 
                 if isinstance(payload, dict) and "messages" in payload and isinstance(body, dict):
                     if body.get("error") and "choices" not in body and "object" not in body:
@@ -362,30 +366,35 @@ class AnthropicMessagesEndpoint(Endpoint):
         except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError):
             if request_entered:
                 await router.settle_unknown(attempt, "transport_error")
-                raise _RoutedRetryableError(
+                failure = _RoutedRetryableError(
                     RouterErrorCode.TRANSPORT_ERROR.value,
                     account=attempt.account,
                     attempt_id=attempt.attempt_id,
-                ) from None
-            await router.settle_not_sent(attempt)
-            raise _RoutedNoRetryError(
-                RouterErrorCode.TRANSPORT_ERROR.value,
-                account=attempt.account,
-                attempt_id=attempt.attempt_id,
-            ) from None
+                )
+            else:
+                await router.settle_not_sent(attempt)
+                failure = _RoutedNoRetryError(
+                    RouterErrorCode.TRANSPORT_ERROR.value,
+                    account=attempt.account,
+                    attempt_id=attempt.attempt_id,
+                )
         except Exception:
             if request_entered:
                 await router.settle_unknown(attempt, "transport_error")
             else:
                 await router.settle_not_sent(attempt)
-            raise _RoutedNoRetryError(
+            failure = _RoutedNoRetryError(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,
                 attempt_id=attempt.attempt_id,
-            ) from None
+            )
         finally:
             if response is not None and not response.closed:
                 response.release()
+        # Raised here, outside the handler, so the error carries no context: the
+        # exception it stands for can quote the request or the response.
+        if failure is not None:
+            raise failure
 
     async def _stream_aiohttp(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
         if not self._account_routing_enabled():
@@ -472,11 +481,8 @@ class AnthropicMessagesEndpoint(Endpoint):
         _routing_scope=None,
         **kwargs,
     ):
-        import asyncio
         import codecs
         import json
-
-        import aiohttp
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._pricing import price_usage
@@ -484,6 +490,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             StreamingSecretRedactor,
             StreamTextRedactor,
             get_router,
+            mask_key_runs,
             redact_value,
             validate_routed_request,
         )
@@ -523,6 +530,7 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         response = None
         request_entered = False
+        failure: Exception | None = None
         redactor = StreamingSecretRedactor(attempt.key)
         # The byte redactor sees the JSON framing between two deltas, so a key split
         # across them reaches a consumer that joins their text. The text redactor holds
@@ -561,6 +569,28 @@ class AnthropicMessagesEndpoint(Endpoint):
                 return [data, stripped]
             return [stripped]
 
+        def mask_strings(value: Any, skip: set[tuple[int, Any]]) -> bool:
+            """Mask long runs of the key in every string of ``value`` not in ``skip``, in
+            place; return whether any string changed."""
+            if isinstance(value, dict):
+                items = list(value.items())
+            elif isinstance(value, list):
+                items = list(enumerate(value))
+            else:
+                return False
+            changed = False
+            for name, item in items:
+                if (id(value), name) in skip:
+                    continue
+                if isinstance(item, str):
+                    masked = mask_key_runs(item, attempt.key)
+                    if masked != item:
+                        value[name] = masked
+                        changed = True
+                elif isinstance(item, (dict, list)):
+                    changed = mask_strings(item, skip) or changed
+            return changed
+
         def queue_data(data: str) -> list:
             """Hand one event to the text redactor; return the events now ready."""
             event = None
@@ -569,13 +599,15 @@ class AnthropicMessagesEndpoint(Endpoint):
             except (TypeError, ValueError):
                 pass
             pieces: list[tuple[str, str]] = []
-            places: list[tuple[dict, str]] = []
-            delta = event.get("delta") if isinstance(event, dict) else None
-            if (
-                isinstance(event, dict)
-                and event.get("type") == "content_block_delta"
-                and isinstance(delta, dict)
-            ):
+            places: list[tuple[Any, Any]] = []
+            if not isinstance(event, dict):
+                # Not a JSON object, so it reaches a consumer as text: the whole data is
+                # matched, joined with the data of other such events.
+                pieces.append((StreamTextRedactor.RAW, data))
+                places.append((None, None))
+                return text_redactor.push((event, data, places, False), pieces)
+            delta = event.get("delta")
+            if event.get("type") == "content_block_delta" and isinstance(delta, dict):
                 delta_type = delta.get("type")
                 field = (
                     _JOINED_DELTA_FIELDS.get(delta_type) if isinstance(delta_type, str) else None
@@ -587,14 +619,34 @@ class AnthropicMessagesEndpoint(Endpoint):
                 elif isinstance(citation, dict) and isinstance(citation.get("cited_text"), str):
                     pieces.append((delta_type, citation["cited_text"]))
                     places.append((citation, "cited_text"))
-            return text_redactor.push((event, data, places), pieces)
+                elif field is None and delta_type != "citations_delta":
+                    # A delta type this module does not know: each of its text fields is
+                    # joined like a known one, under the delta's type.
+                    kind = delta_type if isinstance(delta_type, str) and delta_type else "\x00delta"
+                    for name, value in delta.items():
+                        if name != "type" and isinstance(value, str):
+                            pieces.append((kind, value))
+                            places.append((delta, name))
+            # Every other string in the event is matched on its own: no consumer joins it.
+            rewrite = mask_strings(event, {(id(holder), name) for holder, name in places})
+            return text_redactor.push((event, data, places, rewrite), pieces)
 
         async def emit_ready(ready: list):
             nonlocal served_model, request_id, settled, saw_error_event
-            for (event, data, places), texts in ready:
-                if places:
-                    for (holder, field), text in zip(places, texts, strict=True):
+            for (event, data, places, rewrite), texts in ready:
+                raw = None
+                for (holder, field), text in zip(places, texts, strict=True):
+                    if holder is None:
+                        raw = text
+                    else:
                         holder[field] = text
+                if raw is not None:
+                    data = raw
+                    try:
+                        event = json.loads(data)
+                    except (TypeError, ValueError):
+                        event = None
+                elif places or rewrite:
                     data = json.dumps(event)
                 event_type = event.get("type") if isinstance(event, dict) else None
                 if event_type == "message_start":
@@ -724,38 +776,28 @@ class AnthropicMessagesEndpoint(Endpoint):
             raise
         except (_RoutedNoRetryError, _RoutedRetryableError):
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError):
-            if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
-                raise _RoutedRetryableError(
-                    RouterErrorCode.TRANSPORT_ERROR.value,
-                    account=attempt.account,
-                    attempt_id=attempt.attempt_id,
-                ) from None
-            await router.settle_not_sent(attempt)
-            raise _RoutedNoRetryError(
-                RouterErrorCode.TRANSPORT_ERROR.value,
-                account=attempt.account,
-                attempt_id=attempt.attempt_id,
-            ) from None
         except Exception:
             if request_entered:
                 await router.settle_unknown(attempt, "transport_error")
-                raise _RoutedRetryableError(
+                failure = _RoutedRetryableError(
                     RouterErrorCode.TRANSPORT_ERROR.value,
                     account=attempt.account,
                     attempt_id=attempt.attempt_id,
-                ) from None
+                )
             else:
                 await router.settle_not_sent(attempt)
-            raise _RoutedNoRetryError(
-                RouterErrorCode.TRANSPORT_ERROR.value,
-                account=attempt.account,
-                attempt_id=attempt.attempt_id,
-            ) from None
+                failure = _RoutedNoRetryError(
+                    RouterErrorCode.TRANSPORT_ERROR.value,
+                    account=attempt.account,
+                    attempt_id=attempt.attempt_id,
+                )
         finally:
             if response is not None and not response.closed:
                 response.release()
+        # Raised here, outside the handler, so the error carries no context: the
+        # exception it stands for can quote the request or the response.
+        if failure is not None:
+            raise failure
 
     def create_payload(
         self,

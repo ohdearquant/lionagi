@@ -278,11 +278,34 @@ class _Char:
 
 
 class _Join:
-    __slots__ = ("active", "pending")
+    __slots__ = ("active", "pending", "tail")
 
     def __init__(self) -> None:
         self.active: set[int] = set()  # lengths of the key's beginning the join now ends with
+        self.tail = ""  # the longest end of the join that occurs anywhere in the key
         self.pending: list[_Char] = []  # undecided characters, the join's last ones
+
+
+def mask_key_runs(text: str, key: SecretStr) -> str:
+    """``text`` with every run of ``StreamTextRedactor.MIN_RUN`` or more characters that
+    occurs anywhere in the key masked, for text that no other text continues."""
+    secret = key.get_secret_value()
+    need = min(StreamTextRedactor.MIN_RUN, len(secret))
+    masked = [False] * len(text)
+    tail = ""
+    for index, ch in enumerate(text):
+        tail += ch
+        while tail and tail not in secret:
+            tail = tail[1:]
+        if len(tail) >= need:
+            masked[index - len(tail) + 1 : index + 1] = [True] * len(tail)
+    out: list[str] = []
+    for index, ch in enumerate(text):
+        if not masked[index]:
+            out.append(ch)
+        elif index == 0 or not masked[index - 1]:
+            out.append(StreamTextRedactor.MASK)
+    return "".join(out)
 
 
 class StreamTextRedactor:
@@ -290,23 +313,33 @@ class StreamTextRedactor:
 
     A consumer joins the pieces of one kind across the message (text across blocks
     and citations, thinking across signatures, the quoted text of citations) and may
-    join every piece in order. Each of those joins is matched against the key's
-    beginning, and a character is masked when it lies in a run of ``MIN_RUN`` or
-    more characters that begins the key, in any join it belongs to. A whole key and
-    any long beginning of one are masked wherever the message splits them.
+    join every piece in order. Each of those joins is matched against the key, and a
+    character is masked when it lies in a run of ``MIN_RUN`` or more characters that
+    occurs anywhere in the key, in any join it belongs to. A whole key and any long
+    part of one are masked wherever the message splits them. Pieces of kind ``RAW``
+    (the data of an event that carries no known text field) are joined only with
+    each other.
 
-    An event whose text ends in a shorter beginning of the key is held until the
-    next event shows whether the key continues. When the next event does not carry
-    text into the same join, or the stream ends, the held characters are decided:
-    sent while the beginning they end is no longer than ``PUBLIC_PREFIX``, the
-    ``sk-ant-`` every Anthropic key starts with, so what is sent is public; masked
-    otherwise. A key that does not start with ``PUBLIC_PREFIX`` therefore has every
-    held character masked. If the key continues later, it is masked from there.
+    A character in a beginning of the key longer than ``PUBLIC_PREFIX``, the
+    ``sk-ant-`` every Anthropic key starts with, is masked as soon as the beginning
+    is that long, so what is sent of a beginning is public. A key that does not
+    start with ``PUBLIC_PREFIX`` therefore has every character of any beginning of
+    it masked, its first character wherever it appears.
+
+    An event whose text ends in a shorter run of the key is held until the next
+    event shows whether the run continues. A held character the next character
+    shows is in no run is decided at once; when the next event carries no text into
+    the same join, or the stream ends, every held character is decided. A held
+    character of a run shorter than ``MIN_RUN`` that is not masked as part of a
+    beginning is sent: fewer than ``MIN_RUN`` characters cannot be told from other
+    text. So from inside the key, up to ``MIN_RUN - 1`` characters can be sent
+    before a pause the run continues after; from there the run is masked.
     """
 
     MIN_RUN = 8
     MASK = "[REDACTED]"
     ALL = ""  # the join of every piece in order; a kind is never empty
+    RAW = "\x00data"  # an event's data when it carries no known text field
     PUBLIC_PREFIX = "sk-ant-"
 
     def __init__(self, key: SecretStr) -> None:
@@ -327,14 +360,16 @@ class StreamTextRedactor:
         fed: set[str] = set()
         entry = []
         for kind, text in pieces:
-            chars = [_Char(ch, 2) for ch in text]
+            joined = kind != self.RAW
+            chars = [_Char(ch, 2 if joined else 1) for ch in text]
             entry.append((kind, chars))
             join = self._joins.setdefault(kind, _Join())
             for char in chars:
-                self._feed(self._joins[self.ALL], char)
+                if joined:
+                    self._feed(self._joins[self.ALL], char)
                 self._feed(join, char)
             if chars:
-                fed.update((self.ALL, kind))
+                fed.update((self.ALL, kind) if joined else (kind,))
         for name, join in self._joins.items():
             if name not in fed:
                 self._decide(join)
@@ -354,28 +389,35 @@ class StreamTextRedactor:
             for length in (*join.active, 0)
             if length < len(secret) and secret[length] == char.ch
         }
-        longest = max(join.active, default=0)
+        beginning = max(join.active, default=0)
+        join.active.discard(len(secret))
+        tail = join.tail + char.ch
+        while tail and tail not in secret:
+            tail = tail[1:]
+        join.tail = tail
         join.pending.append(char)
-        if longest >= min(self.MIN_RUN, len(secret)):
+        # The join's last len(tail) characters are a run of the key; an older held
+        # character is in no run, so this join has decided it.
+        while len(join.pending) > len(tail):
+            join.pending.pop(0).open -= 1
+        if len(tail) >= min(self.MIN_RUN, len(secret)):
             # Every undecided character of the run is masked; its earlier characters
             # were masked when the run reached MIN_RUN or sent before it did.
             for held in join.pending:
                 held.masked = True
                 held.open -= 1
             join.pending.clear()
-        else:
-            while len(join.pending) > longest:
-                join.pending.pop(0).open -= 1
-        join.active.discard(len(secret))
+        elif beginning > self._release:
+            # A beginning of the key longer than the public prefix is never sent.
+            for held in join.pending[-beginning:]:
+                held.masked = True
 
     def _decide(self, join: _Join) -> None:
         # No more text reaches this join before the next event. Its undecided
-        # characters end a beginning of the key: sent while that beginning is within
-        # the public prefix, masked once it is longer. The join still remembers the
-        # beginning they make.
-        masked = max(join.active, default=0) > self._release
+        # characters end a run of the key shorter than MIN_RUN; one in a beginning
+        # longer than the public prefix is already masked, and the rest are sent. The
+        # join still remembers the run and the beginning they make.
         for held in join.pending:
-            held.masked = held.masked or masked
             held.open -= 1
         join.pending.clear()
 

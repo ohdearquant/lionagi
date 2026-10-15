@@ -1532,7 +1532,7 @@ async def test_held_text_reaches_the_consumer_before_the_next_block_starts(monke
 
 
 def test_a_beginning_of_the_key_waits_only_for_the_next_event():
-    """Held while the next event may continue the key; sent when it cannot."""
+    """Held while the next event may continue the key; decided at an event with no text."""
     from lionagi.service.accounts._router import StreamTextRedactor
 
     run = StreamTextRedactor.MIN_RUN
@@ -1676,3 +1676,262 @@ async def test_a_long_key_whose_held_bytes_hold_the_last_events_still_settles(
     assert _raw_delta_text(chunks, "text") == "hi"
     row = _attempts(path)[0]
     assert row[2] == "settled", row
+
+
+# Past the public prefix this key holds only capitals; the filler below uses none.
+_RUN_KEY = "sk-ant-" + "QWXVJKPZBMHTRLYC" * 2
+
+
+def _no_run_of_the_key(joined: str, key: str) -> bool:
+    from lionagi.service.accounts._router import StreamTextRedactor
+
+    run = min(StreamTextRedactor.MIN_RUN, len(key))
+    return not any(
+        segment[start : start + run] in key
+        for segment in joined.split("[REDACTED]")
+        for start in range(len(segment) - run + 1)
+    )
+
+
+@pytest.mark.parametrize("start", [1, 7, 13, 20])
+def test_a_long_run_from_inside_the_key_is_masked(start):
+    out = _redacted([("a", [("text", "ab" + _RUN_KEY[start:] + "zz")])], key=_RUN_KEY)
+    assert _sent(out) == "ab[REDACTED]zz"
+
+
+@pytest.mark.parametrize("cut", range(1, 12))
+def test_a_run_from_inside_the_key_split_across_events_is_masked_whole(cut):
+    span = _RUN_KEY[13:30]
+    out = _redacted(
+        [("a", [("text", "ab" + span[:cut])]), ("b", [("text", span[cut:] + "zz")])], key=_RUN_KEY
+    )
+    assert _sent(out) == "ab[REDACTED]zz"
+
+
+@pytest.mark.parametrize("cut", range(1, 8))
+def test_a_run_from_inside_the_key_sends_fewer_than_min_run_before_a_pause(cut):
+    """Fewer than MIN_RUN characters cannot be told from other text, so a pause inside
+    a run lets them out; the run is masked from there."""
+    span = _RUN_KEY[13:30]
+    out = _redacted(
+        [("a", [("text", "ab" + span[:cut])]), ("pause", []), ("b", [("text", span[cut:] + "zz")])],
+        key=_RUN_KEY,
+    )
+    assert _sent(out) == "ab" + span[:cut] + "[REDACTED]zz"
+
+
+@pytest.mark.parametrize("cut", range(1, 8))
+@pytest.mark.parametrize("key", [_PREFIXED_KEY, _UNPREFIXED_KEY], ids=["sk-ant", "other"])
+def test_a_beginning_broken_by_the_next_character_is_decided_as_at_a_pause(key, cut):
+    sent = _sent(_redacted([("a", [("text", "ab" + key[:cut])]), ("b", [("text", "zz")])], key=key))
+    public = key.startswith("sk-ant-")
+    assert sent == "ab" + (key[:cut] if public else "[REDACTED]") + "zz"
+
+
+def test_a_beginning_inside_a_longer_run_from_inside_the_key_is_still_masked():
+    """The beginning breaks while the run around it goes on: its characters stay masked."""
+    key = "ABCDEFGH" + "XABCY" + "MNOPQRST"
+    sent = _sent(_redacted([("a", [("text", "zz" + "XABCY" + "zz")])], key=key))
+    assert sent == "zzX[REDACTED]Yzz"
+
+
+@pytest.mark.parametrize("seed", range(60))
+@pytest.mark.parametrize("prefixed", [True, False], ids=["sk-ant", "other"])
+def test_no_join_ever_shows_a_run_of_the_key_or_a_secret_beginning(seed, prefixed):
+    """Random texts holding whole keys, beginnings and runs from inside the key, split
+    across kinds, citations, pauses and empty deltas: no join shows MIN_RUN characters
+    in a row from anywhere in the key, nor any part of a beginning past the public
+    prefix."""
+    import random
+
+    rng = random.Random(seed)
+    body = "".join(rng.choice("QWXVJKPZBMHTRLYCGDNF") for _ in range(rng.randint(20, 60)))
+    key = ("sk-ant-" if prefixed else "") + body
+    filler_chars = "abcdefghijklmnopqrstuvwxyz0123456789 .\n"
+    kinds = ["text_delta", "thinking_delta", "input_json_delta", "citations_delta"]
+    text = ""
+    for _ in range(rng.randint(1, 4)):
+        text += "".join(rng.choice(filler_chars) for _ in range(rng.randint(0, 12)))
+        roll = rng.random()
+        if roll < 0.4:
+            text += key[: rng.randint(1, len(key))]
+        elif roll < 0.6:
+            text += key
+        else:
+            start = rng.randrange(len(key))
+            text += key[start : rng.randint(start + 1, len(key))]
+    events = []
+    position = 0
+    while position < len(text):
+        size = rng.randint(1, 15)
+        events.append((len(events), [(rng.choice(kinds), text[position : position + size])]))
+        position += size
+        if rng.random() < 0.3:
+            events.append((len(events), []))
+        if rng.random() < 0.1:
+            events.append((len(events), [(rng.choice(kinds), "")]))
+    out = _redacted(events, key=key)
+    joins = {"": ""}
+    for (_, pieces), (_, texts) in zip(events, out, strict=True):
+        for (kind, _), sent in zip(pieces, texts, strict=True):
+            joins[kind] = joins.get(kind, "") + sent
+            joins[""] += sent
+    for joined in joins.values():
+        assert _no_run_of_the_key(joined, key)
+        # The filler has no capitals, so a capital is a key character; the public prefix
+        # has none. Any shown must come from a run from inside the key, never a beginning.
+        shown = joined.replace("[REDACTED]", "")
+        if not prefixed:
+            assert key[0] not in shown
+
+
+def test_mask_key_runs_masks_each_long_run_and_keeps_short_ones():
+    from pydantic import SecretStr
+
+    from lionagi.service.accounts._router import mask_key_runs
+
+    key = SecretStr(_RUN_KEY)
+    assert mask_key_runs("x " + _RUN_KEY[10:20] + " y", key) == "x [REDACTED] y"
+    assert mask_key_runs(_RUN_KEY[10:17] + " " + _RUN_KEY[3:10], key) == (
+        _RUN_KEY[10:17] + " " + _RUN_KEY[3:10]
+    )
+    assert mask_key_runs("", key) == ""
+
+
+def _seen(chunks) -> str:
+    return " ".join(
+        repr((chunk.content, chunk.tool_input, chunk.tool_output, chunk.metadata))
+        for chunk in chunks
+    )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [CANARY[:20], json.dumps(CANARY[7:]), json.dumps([CANARY[7:]])],
+    ids=["bare", "json-string", "json-array"],
+)
+@pytest.mark.asyncio
+async def test_a_line_that_is_not_a_json_object_is_masked(monkeypatch, tmp_path, data):
+    _install_accounts(monkeypatch, tmp_path)
+    body = _sse([_MESSAGE_START]) + b"data: " + data.encode() + b"\n\n" + _sse(_MESSAGE_END)
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[body])])
+
+    chunks = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    seen = _seen(chunks)
+    assert "[REDACTED]" in seen
+    assert _no_run_of_the_key(seen, CANARY)
+
+
+@pytest.mark.parametrize("cut", [1, 5, 12, 19])
+@pytest.mark.asyncio
+async def test_an_unknown_delta_type_is_masked_and_joined_like_a_known_one(
+    monkeypatch, tmp_path, cut
+):
+    events = [
+        _MESSAGE_START,
+        _text_block(0),
+        _delta("future_delta", "text", "ab" + CANARY[:cut]),
+        _delta("future_delta", "text", CANARY[cut:] + "cd"),
+        {"type": "content_block_stop", "index": 0},
+        *_MESSAGE_END,
+    ]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    assert _raw_delta_text(chunks, "text") == "ab[REDACTED]cd"
+
+
+@pytest.mark.asyncio
+async def test_a_run_of_the_key_in_any_other_string_of_an_event_is_masked(monkeypatch, tmp_path):
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": ""}}
+    error["error"]["message"] = "bad key " + CANARY[3:25]
+    events = [_MESSAGE_START, error]
+
+    chunks = await _stream_events(monkeypatch, tmp_path, events)
+
+    seen = _seen(chunks)
+    assert "bad key [REDACTED]" in seen
+    assert _no_run_of_the_key(seen, CANARY)
+
+
+def _every_linked_error(error: BaseException) -> list[BaseException]:
+    found: list[BaseException] = []
+    todo = [error]
+    while todo:
+        current = todo.pop()
+        if current is None or any(current is seen for seen in found):
+            continue
+        found.append(current)
+        todo += [current.__cause__, current.__context__]
+    return found
+
+
+class _UnreadableResponse(StubResponse):
+    async def json(self):
+        raise ValueError("cannot decode " + CANARY)
+
+
+class _FailingResponse:
+    """A response whose status read fails the way a dropped connection does."""
+
+    closed = False
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    @property
+    def status(self):
+        raise self.error
+
+    def release(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_body_is_not_chained_to_the_error(monkeypatch, tmp_path):
+    from lionagi.service.connections.endpoint import _RoutedNoRetryError
+
+    _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [_UnreadableResponse(), _UnreadableResponse()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(REQUEST)
+    # The request layer's own error, before a retry layer replaces its context.
+    payload, headers = model.endpoint.create_payload(REQUEST)
+    with pytest.raises(_RoutedNoRetryError) as attempt:
+        await model.endpoint._request_attempt(
+            payload=payload,
+            headers=headers,
+            body_kwargs={"json": payload},
+            request_kwargs={},
+            response_mode="json",
+            error_context="Request",
+        )
+
+    for error in (caught.value, attempt.value):
+        linked = _every_linked_error(error)
+        assert not any(isinstance(item, ValueError) for item in linked)
+        assert not any(CANARY in repr(item.args) for item in linked)
+
+
+@pytest.mark.parametrize("streamed", [True, False], ids=["stream", "call"])
+@pytest.mark.asyncio
+async def test_a_transport_error_is_not_chained_to_the_error(monkeypatch, tmp_path, streamed):
+    from aiohttp import ClientError
+
+    _install_accounts(monkeypatch, tmp_path)
+    failing = ClientError("x-api-key: " + CANARY)
+    response = StubResponse(pieces=[failing]) if streamed else _FailingResponse(failing)
+    model, _ = _model(monkeypatch, [response])
+    model.endpoint.config.max_retries = 0
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if streamed:
+            async for _ in model.endpoint.stream(REQUEST):
+                pass
+        else:
+            await model.endpoint.call(REQUEST)
+
+    linked = _every_linked_error(caught.value)
+    assert not any(isinstance(error, ClientError) for error in linked)
