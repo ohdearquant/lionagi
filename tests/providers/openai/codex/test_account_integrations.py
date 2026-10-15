@@ -566,7 +566,9 @@ def test_containment_refuses_a_profile_a_project_codex_config_selects(tmp_path, 
     _project_config(repo / at, 'profile = "w"\n[profiles.w.features]\napps = true\n')
     env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
     req = CodexCodeRequest(prompt="hi", repo=cwd, env=env, contain_account_integrations=True)
-    with pytest.raises(ValueError, match=r"the project codex config .*'s profile = 'w'"):
+    with pytest.raises(
+        ValueError, match=r"profile = 'w' in the project codex config '.*config\.toml'"
+    ):
         req.as_cmd_args()
 
 
@@ -602,21 +604,112 @@ def test_containment_refuses_a_project_codex_config_it_cannot_read(tmp_path):
 
 @pytest.mark.parametrize(
     "fields",
-    [
-        {},
-        {"contain_account_integrations": True, "account_connectors": ["github"]},
-        {
-            "contain_account_integrations": True,
-            "profile": CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2,
-        },
-    ],
-    ids=["uncontained", "granted", "generated-profile"],
+    [{}, {"contain_account_integrations": True, "account_connectors": ["github"]}],
+    ids=["uncontained", "granted"],
 )
-def test_a_project_codex_config_is_read_only_under_containment_with_no_profile(fields, tmp_path):
+def test_a_project_codex_config_is_read_only_under_containment(fields, tmp_path):
     repo = _repo(tmp_path)
     _project_config(repo, "profile = \n")
     env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
     CodexCodeRequest(prompt="hi", repo=repo, env=env, **fields).as_cmd_args()
+
+
+_GENERATED = CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2
+
+
+@pytest.mark.parametrize("where", ["user", "project"])
+def test_containment_refuses_a_config_defining_a_profile_under_the_generated_name(tmp_path, where):
+    """Codex before 0.135 reads `-p` as a `[profiles.<name>]` table in the configs it merges."""
+    table = f"[profiles.{_GENERATED}.features]\napps = true\n"
+    repo = _repo(tmp_path)
+    if where == "user":
+        env = _codex_home(tmp_path, table)
+    else:
+        env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+        _project_config(repo, table)
+    req = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True, profile=_GENERATED
+    )
+    with pytest.raises(ValueError, match=re.escape(f"profile={_GENERATED!r} while")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_the_generated_profile_beside_other_profiles(tmp_path):
+    repo = _repo(tmp_path)
+    env = _codex_home(tmp_path, 'profile = "work"\n[profiles.work.features]\napps = true\n')
+    _project_config(repo, 'profile = "w"\n[profiles.w.features]\nplugins = true\n')
+    args = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True, profile=_GENERATED
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == _GENERATED
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+def test_containment_with_the_generated_profile_refuses_a_config_it_cannot_read(tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "profile = \n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True, profile=_GENERATED
+    )
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+def test_containment_walks_the_resolved_path_of_a_symlinked_working_directory(tmp_path):
+    real = _repo(tmp_path)
+    _project_config(real, 'profile = "w"\n')
+    (real / "sub").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real / "sub", target_is_directory=True)
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=link, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_collapses_a_dot_dot_in_the_working_directory(tmp_path):
+    """`a/b/../c` is `a/c`: the walk reads `a` and above, not the git root at `a/b`."""
+    _project_config(tmp_path, 'profile = "w"\n')
+    (tmp_path / "a" / "b" / ".git").mkdir(parents=True)
+    (tmp_path / "a" / "c").mkdir()
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path / "a" / "b" / ".." / "c",
+        env=env,
+        contain_account_integrations=True,
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_walks_the_spelled_path_beside_the_resolved_one(tmp_path):
+    """`x/link/../c`, with `link` pointing into a git root at `far`, is `x/c` as spelled and
+    `far/c` as resolved; the two trees differ, and the spelled one holds the config."""
+    _project_config(tmp_path / "x", 'profile = "w"\n')
+    (tmp_path / "far" / ".git").mkdir(parents=True)
+    (tmp_path / "far" / "deep").mkdir()
+    (tmp_path / "far" / "c").mkdir()
+    (tmp_path / "x" / "link").symlink_to(tmp_path / "far" / "deep", target_is_directory=True)
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path / "x" / "link" / ".." / "c",
+        env=env,
+        contain_account_integrations=True,
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_refuses_a_project_codex_config_nested_too_deep_to_parse(tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "x = " + "[" * 3000 + "]" * 3000 + "\n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=repo, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
 
 
 @pytest.mark.parametrize("where", ["user", "project"])

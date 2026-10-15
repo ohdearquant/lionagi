@@ -25,6 +25,7 @@ except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 par
 
 __all__ = (
     "CODEX_MCP_PROFILE_PREFIX",
+    "codex_config_defining_profile",
     "codex_home_for_env",
     "configured_codex_profile",
     "global_codex_reasoning_effort",
@@ -251,14 +252,33 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
     return value if isinstance(value, str) and value else None
 
 
-def _root_profile(config_path: Path) -> Any:
+def _read_codex_config(config_path: Path) -> dict[str, Any] | None:
     try:
         if not config_path.is_file():
             return None
-        data = _tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, _tomllib.TOMLDecodeError) as e:
+        return _tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, RecursionError, _tomllib.TOMLDecodeError) as e:
         raise ValueError(f"cannot read the codex config {str(config_path)!r}: {e}") from None
-    return data.get("profile")
+
+
+def _root_profile(config_path: Path) -> Any:
+    data = _read_codex_config(config_path)
+    return None if data is None else data.get("profile")
+
+
+def _project_config_dirs(cwd: Path) -> list[Path]:
+    """The directories whose ``.codex/config.toml`` codex before 0.135 can merge for a child run
+    in ``cwd``: from ``cwd`` up to its git root, every ancestor when there is no git root. The
+    walk is made over the path as spelled, with ``..`` collapsed, and over the resolved path, since
+    a symlink or a ``..`` in ``cwd`` puts the two in different trees."""
+    dirs: list[Path] = []
+    for start in (Path(os.path.abspath(cwd)), Path(cwd).resolve()):
+        for directory in (start, *start.parents):
+            if directory not in dirs:
+                dirs.append(directory)
+            if (directory / ".git").exists():
+                break
+    return dirs
 
 
 def configured_codex_profile(env: Mapping[str, str] | None = None) -> Any:
@@ -282,12 +302,28 @@ def project_codex_profile(cwd: Path) -> tuple[Path, Any] | None:
     not read. None when no file sets the key. A file that cannot be read or parsed raises
     ValueError, as in :func:`configured_codex_profile`.
     """
-    start = Path(cwd).absolute()
-    for directory in (start, *start.parents):
+    for directory in _project_config_dirs(cwd):
         config_path = directory / ".codex" / "config.toml"
         profile = _root_profile(config_path)
         if profile is not None:
             return config_path, profile
-        if (directory / ".git").exists():
-            return None
+    return None
+
+
+def codex_config_defining_profile(
+    name: str, env: Mapping[str, str] | None, cwd: Path
+) -> Path | None:
+    """The first codex config that defines a ``[profiles.<name>]`` table, or None.
+
+    Codex before 0.135 reads ``-p <name>`` as that table in the configs it merges: the user config
+    (found as for :func:`configured_codex_profile`) and the project configs
+    :func:`project_codex_profile` reads. A file that cannot be read or parsed raises ValueError.
+    """
+    paths = [codex_home_for_env(env) / "config.toml"]
+    paths += [directory / ".codex" / "config.toml" for directory in _project_config_dirs(cwd)]
+    for config_path in paths:
+        data = _read_codex_config(config_path)
+        profiles = None if data is None else data.get("profiles")
+        if isinstance(profiles, dict) and name in profiles:
+            return config_path
     return None

@@ -46,6 +46,7 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
 from ._codex_profile import (
+    codex_config_defining_profile,
     configured_codex_profile,
     is_generated_codex_profile,
     project_codex_profile,
@@ -750,7 +751,18 @@ class CodexCodeRequest(BaseModel):
                     f"override {key!r}: it selects or changes a profile, and codex "
                     "before 0.135 applies a profile's features after --disable"
                 )
-        if self.profile is None:
+        if self.profile is not None:
+            # The profile lionagi writes is a file of its own, but codex before 0.135 reads `-p`
+            # as a `[profiles.<name>]` table in the configs it merges, and one defined there under
+            # this name could turn either feature back on.
+            defined = codex_config_defining_profile(self.profile, self.env, self.cwd())
+            if defined is not None:
+                raise ValueError(
+                    f"contain_account_integrations cannot be combined with profile={self.profile!r} "
+                    f"while {str(defined)!r} defines a profile of that name: codex before 0.135 "
+                    "applies its features after --disable"
+                )
+        else:
             sources = [("the codex config", configured_codex_profile(self.env))]
             project = project_codex_profile(self.cwd())
             if project is not None:
@@ -764,7 +776,7 @@ class CodexCodeRequest(BaseModel):
                 else:
                     named = f"a root profile key of type {type(value).__name__}"
                 raise ValueError(
-                    f"contain_account_integrations cannot be combined with {where}'s {named}: "
+                    f"contain_account_integrations cannot be combined with {named} in {where}: "
                     "with no -p, codex before 0.135 makes it the active profile and applies "
                     "its features after --disable (from 0.135 codex refuses the key itself)"
                 )
