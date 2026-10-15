@@ -25,9 +25,11 @@ reaches it as no DELETE, and a ROLLBACK resolution ends the transaction without 
 admission refuses a store whose tables declare any conflict resolution but ABORT, or whose
 triggers and views name one, the statement check refuses a statement that names one, and a write
 is refused once the transaction its operation opened is no longer open: SQLite ending it leaves
-the connection out of a transaction, and any BEGIN the guard did not send clears its mark. A
-statement sent to the driver directly, past the statement check, can still name a conflict
-clause the authorizer cannot see.
+the connection out of a transaction, and a BEGIN the guard did not send clears its mark or,
+inside an open transaction, is denied and poisons it. A statement sent to the driver directly,
+past the statement check, can still name a conflict clause the authorizer cannot see: an
+INSERT OR REPLACE sent that way inside an operation's transaction deletes the row it conflicts
+with, and nothing refuses it.
 """
 
 from __future__ import annotations
@@ -88,18 +90,28 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
 _WORD, _IDENT, _STRING, _PUNCT = "word", "ident", "string", "punct"
 
 
-def _sql_tokens(sql: str) -> list[tuple[str, str]]:
+def _identifier_char(ch: str) -> bool:
+    # SQLite reads every character past ASCII as part of an identifier.
+    return not ch.isascii() or ch.isalnum() or ch in "_$"
+
+
+def _sql_tokens(sql: str, *, spelled: bool = False) -> list[tuple[str, str]]:
     """Split SQL into ``(kind, text)`` tokens, dropping comments and whitespace.
 
     Bare words are lowercased. A quoted identifier ("x", `x`, [x]) is unquoted and lowercased but
     keeps its own kind, so a column named "returning" is never read as the keyword. A string
-    literal keeps its text verbatim, quotes included.
+    literal keeps its text verbatim, quotes included. As in SQLite, only ASCII whitespace
+    separates tokens and every character past ASCII belongs to an identifier.
+
+    *spelled* keeps the case of a double-quoted token, for comparing definitions: SQLite reads
+    one that names no column as a string literal, so ``DEFAULT "Open"`` and ``DEFAULT "open"``
+    differ.
     """
     tokens: list[tuple[str, str]] = []
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
-        if ch.isspace():
+        if ch in " \t\n\v\f\r":
             i += 1
         elif sql.startswith("--", i):
             end = sql.find("\n", i)
@@ -126,11 +138,12 @@ def _sql_tokens(sql: str) -> list[tuple[str, str]]:
                     break
                 parts.append(sql[j])
                 j += 1
-            tokens.append((_IDENT, "".join(parts).lower()))
+            name = "".join(parts)
+            tokens.append((_IDENT, name if spelled and ch == '"' else name.lower()))
             i = j + 1
-        elif ch.isalnum() or ch in "_$":
+        elif _identifier_char(ch):
             j = i + 1
-            while j < n and (sql[j].isalnum() or sql[j] in "_$"):
+            while j < n and _identifier_char(sql[j]):
                 j += 1
             tokens.append((_WORD, sql[i:j].lower()))
             i = j
@@ -154,7 +167,7 @@ def _joined(tokens: list[tuple[str, str]]) -> str:
 
 
 def _normalize_sql(sql: str) -> str:
-    return _joined(_sql_tokens(sql))
+    return _joined(_sql_tokens(sql, spelled=True))
 
 
 def _top_level_words(tokens: list[tuple[str, str]]) -> list[str]:
@@ -322,12 +335,15 @@ class TableShape:
     resolution other than ABORT, SQLite's default, that the table's constraints declare
     (``"replace"``, ``"rollback"``, ``"ignore"``, ``"fail"``); admission refuses a table that has
     one. ``definitions`` holds each column and table-constraint definition of the table's SQL in
-    one spelling (case, whitespace, comments and identifier quotes aside), so what PRAGMA output
-    leaves out is compared too: a collation, a generated column's expression, a ``DEFERRABLE``
-    foreign key, ``AUTOINCREMENT``. Two definitions SQLite reads alike but spells differently,
-    such as ``REFERENCES runs`` and ``REFERENCES runs(id)``, differ. Values compare as
-    :func:`read_closure` spells them, so a profile's shapes come from reading a store built by the
-    managing application.
+    one spelling (whitespace, comments, identifier quotes and the case of words aside; a
+    double-quoted token keeps its case, since SQLite can read it as a string literal), so what
+    PRAGMA output leaves out is compared too: a collation, a generated column's expression, a
+    ``DEFERRABLE`` foreign key, ``AUTOINCREMENT``. Two definitions SQLite reads alike but spells
+    differently differ: ``REFERENCES runs`` and ``REFERENCES runs(id)``, a constraint with and
+    without a name, a default spelled out (``NO ACTION``, ``COLLATE BINARY``, ``ASC``),
+    constraints in another order, a column's ``UNIQUE`` and the table's, ``<>`` and ``!=``.
+    Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
+    a store built by the managing application.
     """
 
     name: str
@@ -479,7 +495,7 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
 
 def _indexed_terms(index_sql: str) -> list[str]:
     """The terms of a CREATE INDEX, each in one spelling: a column, an expression, a COLLATE."""
-    tokens = _sql_tokens(index_sql)
+    tokens = _sql_tokens(index_sql, spelled=True)
     on = next((i for i, token in enumerate(tokens) if token == (_WORD, "on")), None)
     if on is None:
         return []
@@ -490,7 +506,7 @@ def _indexed_terms(index_sql: str) -> list[str]:
 
 
 def _predicate(index_sql: str) -> str:
-    tokens = _sql_tokens(index_sql)
+    tokens = _sql_tokens(index_sql, spelled=True)
     depth = 0
     for index, (kind, text) in enumerate(tokens):
         if kind == _PUNCT and text == "(":
@@ -534,7 +550,7 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
         if partial:
             key.append("where " + _predicate(index_sql))
         unique.add(tuple(key))
-    tokens = _sql_tokens(sql)
+    tokens = _sql_tokens(sql, spelled=True)
     return TableShape(
         name.lower(),
         columns,
@@ -588,9 +604,11 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
                 if key.table in wanted or key.parent in wanted
             )
         elif kind in ("trigger", "view") and row[3]:
+            # A table is named without regard to case, as SQLite matches it; the SQL is kept
+            # as a definition is, the case of a double-quoted token included.
             tokens = _sql_tokens(row[3])
             if wanted.intersection(text for k, text in tokens if k in (_WORD, _IDENT)):
-                objects.add(SchemaObject(kind, name, _joined(tokens)))
+                objects.add(SchemaObject(kind, name, _normalize_sql(row[3])))
     return Closure(tuple(shapes), frozenset(keys), frozenset(objects))
 
 
@@ -804,8 +822,10 @@ class _ConnectionState:
     """Enforcement state of one connection, shared by its authorizer and the engine listeners.
 
     ``write_txn`` is set only by the guard's begin listener, once it has reserved the writer and
-    checked the schema, and cleared when any BEGIN, COMMIT or ROLLBACK is prepared.
-    ``denied`` poisons the current write transaction: its COMMIT is denied.
+    checked the schema. It is cleared when a COMMIT, a ROLLBACK or a BEGIN outside a transaction
+    is prepared, and when a statement finds the connection out of the transaction it marked.
+    ``denied`` poisons the current write transaction: its COMMIT is denied. A BEGIN prepared
+    inside an open transaction is denied, so it poisons that transaction.
     """
 
     __slots__ = ("denied", "last_denial", "seen", "write_txn")
@@ -1028,6 +1048,10 @@ class _Guard:
             if action == sqlite3.SQLITE_TRANSACTION:
                 verb = (arg1 or "").upper()
                 if verb == "BEGIN":
+                    if driver.in_transaction:
+                        # SQLite would refuse it and leave the open transaction under the
+                        # mark it had; denying it poisons that transaction instead.
+                        return denied("BEGIN inside an open transaction")
                     # The begin listener sets the mark after its own BEGIN, so a transaction
                     # anything else opens, including after SQLite ended an operation's
                     # transaction by itself, never carries it.
