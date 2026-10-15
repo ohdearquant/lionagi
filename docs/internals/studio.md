@@ -318,6 +318,15 @@ message ids) must not fall through to `0 or fallback`.
 
 ## lionagi/studio/services/invocations.py
 
+**`list_invocations_route`** — Returns `latest_started_at`, a nullable Unix-second
+timestamp for the maximum recorded start across every row matching `skill`,
+`plugin`, and `status`. It shares the count query and the existing page/count
+read snapshot; limit, offset, update order, and cleanup end times cannot change
+it. No matches or an absent store return null. `completed_total` retains its
+existing status-independent completed count. Clients predating this additive
+field can ignore it; newer clients treat an omitted field from an older daemon
+as unknown rather than deriving a latest start from a bounded page.
+
 **`get_invocation`** — One invocation with its child sessions, artifacts
 and derived health. `readonly` opens the store read-only for callers whose
 contract says they only read; the ordinary open runs schema application,

@@ -1676,6 +1676,8 @@ export async function listArtifactsForSession(
 }
 
 export interface InvocationListResponse {
+  /** Latest recorded start across all matching rows; omitted by older servers. */
+  latest_started_at?: number | null;
   invocations: InvocationSummary[];
   limit: number;
   offset: number;

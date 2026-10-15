@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from fastapi import Query
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import NotFoundError
@@ -188,6 +189,28 @@ async def _count_invocations_from_db(
     )
 
 
+async def _invocation_totals(
+    connection: AsyncConnection,
+    *,
+    skill: str | None,
+    plugin: str | None,
+    status: str | None,
+) -> tuple[int, float | None]:
+    """Matching count and latest recorded start, independent of page order/limit."""
+    params = {
+        name: value
+        for name, value in (("skill", skill), ("plugin", plugin), ("status", status))
+        if value
+    }
+    query = "SELECT COUNT(*) AS total, MAX(started_at) AS latest_started_at FROM invocations"
+    if params:
+        # Column names come only from the fixed filter keys; values remain bound.
+        query += " WHERE " + " AND ".join(f"{name} = :{name}" for name in params)
+    row = (await connection.execute(text(query), params)).mappings().one()
+    latest = row["latest_started_at"]
+    return row["total"], float(latest) if latest is not None else None
+
+
 async def count_invocations(
     *,
     skill: str | None = None,
@@ -327,6 +350,7 @@ async def list_invocations_route(
         rows: list[dict[str, Any]] = []
         total = 0
         completed_total = 0
+        latest_started_at = None
     else:
         async with StateDB(readonly=read_only_open_supported()) as db:
             async with db.read_snapshot() as connection:
@@ -339,12 +363,11 @@ async def list_invocations_route(
                     offset=offset,
                     connection=connection,
                 )
-                total = await _count_invocations_from_db(
-                    db,
+                total, latest_started_at = await _invocation_totals(
+                    connection,
                     skill=skill,
                     plugin=plugin,
                     status=status,
-                    connection=connection,
                 )
                 completed_total = await _count_invocations_from_db(
                     db,
@@ -367,6 +390,7 @@ async def list_invocations_route(
         "has_next": len(rows) == limit,
         "total": total,
         "completed_total": completed_total,
+        "latest_started_at": latest_started_at,
     }
 
 

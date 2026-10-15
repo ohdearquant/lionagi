@@ -248,8 +248,9 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // all 16 locales, so they add nothing to the identity-leak baseline.
   // 1106 = 1105 + the Library's explicit clear-filter action.
   // 1105 = 1106 - empty.createWorkflow, a Library label no component reads.
-  it("en.json has 1105 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1105);
+  // Three labels explain recorded usage, unavailable reads, and unknown start times.
+  it("en.json has 1108 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1108);
   });
 
   it.each(LOCALES.map((l) => l.code))(

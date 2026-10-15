@@ -43,6 +43,19 @@ experience, use `li studio --dev`.
 Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 `/admin/maintenance` remain routed to their current space.
 
+## Recorded usage
+
+Skill and plugin details show recorded invocations only. Zero records do not
+establish that a skill or plugin has never been used: activity outside tracking
+is unknown. Counts and success rates cover all matching records, while the
+recent list contains five records ordered by update time. Failed usage requests
+show an unavailable state with a retry action, without replacing failure with
+zero or an empty-history claim. Recent record ages use their recorded start time,
+so later completion or cleanup does not appear as a new use.
+Last tracked use is the latest recorded start across all matching records,
+independent of the five-row recent list. Older servers without this aggregate
+show Unknown for nonempty results.
+
 ## API resolution
 
 The runtime chooses an API base in this order:

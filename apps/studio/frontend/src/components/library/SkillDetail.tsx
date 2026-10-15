@@ -42,6 +42,7 @@ interface SkillDetailProps {
 
 export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
   const t = useTranslations("library.drawer");
+  const tDaemon = useTranslations("daemon");
   const readOnly = pluginName != null;
 
   const [summary, setSummary] = useState<SkillSummaryDetail | null>(null);
@@ -60,7 +61,12 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
   const [previewVer, setPreviewVer] = useState<DefinitionVersionDetail | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const { stats, loading: statsLoading } = useInvocationStats("skill", name);
+  const {
+    stats,
+    loading: statsLoading,
+    error: statsError,
+    retry,
+  } = useInvocationStats("skill", name);
 
   useEffect(() => {
     let alive = true;
@@ -311,68 +317,93 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
             </div>
           )}
 
-          {/* Stats strip */}
-          <div className="grid grid-cols-3 gap-px overflow-hidden rounded border border-edge bg-edge">
-            {[
-              { label: t("invocations"), value: statsLoading ? "—" : String(stats?.total ?? 0) },
-              {
-                label: t("successRate"),
-                value: statsLoading
-                  ? "—"
-                  : stats?.successRate != null
-                    ? `${stats.successRate}%`
-                    : "—",
-              },
-              {
-                label: t("lastUsed"),
-                value: statsLoading
-                  ? "—"
-                  : stats?.lastUsedSec != null
-                    ? formatInvocationAge(stats.lastUsedSec)
-                    : t("never"),
-              },
-            ].map(({ label, value }) => (
-              <div key={label} className="flex flex-col gap-0.5 bg-surface-raised px-3 py-2">
-                <SectionLabel>{label}</SectionLabel>
-                <span className="font-data tabular-nums text-[length:var(--t-base)] text-content-primary">
-                  {value}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Recent invocations */}
-          <div>
-            <SectionLabel className="mb-1.5">{t("recentInvocations")}</SectionLabel>
-            {statsLoading ? (
-              <p className="text-[length:var(--t-sm)] text-content-muted">{t("loading")}</p>
-            ) : !stats || stats.recent.length === 0 ? (
-              <p className="text-[length:var(--t-sm)] text-content-muted">{t("noInvocations")}</p>
-            ) : (
-              <div className="flex flex-col rounded border border-edge" style={{ borderRadius: 4 }}>
-                {stats.recent.map((inv, i) => (
-                  <Link
-                    key={inv.id}
-                    to="/fleet"
-                    className="flex items-center gap-2 px-2.5 py-2 font-data text-[length:var(--t-sm)] text-content-primary hover:underline"
-                    style={{
-                      borderTop: i > 0 ? "1px solid var(--edge-hairline)" : undefined,
-                    }}
-                  >
-                    <StatusPill value={inv.status} kind="lifecycle" taxonomy="session" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {inv.status === "failed" && inv.status_reason_summary
-                        ? inv.status_reason_summary
-                        : inv.skill}
+          <p className="text-[length:var(--t-sm)] text-content-muted">{t("usageCoverage")}</p>
+          {statsError ? (
+            <div
+              role="alert"
+              className="flex items-center gap-3 text-[length:var(--t-sm)] text-content-muted"
+            >
+              <span>{t("usageUnavailable")}</span>
+              <Button size="sm" onClick={retry}>
+                {tDaemon("retry")}
+              </Button>
+            </div>
+          ) : (
+            <>
+              {/* Stats strip */}
+              <div className="grid grid-cols-3 gap-px overflow-hidden rounded border border-edge bg-edge">
+                {[
+                  {
+                    label: t("invocations"),
+                    value: statsLoading ? "—" : String(stats?.total ?? 0),
+                  },
+                  {
+                    label: t("successRate"),
+                    value: statsLoading
+                      ? "—"
+                      : stats?.successRate != null
+                        ? `${stats.successRate}%`
+                        : "—",
+                  },
+                  {
+                    label: t("lastUsed"),
+                    value: statsLoading
+                      ? "—"
+                      : stats?.lastUsedSec != null
+                        ? formatInvocationAge(stats.lastUsedSec)
+                        : stats?.total === 0
+                          ? t("never")
+                          : t("usageUnknown"),
+                  },
+                ].map(({ label, value }) => (
+                  <div key={label} className="flex flex-col gap-0.5 bg-surface-raised px-3 py-2">
+                    <SectionLabel>{label}</SectionLabel>
+                    <span className="font-data tabular-nums text-[length:var(--t-base)] text-content-primary">
+                      {value}
                     </span>
-                    <span className="shrink-0 tabular-nums text-[length:var(--t-xs)] text-content-muted">
-                      {formatInvocationAge(inv.ended_at ?? inv.started_at)}
-                    </span>
-                  </Link>
+                  </div>
                 ))}
               </div>
-            )}
-          </div>
+
+              {/* Recent invocations */}
+              <div>
+                <SectionLabel className="mb-1.5">{t("recentInvocations")}</SectionLabel>
+                {statsLoading ? (
+                  <p className="text-[length:var(--t-sm)] text-content-muted">{t("loading")}</p>
+                ) : !stats || stats.recent.length === 0 ? (
+                  <p className="text-[length:var(--t-sm)] text-content-muted">
+                    {t("noInvocations")}
+                  </p>
+                ) : (
+                  <div
+                    className="flex flex-col rounded border border-edge"
+                    style={{ borderRadius: 4 }}
+                  >
+                    {stats.recent.map((inv, i) => (
+                      <Link
+                        key={inv.id}
+                        to="/fleet"
+                        className="flex items-center gap-2 px-2.5 py-2 font-data text-[length:var(--t-sm)] text-content-primary hover:underline"
+                        style={{
+                          borderTop: i > 0 ? "1px solid var(--edge-hairline)" : undefined,
+                        }}
+                      >
+                        <StatusPill value={inv.status} kind="lifecycle" taxonomy="session" />
+                        <span className="min-w-0 flex-1 truncate">
+                          {inv.status === "failed" && inv.status_reason_summary
+                            ? inv.status_reason_summary
+                            : inv.skill}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-[length:var(--t-xs)] text-content-muted">
+                          {formatInvocationAge(inv.started_at)}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           {/* Instructions */}
           <div>
