@@ -147,15 +147,20 @@ class SQLAlchemyLifecycleService:
 
         transition_id = uuid.uuid4().hex
         now = time.time()
+        # A store whose rows carry an owner gets it written on the transition too (ADR-0128 D5).
+        owner_values = getattr(self._db, "_owner_values", None)
+        owned = owner_values("status_transitions") if owner_values is not None else {}
+        owner_columns = "".join(', "' + name.replace('"', '""') + '"' for name in owned)
+        owner_params = "".join(f", :_owner{i}" for i in range(len(owned)))
         await connection.execute(
             text(
-                "INSERT INTO status_transitions "
+                "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
                 "(id, entity_type, entity_id, previous_status, status, "
                 " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
+                f" source, actor, created_at, metadata{owner_columns}) "
                 "VALUES (:id, :entity_type, :entity_id, NULL, :status, "
                 " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
+                f" :source, :actor, :created_at, :metadata{owner_params})"
             ).bindparams(
                 bindparam("evidence_refs", type_=JSON),
                 bindparam("metadata", type_=JSON),
@@ -172,6 +177,7 @@ class SQLAlchemyLifecycleService:
                 "actor": command.actor.id,
                 "created_at": now,
                 "metadata": dict(command.reason.metadata),
+                **{f"_owner{i}": value for i, value in enumerate(owned.values())},
             },
         )
         return transition_id

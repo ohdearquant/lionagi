@@ -46,6 +46,7 @@ __all__ = (
     "ColumnShape",
     "CompatibilityProfile",
     "ForeignKeyShape",
+    "OwnerRule",
     "SchemaObject",
     "StateCompatibilityRefused",
     "TableShape",
@@ -569,6 +570,27 @@ class TableWrites:
         )
 
 
+@dataclass(frozen=True)
+class OwnerRule:
+    """Where a store records who owns a row (ADR-0128 D5).
+
+    Every table in the profile's closure that has a column named ``column`` is owned. Compatibility
+    mode writes the configured owner into that column on every insert, never leaving it to the
+    column's default, and the owner must exist as a ``key`` value of the ``principals`` table.
+    """
+
+    column: str
+    principals: str
+    key: str = "id"
+
+    def __post_init__(self) -> None:
+        for name in ("column", "principals", "key"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"OwnerRule.{name} names a column or table: {value!r}")
+            object.__setattr__(self, name, value.lower())
+
+
 def _rowid_alias(column: ColumnShape, table: TableShape) -> bool:
     return (
         column.pk == 1
@@ -586,7 +608,9 @@ class CompatibilityProfile:
     table, the columns inserted and updated; ``operations`` the StateDB operations served.
     ``store_versions``, when set, narrows the stores a profile is tried on by their
     ``schema_meta`` version; a version never admits a store on its own. ``invariants`` states the
-    reader invariants the operations keep. Profiles compare by identity.
+    reader invariants the operations keep. ``owner``, when set, names where the store records who
+    owns a row; every owned table the profile inserts into must insert the owner column, and none may
+    update it. Profiles compare by identity.
     """
 
     name: str
@@ -596,6 +620,7 @@ class CompatibilityProfile:
     operations: frozenset[str]
     store_versions: frozenset[str] | None = None
     invariants: tuple[str, ...] = ()
+    owner: OwnerRule | None = None
 
     def __post_init__(self) -> None:
         if not self.name or "@" in self.name:
@@ -609,6 +634,8 @@ class CompatibilityProfile:
         tables = {table.name: table for table in self.closure.tables}
         for name, spec in writes.items():
             self._check_writes(name, spec, tables.get(name))
+        if self.owner is not None:
+            self._check_owner(self.owner, writes, tables)
         object.__setattr__(self, "operations", operations)
         object.__setattr__(self, "writes", MappingProxyType(writes))
         if self.store_versions is not None:
@@ -649,6 +676,43 @@ class CompatibilityProfile:
                     f"{where}: {column} is NOT NULL with no default, so an insert leaving it "
                     "out fails"
                 )
+
+    def _check_owner(
+        self, owner: OwnerRule, writes: Mapping[str, TableWrites], tables: Mapping[str, TableShape]
+    ) -> None:
+        if not isinstance(owner, OwnerRule):
+            raise TypeError(f"profile {self.name}: owner takes an OwnerRule, got {type(owner)!r}")
+        principals = tables.get(owner.principals)
+        if principals is None:
+            raise ValueError(
+                f"profile {self.name}: the principals table {owner.principals} is not in the closure"
+            )
+        if owner.key not in {column.name for column in principals.columns}:
+            raise ValueError(
+                f"profile {self.name}: {owner.principals} has no column {owner.key} to find an owner by"
+            )
+        for name, spec in writes.items():
+            if owner.column not in {column.name for column in tables[name].columns}:
+                continue
+            where = f"profile {self.name}, table {name}"
+            if owner.column in spec.update:
+                raise ValueError(f"{where}: the owner column {owner.column} is never updated")
+            if spec.insert and owner.column not in spec.insert:
+                raise ValueError(
+                    f"{where}: inserts write the owner column {owner.column}; a default is never "
+                    "the owner"
+                )
+
+    @property
+    def owned_tables(self) -> frozenset[str]:
+        """The closure's tables that carry the owner column; empty without an owner rule."""
+        if self.owner is None:
+            return frozenset()
+        return frozenset(
+            table.name
+            for table in self.closure.tables
+            if any(column.name == self.owner.column for column in table.columns)
+        )
 
     @property
     def label(self) -> str:
@@ -734,10 +798,16 @@ def _is_auth_error(exc: BaseException) -> bool:
 class _Guard:
     """Admission and enforcement for one compatibility-mode StateDB."""
 
-    def __init__(self, profile: CompatibilityProfile) -> None:
+    def __init__(self, profile: CompatibilityProfile, owner: str | None = None) -> None:
         if not isinstance(profile, CompatibilityProfile):
             raise TypeError(f"compatibility takes a CompatibilityProfile, got {type(profile)!r}")
+        if profile.owner is not None and (not isinstance(owner, str) or not owner):
+            raise ValueError(f"profile {profile.label} records owners, so an owner is required")
+        if profile.owner is None and owner is not None:
+            raise ValueError(f"profile {profile.label} records no owner, so none can be given")
         self.profile = profile
+        self.owner = owner
+        self.owned_tables = profile.owned_tables
         # PRAGMA schema_version as admitted; a write transaction that finds another value
         # re-reads the closure before any statement runs.
         self.schema_version: int | None = None
@@ -822,11 +892,25 @@ class _Guard:
 
         try:
             self._check_store(fetch, "admission", "open")
+            self._check_owner(connection)
             self.schema_version = int(fetch("PRAGMA schema_version")[0][0])
         except StateCompatibilityRefused:
             raise
         except (sqlite3.Error, DBAPIError) as exc:
             raise self.refusal(f"the store could not be read: {exc}", operation="open") from exc
+
+    def _check_owner(self, connection) -> None:
+        rule = self.profile.owner
+        if rule is None:
+            return
+        found = connection.exec_driver_sql(
+            f"SELECT 1 FROM {_quote(rule.principals)} WHERE {_quote(rule.key)} = ?",  # noqa: S608
+            (self.owner,),
+        ).fetchall()
+        if not found:
+            raise self.refusal(
+                f"admission: the owner {self.owner!r} is not in {rule.principals}", operation="open"
+            )
 
     def _recheck(self, connection) -> None:
         def fetch(sql: str) -> list:
