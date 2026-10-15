@@ -187,7 +187,13 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) -> bool:
     """Mask long runs of the key in every string of ``value`` not in ``skip``, in
-    place; return whether any string changed."""
+    place; return whether any string changed.
+
+    A string is matched on its own, and a name and a number are matched as their text.
+    A name whose text holds a run is replaced by that text, and where the masked name
+    is already taken it is numbered too, so both values stay reachable; a number whose
+    text holds a run is replaced by that text. A bool and None are never matched.
+    """
     from lionagi.service.accounts._router import mask_key_runs
 
     if isinstance(value, dict):
@@ -200,9 +206,28 @@ def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) 
     for name, item in items:
         if (id(value), name) in skip:
             continue
+        if isinstance(name, str):
+            masked = mask_key_runs(name, key)
+            if masked != name:
+                taken = masked
+                suffix = 2
+                while taken in value:
+                    taken = f"{masked} ({suffix})"
+                    suffix += 1
+                value[taken] = value.pop(name)
+                name = taken
+                changed = True
         if isinstance(item, str):
             masked = mask_key_runs(item, key)
             if masked != item:
+                value[name] = masked
+                changed = True
+        elif isinstance(item, bool) or item is None:
+            # A bool is an int to `isinstance`, and neither it nor None is text.
+            continue
+        elif isinstance(item, (int, float)):
+            masked = mask_key_runs(str(item), key)
+            if masked != str(item):
                 value[name] = masked
                 changed = True
         elif isinstance(item, (dict, list)):
@@ -216,8 +241,10 @@ def _mask_content_runs(body: Any, key: Any) -> Any:
     The text, thinking and quoted text of its content are each matched as a join of their
     kind, and all of them in order, a bare string item counting as text; a key split
     across those is masked in each piece that holds part of it. Every other string, such
-    as a tool input value, a tool result text or a citation title, is matched on its own
-    (see ``StreamTextRedactor``). The body is changed in place.
+    as a tool input value, a redacted block, a citation title or a signature, is matched
+    on its own, so a key split between one of the joined strings and one of those is not
+    masked (see ``StreamTextRedactor``). A dict name and a number are matched as their
+    text; see ``_mask_key_runs_in_strings``. The body is changed in place.
     """
     from lionagi.service.accounts._router import mask_joined_key_runs
 
@@ -700,8 +727,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                             places.append((delta, name))
             # Every other string value in the event is matched on its own: no consumer joins
             # it, except as the text of the event's chunk, which is joined with other chunks'
-            # text. An object's names are not matched for runs; the chunk masks a whole key in
-            # one.
+            # text. An object's name and a number are matched as their text too, and the
+            # chunk masks a whole key wherever one lies in the text it shows.
             rewrite = _mask_key_runs_in_strings(
                 event, attempt.key, {(id(holder), name) for holder, name in places}
             )

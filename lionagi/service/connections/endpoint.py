@@ -198,6 +198,16 @@ class Endpoint:
 
             raise AccountRoutingError(RouterErrorCode.CREDENTIAL_CONFLICT) from None
 
+        if routed and any(
+            source.get("response_mode", "json") != "json" for source in (request, kwargs)
+        ):
+            from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+
+            # A routed call is settled from the usage in its JSON body and its key is
+            # masked in that body as parsed; a mode that returns anything else can do
+            # neither, so it is refused here, before a request is built or sent.
+            raise AccountRoutingError(RouterErrorCode.UNSUPPORTED_PRICING) from None
+
         payload = self.config.kwargs.copy()
         payload.update(request)
 

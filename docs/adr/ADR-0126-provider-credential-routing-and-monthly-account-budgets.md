@@ -36,15 +36,18 @@ closing the fourth would mean a join for every set of chunk types a consumer mig
 - A consumer that joins the text of some chunk types and not others, such as text and thinking
   without the error chunk between them, makes a join the stream path does not match, so a run of
   the key split across that join's parts can be sent.
-- The names in an event's objects are not matched for runs; a whole key in a name is masked in the
-  chunks a consumer receives.
+- An event's object names and numbers are matched for runs as their text, like every other string
+  value; the chunk a consumer receives masks a whole key wherever one lies in the text it shows.
 
 A response that is not streamed reaches its caller only with status 200 and only as parsed JSON;
 every whole key in it is masked, the text, thinking and quoted text of its content are matched for
 runs as joins of each kind and all in order (a bare string item counts as text), and every other
-string is matched for runs on its own. Unlike a stream it does not mask a beginning of the key
-shorter than eight characters, since it can read the whole text first. A routed call that asks for
-another response mode is refused with `unsupported_pricing` before it is sent.
+string, a dict name and a number alike, is matched for runs on its own, as its text. A run split
+between one of the joined strings and any other string, such as a tool input value, a redacted
+block, a citation title or a signature, is therefore matched in each string on its own and left
+unmasked. Unlike a stream it does not mask a beginning of the key shorter than eight characters,
+since it can read the whole text first. A routed call that asks for another response mode is
+refused with `unsupported_pricing` before it is sent.
 
 ## Requirements
 

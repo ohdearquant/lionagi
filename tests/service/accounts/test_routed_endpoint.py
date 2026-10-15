@@ -1158,8 +1158,10 @@ async def test_a_response_masks_a_run_split_across_a_text_block_and_a_bare_strin
     monkeypatch,
     tmp_path,
 ):
+    """Each piece holds six characters of the key, so neither is a run on its own and
+    only the join of the two text pieces holds one."""
     run = CANARY[4:20]
-    content = [{"type": "text", "text": run[:8]}, run[8:]]
+    content = [{"type": "text", "text": run[:6]}, run[6:]]
 
     result = await _routed_call_on_content(monkeypatch, tmp_path, content)
 
@@ -1216,7 +1218,9 @@ async def test_a_response_masks_a_run_that_only_its_text_blocks_join_holds(
 
 @pytest.mark.asyncio
 async def test_a_response_masks_a_run_split_across_two_citations(monkeypatch, tmp_path):
-    first, second = CANARY[6:14], CANARY[14:22]
+    """Each citation holds six characters of the key, so neither is a run on its own
+    and only the join of the quoted texts holds one."""
+    first, second = CANARY[6:12], CANARY[12:18]
     content = [
         {"type": "text", "text": "one", "citations": [{"cited_text": first, "title": "t1"}]},
         {"type": "text", "text": "two", "citations": [{"cited_text": second, "title": "t2"}]},
@@ -1227,6 +1231,152 @@ async def test_a_response_masks_a_run_split_across_two_citations(monkeypatch, tm
     _masked_in_every_string(result)
     assert result["content"][0]["citations"][0]["cited_text"] == "[REDACTED]"
     assert result["content"][1]["citations"][0]["cited_text"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_a_response_masks_a_key_run_in_a_names_own_text(monkeypatch, tmp_path):
+    """A tool input's object name holds a run of the key: the name is replaced by its
+    masked text and the value it held stays under it."""
+    run = CANARY[4:20]
+    content = [{"type": "tool_use", "name": "lookup", "input": {run: "kept"}}]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert result["content"][0]["input"] == {"[REDACTED]": "kept"}
+
+
+@pytest.mark.asyncio
+async def test_a_response_keeps_both_values_when_its_masked_name_is_taken(
+    monkeypatch,
+    tmp_path,
+):
+    """A name that masks to one already in the object is numbered, so neither value is
+    lost to the other."""
+    run = CANARY[4:20]
+    content = [
+        {
+            "type": "tool_use",
+            "name": "lookup",
+            "input": {run: "run value", "[REDACTED]": "other value"},
+        }
+    ]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert result["content"][0]["input"] == {
+        "[REDACTED]": "other value",
+        "[REDACTED] (2)": "run value",
+    }
+
+
+@pytest.mark.parametrize("value", [123456789, 123456789.0], ids=["int", "float"])
+@pytest.mark.asyncio
+async def test_a_response_masks_a_key_run_in_a_numbers_own_text(monkeypatch, tmp_path, value):
+    """A number whose text holds a run of the key is replaced by the masked text of that
+    number."""
+    expected = "[REDACTED]" if isinstance(value, int) else "[REDACTED].0"
+    content = [{"type": "tool_use", "name": "lookup", "input": {"count": value}}]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    _masked_in_every_string(result)
+    assert result["content"][0]["input"]["count"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_response_leaves_a_name_or_a_number_with_no_run_alone(monkeypatch, tmp_path):
+    content = [
+        {
+            "type": "tool_use",
+            "name": "lookup",
+            "input": {"query": "a question", "count": 42, "ratio": 1.5},
+        }
+    ]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    assert result["content"][0]["input"] == {"query": "a question", "count": 42, "ratio": 1.5}
+    assert isinstance(result["content"][0]["input"]["count"], int)
+    assert isinstance(result["content"][0]["input"]["ratio"], float)
+
+
+@pytest.mark.asyncio
+async def test_a_response_leaves_a_bool_and_none_alone(monkeypatch, tmp_path):
+    content = [{"type": "tool_use", "name": "lookup", "input": {"ok": True, "missing": None}}]
+
+    result = await _routed_call_on_content(monkeypatch, tmp_path, content)
+
+    assert result["content"][0]["input"] == {"ok": True, "missing": None}
+    assert result["content"][0]["input"]["ok"] is True
+
+
+@pytest.mark.parametrize("mode", ["bytes", "text", None], ids=["bytes", "text", "None"])
+@pytest.mark.asyncio
+async def test_a_routed_invoke_asking_for_a_non_json_mode_is_refused_before_it_is_sent(
+    monkeypatch,
+    tmp_path,
+    mode,
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.invoke(messages=REQUEST["messages"], max_tokens=32, response_mode=mode)
+
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.asyncio
+async def test_a_routed_stream_asking_for_bytes_is_refused_before_it_is_sent(
+    monkeypatch,
+    tmp_path,
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [StubResponse(pieces=_stream_pieces())])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        [
+            chunk
+            async for chunk in model.stream(
+                messages=REQUEST["messages"], max_tokens=32, response_mode="bytes"
+            )
+        ]
+
+    assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
+    assert not transport.calls
+    assert not path.exists() or not _attempts(path)
+
+
+@pytest.mark.asyncio
+async def test_a_routed_invoke_asking_for_json_is_sent(monkeypatch, tmp_path):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    completed = await model.invoke(
+        messages=REQUEST["messages"], max_tokens=32, response_mode="json"
+    )
+
+    assert completed.status.value == "completed"
+    assert len(transport.calls) == 1
+    assert len(_attempts(path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unrouted_invoke_asking_for_bytes_is_unchanged(monkeypatch, tmp_path):
+    _install_unconfigured(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response()])
+
+    completed = await model.invoke(
+        messages=REQUEST["messages"], max_tokens=32, response_mode="bytes"
+    )
+
+    assert completed.status.value == "completed"
+    assert len(transport.calls) == 1
+    assert transport.calls[0]["json"]["messages"] == REQUEST["messages"]
 
 
 @pytest.mark.asyncio
