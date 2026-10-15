@@ -634,7 +634,7 @@ async def test_view_flags_degraded_completed_flow(temp_db_path: Path):
         view = await _build_view(db, command="play", entity_type="session", row=row)
     assert view["degraded"] is True
     assert view["degraded_reason"] is not None
-    assert view["current_phase"] == "synthesizing"
+    assert view["current_phase"] is None
 
 
 @pytest.mark.asyncio

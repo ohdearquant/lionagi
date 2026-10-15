@@ -581,10 +581,26 @@ statements; a session can go terminal between them. The insert re-checks the
 running condition so it — not the earlier read — is what decides admission,
 avoiding a control queued against a run whose consumer has already exited.
 
-Landing time is a property of the consumer, not the verb: a flow/play poller
-renders queued context before the next op (~2s poll interval), while an
-agent leg only drains at its next turn boundary, which can be far later than
-2s into a long provider call.
+Flow/play sessions persist `planning` before calling the planner. Controls
+queued in that phase are explicitly deferred until planning completes and
+`_execute_dag` starts its poller. The approximately two-second poll interval
+is not a delivery deadline or a guarantee of application before the first
+operation. Applied pause/resume closes/opens the executor gate at operation
+boundaries and persists `paused`/`executing`; in-flight operations continue.
+Messages affect only operations prepared after delivery and are rejected
+when no operations remain pending. Agent legs instead drain at their next
+turn boundary, which can be far later than two seconds into a provider call.
+
+Flow finalization clears the persisted live phase inside its cancellation
+shield before closing persistence. Status and monitor also suppress stale
+live phases on terminal records written by older runners. Neither a queued
+pause nor a queued resume changes the phase before the executor applies it.
+
+Control targets must resolve to a recorded session, invocation, play or run.
+Use the printed session ID or an invocation registered with `li invoke start`;
+a self-chosen `--invocation` value does not register an alias. In monitor,
+`--type session` includes flow sessions; `--type invocation` selects registered
+invocations. The row label `flow` is not a monitor entity-type filter.
 
 ### `_finalize.py` — the exclusive claim over closing a manifest round
 
@@ -876,6 +892,10 @@ pending_controls
 Exit codes: `0` terminal-success, `1` terminal-failure, `3` still running/active, `2` lookup
 failed (unknown id, or state.db unreachable; also argparse's own usage-error code).
 
+`current_phase` describes live execution (`planning`, `executing`, `paused`, or
+`synthesizing`). It is null when the requested entity or its backing session is
+terminal, including older records that still store a live phase.
+
 `pending_controls`: unapplied `session_controls` rows (id, verb, created_at) for the resolved
 session, oldest first — queued via `li o ctl pause|resume|msg`, then consumed by the control
 poller while a flow runs. `[]` when no backing session or nothing queued.
@@ -904,12 +924,10 @@ of hanging indefinitely.
 record whose backing session shows no sign the normal teardown path (`persist_session_end` /
 `SESSION_END` hook) ever ran — a proxy for an orphan/limit-exit that forced a "completed"
 status. Deliberately narrower than a literal "`current_phase` non-terminal OR `duration_ms` is
-NULL" check: `current_phase` is only ever written as "executing"/"synthesizing"
-(`lionagi/cli/orchestrate/flow.py`) and is never reset to a terminal marker on any path, healthy
-or not, so alone it would flag every successful flow/play run. `duration_ms` is never populated
-by the CLI teardown path at all (`_collect_branch_usage`'s return has no `duration_ms` key) —
-checking it alone would flag every completed session, healthy or not. `num_turns` IS populated
-by that path (`persist_session_end` receives it from `_collect_branch_usage`, default 0, not
+NULL" check: older successful flow/play records can retain a live phase, and older teardown
+paths left duration unset. Current flow finalization clears the phase, and terminal display
+suppresses legacy phases; neither field alone proves whether usage was recorded. `num_turns`
+is populated by that path (`persist_session_end` receives it from `_collect_branch_usage`, default 0, not
 None), so its absence is a real signal — scoped to `source_kind='live'` because mirrored Claude
 Code transcripts (`source_kind='imported_fs'`) use a dormancy-based "completed" with no usage
 metrics by design (`lionagi/state/claude_mirror.reconcile_session_status`) and must not be

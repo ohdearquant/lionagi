@@ -200,7 +200,7 @@ class FlowPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
 
-async def _persist_session_phase(env, phase: str) -> None:
+async def _persist_session_phase(env, phase: str | None) -> None:
     """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
@@ -343,10 +343,14 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     try:
         if verb == "pause":
             executor.pause()
+            with contextlib.suppress(Exception):
+                await db.update_session(row["session_id"], current_phase="paused")
             return await _finalize_applied(db, control_id)
 
         if verb == "resume":
             executor.resume()
+            with contextlib.suppress(Exception):
+                await db.update_session(row["session_id"], current_phase="executing")
             return await _finalize_applied(db, control_id)
 
         if verb == "message":
@@ -2951,6 +2955,9 @@ async def _run_flow(
         raise
     finally:
         with CancelScope(shield=True):
+            # Execution and its control poller have stopped. Clear the live
+            # phase before teardown closes the database, including cancellation.
+            await _persist_session_phase(env, None)
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
@@ -3114,6 +3121,7 @@ async def _run_flow_inner(
         )
 
         progress("Planning DAG...")
+        await _persist_session_phase(env, "planning")
         try:
             assignments = await plan(
                 env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops

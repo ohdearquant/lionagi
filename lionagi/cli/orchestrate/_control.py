@@ -88,7 +88,12 @@ async def _enqueue_control_inner(
         except AmbiguousIdError as exc:
             return str(exc), EXIT_UNKNOWN
         if session is None:
-            return f"no session/invocation/play found for id {entity_id!r}", EXIT_UNKNOWN
+            return (
+                f"no session/invocation/play found for id {entity_id!r} — use the printed "
+                "session ID or an invocation ID registered with `li invoke start`; "
+                "`--invocation` alone does not register a control target",
+                EXIT_UNKNOWN,
+            )
         session_id = session["id"]
         status = session.get("status")
         if status != "running":
@@ -158,11 +163,20 @@ async def _enqueue_control_inner(
     # leg drains at its next turn boundary — which can be much later than 2s
     # into a long provider call. Stating the flow-poller number for an agent
     # steer would tell the operator to expect delivery well before it lands.
-    landing = (
-        "lands as a continuation turn once the run's current turn ends"
-        if kind == "agent"
-        else f"applies within ~{2:.0f}s while the flow is live"
-    )
+    if kind == "agent":
+        landing = "lands as a continuation turn once the run's current turn ends"
+    else:
+        landing = (
+            "deferred until planning completes and the execution poller runs; "
+            if session.get("current_phase") == "planning"
+            else "execution poller checks about every 2s during DAG execution; "
+        )
+        landing += (
+            "context reaches only operations prepared after delivery"
+            if verb == "message"
+            else "pause/resume gates new operations at operation boundaries; "
+            "running operations are not interrupted"
+        )
     return (
         f"queued {verb} (control {control_id[:8]}) for session {session_id[:8]} — "
         f"{landing}; check `li o ctl status {session_id[:8]}`",

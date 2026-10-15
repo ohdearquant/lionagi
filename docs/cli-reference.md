@@ -333,6 +333,19 @@ li o ctl msg ID "Prioritize correctness over breadth"
 using context-mode operator steering. Use `li o ctl SUBCOMMAND --help` for the
 command-specific ID and JSON options.
 
+Use the session ID printed by the running flow, or an invocation ID registered
+with `li invoke start`. Supplying a self-chosen `--invocation` value does not
+register a new invocation or create a control-target alias.
+
+During `planning`, controls remain queued until planning completes and the DAG
+execution poller runs. That poller checks about every two seconds during execution;
+it does not interrupt the planner or guarantee delivery before the first operation.
+Pause/resume gate new operations at operation boundaries; operations already
+running finish normally. Messages affect only operations prepared after delivery
+and are rejected if no operations remain pending. Check `status` to distinguish a
+queued control from an applied one. Applied pause/resume changes the live phase to
+`paused`/`executing`; terminal flows have no live phase.
+
 ---
 
 ## Playbooks (`-f`, `-p`, `li play`)
@@ -520,6 +533,10 @@ li monitor --project myproject  # filter sessions by project
 | `--since WINDOW` | active entities only | Time window: `30m`, `1h`, `2d`; includes terminal rows updated in the window |
 | `-t, --type` | none | One of `session`, `invocation`, `show`, `play`, `command`. `command` narrows to invocations launched as a command action |
 | `-p, --project` | none | Filter sessions by project name |
+
+Flow runs are sessions: use `--type session`, even when the table's `type` column
+labels the row `flow`. Use `--type invocation` for records registered through
+`li invoke start`. `flow` is not a supported `--type` value.
 
 A session detail view includes a `khive injection` block when an opted-in profile recorded
 non-zero recall, injection, failure, degradation, or writeback counters. `degraded_turns`

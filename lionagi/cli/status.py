@@ -329,7 +329,7 @@ def _detect_degraded(
     if primary_session.get("num_turns") is not None:
         return False, None
     phase = primary_session.get("current_phase")
-    detail = f"; current_phase={phase!r} never advanced to a terminal marker" if phase else ""
+    detail = f"; stored current_phase={phase!r}" if phase else ""
     return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded{detail}"
 
 
@@ -379,7 +379,8 @@ async def _build_view(
     if primary_session is not None:
         model = primary_session.get("model")
         provider = primary_session.get("provider")
-        current_phase = primary_session.get("current_phase")
+        if not terminal and not _classify("session", primary_session.get("status") or "")[0]:
+            current_phase = primary_session.get("current_phase")
         last_activity = primary_session.get("last_message_at") or primary_session.get("updated_at")
     else:
         last_activity = row.get("updated_at")
@@ -474,6 +475,8 @@ def _render_human(view: dict[str, Any]) -> str:
         lines.append("")
         if not view["terminal"]:
             lines.append(_dim("  -- pending controls --"))
+            if view["current_phase"] == "planning":
+                lines.append("  deferred until planning completes and the execution poller runs")
         elif any(
             str(c.get("result") or "").startswith("applying") for c in view["pending_controls"]
         ):
