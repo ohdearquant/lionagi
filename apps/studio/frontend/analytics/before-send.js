@@ -3,11 +3,13 @@
  *
  * The tracker calls `window[data-before-send](type, payload)` before every
  * send and awaits the result: a falsy value drops the send, any other value is
- * sent as the payload. The hook keeps page views useful as aggregate traffic
- * while removing per-visitor detail: ids, search strings, and hashes never
- * leave the browser. It is injected inline into the hosted `index.html` by
- * `hostedAnalyticsInjector` in vite.config.mts, ahead of the tracker tag, and
- * is never present in local, source, Docker, or packaged builds.
+ * sent as the payload. The hook rebuilds the payload from an allowlist of
+ * page-view fields, so a value another script hands the tracker (an `id` from
+ * `umami.identify(...)` or the `data` given to `umami.track({...})`) never
+ * rides along on a later page view; ids, search strings, and hashes never leave
+ * the browser. It is injected inline into the hosted `index.html` by
+ * `hostedAnalyticsInjector` in vite.config.mts, ahead of the tracker loader,
+ * and is never present in local, source, Docker, or packaged builds.
  */
 (function () {
   "use strict";
@@ -47,6 +49,9 @@
     "/teams",
   ];
 
+  // The only page-view fields the tracker is allowed to send.
+  var ALLOWED_FIELDS = ["website", "hostname", "screen", "language", "url", "referrer", "title"];
+
   var ONE_SEGMENT = "[^/]+";
 
   // Dynamic routes collapse to a fixed template so an id never reaches the
@@ -84,14 +89,18 @@
 
   window.__studioAnalyticsBeforeSend = function (type, payload) {
     try {
-      // We run no identify calls and no custom events; the tracker sends
-      // nothing for a falsy result.
-      if (type === "identify" || (payload && payload.name !== undefined)) {
+      // The tracker sends page views, and page views only; anything else —
+      // identify calls (which carry an `id`) and named custom events (which
+      // carry `data`) — sends nothing.
+      if (type !== "event" || (payload && payload.name !== undefined)) {
         return false;
       }
 
+      // Copy only the allowlisted page-view fields, so a key another script
+      // added to the tracker's internal payload state is not sent.
       var result = {};
-      for (var key in payload) {
+      for (var i = 0; i < ALLOWED_FIELDS.length; i += 1) {
+        var key = ALLOWED_FIELDS[i];
         if (Object.prototype.hasOwnProperty.call(payload, key)) {
           result[key] = payload[key];
         }
@@ -101,8 +110,9 @@
         return false;
       }
       // The URL and the title both carry the route template, never the raw
-      // path or the page title (a run detail title contains the run id).
-      // The tracker sends an absolute URL; a path is resolved against the page the same way.
+      // path. The tracker sends page views with an absolute URL; a path is
+      // resolved against the page the same way. The title is replaced by the
+      // template so whatever the page title holds is not sent.
       var route = template(new URL(payload.url, location.href).pathname);
       result.url = location.origin + route;
       result.title = route;
@@ -113,8 +123,15 @@
           // Same-origin means a client-side navigation; the previous route's
           // path is templated so its ids do not leak.
           result.referrer = location.origin + template(referrer.pathname);
+        } else if (referrer.protocol === "http:" || referrer.protocol === "https:") {
+          // A referrer from another origin keeps its origin only: its path,
+          // search string, and hash are dropped.
+          result.referrer = referrer.origin;
+        } else {
+          // An opaque origin ("null", e.g. android-app:// or about:blank) has
+          // nothing safe to send.
+          result.referrer = "";
         }
-        // A referrer from another origin is left as-is.
       }
       return result;
     } catch {

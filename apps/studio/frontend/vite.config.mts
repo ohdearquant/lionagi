@@ -37,25 +37,31 @@ export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plu
 }
 
 // The hosted Studio fronts page analytics with a self-hosted Umami tracker.
-// The tracker tag is injected ONLY when STUDIO_UMAMI_WEBSITE_ID is set in the
-// build environment (the Vercel project env for lion-studio.khive.ai), so local,
-// source, Docker, and packaged builds ship no tag and never contact the analytics
-// host. Gating on the variable rather than VERCEL also keeps a preview or a
-// self-hosted static build from reporting unless it explicitly opts in.
+// The tracker is injected ONLY when STUDIO_UMAMI_WEBSITE_ID is set in the
+// build's process environment (the Vercel project env for lion-studio.khive.ai),
+// so local, source, Docker, and packaged builds ship no tag and never contact
+// the analytics host. Vite does not copy `.env*` files into the config's
+// process environment, so setting the variable in an `.env` file does not turn
+// the tracker on; the build process itself must export it. Gating on the
+// variable rather than VERCEL also keeps a preview or a self-hosted static
+// build from reporting unless it explicitly opts in.
 //
-// Two tags ride ahead of the tracker, in this order:
-//   1. the inline before-send hook (analytics/before-send.js), a classic script
-//      that scrubs ids, search strings, and hashes out of every payload and
-//      drops identify calls and custom events;
-//   2. the deferred tracker tag, pointed at the hook by data-before-send and
-//      restricted to the hosted domain by data-domains.
-// The hook must be defined before the tracker runs, so it is injected first and
-// synchronously; the tracker is deferred. A malformed website id fails the build
+// One inline script is injected, containing the before-send hook
+// (analytics/before-send.js) followed by a loader (analytics/load-tracker.js)
+// that is called with the tracker's attributes as a JSON literal. The hook
+// rebuilds each payload from an allowlist of page-view fields and drops every
+// other send type; the loader then appends the deferred tracker tag, pointed at
+// the hook by data-before-send and restricted to the hosted domain by
+// data-domains, only when the hook is present. The tracker therefore loads only
+// after the hook exists: if the inline script did not run, no tag is added and
+// no raw path or page title is sent. A malformed website id fails the build
 // here instead of reaching an HTML attribute.
 export function hostedAnalyticsInjector(env: NodeJS.ProcessEnv = process.env): Plugin {
   const websiteId = env.STUDIO_UMAMI_WEBSITE_ID;
   if (websiteId && !UUID_RE.test(websiteId)) {
-    throw new Error(`STUDIO_UMAMI_WEBSITE_ID must be a UUID, got ${JSON.stringify(websiteId)}`);
+    throw new Error(
+      `STUDIO_UMAMI_WEBSITE_ID must be a UUID; received a value of length ${websiteId.length}`,
+    );
   }
   return {
     name: "studio-hosted-analytics",
@@ -66,23 +72,25 @@ export function hostedAnalyticsInjector(env: NodeJS.ProcessEnv = process.env): P
         path.resolve(__dirname, "analytics/before-send.js"),
         "utf-8",
       );
+      // The loader file is the bare IIFE; drop the trailing semicolon the
+      // formatter adds so the call appended below becomes part of the same
+      // expression.
+      const loaderSource = fs
+        .readFileSync(path.resolve(__dirname, "analytics/load-tracker.js"), "utf-8")
+        .replace(/;\s*$/, "");
+      const trackerAttrs = {
+        defer: true,
+        src: "https://analytics.khive.ai/script.js",
+        "data-website-id": websiteId,
+        "data-domains": "lion-studio.khive.ai",
+        "data-exclude-search": "true",
+        "data-exclude-hash": "true",
+        "data-before-send": "__studioAnalyticsBeforeSend",
+      };
       return [
         {
           tag: "script",
-          children: hookSource,
-          injectTo: "head",
-        },
-        {
-          tag: "script",
-          attrs: {
-            defer: true,
-            src: "https://analytics.khive.ai/script.js",
-            "data-website-id": websiteId,
-            "data-domains": "lion-studio.khive.ai",
-            "data-exclude-search": "true",
-            "data-exclude-hash": "true",
-            "data-before-send": "__studioAnalyticsBeforeSend",
-          },
+          children: `${hookSource}\n${loaderSource}(${JSON.stringify(trackerAttrs)});`,
           injectTo: "head",
         },
       ];
