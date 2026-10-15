@@ -44,6 +44,7 @@ from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
+from ._codex_profile import is_generated_codex_profile
 from ._config import CodexConfigs
 
 try:
@@ -718,9 +719,29 @@ class CodexCodeRequest(BaseModel):
     def _contains_account_integrations(self) -> bool:
         return self.contain_account_integrations and not self.account_connectors
 
+    def _refuse_a_profile_under_containment(self) -> None:
+        # `--disable` sets the features in the root config, and codex applies the
+        # active profile's `[features]` after it, so a profile can turn either one
+        # back on. The profile lionagi writes for MCP server secrets holds only
+        # `mcp_servers`.
+        if self.profile is not None and not is_generated_codex_profile(self.profile):
+            raise ValueError(
+                f"contain_account_integrations cannot be combined with profile={self.profile!r}: "
+                "codex applies a profile's features after --disable, so the profile "
+                "could turn apps or plugins back on"
+            )
+        for key in self.config_overrides:
+            if _override_key_path(key)[0] in ("profile", "profiles"):
+                raise ValueError(
+                    "contain_account_integrations cannot be combined with the config "
+                    f"override {key!r}: it selects or changes a profile, and codex "
+                    "applies a profile's features after --disable"
+                )
+
     def _build_declarative_args(self) -> list[str]:
         if not self._contains_account_integrations():
             return build_declarative_cli_args(self)
+        self._refuse_a_profile_under_containment()
         disabled = list(self.disable_features or ())
         settled = self.model_copy(
             update={

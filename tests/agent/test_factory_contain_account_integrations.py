@@ -124,13 +124,20 @@ def test_a_setting_that_is_not_a_boolean_is_refused_from_yaml(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "line", ["contain_account_integrations:\n", "contain_account_integrations: null\n"]
+    "line",
+    [
+        "contain_account_integrations:\n",
+        "contain_account_integrations: null\n",
+        "contain_account_integrations: ~\n",
+    ],
 )
-def test_a_setting_present_with_no_value_reads_as_unset_from_yaml(tmp_path, line):
+def test_a_setting_present_with_no_value_is_refused_from_yaml(tmp_path, line):
+    """A key with no value is as unreadable as a quoted one; it is not read as unset."""
     path = tmp_path / "spec.yaml"
     AgentSpec.compose("reviewer").to_yaml(path)
     path.write_text(path.read_text() + line)
-    assert AgentSpec.from_yaml(path).contain_account_integrations is False
+    with pytest.raises(ValueError, match="got no value"):
+        AgentSpec.from_yaml(path)
 
 
 def test_an_unset_setting_is_not_written_to_yaml(tmp_path):
@@ -139,3 +146,19 @@ def test_an_unset_setting_is_not_written_to_yaml(tmp_path):
     AgentSpec.compose("reviewer").to_yaml(path)
     assert "contain_account_integrations" not in path.read_text()
     assert AgentSpec.from_yaml(path).contain_account_integrations is False
+
+
+async def test_a_call_naming_a_profile_is_refused_when_the_command_line_is_built():
+    """A profile's features apply after --disable, so a contained call may not name one."""
+    branch = await _branch("codex/gpt-5.5", contain_account_integrations=True)
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi", "profile": "work"})
+    with pytest.raises(ValueError, match="profile='work'"):
+        payload["request"].as_cmd_args()
+
+
+async def test_an_uncontained_call_naming_a_profile_runs_with_it():
+    """Control."""
+    branch = await _branch("codex/gpt-5.5")
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi", "profile": "work"})
+    args = payload["request"].as_cmd_args()
+    assert args[args.index("-p") + 1] == "work"

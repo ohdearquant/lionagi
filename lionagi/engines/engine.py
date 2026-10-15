@@ -1028,7 +1028,8 @@ class EngineRun:
         CLI model. Nor may a node pass, among its own keywords, in
         ``interpret_kwargs`` or ``response_kwargs``, or in an ``imodel_kw`` in any
         of them: ``api_call``, a prebuilt call the model sends as it was built;
-        ``env`` with ``agent_env`` set, which replaces the overlay for that call;
+        ``create_event_type`` other than ``APICalling``, an event type whose
+        request this check cannot see being built; ``env`` with ``agent_env`` set, which replaces the overlay for that call;
         or, with ``contain_account_integrations`` set, that keyword as anything but
         ``True`` or a non-empty ``account_connectors``, either of which lifts the
         containment for that call. Not every operation passes each of these
@@ -1036,13 +1037,17 @@ class EngineRun:
         the same. Each of these raises ``ConfigurationError`` before any node
         runs. The check is made once, before the first node: a model the caller's
         own code puts on a built branch, or a keyword it sets on a later node,
-        while the DAG runs is not seen.
+        while the DAG runs is not seen. A codex ``profile``, or a config override
+        under ``profile`` or ``profiles``, is not refused here: under containment
+        the codex request refuses it when it builds the command line, after the
+        nodes before it have run.
 
         The settings reach only the branches ``make_agent`` builds, through the
         model it builds for them. The run's ``session`` used directly
         (``session.flow``, a branch the caller built) does not carry them; a change
-        made inside that model after it was built (its endpoint or its config) is
-        not checked; and a branch built with an explicit ``make_agent(env=...)``
+        made inside that model after it was built (its endpoint, its config, or a
+        hook registered on it, such as a ``PreEventCreate`` hook returning an event
+        of its own) is not checked; and a branch built with an explicit ``make_agent(env=...)``
         runs with that env, as the code that built it wrote, while its record
         holds the engine's settings, so this check accepts it.
         """
@@ -1160,8 +1165,9 @@ class EngineRun:
                 if any(_passed(op).get(key) is not None for key in model_keys)
                 or _holds_a_model(op.request)
             ]
-            # A prebuilt call, or an event type other than the one the model builds its request
-            # with, reaches the CLI without the settings; None for api_call means "build one".
+            # A prebuilt call reaches the CLI as it was built, without the settings, and
+            # this check cannot see how an event type other than APICalling builds its
+            # request; None for api_call means "build one".
             prebuilt = [
                 op
                 for op in operations
@@ -1203,8 +1209,8 @@ class EngineRun:
                 if prebuilt:
                     problems.append(
                         f"{len(prebuilt)} of {total} nodes pass api_call or create_event_type, "
-                        "a prebuilt call the model sends as it was built or an event type that "
-                        "builds its own"
+                        "a prebuilt call the model sends as it was built or an event type "
+                        "whose request this check cannot see being built"
                     )
                 if enved:
                     problems.append(

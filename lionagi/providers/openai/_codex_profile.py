@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,12 +19,29 @@ from typing import Any
 from lionagi.libs.path_safety import validate_bare_name
 
 __all__ = (
+    "CODEX_MCP_PROFILE_PREFIX",
     "codex_home_for_env",
     "global_codex_reasoning_effort",
+    "is_generated_codex_profile",
     "resolve_codex_config_profile",
 )
 
 logger = logging.getLogger(__name__)
+
+# Fixed prefix + 32 hex chars marks a profile as lionagi-generated (the name
+# has to carry this since a resumed leg's profile was written by a different
+# process). A caller name in this exact shape is treated as ours and
+# replaced; anything else is the caller's and refused, never overwritten.
+CODEX_MCP_PROFILE_PREFIX = "lionagi-mcp-"
+_GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(CODEX_MCP_PROFILE_PREFIX)}[0-9a-f]{{32}}$")
+
+
+def is_generated_codex_profile(name: object) -> bool:
+    """Whether *name* is a profile name lionagi minted for MCP server secrets.
+
+    That profile file holds only ``mcp_servers``.
+    """
+    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:

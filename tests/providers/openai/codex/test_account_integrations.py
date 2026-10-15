@@ -12,6 +12,7 @@ they reach the live call and are never written down.
 from __future__ import annotations
 
 import logging
+import re
 
 import pytest
 
@@ -22,6 +23,7 @@ from lionagi.cli._providers import (
     build_imodel_from_spec,
     profile_config,
 )
+from lionagi.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
 from lionagi.providers.openai.codex import CodexCodeRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.imodel import iModel
@@ -171,12 +173,13 @@ def test_toml_decodes_a_quoted_dotted_key():
 
 
 def test_containment_keeps_a_nested_key_under_another_table():
+    """A profile's table is refused instead (below)."""
     args = CodexCodeRequest(
         prompt="hi",
         contain_account_integrations=True,
-        config_overrides={"profiles.work.features.apps": True},
+        config_overrides={"tui.features.apps": True},
     ).as_cmd_args()
-    assert "profiles.work.features.apps=true" in _overrides(args)
+    assert "tui.features.apps=true" in _overrides(args)
 
 
 def test_containment_drops_a_nested_account_feature_override():
@@ -353,3 +356,93 @@ def test_build_chat_model_hands_both_fields_to_codex(captor):
     kw = captor.captures[-1]
     assert kw["account_connectors"] == ["github"]
     assert kw["contain_account_integrations"] is True
+
+
+# ── a profile under containment ─────────────────────────────────────────
+# `--disable` sets the features in the root config; codex applies the active
+# profile's `[features]` after it, so a profile could turn either back on.
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ["work", "", CODEX_MCP_PROFILE_PREFIX + "0" * 31, CODEX_MCP_PROFILE_PREFIX + "A" * 32],
+    ids=["named", "empty", "short-generated-shape", "uppercase-generated-shape"],
+)
+def test_containment_refuses_a_profile_lionagi_did_not_write(profile):
+    req = CodexCodeRequest(prompt="hi", contain_account_integrations=True, profile=profile)
+    with pytest.raises(ValueError, match=re.escape(f"profile={profile!r}")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_the_profile_lionagi_writes_for_mcp_server_secrets(tmp_path):
+    """That profile holds only mcp_servers."""
+    name = CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2
+    args = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True, profile=name
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == name
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "profile",
+        '"profile"',
+        "profiles",
+        "profiles.work.features.apps",
+        'profiles."work".features',
+        '"\\u0070rofiles".work.features.plugins',
+    ],
+)
+def test_containment_refuses_an_override_that_selects_or_changes_a_profile(key):
+    req = CodexCodeRequest(
+        prompt="hi", contain_account_integrations=True, config_overrides={key: True}
+    )
+    with pytest.raises(ValueError, match=re.escape(f"override {key!r}")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_an_override_whose_first_part_only_starts_like_profile(tmp_path):
+    args = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides={"profile_note": 1, "tools.profiles": 2},
+    ).as_cmd_args()
+    assert {"profile_note=1", "tools.profiles=2"} <= set(_overrides(args))
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"contain_account_integrations": True, "account_connectors": ["github"]}],
+    ids=["uncontained", "granted"],
+)
+def test_a_profile_is_left_as_named_without_containment(fields, tmp_path):
+    args = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        profile="work",
+        config_overrides={"profiles.work.model_verbosity": "low"},
+        **fields,
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == "work"
+    assert 'profiles.work.model_verbosity="low"' in _overrides(args)
+
+
+def test_containment_refuses_a_profile_a_model_profile_file_selects(tmp_path):
+    """A model naming a codex config profile file brings its scalar keys as overrides."""
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "leg.config.toml").write_text('model = "gpt-5.5"\nprofile = "work"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        model="leg",
+        env={"CODEX_HOME": str(home)},
+        contain_account_integrations=True,
+    )
+    assert req.model == "gpt-5.5"
+    assert req.config_overrides == {"profile": "work"}
+    with pytest.raises(ValueError, match=re.escape("override 'profile'")):
+        req.as_cmd_args()

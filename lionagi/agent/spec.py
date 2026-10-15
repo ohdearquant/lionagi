@@ -80,7 +80,7 @@ class AgentSpec(HooksMixin):
     khive_injection: Any = None
     # Codex only: turn the signed-in account's apps and plugins off for this
     # agent's endpoint by default (a call can still lift it; see create_agent).
-    # Other providers' requests attach no account integrations.
+    # An agent of another provider is built unchanged.
     contain_account_integrations: bool = False
 
     @classmethod
@@ -159,15 +159,12 @@ class AgentSpec(HooksMixin):
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        contain = data.get("contain_account_integrations")
-        if contain is None:
-            # absent, or present with no value
-            contain = False
+        contain = data.get("contain_account_integrations", False)
         if not isinstance(contain, bool):
-            # bool("false") is True; a quoted value is a mistake to report, not to read.
-            raise ValueError(
-                f"contain_account_integrations must be true or false, got {type(contain).__name__}"
-            )
+            # bool("false") is True, and a key with no value reads as None; either is a
+            # mistake to report, not to read.
+            got = "no value" if contain is None else type(contain).__name__
+            raise ValueError(f"contain_account_integrations must be true or false, got {got}")
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),

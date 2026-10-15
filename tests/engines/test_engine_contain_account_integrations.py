@@ -40,3 +40,12 @@ async def test_a_contained_engine_still_builds_agents_of_other_providers():
     run = Engine(contain_account_integrations=True).new_run()
     branch = await run.make_agent("researcher", name="r1", model="claude_code/haiku")
     assert _features_switched(branch) == []
+
+
+async def test_a_contained_engine_agent_refuses_a_call_naming_a_profile():
+    """run_dag does not read profile; the request refuses it when it builds the command line."""
+    run = Engine(contain_account_integrations=True).new_run()
+    branch = await run.make_agent("researcher", name="r1", model="codex/gpt-5.5")
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi", "profile": "work"})
+    with pytest.raises(ValueError, match="profile='work'"):
+        payload["request"].as_cmd_args()

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from collections.abc import Callable, Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +12,12 @@ from lionagi._errors import ConfigurationError
 from lionagi.ln import Unset
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.ln.types import UnsetType
+from lionagi.providers.openai._codex_profile import (
+    CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
+)
+from lionagi.providers.openai._codex_profile import (
+    is_generated_codex_profile as _is_generated_codex_profile,
+)
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
@@ -1097,19 +1102,6 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
             f"(expected a JSON array, got {type(listed).__name__})."
         )
     return {entry["name"] for entry in listed if isinstance(entry, dict) and "name" in entry}
-
-
-# Fixed prefix + 32 hex chars marks a profile as lionagi-generated (the name
-# has to carry this since a resumed leg's profile was written by a different
-# process). A caller name in this exact shape is treated as ours and
-# replaced; anything else is the caller's and refused, never overwritten.
-_CODEX_MCP_PROFILE_PREFIX = "lionagi-mcp-"
-_GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(_CODEX_MCP_PROFILE_PREFIX)}[0-9a-f]{{32}}$")
-
-
-def _is_generated_codex_profile(name: object) -> bool:
-    """Whether *name* is a profile name `_write_codex_mcp_secret_profile` minted."""
-    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
 
 def _codex_home() -> Path:
