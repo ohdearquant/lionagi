@@ -39,6 +39,19 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
+def _forward_collection(
+    key_ref: weakref.ref[_IdentityKey], on_collect: Callable[[_IdentityKey], None]
+) -> Callable[[weakref.ref], None]:
+    """A weakref callback that calls ``on_collect`` with the key while the key is alive."""
+
+    def callback(_ref: weakref.ref) -> None:
+        key = key_ref()
+        if key is not None:
+            on_collect(key)
+
+    return callback
+
+
 class _IdentityKey:
     """Identity key that does not extend the lifetime of what it identifies.
 
@@ -48,19 +61,21 @@ class _IdentityKey:
     target retains. The hash is the id taken while the target was alive, so it stays usable
     after the target dies; equality demands both referents still be live, so an id the
     interpreter has reused cannot collide with a dead entry, and the dead entry matches
-    nothing until it leaves the cache: when its target is collected for a key given
-    `on_collect`, when it is evicted for any other. A target that cannot be weakly
-    referenced is held strongly, which keeps it and everything it carries alive for as
-    long as the key lives; `holds_weakly` says which of the two a key is, so a caller
-    storing one past the call can decide whether to.
+    nothing until it leaves the cache: for a key given `on_collect`, at the cache's next
+    read or write after its target is collected, and for any other when it is evicted.
+    A target that cannot be weakly referenced is held strongly, which keeps it and
+    everything it carries alive for as long as the key lives; `holds_weakly` says which
+    of the two a key is, so a caller storing one past the call can decide whether to.
 
     A dead entry is never hit, but until it is removed it shares a hash bucket with every
     later object allocated at the same address, and each lookup there compares against it.
-    A key a cache stores as an entry's whole key is therefore given `on_collect`, which is
-    called with the key when its weakly-held target is collected, while the key itself is
-    still alive, so the cache can remove the entry stored under it. A key nested inside a
-    larger key, such as a tuple, is not the entry's key, so `on_collect` cannot remove that
-    entry when the target is collected.
+    `on_collect` is called with the key when its weakly-held target is collected, while
+    the key itself is still alive, so a `BoundedLRUCache` can remove the entry stored
+    under it; the dataclass projection cache gives it to every key it stores. A plain
+    dict keyed by `_IdentityKey`, such as `_SingletonMeta._cache`, gives none and keeps
+    a dead entry until it is deleted. A key nested inside a larger key, such as a tuple,
+    is not the entry's key, so `on_collect` cannot remove that entry when the target is
+    collected.
     """
 
     __slots__ = ("__weakref__", "_hash", "_ref", "_strong")
@@ -69,18 +84,12 @@ class _IdentityKey:
         self, target: object, on_collect: Callable[[_IdentityKey], None] | None = None
     ) -> None:
         self._hash = id(target)
-        callback = None
-        if on_collect is not None:
-            # Weak, so the key, its reference and this callback form no cycle. A cache's
-            # `forget` holds the cache's queue, not the cache, so a cache storing this key
-            # forms none either.
-            this = weakref.ref(self)
-
-            def callback(_ref: weakref.ref) -> None:
-                key = this()
-                if key is not None:
-                    on_collect(key)
-
+        # The key is referenced weakly, so the key, its reference and the callback form no
+        # cycle. An `on_collect` that held the cache storing this key would form one
+        # through the cache, so the dataclass projection cache passes its queue's append.
+        callback = (
+            None if on_collect is None else _forward_collection(weakref.ref(self), on_collect)
+        )
         try:
             self._ref: weakref.ref | None = weakref.ref(target, callback)
             self._strong: object = None
@@ -589,9 +598,10 @@ def _project(
                     and identity_key.holds_weakly
                     and not value_semantics
                 ):
-                    _stable_dataclass_keys.put(
-                        _IdentityKey(value, on_collect=_stable_dataclass_keys.forget), result
-                    )
+                    # The queue's own append rather than `forget`, a bound method that would
+                    # hold the cache and put every stored key in a cycle with it.
+                    forget = _stable_dataclass_keys._pending_removals.append
+                    _stable_dataclass_keys.put(_IdentityKey(value, on_collect=forget), result)
                 return result
             return dataclasses.replace(
                 combined,

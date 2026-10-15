@@ -28,20 +28,25 @@ class BoundedLRUCache(Generic[K, V]):
     mode exists to refuse.
     """
 
-    __slots__ = ("_cache", "_lock", "_max_size", "_pending_removals", "_weak_values", "forget")
+    __slots__ = ("_cache", "_lock", "_max_size", "_pending_removals", "_weak_values")
 
     def __init__(self, max_size_env: str, default_max: int, *, weak_values: bool = False) -> None:
         self._max_size = int(os.environ.get(max_size_env, str(default_max)))
         self._cache: OrderedDict[K, Any] = OrderedDict()
         self._lock = threading.RLock()
         self._weak_values = weak_values
+        # Keys queued by `forget`, removed under the lock at the next read or write.
         self._pending_removals: deque[K] = deque()
-        # forget(key) removes key's entry when the cache is next read or written. It is
-        # meant for a weakref callback, which can run in any thread and in the middle of
-        # this cache's own work, so it only queues the key. It is the queue's own append
-        # rather than a method, so a callback holding it holds the queue and not the
-        # cache: a key stored here with it forms no cycle back to the cache.
-        self.forget: Callable[[K], None] = self._pending_removals.append
+
+    def forget(self, key: K) -> None:
+        """Remove ``key``'s entry at the cache's next read or write.
+
+        It only queues the key, so it is safe from a weakref callback, which can run in
+        any thread and in the middle of this cache's own work. A callback stored inside
+        this cache that must not keep the cache alive passes ``_pending_removals.append``
+        instead of this bound method, which holds the cache.
+        """
+        self._pending_removals.append(key)
 
     def _remove_forgotten_unlocked(self) -> None:
         pending = self._pending_removals
@@ -49,6 +54,11 @@ class BoundedLRUCache(Generic[K, V]):
             self._cache.pop(pending.popleft(), None)
 
     def __len__(self) -> int:
+        """The number of entries held.
+
+        Under ``weak_values`` an entry whose value has been collected is counted until it
+        is next read, replaced or evicted.
+        """
         with self._lock:
             self._remove_forgotten_unlocked()
             return len(self._cache)

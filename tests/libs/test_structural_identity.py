@@ -720,28 +720,37 @@ def test_the_cache_is_bounded_by_eviction():
     """A cache is a bounded store, not a growing one: eviction has to actually fire."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
-    # Held, so no entry is removed for its declaration being collected and only
-    # eviction can keep the count at the bound.
+    # Held, so the oldest of them can leave the cache only by eviction.
     held_alive = [_Payload(filler) for filler in range(_stable_dataclass_keys._max_size + 1)]
     for payload in held_alive:
         _structural_key(payload)
 
-    assert len(_stable_dataclass_keys) == _stable_dataclass_keys._max_size
+    assert len(_stable_dataclass_keys) <= _stable_dataclass_keys._max_size
+    assert [key for key in _stable_dataclass_keys._cache if key.target is held_alive[-1]]
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is held_alive[0]]
 
 
 def test_an_entry_leaves_the_cache_when_its_declaration_is_collected():
     """Each of these is freed after its one use, and the next is allocated at the address
     it left. Left in the cache, every dead entry shares that hash, so each lookup compared
-    against all of them and inserting the cache's size in such objects took quadratic time."""
+    against all of them, and inserting n such objects took time quadratic in n."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
     for filler in range(2000):
         _structural_key(_Payload(filler))
-    len(_stable_dataclass_keys)  # a read removes the entries already forgotten
 
-    # Asserted per entry, not by count: a cache another test left full stays at its
-    # bound however many dead entries it holds.
-    assert not [key for key in _stable_dataclass_keys._cache if key.target is None]
+    # With the cycle collector off, nothing is collected between the read that removes
+    # the entries already forgotten and the scan.
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        len(_stable_dataclass_keys)
+        # Asserted per entry, not by count: a cache another test left full stays at its
+        # bound however many dead entries it holds.
+        assert not [key for key in _stable_dataclass_keys._cache if key.target is None]
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 def test_a_collected_entry_is_removed_without_removing_a_live_one_in_its_bucket():
@@ -795,7 +804,8 @@ def test_a_dropped_cache_frees_its_keys_and_values_without_the_cycle_collector()
     try:
         target, value = _Payload("target"), _Payload("value")
         cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
-        key = _IdentityKey(target, on_collect=cache.forget)
+        # As the dataclass projection cache passes it: `forget` would hold the cache.
+        key = _IdentityKey(target, on_collect=cache._pending_removals.append)
         cache.put(key, value)
         key_freed, value_freed = weakref.ref(key), weakref.ref(value)
 
@@ -805,6 +815,34 @@ def test_a_dropped_cache_frees_its_keys_and_values_without_the_cycle_collector()
     finally:
         if was_enabled:
             gc.enable()
+
+
+def test_the_projection_cache_hands_its_keys_a_callback_that_does_not_hold_it():
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    payload = _Payload("held")
+    _structural_key(payload)
+    (key,) = [key for key in _stable_dataclass_keys._cache if key.target is payload]
+
+    held = [
+        getattr(cell.cell_contents, "__self__", None) for cell in key._ref.__callback__.__closure__
+    ]
+    assert not any(owner is _stable_dataclass_keys for owner in held)
+    assert any(owner is _stable_dataclass_keys._pending_removals for owner in held)
+
+
+def test_forget_removes_an_entry_at_the_next_read():
+    from lionagi.ln._cache import BoundedLRUCache
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    cache.put("kept", 1)
+    cache.put("forgotten", 2)
+
+    cache.forget("forgotten")
+
+    assert list(cache._cache) == ["kept", "forgotten"]
+    assert cache.get("forgotten") is None
+    assert list(cache._cache) == ["kept"]
 
 
 def test_an_empty_cache_is_truthy():
