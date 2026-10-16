@@ -28,8 +28,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `to_list(..., unique=True)` keeps the first of equal `DataClass` values. It groups values that
   keep the base equality by a hash of their declared field state, taken during deduplication
   and not stored, groups a value whose class defines its own equality by its own hash, and
-  compares each value with its group and with the kept values of the other kind in both
-  directions, so the result does not depend on which value came first. A `DataClass` value
+  compares each value with its group and with the kept values of the other kind, asking
+  each pair in both directions, so a pair either side's equality calls equal is one value
+  whichever value arrived first, while a non-transitive `__eq__` can still make the result
+  depend on the order the values arrive in. A `DataClass` value
   whose field state cannot be hashed, such as one holding a writable memoryview, is compared
   with the kept values that define their own equality and is kept as a separate value unless it
   is the same object or a kept value's own equality calls it equal, where it used to raise. A

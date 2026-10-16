@@ -281,26 +281,81 @@ class Strict(DataClass):
     __hash__ = None
 
 
-@pytest.mark.parametrize("keyed_first", [False, True], ids=["keyed-first", "plain-first"])
-def test_dataclass_dedup_lets_a_hashable_own_equality_error_propagate_in_either_order(
+@pytest.mark.parametrize("keyed_first", [False, True], ids=["plain-first", "keyed-first"])
+def test_dataclass_dedup_reads_an_unreadable_hashable_equality_as_unequal_in_either_order(
     keyed_first,
 ):
-    """An error other than ``TypeError`` or ``ValueError`` is not a comparison result."""
+    """An ``AttributeError`` from a value's own ``__eq__`` reads as unequal, as the
+    base equality reads its own uncomparable state, so both values are kept."""
 
     keyed, plain = Keyed(1), Point(1)
     first, second = (keyed, plain) if keyed_first else (plain, keyed)
-    with pytest.raises(AttributeError):
-        to_list([first, second], flatten=True, unique=True)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is second
 
 
-@pytest.mark.parametrize("strict_first", [False, True], ids=["strict-first", "plain-first"])
-def test_dataclass_dedup_lets_an_unhashable_own_equality_error_propagate_in_either_order(
+@pytest.mark.parametrize("strict_first", [False, True], ids=["plain-first", "strict-first"])
+def test_dataclass_dedup_reads_an_unreadable_unhashable_equality_as_unequal_in_either_order(
     strict_first,
 ):
     strict, plain = Strict(1), Point(1)
     first, second = (strict, plain) if strict_first else (plain, strict)
-    with pytest.raises(AttributeError):
-        to_list([first, second], flatten=True, unique=True)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is second
+
+
+@dataclass(slots=True, eq=False)
+class Carries(DataClass):
+    """Its own equality reads a field only some values carry, through a name."""
+
+    k: int = 0
+
+    def __eq__(self, other):
+        return self.k == other.k
+
+    def __hash__(self):
+        return hash(self.k)
+
+
+@dataclass(slots=True, eq=False)
+class KeyedPoint(Point):
+    """Equal to a ``Point`` at the same position, and it reads ``other.k``."""
+
+    k: int = 0
+
+    def __eq__(self, other):
+        return isinstance(other, KeyedPoint) and other.k == self.k
+
+    def __hash__(self):
+        return hash(self.k)
+
+
+@pytest.mark.parametrize("keyed_first", [False, True], ids=["point-first", "keyed-first"])
+def test_dataclass_dedup_keeps_a_cross_class_pair_whose_equality_reads_back(keyed_first):
+    """A value whose own equality reads a field the other value lacks must not make the
+    comparison raise: it reads as unequal, so both values are kept in either order."""
+
+    plain, keyed = Point(1), KeyedPoint(1, 7)
+    first, second = (keyed, plain) if keyed_first else (plain, keyed)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is second
+
+
+@pytest.mark.parametrize("keyed_first", [False, True], ids=["point-first", "keyed-first"])
+def test_operation_dedup_keeps_a_pair_whose_output_reads_back(keyed_first):
+    plain = fields.ActionResponseModel(function="f", output=Point(1))
+    keyed = fields.ActionResponseModel(function="f", output=KeyedPoint(1, 7))
+    ordered = (keyed, plain) if keyed_first else (plain, keyed)
+    result = fields._validate_listable_field(None, list(ordered))
+    assert len(result) == 2
+    assert result[0] is ordered[0]
+    assert result[1] is ordered[1]
 
 
 @dataclass(slots=True, eq=False)
@@ -315,7 +370,7 @@ class Incomparable(DataClass):
     __hash__ = None
 
 
-@pytest.mark.parametrize("refusing_first", [False, True], ids=["refusing-first", "plain-first"])
+@pytest.mark.parametrize("refusing_first", [False, True], ids=["plain-first", "refusing-first"])
 def test_dataclass_dedup_reads_a_refused_comparison_as_unequal_in_either_order(
     refusing_first,
 ):
@@ -378,6 +433,36 @@ def test_dataclass_dedup_keeps_one_value_when_a_repeat_cannot_be_keyed_twice():
     assert result[0] is value
 
 
+class ReadsFourTimes(Point):
+    """Its field state reads four times and then fails, as a value being written would.
+
+    Four reads are exactly what the first copy costs for its key and the second for its
+    key and the equality that drops it; a value recorded only when it is kept reads a
+    fifth time for the repeated copy and fails.
+    """
+
+    def _field_state(self):
+        _READS["count"] += 1
+        if _READS["count"] > 4:
+            raise AttributeError("field state is gone after its fourth read")
+        return DataClass._field_state(self)
+
+
+def test_dataclass_dedup_records_a_dropped_value_so_a_repeat_is_never_reread():
+    """A value is recorded by identity whether it is kept or dropped, so a repeat of a
+    value that equality already dropped is not keyed again. The first copy costs one read
+    for its key, the second one more for its key and two for the equality that drops it,
+    and the third is dropped by the recorded identity without a fifth read."""
+
+    kept, dropped = ReadsFourTimes(1), ReadsFourTimes(1)
+    assert kept == dropped
+    _READS["count"] = 0  # Count only the reads the deduplication itself makes.
+    result = to_list([kept, dropped, dropped], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is kept
+    assert _READS["count"] == 4
+
+
 class Pe:
     __hash__ = None
 
@@ -392,7 +477,7 @@ class Qe:
         return isinstance(other, Pe)
 
 
-@pytest.mark.parametrize("pe_first", [False, True], ids=["pe-first", "qe-first"])
+@pytest.mark.parametrize("pe_first", [False, True], ids=["qe-first", "pe-first"])
 def test_operation_dedup_keeps_one_value_for_one_sided_equality_in_either_order(pe_first):
     first = fields.ActionResponseModel(output=Pe())
     second = fields.ActionResponseModel(output=Qe())
@@ -584,6 +669,76 @@ def test_dataclass_dedup_compares_only_values_with_the_same_structure(monkeypatc
     assert all(kept is value for kept, value in zip(result, values, strict=True))
     assert len(calls) == 1
     assert calls[0] is repeat
+
+
+def test_dataclass_dedup_tells_distinct_values_apart_by_key_without_comparing(monkeypatch):
+    """Distinct base-equality values that can be keyed are told apart by their keys, so
+    deduplicating them compares nothing: the work is linear in the values that can be
+    keyed."""
+    calls = []
+    compare = DataClass.__eq__
+
+    def counted(self, other):
+        calls.append(other)
+        return compare(self, other)
+
+    monkeypatch.setattr(DataClass, "__eq__", counted)
+    values = [MutableContext([n]) for n in range(2000)]
+    result = to_list([values], flatten=True, unique=True)
+    assert len(result) == 2000
+    assert calls == []
+
+
+class CountedKey:
+    """Keyable, so a distinct value is told apart by its key; its equality counts."""
+
+    calls: list = []
+
+    def __init__(self, value):
+        self.value = value
+
+    def __hash__(self):
+        return hash(self.value)
+
+    def __eq__(self, other):
+        CountedKey.calls.append(other)
+        return isinstance(other, CountedKey) and self.value == other.value
+
+
+def test_operation_dedup_tells_distinct_keyable_values_apart_by_key_without_comparing():
+    """An all-keyable operation input is deduplicated by key in one pass, so it compares
+    nothing and stays linear."""
+    CountedKey.calls.clear()
+    values = [CountedKey(n) for n in range(2000)]
+    result = fields._validate_listable_field(None, values)
+    assert len(result) == 2000
+    assert CountedKey.calls == []
+
+
+class CountedKeyless:
+    """Without a key, so each value is compared pairwise against the kept values."""
+
+    calls: list = []
+
+    __hash__ = None
+
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        CountedKeyless.calls.append(other)
+        return isinstance(other, CountedKeyless) and self.value == other.value
+
+
+def test_operation_dedup_compares_a_keyless_value_against_the_kept_values():
+    """A value without a key is compared pairwise against the kept values, and each pair
+    is asked in both directions, so six distinct values compare 30 times: about u times
+    the kept count, doubled by the two directions."""
+    CountedKeyless.calls.clear()
+    values = [CountedKeyless(n) for n in range(6)]
+    result = fields._validate_listable_field(None, values)
+    assert len(result) == 6
+    assert len(CountedKeyless.calls) == 30
 
 
 def test_operation_dedup_keeps_requests_whose_arguments_have_no_single_answer():

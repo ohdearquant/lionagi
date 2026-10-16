@@ -448,9 +448,11 @@ hashes only when every field value does: a tuple field hashes, a list or dict fi
 No intentional production set or dictionary-key consumers were found. `to_list()` groups
 `DataClass` values that keep the base equality by a transient hash of their declared field state
 and a value whose class defines its own equality by its own hash, and confirms identity-first
-equality in both directions inside each group and against the kept values of the other kind, so
-the result does not depend on which value came first; a value whose field state cannot be hashed
-is compared with the kept values that define their own equality and stays separate unless it is
+equality in both directions inside each group and against the kept values of the other kind, so a
+pair either side's equality calls equal is one value whichever value arrived first; a
+non-transitive `__eq__` can still make the result depend on the order the values arrive in. A
+value whose field state cannot be hashed is compared with the kept values that define their own
+equality and stays separate unless it is
 the same object or a kept value's own equality calls it equal. A `DataClass` value is never
 compared with a plain mapping; the two are deduplicated in separate branches. The four operation
 DTOs at their shared listable-field validator use ordered identity-first equality in both

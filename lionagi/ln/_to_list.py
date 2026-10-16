@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 
 from ._hash import hash_dict
 from ._lazy_init import LazyInit
-from ._structural import _dataclass_structural_key
+from ._structural import UnhashableStructuralValueError, _dataclass_structural_key
 from .types import DataClass, Params
 
 __all__ = ("to_list", "ToListParams")
@@ -54,11 +54,15 @@ def _equal_either_way(left: Any, right: Any) -> bool:
     """Whether two values compare equal, asking both directions.
 
     A value such as an array or a data frame gives no single truth value for
-    ``==``, and a value's own ``__eq__`` may refuse a pair with ``TypeError`` or
-    ``ValueError``; either reads as unequal in both directions, so the answer does
-    not depend on which value came first. The comparison is asked inside the guard
-    that reads it, so a result without one truth value is never tested bare. Any
-    error other than ``TypeError`` or ``ValueError`` propagates.
+    ``==``, and a value's own ``__eq__`` may refuse a pair: with ``AttributeError``
+    when it reads a field the other value does not carry, with ``TypeError`` or
+    ``ValueError``, or with ``UnhashableStructuralValueError`` when the base equality
+    cannot key a state. Each of those reads as unequal in the direction that raised,
+    as ``DataClass.__eq__`` reads its own uncomparable state, so an unreadable state on
+    one side does not decide the answer; any other error propagates. The comparison is
+    asked inside the guard that reads it, so a result without one truth value is never
+    tested bare. A non-transitive pair can still make the result depend on the order
+    the values arrive in.
     """
     if left is right:
         return True
@@ -66,7 +70,7 @@ def _equal_either_way(left: Any, right: Any) -> bool:
         try:
             if one == other:
                 return True
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError, UnhashableStructuralValueError):
             continue
     return False
 
@@ -85,6 +89,104 @@ def _dataclass_content_key(value: DataClass) -> int | None:
 
 def _own_content_key(value: DataClass) -> int | None:
     """A value's own hash, or ``None`` when it cannot be taken."""
+    try:
+        return hash(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Deduplication keys each ``DataClass`` value by one of two hashes. A value that keeps
+# the base equality is keyed by a transient hash of its declared field state, so equal
+# copies share a bucket; a value whose class defines its own equality is keyed by its own
+# hash. A keyed value is compared inside its key's bucket and against the kept values of
+# the other kind that could not be keyed, so when every value can be keyed the work is
+# linear in the values. A value that cannot be keyed is compared against the kept values
+# whose own equality can decide, so for u such values the work grows by about u times the
+# count of kept values. A value's id is recorded whether it was kept or dropped, so a
+# repeat is never keyed or compared a second time.
+def _dedupe_dataclasses(values: Iterable, out: list) -> None:
+    """Append the ``DataClass`` values of *values* that are not duplicates to *out*."""
+    keyed: dict[int, list[DataClass]] = {}
+    base_keyless: list[DataClass] = []
+    own_keyless: list[DataClass] = []
+    own_all: list[DataClass] = []
+    all_values: list[DataClass] = []
+    processed_ids: set[int] = set()
+    for value in values:
+        if not isinstance(value, DataClass):
+            continue
+        if id(value) in processed_ids:
+            continue
+        processed_ids.add(id(value))
+        own_equality = type(value).__eq__ is not DataClass.__eq__
+        key = _own_content_key(value) if own_equality else _dataclass_content_key(value)
+        if key is None:
+            # A value whose state cannot be keyed: an own-equality value is compared
+            # against every kept value, because its equality may join a pair the base
+            # keys call different; a base-equality value is compared only against the
+            # kept own-equality values, since the base equality cannot compare its own
+            # unkeyable state and would raise.
+            compared: Iterable[DataClass] = all_values if own_equality else own_all
+        elif own_equality:
+            # A keyed value with its own equality is compared inside its bucket and
+            # against every kept value that could not be keyed.
+            compared = chain(keyed.get(key, ()), base_keyless, own_keyless)
+        else:
+            # A keyed base-equality value is compared inside its bucket and against the
+            # kept own-equality values that could not be keyed, because only the other
+            # side's equality can join a pair the base equality calls different.
+            compared = chain(keyed.get(key, ()), own_keyless)
+        if any(_equal_either_way(existing, value) for existing in compared):
+            continue
+        if key is None:
+            (own_keyless if own_equality else base_keyless).append(value)
+        else:
+            keyed.setdefault(key, []).append(value)
+        if own_equality:
+            own_all.append(value)
+        all_values.append(value)
+        out.append(value)
+
+
+def _dedupe_operation_fields(values: Iterable) -> list:
+    """Keep the first of equal operation-field values, in input order.
+
+    A plain value is keyed by its own hash and compared only inside its bucket, so the
+    work is linear in the values that can be keyed. A mapping or model value has no key
+    and is compared pairwise against the kept values, because a mutable operation output
+    may be opaque and its equality need not match any projection of its content, so for u
+    such values the work grows by about u times the count of kept values. A value already
+    processed is dropped by identity before any key is taken or any comparison runs, and
+    every comparison asks both directions under one policy.
+    """
+    buckets: dict[int, list] = {}
+    unkeyed: list = []
+    processed_ids: set[int] = set()
+    out: list = []
+    for value in values:
+        if id(value) in processed_ids:
+            continue
+        processed_ids.add(id(value))
+        key = _operation_content_key(value)
+        compared: Iterable = (
+            chain(buckets.get(key, ()), unkeyed)
+            if key is not None
+            else chain(chain.from_iterable(buckets.values()), unkeyed)
+        )
+        if any(_equal_either_way(existing, value) for existing in compared):
+            continue
+        if key is None:
+            unkeyed.append(value)
+        else:
+            buckets.setdefault(key, []).append(value)
+        out.append(value)
+    return out
+
+
+def _operation_content_key(value: Any) -> int | None:
+    """A value's own hash, or ``None`` when it must be compared pairwise."""
+    if isinstance(value, _MAP_LIKE):
+        return None
     try:
         return hash(value)
     except (TypeError, ValueError):
@@ -164,70 +266,18 @@ def to_list(
     processed = _process_list(initial_list, flatten=flatten, dropna=dropna, skip_types=skip_types)
 
     if unique:
+        dataclass_kept: list = []
+        _dedupe_dataclasses(processed, dataclass_kept)
+        kept_dataclasses = {id(value) for value in dataclass_kept}
         seen: set = set()
-        # A DataClass value is keyed by a hash of its content when one can be taken, and
-        # falls back to comparing with the values it can be compared with when it cannot.
-        # A value that keeps DataClass equality is keyed by a transient hash of its
-        # declared field state, taken now and never stored on the instance; a value whose
-        # class defines its own equality is keyed by its own hash. Keyed values are
-        # compared inside their own bucket, so equal copies collapse without scanning the
-        # whole list and distinct hashable values stay linear. The two kinds are also
-        # compared across kinds, because only the value that defines its own equality can
-        # join a pair the base equality would call different. A value that cannot be keyed
-        # (a writable memoryview, nesting past the recursion limit, a class whose own hash
-        # raises) is compared with the values that define their own equality, and a value
-        # of that kind is compared with every value kept so far. Every comparison asks
-        # both directions under one exception policy, a result without one truth value is
-        # never tested bare, and a value already kept is dropped by identity before any
-        # key is taken or any comparison runs. A DataClass value is never compared with a
-        # plain mapping: those are separate branches, so a pair that only the DataClass
-        # equality would join across the two stays two values.
-        dataclass_buckets: dict[int, list[DataClass]] = {}
-        unkeyed_dataclasses: list[DataClass] = []
-        own_equality_buckets: dict[int, list[DataClass]] = {}
-        own_equality_values: list[DataClass] = []
-        kept_ids: set[int] = set()
         unhashable_buckets: dict[Any, list] = {}
+        emitted_dataclasses: set[int] = set()
         out: list = []
         for i in processed:
             if isinstance(i, DataClass):
-                if id(i) in kept_ids:
-                    continue
-                if type(i).__eq__ is DataClass.__eq__:
-                    bucket_key = _dataclass_content_key(i)
-                    if bucket_key is None:
-                        compared: Iterable[DataClass] = own_equality_values
-                    else:
-                        compared = chain(dataclass_buckets.get(bucket_key, ()), own_equality_values)
-                    if any(_equal_either_way(existing, i) for existing in compared):
-                        continue
-                    if bucket_key is None:
-                        unkeyed_dataclasses.append(i)
-                    else:
-                        dataclass_buckets.setdefault(bucket_key, []).append(i)
-                else:
-                    bucket_key = _own_content_key(i)
-                    if bucket_key is None:
-                        compared = chain(
-                            own_equality_values,
-                            unkeyed_dataclasses,
-                            *dataclass_buckets.values(),
-                        )
-                    else:
-                        compared = chain(
-                            own_equality_buckets.get(bucket_key, ()),
-                            unkeyed_dataclasses,
-                            *dataclass_buckets.values(),
-                        )
-                    if any(_equal_either_way(existing, i) for existing in compared):
-                        continue
-                    if bucket_key is None:
-                        own_equality_values.append(i)
-                    else:
-                        own_equality_buckets.setdefault(bucket_key, []).append(i)
-                        own_equality_values.append(i)
-                kept_ids.add(id(i))
-                out.append(i)
+                if id(i) in kept_dataclasses and id(i) not in emitted_dataclasses:
+                    emitted_dataclasses.add(id(i))
+                    out.append(i)
                 continue
             try:
                 if i not in seen:

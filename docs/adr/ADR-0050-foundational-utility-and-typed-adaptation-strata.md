@@ -267,9 +267,11 @@ class Note(BaseModel):
   field state and compared with its group and with the kept values whose class defines
   its own equality; a value whose class defines its own equality is grouped by its own
   hash and compared with its group and with the kept base-equality values. Every
-  comparison asks both directions, so the result does not depend on which value came
-  first. A value whose field state cannot be hashed cannot be compared by the base
-  equality either, so it is compared with the kept values that define their own equality
+  comparison asks both directions, so a pair either side's equality calls equal is one
+  value whichever value arrived first; a non-transitive `__eq__` can still make the
+  result depend on the order the values arrive in. A value whose field state cannot be
+  hashed cannot be compared by the base equality either, so it is compared with the kept
+  values that define their own equality
   and stays a separate value unless it is the same object or a kept value's own equality
   calls it equal. A `DataClass` value is never compared with a plain mapping; the two are
   deduplicated in separate branches. Generic mappings, Pydantic models, and msgspec

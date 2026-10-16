@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from lionagi.models.field_model import FieldModel
 
 from lionagi.ln import extract_json, to_dict, to_list
+from lionagi.ln._to_list import _dedupe_operation_fields
 from lionagi.ln.types import Unset
 from lionagi.ln.types._sentinel import _compat_not_sentinel
 from lionagi.models import HashableModel
@@ -382,34 +383,7 @@ def _get_default_fields(
 def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
     """Normalize one listable operation field, through one stable validator identity."""
     del cls  # Pydantic recognizes the validator class argument by this exact name.
-    result: list[Any] = []
-    for item in to_list(value, dropna=True, flatten=True):
-        if not any(_repeats(existing, item) for existing in result):
-            result.append(item)
-    return result
-
-
-def _repeats(existing: Any, item: Any) -> bool:
-    """Whether *item* is *existing* again: the same object, or an equal value.
-
-    The comparison is asked in both directions, so a pair that only one side's
-    ``__eq__`` joins is found whichever value came first. A value such as an
-    output array or a data frame compares element by element, so its ``==`` gives
-    no single truth value; such a pair stays two values, and so does a pair of
-    requests whose arguments hold one. A ``TypeError`` or ``ValueError`` raised by
-    an item's own ``__eq__`` reads as inequality the same way; any other error
-    propagates. The result is never read outside the guard that takes it, so a
-    comparison without one truth value is never tested bare.
-    """
-    if existing is item:
-        return True
-    for one, other in ((existing, item), (item, existing)):
-        try:
-            if one == other:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return _dedupe_operation_fields(to_list(value, dropna=True, flatten=True))
 
 
 def _validate_action_required_field(cls: Any, value: Any) -> bool | None:
