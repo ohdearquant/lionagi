@@ -1255,8 +1255,8 @@ returns candidates rather than choosing one: substring results are capped at
 smaller cap. Each reports truncation when its limit is exceeded.
 
 `run_progress.resolve_run("current")` calls `get_current_view`, which can use a
-later observation from the same browser page. The tools that reuse it — run
-findings, resume, rename, and run control — share that selection behavior.
+later observation from the same browser page. Tools that reuse this resolver
+share that selection behavior, including resume, rename, and run control.
 Project authorization still comes from the frozen turn context. Cancellation
 uses a separate resolver: `cancel_run._current_run_id` reads the turn's frozen
 selection and does not follow a later view report. The frontend carries the
