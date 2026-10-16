@@ -341,16 +341,17 @@ async def test_a_tracker_search_that_answers_nothing_releases_the_finding_once()
     run = eng.new_run()
     calls = _mute(eng, "extract")
     _wire(eng, run)
-    built: list[str] = []
+    built: list[_StubAgent] = []
 
     async def make_agent(role, *, name=None, **kwargs):
-        built.append(name)
-        return _StubAgent(name, None)
+        agent = _StubAgent(name, None)
+        built.append(agent)
+        return agent
 
-    operated: list[str] = []
+    operated: list[_StubAgent] = []
 
     async def operate_with_repair(agent, *args, **kwargs):
-        operated.append(agent.name)
+        operated.append(agent)
         return None
 
     run.make_agent = make_agent
@@ -361,7 +362,9 @@ async def test_a_tracker_search_that_answers_nothing_releases_the_finding_once()
     await run.emit(FindingPosted(description="the search finds nothing to say"))
     await run.wait_quiescence()
 
-    assert [name.split("-")[0] for name in built] == ["dedup"]
+    assert [agent.name.split("-")[0] for agent in built] == ["dedup"]
+    # _StubAgent has no __eq__, so this compares identity: the search operated
+    # exactly the agent it built.
     assert operated == built
     assert [s for s, _ in calls] == ["extract"]
     assert sum(e["type"] == "dedup_missing" for e in events) == 1
@@ -454,6 +457,82 @@ async def test_a_judge_that_raises_in_the_dedup_stage_ends_the_finding(
         assert f.eid not in run.dedup_cleared
         assert not any(e["type"] == "dedup_missing" for e in events)
         assert any(e["type"] == "stage_error" and e["stage"] == "dedup" for e in events)
+
+
+def _agent_sourced_finding_chain(run):
+    q = run.collect(QuestionRaised(area="a", what_is_unknown="why X?", gen=0))
+    h = run.collect(HypothesisFormed(question_ref=q.eid, statement="X < 500us"))
+    return run.collect(ExperimentDesigned(hypothesis_ref=h.eid, method="analysis", procedure="b"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["new", "extends", "duplicate"])
+async def test_a_verdict_naming_a_finding_its_judge_refused_is_an_orphan(verdict):
+    """A dedup agent can name any finding in its verdict. A finding whose judge refused
+    it had no search sent, so a verdict naming it neither extracts it nor marks it."""
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    calls = _mute(eng, "extract", "dedup_search")
+    _wire(eng, run)
+    judged: list[str] = []
+
+    async def judge(_run, eid, _subject):
+        judged.append(eid)
+        return False
+
+    eng.judge = judge
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="junk", parent_ref=x.eid))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+    assert f.gen == 1
+
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict, issue_number=3))
+    await run.wait_quiescence()
+
+    assert judged == [f.eid]
+    assert calls == []
+    assert f.eid not in run.dedup_cleared
+    assert any(e["type"] == "dedup_orphan" and e["finding_ref"] == f.eid for e in events)
+    assert not any(e["type"] == "finding_duplicate" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_finding_its_judge_passed_is_extracted_without_a_second_judge():
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    _wire(eng, run)
+    judged: list[str] = []
+
+    async def judge(_run, eid, _subject):
+        judged.append(eid)
+        return True
+
+    async def search(_run, f):
+        await _run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+
+    extracted: list[str] = []
+
+    async def make_agent(role, *, name=None, **kwargs):
+        extracted.append(name)
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    eng.judge = judge
+    eng._dedup_search = search
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="a real finding", parent_ref=x.eid))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+
+    assert judged == [f.eid]
+    assert extracted == [f"extract-{f.eid}"]
 
 
 @pytest.mark.parametrize("bad_verdict", ["uncertain", "Duplicate", "dupe", "NEW", ""])

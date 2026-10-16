@@ -534,9 +534,14 @@ class HypothesisRun(ChainRun):
         super().__init__(engine, **kwargs)
         self.pending: list[ExperimentDesigned] = []
         self.decisions: str = ""
-        # Findings that passed the dedup gate (and its judge, for gen > 0), so
-        # extraction neither re-judges nor waits on a second novelty check.
+        # Findings the dedup gate released to extraction, so a second verdict
+        # does not extract one twice.
         self.dedup_cleared: set[str] = set()
+        # Agent-sourced findings (gen > 0) whose dedup-stage judge passed, so a
+        # tracker search was sent for them. Extraction skips the judge only for
+        # these, and a verdict naming any other agent-sourced finding is an
+        # orphan, whichever agent emitted it.
+        self.dedup_judged: set[str] = set()
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -863,6 +868,12 @@ class HypothesisEngine(Engine):
         if not isinstance(f, FindingPosted):
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
+        if f.gen > 0 and f.eid not in run.dedup_judged:
+            # No search was sent for this finding: its judge refused it, raised,
+            # or has not decided yet. A verdict naming it must not carry it past
+            # the judge, so it is treated as one naming no finding.
+            run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
+            return
         if d.verdict == "duplicate":
             run.notify(
                 "finding_duplicate",
@@ -946,8 +957,10 @@ class HypothesisEngine(Engine):
         # runs outside the release below: a judge that raises (a contained one
         # raises any error) ends the finding here, where a release would send it
         # to extraction, which skips the judge for a released finding.
-        if f.gen > 0 and not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen)):
-            return
+        if f.gen > 0:
+            if not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen)):
+                return
+            run.dedup_judged.add(f.eid)
         # A tracker search that raises (agent construction, timeout, ...) must
         # not drop the finding — release it to extraction the same way a
         # missing-but-not-errored verdict does.
@@ -993,10 +1006,10 @@ class HypothesisEngine(Engine):
     async def _extract(self, run: HypothesisRun, f: FindingPosted) -> None:
         # Seeds (gen 0) are caller-provided; agent-sourced findings (gen > 0)
         # pass the judge before spending more budget — unless the dedup gate
-        # already judged them.
+        # already judged them and passed them.
         if (
             f.gen > 0
-            and f.eid not in run.dedup_cleared
+            and f.eid not in run.dedup_judged
             and not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen))
         ):
             return
