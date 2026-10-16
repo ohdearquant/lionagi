@@ -2045,13 +2045,15 @@ export default function RunDetail({ id }: RunDetailProps) {
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const olderSentinelRef = useRef<HTMLDivElement>(null);
-  // The run the component currently has selected. The Fleet view keeps this
-  // component mounted and swaps `id`, so a response for a run the reader has
-  // left can land after the switch; it must be checked against this before it
-  // writes, or run A's header and rows reappear under run B's URL. The mount
-  // effect sets this synchronously on every id change, so a request can ask
-  // whether the run it was made for is still the one on screen.
-  const selectedRunRef = useRef<string | null>(null);
+  // The visit the pane is currently showing, bumped by the mount effect on
+  // every id change. The Fleet view keeps this component mounted and swaps
+  // `id`, so a response for a run the reader has left can land after the
+  // switch; a request takes this token before it starts and checks it before
+  // it writes, or run A's header and rows reappear under run B's URL. The run
+  // id alone is not enough: leaving A for B and returning to A reaches the
+  // same id again but not the same visit, so a request from the first visit
+  // would match the second and overwrite the reader's own fresh read.
+  const visitTokenRef = useRef(0);
 
   useEffect(() => {
     if (!id) return;
@@ -2093,7 +2095,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       writeSelectedNodeToUrl(null);
     }
     selectionRunRef.current = id;
-    selectedRunRef.current = id;
+    visitTokenRef.current += 1;
     getSession(id)
       .then((s) => {
         if (cancelled) return;
@@ -2367,12 +2369,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
+    const visit = visitTokenRef.current;
     getSession(id, { messageCursor: cursor })
       .then((older) => {
         // The reader may have switched runs while this page was in flight: a
         // response for a run that is no longer on screen must not set its
         // cursor or merge its rows into the newly selected run.
-        if (selectedRunRef.current !== id) return;
+        if (visitTokenRef.current !== visit) return;
         setOlderCursor(older.message_next_cursor ?? null);
         setSession((prev) => {
           if (!prev) return prev;
@@ -2395,6 +2398,12 @@ export default function RunDetail({ id }: RunDetailProps) {
         });
       })
       .catch((e: unknown) => {
+        // The reader may have switched runs while this page was in flight.
+        // This failure is about the run the request was made for — an error
+        // state replaces the whole pane, and a refusal takes the run it is
+        // about off its own cursor — so it must not be written over a run the
+        // reader did not ask it for.
+        if (visitTokenRef.current !== visit) return;
         // A stale anchor (HTTP 400) means the branch's progression moved on
         // and this cursor no longer resolves — surface the dead-end instead
         // of retrying the same broken request on every scroll-up tick.
@@ -2415,15 +2424,23 @@ export default function RunDetail({ id }: RunDetailProps) {
     suppressAutoScrollRef.current = true;
     setOlderLoadFailed(false);
     setLoadingOlder(true);
+    // The visit this reload was asked for. A run id alone cannot tell a
+    // reload of the run now on screen from a reload of an earlier visit to
+    // it, so a reader who leaves and returns would see the first visit's
+    // snapshot land on the second.
+    const visit = visitTokenRef.current;
     getSession(id)
       .then((fresh) => {
         // A reload started on one run and finished after a switch must not
         // replace the view with the run the reader has left.
-        if (selectedRunRef.current !== id) return;
+        if (visitTokenRef.current !== visit) return;
         setOlderCursor(fresh.message_next_cursor ?? null);
         setSession(fresh);
       })
-      .catch((e: unknown) => setError(String(e)))
+      .catch((e: unknown) => {
+        if (visitTokenRef.current !== visit) return;
+        setError(String(e));
+      })
       .finally(() => setLoadingOlder(false));
   }, [id]);
 

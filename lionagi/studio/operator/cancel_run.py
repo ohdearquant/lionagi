@@ -210,10 +210,11 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
             return None
         if len(owned) == 1:
             return owned[0]
-        # The scoped prefix scan stops one row past the CLI helper's listing
-        # size, so a full window is the honest truncation signal and the
-        # candidates are that listing size -- the same window the read-only
-        # resolver reports.
+        # The scoped prefix scan reads one row more than the CLI helper shows
+        # (``_CANDIDATES_SHOWN + 1``), so a full read is the honest truncation
+        # signal, and the cap -- the listing size, not the read size -- sets
+        # how many candidates are shown below. That is the same window the
+        # read-only resolver reports.
         raise AmbiguousRunReferenceError([r["id"] for r in owned], cap=_CANDIDATES_SHOWN) from exc
     if row is not None:
         row_dict = db._row_to_dict(row)
