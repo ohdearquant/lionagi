@@ -260,3 +260,35 @@ class TestGlobalEffortIsClampedToTheResolvedModel:
 
         monkeypatch.setattr(Path, "is_file", is_file)
         assert global_codex_reasoning_effort({"CODEX_HOME": str(codex_home)}) is None
+
+
+class TestADeeplyNestedGlobalConfigReadsAsNoEffort:
+    """A global config nested past the parser's recursion limit must not crash the read.
+
+    The judge path reads the global config whenever the effort is unset, before
+    any containment check, so a RecursionError here escapes as an engine error
+    instead of the "no effort" answer an unreadable config gets.
+    """
+
+    def test_a_deeply_nested_config_answers_no_effort_without_raising(self, codex_home):
+        from lionagi.providers.openai._codex_profile import global_codex_reasoning_effort
+
+        _write_global(codex_home, "x = " + "[" * 3000 + "]" * 3000 + "\n")
+
+        assert global_codex_reasoning_effort({"CODEX_HOME": str(codex_home)}) is None
+
+    def test_an_effortless_build_over_a_deeply_nested_config_emits_no_effort(self, codex_home):
+        """The read the builder makes must answer None, not raise: the builder
+        reads the global config whenever the effort is unset."""
+        _write_global(codex_home, "x = " + "[" * 3000 + "]" * 3000 + "\n")
+
+        model = build_chat_model(
+            provider="codex",
+            model="gpt-5.3-codex-spark",
+            yolo=True,
+            verbose=False,
+            theme=None,
+            effort=None,
+        )
+
+        assert "reasoning_effort" not in model.endpoint.config.kwargs
