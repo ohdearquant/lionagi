@@ -65,6 +65,8 @@ class RunEnd(Signal):
     output_tokens: int = 0
     cached_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_write_5m_tokens: int = 0
+    cache_write_1h_tokens: int = 0
     total_cost_usd: float | None = None
     num_turns: int = 0
     duration_ms: float = 0.0
@@ -302,6 +304,21 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     return prompt_tokens - cached, output_tokens, cached, 0, is_valid
 
 
+def _extract_cache_write_ttl(usage: dict[str, Any]) -> tuple[int, int]:
+    """Split a provider's cache writes by lifetime as (five-minute, one-hour) tokens.
+
+    Only Anthropic reports the split, under ``usage["cache_creation"]``; any other
+    shape, or a value that is not a token count, reads as zero for both, and
+    ``cache_write_tokens`` keeps the total either way.
+    """
+    creation = usage.get("cache_creation")
+    if not isinstance(creation, dict):
+        return 0, 0
+    five_min = _as_nonneg_int(creation.get("ephemeral_5m_input_tokens", 0)) or 0
+    one_hour = _as_nonneg_int(creation.get("ephemeral_1h_input_tokens", 0)) or 0
+    return five_min, one_hour
+
+
 _MODEL_USAGE_ENTRY_KEYS = frozenset(
     {"inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"}
 )
@@ -349,6 +366,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     output_tokens = 0
     cached_tokens = 0
     cache_write_tokens = 0
+    cache_write_5m_tokens = 0
+    cache_write_1h_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
     usage_valid = True
@@ -361,6 +380,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             "output_tokens": 0,
             "cached_tokens": 0,
             "cache_write_tokens": 0,
+            "cache_write_5m_tokens": 0,
+            "cache_write_1h_tokens": 0,
             "total_cost_usd": None,
             "num_turns": 0,
             "usage_valid": True,
@@ -387,6 +408,9 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
             m_in, m_out, m_cached, m_cache_write, m_valid = _extract_usage_dims(usage)
             usage_valid = usage_valid and m_valid
+            m_write_5m, m_write_1h = _extract_cache_write_ttl(usage)
+            cache_write_5m_tokens += m_write_5m
+            cache_write_1h_tokens += m_write_1h
         input_tokens += m_in
         output_tokens += m_out
         cached_tokens += m_cached
@@ -408,6 +432,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "cached_tokens": cached_tokens,
         "cache_write_tokens": cache_write_tokens,
+        "cache_write_5m_tokens": cache_write_5m_tokens,
+        "cache_write_1h_tokens": cache_write_1h_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
         "usage_valid": usage_valid,
@@ -420,6 +446,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
     output_tokens = 0
     cached_tokens = 0
     cache_write_tokens = 0
+    cache_write_5m_tokens = 0
+    cache_write_1h_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
     usage_valid = True
@@ -430,6 +458,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
         output_tokens += usage["output_tokens"]
         cached_tokens += usage["cached_tokens"]
         cache_write_tokens += usage["cache_write_tokens"]
+        cache_write_5m_tokens += usage["cache_write_5m_tokens"]
+        cache_write_1h_tokens += usage["cache_write_1h_tokens"]
         if usage["total_cost_usd"] is not None:
             total_cost_usd = (total_cost_usd or 0.0) + usage["total_cost_usd"]
         num_turns += usage["num_turns"]
@@ -440,6 +470,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "cached_tokens": cached_tokens,
         "cache_write_tokens": cache_write_tokens,
+        "cache_write_5m_tokens": cache_write_5m_tokens,
+        "cache_write_1h_tokens": cache_write_1h_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
         "usage_valid": usage_valid,

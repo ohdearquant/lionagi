@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `RunEnd` and the run usage totals report cache writes by lifetime, `cache_write_5m_tokens` and
+  `cache_write_1h_tokens`, read from Anthropic's `usage.cache_creation`; `cache_write_tokens` stays
+  the total, and both new fields are 0 for providers that do not report the split.
+
 ### Changed
 
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon

@@ -730,3 +730,69 @@ def test_node_spawned_exported_from_session_package():
     from lionagi.session import NodeSpawned as NS
 
     assert NS is NodeSpawned
+
+
+def _branch_with_usage_dicts(*usages):
+    messages = []
+    for usage in usages:
+        msg = MagicMock()
+        msg.metadata = {"model_response": {"usage": usage}}
+        messages.append(msg)
+    branch = MagicMock()
+    branch.msgs.messages = messages
+    return branch
+
+
+def test_collect_branch_usage_splits_anthropic_cache_writes_by_lifetime():
+    usage = _collect_branch_usage(
+        _branch_with_usage_dicts(
+            {
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 700,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 200,
+                    "ephemeral_1h_input_tokens": 500,
+                },
+            },
+            {
+                "input_tokens": 3,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 1600,
+                "cache_creation_input_tokens": 40,
+                "cache_creation": {"ephemeral_5m_input_tokens": 40},
+            },
+        )
+    )
+    assert usage["cache_write_tokens"] == 740
+    assert usage["cache_write_5m_tokens"] == 240
+    assert usage["cache_write_1h_tokens"] == 500
+    assert usage["cached_tokens"] == 2500
+
+
+def test_cache_write_lifetimes_read_zero_without_a_split():
+    usage = _collect_branch_usage(
+        _branch_with_usage_dicts(
+            {"input_tokens": 80, "cache_creation_input_tokens": 25},
+            {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 10}},
+            {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": -5}},
+            {"input_tokens": 1, "cache_creation": "not a mapping"},
+        )
+    )
+    assert usage["cache_write_tokens"] == 25
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+
+
+def test_run_end_carries_cache_write_lifetimes_across_branches():
+    first = _branch_with_usage_dicts(
+        {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 300}}
+    )
+    second = _branch_with_usage_dicts(
+        {"input_tokens": 1, "cache_creation": {"ephemeral_5m_input_tokens": 70}}
+    )
+    usage = _collect_multi_branch_usage([first, second])
+    assert (usage["cache_write_5m_tokens"], usage["cache_write_1h_tokens"]) == (70, 300)
+    sig = build_run_end(first)
+    assert (sig.cache_write_5m_tokens, sig.cache_write_1h_tokens) == (0, 300)

@@ -114,6 +114,8 @@ EXPECTED_SIGNAL_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "RunStart": ("created_at", "data", "emitter_role", "id", "metadata", "schema_version"),
     "RunEnd": (
+        "cache_write_1h_tokens",
+        "cache_write_5m_tokens",
         "cache_write_tokens",
         "cached_tokens",
         "created_at",

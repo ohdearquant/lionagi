@@ -153,7 +153,10 @@ breaking field removal/rename; adding nullable fields is non-breaking.
 - `_extract_usage_dims` normalizes both provider usage shapes to "uncached
   prompt tokens" for input. Anthropic-style: `input_tokens` already excludes
   cache activity; cache reads/writes arrive separately as
-  `cache_read_input_tokens` / `cache_creation_input_tokens`. OpenAI-style:
+  `cache_read_input_tokens` / `cache_creation_input_tokens`, and
+  `_extract_cache_write_ttl` splits the writes by lifetime from
+  `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`
+  (zero for any other shape; `cache_write_tokens` stays the total). OpenAI-style:
   `prompt_tokens` *includes* cached reads, split out under
   `prompt_tokens_details.cached_tokens`, so it's subtracted here. `is_valid`
   is False when an OpenAI-style report violates the token-count invariants (a
