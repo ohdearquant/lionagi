@@ -211,6 +211,220 @@ def test_dataclass_dedup_finds_a_pair_its_own_equality_calls_equal_in_either_ord
 
 
 @dataclass(slots=True, eq=False)
+class Loose(DataClass):
+    """Equal to any plain value, whatever its own field holds."""
+
+    tag: int = 0
+
+    def __eq__(self, other):
+        return isinstance(other, Point)
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize("loose_first", [False, True], ids=["plain-first", "loose-first"])
+def test_dataclass_dedup_finds_a_sibling_pair_its_own_equality_calls_equal_in_either_order(
+    loose_first,
+):
+    plain, loose = Point(1), Loose(0)
+    first, second = (loose, plain) if loose_first else (plain, loose)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is first
+
+
+@dataclass(slots=True, eq=False)
+class LooseHolder(DataClass):
+    """Equal to any holder, whatever its own field holds."""
+
+    tag: int = 0
+
+    def __eq__(self, other):
+        return isinstance(other, Holder)
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize("loose_first", [False, True], ids=["holder-first", "loose-first"])
+def test_dataclass_dedup_finds_an_unkeyable_pair_its_own_equality_calls_equal_in_either_order(
+    loose_first,
+):
+    holder, loose = Holder(memoryview(bytearray(b"ab"))), LooseHolder(0)
+    first, second = (loose, holder) if loose_first else (holder, loose)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is first
+
+
+@dataclass(slots=True, eq=False)
+class Keyed(DataClass):
+    """Its own equality, and its own hash, read a field the other value may not carry."""
+
+    k: int = 0
+
+    def __eq__(self, other):
+        return self.k == other.k
+
+    def __hash__(self):
+        return hash(self.k)
+
+
+@dataclass(slots=True, eq=False)
+class Strict(DataClass):
+    """Its own equality, without a hash, reads a field the other value may not carry."""
+
+    k: int = 0
+
+    def __eq__(self, other):
+        return self.k == other.k
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize("keyed_first", [False, True], ids=["keyed-first", "plain-first"])
+def test_dataclass_dedup_lets_a_hashable_own_equality_error_propagate_in_either_order(
+    keyed_first,
+):
+    """An error other than ``TypeError`` or ``ValueError`` is not a comparison result."""
+
+    keyed, plain = Keyed(1), Point(1)
+    first, second = (keyed, plain) if keyed_first else (plain, keyed)
+    with pytest.raises(AttributeError):
+        to_list([first, second], flatten=True, unique=True)
+
+
+@pytest.mark.parametrize("strict_first", [False, True], ids=["strict-first", "plain-first"])
+def test_dataclass_dedup_lets_an_unhashable_own_equality_error_propagate_in_either_order(
+    strict_first,
+):
+    strict, plain = Strict(1), Point(1)
+    first, second = (strict, plain) if strict_first else (plain, strict)
+    with pytest.raises(AttributeError):
+        to_list([first, second], flatten=True, unique=True)
+
+
+@dataclass(slots=True, eq=False)
+class Incomparable(DataClass):
+    """Its own equality refuses a pair it cannot compare, with ``ValueError``."""
+
+    n: int = 0
+
+    def __eq__(self, other):
+        raise ValueError("incomparable values")
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize("refusing_first", [False, True], ids=["refusing-first", "plain-first"])
+def test_dataclass_dedup_reads_a_refused_comparison_as_unequal_in_either_order(
+    refusing_first,
+):
+    refusing, plain = Incomparable(1), Point(1)
+    first, second = (refusing, plain) if refusing_first else (plain, refusing)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is second
+
+
+@dataclass(slots=True, eq=False)
+class ArrayHolder(DataClass):
+    """Its own equality asks an array for one truth value, which raises."""
+
+    value: object = None
+
+    def __eq__(self, other):
+        return isinstance(other, ArrayHolder) and bool(self.value == other.value)
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize(
+    "other_first", [False, True], ids=["first-value-first", "second-value-first"]
+)
+def test_dataclass_dedup_never_truth_tests_an_elementwise_comparison(other_first):
+    """A comparison with no single truth value keeps the values apart, in either order."""
+
+    numpy = pytest.importorskip("numpy")
+    one, two = ArrayHolder(numpy.array([1, 2])), ArrayHolder(numpy.array([1, 2]))
+    first, second = (two, one) if other_first else (one, two)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is second
+
+
+_READS = {"count": 0}
+
+
+class ReadsOnce(Point):
+    """Its field state reads once and then fails, as a value being written would."""
+
+    def _field_state(self):
+        _READS["count"] += 1
+        if _READS["count"] > 1:
+            raise AttributeError("field state is gone on the second read")
+        return DataClass._field_state(self)
+
+
+def test_dataclass_dedup_keeps_one_value_when_a_repeat_cannot_be_keyed_twice():
+    """Identity covers every kept value, so a repeat is dropped before its field state
+    is read a second time."""
+
+    _READS["count"] = 0
+    value = ReadsOnce(1)
+    result = to_list([value, value], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is value
+
+
+class Pe:
+    __hash__ = None
+
+    def __eq__(self, other):
+        return False
+
+
+class Qe:
+    __hash__ = None
+
+    def __eq__(self, other):
+        return isinstance(other, Pe)
+
+
+@pytest.mark.parametrize("pe_first", [False, True], ids=["pe-first", "qe-first"])
+def test_operation_dedup_keeps_one_value_for_one_sided_equality_in_either_order(pe_first):
+    first = fields.ActionResponseModel(output=Pe())
+    second = fields.ActionResponseModel(output=Qe())
+    ordered = (first, second) if pe_first else (second, first)
+    result = fields._validate_listable_field(None, list(ordered))
+    assert len(result) == 1
+    assert result[0] is ordered[0]
+
+
+@dataclass(slots=True, unsafe_hash=True)
+class FastKey(DataClass):
+    """A hashable value whose generated equality follows its fields."""
+
+    value: str = ""
+
+
+def test_dataclass_dedup_keeps_hashable_values_in_input_order_quickly():
+    """A few thousand hashable values deduplicate in well under a second."""
+
+    import time
+
+    values = [FastKey(str(n)) for n in range(6000)]
+    doubled = values + values
+    started = time.perf_counter()
+    result = to_list([doubled], flatten=True, unique=True)
+    elapsed = time.perf_counter() - started
+    assert len(result) == len(values)
+    assert all(kept is value for kept, value in zip(result, values, strict=True))
+    assert elapsed < 2.0, f"deduplicating {len(doubled)} values took {elapsed:.2f}s"
+
+
+@dataclass(slots=True, eq=False)
 class Holder(DataClass):
     value: object = None
 

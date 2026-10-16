@@ -27,10 +27,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `TypeError` or `ValueError` from a value's own `__eq__` reads as unequal the same way.
   `to_list(..., unique=True)` keeps the first of equal `DataClass` values. It groups values that
   keep the base equality by a hash of their declared field state, taken during deduplication
-  and not stored, and compares a value whose class defines its own equality with every kept
-  value, so a pair that equality calls equal is one value in either order. A `DataClass` value
-  whose field state cannot be hashed, such as one holding a writable memoryview, is kept as a
-  separate value unless it is the same object, where it used to raise.
+  and not stored, groups a value whose class defines its own equality by its own hash, and
+  compares each value with its group and with the kept values of the other kind in both
+  directions, so the result does not depend on which value came first. A `DataClass` value
+  whose field state cannot be hashed, such as one holding a writable memoryview, is compared
+  with the kept values that define their own equality and is kept as a separate value unless it
+  is the same object or a kept value's own equality calls it equal, where it used to raise. A
+  `DataClass` value is never compared with a plain mapping: the two are deduplicated in
+  separate branches, so a pair that only the `DataClass` equality would join across the two
+  stays two values.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

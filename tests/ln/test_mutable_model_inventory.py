@@ -5,10 +5,12 @@ assignment expressions, and loop targets over a literal tuple, list or set) and
 declared inheritance. A name bound in more than one place resolves to every value it
 was given, so a fallback in an ``except`` clause cannot hide the import it replaces.
 Calls are read in every expression a statement evaluates, including tests, context
-managers, loop iterables, return values, assertions and match subjects and guards.
-It does not execute factories, decorators or reflective code, so it fails closed
-where it cannot follow one: a class whose base is bound by any other loop or ``with``
-target, and a class created with ``type()`` from a family member. A class a function
+managers, loop iterables, return values, assertions and match subjects and guards. Every
+statement body is walked, a ``match`` statement's case clauses included, and a statement
+kind the walk cannot classify is reported rather than skipped. It does not execute
+factories, decorators or reflective code, so it fails closed where it cannot follow one:
+a class whose base is bound by any other loop or ``with`` target, a class created with
+``type()`` from a family member, and a statement kind it does not know. A class a function
 builds from one of its parameters, or one ``create_model`` builds, is outside what the
 scan proves, as the inventory's scope limits say. Consumer references
 document audited boundaries rather than arbitrary dataflow. Wildcard imports are
@@ -124,6 +126,77 @@ def _own_expressions(node: ast.stmt) -> Iterator[ast.expr]:
             )
 
 
+# Every statement kind's own suites, by the field names that hold them. A kind
+# absent from this table is one the walk cannot classify, and the walk fails closed
+# on it rather than reading it as hash-free. ``Match`` holds its suites in ``case``
+# clauses, which are not statements, so its bodies are collected separately.
+_SUITE_FIELDS: dict[str, tuple[str, ...]] = {
+    "FunctionDef": ("body",),
+    "AsyncFunctionDef": ("body",),
+    "ClassDef": ("body",),
+    "For": ("body", "orelse"),
+    "AsyncFor": ("body", "orelse"),
+    "While": ("body", "orelse"),
+    "If": ("body", "orelse"),
+    "With": ("body",),
+    "AsyncWith": ("body",),
+    "Try": ("body", "orelse", "finalbody"),
+    "TryStar": ("body", "orelse", "finalbody"),
+    "Match": (),
+    "Return": (),
+    "Delete": (),
+    "Assign": (),
+    "AugAssign": (),
+    "AnnAssign": (),
+    "Import": (),
+    "ImportFrom": (),
+    "Global": (),
+    "Nonlocal": (),
+    "Expr": (),
+    "Pass": (),
+    "Break": (),
+    "Continue": (),
+    "Raise": (),
+    "Assert": (),
+}
+
+
+def _suite_bodies(node: ast.stmt) -> Iterator[list[ast.stmt]]:
+    """Every statement body a statement holds, or a refusal for an unknown kind.
+
+    The scan must read a hash write or a frozen configuration wherever it sits, so a
+    statement kind it cannot classify is reported rather than skipped: an unknown
+    body would otherwise be a place a hash authority could hide unread.
+    """
+    fields = _SUITE_FIELDS.get(type(node).__name__)
+    if fields is None:
+        raise ValueError(
+            f"{type(node).__name__} at line {node.lineno} is a statement kind the "
+            "mutable-model scan cannot read; extend the scan before relying on the gate"
+        )
+    for field in fields:
+        body = getattr(node, field)
+        if body:
+            yield body
+    for handler in getattr(node, "handlers", ()) or ():
+        if handler.body:
+            yield handler.body
+    for case in getattr(node, "cases", ()) or ():
+        if case.body:
+            yield case.body
+
+
+def _scope_suites(node: ast.stmt) -> Iterator[list[ast.stmt]]:
+    """The suites of *node* that stay in the enclosing scope.
+
+    A function or class definition opens its own scope, so a name assigned there is
+    not a class-body setting and is not read as one.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return
+    yield from _suite_bodies(node)
+
+
 def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
     result = _Scan({}, {}, set(), [], [])
     calls: list[tuple[str, frozenset[str], str, str]] = []
@@ -157,6 +230,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         assignment(child, values[index] if index < len(values) else None)
 
             def loop_target(target: ast.AST, iterable: ast.AST | None) -> None:
+                # An attribute target is a binding statement too: a loop or with target
+                # that names ``__hash__`` writes it wherever the loop runs.
+                if isinstance(target, ast.Attribute):
+                    assignment(target, iterable)
+                    return
                 # A name iterating a literal tuple, list or set takes each element in turn;
                 # any other loop or with target is a value the scan cannot follow.
                 literal = isinstance(target, ast.Name) and isinstance(
@@ -179,6 +257,8 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     for item in ast.walk(expression):
                         if isinstance(item, ast.NamedExpr):
                             assignment(item.target, item.value)
+                        elif isinstance(item, ast.comprehension):
+                            loop_target(item.target, item.iter)
                 inspect_calls(expressions, bindings)
                 if isinstance(node, ast.ImportFrom):
                     parts = package.split(".") if package else []
@@ -254,14 +334,8 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 loop_target(item.optional_vars, None)
                     # Inspect declarations in conditional, loop, try and match suites
                     # without pretending to decide which branch executes at runtime.
-                    for _field, value in ast.iter_fields(node):
-                        if isinstance(value, list):
-                            statements = [item for item in value if isinstance(item, ast.stmt)]
-                            if statements:
-                                walk(statements, bindings.copy(), scope, class_name, closure)
-                            for handler in value:
-                                if isinstance(handler, (ast.ExceptHandler, ast.match_case)):
-                                    walk(handler.body, bindings.copy(), scope, class_name, closure)
+                    for statements in _suite_bodies(node):
+                        walk(statements, bindings.copy(), scope, class_name, closure)
 
         def inspect_calls(expressions: list[ast.expr], bindings: dict[str, str]) -> None:
             for expression in expressions:
@@ -339,6 +413,17 @@ def _settings(body: list[ast.stmt]) -> Iterator[tuple[list[ast.expr], ast.expr |
             yield node.targets, node.value
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
             yield [node.target], node.value
+        for nested in _scope_suites(node):
+            yield from _settings(nested)
+
+
+def _class_body_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Every statement in a class body, nested suites included, without entering a
+    new scope."""
+    for node in body:
+        yield node
+        for nested in _scope_suites(node):
+            yield from _class_body_statements(nested)
 
 
 def _generation(declaration: _Class, aliases: dict[str, set[str]]) -> bool:
@@ -356,7 +441,7 @@ def _generation(declaration: _Class, aliases: dict[str, set[str]]) -> bool:
     for targets, value in _settings(declaration.node.body):
         if _frozen_setting(targets, value, "model_config"):
             return True
-    for node in declaration.node.body:
+    for node in _class_body_statements(declaration.node.body):
         if isinstance(node, ast.ClassDef) and node.name == "Config":
             for targets, value in _settings(node.body):
                 if _frozen_setting(targets, value, "frozen"):
@@ -684,6 +769,80 @@ def test_a_descendant_declared_inside_any_suite_is_inventoried(suite):
     scan = _sample("from lionagi.models import HashableModel\n" + suite.format(declaration))
     hidden = "sample.make.<locals>.Hidden" if suite.startswith("async def") else "sample.Hidden"
     assert _violations(scan, {*_ROOTS}) == [f"inventory drift: missing=[], unexpected=['{hidden}']"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    match flag:\n        case 1:\n            __hash__ = object.__hash__",
+        "    match flag:\n        case 1:\n            def __hash__(self): return 1",
+        "    match flag:\n        case 1:\n            model_config = {'frozen': True}",
+        "    match flag:\n        case 1:\n            model_config = ConfigDict(frozen=True)",
+        "    match flag:\n        case 1:\n            class Config:\n                frozen = True",
+        "    if flag:\n        __hash__ = object.__hash__",
+        "    if flag:\n        model_config = {'frozen': True}",
+        "    for _ in ():\n        __hash__ = object.__hash__",
+        "    while flag:\n        __hash__ = object.__hash__\n        break",
+        "    with context:\n        __hash__ = object.__hash__",
+        "    try:\n        __hash__ = object.__hash__\n    except Exception:\n        pass",
+        "    try:\n        pass\n    finally:\n        __hash__ = object.__hash__",
+    ],
+)
+def test_hash_authority_inside_any_suite_is_rejected(body):
+    scan = _sample(
+        "from lionagi.models import HashableModel\n"
+        "from pydantic import ConfigDict\n"
+        "class Known(HashableModel):\n" + body
+    )
+    errors = _violations(scan, {*_ROOTS, "sample.Known"})
+    assert errors and all("sample.Known" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "for Known.__hash__ in (object.__hash__,):\n    pass",
+        "with context() as Known.__hash__:\n    pass",
+        "_ = [None for Known.__hash__ in (object.__hash__,)]",
+    ],
+    ids=["for-target", "with-target", "comprehension-target"],
+)
+def test_a_hash_written_as_a_binding_target_is_rejected(statement):
+    """A loop, with or comprehension target binds an attribute just as an assignment
+    does, so a target that names ``__hash__`` is a write."""
+
+    scan = _sample(
+        "from lionagi.models import HashableModel\nclass Known(HashableModel): pass\n" + statement
+    )
+    assert "sample.Known: post-definition __hash__ assignment" in (
+        _violations(scan, {*_ROOTS, "sample.Known"})
+    )
+
+
+def test_an_unknown_statement_kind_fails_closed():
+    """A statement the scan cannot classify must not be read as hash-free."""
+
+    class Unknown(ast.stmt):
+        _fields = ("body",)
+        lineno = 1
+
+        def __init__(self, body):
+            self.body = body
+
+    tree = ast.parse("class Known: pass\n")
+    unknown = Unknown([ast.parse("Known.__hash__ = object.__hash__\n").body[0]])
+    tree.body.append(unknown)
+    original = ast.parse
+
+    def parse_with_unknown(source, *args, **kwargs):
+        if kwargs.get("filename") == "sample" or (args and args[0] == "sample"):
+            return tree
+        return original(source, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ast, "parse", parse_with_unknown)
+        with pytest.raises(ValueError, match="statement kind the mutable-model scan cannot read"):
+            _sample("")
 
 
 @pytest.mark.parametrize(
