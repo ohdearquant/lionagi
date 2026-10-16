@@ -4,6 +4,14 @@ These tests read the required workflow, the scripts and the tests it runs, and
 the action code it uses, so they catch a switch added to any of them by
 accident. A pull request that edits those files can also edit this test, so they
 do not stop a deliberate one.
+
+The searches here are textual, and each one keeps the limits named in its own
+comment rather than chasing every input: a line that names a detail is refused
+even in prose, only an environment write through a call with one of four names
+is exempt, only a direct `if:` or `continue-on-error:` input condition is read,
+a write blanks the whole statement that holds it, the API scan reads no file
+under `tests/` and every other text file under its roots, and a file read as
+bytes in a multibyte encoding can stay silent.
 """
 
 from __future__ import annotations
@@ -139,8 +147,8 @@ API_VARIABLE_READ = re.compile(
 
 # A write verb beside the variables endpoint. The REST path alone does not say
 # whether a call reads or writes, so a line that names a write verb is left alone.
-# `curl` spells the verb `--request`, and either option may carry it as
-# `--method=VERB`.
+# `gh api` spells the verb `--method`, and may carry it as `--method=VERB`; `curl`
+# spells it `-X` or `--request`.
 API_VARIABLE_WRITE = re.compile(
     r"(-X|--method|--request)\s*=?\s*['\"]?(PATCH|POST|PUT|DELETE)\b"
     r"|\b(create|update|delete)(Repo|Org|Environment)Variables?\b",
@@ -159,7 +167,9 @@ API_VARIABLE_WRITE = re.compile(
 # prose on a line that carries both. A step that runs `actions/github-script`
 # reads the same details as `context.actor`, `context.payload.pull_request` and
 # `context.payload.label`; those spellings count wherever they appear, not only
-# inside a github-script block.
+# inside a github-script block. The whole `github` context is read when it is
+# passed to `toJSON`; passed to any other function, `format()` say, its details
+# are not what the pattern matches.
 LABEL = re.compile(
     r"\bgithub\s*\.\s*event\s*\.\s*label\b"
     r"|\bpull_request\s*\[\s*['\"]labels['\"]\s*\]"
@@ -188,14 +198,19 @@ ENV_DETAIL = re.compile(
 # inputs. A condition on one of them can switch off the step the caller meant to
 # run. Only a direct `if:` or `continue-on-error:` condition is read: an indirect
 # gate on an input through a step's `env:` value or through a `run:` shell test is
-# outside what this pattern sees.
+# outside what this pattern sees. A condition is refused as written, so a callee
+# that reads an input its caller always supplies is refused too; that is a limit,
+# and the condition has to move behind a step's `env:` or a `run:` test to pass.
 INPUT_READ = re.compile(r"\binputs\s*(\.|\[)", re.IGNORECASE)
 
 # A call that writes an environment variable rather than reading one. A test
 # fixture sets or clears a GITHUB_ variable to arrange the environment; that names
-# the variable to write it, so it reads nothing about the pull request. The string
-# arguments of such a call, and the loop its name is drawn from, are blanked before
-# a code search runs.
+# the variable to write it, so it reads nothing about the pull request. Only the
+# four call names below are exempt: a write through another call that reaches
+# os.environ (`monkeypatch.setitem`, `patch.dict`, an assigned subscript) still
+# names the variable and is refused, so a test that arranges the environment with
+# one has to be rewritten to `setenv` and `delenv`. A read on the same statement
+# as an exempt call is blanked with it (see `_code_only`).
 ENV_WRITE_CALLS = frozenset({"setenv", "delenv", "putenv", "unsetenv"})
 
 
@@ -211,10 +226,12 @@ def _is_env_write(node: ast.AST) -> bool:
 def _env_write_spans(tree: ast.AST) -> list[ast.AST]:
     """The nodes to blank for a call that writes an environment variable.
 
-    The call's whole statement is dropped, and so is the iterable of the loop a
-    variable name is drawn from, as in a clean-up loop over the names a fixture
-    set. The call itself names the variable to write it, so its argument reads
-    nothing.
+    The whole statement that holds the call is dropped, not only the call: a
+    statement is the smallest span this can blank, so a read sharing it (a
+    conditional expression, a loop test) is dropped too, and that is a limit.
+    The iterable of the loop a variable name is drawn from is dropped as well,
+    as in a clean-up loop over the names a fixture set. The call itself names
+    the variable to write it, so its argument reads nothing.
     """
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
@@ -360,14 +377,16 @@ def _uncommented(text: str) -> str:
 
 
 def _code_only(text: str) -> str:
-    """*text* with whole-line comments, a Python docstring and an env write taken out.
+    """*text* with whole-line comments, bare string statements and env writes out.
 
-    Only code can read a label or an event: a `#` line and a string that stands
-    alone as a statement (a module, class or function docstring) say what the code
-    is for, and a call that sets or clears an environment variable names the
-    variable to write it rather than to read it. A Python file is read through
-    `ast`, so all three are dropped; text that does not parse as Python keeps its
-    `#` lines removed and the rest as written.
+    Only code can read a label or an event: a `#` line and a bare string
+    statement (a module, class or function docstring, and any other string
+    standing alone as a statement) say what the code is for, and a call that
+    sets or clears an environment variable names the variable to write it rather
+    than to read it. A Python file is read through `ast`, so all three are
+    dropped; text that does not parse as Python keeps its `#` lines removed and
+    the rest as written. A `#`-first line is dropped wherever it sits, so one
+    inside a shell string is dropped too, and that is a limit.
     """
     stripped = _uncommented(text)
     try:
@@ -509,12 +528,14 @@ def test_a_local_path_is_read_with_dot_segments_resolved(uses: str, target: str 
 def _api_reads(text: str) -> list[str]:
     """The API calls in *text* that return a repository variable.
 
-    A whole-line comment, a docstring and a call that writes an environment
-    variable are dropped. A line that names a write verb is not a read: only a
-    call that returns the value can stand in for `vars`. A write verb hides any
-    read beside it on the same line, and the other write spellings (an Octokit
-    `request` string, an implicit `gh api -f`) are not recognised, so both stay
-    allowed.
+    A whole-line comment, a bare string statement and a call that writes an
+    environment variable are dropped. A line that names a write verb is not a
+    read: only a call that returns the value can stand in for `vars`. Three
+    limits are kept: a write verb hides any read beside it on the same line; only
+    the write spellings above are recognised, so an Octokit `request` string that
+    names the endpoint and an implicit `gh api -f` are refused even though they
+    write; and every text file under the roots is read, so a fixture that merely
+    holds the endpoint (a JSON sample) is refused as well.
     """
     found: list[str] = []
     for line in _code_only(text).splitlines():
@@ -531,8 +552,9 @@ def test_no_step_or_script_reads_a_variable_through_the_api() -> None:
     files = _scanned_files((WORKFLOWS.parent, REPO / "scripts"))
     assert WORKFLOWS / "ci.yml" in files
     assert REPO / "scripts" / "check_issue_links.py" in files
-    # The API scan reads `.github` and `scripts`; the code scan also reads `tests`.
-    # An endpoint a step or a script runs is what this one covers.
+    # Limit: this scan reads `.github` and `scripts` only, so an endpoint reached
+    # from a file under `tests/` is out of it; the code scan, which does read
+    # `tests/`, refuses the environment names an endpoint there would use instead.
     assert REPO / "tests" / "conftest.py" not in files
     hits = [path for path in files if _api_reads(path.read_text(errors="replace"))]
     assert hits == []
@@ -669,9 +691,11 @@ def _other_switches(text: str) -> list[str]:
     """What in a required workflow or action could act as a switch.
 
     A label, an event detail and a secret are each refused only as a reference:
-    the word in a step name or a comment reads nothing. The raw text is searched
-    beside the parsed strings, so an `env`, `run`, `runs-on` or matrix value
-    counts as much as an `if`. A secret under a `with:` input is how a step
+    the word in a step name reads nothing, and a whole-line comment is dropped,
+    but a reference after a value on the same line is still refused, since only
+    whole-line comments come out. The raw text is searched beside the parsed
+    strings, so an `env`, `run`, `runs-on` or matrix value counts as much as an
+    `if`. A secret under a `with:` input is how a step
     receives one, and it is the only place within a job's steps one is allowed:
     a secret in an `env` value can gate a step the same way, so that stays
     refused. A job-level `secrets:` mapping is a keyword of a reusable-workflow
@@ -1123,28 +1147,35 @@ def _ci_gate_source() -> ast.Module:
     return ast.parse(textwrap.dedent(match.group("body")))
 
 
-def _assigned(source: ast.Module, name: str) -> object:
-    """The literal value assigned to *name* at the top level of *source*."""
-    for node in source.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == name for target in node.targets
-        ):
-            return ast.literal_eval(node.value)
-    raise AssertionError(f"the aggregate check no longer assigns {name}")
+def _needs_context(results: dict[str, str], outputs: dict[str, str] | None) -> dict:
+    """A ``toJSON(needs)`` value with every job the aggregate check reads.
 
-
-def _needs_context(results: dict[str, str], outputs: dict[str, str]) -> dict:
-    """A ``toJSON(needs)`` value with every job the aggregate check reads."""
+    With *outputs* None the ``changes`` job reports no outputs at all, which is
+    how a job that never set the flag reaches the aggregate.
+    """
     needs = {name: {"result": results.get(name, "success")} for name in CI_GATE_HARD_GATES}
     for name in CI_GATE_CONDITIONAL_GATES:
         needs.setdefault(name, {"result": results.get(name, "success")})
     needs["changes"] = {
         "result": results.get("changes", "success"),
-        "outputs": {
-            flag: outputs.get(flag, "false") for flag in CI_GATE_CONDITIONAL_GATES.values()
-        },
+        "outputs": (
+            {}
+            if outputs is None
+            else {flag: outputs.get(flag, "false") for flag in CI_GATE_CONDITIONAL_GATES.values()}
+        ),
     }
     return needs
+
+
+def _exec_ci_gate(needs: dict, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Run the aggregate check on *needs* and return the names it ends with."""
+    monkeypatch.setenv("NEEDS_CONTEXT", json.dumps(needs))
+    namespace: dict = {"__name__": "__main__"}
+    try:
+        exec(compile(_ci_gate_source(), "ci-gate", "exec"), namespace)
+    except SystemExit:
+        pass
+    return namespace
 
 
 def _run_ci_gate(needs: dict, monkeypatch: pytest.MonkeyPatch, capsys) -> tuple[int, str]:
@@ -1157,37 +1188,76 @@ def _run_ci_gate(needs: dict, monkeypatch: pytest.MonkeyPatch, capsys) -> tuple[
     return 0, capsys.readouterr().out
 
 
-def test_the_aggregate_check_keeps_its_hard_gates() -> None:
+def test_the_aggregate_check_keeps_its_hard_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     # ci-gate compares each named job's result against success. Dropping a name
     # from the list makes the aggregate ignore that job, so a failure it reports
-    # would not fail the check the branch protection reads. The list is pinned
-    # rather than counted: a name is what matters.
-    assert _assigned(_ci_gate_source(), "hard_gates") == CI_GATE_HARD_GATES
+    # would not fail the check the branch protection reads. The value the check
+    # ends with is compared, not the literal it starts from: a statement after the
+    # list that edits it (`remove`, an append) is caught too. Narrowing the loop
+    # instead of the list is what the failure case over every name below catches.
+    assert _exec_ci_gate(_needs_context({}, {}), monkeypatch)["hard_gates"] == CI_GATE_HARD_GATES
 
 
-def test_the_aggregate_check_keeps_its_conditional_gates() -> None:
+def test_the_aggregate_check_keeps_its_conditional_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Each conditional job is pinned with the flag it may skip against. Dropping an
     # entry makes the aggregate stop reading that job, so a skip of it would no
     # longer be checked against the path filter that is supposed to allow it.
-    assert _assigned(_ci_gate_source(), "conditional_gates") == CI_GATE_CONDITIONAL_GATES
+    assert (
+        _exec_ci_gate(_needs_context({}, {}), monkeypatch)["conditional_gates"]
+        == CI_GATE_CONDITIONAL_GATES
+    )
+
+
+@pytest.mark.parametrize("name", CI_GATE_HARD_GATES)
+def test_every_hard_gate_failure_fails_the_aggregate(
+    name: str, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # One arm per name, so a change that stops judging a particular gate (a slice
+    # in the loop, a rename in the list) is caught for the gate it drops and not
+    # only for the first.
+    rc, out = _run_ci_gate(_needs_context({name: "failure"}, {}), monkeypatch, capsys)
+    assert rc == 1, out
 
 
 @pytest.mark.parametrize(
-    ("results", "outputs"),
+    ("results", "outputs", "expected"),
     [
-        pytest.param({}, {}, id="all-success"),
-        pytest.param({"test": "failure"}, {}, id="hard-gate-failure"),
-        pytest.param({"test": "skipped"}, {}, id="hard-gate-skipped"),
-        pytest.param({"lion1": "skipped"}, {"lion1": "true"}, id="conditional-changed-skip"),
-        pytest.param({"lion1": "failure"}, {"lion1": "false"}, id="conditional-unchanged-failure"),
+        pytest.param({}, {}, 0, id="all-success"),
+        pytest.param({"test": "failure"}, {}, 1, id="hard-gate-failure"),
+        pytest.param({"test": "skipped"}, {}, 1, id="hard-gate-skipped"),
+        pytest.param({"test": "cancelled"}, {}, 1, id="hard-gate-cancelled"),
+        pytest.param({"lion1": "skipped"}, {"lion1": "true"}, 1, id="conditional-changed-skip"),
+        pytest.param(
+            {"lion1": "failure"}, {"lion1": "false"}, 1, id="conditional-unchanged-failure"
+        ),
+        pytest.param({}, None, 1, id="changes-output-missing"),
     ],
 )
 def test_the_aggregate_check_fails_on_a_bad_result(
-    results: dict[str, str], outputs: dict[str, str], monkeypatch: pytest.MonkeyPatch, capsys
+    results: dict[str, str],
+    outputs: dict[str, str] | None,
+    expected: int,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
 ) -> None:
     # A hard gate must succeed, and a conditional job may skip only when its inputs
-    # did not change. Both comparisons are exercised here, so inverting either one,
-    # or dropping a job from either mapping, turns one of these arms green.
+    # did not change and the flag that says so was reported. Each arm carries the
+    # exit code expected of it, so a comparison cannot pass a case that asserts only
+    # "the run finished": inverting one turns its arms red.
     rc, out = _run_ci_gate(_needs_context(results, outputs), monkeypatch, capsys)
-    expected = 0 if not results else 1
+    assert rc == expected, out
+
+
+@pytest.mark.parametrize("job", sorted(CI_GATE_CONDITIONAL_GATES))
+@pytest.mark.parametrize(("result", "expected"), [("skipped", 0), ("cancelled", 1)])
+def test_a_conditional_job_may_skip_an_unchanged_run_but_not_cancel_one(
+    job: str, result: str, expected: int, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # When the paths a conditional job filters on did not change it skips, which is
+    # the ordinary path on most pull requests, so that skip must pass. A cancelled
+    # job never ran, so it fails there the same way it fails a changed run.
+    outputs = {CI_GATE_CONDITIONAL_GATES[job]: "false"}
+    rc, out = _run_ci_gate(_needs_context({job: result}, outputs), monkeypatch, capsys)
     assert rc == expected, out
