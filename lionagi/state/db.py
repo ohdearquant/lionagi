@@ -15,6 +15,7 @@ import re
 import shutil
 import sqlite3
 import struct
+import tempfile
 import time
 import uuid
 import weakref
@@ -642,6 +643,9 @@ class StateDB:
         self._native_file: tuple[int, int] | None = None
         # Whether a connection of this handle's writable engine has read the store (ADR-0128 D7).
         self._connection_read = False
+        # One open at a time: a native open reads the store in a worker thread before its engine
+        # exists, so two opens running together would each build an engine and lose one.
+        self._open_lock: Lock = Lock()
         if compatibility is None and owner is not None:
             raise ValueError("an owner is written in compatibility mode only")
         if compatibility is not None:
@@ -734,6 +738,10 @@ class StateDB:
     # Connection lifecycle
 
     async def open(self) -> None:
+        async with self._open_lock:
+            await self._open()
+
+    async def _open(self) -> None:
         if self._engine is not None:
             return
         if self._compat is not None:
@@ -774,8 +782,9 @@ class StateDB:
             # before any writable connection exists, and each new writable connection reads them
             # again before its settings change the file, for a row written in between (ADR-0128
             # D7).
-            await run_sync(self._read_lineage_without_writing)
+            await run_sync(self._read_lineage_without_writing, _held_files())
             self._connection_read = False
+            self._native_file = None
             self._engine = make_engine(self.url, before_settings=self._refuse_a_managed_store)
             _install_begin_immediate(self._engine.sync_engine)
         else:
@@ -792,10 +801,7 @@ class StateDB:
                 with CancelScope(shield=True):
                     await self.close()
             raise
-        p = self.path
-        if self.dialect == "sqlite" and p is not None and str(p) != ":memory:":
-            # SQLAlchemy opens the absolute path of a SQLite URL's database, resolved lexically.
-            self._native_file = _file_identity(os.path.abspath(p))
+        if self._native_file is not None:
             _OPEN_NATIVE.add(self)
 
     def _refuse_a_managed_store(self, dbapi_conn) -> None:
@@ -806,9 +812,8 @@ class StateDB:
         cursor = dbapi_conn.cursor()
         try:
             cursor.execute("PRAGMA database_list")
-            self._refuse_a_held_file(
-                next((row[2] for row in cursor.fetchall() if row[1] == "main"), "")
-            )
+            opened = next((row[2] for row in cursor.fetchall() if row[1] == "main"), "")
+            self._refuse_a_held_file(opened, _held_files())
             cursor.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
             )
@@ -821,19 +826,23 @@ class StateDB:
             cursor.close()
         self._raise_if_foreign_lineage(lineage)
         self._connection_read = True
+        # The file the connection opened, however the URL spells it, so compatibility admission
+        # in this process is refused for that file while this handle is open.
+        self._native_file = _file_identity(opened) if opened else None
 
-    def _read_lineage_without_writing(self) -> None:
+    def _read_lineage_without_writing(self, held: tuple) -> None:
         """Refuse a file this process holds in compatibility mode, or a store whose ``lineage`` row
         names another application, before any writable connection opens it (ADR-0128 D7).
 
-        The first read opens the file immutable: SQLite takes no lock and reads no journal,
-        write-ahead log or shared-memory index, so a refused store keeps its bytes and times, a hot
-        journal and a log another process holds included. That read cannot see a row still only in
-        the log, so when a non-empty log is beside the file the row is read again read-only. That
-        read changes nothing while another process has the store open; on a store nobody has open,
-        SQLite builds the log's index in the ``-shm`` file and leaves the file and the log as they
-        are, and no read-only read of a log avoids that. A read that fails decides nothing here:
-        the writable connection reads the row again before its settings.
+        No file of the store is written. The file is read immutable first: SQLite takes no lock and
+        reads no journal, log or index. Beside a rollback journal that begins with a journal header,
+        as one an interrupted transaction leaves does, the file can hold part of that transaction, so
+        the row is read instead from a private copy of the file and the journal, which SQLite rolls
+        back. When the file shows no row and a write-ahead log is beside it, the row is read again
+        read-only with ``readonly_shm``, which reads the log through its ``-shm`` index without
+        writing to it, and, when there is no index or that read fails, from a private copy of the
+        file and the log. A read that fails decides nothing here: the writable connection reads the
+        row again before its settings.
         """
         from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
 
@@ -847,25 +856,29 @@ class StateDB:
         if read is None:
             return
         opened, lineage = read
-        self._refuse_a_held_file(opened)
-        self._raise_if_foreign_lineage(lineage)
-        try:
-            logged = bool(opened) and os.path.getsize(f"{opened}-wal") > 0
-        except OSError:
-            logged = False
-        if logged:
-            read = _read_lineage(_read_only_uri(filename, uri, immutable=False))
-            if read is not None:
-                self._raise_if_foreign_lineage(read[1])
+        self._refuse_a_held_file(opened, held)
+        if not opened:
+            return
+        if _journal_has_a_header(opened):
+            copied = _read_lineage_from_a_copy(opened, "-journal")
+            if copied is not _UNREAD:
+                lineage = copied
+        elif (lineage is None or lineage is _UNREAD) and _log_has_frames(opened):
+            reread = _read_lineage(_read_only_uri(filename, uri, immutable=False))
+            lineage = _UNREAD if reread is None else reread[1]
+            if lineage is _UNREAD:
+                lineage = _read_lineage_from_a_copy(opened, "-wal")
+        if lineage is not _UNREAD:
+            self._raise_if_foreign_lineage(lineage)
 
     @staticmethod
-    def _refuse_a_held_file(filename: str) -> None:
+    def _refuse_a_held_file(filename: str, held: tuple) -> None:
         identity = _file_identity(filename) if filename else None
         if identity is None:
             return
-        for held in list(_OPEN_COMPAT):
-            if held._engine is not None and held._held_file == identity:
-                raise held._compat.refusal(
+        for file, handle in held:
+            if file == identity:
+                raise handle._compat.refusal(
                     "this process holds the store in compatibility mode, and a native open would "
                     "apply this package's schema to it",
                     "open",
@@ -6883,16 +6896,32 @@ def _file_identity(path: str) -> tuple[int, int] | None:
     return stat.st_dev, stat.st_ino
 
 
+def _held_files() -> tuple:
+    """The (device, inode) and the handle of every file this process holds in compatibility mode,
+    read on the calling thread so a worker thread never iterates the registry."""
+    return tuple(
+        (held._held_file, held)
+        for held in list(_OPEN_COMPAT)
+        if held._engine is not None and held._held_file is not None
+    )
+
+
 def _read_only_uri(filename: str, uri: bool, *, immutable: bool) -> str | None:
     """A URI opening the file SQLAlchemy's SQLite dialect opens as *filename*, read-only:
-    ``immutable`` reads the file alone, otherwise its journal or log is read with it. None for an
-    in-memory or temporary database."""
+    ``immutable`` reads the file alone, otherwise its log is read with it through the log's
+    existing ``-shm`` index, which is never written. None for an in-memory or temporary
+    database."""
     if uri:
-        location, _, query = filename.partition("?")
+        # SQLite ends the file name at a `#`, and reads nothing after it.
+        location, _, query = filename.partition("#")[0].partition("?")
         parameters = parse_qsl(query, keep_blank_values=True)
         if location in ("file:", "file::memory:") or ("mode", "memory") in parameters:
             return None
-        parameters = [(k, v) for k, v in parameters if k not in ("mode", "immutable", "nolock")]
+        parameters = [
+            (k, v)
+            for k, v in parameters
+            if k not in ("mode", "immutable", "nolock", "readonly_shm")
+        ]
     else:
         if filename in ("", ":memory:"):
             return None
@@ -6901,13 +6930,56 @@ def _read_only_uri(filename: str, uri: bool, *, immutable: bool) -> str | None:
         except ValueError:
             return None
         parameters = []
-    parameters.append(("immutable", "1") if immutable else ("mode", "ro"))
+    if immutable:
+        parameters.append(("immutable", "1"))
+    else:
+        parameters += [("mode", "ro"), ("readonly_shm", "1")]
     return f"{location}?{urlencode(parameters)}"
 
 
+# A store whose file opened but whose `lineage` row could not be read.
+_UNREAD = object()
+# The first eight bytes of a rollback journal's header. A commit deletes, truncates or zeroes it.
+_JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
+
+
+def _journal_has_a_header(path: str) -> bool:
+    """Whether the rollback journal beside *path* begins with a journal header: an interrupted
+    transaction's does, and so does a transaction's still in progress."""
+    try:
+        with open(f"{path}-journal", "rb") as journal:
+            return journal.read(len(_JOURNAL_HEADER)) == _JOURNAL_HEADER
+    except OSError:
+        return False
+
+
+def _log_has_frames(path: str) -> bool:
+    try:
+        return os.path.getsize(f"{path}-wal") > 0
+    except OSError:
+        return False
+
+
+def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
+    """The ``lineage`` row of a private copy of the file at *path* and of its ``-journal`` or
+    ``-wal``, read on a writable connection, so SQLite rolls the copy's journal back or reads the
+    copy's log and never touches the originals. The copy is made in a new directory under the
+    system's temporary directory, which only this user can read, and removed before this returns.
+    ``_UNREAD`` when the copy or its read fails."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
+            copy = os.path.join(scratch, "store.db")
+            shutil.copyfile(path, copy)
+            shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
+            read = _read_lineage(Path(copy).as_uri())
+    except OSError:
+        return _UNREAD
+    return _UNREAD if read is None else read[1]
+
+
 def _read_lineage(uri: str) -> tuple[str, Any] | None:
-    """The file SQLite opened for *uri* and that file's ``lineage`` row, or None when it could not
-    be read."""
+    """The file SQLite opened for *uri* and that file's ``lineage`` row (``_UNREAD`` when the file
+    opened but the row could not be read), or None when the file could not be opened."""
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     except sqlite3.Error:
@@ -6915,10 +6987,14 @@ def _read_lineage(uri: str) -> tuple[str, Any] | None:
     try:
         # A file an interrupted transaction left beside a hot journal can list a table whose pages
         # it does not hold yet, and SQLite refuses to load such a schema; this skips that entry
-        # rather than the whole read. The connection is read-only, so it still writes nothing.
+        # rather than the whole read. On a read-only connection it still writes nothing.
         conn.execute("PRAGMA writable_schema = ON")
         rows = conn.execute("PRAGMA database_list").fetchall()
         opened = next((row[2] for row in rows if row[1] == "main"), "")
+    except sqlite3.Error:
+        conn.close()
+        return None
+    try:
         table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
         ).fetchone()
@@ -6929,7 +7005,7 @@ def _read_lineage(uri: str) -> tuple[str, Any] | None:
         ).fetchone()
         return opened, row[0] if row else None
     except sqlite3.Error:
-        return None
+        return opened, _UNREAD
     finally:
         conn.close()
 

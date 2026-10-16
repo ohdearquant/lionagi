@@ -17,10 +17,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
 - A writable `StateDB` open refuses a store whose `schema_meta` `lineage` row names another
   application, raising `ForeignLineageError` (exported from `lionagi.state`). The row is read from
-  the file the URL opens before any writable connection exists, so a refused store keeps its bytes,
-  journal and write-ahead log included; the one exception is a store nobody has open whose row is
-  still only in its log, for which SQLite builds the log's `-shm` index. Each writable connection
-  reads the row again before its own settings, for a row written in between. The managing
+  the file the URL opens before any writable connection exists, without writing the file, its
+  journal, its write-ahead log or the log's `-shm` index: beside a journal an interrupted
+  transaction left, or a log with no readable index, it is read from a private copy in a temporary
+  directory that is removed before the open goes on. Each writable connection reads the row again
+  before its own settings, for a row written in between; a store refused there may have had its
+  journal rolled back, its index written or its log folded into the file by that connection. The
+  managing
   application writes that row when it creates the store, and compatibility mode admits only a store
   that has it, so a native open in another process cannot migrate a store being written in
   compatibility mode; compatibility mode in turn refuses a store this process has open natively. A

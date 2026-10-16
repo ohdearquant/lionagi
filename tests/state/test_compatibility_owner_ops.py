@@ -417,8 +417,11 @@ import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1], isolation_level=None)
 conn.execute("PRAGMA wal_autocheckpoint = 0")
 if sys.argv[2] == "only-in-the-log":
+    # Not read again after the write, so the log's index records no reader at its last frame and
+    # a read-only reader that records its own would write the index.
     conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
-conn.execute("SELECT count(*) FROM schema_meta").fetchone()
+else:
+    conn.execute("SELECT count(*) FROM schema_meta").fetchone()
 print("holding", flush=True)
 sys.stdin.read()
 conn.close()
@@ -430,8 +433,8 @@ async def test_a_refused_native_open_leaves_a_store_another_process_holds_as_it_
     tmp_path, lineage
 ):
     """The manager has the store open in another process, its row in the file or written by that
-    process and still only in the log; the refused open leaves the file, the log and the index
-    with their bytes and times."""
+    process and still only in the log, which that process has not read since; the refused open
+    leaves the file, the log and the index with their bytes and times."""
     store = await _managed_store(tmp_path / "managed.db")
     if lineage == "only-in-the-log":
         _execute(store, "DELETE FROM schema_meta WHERE key = 'lineage'")
@@ -493,7 +496,7 @@ async def test_the_lineage_refuses_before_the_version_on_either_guard(store):
     # As if the lineage row landed after the connection's own read: its manager still creating
     # the store.
     with (
-        patch.object(StateDB, "_read_lineage_without_writing", lambda self: None),
+        patch.object(StateDB, "_read_lineage_without_writing", lambda self, held: None),
         patch.object(StateDB, "_refuse_a_managed_store", lambda self, dbapi_conn: None),
     ):
         try:
@@ -574,11 +577,15 @@ async def test_a_lineage_row_written_just_before_the_writable_open_is_refused(
     assert not Path(f"{store}-wal").exists()
 
 
-def _hot_copy(store: Path, copy: Path) -> Path:
-    """A copy of *store* taken mid-transaction, with its rollback journal: a hot journal."""
+def _hot_copy(store: Path, copy: Path, first: str | None = None) -> Path:
+    """A copy of *store* taken mid-transaction, with its rollback journal: a hot journal. The
+    transaction runs *first* before enough inserts that the page it changed is written to the
+    file."""
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA cache_size = -64")
         conn.execute("BEGIN IMMEDIATE")
+        if first is not None:
+            conn.execute(first)
         conn.execute("CREATE TABLE unfinished (v TEXT)")
         for _ in range(2000):
             conn.execute("INSERT INTO unfinished (v) VALUES (?)", ("x" * 4000,))
@@ -603,6 +610,47 @@ async def test_a_store_with_a_hot_journal_and_no_lineage_row_opens_natively(tmp_
     await again.close()
     assert _rows(copy, "SELECT name FROM sqlite_master WHERE name = 'unfinished'") == []
     assert _journal_mode(copy) == "wal"
+
+
+async def test_a_refused_native_open_leaves_a_hot_journal_that_took_the_row_out_of_the_file(
+    tmp_path,
+):
+    """The interrupted transaction deleted the row and its page reached the file, so the file alone
+    shows no row; a private copy of the file and the journal is rolled back and shows it, and the
+    store, its journal and the absence of a log are left as they were."""
+    from lionagi.state.db import _read_lineage
+
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, "PRAGMA journal_mode = delete")
+    copy = _hot_copy(store, tmp_path / "copy.db", "DELETE FROM schema_meta WHERE key = 'lineage'")
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] is None
+    before = _snapshot(copy)
+    assert set(before) == {"", "-journal"}
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await StateDB(copy).open()
+    assert _snapshot(copy) == before
+
+
+async def test_a_lineage_row_an_interrupted_transaction_wrote_does_not_refuse_the_open(tmp_path):
+    """The file shows a row the interrupted transaction wrote, which rolling the journal back
+    removes; the store opens natively, and the writable connection rolls the journal back."""
+    from lionagi.state.db import _read_lineage
+
+    store = tmp_path / "native.db"
+    first = StateDB(store)
+    await first.open()
+    await first.close()
+    _execute(store, "PRAGMA journal_mode = delete")
+    copy = _hot_copy(
+        store,
+        tmp_path / "copy.db",
+        "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')",
+    )
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "manager"
+    again = StateDB(copy)
+    await again.open()
+    await again.close()
+    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == []
 
 
 @pytest.mark.parametrize("spelling", ["dot", "symlink"])
@@ -632,7 +680,7 @@ async def test_a_native_open_of_the_held_file_by_another_path_is_refused_whateve
     assert _rows(store, "SELECT value FROM schema_meta WHERE key = 'version'") == [("900",)]
 
 
-@pytest.mark.parametrize("spelling", ["same-path", "symlink"])
+@pytest.mark.parametrize("spelling", ["same-path", "symlink", "query", "file-uri"])
 async def test_compatibility_admission_is_refused_while_a_native_handle_has_the_store_open(
     tmp_path, spelling
 ):
@@ -641,7 +689,11 @@ async def test_compatibility_admission_is_refused_while_a_native_handle_has_the_
     its path is spelled, until the handle closes. A read-only handle writes nothing and is left
     alone."""
     store = tmp_path / "managed.db"
-    native = StateDB(store)
+    urls = {
+        "query": f"sqlite+aiosqlite:///{store}?timeout=5",
+        "file-uri": f"sqlite+aiosqlite:///file:{store}?uri=true",
+    }
+    native = StateDB(urls.get(spelling, store))
     await native.open()
     _manage(store)
     path = store
@@ -722,9 +774,10 @@ async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_
         await handle.close()
 
 
-def _wal_copy(store: Path, copy: Path, *, lineage: bool = False) -> Path:
+def _wal_copy(store: Path, copy: Path, *, lineage: bool = False, index: bool = False) -> Path:
     """A copy of *store* whose last committed rows, the lineage row when *lineage*, are still only
-    in its write-ahead log, with no index beside it: a manager that stopped without a checkpoint."""
+    in its write-ahead log, with the log's index beside it when *index*: a manager that stopped
+    without a checkpoint."""
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
         conn.execute("CREATE TABLE unfolded (v TEXT)")
@@ -733,6 +786,8 @@ def _wal_copy(store: Path, copy: Path, *, lineage: bool = False) -> Path:
             conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
+        if index:
+            shutil.copyfile(Path(f"{store}-shm"), Path(f"{copy}-shm"))
     return copy
 
 
@@ -763,20 +818,45 @@ async def test_a_refused_native_open_leaves_a_store_nobody_has_open_as_it_was(tm
     assert _snapshot(store) == before
 
 
-async def test_a_refused_native_open_of_a_store_nobody_has_open_whose_row_is_in_its_log(tmp_path):
-    """The one read that changes a file: the row is only in the log, read-only, and SQLite builds
-    the log's index in the -shm file, which holds no durable content. The store file and the log
-    keep their bytes and times."""
+@pytest.mark.parametrize("index", [True, False], ids=["with-its-index", "without-an-index"])
+async def test_a_refused_native_open_of_a_store_nobody_has_open_whose_row_is_in_its_log(
+    tmp_path, index
+):
+    """The row is only in the log. With the log's index beside it, the row is read through the
+    index without writing to it; without one, from a private copy of the file and the log, so no
+    index is built beside the store."""
     store = await _managed_store(tmp_path / "managed.db")
     _execute(store, "DELETE FROM schema_meta WHERE key = 'lineage'")
-    copy = _wal_copy(store, tmp_path / "copy.db", lineage=True)
+    copy = _wal_copy(store, tmp_path / "copy.db", lineage=True, index=index)
     before = _snapshot(copy)
-    assert set(before) == {"", "-wal"}
+    assert set(before) == ({"", "-wal", "-shm"} if index else {"", "-wal"})
     with pytest.raises(ForeignLineageError, match="'manager' as the application"):
         await StateDB(copy).open()
-    after = _snapshot(copy)
-    assert set(after) == {"", "-wal", "-shm"}
-    assert (after[""], after["-wal"]) == (before[""], before["-wal"])
+    assert _snapshot(copy) == before
+
+
+async def test_a_refused_native_open_of_a_store_whose_file_was_cut_short_beside_its_log(tmp_path):
+    """Every page is in the log and the file holds only its first, as a crash during a checkpoint
+    can leave it: the file cannot be read alone, so the row is read from a private copy of the
+    file and the log."""
+    from lionagi.state.db import _UNREAD, _read_lineage
+
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, "DELETE FROM schema_meta WHERE key = 'lineage'")
+    copy = tmp_path / "copy.db"
+    with closing(sqlite3.connect(store, isolation_level=None)) as conn:
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute("VACUUM")
+        shutil.copyfile(store, copy)
+        shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
+    with open(copy, "r+b") as handle:
+        handle.truncate(4096)
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] is _UNREAD
+    before = _snapshot(copy)
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await StateDB(copy).open()
+    assert _snapshot(copy) == before
 
 
 async def test_a_store_with_rows_only_in_its_log_and_no_lineage_row_opens_natively(tmp_path):
@@ -2736,3 +2816,41 @@ async def test_a_trigger_named_after_a_keyword_is_admitted_when_it_copies_the_ow
     handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
     await handle.open()
     await handle.close()
+
+
+async def test_two_opens_of_one_handle_at_once_build_one_engine(tmp_path, monkeypatch):
+    """The store is read in a worker thread before the engine exists, so the second open waits for
+    the first and finds its engine."""
+    import asyncio
+
+    from lionagi.state import db as db_mod
+
+    built = []
+    make_engine = db_mod.make_engine
+
+    def counting(url, **kwargs):
+        engine = make_engine(url, **kwargs)
+        built.append(engine)
+        return engine
+
+    monkeypatch.setattr(db_mod, "make_engine", counting)
+    handle = StateDB(tmp_path / "state.db")
+    try:
+        await asyncio.gather(handle.open(), handle.open())
+        assert len(built) == 1
+        assert handle._engine is built[0]
+    finally:
+        await handle.close()
+
+
+def test_the_read_only_uri_ends_the_file_name_where_sqlite_does():
+    """SQLite reads nothing after a `#` in a URI file name, so the read-only parameters go before
+    it, on the file SQLAlchemy's connection opens."""
+    from lionagi.state.db import _read_only_uri
+
+    assert _read_only_uri("file:/stores/a.db#part?mode=rw", True, immutable=True) == (
+        "file:/stores/a.db?immutable=1"
+    )
+    assert _read_only_uri("file:/stores/a.db?vfs=unix#part", True, immutable=False) == (
+        "file:/stores/a.db?vfs=unix&mode=ro&readonly_shm=1"
+    )
