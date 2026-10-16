@@ -1782,3 +1782,78 @@ async def test_postgres_attach_session_invocation_decrements_off_the_value_a_con
         assert [r["id"] for r in await db.list_sessions_for_invocation(new)] == [sid]
     finally:
         await db.close()
+
+
+# lionagi/studio/services/schedules.py: recent-run summary on both dialects
+#
+# The list endpoint's recent-run read builds its id list and its per-group
+# limit with collection functions that differ between SQLite and PostgreSQL.
+# The studio suite exercises the SQLite read on the default store; this
+# executes the same read against a live PostgreSQL store, because a dialect
+# function that does not exist or a bound parameter the collection expansion
+# refuses is a runtime failure the SQL text alone cannot show.
+_RECENT_SUMMARY_LIMIT = 25
+
+
+async def _seed_pg_schedule(db: StateDB, sid: str, runs: int, *, invocation: bool) -> None:
+    await db.create_schedule(
+        {
+            "id": sid,
+            "name": sid,
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    if invocation:
+        await db.create_invocation(
+            {"id": f"{sid}-inv", "skill": "agent", "status": "completed", "started_at": 100}
+        )
+    for index in range(runs):
+        row = {
+            "id": f"{sid}-run-{index:02}",
+            "schedule_id": sid,
+            "trigger_context": {},
+            "action_args": [],
+            "action_kind": "agent",
+            "status": "failed",
+            "fired_at": 100 + index,
+            "error_detail": "Permission denied: private path",
+        }
+        if invocation:
+            row["invocation_id"] = f"{sid}-inv"
+        await db.create_schedule_run(row)
+
+
+async def test_postgres_recent_run_summaries_are_available(pg_url):
+    """A bounded newest-first slice, a continuation flag, joined invocation
+    evidence, and an empty definition that stays an available empty slice."""
+    from lionagi.studio.services import schedules
+
+    # A live store is shared across tests, so the ids are unique per run.
+    full_id = f"pg-full-{_uid()}"
+    empty_id = f"pg-empty-{_uid()}"
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+        await _seed_pg_schedule(db, full_id, 30, invocation=True)
+        await _seed_pg_schedule(db, empty_id, 0, invocation=False)
+        summaries = await schedules._recent_run_summaries(db, [full_id, empty_id])
+    finally:
+        await db.close()
+
+    full = summaries[full_id]
+    assert full["status"] == "available"
+    assert full["limit"] == _RECENT_SUMMARY_LIMIT
+    assert full["has_next"] is True
+    assert [run["id"] for run in full["runs"]] == [
+        f"{full_id}-run-{index:02}" for index in range(29, 4, -1)
+    ]
+    assert all(run["error_class"] == "permission" for run in full["runs"])
+    assert full["runs"][0]["invocation_id"] == f"{full_id}-inv"
+
+    empty = summaries[empty_id]
+    assert empty["status"] == "available"
+    assert empty["has_next"] is False
+    assert empty["runs"] == []

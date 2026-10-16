@@ -194,9 +194,15 @@ between `build_argv()` and this function gives a revoked
   The flag defaults to false; Mission, operator MCP, and machine list callers
   retain their existing response and do not compute these histories.
   One batched statement selects at most 26 keys per listed definition through
-  a correlated, ordered `LIMIT 26` query, then loads occurrence payloads and
-  error details only for its displayed 25. Each group uses the schedule/time
-  index; equal-timestamp groups may still scan/sort additional keys by id.
+  a per-group ordered `LIMIT 26`, then loads occurrence payloads and error
+  details only for its displayed 25. The statement's collection functions are
+  dialect-specific: SQLite aggregates and expands the keys with
+  `json_group_array`/`json_each`, PostgreSQL with `jsonb_agg` and
+  `jsonb_array_elements_text ... WITH ORDINALITY`. Each group uses the
+  schedule/time index, and the limit is applied after the ordering: a set of
+  runs that share one `fired_at` at the boundary is read in full to be
+  ordered by id, so a tie group is not a constant-cost read however many rows
+  it holds.
   Invocation and session evidence is joined in two additional set queries.
   All linked sessions participate in the existing outcome reducer; session
   count is not capped because an omitted active child could change its verdict.
@@ -206,12 +212,20 @@ between `build_argv()` and this function gives a revoked
   failure need not produce an error class when the occurrence has no error text;
   the detail view retains the separate reconciled outcome.
   Raw error text, prompts, event payloads, and artifact paths stay withheld.
-  A batch query failure marks every requested slice unavailable; only projection
-  failures are isolated to one schedule. This does not promise that other slices
-  remain available when their shared database read fails. Existing health/count
-  queries, budget rollups, schedule-list limits, and filters are unchanged.
-  Cards, table, and calendar consume this one list request and identify unavailable
-  schedules. Refreshes are single-flight with at most one queued refresh. Explicit
+  A shared batch read failure is retried for each definition on its own before
+  that definition is marked unavailable, so a failure belonging to one
+  definition's rows is attributed to that definition and does not hide the
+  other summaries on the page. A run of consecutive failed retries is treated as
+  store-wide: the remaining definitions are marked unavailable without a read
+  of their own. A store-wide read failure leaves every slice unavailable, never
+  an available empty slice. Projection failures are isolated to one schedule.
+  Existing health/count queries, budget rollups, schedule-list limits, and
+  filters are unchanged.
+  Cards and table mark an unavailable schedule's own row; the shared banner
+  names every unavailable schedule for all views, including the calendar.
+  A failed list load with no schedules suppresses the empty-state claim, which
+  would otherwise read as a successful load that found none.
+  Refreshes are single-flight with at most one queued refresh. Explicit
   detail history keeps its separate pagination and uses the same deterministic
   timestamp/id ordering without using this slice.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators

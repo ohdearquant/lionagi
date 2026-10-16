@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Recent schedule slices are bounded, batched, and distinguish failure from empty."""
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -194,7 +195,7 @@ async def test_100_schedules_use_three_batched_reads_and_no_history_reads(isolat
 
     async def fetch_all(db, query, params=None):
         result = await original(db, query, params)
-        calls.append((query, len(result)))
+        calls.append((query, params, len(result)))
         return result
 
     async def forbidden(*args, **kwargs):
@@ -207,8 +208,22 @@ async def test_100_schedules_use_three_batched_reads_and_no_history_reads(isolat
     rows = await list_rows()
     assert len(rows) == 100
     assert len(calls) == 3
-    assert calls[0][1] == 100
-    assert "ORDER BY fired_at DESC, id DESC LIMIT ?" in calls[0][0]
+    # The three reads are set-based and issued in a fixed order: the bounded key
+    # read, then the invocation evidence, then the session evidence. Assert the
+    # calls and their order through what each one reads, not through the text of
+    # one statement: the bound limit and the row each read returns are the facts
+    # a per-row rewrite would change.
+    key_params, key_rows = calls[0][1], calls[0][2]
+    assert key_rows == 100
+    assert json.loads(key_params[0]) == [row["id"] for row in rows]
+    assert key_params[1] == schedules._RECENT_RUN_LIMIT + 1
+    assert key_params[2] == schedules._RECENT_RUN_LIMIT
+    # The second set read resolves the 100 invocations; the third resolves their
+    # sessions, and this fixture links none, so it returns no rows while still
+    # being issued (three reads, not a read per row).
+    assert calls[1][2] == 100
+    assert calls[2][1][0] == calls[1][1][0]
+    assert calls[2][2] == 0
     assert all(len(row["recent_runs_summary"]["runs"]) == 1 for row in rows)
 
 
@@ -274,33 +289,66 @@ async def test_status_fields_and_reconciled_error_class_match_history(isolated_d
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failed_read", [1, 2, 3])
-async def test_batch_failure_is_unavailable_for_every_slice(isolated_db, monkeypatch, failed_read):
+async def test_store_wide_read_failure_is_unavailable_for_every_slice(isolated_db, monkeypatch):
+    # More definitions than the consecutive-retry bound, so the store-wide path
+    # is the one exercised: the failures stop the per-definition retries.
     async with StateDB() as db:
-        await create_schedule(db, "empty")
-        await create_schedule(db, "ran")
+        for sid in ["a", "b", "c", "d", "e", "f", "g"]:
+            await create_schedule(db, sid)
         await db.create_invocation(
             {"id": "inv", "skill": "agent", "status": "failed", "started_at": 100}
         )
-        await create_run(db, "ran", "run", invocation_id="inv")
-    original = StateDB.fetch_all
+        await create_run(db, "g", "run", invocation_id="inv")
+
     reads = 0
 
     async def fetch_all(db, query, params=None):
         nonlocal reads
         reads += 1
-        if reads == failed_read:
-            raise OSError("Database read unavailable")
-        return await original(db, query, params)
+        raise OSError("Database read unavailable")
 
     monkeypatch.setattr(StateDB, "fetch_all", fetch_all)
     rows = await list_rows()
-    assert len(rows) == 2
+    assert len(rows) == 7
+    # A failure every read hits leaves every slice unavailable, never an
+    # available empty slice that would read as "no recent runs".
     assert all(
         row["recent_runs_summary"]
         == {"version": 1, "status": "unavailable", "limit": 25, "has_next": None, "runs": []}
         for row in rows
     )
+    # The batch read plus a bounded run of retries, not one read per definition.
+    assert reads == 1 + schedules._RECENT_RUN_ISOLATION_FAILURES
+
+
+@pytest.mark.asyncio
+async def test_a_definition_specific_read_failure_leaves_other_summaries_available(
+    isolated_db, monkeypatch
+):
+    async with StateDB() as db:
+        for sid in ["bad", "empty", "good"]:
+            await create_schedule(db, sid)
+        await create_run(db, "bad", "bad-run")
+        await create_run(db, "good", "good-run")
+
+    original = StateDB.fetch_all
+
+    async def fetch_all(db, query, params=None):
+        # Fail only reads that name the "bad" definition, standing in for a
+        # shared read that one definition's rows make fail. Every retry that
+        # does not carry "bad" must still succeed.
+        if params and "bad" in str(params[0]):
+            raise OSError("Database read unavailable for one definition")
+        return await original(db, query, params)
+
+    monkeypatch.setattr(StateDB, "fetch_all", fetch_all)
+    rows = {row["id"]: row["recent_runs_summary"] for row in await list_rows()}
+    assert rows["bad"]["status"] == "unavailable"
+    assert rows["bad"]["has_next"] is None
+    assert rows["empty"]["status"] == "available"
+    assert rows["empty"]["runs"] == []
+    assert rows["good"]["status"] == "available"
+    assert [run["id"] for run in rows["good"]["runs"]] == ["good-run"]
 
 
 @pytest.mark.asyncio
@@ -345,3 +393,32 @@ async def test_list_filters_and_detail_history_remain_independent(isolated_db):
     assert "recent_runs_summary" not in detail
     history = await schedules.list_schedule_run_views("selected", limit=7, offset=25)
     assert [row["id"] for row in history] == [f"run-{index:02}" for index in range(4, -1, -1)]
+
+
+def test_key_read_uses_each_dialect_own_collection_vocabulary():
+    """The list read must be portable: PostgreSQL has no ``json_group_array``
+    and its ``json_each`` reads a JSON object, not the text array bound here.
+    Pin both forms so a change to one cannot silently reintroduce the other's
+    statements."""
+    sqlite_sql = schedules._recent_run_keys_sql("sqlite")
+    assert "json_group_array" in sqlite_sql and "json_each" in sqlite_sql
+    assert "jsonb_array_elements_text" not in sqlite_sql
+
+    pg_sql = schedules._recent_run_keys_sql("postgresql")
+    assert "json_group_array" not in pg_sql
+    assert "json_each(" not in pg_sql
+    assert "jsonb_array_elements_text" in pg_sql and "WITH ORDINALITY" in pg_sql
+
+    assert schedules._id_set_predicate("sqlite") == "IN (SELECT value FROM json_each(?))"
+    id_set_pg = schedules._id_set_predicate("postgresql")
+    assert "json_each(" not in id_set_pg and "jsonb_array_elements_text" in id_set_pg
+
+    # The statement is written with qmark placeholders, which the store layer
+    # rewrites to bound names. A change in the number of them is a change in
+    # what the statement reads, so pin the count: three on the key read (the
+    # definition set, the per-group limit, the displayed-row bound) and one on
+    # each id set.
+    assert pg_sql.count("?") == 3
+    assert sqlite_sql.count("?") == 3
+    assert schedules._id_set_predicate("postgresql").count("?") == 1
+    assert schedules._id_set_predicate("sqlite").count("?") == 1

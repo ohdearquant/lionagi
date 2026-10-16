@@ -567,6 +567,72 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 _RECENT_RUN_LIMIT = 25
 
+# How many definitions, in a row, may fail their isolated retry before the
+# failure is treated as store-wide and the rest of the page is marked
+# unavailable without reading each one. A failure belonging to one definition
+# sits behind its own retry, so the definitions around it succeed and reset the
+# count; a store-wide failure makes every retry fail, and this stops it at a
+# handful of reads instead of one per listed definition.
+_RECENT_RUN_ISOLATION_FAILURES = 5
+
+
+def _recent_run_keys_sql(dialect: str) -> str:
+    """The per-definition key read, in the dialect's own collection vocabulary.
+
+    Both forms select up to ``_RECENT_RUN_LIMIT + 1`` keys per requested
+    definition, newest first by ``fired_at DESC, id DESC``, and leave the row
+    past the limit without an occurrence payload. The extra key detects longer
+    history without reading its error payload or counting every run.
+
+    SQLite aggregates each definition's keys with ``json_group_array`` and
+    expands them with ``json_each``; ``recent.key`` is the 0-based position, so
+    the payload bound is ``recent.key < :limit``.
+
+    PostgreSQL has neither function for this shape -- ``json_each`` reads a
+    JSON *object*, not the text array bound here -- so the same structure is
+    built from ``jsonb_agg`` over an ordered, ``LIMIT``-ed subquery and
+    ``jsonb_array_elements_text(...) WITH ORDINALITY``; ``recent.ord`` is the
+    1-based position, so the payload bound is ``recent.ord <= :limit``.
+    """
+    if dialect == "sqlite":
+        return (
+            "SELECT recent.value AS id, definition.value AS schedule_id,"
+            " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
+            " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
+            " occurrence.ended_at, occurrence.error_detail"
+            " FROM json_each(?) AS definition"
+            " JOIN json_each((SELECT json_group_array(id) FROM ("
+            " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
+            " ORDER BY fired_at DESC, id DESC LIMIT ?))) AS recent"
+            " LEFT JOIN schedule_runs AS occurrence"
+            " ON occurrence.id = recent.value AND recent.key < ?"
+            " ORDER BY definition.value, recent.key"
+        )
+    return (
+        "SELECT recent.id AS id, definition.value AS schedule_id,"
+        " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
+        " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
+        " occurrence.ended_at, occurrence.error_detail"
+        " FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS definition(value)"
+        " JOIN LATERAL ("
+        " SELECT jsonb_agg(ordered.id ORDER BY ordered.fired_at DESC, ordered.id DESC) AS ids"
+        " FROM ( SELECT id, fired_at FROM schedule_runs WHERE schedule_id = definition.value"
+        " ORDER BY fired_at DESC, id DESC LIMIT ?) AS ordered"
+        " ) AS limited ON TRUE"
+        " JOIN LATERAL jsonb_array_elements_text(limited.ids) WITH ORDINALITY"
+        " AS recent(id, ord) ON TRUE"
+        " LEFT JOIN schedule_runs AS occurrence"
+        " ON occurrence.id = recent.id AND recent.ord <= ?"
+        " ORDER BY definition.value, recent.ord"
+    )
+
+
+def _id_set_predicate(dialect: str) -> str:
+    """``IN (<id set>)`` over one bound JSON array of ids, per dialect."""
+    if dialect == "sqlite":
+        return "IN (SELECT value FROM json_each(?))"
+    return "IN (SELECT value FROM jsonb_array_elements_text(CAST(? AS jsonb)))"
+
 
 def _unavailable_run_summary() -> dict[str, Any]:
     return {
@@ -578,6 +644,58 @@ def _unavailable_run_summary() -> dict[str, Any]:
     }
 
 
+# (occurrences grouped by definition, invocation evidence, session evidence)
+_RunBatch = tuple[
+    dict[str, list[dict[str, Any]]],
+    dict[str, dict[str, Any]],
+    dict[str, list[dict[str, Any]]],
+]
+
+
+async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
+    """Read a set of definitions' occurrence rows and the evidence they project with.
+
+    Three set reads, none per run: the bounded key read, then the invocation
+    and session evidence for the displayed rows only. A read failure raises to
+    the caller, which uses it to decide what to attribute the failure to.
+    """
+    rows = await db.fetch_all(
+        _recent_run_keys_sql(db.dialect),
+        (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
+    for row in rows:
+        grouped[row["schedule_id"]].append(row)
+    invocation_ids = list(
+        {
+            row["invocation_id"]
+            for runs in grouped.values()
+            for row in runs[:_RECENT_RUN_LIMIT]
+            if row["invocation_id"]
+        }
+    )
+    if not invocation_ids:
+        return grouped, {}, {}
+    ids = (json.dumps(invocation_ids),)
+    id_set = _id_set_predicate(db.dialect)
+    # The interpolated text is a placeholder clause for the store's dialect,
+    # never a value; the ids themselves are bound.
+    invocation_query = (
+        "SELECT id, status, status_reason_code, status_reason_summary FROM invocations"  # noqa: S608
+        f" WHERE id {id_set}"
+    )
+    invocations = {row["id"]: row for row in await db.fetch_all(invocation_query, ids)}
+    session_query = (
+        "SELECT id, invocation_id, status, status_reason_code, status_reason_summary,"  # noqa: S608
+        " created_at, artifacts_path FROM sessions"
+        f" WHERE invocation_id {id_set}"
+    )
+    sessions: dict[str, list[dict[str, Any]]] = {}
+    for row in await db.fetch_all(session_query, ids):
+        sessions.setdefault(row["invocation_id"], []).append(row)
+    return grouped, invocations, sessions
+
+
 async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
     """Select 26 recent keys per definition and load payloads for the displayed 25.
 
@@ -586,58 +704,49 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
     longer history without reading its error payload or counting all runs. Linked
     session evidence must include every child: the shared reducer only grades a
     session outcome when all children are terminal. No per-run reads are performed.
+
+    The definitions are read in one batch. If that shared read fails, each
+    definition is retried on its own before it is marked unavailable, so a
+    failure that belongs to one definition's rows is attributed to that
+    definition and does not hide the rest of the page's summaries. Retries stop
+    after ``_RECENT_RUN_ISOLATION_FAILURES`` consecutive failures: a failure
+    that is not definition-specific -- an unreachable store, a closed
+    connection -- fails every retry too, and then the remaining definitions are
+    marked unavailable without reading each of them. Either way a failed read
+    leaves a slice unavailable, never silently empty.
     """
     result = {sid: _unavailable_run_summary() for sid in schedule_ids}
     if not schedule_ids:
         return result
     try:
-        rows = await db.fetch_all(
-            "SELECT recent.value AS id, definition.value AS schedule_id,"
-            " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
-            " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
-            " occurrence.ended_at, occurrence.error_detail"
-            " FROM json_each(?) AS definition"
-            " JOIN json_each((SELECT json_group_array(id) FROM ("
-            " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
-            " ORDER BY fired_at DESC, id DESC LIMIT ?))) AS recent"
-            " LEFT JOIN schedule_runs AS occurrence"
-            " ON occurrence.id = recent.value AND recent.key < ?"
-            " ORDER BY definition.value, recent.key",
-            (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
-        )
-        grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
-        for row in rows:
-            grouped[row["schedule_id"]].append(row)
-        invocation_ids = list(
-            {
-                row["invocation_id"]
-                for runs in grouped.values()
-                for row in runs[:_RECENT_RUN_LIMIT]
-                if row["invocation_id"]
-            }
-        )
-        invocations: dict[str, dict[str, Any]] = {}
-        sessions: dict[str, list[dict[str, Any]]] = {}
-        if invocation_ids:
-            ids = (json.dumps(invocation_ids),)
-            invocations = {
-                row["id"]: row
-                for row in await db.fetch_all(
-                    "SELECT id, status, status_reason_code, status_reason_summary FROM invocations"
-                    " WHERE id IN (SELECT value FROM json_each(?))",
-                    ids,
-                )
-            }
-            for row in await db.fetch_all(
-                "SELECT id, invocation_id, status, status_reason_code, status_reason_summary,"
-                " created_at, artifacts_path FROM sessions"
-                " WHERE invocation_id IN (SELECT value FROM json_each(?))",
-                ids,
-            ):
-                sessions.setdefault(row["invocation_id"], []).append(row)
+        grouped, invocations, sessions = await _read_run_batch(db, schedule_ids)
     except Exception:
         _log.exception("Recent schedule run summary query failed")
-        return result
+        grouped, invocations, sessions = {}, {}, {}
+        failures: list[tuple[str, BaseException]] = []
+        consecutive = 0
+        store_wide = False
+        for sid in schedule_ids:
+            try:
+                one_grouped, one_invocations, one_sessions = await _read_run_batch(db, [sid])
+            except Exception as exc:
+                failures.append((sid, exc))
+                consecutive += 1
+                if consecutive >= _RECENT_RUN_ISOLATION_FAILURES:
+                    store_wide = True
+                    break
+                continue
+            consecutive = 0
+            grouped.update(one_grouped)
+            invocations.update(one_invocations)
+            sessions.update(one_sessions)
+        # Name each failing definition only when the failure stays isolated.
+        # Once consecutive retries fail, the exception above already carries the
+        # cause, and a line per definition would turn one outage into thousands
+        # of log lines.
+        if not store_wide:
+            for sid, exc in failures:
+                _log.error("Recent run summary unavailable for schedule %s", sid, exc_info=exc)
 
     for sid, runs in grouped.items():
         try:
