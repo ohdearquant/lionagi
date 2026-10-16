@@ -3284,16 +3284,17 @@ class StateDB:
     ) -> None:
         """Update session fields; status changes route through update_status().
 
-        ``node_metadata`` is merged by top-level key and never written whole: a key the payload
-        omits keeps its stored value, while a nested object under a key the payload does send
-        replaces the stored object there. A stored ``node_metadata`` that is not a JSON object is
-        refused, as is a payload that is not one.
+        Natively ``node_metadata`` is written whole, as given. A ``set_if_null`` fill of it treats
+        a stored JSON ``null`` as absent, in either mode.
 
-        In compatibility mode the session must be one this run created and still carry its owner,
-        and every row it links to must be one this run created and still carry that owner. The
-        merge then happens inside this write's transaction, and inside the status change's own
+        In compatibility mode the session must be one this run created and still carry its owner;
+        a message it links to must be one this run created and still carry that owner, and an
+        invocation it links to must carry that owner. ``node_metadata`` is merged by top-level key
+        into the stored object inside this write's transaction, and inside the status change's own
         transaction when there is one, so a reader never sees the metadata without the status it
-        landed with.
+        landed with: a key the payload omits keeps its stored value, a nested object under a key
+        the payload sends replaces the stored object there, and a stored or given value that is not
+        a JSON object is refused.
         """
         if self._compat is not None:
             self._require_created("sessions", session_id, "session")
