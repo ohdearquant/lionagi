@@ -9,15 +9,15 @@ name: Benchmarks
 on:
   push:
     branches: [ main, master ]
-  # Deliberately left on the default activity types, unlike the other
-  # pull_request workflows here. They name ready_for_review so that marking a
-  # draft ready starts a run; this one emits no required check, and a benchmark
-  # re-run costs real machine time and adds a timing sample nobody asked for.
-  # If a benchmark result is ever made a required check, add ready_for_review
-  # here too, with [ opened, synchronize, reopened ] listed back alongside it.
+  # ready_for_review is listed because the job skips drafts (below): without it
+  # a draft marked ready would get no run until its next push. That costs one
+  # benchmark run each time a draft is marked ready. A pull request converted
+  # back to draft and marked ready again while its run is in progress cancels
+  # that run and starts the same commit again, because converted_to_draft is not
+  # listed and pull-request runs cancel in progress; the cost is one duplicate
+  # run, and nothing is decided by it, since this check is not required.
+  # Naming types replaces the defaults, so the three defaults are listed back.
   pull_request:
-    # ready_for_review: the job skips drafts (below), so a draft gets its first
-    # run when it is marked ready.
     types: [ opened, synchronize, reopened, ready_for_review ]
     branches: [ main, master ]
 

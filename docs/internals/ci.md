@@ -6,8 +6,9 @@ environment variables; they do not inline pytest commands.
 
 ## Test lanes
 
-The required `test` matrix runs Python 3.10 and 3.14 on pull requests and the
-full 3.10-3.14 matrix on protected-branch pushes. Python 3.10 carries coverage.
+The required `test` matrix runs the full Python 3.10-3.14 set on pull requests
+and on protected-branch pushes; a manual run can ask for 3.10 and 3.14 only.
+Python 3.10 carries coverage.
 The required marker expression is:
 
 ```text
