@@ -85,206 +85,230 @@ interface LibraryItem {
 
 type KindLoadStatus = "loaded" | "failed";
 
-function useLibraryData(tab: LibraryTab | undefined, reloadToken: number, hidden = false) {
+// One list endpoint each. A tab's catalog is assembled from the sources its
+// kind needs; e.g. the Playbook tab reads both bundled templates and the
+// user's own playbooks.
+type CatalogSource =
+  | "agents"
+  | "builtinPlaybooks"
+  | "playbooks"
+  | "workflows"
+  | "skills"
+  | "plugins"
+  | "engines"
+  | "mcpServers";
+
+const KIND_SOURCES: Record<LibraryKind, CatalogSource[]> = {
+  agent: ["agents"],
+  playbook: ["builtinPlaybooks", "playbooks"],
+  workflow: ["workflows"],
+  skill: ["skills"],
+  plugin: ["plugins"],
+  engine: ["engines"],
+  mcp: ["mcpServers"],
+};
+
+// Rows one source contributes, plus the detail lookups a routed pane reads
+// (agent profiles, engine defs).
+interface SourceData {
+  items: LibraryItem[];
+  agents?: AgentProfileSummary[];
+  engines?: EngineDef[];
+}
+
+// A source's settled result, held for the page's life so revisiting a tab
+// renders what it already fetched instead of requesting it again. "failed"
+// records a rejected request so a retry can target just that source.
+type SourceCache = Partial<Record<CatalogSource, SourceData | "failed">>;
+
+const SOURCE_REQUESTS: Record<CatalogSource, () => Promise<SourceData>> = {
+  agents: async () => {
+    const value = await listAgents();
+    return {
+      agents: value.agents,
+      items: value.agents.map((a) => ({
+        key: `agent:${a.name}`,
+        kind: "agent",
+        name: a.name,
+        description: a.description ?? undefined,
+        meta: a.model ?? undefined,
+      })),
+    };
+  },
+  // Built-in templates first, then the user's own playbooks — surfacing the
+  // shipped templates the Workflows page was missing entirely
+  // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so they
+  // live under the "playbook" kind, separate from "workflow" (DB-backed graph
+  // designs, edited inline via the Library drawer).
+  builtinPlaybooks: async () => {
+    const value = await listBuiltinPlaybooks();
+    return {
+      items: value.playbooks.map((p) => ({
+        key: `playbook:builtin:${p.name}`,
+        kind: "playbook",
+        subKind: "builtin",
+        name: p.name,
+        description: p.description,
+        meta: p.description,
+      })),
+    };
+  },
+  playbooks: async () => {
+    const value = await listPlaybooks();
+    return {
+      items: value.playbooks.map((p) => ({
+        key: `playbook:custom:${p.name}`,
+        kind: "playbook",
+        subKind: "custom",
+        name: p.name,
+        description: p.description ?? undefined,
+        meta: p.description ?? undefined,
+      })),
+    };
+  },
+  workflows: async () => {
+    const value = await listWorkflowDefs();
+    return {
+      items: value.map((w) => ({
+        key: `workflow:${w.id}`,
+        kind: "workflow",
+        name: w.name,
+        description: w.description ?? undefined,
+        meta: w.id,
+      })),
+    };
+  },
+  skills: async () => {
+    const value = await listSkills();
+    return {
+      items: value.skills.map((s) => ({
+        key: `skill:${s.name}`,
+        kind: "skill",
+        name: s.name,
+        description: s.description ?? undefined,
+      })),
+    };
+  },
+  plugins: async () => {
+    const value = await listPlugins();
+    // The same plugin can be listed by several sources (marketplace +
+    // installed cache); detail lookup is by name, so one row suffices.
+    const seenPlugins = new Set<string>();
+    const items: LibraryItem[] = [];
+    for (const p of value.plugins) {
+      if (seenPlugins.has(p.name)) continue;
+      seenPlugins.add(p.name);
+      items.push({
+        key: `plugin:${p.name}`,
+        kind: "plugin",
+        name: p.name,
+        description: p.description ?? undefined,
+        meta: `v${p.version}`,
+      });
+    }
+    return { items };
+  },
+  engines: async () => {
+    const value = await listEngineDefs();
+    return {
+      engines: value,
+      items: value.map((e) => ({
+        key: `engine:${e.id}`,
+        kind: "engine",
+        name: e.name,
+        description: e.description ?? undefined,
+        meta: e.kind,
+      })),
+    };
+  },
+  mcpServers: async () => {
+    const value = await listMcpServers();
+    return {
+      items: value.servers.map((s) => ({
+        key: `mcp:${s.name}`,
+        kind: "mcp",
+        name: s.name,
+        description: s.command ?? s.url ?? undefined,
+        meta: s.enabled ? s.transport : `${s.transport} · disabled`,
+      })),
+    };
+  },
+};
+
+function useLibraryData(
+  tab: LibraryTab | undefined,
+  refresh: { reloadToken: number; retryToken: number },
+  hidden = false,
+) {
+  const { reloadToken, retryToken } = refresh;
+  const [cache, setCache] = useState<SourceCache>({});
+  const requestVersion = useRef<Partial<Record<CatalogSource, number>>>({});
+  const prevReloadToken = useRef(reloadToken);
+  const prevRetryToken = useRef(retryToken);
+
+  const wants = (kind: LibraryKind) =>
+    (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
+    (tab === "all" && !UNFINISHED_KINDS.has(kind));
+  const wantedKinds = LIBRARY_KINDS.filter(wants);
+  const wantedSources = Array.from(new Set(wantedKinds.flatMap((kind) => KIND_SOURCES[kind])));
+  // The effect runs on the scope and refresh tokens; wantedKinds is derived
+  // from the scope, so a stable key stands in for the wanted set.
   const scope = `${tab ?? ""}:${hidden}`;
-  const requestVersion = useRef(0);
-  const [loadedScope, setLoadedScope] = useState<string | null>(null);
-  const [items, setItems] = useState<LibraryItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [allAgents, setAllAgents] = useState<AgentProfileSummary[]>([]);
-  const [allEngines, setAllEngines] = useState<EngineDef[]>([]);
-  const [kindStatus, setKindStatus] = useState<Partial<Record<LibraryKind, KindLoadStatus>>>({});
 
   useEffect(() => {
-    const version = ++requestVersion.current;
-    const wants = (kind: LibraryKind) =>
-      (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
-      (tab === "all" && !UNFINISHED_KINDS.has(kind));
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset while the selected catalog request is pending
-    setLoading(true);
-    setError(null);
+    const reload = reloadToken !== prevReloadToken.current;
+    const retry = !reload && retryToken !== prevRetryToken.current;
+    prevReloadToken.current = reloadToken;
+    prevRetryToken.current = retryToken;
 
-    Promise.allSettled([
-      wants("agent") ? listAgents() : undefined,
-      wants("playbook") ? listBuiltinPlaybooks() : undefined,
-      wants("playbook") ? listPlaybooks() : undefined,
-      wants("workflow") ? listWorkflowDefs() : undefined,
-      wants("skill") ? listSkills() : undefined,
-      wants("plugin") ? listPlugins() : undefined,
-      wants("engine") ? listEngineDefs() : undefined,
-      wants("mcp") ? listMcpServers() : undefined,
-    ]).then(
-      ([
-        agentsRes,
-        builtinsRes,
-        playbooksRes,
-        workflowsRes,
-        skillsRes,
-        pluginsRes,
-        enginesRes,
-        mcpRes,
-      ]) => {
-        if (version !== requestVersion.current) return;
+    const sources = wantedSources.filter((source) => {
+      const cached = cache[source];
+      if (reload) return true;
+      if (retry) return cached === "failed";
+      return cached === undefined;
+    });
+    if (sources.length === 0) return;
 
-        const out: LibraryItem[] = [];
-        const results = [
-          agentsRes,
-          builtinsRes,
-          playbooksRes,
-          workflowsRes,
-          skillsRes,
-          pluginsRes,
-          enginesRes,
-          mcpRes,
-        ];
+    for (const source of sources) {
+      const version = (requestVersion.current[source] ?? 0) + 1;
+      requestVersion.current[source] = version;
+      SOURCE_REQUESTS[source]().then(
+        (data) => {
+          if (requestVersion.current[source] !== version) return;
+          setCache((prev) => ({ ...prev, [source]: data }));
+        },
+        () => {
+          if (requestVersion.current[source] !== version) return;
+          setCache((prev) => ({ ...prev, [source]: "failed" }));
+        },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wantedSources derives from tab/hidden; cache is read only to pick what to request
+  }, [scope, reloadToken, retryToken, hidden]);
 
-        setAllAgents(agentsRes.status === "fulfilled" ? (agentsRes.value?.agents ?? []) : []);
-        setAllEngines(enginesRes.status === "fulfilled" ? (enginesRes.value ?? []) : []);
-        if (agentsRes.status === "fulfilled" && agentsRes.value) {
-          for (const a of agentsRes.value.agents) {
-            out.push({
-              key: `agent:${a.name}`,
-              kind: "agent",
-              name: a.name,
-              description: a.description ?? undefined,
-              meta: a.model ?? undefined,
-            });
-          }
-        }
-        // Built-in templates first, then the user's own playbooks — surfacing
-        // the shipped templates the Workflows page was missing entirely
-        // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
-        // they live under the "playbook" kind, separate from "workflow"
-        // (DB-backed graph designs, edited inline via the Library drawer).
-        if (builtinsRes.status === "fulfilled" && builtinsRes.value) {
-          for (const p of builtinsRes.value.playbooks) {
-            out.push({
-              key: `playbook:builtin:${p.name}`,
-              kind: "playbook",
-              subKind: "builtin",
-              name: p.name,
-              description: p.description,
-              meta: p.description,
-            });
-          }
-        }
-        if (playbooksRes.status === "fulfilled" && playbooksRes.value) {
-          for (const p of playbooksRes.value.playbooks) {
-            out.push({
-              key: `playbook:custom:${p.name}`,
-              kind: "playbook",
-              subKind: "custom",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: p.description ?? undefined,
-            });
-          }
-        }
-        if (workflowsRes.status === "fulfilled" && workflowsRes.value) {
-          for (const w of workflowsRes.value) {
-            out.push({
-              key: `workflow:${w.id}`,
-              kind: "workflow",
-              name: w.name,
-              description: w.description ?? undefined,
-              meta: w.id,
-            });
-          }
-        }
-        if (skillsRes.status === "fulfilled" && skillsRes.value) {
-          for (const s of skillsRes.value.skills) {
-            out.push({
-              key: `skill:${s.name}`,
-              kind: "skill",
-              name: s.name,
-              description: s.description ?? undefined,
-            });
-          }
-        }
-        if (pluginsRes.status === "fulfilled" && pluginsRes.value) {
-          // The same plugin can be listed by several sources (marketplace +
-          // installed cache); detail lookup is by name, so one row suffices.
-          const seenPlugins = new Set<string>();
-          for (const p of pluginsRes.value.plugins) {
-            if (seenPlugins.has(p.name)) continue;
-            seenPlugins.add(p.name);
-            out.push({
-              key: `plugin:${p.name}`,
-              kind: "plugin",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: `v${p.version}`,
-            });
-          }
-        }
-        if (enginesRes.status === "fulfilled" && enginesRes.value) {
-          for (const e of enginesRes.value) {
-            out.push({
-              key: `engine:${e.id}`,
-              kind: "engine",
-              name: e.name,
-              description: e.description ?? undefined,
-              meta: e.kind,
-            });
-          }
-        }
+  const items = wantedKinds.flatMap((kind) =>
+    KIND_SOURCES[kind].flatMap((source) => {
+      const entry = cache[source];
+      return entry && entry !== "failed" ? entry.items : [];
+    }),
+  );
 
-        if (mcpRes.status === "fulfilled" && mcpRes.value) {
-          for (const s of mcpRes.value.servers) {
-            out.push({
-              key: `mcp:${s.name}`,
-              kind: "mcp",
-              name: s.name,
-              description: s.command ?? s.url ?? undefined,
-              meta: s.enabled ? s.transport : `${s.transport} · disabled`,
-            });
-          }
-        }
+  const kindStatus: Partial<Record<LibraryKind, KindLoadStatus>> = {};
+  for (const kind of wantedKinds) {
+    const sources = KIND_SOURCES[kind];
+    if (sources.some((source) => cache[source] === "failed")) kindStatus[kind] = "failed";
+    else if (sources.every((source) => cache[source] !== undefined)) kindStatus[kind] = "loaded";
+  }
 
-        setItems(out);
-        if (results.some((result) => result.status === "rejected")) {
-          setError("degraded");
-        }
-        const status = (
-          kind: LibraryKind,
-          ...sources: PromiseSettledResult<unknown>[]
-        ): KindLoadStatus | undefined =>
-          wants(kind)
-            ? sources.every((source) => source.status === "fulfilled")
-              ? "loaded"
-              : "failed"
-            : undefined;
-        setKindStatus({
-          agent: status("agent", agentsRes),
-          // Either playbook source failing leaves the combined catalog incomplete.
-          playbook: status("playbook", builtinsRes, playbooksRes),
-          workflow: status("workflow", workflowsRes),
-          skill: status("skill", skillsRes),
-          plugin: status("plugin", pluginsRes),
-          engine: status("engine", enginesRes),
-          mcp: status("mcp", mcpRes),
-        });
-        setLoadedScope(scope);
-        setLoading(false);
-      },
-    );
-
-    return () => {
-      requestVersion.current += 1;
-    };
-  }, [tab, hidden, scope, reloadToken]);
-
-  // A new URL can render before its loading effect runs. Keep the previous
-  // tab's rows and status from changing that URL's selection in the meantime.
-  const current = loadedScope === scope;
+  const agentsEntry = wants("agent") ? cache["agents"] : undefined;
+  const enginesEntry = wants("engine") ? cache["engines"] : undefined;
   return {
-    items: current ? items : [],
-    loading: loading || !current,
-    error: current ? error : null,
-    allAgents: current ? allAgents : [],
-    allEngines: current ? allEngines : [],
-    kindStatus: current ? kindStatus : {},
+    items,
+    loading: wantedSources.some((source) => cache[source] === undefined),
+    error: wantedKinds.some((kind) => kindStatus[kind] === "failed") ? "degraded" : null,
+    allAgents: agentsEntry && agentsEntry !== "failed" ? (agentsEntry.agents ?? []) : [],
+    allEngines: enginesEntry && enginesEntry !== "failed" ? (enginesEntry.engines ?? []) : [],
+    kindStatus,
   };
 }
 
@@ -401,9 +425,13 @@ function LibraryPage() {
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
   const retryVisible = useCallback(() => setVisibleRetryToken((token) => token + 1), []);
   const retryHidden = useCallback(() => setHiddenRetryToken((token) => token + 1), []);
-  const visible = useLibraryData(kindFilter, reloadToken + visibleRetryToken);
+  const visible = useLibraryData(kindFilter, { reloadToken, retryToken: visibleRetryToken });
   // Detail navigation must not reload or hide the visible catalog.
-  const hidden = useLibraryData(selectedHiddenKind, reloadToken + hiddenRetryToken, true);
+  const hidden = useLibraryData(
+    selectedHiddenKind,
+    { reloadToken, retryToken: hiddenRetryToken },
+    true,
+  );
   const items = [...visible.items, ...hidden.items];
   const { loading, allAgents } = visible;
   const { allEngines } = hidden;
@@ -414,6 +442,12 @@ function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  // A create form belongs to the tab that opened it; switching tabs closes it
+  // rather than leaving a form for the previous kind on screen.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- close the form for the previous tab
+    setShowCreate(false);
+  }, [kindFilter]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
   // Collapsed split-pane: show detail when a selection exists or create is open.

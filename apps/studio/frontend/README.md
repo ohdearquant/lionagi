@@ -51,8 +51,10 @@ catalogs are loaded only for an explicit detail deep link on a catalog tab;
 withheld tab names alone do not load them. Hooks is a full-page configuration surface:
 it owns its configuration requests and does not load a hidden Library detail.
 Selecting or leaving a hidden detail does not reload the visible catalog.
-Switching tabs reloads the selected sources; a late response from the previous tab
-cannot replace the active list or its errors. Create, delete, and clone completions
+Switching tabs loads the sources that tab has not fetched yet and renders a tab
+already visited from what it fetched; a late response from the previous tab
+cannot replace the active list or its errors. The create form belongs to the tab
+that opened it and closes when the tab changes. Create, delete, and clone completions
 refresh the current tab even if navigation occurred while the change was pending.
 They update selection only if the tab still matches the tab where the action began,
 and do not navigate after the Library unmounts. Visible catalog failures are named
@@ -64,8 +66,9 @@ not found only after a successful catalog response. The
 
 Catalog-list request counts are one for Agent, Skill, Plugin or MCP; two for Playbook;
 six for All; and zero for Hooks or a withheld tab name alone. An explicit hidden detail
-adds one request outside Hooks. Row selection adds none; visiting a tab loads its sources
-again. A completion refreshes the current tab's sources and any current hidden detail.
+adds one request outside Hooks. Row selection adds none; a tab already visited fetches
+nothing again. Retry requests only the sources that failed. A completion refreshes the
+current tab's sources and any current hidden detail.
 A workflow created on All loads six visible sources plus its workflow catalog.
 
 ## API resolution

@@ -303,6 +303,70 @@ describe("Library catalog loading", () => {
     expect(api.listSkills).toHaveBeenCalledOnce();
   });
 
+  it("revisits a tab from its cached rows with no new request or skeleton", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "alpha", model: "alpha-model" }] });
+    api.listSkills.mockResolvedValue({ skills: [{ name: "beta-skill" }] });
+    await renderLibrary({ tab: "agent", sel: "agent:alpha" });
+    expect(api.listAgents).toHaveBeenCalledOnce();
+    await renderLibrary({ tab: "skill", sel: "skill:beta-skill" });
+    expect(api.listSkills).toHaveBeenCalledOnce();
+
+    // The revisit request is never allowed to settle: the cached rows alone
+    // must keep the tab out of its loading state.
+    api.listAgents.mockReturnValue(new Promise(() => {}));
+    await renderLibrary({ tab: "agent", sel: "agent:alpha" });
+    expect(api.listAgents).toHaveBeenCalledOnce();
+    expect(container.querySelector(".skeleton")).toBeNull();
+    expect(container.querySelector("tbody")?.textContent).toContain("alpha");
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.dataset.model,
+    ).toBe("alpha-model");
+    expect(api.listSkills).toHaveBeenCalledOnce();
+  });
+
+  it("re-requests only the source that failed when Retry is pressed", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "alpha" }] });
+    api.listBuiltinPlaybooks.mockResolvedValue({ playbooks: [{ name: "bundled" }] });
+    api.listPlaybooks.mockResolvedValue({ playbooks: [{ name: "custom" }] });
+    api.listSkills.mockResolvedValue({ skills: [{ name: "beta-skill" }] });
+    api.listPlugins.mockResolvedValue({ plugins: [] });
+    api.listMcpServers.mockRejectedValueOnce(new Error("mcp catalog unavailable"));
+    await renderLibrary({});
+    expect(api.listMcpServers).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("filterMcp");
+
+    await act(async () => retry().click());
+    await flush();
+
+    expect(api.listMcpServers).toHaveBeenCalledTimes(2);
+    for (const source of [
+      "listAgents",
+      "listBuiltinPlaybooks",
+      "listPlaybooks",
+      "listSkills",
+      "listPlugins",
+    ] as const) {
+      expect(api[source], source).toHaveBeenCalledOnce();
+    }
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector("tbody")?.textContent).toContain("alpha");
+  });
+
+  it("closes the create form when the tab changes", async () => {
+    await renderLibrary({ tab: "all" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newWorkflow"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    expect(container.querySelector('[data-testid="submit-workflow"]')).not.toBeNull();
+
+    // The skill tab has no create affordance of its own, so a workflow form
+    // still on screen here is a form that outlived its tab.
+    await renderLibrary({ tab: "skill", sel: "skill:alpha" });
+    expect(container.querySelector('[data-testid="submit-workflow"]')).toBeNull();
+  });
+
   it("ignores a previous tab's late rejection", async () => {
     const plugins = deferred<{ plugins: [] }>();
     api.listPlugins.mockReturnValue(plugins.promise);
@@ -357,7 +421,11 @@ describe("Library catalog loading", () => {
       expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
       await act(async () => retry().click());
       await flush();
-      expectRequests(["listBuiltinPlaybooks", "listPlaybooks"], 2);
+      // Only the source that failed is fetched again; the other keeps its rows.
+      expect(api[failedSource]).toHaveBeenCalledTimes(2);
+      const otherSource =
+        failedSource === "listBuiltinPlaybooks" ? "listPlaybooks" : "listBuiltinPlaybooks";
+      expect(api[otherSource]).toHaveBeenCalledOnce();
       expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
     },
@@ -457,10 +525,11 @@ describe("Library catalog loading", () => {
               ? ["listMcpServers"]
               : ["listBuiltinPlaybooks", "listPlaybooks"];
       for (const [source, mock] of Object.entries(api)) {
+        // The skill tab is visited once after the create; with its rows cached,
+        // that visit adds no request, so only the completion's refresh reaches
+        // it. Every other source keeps its single initial fetch.
         expect(mock, source).toHaveBeenCalledTimes(
-          source === "listSkills"
-            ? 2 + Number(tab === "all")
-            : Number(initialSources.includes(source)),
+          source === "listSkills" ? 2 : Number(initialSources.includes(source)),
         );
       }
     },
