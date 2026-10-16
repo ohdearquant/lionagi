@@ -241,8 +241,8 @@
       "allHint": "Создайте первого агента или рабочий процесс, чтобы начать.",
       "filtered": "Нет элементов, соответствующих фильтру.",
       "filteredHint": "Попробуйте другой тип или очистите поиск.",
+      "clearFilters": "Сбросить фильтры",
       "createFirst": "Создать первый",
-      "createWorkflow": "Новый рабочий процесс",
       "createAgent": "Новый агент",
       "allSkill": "Навыки не найдены.",
       "allSkillHint": "Добавьте SKILL.md в ~/.lionagi/skills/NAME/, чтобы увидеть его здесь.",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "Этому демону нужен токен доступа",
+      "body": "Демон lionagi ответил по адресу {base}, но отклонил эту страницу. Демон принимает страницу с другого источника только с токеном доступа, а команда li studio передаёт его этой странице, когда открывает её. При перезагрузке страницы токен теряется.",
+      "fix": "Выполните это там, где работает демон, чтобы открыть Studio с доступом:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

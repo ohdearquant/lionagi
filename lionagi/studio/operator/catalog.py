@@ -71,6 +71,7 @@ OPERATOR_MODEL_CATALOG: tuple[OperatorModelSpec, ...] = (
     OperatorModelSpec("gpt-5.6-luna", "Codex Luna (gpt-5.6)", "codex"),
     OperatorModelSpec("gpt-6-sol", "GPT-6 Sol", "codex"),
     OperatorModelSpec("gpt-6-luna", "GPT-6 Luna", "codex"),
+    OperatorModelSpec("gemini-4-argon", "Gemini 4 Argon", "gemini_code"),
     OperatorModelSpec("gemini-3.8-flash", "Gemini 3.8 Flash", "gemini_code"),
     OperatorModelSpec("gemini-3.6-flash", "Gemini 3.6 Flash", "gemini_code"),
     OperatorModelSpec("gemini-3.5-flash", "Gemini 3.5 Flash", "gemini_code"),

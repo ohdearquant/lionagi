@@ -241,8 +241,8 @@
       "allHint": "Buat agen atau alur kerja pertama Anda untuk memulai.",
       "filtered": "Tidak ada item yang cocok dengan filter Anda.",
       "filteredHint": "Coba jenis lain atau bersihkan pencarian.",
+      "clearFilters": "Hapus filter",
       "createFirst": "Buat yang pertama",
-      "createWorkflow": "Alur kerja baru",
       "createAgent": "Agen baru",
       "allSkill": "Tidak ada skill ditemukan.",
       "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/NAME/ agar muncul di sini.",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "Daemon ini memerlukan token akses",
+      "body": "Daemon lionagi menjawab di {base}, tetapi menolak halaman ini. Daemon hanya menerima halaman dari origin lain yang membawa token akses, dan perintah li studio memberikannya ke halaman ini saat membukanya. Memuat ulang halaman akan menghilangkan token tersebut.",
+      "fix": "Jalankan ini di tempat daemon berjalan untuk membuka Studio dengan akses:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

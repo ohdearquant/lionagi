@@ -12,6 +12,7 @@ import type { RunSummary } from "@/lib/types";
 
 function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: string }): RunSummary {
   const base: RunSummary = {
+    id: overrides.id ?? overrides.run_id,
     run_id: overrides.run_id,
     status: overrides.status,
     playbook_name: null,

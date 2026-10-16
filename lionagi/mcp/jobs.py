@@ -379,16 +379,24 @@ def _write_job(record: dict[str, Any]) -> None:
         raise
 
 
-def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any], *, source: Path | str) -> None:
+def _write_mcp_server_snapshot(
+    path: Path, servers: dict[str, Any], *, source: Path | str, searched_from: Path | str
+) -> None:
     """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
 
     *source* is the config the submission found. Naming it in the snapshot is
     what keeps the child, which reads this file through ``--mcp-config``, from
-    taking a found set for one the caller named.
+    taking a found set for one the caller named. *searched_from* is the directory
+    the submission searched from, which the child records as its provenance in
+    place of its own directory.
     """
-    from lionagi.cli._mcp_resolve import SNAPSHOT_SOURCE_KEY
+    from lionagi.cli._mcp_resolve import SNAPSHOT_SEARCHED_FROM_KEY, SNAPSHOT_SOURCE_KEY
 
-    document = {"mcpServers": servers, SNAPSHOT_SOURCE_KEY: str(source)}
+    document = {
+        "mcpServers": servers,
+        SNAPSHOT_SOURCE_KEY: str(source),
+        SNAPSHOT_SEARCHED_FROM_KEY: str(searched_from),
+    }
     raise_if_non_finite(document)
     path.write_text(json.dumps(document, indent=2))
 
@@ -1206,6 +1214,7 @@ def submit(
         mcp_config_source: str | None = None
         mcp_config_reason: str | None = None
         mcp_servers: dict[str, Any] | None = None
+        mcp_config_searched_from: Path | None = None
         # Server names declared in the config snapshot lionagi controls. `[]`
         # means this layer settled its declaration as empty; `None` means it
         # never inspected a set. Providers may merge their own global config,
@@ -1247,6 +1256,7 @@ def submit(
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None
+                mcp_config_searched_from = resolution.searched_from
                 mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
                 declared_mcp_servers = sorted(
                     mcp_servers
@@ -1283,7 +1293,10 @@ def submit(
             prompt_path.write_text(prompt)
         if mcp_servers is not None and mcp_config_path is not None:
             _write_mcp_server_snapshot(
-                Path(mcp_config_path), mcp_servers, source=mcp_config_source or ""
+                Path(mcp_config_path),
+                mcp_servers,
+                source=mcp_config_source or "",
+                searched_from=mcp_config_searched_from or "",
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)

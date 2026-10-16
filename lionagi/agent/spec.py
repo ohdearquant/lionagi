@@ -78,6 +78,10 @@ class AgentSpec(HooksMixin):
     mcp_config_path: str | None = None
     context_management: bool = True
     khive_injection: Any = None
+    # Codex only: turn the signed-in account's apps and plugins off for this
+    # agent's endpoint by default (a call can still lift it; see create_agent).
+    # An agent of another provider is built unchanged.
+    contain_account_integrations: bool = False
 
     @classmethod
     def compose(
@@ -96,6 +100,7 @@ class AgentSpec(HooksMixin):
         cwd: str | None = None,
         yolo: bool = False,
         khive_injection: Any = None,
+        contain_account_integrations: bool = False,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
         prof = Profile.compose(role, modes=modes)
@@ -113,6 +118,7 @@ class AgentSpec(HooksMixin):
             cwd=cwd,
             yolo=yolo,
             khive_injection=khive_injection,
+            contain_account_integrations=contain_account_integrations,
         )
 
     @classmethod
@@ -153,6 +159,12 @@ class AgentSpec(HooksMixin):
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        contain = data.get("contain_account_integrations", False)
+        if not isinstance(contain, bool):
+            # bool("false") is True, and a key with no value reads as None; either is a
+            # mistake to report, not to read.
+            got = "no value" if contain is None else type(contain).__name__
+            raise ValueError(f"contain_account_integrations must be true or false, got {got}")
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
@@ -164,6 +176,7 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
+            contain_account_integrations=contain,
         )
         # compose() defaults lion_system to True, so a saved False must be
         # restored explicitly or it would be silently dropped.
@@ -210,6 +223,8 @@ class AgentSpec(HooksMixin):
         }
         if self.cwd:
             data["cwd"] = self.cwd
+        if self.contain_account_integrations:
+            data["contain_account_integrations"] = True
         if isinstance(self.khive_injection, (bool, dict)):
             data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:

@@ -264,7 +264,10 @@ async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
         snapshot = tmp_path / "job" / "mcp.json"
         snapshot.parent.mkdir()
         _write_mcp_server_snapshot(
-            snapshot, {"found": {"command": "server"}}, source=tmp_path / ".mcp.json"
+            snapshot,
+            {"found": {"command": "server"}},
+            source=tmp_path / ".mcp.json",
+            searched_from=tmp_path,
         )
         kwargs["mcp_config"] = str(snapshot)
     elif config_case == "disabled":
@@ -374,10 +377,15 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
     from lionagi.cli.agent import _MCP_LAUNCH_KEY, _run_agent
     from lionagi.mcp.jobs import _write_mcp_server_snapshot
 
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
     snapshot = tmp_path / "job" / "mcp.json"
     snapshot.parent.mkdir()
     _write_mcp_server_snapshot(
-        snapshot, {"found": {"command": "found-server"}}, source=tmp_path / ".mcp.json"
+        snapshot,
+        {"found": {"command": "found-server"}},
+        source=server_dir / ".mcp.json",
+        searched_from=server_dir,
     )
 
     await _run_agent(
@@ -388,7 +396,11 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
         mcp_config=str(snapshot),
     )
 
-    assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]["mcp_config"] == str(snapshot.resolve())
+    launched = spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]
+    assert launched["mcp_config"] == str(snapshot.resolve())
+    # The search directory is provenance; a resume reads from this process's own directory.
+    assert launched["launch_dir"] == str(Path.cwd().resolve())
+    assert launched["launch_dir"] != str(server_dir)
     assert _forwarded_servers(spawn.branches[-1]) == {"found": {"command": "found-server"}}
 
 

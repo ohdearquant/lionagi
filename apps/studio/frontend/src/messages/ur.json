@@ -241,8 +241,8 @@
       "allHint": "شروع کرنے کے لیے اپنا پہلا ایجنٹ یا ورک فلو بنائیں۔",
       "filtered": "کوئی آئٹم آپ کے فلٹر سے میل نہیں کھاتا۔",
       "filteredHint": "دوسری قسم آزمائیں یا تلاش صاف کریں۔",
+      "clearFilters": "فلٹرز صاف کریں",
       "createFirst": "اپنا پہلا بنائیں",
-      "createWorkflow": "نیا ورک فلو",
       "createAgent": "نیا ایجنٹ",
       "allSkill": "کوئی سکل نہیں ملی۔",
       "allSkillHint": "یہاں دیکھنے کے لیے ~/.lionagi/skills/NAME/ کے تحت ایک SKILL.md شامل کریں۔",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "اس ڈیمن کو رسائی ٹوکن درکار ہے",
+      "body": "{base} پر ایک lionagi ڈیمن نے جواب دیا، لیکن اس صفحے کو مسترد کر دیا۔ ڈیمن کسی دوسرے اوریجن کے صفحے کو صرف رسائی ٹوکن کے ساتھ قبول کرتا ہے، اور li studio کمانڈ اس صفحے کو کھولتے وقت اسے ٹوکن دیتی ہے۔ صفحہ دوبارہ لوڈ کرنے سے ٹوکن ختم ہو جاتا ہے۔",
+      "fix": "رسائی کے ساتھ Studio کھولنے کے لیے اسے وہاں چلائیں جہاں ڈیمن چل رہا ہے:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

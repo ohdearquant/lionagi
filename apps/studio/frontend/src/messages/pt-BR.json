@@ -241,8 +241,8 @@
       "allHint": "Crie seu primeiro agente ou fluxo de trabalho para começar.",
       "filtered": "Nenhum item corresponde ao filtro.",
       "filteredHint": "Tente outro tipo ou limpe a busca.",
+      "clearFilters": "Limpar filtros",
       "createFirst": "Criar o primeiro",
-      "createWorkflow": "Novo fluxo de trabalho",
       "createAgent": "Novo agente",
       "allSkill": "Nenhuma skill encontrada.",
       "allSkillHint": "Adicione um SKILL.md em ~/.lionagi/skills/NAME/ para vê-la aqui.",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "Este daemon precisa de um token de acesso",
+      "body": "Um daemon do lionagi respondeu em {base}, mas recusou esta página. Um daemon só aceita uma página de outra origem com um token de acesso, e o comando li studio entrega um a esta página ao abri-la. Recarregar a página descarta o token.",
+      "fix": "Execute isto onde o daemon está rodando para abrir o Studio com acesso:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

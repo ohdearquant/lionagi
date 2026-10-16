@@ -145,7 +145,12 @@ export function planOperatorEffect(effect: unknown): OperatorEffectPlan {
       return { kind: "reject", rejectionCode: "invalid_params" };
     }
     if (raw.space === "mission" || raw.space === "history") {
-      const id = selection.s ?? selection.runId ?? selection.run_id ?? selection.sessionId;
+      const id =
+        selection.s ??
+        selection.sessionId ??
+        selection.session_id ??
+        selection.runId ??
+        selection.run_id;
       return id
         ? { kind: "navigate", to: "/fleet", search: { s: id } }
         : { kind: "reject", rejectionCode: "invalid_params" };

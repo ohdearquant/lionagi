@@ -1,7 +1,8 @@
-/** A single run record returned by GET /api/runs/ and GET /api/runs/{run_id}. */
+/** A single Session projection returned by GET /api/runs/ and GET /api/runs/{id}. */
 export interface Run {
-  run_id: string;
   id: string;
+  /** Nullable, non-unique CLI-run provenance; not accepted by Session routes. */
+  run_id: string | null;
   name: string | null;
   playbook_name: string | null;
   agent_name: string | null;

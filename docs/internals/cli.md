@@ -84,13 +84,31 @@ the directory that doesn't have it). "Nothing was configured" and "something was
 could not be used" are returned as distinct states, so a failed resolution always carries its
 reason.
 
+Every newly allocated CLI `run.json` persists the resolved execution `cwd`
+alongside that submit-time discovery provenance. `mcp_config_source` is the
+resolved source `.mcp.json` path or explicit JSON `null`; the latter differs
+from a legacy manifest where the field is absent. `mcp_config_searched_from`,
+`mcp_config_explicit`, and `mcp_config_reason` preserve where discovery began,
+whether the caller named the file, and why no usable source was selected.
+`RunDir.write_manifest()` reinjects these allocation-owned fields on every
+whole-file lifecycle write, including orchestration live-start and terminal
+persistence, so a later status update cannot erase or redefine them.
+
 A run submitted through the MCP server reaches its snapshot through `--mcp-config`, the flag a
 caller names a file with, so the snapshot carries `lionagiSnapshotOf`, the path of the config the
 submission found. A file carrying that key resolves as found (`McpResolution.explicit` is false),
 so the set the submission found is not taken for one the caller named: the job-control policy
 under `_hand_mcp_servers` still applies to it, and a leg on a provider with no MCP transport is
 not refused for it the way it is for a named config. The key is read wherever the file is named,
-so a caller who names a copy of a snapshot gets it read as found too.
+so a caller who names a copy of a snapshot gets it read as found too. The resolution keeps the
+original path in `source`, which is the path persisted as `mcp_config_source`; the snapshot path
+is only the file the child reads. The snapshot also carries `lionagiSnapshotSearchedFrom`, the
+directory the submission searched from, which the resolution reports as `searched_from` and the
+run persists as `mcp_config_searched_from`, since a submission that names a cwd starts the child
+there, which need not be the directory the search began in. A snapshot from a submission that
+predates that key reports the child's own directory. Both keys must hold absolute paths; any
+other value makes the file unusable. The child's own directory stays the one a relative
+`--mcp-config` name and a resume read from.
 
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn

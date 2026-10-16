@@ -241,8 +241,8 @@
       "allHint": "शुरू करने के लिए अपना पहला एजेंट या वर्कफ़्लो बनाएँ।",
       "filtered": "कोई आइटम आपके फ़िल्टर से मेल नहीं खाता।",
       "filteredHint": "कोई और प्रकार आज़माएँ या खोज साफ़ करें।",
+      "clearFilters": "फ़िल्टर साफ़ करें",
       "createFirst": "अपना पहला बनाएँ",
-      "createWorkflow": "नया वर्कफ़्लो",
       "createAgent": "नया एजेंट",
       "allSkill": "कोई स्किल नहीं मिली।",
       "allSkillHint": "यहाँ देखने के लिए ~/.lionagi/skills/NAME/ के अंतर्गत एक SKILL.md जोड़ें।",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "इस डेमन को एक्सेस टोकन चाहिए",
+      "body": "{base} पर एक lionagi डेमन ने जवाब दिया, लेकिन इस पेज को अस्वीकार कर दिया। डेमन किसी दूसरे ऑरिजिन के पेज को केवल एक्सेस टोकन के साथ स्वीकार करता है, और li studio कमांड इस पेज को खोलते समय उसे टोकन देता है। पेज को रीलोड करने पर टोकन खो जाता है।",
+      "fix": "एक्सेस के साथ Studio खोलने के लिए इसे वहाँ चलाएँ जहाँ डेमन चल रहा है:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

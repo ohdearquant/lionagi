@@ -94,8 +94,11 @@ def _project(run: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     )
 
     fields = {
+        # The CLI run that executed this Session, or None. Operator results from the
+        # coordinator carry the Session id under runId instead; link by sessionId.
         "runId": run.get("run_id"),
         "id": run.get("id"),
+        "sessionId": run.get("id"),
         "name": _scrub(run.get("name")),
         "playbookName": _scrub(run.get("playbook_name")),
         "agentName": _scrub(run.get("agent_name")),

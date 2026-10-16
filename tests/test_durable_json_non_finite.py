@@ -231,11 +231,16 @@ def test_mcp_server_snapshot_refuses_non_finite(tmp_path):
 
     with pytest.raises(ValueError, match=r"non-finite float at \$\.mcpServers\.x\.timeout"):
         _write_mcp_server_snapshot(
-            target, {"x": {"command": "y", "timeout": float("inf")}}, source="found.json"
+            target,
+            {"x": {"command": "y", "timeout": float("inf")}},
+            source="found.json",
+            searched_from=tmp_path,
         )
     assert not target.exists()
 
-    _write_mcp_server_snapshot(target, {"payload": CONTROL}, source="found.json")
+    _write_mcp_server_snapshot(
+        target, {"payload": CONTROL}, source="found.json", searched_from=tmp_path
+    )
     assert json.loads(target.read_text())["mcpServers"]["payload"] == CONTROL
 
 
