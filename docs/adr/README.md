@@ -100,6 +100,8 @@ its area block.
 - [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn context-
   provider execution and attribution
 - 0009-0010 — unused (intentional gaps)
+- [ADR-0127](ADR-0127-prompt-cache-placement-for-prefix-caching-providers.md) — Prompt-cache
+  placement for prefix-caching providers (sequential number; see Numbering)
 
 ### actions-tools (0011-0015)
 
