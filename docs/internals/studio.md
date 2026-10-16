@@ -23,6 +23,33 @@ Content-Type/CSRF check -> bearer-token gate -> route. A real preflight
 never reaches the bearer-token/Content-Type middlewares because CORS
 answers it first.
 
+**Origin rule with no token (`_origin_accepted_without_token`)** — with no
+`LIONAGI_STUDIO_AUTH_TOKEN`, the bearer-token gate still refuses `/api` and
+schema requests (401) from a browser origin that is neither loopback
+(`localhost`, 127.0.0.0/8, `::1`; an IPv4-mapped address is judged as its IPv4
+address) nor the daemon's own origin (Origin authority equal to the request's
+Host, as for the SPA a daemon bound to another address serves itself). A
+request without an Origin header, as from the CLI or a script, passes; `null`,
+a second Origin header, or an origin carrying userinfo, a path, a query or a
+fragment is refused. CORS only decides which pages may read a response, so it
+cannot stand in for this check.
+
+Such an origin is admitted only with the launch bearer (`launch_access.py`),
+minted per process and held in memory, never put in the environment or written
+anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
+asks a daemon already running on the port for one over
+`POST /api/studio/pairing-codes` (refused to any request carrying an Origin, and
+behind the bearer gate, so a daemon with a token needs it), then opens the
+hosted page with `#pair=<code>`. A browser never sends the fragment to a server.
+The page reads it once before the router starts, removes it with
+`history.replaceState`, and redeems it at `POST /api/studio/pair`, the one API
+path the gate lets through without a bearer. That route requires an Origin in
+`CORS_ORIGINS` (checked before the code is spent); a code works once and
+expires after 120 seconds. The answer is the configured token when one is set,
+else the launch bearer, and the page keeps it in memory only: a reload loses
+it, and the page then shows the access-required screen with `li studio` as the
+remedy.
+
 **`require_json_content_type`** — rejects every state-changing `/api`
 request that does not declare `application/json`, including bodyless action
 routes. FastAPI parses bodies as JSON regardless of declared Content-Type,

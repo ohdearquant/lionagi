@@ -34,7 +34,8 @@ import type {
   WorkerStepNode,
   WorkerLinkEdge,
 } from "./types";
-import { reportConnectivityFailure } from "./connectivity";
+import { reportAccessRefused, reportConnectivityFailure } from "./connectivity";
+import { pairedBearer } from "./pairing";
 
 declare global {
   interface Window {
@@ -66,7 +67,8 @@ declare global {
 export function resolveAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const token = window.__STUDIO_AUTH_TOKEN__;
-  if (!token) return undefined;
+  // Without an injected token, the bearer `li studio` paired this page with.
+  if (!token) return pairedBearer(resolveApiBase());
 
   const override = resolveApiOverride();
   if (!override) return token;
@@ -263,6 +265,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     // re-probe /health right away instead of waiting for its own poll tick.
     reportConnectivityFailure();
     throw err;
+  }
+  if (response.status === 401) {
+    reportAccessRefused();
   }
   if (!response.ok) {
     // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
