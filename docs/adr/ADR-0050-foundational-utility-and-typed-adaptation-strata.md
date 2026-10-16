@@ -262,14 +262,18 @@ class Note(BaseModel):
   when every field value does; a list or dict field makes it unhashable. `DataClass`
   fallback equality compares public fields of the exact concrete type, while ordinary
   message dataclasses retain generated equality.
-- `to_list(..., flatten=True, unique=True)` keeps the first of equal `DataClass` values,
-  grouping them by a transient hash of their declared field state and confirming
-  identity or equality inside each group. Generic mappings, Pydantic models, and
-  msgspec structs retain transient hash buckets with equality confirmation. The
-  operation DTO listable-field validator compares by identity, then equality, without
-  hashing; opaque outputs whose equality differs from their representation dedupe by
-  equality, and a pair whose equality gives no single truth value (an array, a data
-  frame) stays two values.
+- `to_list(..., flatten=True, unique=True)` keeps the first of equal `DataClass` values.
+  A value that keeps the base equality is grouped by a transient hash of its declared
+  field state and compared with its group and with every kept value whose class defines
+  its own equality; a value whose class defines its own equality is compared with every
+  kept value. A value whose field state cannot be hashed cannot be compared by the base
+  equality either, so it stays a separate value unless it is the same object. Generic
+  mappings, Pydantic models, and msgspec structs retain transient hash buckets with
+  equality confirmation. The operation DTO listable-field validator compares by
+  identity, then equality, without hashing; opaque outputs whose equality differs from
+  their representation dedupe by equality, and a pair whose equality gives no single
+  truth value (an array, a data frame, a request whose arguments hold one) or raises
+  `TypeError` or `ValueError` stays two values.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model

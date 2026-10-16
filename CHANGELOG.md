@@ -23,9 +23,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Deduplicating operation fields keeps the first of equal values without hashing them, so two
   action outputs that compare equal are one value even when they print differently. An output
   whose `==` gives no single truth value, such as an array or a data frame, is kept as a
-  separate value instead of raising. `to_list(..., unique=True)` groups `DataClass` values by a
-  hash of their declared field state, taken during deduplication and not stored, and compares
-  only values with the same structure.
+  separate value instead of raising, and so is an action request whose arguments hold one; a
+  `TypeError` or `ValueError` from a value's own `__eq__` reads as unequal the same way.
+  `to_list(..., unique=True)` keeps the first of equal `DataClass` values. It groups values that
+  keep the base equality by a hash of their declared field state, taken during deduplication
+  and not stored, and compares a value whose class defines its own equality with every kept
+  value, so a pair that equality calls equal is one value in either order. A `DataClass` value
+  whose field state cannot be hashed, such as one holding a writable memoryview, is kept as a
+  separate value unless it is the same object, where it used to raise.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

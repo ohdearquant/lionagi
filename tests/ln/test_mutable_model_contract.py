@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import operator
+import sys
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -179,6 +181,67 @@ def test_generic_dataclass_dedup_accepts_generated_equality_and_cycles():
     assert result[2] is cyclic
 
 
+@dataclass(slots=True, eq=False)
+class Point(DataClass):
+    x: int = 0
+
+
+@dataclass(slots=True, eq=False)
+class LabelledPoint(Point):
+    """Equal to any point at the same position, whatever its label."""
+
+    label: str = ""
+
+    def __eq__(self, other):
+        return isinstance(other, Point) and other.x == self.x
+
+    __hash__ = None
+
+
+@pytest.mark.parametrize("labelled_first", [False, True], ids=["base-first", "labelled-first"])
+def test_dataclass_dedup_finds_a_pair_its_own_equality_calls_equal_in_either_order(
+    labelled_first,
+):
+    point, labelled, other = Point(1), LabelledPoint(1, "a"), Point(2)
+    first, second = (labelled, point) if labelled_first else (point, labelled)
+    result = to_list([first, second, LabelledPoint(1, "b"), other], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is other
+
+
+@dataclass(slots=True, eq=False)
+class Holder(DataClass):
+    value: object = None
+
+
+def _nested(depth):
+    value = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: memoryview(bytearray(b"ab")), lambda: _nested(sys.getrecursionlimit())],
+    ids=["writable-memoryview", "past-the-recursion-limit"],
+)
+def test_dataclass_dedup_keeps_a_value_whose_structure_cannot_be_keyed(make):
+    """DataClass equality cannot compare such a value either, so it is kept unless it
+    is the same object as a kept value, and the values around it are deduplicated."""
+    first, equal_content, plain = Holder(make()), Holder(make()), Holder("plain")
+    with pytest.raises((ValueError, RecursionError)):
+        operator.eq(first, equal_content)
+    result = to_list(
+        [first, plain, equal_content, first, Holder("plain")], flatten=True, unique=True
+    )
+    assert len(result) == 3
+    assert result[0] is first
+    assert result[1] is plain
+    assert result[2] is equal_content
+
+
 @pytest.mark.parametrize("kind", ["mapping", "pydantic", "msgspec"])
 @pytest.mark.parametrize("collide", [False, True])
 def test_generic_model_buckets_retain_hash_partition_and_equality_confirmation(
@@ -307,6 +370,21 @@ def test_dataclass_dedup_compares_only_values_with_the_same_structure(monkeypatc
     assert all(kept is value for kept, value in zip(result, values, strict=True))
     assert len(calls) == 1
     assert calls[0] is repeat
+
+
+def test_operation_dedup_keeps_requests_whose_arguments_have_no_single_answer():
+    numpy = pytest.importorskip("numpy")
+    first = fields.ActionRequestModel(function="f", arguments={"x": numpy.array([1, 2])})
+    same_values = fields.ActionRequestModel(function="f", arguments={"x": numpy.array([1, 2])})
+    scalar = fields.ActionRequestModel(function="f", arguments={"x": 1})
+    scalar_again = fields.ActionRequestModel(function="f", arguments={"x": 1})
+    result = fields._validate_listable_field(
+        None, [first, same_values, scalar, scalar_again, first]
+    )
+    assert len(result) == 3
+    assert result[0] is first
+    assert result[1] is same_values
+    assert result[2] is scalar
 
 
 def test_operation_dedup_checks_identity_before_equality(monkeypatch):

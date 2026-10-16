@@ -8,11 +8,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum as _Enum
+from itertools import chain
 from typing import Any, ClassVar
 
 from ._hash import hash_dict
 from ._lazy_init import LazyInit
-from ._structural import UnhashableStructuralValueError, _dataclass_structural_key
+from ._structural import _dataclass_structural_key
 from .types import DataClass, Params
 
 __all__ = ("to_list", "ToListParams")
@@ -123,26 +124,48 @@ def to_list(
 
     if unique:
         seen: set = set()
-        dataclass_buckets: dict[int | None, list[DataClass]] = {}
+        dataclass_buckets: dict[int, list[DataClass]] = {}
+        unkeyed_dataclasses: set[int] = set()
+        own_equality: list[DataClass] = []
+        kept_dataclasses: list[DataClass] = []
         unhashable_buckets: dict[Any, list] = {}
         out: list = []
         for i in processed:
             if isinstance(i, DataClass):
-                # A value compared by its structure is bucketed by a hash of that
-                # structure, taken now and never kept on the instance, and only
-                # values sharing a bucket are compared. A subclass with its own
-                # equality, or a value whose structure cannot be keyed, shares one
-                # bucket and is compared with every other such value.
-                bucket_key = None
+                # A value that keeps DataClass equality is bucketed by a hash of its
+                # structure, taken now and never kept on the instance, and compared
+                # with its bucket and with every kept value that defines its own
+                # equality. One whose structure cannot be keyed (a writable memoryview,
+                # nesting past the recursion limit) is one DataClass equality cannot
+                # compare either, so it is kept unless it is the same object as a kept
+                # value or a kept value's own equality calls it equal. A value that
+                # defines its own equality is compared with every kept value, so a pair
+                # that equality calls equal is found in either order.
                 if type(i).__eq__ is DataClass.__eq__:
                     try:
                         bucket_key = hash(_dataclass_structural_key(i._field_state()))
-                    except (AttributeError, TypeError, UnhashableStructuralValueError):
+                    except Exception:
                         bucket_key = None
-                bucket = dataclass_buckets.setdefault(bucket_key, [])
-                if not any(existing is i or existing == i for existing in bucket):
-                    bucket.append(i)
-                    out.append(i)
+                    if bucket_key is None:
+                        if id(i) in unkeyed_dataclasses or any(
+                            existing == i for existing in own_equality
+                        ):
+                            continue
+                        unkeyed_dataclasses.add(id(i))
+                    else:
+                        bucket = dataclass_buckets.get(bucket_key, ())
+                        if any(
+                            existing is i or existing == i
+                            for existing in chain(bucket, own_equality)
+                        ):
+                            continue
+                        dataclass_buckets.setdefault(bucket_key, []).append(i)
+                else:
+                    if any(existing is i or existing == i for existing in kept_dataclasses):
+                        continue
+                    own_equality.append(i)
+                kept_dataclasses.append(i)
+                out.append(i)
                 continue
             try:
                 if i not in seen:
