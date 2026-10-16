@@ -231,6 +231,7 @@ def test_a_password_key_between_the_users_password_and_the_host_is_masked_with_b
     )
 
 
+@pytest.mark.performance
 @pytest.mark.parametrize(
     "unit",
     [
@@ -286,7 +287,9 @@ def test_masking_time_grows_with_the_length_of_the_text(unit):
     # each reading scans the text once and looks positions up, and a value starting inside
     # another, outside its quotes and escapes, is not read again, so a long or repetitive
     # message cannot stall a log call:
-    # 200,000 characters of these take a fraction of a second
+    # 200,000 characters of these take a fraction of a second. The bound is wall-clock
+    # time, so the test runs in the serial, uninstrumented performance lane: under
+    # coverage tracing the same reading takes several times as long
     from lionagi.state.engine import mask_credentials, mask_db_url
 
     text = "postgresql://u@h/db" + unit * (200_000 // len(unit))
@@ -296,6 +299,16 @@ def test_masking_time_grows_with_the_length_of_the_text(unit):
         assert time.perf_counter() - start < 5, (mask.__name__, unit)
 
 
+def test_values_opened_inside_each_other_are_masked_as_one_value():
+    # the same text as the timed test below, short enough to run in every suite
+    from lionagi.state.engine import mask_credentials, mask_db_url
+
+    text = "password=${" * 1_000 + "}" * 1_000
+    for mask in (mask_credentials, mask_db_url):
+        assert mask(text) == "password=***", mask.__name__
+
+
+@pytest.mark.performance
 def test_values_opened_inside_each_other_and_closed_are_not_read_again():
     # each value starts inside the one before it and, past its own `}`, comes to text
     # the outer value's reading has passed: it ends where that reading did instead of

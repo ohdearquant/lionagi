@@ -241,8 +241,8 @@
       "allHint": "最初のエージェントまたはワークフローを作成して開始しましょう。",
       "filtered": "フィルターに一致する項目はありません。",
       "filteredHint": "別の種類を試すか、検索をクリアしてください。",
+      "clearFilters": "フィルターをクリア",
       "createFirst": "最初の項目を作成",
-      "createWorkflow": "新規ワークフロー",
       "createAgent": "新規エージェント",
       "allSkill": "スキルが見つかりません。",
       "allSkillHint": "~/.lionagi/skills/NAME/ に SKILL.md を追加するとここに表示されます。",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "このデーモンにはアクセストークンが必要です",
+      "body": "{base} の lionagi デーモンは応答しましたが、このページを拒否しました。デーモンは、別のオリジンのページをアクセストークンがある場合にのみ受け付けます。li studio コマンドは、このページを開くときにトークンを渡します。ページを再読み込みするとトークンは失われます。",
+      "fix": "デーモンが動いている場所でこれを実行し、アクセス付きで Studio を開きます：",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

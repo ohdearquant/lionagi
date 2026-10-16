@@ -4,13 +4,9 @@ import type { ProjectGroup, Run } from "../api/types.js";
 /** Display + group key for runs that have no detected project. */
 export const NO_PROJECT = "(no project)";
 
-/**
- * Stable identifier for a run. Mirrored sessions (e.g. Claude transcripts) are
- * returned with `id` set but no `run_id`, so always resolve through both rather
- * than touching `run.run_id` directly (which would throw on those rows).
- */
+/** Session-projection identity accepted by run detail and Session stream routes. */
 export function runId(run: Run): string {
-  return run.run_id ?? run.id ?? "";
+  return run.id ?? "";
 }
 
 const TERMINAL_STATUSES = new Set([
@@ -213,7 +209,7 @@ export class RunItem extends vscode.TreeItem {
     this.iconPath = statusIcon(run);
     const base = isTerminal(run) ? "runTerminal" : "runActive";
     // The run-tree button is gated on this suffix (see package.json view/item/context).
-    // Require a stable id too: a malformed row with no run_id/id must never expose
+    // Require a stable id too: a malformed row with no id must never expose
     // a button that would open /api/sessions//signals with an empty id.
     this.contextValue = runId(run) && hasRunTree(run) ? `${base}Tree` : base;
     this.tooltip = buildTooltip(run);

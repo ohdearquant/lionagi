@@ -58,6 +58,12 @@ def _script_create_time(fake_proc: MagicMock, value: float) -> None:
 # Fixtures
 
 
+@pytest.fixture(autouse=True)
+def stable_boot_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep host-scoped process identity checks deterministic."""
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1_700_000_000.0)
+
+
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect StateDB to a per-test temp file."""
@@ -747,6 +753,7 @@ def test_current_pid_markers_records_own_pid():
 _RECORDS_ITS_MARKERS_UNDER_SLEW = (
     "import json, sys, time\n"
     "import psutil\n"
+    "psutil.boot_time = lambda: 1_700_000_000.0\n"
     "from lionagi.cli.kill import current_pid_markers\n"
     "psutil._psplatform.INIT_BOOT_TIME += 5.0\n"
     "sys.stdout.write(json.dumps(current_pid_markers()) + '\\n')\n"
@@ -2151,6 +2158,14 @@ def _kill_help_text() -> str:
         check=True,
     )
     return " ".join(result.stdout.split())
+
+
+def test_help_qualifies_the_degraded_run_process_record():
+    help_text = _kill_help_text()
+
+    assert "stops the process only when run.json records a process identity" in help_text
+    assert "`li agent` writes that identity and prints its run id when it starts" in help_text
+    assert "`li kill` uses a matching degraded run.json when it can identify a process" in help_text
 
 
 def test_help_states_what_the_sweep_does_to_a_play():

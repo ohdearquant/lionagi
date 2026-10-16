@@ -173,7 +173,7 @@ function findRunId(value: unknown, depth = 0): string | null {
     return null;
   }
   const record = value as Record<string, unknown>;
-  for (const key of ["runId", "run_id", "sessionId", "session_id"]) {
+  for (const key of ["sessionId", "session_id", "runId", "run_id"]) {
     if (typeof record[key] === "string" && record[key]) return record[key];
   }
   for (const nested of Object.values(record)) {
@@ -669,6 +669,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<OperatorEffort | "">("");
   const [sending, setSending] = useState(false);
+  const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
@@ -899,10 +900,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
       if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
       if (queued.length) dispatch({ type: "APPEND_FRAMES", frames: queued });
     };
-    // Reconnect is owned by streamOperatorConversation; changing cursor must
-    // not tear down a healthy stream after every frame.
+    // Reconnect is normally owned by streamOperatorConversation; changing the
+    // cursor must not tear down a healthy stream after every frame. A
+    // successful submit deliberately advances streamEpoch, though: the POST
+    // may have reached a replacement daemon after the old stream died, and a
+    // fresh subscription replays that durable user frame immediately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.conversation?.id, state.loadState]);
+  }, [state.conversation?.id, state.loadState, streamEpoch]);
 
   const applyClientEffect = useCallback(
     async (effect: unknown): Promise<StoredEffectAcknowledgement> => {
@@ -1095,6 +1099,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(clearing ? { clearSelection: true } : {}),
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
+      setStreamEpoch((current) => current + 1);
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
@@ -1709,7 +1714,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         )}
 
         <footer className="shrink-0 border-t border-edge bg-surface-raised p-3">
-          {(actionError || (state.connectionState === "error" && state.error)) && (
+          {(actionError || state.error) && (
             <div className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure">
               <IconError size={12} className="mt-0.5 shrink-0" />
               <span className="min-w-0 flex-1 break-words">{actionError ?? state.error}</span>

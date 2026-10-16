@@ -12,7 +12,7 @@ import tempfile
 import time
 import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -26,7 +26,10 @@ from lionagi.providers._provider_errors import ProviderError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpResolution
     from lionagi.state.db import StateDB
 
 __all__ = (
@@ -103,6 +106,47 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _run_manifest_lock(state_root: Path, *, required: bool = True) -> Iterator[None]:
+    """Hold the lock every write of the run.json in *state_root* takes.
+
+    Invocations that share a run id (`LIONAGI_RUN_ID`) share its run.json. A writer that reads it
+    to decide what to write holds this lock across the read and the write, so no other writer's
+    record lands between them (ADR-0104 Amendment 2). It is POSIX advisory locking on a file beside
+    run.json; where `fcntl` does not exist (Windows) nothing is held, and writers resolve
+    last-writer-wins.
+
+    A lock that cannot be taken (a filesystem without `flock`, a lock file that cannot be opened)
+    raises the OSError when *required*; otherwise the body runs without it, with a warning, so a
+    run's own writes go on as they did before the lock existed.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows fallback
+        yield
+        return
+
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(state_root / ".run.json.lock", flags, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        if required:
+            raise
+        _log.warning("run.json in %s written without its lock: %r", state_root, exc)
+        fd = None
+    if fd is None:
+        yield
+        return
+    try:
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 @dataclass(frozen=True, slots=True)
 class RunDir:
     """Resolved state and artifact paths for one CLI run."""
@@ -110,6 +154,11 @@ class RunDir:
     run_id: str
     state_root: Path
     artifact_root: Path
+    cwd: Path | None = None
+    mcp_config_source: Path | None = None
+    mcp_config_searched_from: Path | None = None
+    mcp_config_explicit: bool | None = None
+    mcp_config_reason: str | None = None
 
     # ── Path helpers ────────────────────────────────────────────────
 
@@ -172,22 +221,109 @@ class RunDir:
         directory, then os.replace), so a concurrent reader observes either
         the previous manifest or the new one, never a truncated file. It is
         a whole-file replacement, not a merge: the caller owns the full
-        manifest contents, and two writers racing on one run still resolve
-        last-writer-wins.
+        lifecycle contents, and two writers racing on one run still resolve
+        last-writer-wins. Each write takes the run's manifest lock
+        (`_run_manifest_lock`), so a writer holding it across a read and its
+        write sees no other write land between them. A run reconstructed from
+        its path preserves any execution provenance already stored in the
+        manifest, read under that lock; any error reading it other than a
+        missing file or a ``JSONDecodeError`` (an ``OSError``, a
+        ``UnicodeDecodeError``, or a ``ValueError`` the JSON parser raises for
+        JSON it will not read, such as an integer over its digit limit) stops
+        the write with that error.
         """
         ensure_lionagi_dir(self.state_root)
+        with _run_manifest_lock(self.state_root, required=False):
+            self._write_manifest_holding_lock(data)
+
+    def _write_manifest_holding_lock(self, data: dict) -> None:
+        """:meth:`write_manifest` for a caller already holding the manifest lock,
+        which is not reentrant."""
         payload = {
             "run_id": self.run_id,
             "state_root": str(self.state_root),
             "artifact_root": str(self.artifact_root),
             **data,
         }
+        if self.cwd is not None:
+            # Execution context is allocation-owned provenance. Whole-file
+            # writers replace lifecycle data throughout a live run, but must
+            # not erase or redefine the directory and MCP discovery facts that
+            # determined the run's tool surface.
+            payload.update(
+                {
+                    "cwd": str(self.cwd),
+                    "mcp_config_source": (
+                        str(self.mcp_config_source) if self.mcp_config_source else None
+                    ),
+                    "mcp_config_searched_from": (
+                        str(self.mcp_config_searched_from)
+                        if self.mcp_config_searched_from
+                        else None
+                    ),
+                    "mcp_config_explicit": self.mcp_config_explicit,
+                    "mcp_config_reason": self.mcp_config_reason,
+                }
+            )
+        else:
+            # A manifest that is gone, or that is malformed JSON (JSONDecodeError), holds
+            # nothing this code can read back, and one that is JSON but not an object holds
+            # no provenance; any other error reading it leaves a file that may hold
+            # provenance, so that error stops the write.
+            try:
+                existing = self.read_manifest()
+            except (FileNotFoundError, json.JSONDecodeError):
+                existing = {}
+            if isinstance(existing, dict):
+                for key in (
+                    "cwd",
+                    "mcp_config_source",
+                    "mcp_config_searched_from",
+                    "mcp_config_explicit",
+                    "mcp_config_reason",
+                ):
+                    if key in existing:
+                        payload[key] = existing[key]
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
         if not self.manifest_path.exists():
             return {}
         return json.loads(self.manifest_path.read_text())
+
+    def with_execution_provenance(
+        self,
+        *,
+        cwd: str | os.PathLike,
+        mcp_resolution: McpResolution,
+        mcp_disabled: bool = False,
+    ) -> RunDir:
+        """Return this run with resolved execution context bound to future writes.
+
+        ``allocate_run`` writes the running placeholder immediately. CLI call
+        sites then bind the submit-time MCP result before their first live
+        persistence write; rewrite that placeholder too so even an early
+        failure leaves the same provenance as later lifecycle snapshots.
+        """
+        resolved_cwd = Path(cwd).expanduser().resolve()
+        source = mcp_resolution.source
+        updated = replace(
+            self,
+            cwd=resolved_cwd,
+            mcp_config_source=source.expanduser().resolve() if source else None,
+            mcp_config_searched_from=mcp_resolution.searched_from.expanduser().resolve(),
+            mcp_config_explicit=mcp_resolution.explicit,
+            mcp_config_reason=("mcp_disabled_by_caller" if mcp_disabled else mcp_resolution.reason),
+        )
+        if not self.manifest_path.exists():
+            return updated
+        # Read and rewrite under one hold of the lock, so a write by another
+        # invocation sharing this run id cannot land between them and be undone.
+        with _run_manifest_lock(self.state_root, required=False):
+            manifest = self.read_manifest()
+            if manifest:
+                updated._write_manifest_holding_lock(manifest)
+        return updated
 
     # ── Notify-outcome I/O (separate from the manifest; see notify_settings.py) ──
 
@@ -251,13 +387,14 @@ def _record_persistence_degraded(
         _log.warning("could not record persistence degradation: no active run id")
         return reason
     try:
-        manifest = json.loads(manifest_path.read_text())
-        if not isinstance(manifest, dict):
-            raise TypeError("run manifest is not a JSON object")
-        if run_manifest is not None:
-            manifest.update(run_manifest)
-        manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
-        _atomic_write_json(manifest_path, manifest)
+        with _run_manifest_lock(manifest_path.parent, required=False):
+            manifest = json.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                raise TypeError("run manifest is not a JSON object")
+            if run_manifest is not None:
+                manifest.update(run_manifest)
+            manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
+            _atomic_write_json(manifest_path, manifest)
     except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
         _log.warning(
             "could not record persistence degradation for run %s: %r",
@@ -272,7 +409,8 @@ def allocate_run(
     save_dir: str | os.PathLike | None = None,
     run_id: str | None = None,
 ) -> RunDir:
-    """Allocate a run dir, consuming an inherited run id as a one-hop handoff."""
+    """Allocate a run dir whose provenance is a placeholder (the current directory,
+    MCP reason ``not_resolved``) until :meth:`RunDir.with_execution_provenance` binds it."""
     global _ALLOCATED_RUN_ID
 
     inherited_run_id = current_run_id()
@@ -287,7 +425,13 @@ def allocate_run(
     else:
         artifact_root = state_root / "artifacts"
 
-    run = RunDir(run_id=rid, state_root=state_root, artifact_root=artifact_root)
+    run = RunDir(
+        run_id=rid,
+        state_root=state_root,
+        artifact_root=artifact_root,
+        cwd=Path.cwd().resolve(),
+        mcp_config_reason="not_resolved",
+    )
     run.ensure_state_dirs()
     run.ensure_artifact_root()
     # From here on there is durable state on disk under this run id, so a later
@@ -413,15 +557,41 @@ def list_runs(limit: int | None = None) -> list[RunDir]:
     for d in dirs:
         manifest_path = d / "run.json"
         artifact_root = d / "artifacts"
+        manifest: dict[str, Any] = {}
         if manifest_path.exists():
             try:
-                m = json.loads(manifest_path.read_text())
-                art = m.get("artifact_root")
+                loaded = json.loads(manifest_path.read_text())
+                manifest = loaded if isinstance(loaded, dict) else {}
+                art = manifest.get("artifact_root")
                 if art:
                     artifact_root = Path(art)
             except (OSError, json.JSONDecodeError):
                 pass
-        out.append(RunDir(run_id=d.name, state_root=d, artifact_root=artifact_root))
+        cwd = manifest.get("cwd")
+        mcp_source = manifest.get("mcp_config_source")
+        mcp_searched_from = manifest.get("mcp_config_searched_from")
+        out.append(
+            RunDir(
+                run_id=d.name,
+                state_root=d,
+                artifact_root=artifact_root,
+                cwd=Path(cwd) if isinstance(cwd, str) else None,
+                mcp_config_source=Path(mcp_source) if isinstance(mcp_source, str) else None,
+                mcp_config_searched_from=(
+                    Path(mcp_searched_from) if isinstance(mcp_searched_from, str) else None
+                ),
+                mcp_config_explicit=(
+                    manifest.get("mcp_config_explicit")
+                    if isinstance(manifest.get("mcp_config_explicit"), bool)
+                    else None
+                ),
+                mcp_config_reason=(
+                    manifest.get("mcp_config_reason")
+                    if isinstance(manifest.get("mcp_config_reason"), str)
+                    else None
+                ),
+            )
+        )
     return out
 
 
@@ -1067,14 +1237,6 @@ async def teardown_persist(
                 **_usage,
             )
 
-        # Detach signal persistence so the observer handler cannot fire after
-        # teardown (the db handle is about to be closed in the finally block).
-        if session_obj is not None:
-            try:
-                session_obj.observer.unbind_db_persistence()
-            except Exception as _exc:  # noqa: BLE001
-                _log.debug("signal persist unbind failed: %s", _exc)
-
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
@@ -1097,9 +1259,19 @@ async def teardown_persist(
         # explicit unknown outcome instead of a guess.
         return "unknown"
     finally:
+        _session_obj = ctx.get("session")
+        # Detach signal persistence on every path, so the observer handler cannot
+        # fire after the db handle closes below, and hand back how many signals it
+        # could not confirm it wrote, writes still in flight included (run.json reads
+        # it from ctx).
+        if _session_obj is not None:
+            try:
+                _session_obj.observer.unbind_db_persistence()
+                ctx["signal_persist_dropped"] = _session_obj.observer.persist_dropped
+            except Exception as _exc:  # noqa: BLE001
+                _log.debug("signal persist unbind failed: %s", _exc)
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.
-        _session_obj = ctx.get("session")
         if _session_obj is not None:
             for _b in [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]:
                 if _b is None:

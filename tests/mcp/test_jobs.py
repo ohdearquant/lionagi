@@ -621,9 +621,16 @@ def test_status_reports_a_reused_pid_as_not_this_runs_process(
 
     kill() refuses this same record as a reused pid, so the two surfaces are
     asserted together: one module answering one record two ways is the defect.
+
+    Two agreeing live reads that both mismatch the record only prove the two
+    reads agree with each other, not that the record's own spawn-time read
+    was accurate — `_run_process_liveness` checks the marker inherited from
+    the run's process tree before concluding `pid_recycled`, so this scenario
+    also has to name a marker inherited from a different run.
     """
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT + 5000))
+    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", "some-other-run-id"))
 
     rid = _identity_record()
     st = jobs.status(rid)

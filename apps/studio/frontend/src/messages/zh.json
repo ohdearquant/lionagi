@@ -241,8 +241,8 @@
       "allHint": "创建你的第一个智能体或工作流，马上开始。",
       "filtered": "没有匹配的内容。",
       "filteredHint": "换个类型试试，或清除搜索条件。",
+      "clearFilters": "清除筛选条件",
       "createFirst": "创建你的第一个",
-      "createWorkflow": "新建工作流",
       "createAgent": "新建智能体",
       "allSkill": "未找到技能。",
       "allSkillHint": "在 ~/.lionagi/skills/NAME/ 下添加 SKILL.md 即可在此显示。",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "此守护进程需要访问令牌",
+      "body": "{base} 上的 lionagi 守护进程有响应，但拒绝了此页面。守护进程只接受携带访问令牌的其他来源页面，li studio 命令在打开此页面时会为它提供令牌。重新加载页面会丢失该令牌。",
+      "fix": "在守护进程所在的机器上运行此命令，以带访问权限的方式打开 Studio：",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

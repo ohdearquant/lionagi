@@ -85,7 +85,7 @@ Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py`
 **Model spec**: `provider/model[-effort]` — for example
 `claude/opus-4-7-high` or `codex/gpt-5.4-xhigh`. Current bare aliases include
 `claude` → `claude_code/sonnet`, `codex` → `codex/gpt-5.3-codex-spark`,
-`gemini-code` → `gemini_code/gemini-3.5-flash`, and
+`gemini-code` → `gemini_code/gemini-4-argon`, and
 `pi` → `pi/gemini-2.5-flash`. Use `gemini`, without `-code`, for the direct Google
 API provider rather than the Gemini CLI backend.
 

@@ -234,6 +234,7 @@ _MIGRATED_AREAS = {
     "launches",
     "projects",
     "identity",
+    "pairing",
     "engine-defs",
     "workflow-defs",
     "sessions",

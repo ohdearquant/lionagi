@@ -76,7 +76,7 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
 
   return (
     <Link
-      {...runDeepLink(run.run_id)}
+      {...runDeepLink(run.id)}
       className="group flex flex-col gap-2 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100"
     >
       <div className="flex items-center gap-2">
@@ -105,7 +105,7 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
       <div className="flex items-center gap-2">
         <Chip mono>run</Chip>
         <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-xs)] text-content-muted">
-          {run.run_id.slice(-16)}
+          {run.id.slice(-16)}
         </span>
         {run.invocation_kind && (
           <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
@@ -217,7 +217,7 @@ function buildLiveCards(runs: RunSummary[], invocations: InvocationSummary[]): L
   const cards: LiveCard[] = [
     ...runs.map((run) => ({
       kind: "run" as const,
-      id: run.run_id,
+      id: run.id,
       sortKey: runCreationKey(run),
       run,
     })),
@@ -297,7 +297,7 @@ function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
     : isDeadHealth(card.invocation.health);
   const unknown = !isRun && isUnknownHealth(card.invocation.health);
   const status = isRun ? card.run.status : card.invocation.status;
-  const linkProps = isRun ? runDeepLink(card.run.run_id) : invocationDeepLink();
+  const linkProps = isRun ? runDeepLink(card.run.id) : invocationDeepLink();
 
   return (
     <tr className="border-b border-edge transition-colors duration-100 hover:bg-surface-overlay/60">

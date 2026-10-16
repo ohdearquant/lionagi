@@ -182,7 +182,7 @@ Exactly these observations produce `conclusion == "process_gone"`:
 |---------|----------------------|----------------|
 | `pid_absent` | the recorded PID is askable and `_pid_alive(pid)` is false | no live process holds the number, so this run's process cannot be running |
 | `disappeared_during_probe` | the PID was initially live, then the create-time probe returns no process | the process ended between two reads |
-| `pid_recycled` | a live PID's creation time is readable and does not match the creation time recorded at spawn | the live process is a different identity |
+| `pid_recycled` | two live creation-time reads agree with each other but differ from the spawn record; the run marker names a different run, and a bracketing read still agrees | the live process descends from a different run |
 
 The following are not conclusive:
 

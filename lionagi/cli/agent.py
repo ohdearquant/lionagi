@@ -61,6 +61,7 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    RunDir,
     allocate_run,
     find_branch,
     load_last_branch,
@@ -646,9 +647,10 @@ async def _run_agent(
     # Read from *this* process's directory, before --cwd is applied to anything.
     # The child's tool surface is meant to be a property of the submission, and
     # this is the only point at which the submitting directory is still known.
+    launch_dir = Path(os.getcwd()).resolve()
     mcp_resolution = resolve_spawn_mcp_servers(
         mcp_config,
-        launch_dir=os.getcwd(),
+        launch_dir=launch_dir,
         disabled=no_mcp_config,
     )
     if resume and continue_last:
@@ -1070,11 +1072,19 @@ async def _run_agent(
         # The file on the line is what a resume reads again, named or not: a
         # leg submitted through the MCP server is pointed at a snapshot of the
         # config its submission found, and that snapshot is its set.
+        # A snapshot's resolution reports the config it was taken from and the
+        # directory its search began in, both provenance; a resume must read the
+        # snapshot itself, from this process's own directory.
         named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
+        line_file = (
+            explicit_mcp_config_path(mcp_config, launch_dir=launch_dir)
+            if named_on_the_line
+            else None
+        )
         branch.metadata[_MCP_LAUNCH_KEY] = {
-            "mcp_config": str(mcp_resolution.source) if named_on_the_line else None,
+            "mcp_config": str(line_file) if line_file is not None else None,
             "no_mcp_config": no_mcp_config,
-            "launch_dir": str(mcp_resolution.searched_from),
+            "launch_dir": str(launch_dir),
         }
 
     if is_resumed_branch:
@@ -1091,6 +1101,12 @@ async def _run_agent(
         prompt = preamble + prompt
 
     run = allocate_run()
+    if isinstance(run, RunDir):
+        run = run.with_execution_provenance(
+            cwd=cwd or os.getcwd(),
+            mcp_resolution=mcp_resolution,
+            mcp_disabled=no_mcp_config,
+        )
     branch_id = str(branch.id)
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
     run_manifest = {
@@ -1129,6 +1145,21 @@ async def _run_agent(
         # consumer.
         drains_controls=True,
     )
+    if live is None and _write_run_manifest is not None:
+        # Setup returned no session (it may have committed a row before it failed, which `li
+        # monitor` lists under that row's own id; nothing here prints it), so the run id names no
+        # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
+        # says how to stop it (ADR-0104 Amendment 2).
+        from lionagi.cli._logging import warn
+
+        from .kill import current_pid_markers
+
+        run_manifest.update(current_pid_markers())
+        _write_run_manifest(run_manifest)
+        warn(
+            f"run {run.run_id}: persistence setup returned no session; "
+            f"stop it with: li kill {run.run_id}"
+        )
     if seed_injection_totals:
         await _seed_injection_stats(live, _injection_totals)
 
@@ -1416,6 +1447,10 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if live and "signal_persist_dropped" in live:
+                # Signals this run's persistence could not confirm it wrote, 0 included; the field is
+                # absent when teardown had no session of this run to unbind.
+                run_manifest["signal_persist_dropped"] = live["signal_persist_dropped"]
             if _terminal_status == "failed":
                 # The reason teardown decided for this run, so a reader of the run directory
                 # alone can tell a provider's refusal from a crash. A failure teardown decides

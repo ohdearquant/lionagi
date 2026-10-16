@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -1528,6 +1529,181 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
     assert run["agent_name"] == "Operator"
     assert (await coordinator.store.get_turn(accepted["requestId"]))["status"] == "completed"
     await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_writes_its_run_json_off_the_event_loop(tmp_path, monkeypatch):
+    # each write takes the run's manifest lock, which another writer of the run can hold; made on the
+    # event loop, a held lock would stall every turn the coordinator serves
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    where: list[str] = []
+    write_manifest = RunDir.write_manifest
+
+    def recording(self, payload):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            where.append("off the loop")
+        else:
+            where.append("on the loop")
+        return write_manifest(self, payload)
+
+    monkeypatch.setattr(RunDir, "write_manifest", recording)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="run it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    assert where == ["off the loop", "off the loop"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_turn_cancelled_while_its_first_run_json_write_waits_ends_on_its_terminal_record(
+    tmp_path, monkeypatch, cancels
+):
+    # the first write runs on a worker thread and can wait there for the run's manifest lock; a
+    # cancel during that wait, or a second one while the turn's cleanup waits for it, must not let
+    # the terminal record land first and `running` after it
+    import threading
+
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    waiting, release = threading.Event(), threading.Event()
+    landed: list[str] = []
+    runs: list[RunDir] = []
+    write_manifest = RunDir.write_manifest
+
+    def held(self, payload):
+        if payload["status"] == "running":
+            runs.append(self)
+            waiting.set()
+            release.wait(10)
+        write_manifest(self, payload)
+        landed.append(payload["status"])
+
+    monkeypatch.setattr(RunDir, "write_manifest", held)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    # submit returns once the run-link frames land, which is after the first write
+    submitting = asyncio.create_task(
+        coordinator.submit(
+            cid,
+            instruction="run it",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+    )
+    assert await asyncio.to_thread(waiting.wait, 10)
+    request_id = (await coordinator.store.get_conversation(cid))["activeRequestId"]
+    for _ in range(cancels):
+        await coordinator.cancel(cid, request_id)
+        # time for the cancelled turn's cleanup to reach its wait for the first write
+        await asyncio.sleep(0.3)
+    release.set()
+    await submitting
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    assert landed == ["running", "cancelled"]
+    assert runs[0].read_manifest()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_a_first_run_json_write_that_fails_is_logged_once_whether_or_not_its_turn_was_cancelled(
+    tmp_path, monkeypatch, caplog, cancelled
+):
+    # a turn cancelled while the first write waits has stopped waiting for it when the write fails,
+    # so the failure is logged by the cleanup that waits it out; an uncancelled turn fails on it
+    import threading
+
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    waiting, release = threading.Event(), threading.Event()
+    landed: list[str] = []
+    write_manifest = RunDir.write_manifest
+    failure = OSError("the run's manifest lock could not be taken")
+
+    def failing(self, payload):
+        if payload["status"] == "running":
+            waiting.set()
+            release.wait(10)
+            raise failure
+        write_manifest(self, payload)
+        landed.append(payload["status"])
+
+    monkeypatch.setattr(RunDir, "write_manifest", failing)
+    caplog.set_level(logging.ERROR, logger="lionagi.studio.operator.coordinator")
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    submitting = asyncio.create_task(
+        coordinator.submit(
+            cid,
+            instruction="run it",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+    )
+    assert await asyncio.to_thread(waiting.wait, 10)
+    if cancelled:
+        request_id = (await coordinator.store.get_conversation(cid))["activeRequestId"]
+        await coordinator.cancel(cid, request_id)
+        await asyncio.sleep(0.3)
+    release.set()
+    await submitting
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    assert landed == ["cancelled" if cancelled else "failed"]
+    assert [r.exc_info[1] for r in caplog.records if r.exc_info] == [failure]
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_run_json_write_that_fails_is_logged(tmp_path, monkeypatch, caplog):
+    """The run's record keeps its opening status when the terminal write fails, so the
+    failure is logged rather than dropped."""
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    write_manifest = RunDir.write_manifest
+    failure = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    def failing(self, payload):
+        if payload["status"] != "running":
+            raise failure
+        write_manifest(self, payload)
+
+    monkeypatch.setattr(RunDir, "write_manifest", failing)
+    caplog.set_level(logging.ERROR, logger="lionagi.studio.operator.coordinator")
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="run it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    logged = [r for r in caplog.records if r.exc_info]
+    assert [r.exc_info[1] for r in logged] == [failure]
+    assert "terminal run.json write failed" in logged[0].getMessage()
 
 
 @pytest.mark.asyncio

@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import inspect
+import logging
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
-from lionagi.ln.concurrency import maybe_await
+from lionagi.ln.concurrency import Lock, maybe_await
 from lionagi.ln.types import Filter, RoleFilter, TypeFilter, all_of
 from lionagi.protocols._concepts import Observable, Observer
 
@@ -19,6 +22,8 @@ from .signal import Signal
 
 __all__ = ("SessionObserver", "RoleFilter", "_sanitize_signal_payload")
 
+logger = logging.getLogger(__name__)
+
 Handler = Callable[[Any, "SessionObserver"], Any]
 Predicate = Callable[[Any], bool]
 Gate = Callable[[Any], Any]
@@ -26,6 +31,24 @@ Gate = Callable[[Any], Any]
 # PAYLOAD cap (not frame cap) for the persisted payload JSON column; SSE
 # envelope overhead (~176B) can push frames over this. See _sanitize_signal_payload.
 _PAYLOAD_BYTE_CAP: int = 16_384  # 16 KB (payload column only; see note above)
+
+# How long signal persistence stays off after the store refuses the writer lock.
+# A refusal means another process held the writer for the whole busy timeout,
+# which in practice is a maintenance pass lasting minutes. The first signal after
+# the window pays one busy wait to learn whether the writer is free; the signals
+# inside it are dropped at once.
+_PERSIST_SKIP_WINDOW_SECONDS: float = 30.0
+
+# SQLite's primary result codes for a writer refused the lock (SQLITE_BUSY,
+# SQLITE_LOCKED). sqlite3 errors carry them as ``sqlite_errorcode`` from Python
+# 3.11; the messages cover older interpreters.
+_SQLITE_LOCK_CODES: frozenset[int] = frozenset({5, 6})
+_SQLITE_LOCK_MESSAGES: tuple[str, ...] = (
+    "database is locked",
+    "database is busy",
+    "database table is locked",
+    "database schema is locked",
+)
 
 # Signal fields that are part of Signal base and must not be promoted into the
 # payload dict (they are either redundant with columns or not meaningful there).
@@ -123,6 +146,78 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     return payload
 
 
+def _is_lock_refusal(exc: BaseException) -> bool:
+    """Whether *exc* itself, not anything it wraps or chains, is SQLite refusing the writer lock."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int) and code & 0xFF in _SQLITE_LOCK_CODES:
+        return True
+    return type(exc).__name__ == "OperationalError" and any(
+        marker in str(exc).lower() for marker in _SQLITE_LOCK_MESSAGES
+    )
+
+
+def _writer_lock_refusal(exc: BaseException) -> BaseException | None:
+    """Return the driver error for a writer-lock refusal, if one is wrapped by *exc*."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = getattr(current, "orig", None)
+    for current in reversed(chain):
+        if _is_lock_refusal(current):
+            return current
+    return None
+
+
+def _is_writer_lock_failure(exc: BaseException) -> bool:
+    """Whether *exc* or its wrapped driver error is a writer-lock refusal."""
+    return _writer_lock_refusal(exc) is not None
+
+
+@dataclass(slots=True)
+class _SignalPersistState:
+    """One binding's signal persistence: what it could not confirm it wrote and its
+    skip window.
+
+    Each binding has its own, so a write still in flight from a previous binding
+    changes only the state it was bound with.
+    """
+
+    session_id: str
+    dropped: int = 0
+    # Signals taken and not yet finished with, from before their fields are read to the
+    # end of the write. None is confirmed until it finishes, so a count read while they
+    # are in flight includes them.
+    in_flight: int = 0
+    # Monotonic end of the skip window; None while persistence is on.
+    skip_until: float | None = None
+    # Whether the one try at a window's end is in flight.
+    try_in_flight: bool = False
+    # Writes go one at a time, so a write queued behind one the store refused
+    # finds the window that refusal opened instead of waiting out its own.
+    lock: Lock = field(default_factory=Lock)
+
+    @property
+    def unconfirmed(self) -> int:
+        """Signals not known to be written: the dropped ones and the writes in flight."""
+        return self.dropped + self.in_flight
+
+    def admit(self) -> str | None:
+        """``"write"``, ``"try"`` (the caller now holds the window's one try), or None to drop.
+
+        Reads the window and claims the try with no await in between, so emits
+        running in other tasks see one consistent state.
+        """
+        if self.skip_until is None:
+            return "write"
+        if self.try_in_flight or time.monotonic() < self.skip_until:
+            return None
+        self.try_in_flight = True
+        return "try"
+
+
 class _KeyAndRoleFilter(Filter):
     """Conjunction of a payload filter (key) and a role filter (event envelope)."""
 
@@ -160,6 +255,19 @@ class SessionObserver(Observer):
         self._subs: list[tuple[Filter, Handler]] = []
         self._routes: list[tuple[Predicate, str]] = []
         self._gate: Gate | None = None
+        # The latest binding's persistence state; kept after unbind so its count
+        # can still be read.
+        self._persist: _SignalPersistState | None = None
+
+    @property
+    def persist_dropped(self) -> int:
+        """Signals the latest bound persistence sink could not confirm it wrote since it was bound.
+
+        A write still in flight counts until it finishes, so the count read at unbind stays an
+        upper bound whatever those writes do afterwards. A sink bound without ``db`` when there
+        is no state store at all counts nothing.
+        """
+        return self._persist.unconfirmed if self._persist is not None else 0
 
     def observe(
         self,
@@ -300,50 +408,131 @@ class SessionObserver(Observer):
         session_id: str,
         db: Any = None,
     ) -> None:
-        """Register a subscription persisting every Signal to StateDB; pass db to reuse an open connection."""
-        import time as _time
+        """Register a subscription persisting every Signal to StateDB; pass db to reuse an open connection.
 
+        Writes go one at a time. When the store refuses the writer lock,
+        persistence is skipped for ``_PERSIST_SKIP_WINDOW_SECONDS`` with no busy
+        wait, writes queued behind the refused one included; the first signal
+        after the window tries once, and another refusal reopens it. Every signal
+        the sink cannot confirm it wrote is counted in :attr:`persist_dropped`: a
+        skipped or failed write, a signal whose fields or payload cannot be read, a
+        write cancelled while queued or writing, and a write still in flight when the
+        count is read. A sink bound without ``db`` when there is no state store at all
+        writes and counts nothing.
+        The cancelled and in-flight writes may have committed or may still land, so
+        the count can exceed what the store is missing by those. A new binding
+        starts its own count and window.
+        """
         _bound_db = db
+        # One sink at a time: a new binding replaces the previous one instead of
+        # adding a second subscription that would write every signal twice and
+        # queue new emits behind the previous binding's writes.
+        previous = getattr(self, "_db_persist_handler", None)
+        if previous is not None:
+            self.unobserve(previous)
+            self._db_persist_handler = None
+        state = _SignalPersistState(session_id)
+        self._persist = state
 
-        async def _persist(event: Any, _ctx: Any = None) -> None:
+        def _persist(event: Any, _ctx: Any = None) -> Any:
             from lionagi.session.signal import Signal  # noqa: PLC0415
 
             sig = event if isinstance(event, Signal) else None
             if sig is None:
                 return
-            kind = type(sig).__name__
-            op_id = getattr(sig, "op_id", "") or ""
-            ts = _time.time()
-            # _sanitize_signal_payload never raises: unknown objects fall back
-            # to repr, MessageAdded stores a compact ref, oversized payloads capped.
-            payload = _sanitize_signal_payload(sig)
+            # Count at dispatch so an unbind sees handlers whose coroutines have not started.
+            state.in_flight += 1
 
-            try:
-                if _bound_db is not None:
-                    # Fast path: reuse the caller's already-open connection.
-                    await _bound_db.insert_session_signal(
-                        session_id=session_id,
-                        kind=kind,
-                        op_id=op_id,
-                        ts=ts,
-                        payload=payload,
-                    )
-                else:
-                    # Fallback: open a fresh connection (standalone / test use).
-                    from lionagi.state.db import StateDB, state_db_known_absent  # noqa: PLC0415
-
-                    if state_db_known_absent():
+            async def _persist_signal() -> None:
+                trying = False
+                try:
+                    # Unknown objects fall back to repr, MessageAdded stores a compact ref and
+                    # oversized payloads are capped. A signal whose fields or payload still
+                    # cannot be read (a getter or repr that raises) is counted like a failed
+                    # write, opens no skip window, and the emit goes on.
+                    try:
+                        kind = type(sig).__name__
+                        op_id = getattr(sig, "op_id", "") or ""
+                        ts = time.time()
+                        payload = _sanitize_signal_payload(sig)
+                    except Exception:  # noqa: BLE001 — persistence never breaks the session bus
+                        state.dropped += 1
                         return
-                    async with StateDB() as _db:
-                        await _db.insert_session_signal(
-                            session_id=session_id,
-                            kind=kind,
-                            op_id=op_id,
-                            ts=ts,
-                            payload=payload,
-                        )
-            except Exception:  # noqa: BLE001, S110
-                pass  # persistence is best-effort — never break the session bus
+
+                    admission = state.admit()
+                    if admission is None:
+                        state.dropped += 1
+                        return
+                    trying = admission == "try"
+
+                    async with state.lock:
+                        if not trying:
+                            # Read again once the lock is held: a write that queued behind one
+                            # the store refused finds the window that refusal opened.
+                            admission = state.admit()
+                            if admission is None:
+                                state.dropped += 1
+                                return
+                            trying = admission == "try"
+                        if _bound_db is not None:
+                            # Fast path: reuse the caller's already-open connection.
+                            await _bound_db.insert_session_signal(
+                                session_id=session_id,
+                                kind=kind,
+                                op_id=op_id,
+                                ts=ts,
+                                payload=payload,
+                            )
+                        else:
+                            # Fallback: open a fresh connection (standalone / test use).
+                            from lionagi.state.db import (  # noqa: PLC0415
+                                StateDB,
+                                state_db_known_absent,
+                            )
+
+                            if state_db_known_absent():
+                                # No store to write to: nothing is written or counted.
+                                return
+                            async with StateDB() as _db:
+                                await _db.insert_session_signal(
+                                    session_id=session_id,
+                                    kind=kind,
+                                    op_id=op_id,
+                                    ts=ts,
+                                    payload=payload,
+                                )
+                except Exception as exc:  # noqa: BLE001 — persistence never breaks the session bus
+                    # The signal is already in flight while its error is classified and logged.
+                    try:
+                        refusal = _writer_lock_refusal(exc)
+                        if refusal is not None:
+                            opening = state.skip_until is None
+                            state.skip_until = time.monotonic() + _PERSIST_SKIP_WINDOW_SECONDS
+                            if opening:
+                                logger.warning(
+                                    "signal persistence for session %s paused for %.0fs: the state "
+                                    "store refused the writer lock (%r); signals emitted meanwhile "
+                                    "are dropped and counted",
+                                    session_id,
+                                    _PERSIST_SKIP_WINDOW_SECONDS,
+                                    refusal,
+                                )
+                    except Exception:  # noqa: BLE001, S110 — persistence never breaks the session bus
+                        pass
+                    finally:
+                        state.dropped += 1
+                except BaseException:
+                    # Cancellation leaves the write unconfirmed, even if it committed first.
+                    state.dropped += 1
+                    raise
+                else:
+                    state.skip_until = None
+                finally:
+                    state.in_flight -= 1
+                    if trying:
+                        state.try_in_flight = False
+
+            return _persist_signal()
 
         from lionagi.session.signal import Signal  # noqa: PLC0415
 
@@ -351,8 +540,20 @@ class SessionObserver(Observer):
         self._db_persist_handler = handler
 
     def unbind_db_persistence(self) -> None:
-        """Remove the handler registered by :meth:`bind_db_persistence`."""
+        """Remove the handler registered by :meth:`bind_db_persistence`.
+
+        Logs how many signals the sink could not confirm it wrote, writes still in
+        flight included, when there are any.
+        """
         handler = getattr(self, "_db_persist_handler", None)
+        state = self._persist
+        if handler is not None and state is not None and state.unconfirmed:
+            logger.warning(
+                "signal persistence for session %s could not confirm it wrote %d signal(s) "
+                "to the state store",
+                state.session_id,
+                state.unconfirmed,
+            )
         if handler is not None:
             self.unobserve(handler)
             self._db_persist_handler = None

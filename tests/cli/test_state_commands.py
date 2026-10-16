@@ -692,6 +692,51 @@ async def test_doctor_leaves_an_old_session_whose_process_is_still_running(
         assert (await db.get_session(dead))["status"] == "aborted"
 
 
+async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_path, monkeypatch):
+    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+
+    old = time.time() - (48 * 3600)
+    run_id = str(uuid.uuid4())
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "status": "running",
+                PERSISTENCE_DEGRADED_REASON_FIELD: "database unavailable",
+                "pid": 12345,
+                "pid_create_time": 1.0,
+            }
+        )
+    )
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda _pid: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
+
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "running",
+                "started_at": old,
+                "node_metadata": None,
+                "source_kind": "imported_fs",
+            }
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    assert result == {"running": 1, "swept": 0, "skipped": 1}
+    async with StateDB() as db:
+        row = await db.get_session(run_id)
+    assert row["status"] == "running"
+
+
 async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path):
     """A live PID is not proof on its own. The OS hands a dead session's number
     to an unrelated process eventually, and a sweep that stopped there would
