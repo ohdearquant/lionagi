@@ -1,16 +1,18 @@
 """The advisory pull-request checks can be switched off; the required check cannot.
 
-These tests read the required workflow, the scripts it runs and the action code
-it uses, so they catch a switch added to any of them by accident. A pull request
-that edits those files can also edit this test, so they do not stop a deliberate
-one.
+These tests read the required workflow, the scripts and the tests it runs, and
+the action code it uses, so they catch a switch added to any of them by
+accident. A pull request that edits those files can also edit this test, so they
+do not stop a deliberate one.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import posixpath
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -151,10 +153,13 @@ API_VARIABLE_WRITE = re.compile(
 # details (draft, fork, author, base branch) differ from one pull request to the
 # next. `github.event_name` is the same for every pull request and stays allowed.
 #
-# A label and an event detail are matched only as references, so a step name that
-# reads "Check release labels" or prose in a comment is not one. A step that runs
-# `actions/github-script` reads the same details as `context.actor`,
-# `context.payload.pull_request` and `context.payload.label`.
+# A label and an event detail are matched as references, so a step name that reads
+# "Check release labels" is not one. A line that merely names one is still a
+# refusal though: the match is textual, and this file cannot tell a reference from
+# prose on a line that carries both. A step that runs `actions/github-script`
+# reads the same details as `context.actor`, `context.payload.pull_request` and
+# `context.payload.label`; those spellings count wherever they appear, not only
+# inside a github-script block.
 LABEL = re.compile(
     r"\bgithub\s*\.\s*event\s*\.\s*label\b"
     r"|\bpull_request\s*\[\s*['\"]labels['\"]\s*\]"
@@ -181,8 +186,52 @@ ENV_DETAIL = re.compile(
 
 # An action or reusable workflow reached from the required workflow reads its own
 # inputs. A condition on one of them can switch off the step the caller meant to
-# run.
+# run. Only a direct `if:` or `continue-on-error:` condition is read: an indirect
+# gate on an input through a step's `env:` value or through a `run:` shell test is
+# outside what this pattern sees.
 INPUT_READ = re.compile(r"\binputs\s*(\.|\[)", re.IGNORECASE)
+
+# A call that writes an environment variable rather than reading one. A test
+# fixture sets or clears a GITHUB_ variable to arrange the environment; that names
+# the variable to write it, so it reads nothing about the pull request. The string
+# arguments of such a call, and the loop its name is drawn from, are blanked before
+# a code search runs.
+ENV_WRITE_CALLS = frozenset({"setenv", "delenv", "putenv", "unsetenv"})
+
+
+def _is_env_write(node: ast.AST) -> bool:
+    """True for a call that writes an environment variable instead of reading one."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+    return name in ENV_WRITE_CALLS
+
+
+def _env_write_spans(tree: ast.AST) -> list[ast.AST]:
+    """The nodes to blank for a call that writes an environment variable.
+
+    The call's whole statement is dropped, and so is the iterable of the loop a
+    variable name is drawn from, as in a clean-up loop over the names a fixture
+    set. The call itself names the variable to write it, so its argument reads
+    nothing.
+    """
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    spans: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if not _is_env_write(node):
+            continue
+        statement: ast.AST = node
+        while not isinstance(statement, ast.stmt):
+            statement = parents[statement]
+        spans.append(statement)
+        parent = parents.get(statement)
+        if isinstance(parent, ast.For):
+            spans.append(parent.iter)
+    return spans
 
 
 def _strings(node: object, skip: str | None = None, reusable_secrets: bool = False) -> list[str]:
@@ -301,20 +350,24 @@ def _scanned_files(roots: tuple[Path, ...]) -> list[Path]:
 
 
 def _uncommented(text: str) -> str:
-    # Drop whole-line comments, including a `#` line inside a block scalar, which
-    # is a comment to the shell that runs the block. Text after a value stays, so
-    # the raw search is never less strict than the parse except on comment lines.
+    # Drop every line whose first non-space character is `#`. That is a comment in
+    # the shell a `run:` block is handed to, and the same shape is taken as a
+    # comment in every other language read here, so a `#`-first line inside a
+    # heredoc, a string or a JavaScript file is dropped too. Text after a value on
+    # a line stays, so the raw search is never less strict than the parse except
+    # on such lines.
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
 def _code_only(text: str) -> str:
-    """*text* with whole-line comments and a Python docstring taken out.
+    """*text* with whole-line comments, a Python docstring and an env write taken out.
 
     Only code can read a label or an event: a `#` line and a string that stands
-    alone as a statement (a module, class or function docstring) say what the
-    code is for. A Python file is read through `ast`, so such a string is
-    dropped; text that does not parse as Python keeps its `#` lines removed and
-    the rest as written.
+    alone as a statement (a module, class or function docstring) say what the code
+    is for, and a call that sets or clears an environment variable names the
+    variable to write it rather than to read it. A Python file is read through
+    `ast`, so all three are dropped; text that does not parse as Python keeps its
+    `#` lines removed and the rest as written.
     """
     stripped = _uncommented(text)
     try:
@@ -332,6 +385,15 @@ def _code_only(text: str) -> str:
         return starts[line - 1] + len(head.decode("utf-8", "replace"))
 
     characters = list(stripped)
+
+    def blank(node: ast.AST) -> None:
+        for index in range(
+            offset(node.lineno, node.col_offset),
+            offset(node.end_lineno or node.lineno, node.end_col_offset),
+        ):
+            if characters[index] != "\n":
+                characters[index] = " "
+
     for node in ast.walk(tree):
         value = getattr(node, "value", None)
         if (
@@ -339,18 +401,19 @@ def _code_only(text: str) -> str:
             and isinstance(value, ast.Constant)
             and isinstance(value.value, str)
         ):
-            end_line = value.end_lineno or value.lineno
-            for index in range(
-                offset(value.lineno, value.col_offset), offset(end_line, value.end_col_offset)
-            ):
-                if characters[index] != "\n":
-                    characters[index] = " "
+            blank(value)
+    for node in _env_write_spans(tree):
+        blank(node)
     return "".join(characters)
 
 
 def _reads_a_variable(path: Path) -> bool:
     # The raw text and the parsed strings are both searched: a double-quoted YAML
     # scalar can spell a character as an escape, which only the parse decodes.
+    # `vars` is matched as a reference, so a property that merely ends in `vars`
+    # (`steps.x.outputs.vars`) counts, and a file that does not decode as UTF-8
+    # (a UTF-16 script) is read with replacement and can stay silent. Both are
+    # accepted limits.
     text = path.read_text()
     strings = (_uncommented(text), *_strings(_parse(text)))
     return any(VARIABLE_READ.search(s) for s in strings)
@@ -446,9 +509,12 @@ def test_a_local_path_is_read_with_dot_segments_resolved(uses: str, target: str 
 def _api_reads(text: str) -> list[str]:
     """The API calls in *text* that return a repository variable.
 
-    A whole-line comment and a docstring are dropped, and a line that also names
-    a write verb is not a read: only a call that returns the value can stand in
-    for `vars`.
+    A whole-line comment, a docstring and a call that writes an environment
+    variable are dropped. A line that names a write verb is not a read: only a
+    call that returns the value can stand in for `vars`. A write verb hides any
+    read beside it on the same line, and the other write spellings (an Octokit
+    `request` string, an implicit `gh api -f`) are not recognised, so both stay
+    allowed.
     """
     found: list[str] = []
     for line in _code_only(text).splitlines():
@@ -465,8 +531,8 @@ def test_no_step_or_script_reads_a_variable_through_the_api() -> None:
     files = _scanned_files((WORKFLOWS.parent, REPO / "scripts"))
     assert WORKFLOWS / "ci.yml" in files
     assert REPO / "scripts" / "check_issue_links.py" in files
-    # A test fixture that sets a GITHUB_ variable or spells the endpoint reads
-    # nothing about the pull request, so the tests directory is not searched.
+    # The API scan reads `.github` and `scripts`; the code scan also reads `tests`.
+    # An endpoint a step or a script runs is what this one covers.
     assert REPO / "tests" / "conftest.py" not in files
     hits = [path for path in files if _api_reads(path.read_text(errors="replace"))]
     assert hits == []
@@ -634,8 +700,9 @@ def _other_switches(text: str) -> list[str]:
 
 def _code_switches(text: str) -> list[str]:
     # A shell script or an action's own code reads a label or an event detail
-    # through the same names a workflow would. A whole-line comment and a
-    # docstring name them without reading anything, so both are dropped first.
+    # through the same names a workflow would. A whole-line comment, a docstring
+    # and a call that writes an environment variable name them without reading
+    # anything, so all three are dropped first.
     code = _code_only(text)
     return [
         match.group(0)
@@ -664,7 +731,7 @@ def _required_switches(root: Path = REPO) -> dict[str, list[str]]:
     for path in files:
         switches[str(path.relative_to(root))] += _input_gated(path.read_text())
     actions = {path.parent for path in files[1:] if path.name.startswith("action.")}
-    roots = {root / "scripts"} | actions
+    roots = {root / "scripts", root / "tests"} | actions
     for directory in sorted(roots):
         if not directory.is_dir():
             continue
@@ -753,8 +820,12 @@ def test_a_whole_line_comment_or_a_docstring_is_not_a_code_switch(text: str) -> 
         "jq -e '.pull_request.draft' \"$GITHUB_EVENT_PATH\"\n",
         'name = os.environ["GITHUB_ACTOR"]\n',
         "gh variable get ADVISORY_PR_CHECKS\n",
+        # The docstring sits after multibyte characters on the same line, so its
+        # span only lines up once the byte offsets `ast` reports are mapped back to
+        # characters. A read after it must survive the blanking.
+        "\u00e9" * 21 + ' = 1; """doc"""; z = os.environ["GITHUB_ACTOR"]\n',
     ],
-    ids=["event-path", "actor-env", "variable-get"],
+    ids=["event-path", "actor-env", "variable-get", "multibyte-docstring"],
 )
 def test_a_read_in_code_is_still_a_code_switch(text: str) -> None:
     # The control: the arms above must pass on the text, not on code that reads.
@@ -763,8 +834,9 @@ def test_a_read_in_code_is_still_a_code_switch(text: str) -> None:
 
 def test_a_test_fixture_that_sets_an_event_variable_is_not_a_switch(tmp_path: Path) -> None:
     # A fixture that sets or clears a GITHUB_ variable arranges the environment
-    # for a test; it reads nothing about the pull request. The scan leaves the
-    # tests directory out, so such a fixture never counts.
+    # for a test; it reads nothing about the pull request, but the tests directory
+    # is searched like the scripts, so the write has to be exempted rather than the
+    # directory left out. Clearing a whole run of names counts as one.
     workflows = tmp_path / ".github" / "workflows"
     scripts = tmp_path / "scripts"
     tests = tmp_path / "tests" / "scripts"
@@ -781,6 +853,28 @@ def test_a_test_fixture_that_sets_an_event_variable_is_not_a_switch(tmp_path: Pa
     )
     switches = _required_switches(tmp_path)
     assert switches == {".github/workflows/ci.yml": []}
+
+
+def test_a_read_in_a_test_is_still_a_switch(tmp_path: Path) -> None:
+    # The tests directory is searched, so a test the required job runs that reads
+    # the event instead of writing it is refused like any other code.
+    workflows = tmp_path / ".github" / "workflows"
+    tests = tmp_path / "tests" / "scripts"
+    for directory in (workflows, tests, tmp_path / "scripts"):
+        directory.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: scripts/ci.sh test-python\n"
+    )
+    (tests / "test_issue_links.py").write_text(
+        "import os\n"
+        "def test_x():\n"
+        '    if os.environ.get("GITHUB_EVENT_PATH") == "draft":\n'
+        "        return\n"
+    )
+    switches = _required_switches(tmp_path)
+    assert switches[".github/workflows/ci.yml"] == []
+    assert switches["tests/scripts/test_issue_links.py"]
 
 
 def test_a_script_with_a_non_utf8_byte_is_still_scanned(tmp_path: Path) -> None:
@@ -1008,14 +1102,92 @@ CI_GATE_HARD_GATES = [
     "marketplace",
 ]
 
+# A conditional job is allowed to skip only when the path-filter output that gates
+# it reports its inputs unchanged; the flag it is read against is pinned with it.
+CI_GATE_CONDITIONAL_GATES = {
+    "studio-docker": "studio",
+    "minimal-import": "imports",
+    "no-eager-heavies": "imports",
+    "lionrs": "lionrs",
+    "lion1": "lion1",
+}
+
+CI_GATE_HEREDOC = re.compile(r"<<'PY'\n(?P<body>.*?)\n\s*PY\s*$", re.DOTALL)
+
+
+def _ci_gate_source() -> ast.Module:
+    """The Python the aggregate check runs, parsed from its ``run:`` block."""
+    run = _load("ci.yml")["jobs"]["ci-gate"]["steps"][0]["run"]
+    match = CI_GATE_HEREDOC.search(run)
+    assert match, "the aggregate check no longer runs a Python heredoc"
+    return ast.parse(textwrap.dedent(match.group("body")))
+
+
+def _assigned(source: ast.Module, name: str) -> object:
+    """The literal value assigned to *name* at the top level of *source*."""
+    for node in source.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"the aggregate check no longer assigns {name}")
+
+
+def _needs_context(results: dict[str, str], outputs: dict[str, str]) -> dict:
+    """A ``toJSON(needs)`` value with every job the aggregate check reads."""
+    needs = {name: {"result": results.get(name, "success")} for name in CI_GATE_HARD_GATES}
+    for name in CI_GATE_CONDITIONAL_GATES:
+        needs.setdefault(name, {"result": results.get(name, "success")})
+    needs["changes"] = {
+        "result": results.get("changes", "success"),
+        "outputs": {
+            flag: outputs.get(flag, "false") for flag in CI_GATE_CONDITIONAL_GATES.values()
+        },
+    }
+    return needs
+
+
+def _run_ci_gate(needs: dict, monkeypatch: pytest.MonkeyPatch, capsys) -> tuple[int, str]:
+    monkeypatch.setenv("NEEDS_CONTEXT", json.dumps(needs))
+    code = compile(_ci_gate_source(), "ci-gate", "exec")
+    try:
+        exec(code, {"__name__": "__main__"})
+    except SystemExit as exit:
+        return int(exit.code or 0), capsys.readouterr().out
+    return 0, capsys.readouterr().out
+
 
 def test_the_aggregate_check_keeps_its_hard_gates() -> None:
     # ci-gate compares each named job's result against success. Dropping a name
     # from the list makes the aggregate ignore that job, so a failure it reports
     # would not fail the check the branch protection reads. The list is pinned
     # rather than counted: a name is what matters.
-    text = (WORKFLOWS / "ci.yml").read_text()
-    match = re.search(r"^\s*hard_gates\s*=\s*\[(?P<body>.*?)\]", text, re.MULTILINE | re.DOTALL)
-    assert match, "ci.yml no longer names hard_gates as a list literal"
-    found = re.findall(r"\"([^\"]+)\"", match.group("body"))
-    assert found == CI_GATE_HARD_GATES
+    assert _assigned(_ci_gate_source(), "hard_gates") == CI_GATE_HARD_GATES
+
+
+def test_the_aggregate_check_keeps_its_conditional_gates() -> None:
+    # Each conditional job is pinned with the flag it may skip against. Dropping an
+    # entry makes the aggregate stop reading that job, so a skip of it would no
+    # longer be checked against the path filter that is supposed to allow it.
+    assert _assigned(_ci_gate_source(), "conditional_gates") == CI_GATE_CONDITIONAL_GATES
+
+
+@pytest.mark.parametrize(
+    ("results", "outputs"),
+    [
+        pytest.param({}, {}, id="all-success"),
+        pytest.param({"test": "failure"}, {}, id="hard-gate-failure"),
+        pytest.param({"test": "skipped"}, {}, id="hard-gate-skipped"),
+        pytest.param({"lion1": "skipped"}, {"lion1": "true"}, id="conditional-changed-skip"),
+        pytest.param({"lion1": "failure"}, {"lion1": "false"}, id="conditional-unchanged-failure"),
+    ],
+)
+def test_the_aggregate_check_fails_on_a_bad_result(
+    results: dict[str, str], outputs: dict[str, str], monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # A hard gate must succeed, and a conditional job may skip only when its inputs
+    # did not change. Both comparisons are exercised here, so inverting either one,
+    # or dropping a job from either mapping, turns one of these arms green.
+    rc, out = _run_ci_gate(_needs_context(results, outputs), monkeypatch, capsys)
+    expected = 0 if not results else 1
+    assert rc == expected, out
