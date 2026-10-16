@@ -1,7 +1,8 @@
 /**
  * Schedules space data layer — fetch + polling + time math. One row per
- * schedule, carrying its newest-25 run slice from the list response; the full
- * paginated history stays on the schedule detail page.
+ * schedule, carrying its newest-25 run slice, read from the list response when
+ * the daemon serves one and from that schedule's own history endpoint when it
+ * does not; the full paginated history stays on the schedule detail page.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listScheduleRuns, listSchedules } from "@/lib/api";
@@ -76,6 +77,11 @@ export interface SchedulesData {
 }
 
 const POLL_MS = 30_000;
+const RECENT_RUNS = 25;
+
+function unavailableSummary(): ScheduleRecentRunsSummary {
+  return { version: 1, limit: 25, status: "unavailable", has_next: null, runs: [] };
+}
 
 function recentSummary(schedule: ScheduleSummary): ScheduleRecentRunsSummary {
   const summary = schedule.recent_runs_summary;
@@ -85,13 +91,13 @@ function recentSummary(schedule: ScheduleSummary): ScheduleRecentRunsSummary {
     summary.status === "available" &&
     typeof summary.has_next === "boolean" &&
     Array.isArray(summary.runs) &&
-    summary.runs.length <= 25 &&
-    (!summary.has_next || summary.runs.length === 25) &&
+    summary.runs.length <= RECENT_RUNS &&
+    (!summary.has_next || summary.runs.length === RECENT_RUNS) &&
     summary.runs.every((run) => run && run.schedule_id === schedule.id)
   ) {
     return summary;
   }
-  return { version: 1, limit: 25, status: "unavailable", has_next: null, runs: [] };
+  return unavailableSummary();
 }
 
 export function recentRunsUnavailable(schedule: ScheduleSummary): boolean {
@@ -100,15 +106,32 @@ export function recentRunsUnavailable(schedule: ScheduleSummary): boolean {
 
 /**
  * Read one schedule's history the way a daemon that predates the summary field
- * serves it, and shape it as the same slice. A failed read stays unavailable,
- * so a short history is never reported as empty.
+ * serves it, and present it as the same slice. The rows are the wider run view
+ * that endpoint serves -- it adds duration, artifact paths, session ids, and
+ * the reconciled outcome -- while the acceptance rules, the displayed count and
+ * `has_next` are the slice's. One extra row is requested so a history of
+ * exactly the displayed count is not reported as having more. A read that fails
+ * or answers with a body the rules reject stays unavailable, so a short history
+ * is never reported as empty.
  */
 async function historySummary(schedule: ScheduleSummary): Promise<ScheduleRecentRunsSummary> {
   try {
-    const { runs, has_next } = await listScheduleRuns(schedule.id, { limit: 25 });
-    return { version: 1, limit: 25, status: "available", has_next, runs };
+    const { runs } = await listScheduleRuns(schedule.id, { limit: RECENT_RUNS + 1 });
+    if (!Array.isArray(runs)) return unavailableSummary();
+    // The candidate goes back through recentSummary, so a fallback slice is
+    // held to exactly the rules a field-bearing one is.
+    return recentSummary({
+      ...schedule,
+      recent_runs_summary: {
+        version: 1,
+        limit: 25,
+        status: "available",
+        has_next: runs.length > RECENT_RUNS,
+        runs: runs.slice(0, RECENT_RUNS),
+      },
+    });
   } catch {
-    return { version: 1, limit: 25, status: "unavailable", has_next: null, runs: [] };
+    return unavailableSummary();
   }
 }
 

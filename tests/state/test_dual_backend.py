@@ -1857,3 +1857,83 @@ async def test_postgres_recent_run_summaries_are_available(pg_url):
     assert empty["status"] == "available"
     assert empty["has_next"] is False
     assert empty["runs"] == []
+
+
+async def _seed_pg_runs(db: StateDB, sid: str, runs: list[tuple[str, float]]) -> None:
+    await db.create_schedule(
+        {
+            "id": sid,
+            "name": sid,
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    for run_id, fired_at in runs:
+        await db.create_schedule_run(
+            {
+                "id": run_id,
+                "schedule_id": sid,
+                "trigger_context": {},
+                "action_args": [],
+                "action_kind": "agent",
+                "status": "failed",
+                "fired_at": fired_at,
+                "error_detail": "Permission denied: private path",
+            }
+        )
+
+
+async def test_postgres_recent_run_summary_cuts_a_tie_by_id_and_keeps_a_short_slice_whole(pg_url):
+    """The per-group key read is bounded by ``fired_at`` then ``id``, so a tie
+    group straddling the displayed count is cut by id rather than by row order,
+    and a slice of exactly the displayed count is complete."""
+    from lionagi.studio.services import schedules
+
+    tied_id = f"pg-tied-{_uid()}"
+    short_id = f"pg-short-{_uid()}"
+    # Twenty-four runs newer than the tie group, then six runs sharing one older
+    # fired_at. Only two of the six can fit the newest 26 keys, so which two the
+    # per-group LIMIT keeps is decided by the id tie-break and not by the row
+    # order the store happens to return. The group is inserted in ascending id
+    # order so insertion order and the required id DESC order disagree.
+    tied_runs = [(f"{tied_id}-run-{index:02}", float(101 + index)) for index in range(24)]
+    tied_runs += [(f"{tied_id}-tie-{suffix}", 100.0) for suffix in "abcdef"]
+    short_runs = [(f"{short_id}-run-{index:02}", float(100 + index)) for index in range(25)]
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+        await _seed_pg_runs(db, tied_id, tied_runs)
+        await _seed_pg_runs(db, short_id, short_runs)
+        grouped, _, _ = await schedules._read_run_batch(db, [tied_id])
+        summaries = await schedules._recent_run_summaries(db, [tied_id, short_id])
+    finally:
+        await db.close()
+
+    keys = [row["id"] for row in grouped[tied_id]]
+    assert len(keys) == _RECENT_SUMMARY_LIMIT + 1
+    assert keys[:_RECENT_SUMMARY_LIMIT] == [
+        *(f"{tied_id}-run-{index:02}" for index in range(23, -1, -1)),
+        f"{tied_id}-tie-f",
+    ]
+    assert keys[-1] == f"{tied_id}-tie-e"
+    # The key past the limit is read for its boundary position only: the
+    # occurrence payload is not loaded for it.
+    assert grouped[tied_id][-1]["status"] is None
+
+    tied = summaries[tied_id]
+    assert tied["status"] == "available"
+    assert tied["has_next"] is True
+    assert len(tied["runs"]) == _RECENT_SUMMARY_LIMIT
+    # tie-f takes the last displayed slot; tie-e is the 26th key.
+    assert tied["runs"][-1]["id"] == f"{tied_id}-tie-f"
+    assert tied["runs"][-1]["status"] == "failed"
+
+    short = summaries[short_id]
+    assert short["status"] == "available"
+    assert short["has_next"] is False
+    assert [run["id"] for run in short["runs"]] == [
+        f"{short_id}-run-{index:02}" for index in range(24, -1, -1)
+    ]

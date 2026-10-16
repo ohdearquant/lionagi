@@ -219,8 +219,13 @@ between `build_argv()` and this function gives a revoked
   `has_next: null`, and `runs: []`, and so does a slice whose version the client
   does not support. A row that omits the field altogether -- a daemon that
   predates it -- is read through that definition's own history endpoint and
-  marked unavailable only when that read fails. None of these is evidence of
-  empty history.
+  marked unavailable only when that read fails; that read asks for one row past
+  the displayed count so it can state `has_next` truthfully, and the client
+  holds the result to the same rules as a field-bearing slice. None of these is
+  evidence of empty history. That read is one request per such definition, so a
+  page whose daemon omits the field costs the list request plus one history
+  request each; only a page the daemon answers with the field costs a single
+  request.
   The flag defaults to false; Mission, operator MCP, and machine list callers
   retain their existing response and do not compute these histories.
   One batched statement selects at most 26 keys per listed definition through
@@ -241,17 +246,23 @@ between `build_argv()` and this function gives a revoked
   Occurrence status is not a combined child-session status. An unreported child
   failure need not produce an error class when the occurrence has no error text;
   the detail view retains the separate reconciled outcome.
-  Raw error text, prompts, event payloads, and artifact paths stay withheld.
+  On the field path, raw error text, prompts, event payloads, and artifact
+  paths stay withheld. A row read through the older daemon's history endpoint
+  is the wider run view that endpoint serves: it adds duration, artifact paths,
+  session ids, and the reconciled outcome, while the raw error text stays
+  withheld there too.
   A shared batch read failure is followed by one liveness read that does not
   touch the failing statement. When that read fails too the failure is treated
   as store-wide, and every slice is left unavailable without a read each, so an
   outage costs two reads rather than one per listed definition. When the store
-  answers, the shared read failed for a reason belonging to its rows, and each
-  definition is retried on its own before it is marked unavailable, so the
-  failure is attributed to the definition it comes from and does not hide the
-  other summaries on the page. A store-wide read failure leaves every slice
-  unavailable, never an available empty slice. Projection failures are isolated
-  to one schedule.
+  answers, the batch failure is attributed by retrying each definition on its
+  own: a definition whose own rows fail is marked unavailable without hiding
+  the other summaries on the page. A statement that fails for every definition
+  while the store answers therefore costs one read per definition -- the batch,
+  the liveness read, and one retry each -- and its failing ids are named on one
+  line per page rather than a traceback each. Only the store-wide case is two
+  reads. A store-wide read failure leaves every slice unavailable, never an
+  available empty slice. Projection failures are isolated to one schedule.
   Existing health/count queries, budget rollups, schedule-list limits, and
   filters are unchanged.
   Cards and table mark an unavailable schedule's own row; the shared banner

@@ -701,11 +701,13 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
     liveness read decides whether the store is reachable: when it fails too, the
     failure is store-wide and every slice is left unavailable without a read
     each, so an outage costs two reads rather than one per listed definition.
-    When the store answers, the shared read failed for a reason that belongs to
-    its rows, and each definition is retried on its own so the failure is
-    attributed to the definition it comes from and does not hide the rest of
-    the page's summaries. Either way a failed read leaves a slice unavailable,
-    never silently empty.
+    When the store answers, that read proves only that some connection answers;
+    the retry is what attributes the failure, so each definition is read on its
+    own and a definition whose own rows fail is unavailable without hiding the
+    rest of the page's summaries. A statement that fails for every definition
+    while the store answers costs one retry read per definition, and its failing
+    ids are named on one line rather than a traceback each. Either way a failed
+    read leaves a slice unavailable, never silently empty.
     """
     result = {sid: _unavailable_run_summary() for sid in schedule_ids}
     if not schedule_ids:
@@ -723,21 +725,22 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
         except Exception:
             _log.exception("Recent schedule run summary store is unavailable")
         else:
-            failures: list[tuple[str, BaseException]] = []
+            failures: list[str] = []
             for sid in schedule_ids:
                 try:
                     one_grouped, one_invocations, one_sessions = await _read_run_batch(db, [sid])
-                except Exception as exc:
-                    failures.append((sid, exc))
+                except Exception:
+                    failures.append(sid)
                     continue
                 grouped.update(one_grouped)
                 invocations.update(one_invocations)
                 sessions.update(one_sessions)
-            # The exception above already carries the cause once per batch; a
-            # line per failing definition is what names the definition it
-            # belongs to, and the retries are bounded by the page size.
-            for sid, exc in failures:
-                _log.error("Recent run summary unavailable for schedule %s", sid, exc_info=exc)
+            # The batch failure above already carries the cause once. A
+            # statement-level failure fails every retry, so a traceback per
+            # definition would be one per poll; the failing ids are named on a
+            # single line instead, and the ids are the attribution.
+            if failures:
+                _log.error("Recent run summary unavailable for schedules %s", ", ".join(failures))
 
     for sid, runs in grouped.items():
         try:

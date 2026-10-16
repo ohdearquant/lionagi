@@ -155,7 +155,7 @@ describe("schedule summary refresh", () => {
     vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
     vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [run("legacy")], has_next: false });
     await act(async () => root.render(<Harness />));
-    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 25 });
+    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 26 });
     expect(recentRunsUnavailable(latest.schedules[0])).toBe(false);
     expect(latest.runs.map((row) => row.id)).toEqual(["legacy-run-0"]);
   });
@@ -168,7 +168,7 @@ describe("schedule summary refresh", () => {
     vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [run("legacy")], has_next: false });
     await act(async () => root.render(<Harness />));
     expect(listScheduleRuns).toHaveBeenCalledTimes(1);
-    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 25 });
+    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 26 });
     expect(latest.runs.map((row) => row.id).sort()).toEqual(["legacy-run-0", "modern-run-0"]);
   });
 
@@ -177,6 +177,58 @@ describe("schedule summary refresh", () => {
     delete legacy.recent_runs_summary;
     vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
     vi.mocked(listScheduleRuns).mockRejectedValue(new Error("Unavailable"));
+    await act(async () => root.render(<Harness />));
+    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 26 });
+    expect(recentRunsUnavailable(latest.schedules[0])).toBe(true);
+    expect(latest.runs).toEqual([]);
+  });
+
+  it("shows 25 rows of a longer fallback history and a continuation for the rest", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({
+      runs: Array.from({ length: 26 }, (_, index) => run("legacy", index)),
+      has_next: true,
+    });
+    await act(async () => root.render(<Harness />));
+    const summary = latest.schedules[0].recent_runs_summary;
+    expect(summary?.status).toBe("available");
+    expect(summary?.has_next).toBe(true);
+    expect(summary?.runs).toHaveLength(25);
+  });
+
+  it("reads a fallback history of exactly 25 rows as complete", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({
+      runs: Array.from({ length: 25 }, (_, index) => run("legacy", index)),
+      has_next: true,
+    });
+    await act(async () => root.render(<Harness />));
+    const summary = latest.schedules[0].recent_runs_summary;
+    expect(summary?.status).toBe("available");
+    expect(summary?.has_next).toBe(false);
+    expect(summary?.runs).toHaveLength(25);
+  });
+
+  it("marks the fallback unavailable when the history body carries no rows", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({ has_next: false } as never);
+    await act(async () => root.render(<Harness />));
+    expect(latest.error).toBe(false);
+    expect(recentRunsUnavailable(latest.schedules[0])).toBe(true);
+    expect(latest.runs).toEqual([]);
+  });
+
+  it("rejects fallback rows that name another schedule", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [run("other")], has_next: false });
     await act(async () => root.render(<Harness />));
     expect(recentRunsUnavailable(latest.schedules[0])).toBe(true);
     expect(latest.runs).toEqual([]);

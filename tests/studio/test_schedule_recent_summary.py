@@ -155,6 +155,40 @@ async def test_tied_summary_and_detail_choose_the_same_first_page(isolated_db):
 
 
 @pytest.mark.asyncio
+async def test_tied_boundary_keys_are_cut_by_id_and_the_extra_key_has_no_payload(isolated_db):
+    """A tie group that straddles the displayed 25 is cut by id DESC, and the
+    one key past the limit is read without its occurrence payload."""
+    async with StateDB() as db:
+        await create_schedule(db, "nightly")
+        # Twenty-four runs newer than the tie group, then six runs sharing one
+        # older fired_at. Only the two greatest ids of that group are among the
+        # newest 26 keys, and only the greater of those two is displayed. The
+        # group is inserted in descending id order: insertion order and id order
+        # disagree, so a statement that drops the id tie-break cannot pass by
+        # returning the rows in the order they were written.
+        for index in range(24):
+            await create_run(db, "nightly", f"run-{index:02}", fired_at=101 + index)
+        for suffix in "fedcba":
+            await create_run(db, "nightly", f"tie-{suffix}", fired_at=100)
+        grouped, _, _ = await schedules._read_run_batch(db, ["nightly"])
+        summary = (await list_rows())[0]["recent_runs_summary"]
+
+    keys = [row["id"] for row in grouped["nightly"]]
+    assert len(keys) == 26
+    assert keys[-2:] == ["tie-f", "tie-e"]
+    assert keys[24] == "tie-f"
+    # The 26th key is read for its boundary position only; every occurrence
+    # column past the limit stays empty, so its payload is never loaded.
+    assert grouped["nightly"][25]["id"] == "tie-e"
+    assert grouped["nightly"][25]["status"] is None
+    assert grouped["nightly"][25]["error_detail"] is None
+
+    assert summary["has_next"] is True
+    assert [row["id"] for row in summary["runs"]][-2:] == ["run-00", "tie-f"]
+    assert len(summary["runs"]) == 25
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("count", [0, 1, 25, 26, 40])
 async def test_recent_slice_order_bound_completeness_and_projection(isolated_db, count):
     async with StateDB() as db:
@@ -397,6 +431,55 @@ async def test_a_definition_specific_read_failure_leaves_other_summaries_availab
     assert rows["empty"]["runs"] == []
     assert rows["good"]["status"] == "available"
     assert [run["id"] for run in rows["good"]["runs"]] == ["good-run"]
+
+
+@pytest.mark.asyncio
+async def test_a_statement_that_fails_for_every_definition_logs_once_per_page(
+    isolated_db, monkeypatch, caplog
+):
+    """A shared read that fails for every definition while the store answers is
+    retried per definition, and the retries are reported on one line per page
+    rather than one traceback per definition per refresh."""
+    ids = [f"def-{index}" for index in range(6)]
+    async with StateDB() as db:
+        for sid in ids:
+            await create_schedule(db, sid)
+            await create_run(db, sid, f"{sid}-run")
+
+    reads = 0
+    liveness = 0
+
+    async def fetch_all(db, query, params=None):
+        nonlocal reads
+        reads += 1
+        # Every read of the summary statement fails, whatever definitions it
+        # names: a statement-level failure, not one definition's rows.
+        raise OSError("Statement-level read failure")
+
+    original_fetch_one = StateDB.fetch_one
+
+    async def fetch_one(db, query, params=None):
+        nonlocal liveness
+        liveness += 1
+        return await original_fetch_one(db, query, params)
+
+    monkeypatch.setattr(StateDB, "fetch_all", fetch_all)
+    monkeypatch.setattr(StateDB, "fetch_one", fetch_one)
+    with caplog.at_level("ERROR", logger=schedules._log.name):
+        rows = {row["id"]: row["recent_runs_summary"] for row in await list_rows()}
+
+    # The liveness read answers, so every definition is retried and attributed
+    # on its own: one batch read, one liveness read, one batch read per definition.
+    assert reads == 1 + len(ids)
+    assert liveness == 1
+    assert all(rows[sid]["status"] == "unavailable" for sid in ids)
+    naming_the_definitions = [
+        record.getMessage()
+        for record in caplog.records
+        if any(sid in record.getMessage() for sid in ids)
+    ]
+    assert len(naming_the_definitions) == 1, naming_the_definitions
+    assert all(sid in naming_the_definitions[0] for sid in ids)
 
 
 @pytest.mark.asyncio
