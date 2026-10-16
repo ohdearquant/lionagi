@@ -39,6 +39,19 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
+def _forward_collection(
+    key_ref: weakref.ref[_IdentityKey], on_collect: Callable[[_IdentityKey], None]
+) -> Callable[[weakref.ref], None]:
+    """A weakref callback that calls ``on_collect`` with the key while the key is alive."""
+
+    def callback(_ref: weakref.ref) -> None:
+        key = key_ref()
+        if key is not None:
+            on_collect(key)
+
+    return callback
+
+
 class _IdentityKey:
     """Identity key that does not extend the lifetime of what it identifies.
 
@@ -48,18 +61,42 @@ class _IdentityKey:
     target retains. The hash is the id taken while the target was alive, so it stays usable
     after the target dies; equality demands both referents still be live, so an id the
     interpreter has reused cannot collide with a dead entry, and the dead entry matches
-    nothing and is evicted in its turn. A target that cannot be weakly referenced is held
-    strongly, which keeps it and everything it carries alive for as long as the key lives;
-    `holds_weakly` says which of the two a key is, so a caller storing one past the call
-    can decide whether to.
+    nothing until it leaves the cache: for a key given `on_collect`, at the cache's next
+    read or write after its target is collected, and for any other when the cache evicts it
+    (a plain dict never does).
+    A target that cannot be weakly referenced is held strongly, which keeps it and
+    everything it carries alive for as long as the key lives; `holds_weakly` says which
+    of the two a key is, so a caller storing one past the call can decide whether to.
+
+    A dead entry is never hit, but until it is removed it shares a hash bucket with every
+    later object allocated at the same address, and each lookup there compares against it.
+    `on_collect` is called with the key when its weakly-held target is collected, while
+    the key itself is still alive, so a `BoundedLRUCache` can remove the entry stored
+    under it; the dataclass projection cache gives it to every key it stores. The key's
+    weakref holds `on_collect` until the target is collected, so a bound method such as
+    `cache.forget` would put the cache in a reference cycle with every key it stores, freed
+    only by the cycle collector or once those targets are collected; the projection cache
+    passes its removal queue's `append`, which does not hold the cache. A plain
+    dict keyed by `_IdentityKey`, such as `_SingletonMeta._cache`, gives none and keeps
+    a dead entry until it is deleted. A key nested inside a larger key, such as a tuple,
+    is not the entry's key, so `on_collect` cannot remove that entry when the target is
+    collected.
     """
 
-    __slots__ = ("_hash", "_ref", "_strong")
+    __slots__ = ("__weakref__", "_hash", "_ref", "_strong")
 
-    def __init__(self, target: object) -> None:
+    def __init__(
+        self, target: object, on_collect: Callable[[_IdentityKey], None] | None = None
+    ) -> None:
         self._hash = id(target)
+        # The key is referenced weakly, so the key, its reference and the callback form no
+        # cycle. An `on_collect` that held the cache storing this key would form one
+        # through the cache, so the dataclass projection cache passes its queue's append.
+        callback = (
+            None if on_collect is None else _forward_collection(weakref.ref(self), on_collect)
+        )
         try:
-            self._ref: weakref.ref | None = weakref.ref(target)
+            self._ref: weakref.ref | None = weakref.ref(target, callback)
             self._strong: object = None
         except TypeError:
             self._ref = None
@@ -174,6 +211,9 @@ _UUID = 22
 _ELLIPSIS = 23
 _TYPING_SINGLETON = 24
 
+# Keyed by identity, so a frozen dataclass's key is computed once: its fields are assumed not
+# to change after that. A field written through `object.__setattr__` once the key is cached is
+# not seen, and the old key is returned until newer entries evict it or its object is collected.
 _stable_dataclass_keys: BoundedLRUCache[_IdentityKey, _StructuralKey] = BoundedLRUCache(
     "LIONAGI_STRUCTURAL_CACHE_SIZE",
     10000,
@@ -566,7 +606,10 @@ def _project(
                     and identity_key.holds_weakly
                     and not value_semantics
                 ):
-                    _stable_dataclass_keys.put(identity_key, result)
+                    # The queue's own append rather than `forget`, a bound method that would
+                    # hold the cache and put every stored key in a cycle with it.
+                    remove_later = _stable_dataclass_keys._pending_removals.append
+                    _stable_dataclass_keys.put(_IdentityKey(value, on_collect=remove_later), result)
                 return result
             return dataclasses.replace(
                 combined,
