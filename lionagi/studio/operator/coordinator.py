@@ -281,6 +281,10 @@ class OperatorCoordinator:
                 turn = await self.store.get_turn(request_id)
             except Exception:  # noqa: BLE001
                 turn = None
+            if request_id in self._streams_ended:
+                # The stream ended while the turn was read: teardown is running now, and the
+                # read describes the turn as it stood before.
+                continue
             # A done frame makes the turn terminal before canonical Run
             # teardown closes its StateDB handle and writes its final
             # snapshot. Let that bounded cleanup finish; cancelling it here
@@ -714,12 +718,19 @@ class OperatorCoordinator:
             # fail on a later step of the same setup, leaving `live` None even
             # though a durable record exists -- recover that row before
             # concluding nothing was recorded.
+            from lionagi.state.compat import refusal_in
+
+            refusal = refusal_in(exc)
             orphaned_session = None
-            if live is None and run_dir is not None:
-                with suppress(Exception):
+            # A refused setup was writing to a store in compatibility mode, which refuses this
+            # recovery (ADR-0128 A.1), so its rows are left as they stand.
+            if live is None and run_dir is not None and refusal is None:
+                try:
                     orphaned_session = await cli_runs.find_incomplete_session_for_run(
                         run_dir.run_id
                     )
+                except Exception as recovery_exc:  # noqa: BLE001
+                    refusal = refusal_in(recovery_exc)
             if live is not None:
                 run_id = live["session_id"]
                 evidence = f"open the run at /runs/{run_id} for its status and history"
@@ -731,9 +742,6 @@ class OperatorCoordinator:
             else:
                 evidence = "no run was recorded for this turn before it failed"
                 details = {"runId": None}
-            from lionagi.state.compat import refusal_in
-
-            refusal = refusal_in(exc)
             if refusal is not None:
                 # The store refused a write in compatibility mode (ADR-0128 D6), including
                 # one of the setup writes themselves: stopping here did not need a retry, and
@@ -786,11 +794,16 @@ class OperatorCoordinator:
                     # which carries the same provider session id.
                     if not engine_link_task.done():
                         engine_link_task.cancel()
-                    with suppress(BaseException):
-                        await engine_link_task
+                    # asyncio.wait never raises the task's own outcome, so a cancel it raises is
+                    # this turn's: held like the checkpoint's, not swallowed.
+                    while not engine_link_task.done():
+                        try:
+                            await asyncio.wait((engine_link_task,))
+                        except asyncio.CancelledError as exc:
+                            early_failure = early_failure or exc
                     if engine_session_uid is not None and not (
-                        engine_link_task.done()
-                        and not engine_link_task.cancelled()
+                        not engine_link_task.cancelled()
+                        and engine_link_task.exception() is None
                         and engine_link_task.result()
                     ):
                         with suppress(Exception):
@@ -800,12 +813,23 @@ class OperatorCoordinator:
                 if live is not None:
                     from lionagi.cli._runs import teardown_agent_persist
 
-                    with suppress(Exception):
-                        status = await teardown_agent_persist(
+                    # Teardown runs to its end through a cancel, held like the checkpoint's:
+                    # interrupted, it would leave the session and run.json as they stood and
+                    # lose the status a refusal decided.
+                    teardown = asyncio.ensure_future(
+                        teardown_agent_persist(
                             live,
                             status=terminal_status,
                             exception=terminal_exc,
                         )
+                    )
+                    while not teardown.done():
+                        try:
+                            await asyncio.wait((teardown,))
+                        except asyncio.CancelledError as exc:
+                            early_failure = early_failure or exc
+                    if not teardown.cancelled() and teardown.exception() is None:
+                        status = teardown.result()
                         if _in_compatibility_mode(live.get("db")):
                             # In compatibility mode run.json records the status teardown
                             # decided, as `li agent`'s does: a turn the engine finished fails
@@ -823,13 +847,20 @@ class OperatorCoordinator:
                 # has had its say: the status teardown decided takes over, as it does for
                 # completion, so the turn never reads as retryable work while its run failed.
                 if turn_finish_deferred:
-                    await self._finish_deferred_turn(
-                        request_id,
-                        terminal_status,
-                        live,
-                        recorded_outcome=deferred_outcome,
-                        recorded_error=deferred_error,
+                    finish = asyncio.ensure_future(
+                        self._finish_deferred_turn(
+                            request_id,
+                            terminal_status,
+                            live,
+                            recorded_outcome=deferred_outcome,
+                            recorded_error=deferred_error,
+                        )
                     )
+                    while not finish.done():
+                        try:
+                            await asyncio.wait((finish,))
+                        except asyncio.CancelledError as exc:
+                            early_failure = early_failure or exc
             if run_branch is not None and run_dir is not None:
                 if opening_write is not None:
                     # its thread writes whatever happens to this wait, so the wait holds through any
@@ -890,11 +921,24 @@ class OperatorCoordinator:
         refused does not read `completed` -- or `cancelled` -- while its run reads `failed`.
         When teardown's status is the outcome the turn already reached, the outcome and error
         the turn set are recorded as they are, so a cancelled turn keeps its own message. A
-        failure to write it is logged: run.json must still be written.
+        teardown the store refused fails the turn with that refusal. A failure to write it is
+        logged: run.json must still be written.
         """
         outcome = _TURN_OUTCOME_BY_STATUS.get(terminal_status, "failed")
         error = recorded_error
-        if outcome == "failed" and outcome != recorded_outcome:
+        refusal = live.get("store_refusal")
+        if refusal is not None:
+            # Teardown's own write was refused: the turn fails with that refusal, which is not
+            # retryable work, whatever the engine reached -- a retryable engine failure included.
+            outcome = "failed"
+            run_id = live["session_id"]
+            error = {
+                "code": "store_refused",
+                "message": str(refusal),
+                "retryable": False,
+                "details": {"runId": run_id, "href": f"/runs/{run_id}"},
+            }
+        elif outcome == "failed" and outcome != recorded_outcome:
             decided = live.get("terminal_reason")
             error = {
                 "code": "service_failure",

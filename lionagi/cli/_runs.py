@@ -1302,6 +1302,7 @@ async def teardown_persist(
                 # does not send a reader looking for state that is already durable.
                 reason += f"; already committed in this teardown: {', '.join(committed)}"
             ctx["terminal_reason"] = ("failed", reason)
+            ctx["store_refusal"] = refusal
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's

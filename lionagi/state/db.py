@@ -6922,8 +6922,30 @@ def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | Non
     return (db.url, db.mode, db.compatibility, owner)
 
 
+def _held_in_compatibility_mode(url: str) -> StateDB | None:
+    """The compatibility handle registered for *url*, or None when no such handle is registered.
+
+    Handles for several owners write different runs' rows, so a caller that names only the store
+    cannot say which of them it means, and that lookup is refused.
+    """
+    held = [db for key, db in _SHARED.items() if isinstance(key, tuple) and key[0] == url]
+    if len(held) > 1:
+        raise held[0]._compat.refusal(
+            f"{len(held)} compatibility handles for different owners hold this store, and a "
+            "caller that names only the store does not say whose rows it writes",
+            operation="open",
+        )
+    return held[0] if held else None
+
+
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
-    """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH)."""
+    """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH).
+
+    A store this process holds only in compatibility mode is never opened natively here: a native
+    open applies this package's schema to a store another application manages (ADR-0128 D1). The
+    registered compatibility handle is returned instead, so what the caller writes meets the
+    profile (Appendix A.2), and a store held for several owners is refused.
+    """
     global _SHARED_OPEN_LOCK  # noqa: PLW0603
     # Resolve the key through StateDB's own cascade so a monkeypatched DEFAULT_DB_PATH is honored;
     # normalize_state_db_url(None) would bypass it to the real home db.
@@ -6931,6 +6953,9 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
     key = url
     if key in _SHARED:
         return _SHARED[key]
+    held = _held_in_compatibility_mode(url)
+    if held is not None:
+        return held
     if _SHARED_OPEN_LOCK is None:
         _SHARED_OPEN_LOCK = Lock()
     lock = _SHARED_OPEN_LOCK
@@ -6940,8 +6965,12 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
         # refuse to resurrect the singleton rather than leak a fresh worker.
         if _SHARED_CLOSE_GEN != gen:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
-        # Double-checked: another coroutine may have opened it while we waited.
+        # Double-checked: another coroutine may have opened it while we waited, or registered a
+        # compatibility handle for it.
         if key not in _SHARED:
+            held = _held_in_compatibility_mode(url)
+            if held is not None:
+                return held
             db = StateDB(url=url)
             await db.open()
             _SHARED[key] = db

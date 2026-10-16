@@ -16,11 +16,14 @@ import anyio
 import pytest
 
 import lionagi.cli._runs as runs_mod
-from lionagi.state.compat import Closure, CompatibilityProfile
+from lionagi.state.compat import Closure, CompatibilityProfile, StateCompatibilityRefused
 from lionagi.studio.operator import coordinator as coordinator_mod
 from lionagi.studio.operator.coordinator import OperatorCoordinator
 from lionagi.studio.operator.store import OperatorStore
 from lionagi.studio.operator.types import OperatorEngineEvent
+
+# What a teardown the store refused records on the run's context, beside its terminal reason.
+_TEARDOWN_REFUSAL = StateCompatibilityRefused("update_status", "operator-records@1", "refused")
 
 
 def _profile() -> CompatibilityProfile:
@@ -99,6 +102,7 @@ async def _drive(tmp_path, monkeypatch, *, compatibility, decided_status):
             raise asyncio.CancelledError
         if decided_status == "failed":
             ctx["terminal_reason"] = ("failed", "The store refused a write: refused")
+            ctx["store_refusal"] = _TEARDOWN_REFUSAL
         return decided_status
 
     monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
@@ -270,6 +274,7 @@ async def _drive_interrupted(
             await teardown_holds["release"].wait()
         if decided_status == "failed":
             ctx["terminal_reason"] = ("failed", "The store refused a write: refused")
+            ctx["store_refusal"] = _TEARDOWN_REFUSAL
         return decided_status
 
     monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
@@ -408,6 +413,7 @@ async def test_a_cancel_in_the_final_checkpoint_still_finishes_the_turn(tmp_path
 
     async def teardown(ctx, *, status="completed", exception=None):
         ctx["terminal_reason"] = ("failed", "The store refused a write: refused")
+        ctx["store_refusal"] = _TEARDOWN_REFUSAL
         return "failed"
 
     monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
@@ -517,7 +523,14 @@ async def test_a_refused_setup_records_a_store_refusal_not_a_retryable_model_fai
     async def setup(*args, **kwargs):
         raise BaseExceptionGroup("setup wrote", [refusal, ValueError("wrapped beside it")])
 
+    recovered: list[str] = []
+
+    async def recover(run_id):
+        recovered.append(run_id)
+        return None
+
     monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", recover)
 
     coordinator = OperatorCoordinator(store=OperatorStore(tmp_path / "state.db"))
     await coordinator.startup()
@@ -535,6 +548,9 @@ async def test_a_refused_setup_records_a_store_refusal_not_a_retryable_model_fai
     finally:
         await coordinator.shutdown()
 
+    # The refused setup was writing to a store in compatibility mode, which refuses the
+    # recovery of a committed session row (ADR-0128 A.1), so none is attempted.
+    assert recovered == []
     errors = [f for f in frames if f["type"] == "error"]
     assert turn["status"] == "failed"
     assert turn["errorCode"] == "store_refused"
@@ -577,3 +593,262 @@ async def test_an_ordinary_setup_failure_stays_a_retryable_model_failure(tmp_pat
     (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
     assert error["code"] == "model_failure"
     assert error["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_path, monkeypatch):
+    """An ordinary setup failure is recovered on the store, and a store that refuses that
+    recovery is the turn's refusal rather than a failure the recovery swallows."""
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    refusal = StateCompatibilityRefused("update_status", "operator-records", "refused")
+
+    async def setup(*args, **kwargs):
+        raise RuntimeError("setup fell over")
+
+    async def recover(run_id):
+        raise refusal
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", recover)
+
+    coordinator = OperatorCoordinator(store=OperatorStore(tmp_path / "state.db"))
+    await coordinator.startup()
+    try:
+        cid = (await coordinator.create_conversation())["conversation"]["id"]
+        accepted = await coordinator.submit(
+            cid,
+            instruction="hello",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        turn = await _await_finished_turn(coordinator.store, accepted["requestId"])
+        frames = await coordinator.store.list_frames(cid)
+    finally:
+        await coordinator.shutdown()
+
+    (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
+    assert turn["status"] == "failed"
+    assert error["code"] == "store_refused"
+    assert error["message"] == str(refusal)
+    assert error["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_engine_failure_then_a_refused_teardown_is_not_retryable(
+    tmp_path, monkeypatch
+):
+    """The engine failed in a way the turn records as retryable, then teardown's own write was
+    refused: the turn fails with that refusal, never as retryable work beside a failed run."""
+    turn_status, run_status, _order = await _drive_interrupted(
+        tmp_path,
+        monkeypatch,
+        compatibility=_profile(),
+        decided_status="failed",
+        engine=_ExplodingEngine,
+        interrupt="none",
+    )
+    error = await _turn_error(tmp_path)
+
+    assert (turn_status, run_status) == ("failed", "failed")
+    assert error["code"] == "store_refused"
+    assert error["message"] == str(_TEARDOWN_REFUSAL)
+    assert error["retryable"] is False
+    assert error["details"] == {"runId": "s1", "href": "/runs/s1"}
+
+
+class _EndingEngine:
+    """One reply, then the stream ends when ``end`` is set (at once when it is None)."""
+
+    def __init__(self, end: asyncio.Event | None = None) -> None:
+        self.end = end
+
+    async def _stream(self, _turn):
+        yield OperatorEngineEvent(
+            "text", {"content": "reply", "format": "plain", "role": "assistant"}
+        )
+        if self.end is not None:
+            await self.end.wait()
+
+    def stream(self, turn):
+        return self._stream(turn)
+
+
+def _install_turn(monkeypatch, tmp_path, *, compatibility, teardown) -> Path:
+    runs_root = tmp_path / "runs"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+
+    async def setup(*args, **kwargs):
+        return {"session_id": "s1", "db": SimpleNamespace(compatibility=compatibility)}
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "teardown_agent_persist", teardown)
+    return runs_root
+
+
+def _held_teardown(log: list, release: asyncio.Event):
+    """Decides ``failed`` for a refused write once released; logs an interruption."""
+
+    async def teardown(ctx, *, status="completed", exception=None):
+        log.append(("teardown", status))
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            log.append(("teardown", "interrupted"))
+            raise
+        ctx["terminal_reason"] = ("failed", "The store refused a write: refused")
+        ctx["store_refusal"] = _TEARDOWN_REFUSAL
+        return "failed"
+
+    return teardown
+
+
+async def _until(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await anyio.sleep(0.02)
+    return False
+
+
+async def _submit(coordinator: OperatorCoordinator) -> tuple[str, str]:
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await coordinator.submit(
+        cid,
+        instruction="hello",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    return cid, accepted["requestId"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("compatibility", "turn_status", "run_status"),
+    [(_profile(), "failed", "failed"), (None, "completed", "completed")],
+    ids=["compatibility", "native"],
+)
+async def test_a_cancel_during_teardown_lets_it_finish_before_both_records(
+    tmp_path, monkeypatch, compatibility, turn_status, run_status
+):
+    """A cancel that lands while teardown runs is held until teardown, the turn's record and
+    run.json are written, then re-raised. Interrupted, teardown left run.json ``running``."""
+    log: list = []
+    release = asyncio.Event()
+    runs_root = _install_turn(
+        monkeypatch, tmp_path, compatibility=compatibility, teardown=_held_teardown(log, release)
+    )
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_EndingEngine
+    )
+    await coordinator.startup()
+    try:
+        cid, request_id = await _submit(coordinator)
+        assert await _until(lambda: ("teardown", "completed") in log)
+        await coordinator.cancel(cid, request_id)
+        await anyio.sleep(0.1)
+        release.set()
+        turn = await _await_finished_turn(coordinator.store, request_id)
+        final = await _await_terminal_run_status(runs_root)
+    finally:
+        release.set()
+        await coordinator.shutdown()
+
+    assert ("teardown", "interrupted") not in log
+    assert (turn["status"], final) == (turn_status, run_status)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_reading_the_turn_as_its_stream_ends_does_not_cancel_teardown(
+    tmp_path, monkeypatch
+):
+    """Shutdown reads the turn after checking whether its stream ended. A stream that ends
+    during that read starts teardown, and the stale read must not cancel it."""
+    log: list = []
+    end, release = asyncio.Event(), asyncio.Event()
+    runs_root = _install_turn(
+        monkeypatch, tmp_path, compatibility=_profile(), teardown=_held_teardown(log, release)
+    )
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=lambda: _EndingEngine(end)
+    )
+    await coordinator.startup()
+    parked, gate = asyncio.Event(), asyncio.Event()
+    armed = {"on": False}
+    real_get = coordinator.store.get_turn
+
+    async def gated_get(request_id):
+        if armed["on"]:
+            parked.set()
+            await gate.wait()
+        return await real_get(request_id)
+
+    monkeypatch.setattr(coordinator.store, "get_turn", gated_get)
+    try:
+        _cid, request_id = await _submit(coordinator)
+        task = coordinator._tasks[request_id]
+        assert await _until(lambda: list(runs_root.glob("operator-*/run.json")))
+        armed["on"] = True
+        stopping = asyncio.ensure_future(coordinator.shutdown())
+        await asyncio.wait_for(parked.wait(), 5)
+        end.set()
+        assert await _until(lambda: ("teardown", "completed") in log)
+        gate.set()
+        await anyio.sleep(0.2)
+        release.set()
+        await asyncio.wait_for(stopping, 10)
+    finally:
+        gate.set()
+        release.set()
+        monkeypatch.setattr(coordinator.store, "get_turn", real_get)
+        await coordinator.shutdown()
+
+    turn = await real_get(request_id)
+    # The stale read is not acted on: the turn is never cancelled, not merely held to the end.
+    assert not task.cancelled()
+    assert ("teardown", "interrupted") not in log
+    assert turn["status"] == "failed"
+    assert _run_status(runs_root) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_landing_in_the_deferred_finish_still_writes_both_records(
+    tmp_path, monkeypatch
+):
+    """The deferred finish is a store write; a cancel that lands inside it is held until the
+    record and run.json are written. Interrupted, it left both ``running``."""
+
+    async def teardown(ctx, *, status="completed", exception=None):
+        return "completed"
+
+    runs_root = _install_turn(monkeypatch, tmp_path, compatibility=_profile(), teardown=teardown)
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_EndingEngine
+    )
+    await coordinator.startup()
+    inside, release = asyncio.Event(), asyncio.Event()
+    real_finish = coordinator.store.finish_turn
+
+    async def held_finish(request_id, *, outcome, error=None):
+        inside.set()
+        await release.wait()
+        return await real_finish(request_id, outcome=outcome, error=error)
+
+    monkeypatch.setattr(coordinator.store, "finish_turn", held_finish)
+    try:
+        cid, request_id = await _submit(coordinator)
+        await asyncio.wait_for(inside.wait(), 5)
+        await coordinator.cancel(cid, request_id)
+        await anyio.sleep(0.1)
+        release.set()
+        turn = await _await_finished_turn(coordinator.store, request_id)
+        final = await _await_terminal_run_status(runs_root)
+    finally:
+        release.set()
+        monkeypatch.setattr(coordinator.store, "finish_turn", real_finish)
+        await coordinator.shutdown()
+
+    assert turn["status"] == "completed"
+    assert final == "completed"

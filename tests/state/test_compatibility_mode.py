@@ -1133,6 +1133,26 @@ async def test_a_compatibility_handle_is_never_the_shared_native_handle(store, r
         await db_mod.close_shared_db()
 
 
+async def test_the_shared_lookup_returns_the_compatibility_handle_and_opens_no_native_one(
+    store, reference, monkeypatch
+):
+    """A lookup that names only the store, as the default hook handlers' does, gets the handle
+    this process holds it with in compatibility mode; a native open would meet the managed
+    store's later schema, or apply this package's to it (ADR-0128 D1, Appendix A.2)."""
+    from lionagi.hooks import builtins
+
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    compat = _RunsDB(store, compatibility=_profile(reference))
+    try:
+        await db_mod.register_shared_db(compat)
+        assert await db_mod.get_shared_db() is compat
+        assert await db_mod.get_shared_db(store) is compat
+        assert await builtins._db() is compat
+        assert db_mod._SHARED.get(compat.url) is None
+    finally:
+        await db_mod.close_shared_db()
+
+
 async def test_a_read_only_handle_is_shared_by_its_url_as_before(store):
     readonly = StateDB(store, readonly=True)
     try:

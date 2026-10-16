@@ -63,6 +63,10 @@ result, so a run cannot report a success the store refused to persist. A signal
 whose own persistence is refused is the one exception: the session signal sink
 counts it as a dropped signal and lets the session go on, so the refused signal
 is missing from the stored history while the run's other records still stop.
+The default handlers look the store up by its URL. When the process holds that
+store through a registered compatibility handle they write through it, so their
+writes meet the profile, and a refusal one of them meets is raised by the emit
+as any handler's refusal is.
 
 `USER_PROMPT_SUBMIT` fires at most once per genuine user-originated turn,
 regardless of how many internal calls that turn drives underneath it — see
