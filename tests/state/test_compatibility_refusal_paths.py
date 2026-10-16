@@ -656,3 +656,78 @@ def _manager_with_cancellation(refusal: StateCompatibilityRefused):
 
     manager._on_message_added.extend([cancelled, refuse])
     return manager
+
+
+# Parse: a refused write in the repair turn stops the run
+
+
+@pytest.mark.parametrize("handle_validation", ["raise", "return_value", "return_none"])
+async def test_a_refused_write_in_the_parse_repair_turn_is_raised(handle_validation, monkeypatch):
+    """parse retries an unparseable reply through ``Branch.chat``; a refused write there stops
+    the run instead of becoming the raw text, None, or a parse error a caller may retry."""
+    from pydantic import BaseModel
+
+    from lionagi.operations.parse.parse import parse
+    from lionagi.operations.types import ParseParam
+    from lionagi.session.branch import Branch
+
+    class Answer(BaseModel):
+        n: int
+
+    refusal = StateCompatibilityRefused("persist_live_message", "synthetic@1", "refused")
+
+    async def refused_chat(self, **kwargs):
+        raise refusal
+
+    monkeypatch.setattr(Branch, "chat", refused_chat)
+    with pytest.raises(StateCompatibilityRefused) as raised:
+        await parse(
+            Branch(name="repair"),
+            "not json",
+            ParseParam(response_format=Answer, handle_validation=handle_validation),
+        )
+    assert raised.value is refusal
+
+
+# Flow: a refusal inside an operation's error group stops the flow
+
+
+@pytest.mark.parametrize("entry", ["dependency-aware", "reactive", "stream"])
+async def test_a_refusal_inside_an_operation_error_group_stops_the_flow(entry):
+    """An operation whose call raised a group holding the refusal stops the flow with that
+    refusal, rather than failing the one node while its sibling runs on."""
+    import anyio
+
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.operations import flow
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    refusal = StateCompatibilityRefused("persist_live_message", "synthetic@1", "refused")
+
+    async def grouped(**kwargs):
+        raise BaseExceptionGroup("the operation's call failed", [ValueError("ordinary"), refusal])
+
+    async def slow(**kwargs):
+        await anyio.sleep(0.5)
+        return "slow"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("grouped", grouped)
+    session.register_operation("slow", slow)
+    builder = OperationGraphBuilder()
+    builder.add_operation("grouped", depends_on=[])
+    builder.add_operation("slow", depends_on=[])
+    graph = builder.get_graph()
+
+    with pytest.raises(StateCompatibilityRefused) as raised:
+        if entry == "stream":
+            async for _ in session.flow_stream(graph):
+                pass
+        else:
+            await flow(session, graph, reactive=entry == "reactive")
+    assert raised.value is refusal

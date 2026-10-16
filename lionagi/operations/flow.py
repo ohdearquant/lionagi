@@ -732,12 +732,14 @@ class DependencyAwareExecutor:
                             elapsed,
                             operation.execution.error,
                         )
-                    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+                    from lionagi.state.compat import refusal_in  # noqa: PLC0415
 
-                    if isinstance(operation.execution.error, StateCompatibilityRefused):
+                    refusal = refusal_in(operation.execution.error)
+                    if refusal is not None:
                         # A write the store refused in compatibility mode stops the flow rather
-                        # than failing one operation (ADR-0128 D6): nothing more is scheduled.
-                        raise operation.execution.error
+                        # than failing one operation (ADR-0128 D6): nothing more is scheduled. The
+                        # operation's error can hold it inside a group beside another failure.
+                        raise refusal
 
                 elif operation.execution.status == EventStatus.CANCELLED:
                     self._emit_terminal_once(
@@ -756,10 +758,11 @@ class DependencyAwareExecutor:
             raise
 
         except Exception as e:
-            from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+            from lionagi.state.compat import refusal_in  # noqa: PLC0415
 
-            if isinstance(e, StateCompatibilityRefused):
-                raise
+            refusal = refusal_in(e)
+            if refusal is not None:
+                raise refusal  # noqa: B904 -- raised as found, keeping its own cause
             # Defensive net for unexpected flow-level errors; invoke() already handles FAILED status.
             if operation.id not in self.results:
                 self.results[operation.id] = {"error": str(e)}

@@ -1248,6 +1248,7 @@ async def teardown_persist(
             _log.error("live persist teardown refused: %s", refusal)
             _unroute_message_hooks(ctx)
             ctx["terminal_reason"] = ("failed", f"The store refused a write: {refusal}")
+            ctx["store_refusal"] = refusal
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's

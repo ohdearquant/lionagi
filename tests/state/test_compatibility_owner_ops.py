@@ -255,6 +255,23 @@ async def _setup_run(db: StateDB) -> None:
     )
 
 
+async def test_the_shared_lookup_refuses_a_store_held_for_several_owners(store):
+    """Handles for two owners write different runs' rows; a caller naming only the store does
+    not say whose, so neither is handed out and no native handle is opened."""
+    from lionagi.state import db as db_mod
+
+    first = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    second = StateDB(store, compatibility=_profile(store), owner="principal:b")
+    try:
+        await db_mod.register_shared_db(first)
+        await db_mod.register_shared_db(second)
+        with pytest.raises(StateCompatibilityRefused, match="2 compatibility handles"):
+            await db_mod.get_shared_db(store)
+        assert db_mod._SHARED.get(first.url) is None
+    finally:
+        await db_mod.close_shared_db()
+
+
 async def test_a_run_writes_its_owner_on_every_row_it_creates(db, store):
     await _setup_run(db)
 
@@ -1112,6 +1129,8 @@ async def test_a_refused_teardown_fails_the_run_with_the_refusal(db, store):
     status, reason = ctx["terminal_reason"]
     assert status == "failed"
     assert "persist_live_message refused" in reason
+    assert isinstance(ctx["store_refusal"], StateCompatibilityRefused)
+    assert str(ctx["store_refusal"]) in reason
     assert hook not in session.hooks.handlers_for(HookPoint.MESSAGE_ADD)
     assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("running",)]
 
