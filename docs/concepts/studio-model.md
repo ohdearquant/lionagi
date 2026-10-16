@@ -8,10 +8,28 @@ views.
 ## Daemon and client
 
 `li studio` starts a daemon on `127.0.0.1:8765` by default. The hosted client
-at `https://lion-studio.khive.ai` connects to that local service. Docker can
-serve a bundled client and daemon, and a source checkout can run a local
-development frontend. These are different ways to serve the interface;
-they use the same Studio service boundary.
+at `https://lion-studio.khive.ai` connects to that local service. Docker bundles
+the client and daemon and publishes a host port; its default port mapping is
+not restricted to loopback. A source checkout can run a local development
+frontend. The chosen launch mode determines the network exposure.
+
+With `LIONAGI_STUDIO_AUTH_TOKEN` unset, API authentication is disabled: any
+caller that can reach the daemon and passes its Host-header check can call
+the `/api` endpoints, subject to their normal request validation. The default
+`CORS_ORIGINS` includes `https://lion-studio.khive.ai`, so a page served from
+that origin can drive the no-token local API, including Operator proposal
+approval decisions. Host validation and CORS do not authenticate the caller
+or establish that a human approved a request.
+
+Setting `LIONAGI_STUDIO_AUTH_TOKEN` requires the matching bearer token for
+API requests and the schema/docs endpoints; `/health` and CORS preflight
+remain unauthenticated. The
+ordinary hosted client has no token-entry UI and does not receive a token
+from the daemon's environment. It therefore does not gain authenticated
+access merely because the daemon has a token configured. These behaviors
+follow `lionagi/studio/app.py`, `lionagi/studio/config.py`, and
+`lionagi/studio/services/operator.py`;
+frontend credential handling is in `apps/studio/frontend/src/lib/api.ts`.
 
 This split lets the interface use local agents, files, and stored execution
 history. The hosted page does not become the owner of that state. Keep the

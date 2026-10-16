@@ -50,6 +50,34 @@ web client at [lion-studio.khive.ai](https://lion-studio.khive.ai). The hosted
 page is the frontend; execution and stored history remain on your machine.
 Keep the command running while using Studio or its scheduler.
 
+### Authentication and browser trust
+
+By default, `LIONAGI_STUDIO_AUTH_TOKEN` is unset and the daemon does not require
+authentication for `/api` requests. Any caller that can reach it and passes
+the Host-header check can use those endpoints, subject to normal request
+validation. The default browser-origin allowlist, `CORS_ORIGINS`, includes
+`https://lion-studio.khive.ai`. A page served from that origin can therefore
+drive the no-token local daemon, including sending Operator proposal approval
+decisions. The Host check and CORS are not caller authentication or proof of
+a human decision.
+
+Set `LIONAGI_STUDIO_AUTH_TOKEN` in the daemon's environment before starting it
+to require `Authorization: Bearer <token>` for API requests and the
+schema/docs endpoints. `/health` and CORS preflight remain unauthenticated.
+The hosted client has no
+token-entry UI and does not receive a token from this environment variable.
+Setting it on the daemon alone therefore does not authenticate the hosted
+page. Use a client that supplies the matching bearer header; the desktop
+shell injects a token for its own daemon into its frontend. The ordinary
+hosted page does not provide that token-delivery path.
+
+Authentication, Host validation, and browser origins are defined in
+`lionagi/studio/app.py` and `lionagi/studio/config.py`. Operator decisions
+use `lionagi/studio/services/operator.py`; frontend credential handling is
+defined in `apps/studio/frontend/src/lib/api.ts`.
+
+### Choose a launch mode
+
 Choose a launch mode for your setup:
 
 | Command | When to use it |
