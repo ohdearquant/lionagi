@@ -68,6 +68,12 @@ helper code. With that code unchanged, a branch dispatch is rejected before
 tests, and the image is built from the release commit. A maintainer able to
 change the workflow or helper can remove the guard; this is not an external
 default-branch deployment restriction. No GitHub environment rule is assumed.
+The guard constrains only the copy of the workflow it runs in: a principal with
+branch-push and workflow-dispatch rights can run a branch copy of `release.yml`
+that publishes arbitrary content under an existing version tag and `latest`, and
+that copy's jobs can still reach the repository secrets the release path uses.
+The guard binds the published source to the released commit only for the
+workflow on the default branch.
 Both paths trust this repository's publication workflow and do not prove that
 PyPI wheel bytes equal the checked-out source.
 
@@ -82,8 +88,11 @@ queued job can cancel and replace an older pending job even though
 without publishing an image. The daily `Image matches PyPI` workflow detects a
 missing current-version image or stale `latest`. Rerun the displaced release-event
 run (Actions, then the run, then `Re-run all jobs`) to recover its image while
-reruns remain available; if a manual repair was displaced, dispatch it again from
-the default branch when its evidence is retained.
+reruns remain available. That control also reruns the run's `deploy` job, which
+re-attempts `twine upload`; when PyPI already has the wheel the duplicate upload
+can fail and leave the run red even though the image publishes (see the
+duplicate-upload caveat above). If a manual repair was displaced, dispatch it
+again from the default branch when its evidence is retained.
 Avoid overlapping recovery dispatches so they do not replace another pending job.
 See
 [GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).

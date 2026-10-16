@@ -51,6 +51,16 @@ TEST_RUN = (
     "source .venv/bin/activate\n"
     "uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/\n"
 )
+VERIFY_RUN = (
+    'if [ "${DOCKER_RESULT}" != success ]; then\n'
+    "  echo '::error::image publication or digest verification did not succeed'\n"
+    "  exit 1\n"
+    "fi\n"
+    'if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then\n'
+    "  echo '::error::the image build did not produce a valid digest'\n"
+    "  exit 1\n"
+    "fi\n"
+)
 RUNS = (
     f"{PREFIX}/actions/workflows/release.yml/runs?event=release&head_sha={SHA}&per_page=100&page=1"
 )
@@ -271,6 +281,27 @@ def test_skipped_upload_is_not_publication_evidence(metadata):
         resolve_fixture(metadata)
 
 
+def test_a_successful_build_step_is_not_publication_evidence(metadata):
+    """The successful step that stands as upload evidence must be the one that
+    names the upload. A deploy job whose build step passed while its publish
+    step was skipped is not evidence that a wheel was ever uploaded."""
+    metadata[1][JOBS]["jobs"][0]["steps"] = [
+        {"name": "Build package", "status": "completed", "conclusion": "success"},
+        {"name": "Publish package to PyPI", "status": "completed", "conclusion": "skipped"},
+    ]
+    with pytest.raises(release.ReleaseError, match="no successful release workflow"):
+        resolve_fixture(metadata)
+
+
+def test_upload_evidence_must_come_from_the_deploy_job(metadata):
+    """A successful upload step in some other job is not the deploy job's
+    upload, so the job name is part of what makes the step evidence."""
+    job = metadata[1][JOBS]["jobs"][0]
+    job["name"] = "publish"
+    with pytest.raises(release.ReleaseError, match="no successful release workflow"):
+        resolve_fixture(metadata)
+
+
 def test_missing_publication_history_refuses_a_manual_repair(metadata):
     metadata[1][RUNS] = {"workflow_runs": []}
     with pytest.raises(release.ReleaseError, match="no successful release workflow"):
@@ -388,8 +419,36 @@ def test_release_image_waits_for_the_wheel_to_be_published(metadata):
         resolve_fixture(metadata, prepare_image=True)
 
 
+class NoDuplicateKeysLoader(yaml.SafeLoader):
+    """A loader that refuses a mapping key used twice in the same node.
+
+    PyYAML keeps the last of two identical keys, so a first `if:` that would
+    have skipped a step disappears with no trace in the parsed document. A
+    duplicate key is a workflow error, not a value to pick between.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            seen = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"found duplicate key {key!r}",
+                        key_node.start_mark,
+                    )
+                seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_workflow(text):
+    return yaml.load(text, Loader=NoDuplicateKeysLoader)
+
+
 def workflow():
-    return yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    return load_workflow((ROOT / ".github/workflows/release.yml").read_text())
 
 
 def step_identity(step):
@@ -689,24 +748,18 @@ def assert_workflow_contract(document):
     assert docker["steps"].index(digest_verify) == docker["steps"].index(image) + 1
     assert len(jobs["verify-image"]["steps"]) == 1
     verify = jobs["verify-image"]["steps"][0]
-    assert verify["env"] == {
-        "DOCKER_RESULT": "${{ needs.docker.result }}",
-        "EXPECTED_DIGEST": "${{ needs.docker.outputs.digest }}",
+    # The final gate is pinned whole. An unpinned key such as
+    # `working-directory` or `id` would change how the gate runs without
+    # changing the command it names.
+    assert verify == {
+        "name": "Require successful image publication and verification",
+        "shell": "bash",
+        "env": {
+            "DOCKER_RESULT": "${{ needs.docker.result }}",
+            "EXPECTED_DIGEST": "${{ needs.docker.outputs.digest }}",
+        },
+        "run": VERIFY_RUN,
     }
-    assert verify["shell"] == "bash"
-    assert (
-        verify["run"].strip()
-        == """if [ "${DOCKER_RESULT}" != success ]; then
-  echo '::error::image publication or digest verification did not succeed'
-  exit 1
-fi
-if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo '::error::the image build did not produce a valid digest'
-  exit 1
-fi"""
-    )
-    assert "if" not in verify
-    assert not verify.get("continue-on-error", False)
     for job in jobs.values():
         for step in job.get("steps", []):
             if step.get("uses", "").startswith("actions/checkout"):
@@ -787,10 +840,27 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "buildx-driver-options",
         "buildx-retry-soft-failure-removed",
         "login-identity-replaced",
+        "verify-step-working-directory",
+        "verify-step-id",
+        "verify-step-shell-replaced",
+        "duplicate-if-key-on-docker",
     ],
 )
 def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
-    document = workflow()
+    text = (ROOT / ".github/workflows/release.yml").read_text()
+    if mutation == "duplicate-if-key-on-docker":
+        # A second `if:` on the docker job. PyYAML keeps the last one, so a
+        # loader that accepts duplicates would silently drop the first; the
+        # loader must refuse the document instead.
+        text = text.replace(
+            "    if: ${{ !cancelled()",
+            "    if: 'true'\n    if: ${{ !cancelled()",
+            1,
+        )
+        with pytest.raises(yaml.constructor.ConstructorError, match="duplicate key"):
+            load_workflow(text)
+        return
+    document = load_workflow(text)
     assert_workflow_contract(document)
     jobs = document["jobs"]
     docker = jobs["docker"]
@@ -976,6 +1046,12 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         next(s for s in docker["steps"] if s.get("uses") == LOGIN_ACTION)["with"]["password"] = (
             "${{ secrets.PUBLISH_TOKEN }}"
         )
+    elif mutation == "verify-step-working-directory":
+        verify["working-directory"] = "/"
+    elif mutation == "verify-step-id":
+        verify["id"] = "gate"
+    elif mutation == "verify-step-shell-replaced":
+        verify["shell"] = "sh"
     with pytest.raises((AssertionError, KeyError)):
         assert_workflow_contract(document)
 
@@ -1016,7 +1092,16 @@ with Path(os.environ["CURL_ARGUMENTS"]).open("a") as out:
 if "/token?" in url:
     print('{"token": "public-pull-token"}')
 else:
-    item = json.loads(Path(os.environ["RESPONSES"]).read_text()).get(url.rsplit("/", 1)[-1], {})
+    data = json.loads(Path(os.environ["RESPONSES"]).read_text())
+    if "__sequence__" in data:
+        # Snapshots consumed in order, one per manifest read, so a lagging
+        # first read can be followed by a correct one within a single run.
+        counter_path = Path(os.environ["RESPONSES"]).with_suffix(".count")
+        seen = int(counter_path.read_text()) if counter_path.exists() else 0
+        counter_path.write_text(str(seen + 1))
+        sequence = data["__sequence__"]
+        data = sequence[min(seen, len(sequence) - 1)]
+    item = data.get(url.rsplit("/", 1)[-1], {})
     print("HTTP/2 200\\r\\nDocker-Content-Digest: " + item.get("digest", "") + "\\r\\n")
     sys.exit(item.get("exit", 0))
 """)
@@ -1063,10 +1148,12 @@ def test_registry_reads_are_bounded_in_time(registry):
     lines = arguments.read_text().splitlines()
     assert lines, "the verifier must have called curl"
     for line in lines:
-        # The values, not just the flag names: `--max-time 86400` satisfies the
-        # presence of the flag and is not a deadline that bounds the slot.
-        assert "--connect-timeout 10" in line, line
-        assert "--max-time 30" in line, line
+        # The value token, not the flag name alone: `--max-time 86400` and
+        # `--connect-timeout 100` both satisfy a substring check on the flag
+        # and are not the deadlines that bound the slot.
+        tokens = line.split()
+        assert tokens[tokens.index("--connect-timeout") + 1] == "10", line
+        assert tokens[tokens.index("--max-time") + 1] == "30", line
 
 
 def test_registry_verifies_both_published_digests(registry):
@@ -1080,12 +1167,39 @@ def test_old_version_verification_does_not_require_or_read_latest(registry):
     assert "/manifests/latest" not in calls.read_text()
 
 
+def test_a_lagging_first_read_is_retried_until_the_registry_catches_up(registry):
+    """The push can reach the registry after the verifier's first read, so a
+    stale first snapshot must not fail a correct run: the retry loop is what
+    makes the difference between 'not yet' and 'never'."""
+    run, digest, _, _ = registry
+    old = "sha256:" + "d" * 64
+    stale = {"1.2.3": {"digest": old}, "latest": {"digest": old}}
+    caught_up = {"1.2.3": {"digest": digest}, "latest": {"digest": digest}}
+    result = run({"__sequence__": [stale, stale, caught_up, caught_up]})
+    assert result.returncode == 0
+    assert f"Verified ghcr.io/ohdearquant/lion-studio:1.2.3 at {digest}" in result.stdout
+
+
 @pytest.mark.parametrize("tag", ["1.2.3", "latest"])
 def test_an_old_digest_cannot_satisfy_this_runs_build(registry, tag):
     run, digest, _, _ = registry
     tags = {"1.2.3": {"digest": digest}, "latest": {"digest": digest}}
     tags[tag]["digest"] = "sha256:" + "d" * 64
     result = run(tags)
+    assert result.returncode == 1
+    assert (
+        "::error::the requested image tags do not resolve to this run's build digest"
+        in result.stdout
+    )
+
+
+def test_two_old_tags_that_agree_with_each_other_still_cannot_satisfy_this_run(registry):
+    """Both tags resolving to the same older digest is the shape a stale `latest`
+    and a leftover version tag share; comparing the two tags with each other
+    would accept it, so each must be compared with this run's build digest."""
+    run, _, _, _ = registry
+    old = "sha256:" + "d" * 64
+    result = run({"1.2.3": {"digest": old}, "latest": {"digest": old}})
     assert result.returncode == 1
     assert (
         "::error::the requested image tags do not resolve to this run's build digest"
@@ -1219,7 +1333,9 @@ def test_failed_read_is_not_described_as_a_recorded_reading():
     failed read never leaves behind."""
     text = " ".join((ROOT / ".github/workflows/image-matches-pypi.yml").read_text().split())
     assert "Every run writes its readings" not in text
+    assert "Written on every run" not in text
     assert "Every completed reading writes its readings" in text
+    assert "Written on every completed reading" in text
 
 
 def test_daily_check_guidance_does_not_claim_an_older_image_on_a_missing_tag():
@@ -1253,7 +1369,7 @@ def test_daily_check_guidance_does_not_offer_a_new_release_as_recovery():
     assert "publish a new release" not in text
     assert "A newer release does not restore this version's image" in text
     assert "the issue closes and the version above is left without one" in text
-    assert yaml.safe_load((ROOT / ".github/workflows/image-matches-pypi.yml").read_text())
+    assert load_workflow((ROOT / ".github/workflows/image-matches-pypi.yml").read_text())
 
 
 def test_daily_check_guidance_does_not_claim_the_issue_is_current():

@@ -193,8 +193,9 @@ jobs:
           EOF
           )"
 
-          # Written on every run, including the green ones. This is the record
-          # that tells "checked, matched" apart from "never checked".
+          # Written on every completed reading, including the green ones. A
+          # failed read skips this step, so the record is absent for it. This is
+          # the record that tells "checked, matched" apart from "never checked".
           {
             echo "### Readings"
             echo
@@ -243,8 +244,11 @@ jobs:
 
           A queued image job can be cancelled when another image job takes its
           pending slot. Rerun a displaced release-event run (Actions, then the run,
-          then \`Re-run all jobs\`), or dispatch a manual repair again when
-          successful upload evidence is retained. Avoid
+          then \`Re-run all jobs\`). That control also re-runs \`deploy\`, which
+          re-attempts \`twine upload\`; when PyPI already has the wheel the
+          duplicate upload can fail and leave the run red even though the image
+          publishes. Or dispatch a manual repair again when successful upload
+          evidence is retained. Avoid
           overlapping recovery dispatches. This daily check will report the
           current PyPI version again if its image is still missing or stale.
 
