@@ -515,14 +515,18 @@ class AnthropicMessagesEndpoint(Endpoint):
                 await router.settle_response(attempt, body)
                 return redact_value(_mask_content_runs(body, attempt.key), attempt.key)
         except get_cancelled_exc_class():
-            if not request_entered:
-                await router.settle_not_sent(attempt)
-            else:
-                # The request may have reached the provider, so the attempt stays open
-                # with its ceiling held and records why, as a cancelled stream does. The
-                # write is shielded and bounded so the cancellation cannot cut it short;
-                # an attempt that already settled is left as it is.
-                await router.settle_stream_end(attempt, None, reason="cancelled")
+            # The request may have reached the provider, so the attempt stays open with its
+            # ceiling held and records why, as a cancelled stream does. The write is shielded
+            # so the cancellation cannot cut it short; an attempt that already settled is left
+            # as it is. A ledger that refuses the write (locked) records nothing, and the
+            # cancellation still reaches the caller.
+            try:
+                if not request_entered:
+                    await router.settle_not_sent(attempt)
+                else:
+                    await router.settle_stream_end(attempt, None, reason="cancelled")
+            except AccountRoutingError:
+                pass
             raise
         except AccountRoutingError as exc:
             raise _RoutedNoRetryError(
@@ -723,6 +727,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         settled = False
         saw_error_event = False
         saw_final_usage = False
+        start_models: set[str] = set()
 
         def finish_line(line: str) -> list[str]:
             text = line.rstrip("\r")
@@ -854,11 +859,15 @@ class AnthropicMessagesEndpoint(Endpoint):
                     # attempt, and one that leaves a field out says nothing about that field,
                     # so each leaves what an earlier event said in place. Its counts are
                     # placeholders, so a start after a message_delta's final count leaves that
-                    # count alone, and its model too: the final count is priced at the model
-                    # that produced it, so the attempt's cost stays put.
+                    # count alone, and its model too. A stream has one message_start; when
+                    # starts name two models, the next count cannot be tied to one of them
+                    # (see message_delta).
                     if settlement is not None:
+                        started_model = settlement.get("model")
+                        if isinstance(started_model, str) and started_model:
+                            start_models.add(started_model)
                         if not saw_final_usage:
-                            served_model = settlement.get("model") or served_model
+                            served_model = started_model or served_model
                         request_id = (
                             provider_request_id(settlement.get("id"), attempt.key) or request_id
                         )
@@ -871,6 +880,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                         usage.update(delta_usage)
                         output_tokens = delta_usage.get("output_tokens")
                         if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+                            # A count that arrives after starts naming two models has no one
+                            # model to price it at, so the attempt is left unpriced, open with
+                            # its ceiling held. A count that arrived before the second start
+                            # keeps the first model's price. A later delta whose count is not
+                            # an integer replaces the earlier count, which also leaves the
+                            # attempt unpriced.
+                            if len(start_models) > 1:
+                                served_model = None
                             saw_final_usage = True
                 elif event_type == "error":
                     saw_error_event = True
@@ -982,10 +999,15 @@ class AnthropicMessagesEndpoint(Endpoint):
                     await router.settle_stream_end(attempt, None, reason=reason)
                     settled = True
         except get_cancelled_exc_class():
-            if not request_entered:
-                await router.settle_not_sent(attempt)
-            elif not settled:
-                await router.settle_stream_end(attempt, None, reason="cancelled")
+            # A ledger that refuses the write (locked) records nothing; the cancellation still
+            # reaches the caller.
+            try:
+                if not request_entered:
+                    await router.settle_not_sent(attempt)
+                elif not settled:
+                    await router.settle_stream_end(attempt, None, reason="cancelled")
+            except AccountRoutingError:
+                pass
             raise
         except GeneratorExit:
             # The consumer closed the stream before message_stop.

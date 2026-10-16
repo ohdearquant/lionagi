@@ -3692,3 +3692,73 @@ async def test_a_later_message_starts_id_that_holds_a_run_keeps_the_recorded_one
     (row,) = _attempts(path)
     assert row[2:] == ("settled", row[3], "complete"), row
     assert _request_ids(path) == ["msg_s"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_model", ["claude-opus-5-5", "claude-not-priced"])
+@pytest.mark.parametrize("late_delta_first", [False, True], ids=["start-then-count", "count-first"])
+async def test_a_count_after_starts_naming_two_models_leaves_the_attempt_unpriced(
+    monkeypatch, tmp_path, late_model, late_delta_first
+):
+    """A count that arrives after message_starts naming two models cannot be tied to one
+    of them, so the attempt is not priced at either: it stays open with its ceiling held.
+    ``count-first`` has a final count before the second start and another after it;
+    ``start-then-count`` has both starts before the only count."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["usage"]["output_tokens"] = 1
+    late = {"type": "message_start", "message": {"id": "msg_s", "model": late_model}}
+    first = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    second = {"type": "message_delta", "usage": {"output_tokens": 7}}
+    if late_delta_first:
+        events = [start, _PARTIAL_TEXT, first, late, second, {"type": "message_stop"}]
+    else:
+        events = [start, late, _PARTIAL_TEXT, first, {"type": "message_stop"}]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    (row,) = _attempts(path)
+    assert row[2:] == ("open", None, "usage_incomplete"), row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+async def test_a_locked_ledger_does_not_replace_the_cancellation(monkeypatch, tmp_path, streamed):
+    """When the ledger refuses the cancelled attempt's write, the caller still gets
+    CancelledError, not the ledger's refusal."""
+    _install_accounts(monkeypatch, tmp_path)
+
+    async def refuse(self, attempt, usage, *, reason="usage_incomplete"):
+        raise AccountRoutingError(RouterErrorCode.LEDGER_BUSY)
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_stream_end", refuse)
+    model = iModel(provider="anthropic", model=MODEL)
+    model.endpoint._assert_ssrf_safe_url = lambda: None
+    entered_request = asyncio.Event()
+    never_finish = asyncio.Event()
+
+    class SendingSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def request(self, **_):
+            entered_request.set()
+            await never_finish.wait()
+
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: SendingSession()
+
+    async def consume():
+        if streamed:
+            async for _ in model.endpoint.stream(REQUEST):
+                pass
+        else:
+            await model.endpoint.call(REQUEST)
+
+    task = asyncio.create_task(consume())
+    await entered_request.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
