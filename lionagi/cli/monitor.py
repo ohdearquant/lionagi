@@ -1251,6 +1251,10 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
                 source="executor",
                 actor=row["id"],
                 expected_statuses={row["status"]},
+                # The reconciled row is terminal, so it must not keep the live
+                # phase the engine session reported; the clear rides this same
+                # statement rather than a second write that can be skipped.
+                extra_fields={"current_phase": None},
             )
         except TransitionRejectedError:
             # Raced with another writer that took the row terminal first —

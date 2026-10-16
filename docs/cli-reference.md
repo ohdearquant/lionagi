@@ -335,12 +335,19 @@ command-specific ID and JSON options.
 
 Foreground flows print `Session: <full ID>` after recording the session, before
 planning. Background launch prints the full session ID assigned to its child.
-Control actions accept an exact recorded session, invocation, play or run ID, or
-an unambiguous 8-character hex prefix. Shorter prefixes remain available to
-`status`, which does not act on a run. An exact stored ID need not be a UUID.
-`--invocation` must name an existing invocation registered with `li invoke start`;
-unknown values fail before flow setup/planning or background launch, rather than
-silently disabling persistence. The flag does not register an alias.
+Control actions accept an exact recorded session, invocation, play or run ID, an
+unambiguous 8-character hex prefix, or an unambiguous prefix of a run ID (the ID
+`li agent` prints). Any other string is looked up as an exact id first; a string
+shorter than eight characters or carrying a non-hex character is treated as a
+prefix only when it also begins a recorded run ID, and one that begins both a run
+ID and another ID is refused as ambiguous. A self-chosen label that begins no run
+ID therefore cannot match a different run; an eight-hex label is a prefix like
+any other printed id. Shorter prefixes remain available to `status`, which does
+not act on a run. An exact stored ID need not be a UUID. `--invocation` must name an existing
+invocation registered with `li invoke start`; unknown values fail before flow
+setup/planning or background launch, rather than silently disabling persistence.
+Both `li o flow` and `li o fanout` check it before anything is spawned. The flag
+does not register an alias.
 
 While a flow is waiting for DAG execution, controls are deferred until its DAG
 execution poller starts, including pre-planning, graph construction and resumed
@@ -348,16 +355,20 @@ run windows. The poller checks about every two seconds during DAG execution;
 this is not a delivery deadline or a guarantee before the first operation.
 Controls will not be applied after the poller stops. Flows whose poller has
 stopped, and older flows without control-delivery tracking, refuse new controls.
-Marker writes are best-effort: a failed stop-marker write can leave a stale active
-marker, so enqueue is never a delivery guarantee. Check `status` for application.
+The stop marker is published before the poll loop stops, and enqueue re-checks it
+in the same statement that inserts the control, so a run that has lost its poller
+refuses rather than queueing against a consumer that is gone. Marker writes are
+best-effort: a failed stop-marker write can leave a stale active marker, so enqueue
+is never a delivery guarantee. Check `status` for application.
 
 Pause/resume acts at operation boundaries before the concurrency limiter.
 Operations already past the pause gate, including those waiting for limiter
 capacity, may still start; running operations are not interrupted. Messages affect
 only operations prepared after delivery and are rejected if none remain pending.
 Applied pause/resume writes `paused`/`executing` with one retry after a phase-write
-failure; repeated write failure can leave telemetry stale. Terminal status and
-phase clearing share one write. Flow runs are sessions: use
+failure; repeated write failure can leave telemetry stale. Every writer that ends a
+session clears `current_phase` in the same statement as the terminal status, and
+reads still hide a stored phase on a terminal row. Flow runs are sessions: use
 `li monitor --type session`, or `--type invocation` for registered invocations.
 
 ---

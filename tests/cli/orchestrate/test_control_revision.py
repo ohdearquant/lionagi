@@ -198,6 +198,30 @@ async def test_printed_eight_character_prefix_can_control_session(db_path):
         assert len(await db.list_pending_session_controls(sid)) == 1
 
 
+async def test_run_id_prefix_still_controls_its_session(db_path):
+    async with StateDB(db_path) as db:
+        sid = await _named_session(db, "run-backed-session")
+        await db.update_session(sid, run_id="20260801T020202-abc123")
+    _output, rc = await _enqueue_control_inner(entity_id="20260801T020", verb="pause", payload=None)
+    assert rc == 0
+    async with StateDB(db_path) as db:
+        assert len(await db.list_pending_session_controls(sid)) == 1
+
+
+async def test_label_prefixing_an_invocation_and_a_run_is_refused(db_path):
+    async with StateDB(db_path) as db:
+        await db.create_invocation({"id": "20260801T03-label", "skill": "flow", "started_at": 1.0})
+        labelled = await _named_session(db, "labelled-session", invocation_id="20260801T03-label")
+        run_backed = await _named_session(db, "run-backed-session")
+        await db.update_session(run_backed, run_id="20260801T030303-abc123")
+    output, rc = await _enqueue_control_inner(entity_id="20260801T03", verb="pause", payload=None)
+    assert rc == EXIT_UNKNOWN
+    assert "ambiguous" in output
+    async with StateDB(db_path) as db:
+        assert await db.list_pending_session_controls(labelled) == []
+        assert await db.list_pending_session_controls(run_backed) == []
+
+
 @pytest.mark.parametrize(
     "kind,name_field", [("agent", "agent_name"), ("flow", "agent_name"), ("play", "playbook_name")]
 )
@@ -580,3 +604,98 @@ async def test_double_native_cancel_has_no_standalone_phase_clear_barrier(
             await asyncio.gather(task, return_exceptions=True)
         if getattr(env, "test_db", None) is not None:
             await env.test_db.close()
+
+
+async def test_poller_stop_is_published_before_the_loop_is_cancelled(
+    db_path, tmp_path, monkeypatch
+):
+    """A control cannot be admitted in the window between the poll loop dying and the marker.
+
+    The final exchange collect runs after the poll loop can no longer apply a
+    control but before the historical teardown published the stop. The
+    enqueue below runs inside exactly that window: it must be refused, since
+    the only consumer is already gone.
+    """
+    async with StateDB(db_path) as db:
+        sid = await _make_session(db)
+        await db.merge_session_node_metadata(sid, {"flow_control_poller": "pending"})
+        env = _make_env(tmp_path, live_persist={"db": db, "session_id": sid})
+        env.session.include_branches(_FakeBranch("researcher"))
+        plan, dag = _plan_and_dag()
+        seen: dict = {}
+
+        class Exchange:
+            def __init__(self):
+                self.done = asyncio.Event()
+
+            async def run(self, interval):
+                await self.done.wait()
+
+            def stop(self):
+                self.done.set()
+
+            async def collect_all(self):
+                marker = (await db.get_session(sid))["node_metadata"]
+                seen["marker"] = marker.get("flow_control_poller")
+                output, rc = await _enqueue_control_inner(entity_id=sid, verb="pause", payload=None)
+                seen["rc"] = rc
+                seen["output"] = output
+
+        env.exchange = Exchange()
+
+        async def run_dag(graph, *, executor_ref, **kwargs):
+            executor_ref["executor"] = _FakeExecutor()
+            return {"operation_results": {"node-0": "done"}, "spawned_operations": 0}
+
+        engine_run = MagicMock()
+        engine_run.run_dag = run_dag
+        monkeypatch.setattr("lionagi.engines.PlanningEngine.new_run", lambda *a, **k: engine_run)
+        await flow._execute_dag(env, plan, dag, max_concurrent=1, max_ops=0)
+
+        assert seen["marker"] == "stopped"
+        assert seen["rc"] != 0
+        assert await db.list_pending_session_controls(sid) == []
+
+
+async def test_kill_writer_clears_the_live_phase_with_the_terminal_status(db_path):
+    """`li kill` ends a run, so its terminal row must not keep the live phase.
+
+    A flow killed by signal leaves its last phase behind; the kill writer is
+    what terminalizes that row, and the phase clear has to ride its one status
+    write rather than a separate statement that can be skipped.
+    """
+    from lionagi.cli.kill import _persist_cancel
+    from lionagi.state.reasons import RunReasons
+
+    async with StateDB(db_path) as db:
+        sid = await _make_session(db)
+        await db.update_session(sid, current_phase="executing")
+        await _persist_cancel(
+            db,
+            "session",
+            sid,
+            reason_code=RunReasons.CANCELLED_FORCE_KILL,
+            reason_summary="Force-killed (SIGKILL after grace period).",
+            evidence={"kind": "kill_event", "signal": "sigkill", "pid": None},
+        )
+        row = await db.get_session(sid)
+
+    assert row["status"] == "cancelled"
+    assert row["current_phase"] is None
+
+
+async def test_unreadable_invocation_store_refuses_instead_of_traceback(db_path, monkeypatch):
+    """A store that cannot be read is a refusal, not a traceback.
+
+    An id is unproven when the store cannot confirm it, so a file that exists
+    but is not a readable store must reach the caller on the same
+    FlowPlanError channel every other plan-time failure uses, rather than
+    letting the read error escape as a traceback.
+    """
+    db_path.write_bytes(b"this is not a sqlite database")
+    setup = AsyncMock(side_effect=AssertionError("setup ran before invocation validation"))
+    monkeypatch.setattr(flow, "setup_orchestration", setup)
+
+    with pytest.raises(flow.FlowPlanError, match="could not be checked"):
+        await flow._run_flow("fake/model", "work", invocation_id="self-chosen")
+    setup.assert_not_awaited()

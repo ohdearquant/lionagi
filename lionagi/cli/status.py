@@ -328,9 +328,11 @@ def _detect_degraded(
         return False, None
     if primary_session.get("num_turns") is not None:
         return False, None
-    phase = primary_session.get("current_phase")
-    detail = f"; stored current_phase={phase!r}" if phase else ""
-    return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded{detail}"
+    # The stored phase is deliberately not quoted here: a terminal row can keep
+    # one because another writer ended the run (a kill, a reaper) rather than
+    # because teardown ran, so it is not evidence about this record. The
+    # num_turns gap above is the signal.
+    return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded"
 
 
 # ── View assembly ────────────────────────────────────────────────────────
@@ -368,6 +370,8 @@ async def _build_view(
             }
             for c in await db.list_pending_session_controls(primary_session["id"])
         ]
+
+    pending_controls_note = _pending_controls_note(primary_session)
 
     status = row.get("status") or ""
     terminal, exit_class, exit_code = _classify(entity_type, status)
@@ -434,7 +438,41 @@ async def _build_view(
         "pending_controls": [
             {**c, "never_landed": terminal and c.get("result") is None} for c in pending_controls
         ],
+        "pending_controls_note": pending_controls_note,
     }
+
+
+def _pending_controls_note(primary_session: dict[str, Any] | None) -> str | None:
+    """How a queued control would be delivered for this backing session.
+
+    The consumer is a property of the session kind, not of the queue: a
+    flow/play run applies controls through its DAG execution poller, an agent
+    run drains a steer at its next turn boundary. One sentence for every kind
+    would describe one of them wrongly, so the note is chosen here, from the
+    row, and the renderer prints what it is given. ``None`` means no consumer
+    this surface can name, and the renderer prints nothing.
+    """
+    if primary_session is None:
+        return None
+    kind = primary_session.get("invocation_kind")
+    if kind == "agent":
+        return "steers land as a continuation turn once the run's current turn ends"
+    if kind not in {"flow", "play"}:
+        return None
+    metadata = primary_session.get("node_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    marker = metadata.get("flow_control_poller") if isinstance(metadata, dict) else None
+    if marker == "stopped":
+        return (
+            "the DAG execution poller has stopped; controls queued after that will not be applied"
+        )
+    return (
+        "flow/play controls wait for the DAG execution poller; none will be applied after it stops"
+    )
 
 
 def _fmt_ts(ts: float | None) -> str:
@@ -475,10 +513,8 @@ def _render_human(view: dict[str, Any]) -> str:
         lines.append("")
         if not view["terminal"]:
             lines.append(_dim("  -- pending controls --"))
-            lines.append(
-                "  flow/play controls wait for the DAG execution poller; "
-                "none will be applied after it stops"
-            )
+            if view.get("pending_controls_note"):
+                lines.append(f"  {view['pending_controls_note']}")
         elif any(
             str(c.get("result") or "").startswith("applying") for c in view["pending_controls"]
         ):

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li o ctl pause|resume|msg` — enqueue session_controls rows for a running flow.
 
-Pure writers: resolve an exact session/invocation/play/run ID or an unambiguous
-eight-character hex prefix, then insert one row into
+Pure writers: resolve an exact session/invocation/play/run ID, an unambiguous
+eight-character hex prefix or an unambiguous run-id prefix, then insert one row into
 session_controls; do not wait for it to apply. See
 ``docs/internals/cli.md`` (`_control.py`) for consumer wiring and admission
 gating.
@@ -18,7 +18,12 @@ from typing import Any
 
 from .._logging import log_error
 from .._util import AmbiguousIdError
-from ..status import EXIT_UNKNOWN, _resolve_any_target, _resolve_primary_session
+from ..status import (
+    EXIT_UNKNOWN,
+    _resolve_any_target,
+    _resolve_primary_session,
+    _run_id_candidates,
+)
 
 __all__ = (
     "run_ctl_pause",
@@ -47,10 +52,13 @@ _CONSUMER_KINDS_BY_VERB: dict[str, frozenset[str]] = {
 
 
 async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
-    """Resolve an exact ID or an unambiguous eight-character printed prefix.
+    """Resolve an exact ID, an unambiguous eight-character printed prefix, or a run-id prefix.
 
     Status may search shorter prefixes, but an action must not mistake a label
     for a partial ID of another run. Exact registered IDs can be any length.
+    A run-id prefix still resolves as ADR-0108 records: run ids open with a
+    date, so a string that also prefixes an entity id is refused as ambiguous
+    by the resolver below rather than resolved to either.
     """
     if len(entity_id) != 8 or any(char not in "0123456789abcdefABCDEF" for char in entity_id):
         exact = False
@@ -58,7 +66,11 @@ async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
             if await db.fetch_one(f"SELECT id FROM {table} WHERE id = ?", (entity_id,)):  # noqa: S608
                 exact = True
                 break
-        if not exact and not await db.get_sessions_for_run(entity_id):
+        if (
+            not exact
+            and not await db.get_sessions_for_run(entity_id)
+            and not await _run_id_candidates(db, entity_id)
+        ):
             return None
     target = await _resolve_any_target(db, entity_id)
     if target is None:
@@ -177,7 +189,13 @@ async def _enqueue_control_inner(
                 EXIT_UNKNOWN,
             )
         control_id = await db.insert_session_control(
-            session_id=session_id, verb=verb, payload=payload
+            session_id=session_id,
+            verb=verb,
+            payload=payload,
+            # The status/marker checks above are reads; the write re-checks the
+            # delivery marker so a run that lost its poller between them refuses
+            # the control instead of queueing it against a consumer that is gone.
+            require_live_flow_poller=True,
         )
         if control_id is None:
             # The status check above and the insert are two statements, and the

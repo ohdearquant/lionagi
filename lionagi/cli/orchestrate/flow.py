@@ -201,13 +201,27 @@ class FlowPlanError(LionError):
 
 
 async def _validate_flow_invocation(invocation_id: str) -> None:
-    """Reject a dangling invocation before setup can degrade persistence."""
+    """Reject a dangling invocation before setup can degrade persistence.
+
+    Every way this check can fail to confirm the row is reported through
+    :class:`FlowPlanError`: an unreadable store (a missing table, a locked or
+    unopenable file) leaves the id just as unproven as an absent one, and
+    letting the read error escape would surface a traceback where the caller
+    expects a refusal it can act on.
+    """
     from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
     registered = False
     if not state_db_known_absent():
-        async with StateDB(readonly=read_only_open_supported()) as db:
-            registered = await db.get_invocation(invocation_id) is not None
+        try:
+            async with StateDB(readonly=read_only_open_supported()) as db:
+                registered = await db.get_invocation(invocation_id) is not None
+        except Exception as exc:  # noqa: BLE001 — an unreadable store is a refusal
+            raise FlowPlanError(
+                f"--invocation {invocation_id!r} could not be checked against the "
+                f"recorded invocations: {exc}. Register one with `li invoke start` "
+                "and use its exact ID, or repair the state store and retry"
+            ) from exc
     if not registered:
         raise FlowPlanError(
             f"--invocation {invocation_id!r} is not a registered invocation ID; "
@@ -247,6 +261,26 @@ async def _persist_control_poller_state(env, state: str) -> None:
             )
         except Exception as exc:  # noqa: BLE001 — metadata stays best-effort
             logger.debug("control poller state %s could not be persisted: %s", state, exc)
+
+
+async def _persist_control_poller_state_bounded(env, state: str) -> None:
+    """Best-effort marker write, bounded so a wedged store cannot hold the caller.
+
+    The marker is telemetry, like every other node_metadata write, so it gets
+    the same budget the drain gives one segment-metadata write. A write still
+    running at the budget is left to finish on its own and reported, not
+    awaited: teardown and the run's own start must not be held by a store
+    wedged mid-write.
+    """
+    write = _asyncio.ensure_future(_persist_control_poller_state(env, state))
+    _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
+    if pending:
+        _warn("control-poller marker write did not land within its budget; write not durable")
+        return
+    # The write swallows every error it can report itself; what escapes it is a
+    # cancellation, and the caller asked for this write, so it is the caller's
+    # to see.
+    write.result()
 
 
 # ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
@@ -2102,7 +2136,7 @@ async def _execute_dag(
             add_dir.append(project_root)
 
     t_exec = time.monotonic()
-    await _persist_control_poller_state(env, "active")
+    await _persist_control_poller_state_bounded(env, "active")
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
@@ -2143,9 +2177,21 @@ async def _execute_dag(
         _cancelled = isinstance(_dag_exc, _asyncio.CancelledError)
         try:
             _hb_task.cancel()
-            _ctl_task.cancel()
             if _exch_task is not None:
                 _exchange.stop()
+            # Publish the stop before the poll loop is cancelled. Admission reads this
+            # marker, and the poll loop is the only thing that applies a control, so the
+            # marker has to say "stopped" from the moment the loop can no longer run --
+            # otherwise a control admitted in the gap is queued against a consumer that
+            # will never read it. Ordered after the heartbeat and exchange stops above so
+            # the write cannot delay or skip them, and shielded so a native cancellation
+            # arriving mid-write cannot leave the marker reading "active" over a dead
+            # poller. The cancel runs in the finally either way.
+            try:
+                with CancelScope(shield=True):
+                    await _persist_control_poller_state_bounded(env, "stopped")
+            finally:
+                _ctl_task.cancel()
             # Waited, not awaited: awaiting a cancelled task under suppress(CancelledError)
             # would also swallow a cancellation of this task arriving meanwhile.
             await _asyncio.wait({_hb_task, _ctl_task})
@@ -2158,9 +2204,6 @@ async def _execute_dag(
                     _exch_task.result()
                 # Route any final outbox sends left over after the last collect tick.
                 await _exchange.collect_all()
-            # Telemetry must not add an await ahead of mandatory background
-            # stops/settlement; a native cancellation here cannot skip them.
-            await _persist_control_poller_state(env, "stopped")
         except BaseException as exc:
             _cancelled = _cancelled or isinstance(exc, _asyncio.CancelledError)
             if _dag_exc is not None and isinstance(exc, _asyncio.CancelledError):

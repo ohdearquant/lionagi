@@ -24,6 +24,7 @@ from lionagi.cli.status import (
     _classify,
     _detect_degraded,
     _dispatch,
+    _render_human,
     _resolve_agent_target,
     _resolve_any_target,
     _resolve_play_target,
@@ -232,13 +233,18 @@ def test_detect_degraded_healthy_completed():
 
 
 def test_detect_degraded_missing_metrics_flagged():
+    """The stored phase is not quoted: another writer can end the run and leave one.
+
+    num_turns is the signal that teardown never ran; a leftover phase is not
+    evidence the reason can stand on, so it stays out of the text.
+    """
     primary = {"num_turns": None, "source_kind": "live", "current_phase": "synthesizing"}
     degraded, reason = _detect_degraded(
         entity_type="session", status="completed", primary_session=primary
     )
     assert degraded is True
     assert "num_turns" in reason
-    assert "synthesizing" in reason
+    assert "synthesizing" not in reason
 
 
 def test_detect_degraded_missing_metrics_no_phase_still_flagged():
@@ -498,6 +504,7 @@ async def test_json_stable_shape(temp_db_path: Path):
         "status_reason_summary",
         "status_evidence_refs",
         "pending_controls",
+        "pending_controls_note",
     }
     assert set(view.keys()) == expected_keys
 
@@ -1096,3 +1103,54 @@ async def test_view_pending_control_on_running_run_is_not_never_landed(temp_db_p
         view = await _build_view(db, command="ctl", entity_type="session", row=row)
 
     assert [c["never_landed"] for c in view["pending_controls"]] == [False]
+
+
+@pytest.mark.asyncio
+async def test_pending_control_note_names_the_consumer_for_each_kind(temp_db_path: Path):
+    """The pending-controls note describes the run's own consumer.
+
+    An agent steer is drained at its next turn boundary; a flow's is drained
+    by the DAG execution poller. Printing the flow sentence for an agent run
+    tells its reader to expect a delivery mechanism it does not have.
+    """
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        await db.insert_session_control(session_id=sid, verb="message", payload={"text": "x"})
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+    rendered = _render_human(view)
+
+    assert "DAG execution poller" not in rendered
+    assert "continuation turn" in rendered
+
+
+@pytest.mark.asyncio
+async def test_pending_control_note_names_the_dag_poller_for_a_flow(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="flow")
+        await db.insert_session_control(session_id=sid, verb="pause")
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+    rendered = _render_human(view)
+
+    assert "DAG execution poller" in rendered
+    assert "none will be applied after it stops" in rendered
+
+
+@pytest.mark.asyncio
+async def test_terminal_row_stored_phase_does_not_reach_the_degraded_reason(temp_db_path: Path):
+    """A terminal row's stored phase is not evidence about the run.
+
+    A completed row can keep a phase because a kill or a reaper ended it
+    rather than teardown, so quoting it in the degraded reason would report a
+    value the run's own history does not support. The num_turns gap is the
+    signal.
+    """
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed", invocation_kind="flow")
+        await _set_fields(db, "sessions", sid, current_phase="synthesizing")
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="status", entity_type="session", row=row)
+
+    assert view["degraded"] is True
+    assert "stored current_phase" not in (view["degraded_reason"] or "")

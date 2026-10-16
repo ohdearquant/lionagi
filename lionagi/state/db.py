@@ -6106,26 +6106,51 @@ class StateDB:
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
         project: str | None = None,
+        require_live_flow_poller: bool = False,
     ) -> str | None:
-        """Queue a control verb for *session_id*; returns its id, or None if it was not admitted."""
+        """Queue a control verb for *session_id*; returns its id, or None if it was not admitted.
+
+        With *require_live_flow_poller*, a flow/play session must also declare
+        a live DAG poller (``node_metadata.flow_control_poller`` of ``pending``
+        or ``active``) in this same statement. The operator admission paths ask
+        for it: they read that marker to decide, and the run can lose its
+        poller between that read and this write -- the teardown publishes the
+        stop before it stops applying controls. Re-checking it here is what
+        stops a control being queued against a consumer that is already gone,
+        the same way the running condition stops one being queued against a
+        terminal run. Left off by default, because a direct caller has already
+        decided who its consumer is.
+        """
         control_id = uuid.uuid4().hex
-        # Four complete literals, selected rather than assembled: the statement text never depends
-        # on a runtime value, and the ownership predicate is visible in the SQL that actually runs.
-        # :project stays a bound parameter.
+        # Every piece of the statement is a fixed literal chosen by the dialect, whether a project
+        # is bound and whether the poller is required; no caller value reaches the text, and the
+        # ownership and delivery predicates are visible in the SQL that actually runs. :project
+        # stays a bound parameter. Only flow and play rows carry the poller marker, so every other
+        # kind keeps the status-only condition.
+        if not require_live_flow_poller:
+            delivery = ""
+        elif self.dialect == "sqlite":
+            delivery = (
+                " AND (COALESCE(invocation_kind, '') NOT IN ('flow', 'play') OR COALESCE("
+                "CASE WHEN json_valid(node_metadata) THEN "
+                "json_extract(node_metadata, '$.flow_control_poller') END, '') "
+                "IN ('pending', 'active'))"
+            )
+        else:
+            delivery = (
+                " AND (COALESCE(invocation_kind, '') NOT IN ('flow', 'play') OR COALESCE("
+                "node_metadata::jsonb->>'flow_control_poller', '') IN ('pending', 'active'))"
+            )
+        owner = " AND project = :project" if project is not None else ""
         if self.dialect == "sqlite":
             admit_source = (
-                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' AND project = :project)"
-                if project is not None
-                else "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running'"  # noqa: S608
+                f"{owner}{delivery})"
             )
         else:
             admit_source = (
-                "FROM (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' AND project = :project FOR UPDATE) _admitted"
-                if project is not None
-                else "FROM (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' FOR UPDATE) _admitted"
+                "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running'"  # noqa: S608
+                f"{owner}{delivery} FOR UPDATE) _admitted"
             )
         params = {
             "id": control_id,

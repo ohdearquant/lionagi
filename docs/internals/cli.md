@@ -587,11 +587,17 @@ Flow/play sessions persist `planning` before calling the planner. Their scalar
 `_execute_dag` starts its poller, regardless of a stale or NULL phase. Stopped
 consumers refuse new controls; missing declarations are refused as predating
 control-delivery tracking. Agent turn-end drain declarations are unchanged.
-The stopped marker follows existing background stop/settlement, so its telemetry
-await cannot skip exchange shutdown. Marker writes remain best-effort; a failed
-write may leave a stale active marker. Enqueue explicitly says no control will be
-applied after the poller stops. The approximately two-second interval is neither
-a deadline nor a guarantee before the first operation.
+The stopped marker is published before the DAG poll loop is cancelled, so a
+control can never be admitted in the gap between the loop dying and the marker
+saying so. The write is shielded, so a native cancellation arriving mid-write
+cannot leave the marker reading active over a dead poller; the poll loop is
+cancelled in either case. Marker writes remain best-effort; a failed write may
+leave a stale active marker. Enqueue re-checks the marker in the same statement
+that inserts the control, so a run that lost its poller between the admission
+read and the write refuses rather than queueing against a consumer that is gone.
+Enqueue explicitly says no control will be applied after the poller stops. The
+approximately two-second interval is neither a deadline nor a guarantee before
+the first operation.
 
 Applied pause/resume closes/opens the gate and writes `paused`/`executing`, retrying
 one failed phase write without replaying the executor action. Two failures leave
@@ -602,17 +608,26 @@ operations prepared after delivery and are rejected when none remain pending.
 Agent legs drain at the next turn boundary, which can be far later than two seconds
 into a provider call.
 
-Teardown carries `current_phase=None` in the authoritative terminal status UPDATE.
-Only `current_phase` was added to the two session status-patch allowlists; unrelated
-fields remain refused. There is no separate awaited phase clear before teardown.
+Every writer that ends a session carries `current_phase=None` in its terminal
+status UPDATE: teardown, the `li kill` writer, the doctor sweep, the monitor's
+linked-engine reconcile, and the studio reapers. A terminal row therefore no
+longer keeps the live phase it had, whichever path ended it. `current_phase` was
+added to the two session status-patch allowlists; unrelated fields remain refused.
 The existing cancellation shield covers cooperative scopes, not native task
 cancellation: repeated native cancellation can still interrupt the pre-existing
-teardown before it commits. A committed terminal update clears the phase atomically.
-Status/monitor normalize historical terminal phases while retaining the agent or
-playbook name fallback. Queuing a control does not change the applied phase.
+teardown before it commits, and a SIGKILLed process runs no writer at all, which
+is why reads still normalize a stored phase on a terminal row. Status/monitor
+normalize historical terminal phases while retaining the agent or playbook name
+fallback. Queuing a control does not change the applied phase.
 
-Control actions accept an exact recorded session/invocation/play/run ID or an
-unambiguous 8-character hex prefix. Read-only status retains broader prefix lookup.
+Control actions accept an exact recorded session/invocation/play/run ID, an
+unambiguous 8-character hex prefix, or an unambiguous run-id prefix (ADR-0108).
+Any other string is an exact id: shorter than eight characters or containing a
+non-hex character, it enters the prefix search only when it also prefixes a
+recorded run id, and a string that prefixes both an entity id and a run id is
+refused as ambiguous. A label that prefixes no run id therefore cannot match
+another run's session, invocation or play. Read-only status retains broader
+prefix lookup.
 Foreground flow prints its full persisted Session ID before planning; background
 launch prints the full ID assigned to its child. `--invocation` is validated against
 the real invocation row before setup/planning and before background spawn; register
@@ -904,7 +919,7 @@ current_phase, progress_completed, progress_total, model, provider,
 project, last_activity_at, session_id, branch_id, invocation_id, label,
 degraded, degraded_reason,
 status_reason_code, status_reason_summary, status_evidence_refs,
-pending_controls
+pending_controls, pending_controls_note
 ```
 
 Exit codes: `0` terminal-success, `1` terminal-failure, `3` still running/active, `2` lookup
@@ -917,6 +932,11 @@ terminal, including older records that still store a live phase.
 `pending_controls`: unapplied `session_controls` rows (id, verb, created_at) for the resolved
 session, oldest first — queued via `li o ctl pause|resume|msg`, then consumed by the control
 poller while a flow runs. `[]` when no backing session or nothing queued.
+
+`pending_controls_note`: one sentence naming how a queued control for this session would be
+delivered — the flow/play DAG execution poller or, for an agent run, its next turn boundary —
+or `null` when the surface has no consumer to name. Chosen from the row, because the consumer
+is a property of the session kind, not of the queue.
 
 **`_resolve_session_by_branch_id`** — branches/sessions schema note. There is no `branch_id`
 column on `sessions` — `branches` is a separate table, and `branches.session_id` is a NOT NULL

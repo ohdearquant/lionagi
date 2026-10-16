@@ -822,8 +822,9 @@ def add_orchestrate_subparser(
     ctl_pause.add_argument(
         "id",
         help=(
-            "Running flow to pause, by session, invocation, play, or run id (full, or an "
-            "unambiguous 8-character hex prefix). In-flight operations are not interrupted."
+            "Running flow to pause, by session, invocation, play, or run id (full, an "
+            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix). "
+            "In-flight operations are not interrupted."
         ),
     )
 
@@ -835,8 +836,8 @@ def add_orchestrate_subparser(
     ctl_resume.add_argument(
         "id",
         help=(
-            "Paused flow to release, by session, invocation, play, or run id (full, or an "
-            "unambiguous 8-character hex prefix)."
+            "Paused flow to release, by session, invocation, play, or run id (full, an "
+            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix)."
         ),
     )
 
@@ -856,7 +857,8 @@ def add_orchestrate_subparser(
         "id",
         help=(
             "Running flow, playbook run, or agent leg to message, by session, "
-            "invocation, play, or run id (exact, or an unambiguous 8-character hex prefix)."
+            "invocation, play, or run id (exact, an unambiguous 8-character hex prefix, "
+            "or an unambiguous run-id prefix)."
         ),
     )
     ctl_msg.add_argument(
