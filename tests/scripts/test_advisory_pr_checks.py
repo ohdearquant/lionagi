@@ -1141,7 +1141,10 @@ CI_GATE_CONDITIONAL_GATES = {
 # edits the pin beside the edit. A key added to the job (`if:` reading the event
 # name, `continue-on-error: true`) can make the required check report success
 # without the aggregate judging anything, and a path dropped from a filter can
-# let a conditional job skip on the pull requests that change it.
+# let a conditional job skip on the pull requests that change it. What runs inside
+# a required job (a step's `run:`, `if:` or `continue-on-error`) is not pinned
+# here: these pins cover the aggregate job, the jobs it needs, and the filters and
+# outputs that let a conditional job skip.
 CI_GATE_JOB_KEYS = {"if": "${{ always() }}", "runs-on": "ubuntu-latest"}
 CI_GATE_STEP_KEYS = frozenset({"name", "env", "run"})
 CI_CHANGES_FILTERS = {
@@ -1160,6 +1163,9 @@ CI_CHANGES_FILTERS = {
     "imports": ["lionagi/**", "pyproject.toml", "uv.lock", ".github/workflows/ci.yml"],
     "lionrs": ["lionrs/**", ".github/workflows/ci.yml"],
     "lion1": ["lion1/**", ".github/workflows/ci.yml"],
+}
+CI_CHANGES_OUTPUTS = {
+    name: f"${{{{ steps.filter.outputs.{name} }}}}" for name in CI_CHANGES_FILTERS
 }
 
 # Anchored at the start of the `run:` text and at its end: the heredoc has to feed
@@ -1181,10 +1187,10 @@ def _ci_gate_text() -> str:
 
 
 def _changes_filters(workflows: Path = WORKFLOWS) -> dict:
-    """The path filters the `changes` job parses, as its own action reads them."""
+    """The path filters the `changes` job parses, a repeated key refused as its action refuses it."""
     steps = _parse((workflows / "ci.yml").read_text())["jobs"]["changes"]["steps"]
     filter_step = next(step for step in steps if step.get("id") == "filter")
-    return yaml.safe_load(filter_step["with"]["filters"])
+    return _parse(filter_step["with"]["filters"])
 
 
 def _ci_gate_body(text: str) -> str:
@@ -1231,6 +1237,35 @@ def test_the_changes_job_keeps_its_path_filters() -> None:
     assert _changes_filters() == CI_CHANGES_FILTERS
 
 
+def test_the_changes_job_keeps_its_outputs() -> None:
+    # The aggregate reads each conditional job's flag from these outputs. An output
+    # written as a constant (`lion1: 'false'`) reports the inputs unchanged on every
+    # pull request, so the job skips and the skip is accepted.
+    assert _parse(_ci_gate_text())["jobs"]["changes"]["outputs"] == CI_CHANGES_OUTPUTS
+
+
+def test_the_changes_job_outputs_pin_refuses_a_constant() -> None:
+    old = "      lion1: ${{ steps.filter.outputs.lion1 }}\n"
+    assert _ci_gate_text().count(old) == 1
+    text = _ci_gate_text().replace(old, "      lion1: 'false'\n", 1)
+    assert _parse(text)["jobs"]["changes"]["outputs"] != CI_CHANGES_OUTPUTS
+
+
+def test_a_repeated_filter_name_is_refused(tmp_path: Path) -> None:
+    # The filters are a YAML document of their own inside the step; a second
+    # `lion1:` key would silently replace the first under a lenient parser.
+    old = "          lion1:\n"
+    assert _ci_gate_text().count(old) == 1
+    text = _ci_gate_text().replace(
+        old, "          lion1:\n            - 'docs/**'\n          lion1:\n", 1
+    )
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text)
+    with pytest.raises(_DuplicateKeyError):
+        _changes_filters(workflows)
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -1254,9 +1289,10 @@ def test_the_changes_job_pin_refuses_a_dropped_path(path: str, tmp_path: Path) -
 
 
 def _ci_gate_job_is_pinned(workflows: Path = WORKFLOWS) -> None:
-    """Refuse any edit to the aggregate job's own keys, steps or first step."""
+    """Refuse any edit to the aggregate job's own keys, the jobs it needs, its steps or first step."""
     job = _parse((workflows / "ci.yml").read_text())["jobs"]["ci-gate"]
     assert {k: v for k, v in job.items() if k not in ("needs", "steps")} == CI_GATE_JOB_KEYS
+    assert sorted(job["needs"]) == sorted(CI_GATE_HARD_GATES + list(CI_GATE_CONDITIONAL_GATES))
     assert len(job["steps"]) == 1
     assert set(job["steps"][0]) == CI_GATE_STEP_KEYS
 
@@ -1293,6 +1329,11 @@ def test_the_aggregate_job_keeps_its_own_keys() -> None:
             "      run: |\n",
             "      if: github.event_name == 'push'\n      run: |\n",
             id="step-if-event-name",
+        ),
+        pytest.param(
+            " docs, test, frontend,",
+            " docs, frontend,",
+            id="needs-drops-a-hard-gate",
         ),
     ],
 )
