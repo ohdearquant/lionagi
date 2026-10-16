@@ -620,6 +620,51 @@ async def test_a_later_verdict_does_not_reopen_a_duplicate():
 
 
 @pytest.mark.asyncio
+async def test_a_search_that_records_a_duplicate_and_then_fails_does_not_release_the_finding():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    async def make_agent(role, *, name=None, **kwargs):
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        f = run.events_of(FindingPosted)[-1]
+        await run.emit(
+            DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+        )
+        raise TimeoutError("timed out after the verdict")
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+    await run.emit(FindingPosted(description="already tracked"))
+    await run.wait_quiescence()
+
+    assert calls == []
+    assert not any(e["type"] == "dedup_missing" for e in events)
+    assert any(e["type"] == "stage_error" and e["stage"] == "dedup" for e in events)
+    assert run.dedup_verdicts[run.events_of(FindingPosted)[-1].eid].verdict == "duplicate"
+
+
+def test_a_collected_seed_with_two_certifying_verdicts_is_queued_once():
+    eng = HypothesisEngine(dedup_repo="owner/repo")
+    run = eng.new_run()
+    f = run.collect(FindingPosted(description="stale checkpoint overwrites newer segment"))
+    run.collect(DedupChecked(finding_ref=f.eid, verdict="new"))
+    run.collect(
+        DedupChecked(finding_ref=f.eid, verdict="extends", issue_number=7, issue_state="open")
+    )
+
+    assert [(i["finding_ref"], i["verdict"]) for i in filing_queue(run)] == [(f.eid, "new")]
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: extends #7 (open) (not accepted)" in report
+    assert f"{f.eid}: new (not accepted)" not in report
+
+
+@pytest.mark.asyncio
 async def test_a_total_failure_with_only_an_orphan_verdict_still_raises():
     eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
 

@@ -45,11 +45,14 @@ dedup verdict the engine acted on, a question, evidence or a conclusion), and
 every item its judge sees comes after the run has produced a question, so a judge
 that raises does not bring a run to that point. Nor can a dedup verdict carry a
 finding past its judge: the hypothesis engine treats a dedup verdict that names an
-agent-sourced finding whose judge has not passed as one naming no finding,
-whichever agent emitted it. Nothing acts on it, it does not answer that finding's
-search, and the filing queue leaves it out. Which agent emitted a verdict is not
-checked yet, so a judge or dedup verdict naming another item can still decide it
-(issue #3569). An engine that needs the judge to be optional leaves `judge_model`
+agent-sourced finding (one of generation 1 or more) whose judge has not passed as
+one naming no finding, whichever agent emitted it. Nothing acts on it, it does not
+answer that finding's search, and the filing queue leaves it out. Three gaps
+remain, recorded in issue #3569: which agent emitted a verdict is not checked, so
+a judge or dedup verdict naming another item can still decide it; a finding an
+agent posts with no parent is taken as a seed (generation 0), so it skips the
+judge; and a judge reply that carries no verdict passes unless its text contains
+"reject". An engine that needs the judge to be optional leaves `judge_model`
 unset.
 
 ## Context
