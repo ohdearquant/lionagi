@@ -451,7 +451,8 @@ def render_evidence(run: HypothesisRun) -> str:
         parts.append(f"\n\n# Novelty verdicts ({len(dedups)})")
         for d in dedups:
             issue = f" #{d.issue_number} ({d.issue_state})" if d.issue_number else ""
-            parts.append(f"\n- {d.finding_ref}: {d.verdict}{issue} — {d.rationale}")
+            held = "" if _accepted_verdict(run, d) else " (not accepted)"
+            parts.append(f"\n- {d.finding_ref}: {d.verdict}{issue}{held} — {d.rationale}")
         queue = filing_queue(run)
         if queue:
             parts.append(f"\n\n# Filing queue — certified findings, not yet filed ({len(queue)})")
@@ -479,13 +480,32 @@ def render_evidence(run: HypothesisRun) -> str:
     return "".join(parts)
 
 
+def _accepted_verdict(run: HypothesisRun, d: DedupChecked) -> bool:
+    """Whether *d* is the verdict the dedup stage acted on for its finding.
+
+    Every emitted verdict is stored, including one naming an agent-sourced
+    finding whose judge has not passed, and a later verdict for a finding that
+    already has one; neither is acted on. A run assembled with ``collect()``
+    dispatches no observers, so nothing is recorded there: a seed's verdict
+    stands as stored, and an agent-sourced finding's does not, since nothing
+    shows its judge passed.
+    """
+    f = run.find(d.finding_ref)
+    if not isinstance(f, FindingPosted):
+        return False
+    accepted = run.dedup_verdicts.get(f.eid)
+    if accepted is not None:
+        return accepted is d
+    return f.gen == 0
+
+
 def filing_queue(run: HypothesisRun) -> list[dict[str, Any]]:
     """Findings certified 'new' or 'extends' by the dedup stage, with their conclusions — ready for the owner to file. The engine never files."""
     conclusions = run.events_of(ConclusionDrawn)
     questions = {q.eid: q for q in run.events_of(QuestionRaised)}
     out: list[dict[str, Any]] = []
     for d in run.events_of(DedupChecked):
-        if d.verdict not in ("new", "extends"):
+        if d.verdict not in ("new", "extends") or not _accepted_verdict(run, d):
             continue
         f = run.find(d.finding_ref)
         if not isinstance(f, FindingPosted):
@@ -537,11 +557,14 @@ class HypothesisRun(ChainRun):
         # Findings the dedup gate released to extraction, so a second verdict
         # does not extract one twice.
         self.dedup_cleared: set[str] = set()
-        # Agent-sourced findings (gen > 0) whose dedup-stage judge passed, so a
-        # tracker search was sent for them. Extraction skips the judge only for
-        # these, and a verdict naming any other agent-sourced finding is an
-        # orphan, whichever agent emitted it.
+        # Agent-sourced findings (gen > 0) whose dedup-stage judge passed.
+        # Extraction skips the judge only for these, and a verdict naming any
+        # other agent-sourced finding is an orphan, whichever agent emitted it.
         self.dedup_judged: set[str] = set()
+        # The verdict the dedup stage acted on, per finding: the first one that
+        # was not an orphan. Later verdicts for the same finding are ignored,
+        # and only these count as a finding's search having answered.
+        self.dedup_verdicts: dict[str, DedupChecked] = {}
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -824,9 +847,8 @@ class HypothesisEngine(Engine):
         # Total pipeline failure: stages errored and nothing beyond the seeds
         # was produced. Synthesizing an empty report would launder the failure
         # into a green-looking result — fail loud instead.
-        produced = any(
-            run.events_of(t)
-            for t in (DedupChecked, QuestionRaised, EvidenceCollected, ConclusionDrawn)
+        produced = bool(run.dedup_verdicts) or any(
+            run.events_of(t) for t in (QuestionRaised, EvidenceCollected, ConclusionDrawn)
         )
         if run._agent_errors and not produced:
             raise RuntimeError(
@@ -869,11 +891,17 @@ class HypothesisEngine(Engine):
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
         if f.gen > 0 and f.eid not in run.dedup_judged:
-            # No search was sent for this finding: its judge refused it, raised,
-            # or has not decided yet. A verdict naming it must not carry it past
-            # the judge, so it is treated as one naming no finding.
+            # This finding's judge refused it, raised, or has not decided yet. A
+            # verdict naming it must not carry it past the judge, so it is
+            # treated as one naming no finding: nothing acts on it, the filing
+            # queue leaves it out, and it does not answer the finding's search.
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
+        if f.eid in run.dedup_verdicts:
+            # The first verdict decided; a later one (a `new` after a
+            # `duplicate`, say) does not reopen the finding.
+            return
+        run.dedup_verdicts[f.eid] = d
         if d.verdict == "duplicate":
             run.notify(
                 "finding_duplicate",
@@ -954,9 +982,9 @@ class HypothesisEngine(Engine):
     async def _dedup(self, run: HypothesisRun, f: FindingPosted) -> None:
         # The novelty gate carries the recursive-cycle judge so junk findings
         # are rejected before a tracker-search agent is spent on them. The judge
-        # runs outside the release below: a judge that raises (a contained one
-        # raises any error) ends the finding here, where a release would send it
-        # to extraction, which skips the judge for a released finding.
+        # runs outside the release below, so a judge that raises (a contained one
+        # raises any error) ends the finding here rather than releasing it to
+        # extraction, which would only judge it again.
         if f.gen > 0:
             if not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen)):
                 return
@@ -983,14 +1011,14 @@ class HypothesisEngine(Engine):
             await run.operate_with_repair(
                 agent,
                 _dedup_instruction(f, self.dedup_repo or "", self.dedup_seed_issues, bool(cwd)),
-                arrived=lambda: any(d.finding_ref == f.eid for d in run.events_of(DedupChecked)),
+                arrived=lambda: f.eid in run.dedup_verdicts,
                 emits=emits,
                 retries=self.repair_retries,
                 # The dedup instruction requires actually running gh queries — a
                 # non-CLI (API) model only gets tool-calling when actions=True.
                 actions=bool(self.dedup_tools),
             )
-        if not any(d.finding_ref == f.eid for d in run.events_of(DedupChecked)):
+        if f.eid not in run.dedup_verdicts:
             self._dedup_release(run, f)
 
     def _dedup_release(self, run: HypothesisRun, f: FindingPosted) -> None:

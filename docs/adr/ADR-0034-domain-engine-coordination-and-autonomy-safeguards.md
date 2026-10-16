@@ -40,13 +40,17 @@ that is the item being judged, and the run goes on with its other items; a
 stage whose own failure releases its item onward runs the judge before that
 release, so a judge that raises ends the item. The item is recorded as that
 stage's error and the run returns what its other items produced: a stage failure
-makes the hypothesis engine raise only when nothing past its seeds was produced,
-and every item its judge sees comes after the run has produced a question, so a
-judge that raises does not bring a run to that point. Nor can a verdict carry an
-item past its judge: the hypothesis engine treats a dedup verdict that names an
+makes the hypothesis engine raise only when nothing past its seeds was produced (a
+dedup verdict the engine acted on, a question, evidence or a conclusion), and
+every item its judge sees comes after the run has produced a question, so a judge
+that raises does not bring a run to that point. Nor can a dedup verdict carry a
+finding past its judge: the hypothesis engine treats a dedup verdict that names an
 agent-sourced finding whose judge has not passed as one naming no finding,
-whichever agent emitted it. An engine that needs the judge to be optional
-leaves `judge_model` unset.
+whichever agent emitted it. Nothing acts on it, it does not answer that finding's
+search, and the filing queue leaves it out. Which agent emitted a verdict is not
+checked yet, so a judge or dedup verdict naming another item can still decide it
+(issue #3569). An engine that needs the judge to be optional leaves `judge_model`
+unset.
 
 ## Context
 

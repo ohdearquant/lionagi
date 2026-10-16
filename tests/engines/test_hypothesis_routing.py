@@ -6,6 +6,7 @@ recursion narrowing, filing queue, and loud total-failure. No LLM."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pydantic
@@ -533,6 +534,110 @@ async def test_a_finding_its_judge_passed_is_extracted_without_a_second_judge():
 
     assert judged == [f.eid]
     assert extracted == [f"extract-{f.eid}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["new", "extends"])
+async def test_a_refused_finding_named_by_a_verdict_stays_out_of_the_filing_queue(verdict):
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    _mute(eng, "extract", "dedup_search")
+    _wire(eng, run)
+
+    async def judge(_run, eid, _subject):
+        return False
+
+    eng.judge = judge
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="junk", parent_ref=x.eid))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict))
+    await run.wait_quiescence()
+
+    assert filing_queue(run) == []
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: {verdict} (not accepted)" in report
+    assert "Filing queue" not in report
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["new", "duplicate"])
+async def test_a_verdict_while_the_judge_decides_does_not_answer_the_search(verdict):
+    """The early verdict is an orphan. Once the judge passes, the finding's own search
+    posts nothing, so the finding is released and extracted."""
+    gate = asyncio.Event()
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    async def judge(_run, eid, _subject):
+        await gate.wait()
+        return True
+
+    async def make_agent(role, *, name=None, **kwargs):
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    eng.judge = judge
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="agent claim", parent_ref=x.eid))
+    f = run.events_of(FindingPosted)[-1]
+    await asyncio.sleep(0.01)
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict, issue_number=3))
+    gate.set()
+    await run.wait_quiescence()
+
+    assert [e["type"] for e in events if e["type"] == "dedup_orphan"] == ["dedup_orphan"]
+    assert [s for s, _ in calls] == ["extract"]
+    assert any(e["type"] == "dedup_missing" and e["eid"] == f.eid for e in events)
+    assert f.eid not in run.dedup_verdicts
+
+
+@pytest.mark.asyncio
+async def test_a_later_verdict_does_not_reopen_a_duplicate():
+    eng = HypothesisEngine(dedup_repo="owner/repo")
+    run = eng.new_run()
+    calls = _mute(eng, "dedup", "extract")
+    _wire(eng, run)
+    f = run.collect(FindingPosted(description="already tracked"))
+    await run.emit(
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    )
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+    await run.wait_quiescence()
+
+    assert calls == []
+    assert run.dedup_verdicts[f.eid].verdict == "duplicate"
+    assert filing_queue(run) == []
+
+
+@pytest.mark.asyncio
+async def test_a_total_failure_with_only_an_orphan_verdict_still_raises():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+
+    async def search(run, f):
+        await run.emit(DedupChecked(finding_ref="F-9", verdict="new"))
+        raise TimeoutError("search timed out")
+
+    async def extract_boom(run, f):
+        raise RuntimeError("no API key")
+
+    async def fake_synth(run):
+        return "REPORT"
+
+    eng._dedup_search = search
+    eng._extract = extract_boom
+    eng._synthesize = fake_synth
+    with pytest.raises(RuntimeError, match="produced no events"):
+        await eng.run("seed finding")
 
 
 @pytest.mark.parametrize("bad_verdict", ["uncertain", "Duplicate", "dupe", "NEW", ""])
