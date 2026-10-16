@@ -59,9 +59,10 @@ async def test_single_tool_invocation():
             id="declared-on-the-second-round-only",
             marks=pytest.mark.xfail(
                 strict=True,
+                raises=AssertionError,
                 reason=(
-                    "each round's declared action strategy should govern its own batch; "
-                    "round 1 is fixed to concurrent"
+                    "an analysis turn's declared action strategy should govern its own "
+                    "tool batch, but the batch takes the strategy of the analysis before it"
                 ),
             ),
         ),
@@ -121,7 +122,113 @@ async def test_multiple_tool_calls_sequential_strategy(first_round):
         ("divide", 50),
         ("multiply", 6),
     ]
-    assert len(ScriptedBranch.calls(branch)) == 3
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 3
+    final_messages = str(api_calls[-1].payload["messages"])
+    assert "output: 50.0" in final_messages
+    assert "output: 6" in final_messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "an analysis turn's declared action strategy should govern its own tool batch, "
+        "but the first batch always runs concurrently"
+    ),
+)
+async def test_first_round_declared_sequential_runs_in_order():
+    """Two actions declared sequential on the first turn complete one after the other."""
+    trace = []
+
+    async def first(a: float, b: float) -> float:
+        """Record an in-order call."""
+        trace.append(("start", "first"))
+        await asyncio.sleep(0)
+        trace.append(("end", "first"))
+        return a + b
+
+    async def second(a: float, b: float) -> float:
+        """Record an in-order call."""
+        trace.append(("start", "second"))
+        await asyncio.sleep(0)
+        trace.append(("end", "second"))
+        return a + b
+
+    branch = tool_branch(
+        [
+            {
+                "action_strategy": "sequential",
+                "action_requests": [
+                    {"function": "first", "arguments": {"a": 1, "b": 2}},
+                    {"function": "second", "arguments": {"a": 3, "b": 4}},
+                ],
+            }
+        ],
+        [first, second],
+        "done",
+    )
+    assert await branch.ReAct(instruction="Run both", tools=True, max_extensions=0) == "done"
+    assert trace == [
+        ("start", "first"),
+        ("end", "first"),
+        ("start", "second"),
+        ("end", "second"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "an analysis turn's declared action strategy should govern its own tool batch, "
+        "but a batch takes the strategy of the analysis before it"
+    ),
+)
+async def test_later_round_declared_concurrent_overlaps():
+    """A turn declared concurrent overlaps when the turn before it was sequential."""
+    trace = []
+
+    async def single(a: float, b: float) -> float:
+        """Return a single sum."""
+        return a + b
+
+    async def slow(name: str) -> str:
+        """Record a call that yields before finishing."""
+        trace.append(("start", name))
+        await asyncio.sleep(0)
+        trace.append(("end", name))
+        return name
+
+    branch = tool_branch(
+        [
+            {
+                "extension_needed": True,
+                "action_strategy": "sequential",
+                "action_requests": [{"function": "single", "arguments": {"a": 1, "b": 2}}],
+            },
+            {
+                "action_strategy": "concurrent",
+                "action_requests": [
+                    {"function": "slow", "arguments": {"name": name}} for name in ("NYC", "SF")
+                ],
+            },
+        ],
+        [single, slow],
+        "Both cities are sunny",
+    )
+    assert (
+        await branch.ReAct(instruction="Compare weather", tools=True, max_extensions=1)
+        == "Both cities are sunny"
+    )
+    assert trace == [
+        ("start", "NYC"),
+        ("start", "SF"),
+        ("end", "NYC"),
+        ("end", "SF"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -158,7 +265,11 @@ async def test_concurrent_action_strategy():
         "NYC": "NYC: sunny",
         "SF": "SF: sunny",
     }
-    assert len(ScriptedBranch.calls(branch)) == 2
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 2
+    final_messages = str(api_calls[-1].payload["messages"])
+    assert "NYC: sunny" in final_messages
+    assert "SF: sunny" in final_messages
 
 
 @pytest.mark.asyncio
@@ -183,4 +294,12 @@ async def test_tools_parameter_variations():
         assert [(m.function, m.arguments, m.output) for m in responses] == [
             ("multiply", {"a": 6, "b": 7}, 42)
         ]
-        assert len(ScriptedBranch.calls(branch)) == 2
+        api_calls = ScriptedBranch.calls(branch)
+        assert len(api_calls) == 2
+        assert "output: 42" in str(api_calls[-1].payload["messages"])
+
+
+def test_scripted_tool_branch_leaves_no_log_dump():
+    """A scripted tool branch must not write a log dump when the process exits."""
+    branch = tool_branch([], [], "unused")
+    assert branch._log_manager._config.auto_save_on_exit is False

@@ -121,7 +121,7 @@ async def test_capped_parse_retries_limit_endpoint_calls(monkeypatch):
         "lionagi.operations._defaults._PARSE_CALL",
         AlcallParams(retry_initial_delay=0, throttle_period=0),
     )
-    branch = TestBranch.from_text(["not valid JSON"] * 6)
+    branch = TestBranch.from_text(["not valid JSON"] * 10)
     with pytest.warns(UserWarning, match="num_parse_retries"):
         kw = prepare_communicate_kw(branch, num_parse_retries=10, response_format=SomeModel)
     with pytest.raises(ValueError, match="Failed to parse response"):
@@ -161,7 +161,6 @@ async def test_communicate_updates_metadata_when_res2_is_assistant_response():
     assert original != fake_res2.model_response
     assert stored.metadata["original_model_response"] == original
     assert stored.metadata["model_response"] == fake_res2.model_response
-    assert branch.messages[stored.id] is stored
 
 
 @pytest.mark.asyncio

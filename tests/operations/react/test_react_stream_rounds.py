@@ -322,4 +322,6 @@ async def test_react_with_async_tool_registration():
     assert len(responses) == 1
     assert responses[0].function == "search"
     assert responses[0].output == "fixture search result"
-    assert len(ScriptedBranch.calls(branch)) == 2
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 2
+    assert "output: fixture search result" in str(api_calls[-1].payload["messages"])
