@@ -318,8 +318,12 @@ class ClaudeCodeRequest(BaseModel):
             raise TypeError(
                 f"env must be a mapping of strings to strings, got {type(value).__name__}"
             )
+        # Checked on the plain copy that is returned: a mapping whose iteration
+        # and storage disagree would otherwise pass the check with one set of
+        # keys and hand pydantic another.
+        value = dict(value)
         raise_if_env_is_not_a_string_map(value)
-        return dict(value)
+        return value
 
     @field_validator("on_spawn", mode="before")
     @classmethod

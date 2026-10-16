@@ -824,6 +824,85 @@ def test_a_nul_in_an_override_value_is_escaped_not_refused(tmp_path):
     assert 'k="a\\u0000b"' in request.as_cmd_args()
 
 
+@pytest.mark.parametrize("field", ["reasoning_effort", "plan_mode_reasoning_effort"])
+def test_a_nul_in_an_effort_is_escaped_not_refused(tmp_path, field):
+    """An effort is written as a TOML string, which escapes a NUL like any control
+    character, so the CLI can take it and it is not refused."""
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, **{field: "high\x00"})
+
+    assert f'{field}="high\\u0000"' in request.as_cmd_args()
+
+
+class _IterationHidesAKey(dict):
+    """A dict whose iteration names one key while its storage holds another."""
+
+    def __iter__(self):
+        return iter(["k"])
+
+
+class _ItemsHideAKey(dict):
+    """A dict whose items() names one pair while its storage holds another."""
+
+    def items(self):
+        return [("k", "v")]
+
+
+@pytest.mark.parametrize("shape", [_IterationHidesAKey, _ItemsHideAKey])
+@pytest.mark.parametrize("field", ["config_overrides", "env"])
+def test_a_mapping_whose_views_disagree_is_checked_on_its_copy(tmp_path, field, shape):
+    """The keys are checked on the plain copy the validator returns, so a key one view
+    of the mapping hides is still found, by position and type, and not printed. The
+    config_overrides check reads the keys and the env check reads items(), so each is
+    fooled by a different shape without the copy."""
+    hidden = shape({(SECRET_OVERRIDE_KEY, 1): "v"})
+
+    with pytest.raises(TypeError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, **{field: hidden})
+
+    assert "entry 0 (key is tuple)" in str(caught.value)
+    shown = " ".join(
+        [str(caught.value), repr(caught.value), _everything_reachable_from(caught.value)]
+    )
+    assert SECRET_OVERRIDE_KEY not in shown
+
+
+@pytest.mark.parametrize("shape", [_IterationHidesAKey, _ItemsHideAKey])
+def test_the_claude_code_env_is_checked_on_its_copy_too(shape):
+    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    hidden = shape({(SECRET_OVERRIDE_KEY, 1): "v"})
+
+    with pytest.raises(TypeError) as caught:
+        ClaudeCodeRequest(prompt="hi", env=hidden)
+
+    assert "entry 0 (key is tuple)" in str(caught.value)
+    assert SECRET_OVERRIDE_KEY not in str(caught.value)
+
+
+def test_a_copied_key_that_is_not_a_string_is_refused_by_the_command_builder(tmp_path):
+    request = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True
+    ).model_copy(update={"config_overrides": {(SECRET_OVERRIDE_KEY, 1): "v"}})
+
+    with pytest.raises(TypeError, match="entry 0 has a key that is not a string") as caught:
+        request.as_cmd_args()
+
+    assert SECRET_OVERRIDE_KEY not in str(caught.value)
+
+
+def test_a_key_containment_cannot_read_is_named_by_its_first_80_characters(tmp_path):
+    key = "not a key " + "x" * 120
+    request = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True, config_overrides={key: 1}
+    )
+
+    with pytest.raises(ValueError, match="is not a TOML key") as caught:
+        request.as_cmd_args()
+
+    assert repr(key[:80]) in str(caught.value)
+    assert key not in str(caught.value)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "update,named",

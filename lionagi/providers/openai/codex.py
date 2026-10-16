@@ -200,6 +200,13 @@ def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     return None
 
 
+# The argument text fields as_cmd_args writes as a TOML string (`-c key="..."`) rather
+# than as a raw argument.
+_TOML_STRING_TEXT_FIELDS = frozenset(
+    {"reasoning_effort", "plan_mode_reasoning_effort", "ask_for_approval"}
+)
+
+
 def _nul_refusal_message(what: str) -> str:
     return f"{what} holds a NUL character, which no command-line argument can hold."
 
@@ -353,7 +360,13 @@ def _refuse_oversized_cli_inputs(
     for what, text in text_fields or ():
         if failure is not None:
             break
-        failure = _argument_text_failure(text, what)
+        # A field written as a TOML string has its NUL escaped like any control
+        # character, so only strict UTF-8 can refuse it; every other field reaches
+        # the CLI raw, where a NUL cannot be carried.
+        if what in _TOML_STRING_TEXT_FIELDS:
+            failure = _strict_utf8_failure(text, what)
+        else:
+            failure = _argument_text_failure(text, what)
         if failure is None:
             measured.append((what, text.encode("utf-8")))
     if failure is not None:
@@ -388,7 +401,7 @@ def _override_key_path(key: str) -> list[str]:
             ((part, table),) = table.items()
             path.append(part)
     except Exception as e:
-        raise ValueError(f"config override key {key!r} is not a TOML key: {e}") from None
+        raise ValueError(f"config override key {key[:80]!r} is not a TOML key: {e}") from None
     return path
 
 
@@ -549,8 +562,12 @@ class CodexCodeRequest(BaseModel):
             raise TypeError(
                 f"env must be a mapping of strings to strings, got {type(value).__name__}"
             )
+        # Checked on the plain copy that is returned: a mapping whose iteration
+        # and storage disagree would otherwise pass the check with one set of
+        # keys and hand pydantic another.
+        value = dict(value)
         raise_if_env_is_not_a_string_map(value)
-        return dict(value)
+        return value
 
     @field_validator("on_spawn", mode="before")
     @classmethod
@@ -586,9 +603,13 @@ class CodexCodeRequest(BaseModel):
             # TypeError, not ValueError: pydantic quotes a ValueError's rejected
             # input verbatim into the validation error.
             raise TypeError(f"config_overrides must be a mapping, got {type(value).__name__}")
-        # Refused by position and type, as env's keys are: pydantic would quote a
-        # key it cannot validate as a string, and a key can hold a secret as a
-        # value can. A bytes key is refused too rather than decoded.
+        # The keys are checked on the plain copy that is returned, as env's are,
+        # so a mapping whose iteration and storage disagree cannot pass the check
+        # with one set of keys and hand pydantic another. Refused by position and
+        # type: pydantic would quote a key it cannot validate as a string, and a
+        # key can hold a secret as a value can. A bytes key is refused too rather
+        # than decoded.
+        value = dict(value)
         unnamed = [
             f"entry {index} (key is {type(key).__name__})"
             for index, key in enumerate(value)
@@ -1010,7 +1031,14 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-i", image])
 
         containing = self._contains_account_integrations()
-        for key, value in self.config_overrides.items():
+        for index, (key, value) in enumerate(self.config_overrides.items()):
+            if not isinstance(key, str):
+                # Only a request built without validation holds one; named by
+                # position and type, never by the key.
+                raise TypeError(
+                    f"config_overrides entry {index} has a key that is not a string "
+                    f"({type(key).__name__})"
+                )
             # Containment removes overrides under `features.apps` and
             # `features.plugins`, plus those keys from an inline `features`
             # table. Config profiles can contribute either form alongside the
