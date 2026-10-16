@@ -2,6 +2,7 @@
 
 - **Status**: Proposed, amended 2026-10-16 (see Amendment 1)
 - **Kind**: Aspirational
+- **Implementation-status**: not-started
 - **Area**: messages-context
 - **Date**: 2026-07-09
 - **Relations**: extends ADR-0006
@@ -103,6 +104,7 @@ from lionagi.protocols.messages import Instruction, MessageRole
 class ContextBlock:
     provider_name: str
     content: str
+    authority: SectionAuthority = SectionAuthority.MATERIAL  # Amended by D8
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,7 @@ class CompiledChatRequest:
     instruction: Instruction
     messages: tuple[CompiledMessage, ...]
     provider_kwargs: Mapping[str, Any]
+    bounds: tuple[SectionBound, ...]  # Amended by D7; required, no default
 
 
 def compile_chat_request(
@@ -139,6 +142,11 @@ def compile_chat_request(
 
 The per-instance mapping factory avoids sharing mutable call state and exposes a read-only empty
 default.
+
+Amended by D7: `CompiledChatRequest` also carries `bounds`, the tuple of `SectionBound` records,
+and that field is required, with no default. Amended by D8: `ContextBlock` also carries
+`authority`, a `SectionAuthority` that defaults to `SectionAuthority.MATERIAL`. Both additions
+are defined in Amendment 1 below.
 
 After migration, the durable instruction content contract is reduced to provider-neutral fields:
 
@@ -312,7 +320,11 @@ canonical JSON array:
 from lionagi.ln import json_dumps
 
 payload = [
-    {"provider_name": block.provider_name, "content": block.content}
+    {
+        "provider_name": block.provider_name,
+        "content": block.content,
+        "authority": block.authority.value,  # Amended by D8
+    }
     for block in request.context_blocks
 ]
 encoded = json_dumps(payload, sort_keys=True)
@@ -323,9 +335,13 @@ The exact provider-visible shape for two blocks is:
 
 ```text
 LIONAGI_CONTEXT_BLOCKS_JSON
-[{"content":"first retrieved value","provider_name":"catalog"},{"content":"second retrieved value","provider_name":"memory"}]
+[{"authority":"material","content":"first retrieved value","provider_name":"catalog"},{"authority":"material","content":"second retrieved value","provider_name":"memory"}]
 END_LIONAGI_CONTEXT_BLOCKS_JSON
 ```
+
+Amended by D8: each canonical JSON entry gains an `authority` key carrying the block's
+`SectionAuthority` value. The array, `sort_keys`, escaping and the envelope delimiters are
+unchanged, so the only difference from the shape above is that key.
 
 Exact semantics:
 
@@ -446,30 +462,39 @@ guidance fold — system text, retrieved context blocks, caller guidance, folded
 arrive as untyped strings, so "what could have instructed the model in this call" is answered by
 reading one long prompt rather than by querying a typed artifact.
 
-The recap table in Context gained two rows for D7 and D8 below. D4, D5 and D6 are unchanged, as
-are the alternatives already recorded in this ADR.
+The recap table in Context gained two rows for D7 and D8 below. D1's `CompiledChatRequest` and
+`ContextBlock` contracts and D3's example are amended in place by D7 and D8, each marked
+`Amended by` at the field or key it changes. D2, D4, D5 and D6 are unchanged, as are the
+alternatives already recorded in this ADR.
 
 ### D7 — Every bound has two visible states
 
 Every section of the compiled request — system, history, context blocks, tool results — declares
-a bound and a posture. There are two postures, and both produce the same record:
+a bound and a posture. A section that keeps part of its material takes one of two postures, and
+a section that keeps none takes a third:
 
 - **truncate**: the section renders what fits and carries an in-context marker stating that
-  material was left out, naming the section and counting what was dropped; or
-- **refuse**: compilation raises before the provider call, and the same bound record is
-  produced.
+  material was left out, naming the section, counting what was dropped and naming the reason.
+  Only history and tool results truncate; or
+- **refuse**: compilation raises before the provider call, and the bound records travel on that
+  error rather than on a `CompiledChatRequest`, which is never built; or
+- **skip**: the whole unit is left out and never cut, with the marker and a left-out entry. A
+  context block takes this posture: it is admitted whole or left out whole, which is the
+  no-partial-truncation rule ADR-0008 D3 already fixes.
 
 The record states both states of the bound: what the section kept and what it left out. A
 section that dropped nothing still produces its record, with an empty left-out set, so the
 absence of dropped material is a stated fact rather than an unrecorded one. Silent dropping is
-inexpressible: no constructor admits a section without a bound record, and no posture drops
-material without either a marker or a raised error.
+inexpressible: `bounds` is a required field, so no `CompiledChatRequest` exists without its bound
+records, and no posture drops material without either a marker or a raised error.
 
-Contract (target; the module does not exist yet):
+Contract (target; the module exists, and the types below do not exist in it yet):
 
 ```python
 # lionagi/operations/types.py
+from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 
 class SectionAuthority(str, Enum):  # str, Enum: the floor is 3.10 (enum.StrEnum is 3.11)
@@ -478,19 +503,29 @@ class SectionAuthority(str, Enum):  # str, Enum: the floor is 3.10 (enum.StrEnum
     MATERIAL = "material"  # retrieved rows, tool output, relayed text
 
 
+LeftOutReason = Literal[
+    "per_provider_limit",  # the provider's own cap
+    "section_budget",  # the registry's total budget
+    "truncated",  # rendered short by the section's own bound
+    "evicted",  # excluded from the active view by the context tool
+    "compacted",  # replaced by a summary in the active view
+]
+
+
 @dataclass(frozen=True, slots=True)
 class LeftOut:
     name: str
-    reason: str  # "per_provider_limit" | "section_budget" | "truncated"
+    reason: LeftOutReason
     tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SectionBound:
-    section: str  # "system" | "history" | "context" | "tool_results"
-    posture: str  # "truncate" | "refuse"
+    section: Literal["system", "history", "context", "tool_results"]
+    authority: SectionAuthority
+    posture: Literal["truncate", "refuse", "skip"]
     budget: int | None
-    kept: tuple[str, ...]
+    kept: tuple[str, ...]  # references only: message ids or provider names, never raw text
     left_out: tuple[LeftOut, ...]
 
 
@@ -499,21 +534,50 @@ class CompiledChatRequest:
     instruction: Instruction
     messages: tuple[CompiledMessage, ...]
     provider_kwargs: Mapping[str, Any]
-    bounds: tuple[SectionBound, ...] = ()
+    bounds: tuple[SectionBound, ...]  # required: no default
+
+
+class SectionBudgetRefused(ValueError):
+    """A section refused over its own bound; carries the bound records."""
+
+    def __init__(self, message: str, bounds: tuple[SectionBound, ...]) -> None:
+        super().__init__(message)
+        self.bounds = bounds
 ```
 
 Exact semantics:
 
 - one `SectionBound` per section, present whether or not it dropped anything;
-- an empty `left_out` means nothing was left out; it never means "not measured";
-- `reason` is a closed vocabulary: the three values above, with `per_provider_limit` and
-  `section_budget` covering the two admission stages the registry already distinguishes in
-  behavior but not in its report;
-- the truncate marker renders inside the section it belongs to, in the shape the Codex provider
-  already uses for one bounded tool result (`lionagi/providers/openai/codex.py:995-998`), so a
-  model reading the prompt learns that the material is partial;
-- the refusal arm raises before any provider call and still produces the record, so a refused
-  turn remains countable;
+- an empty `left_out` means nothing was left out; it never means "not measured". The history
+  section's `left_out` therefore records every message that the active view excludes but the
+  record keeps: an eviction is a message with reason `evicted`, and a compaction is each message
+  the summary replaced, with reason `compacted`. An eviction and a compaction keep their records
+  in the pile, so the compiler can name them; until it does, an empty `left_out` on a branch whose
+  active view has evicted or compacted messages is false;
+- `reason` is a closed vocabulary, `LeftOutReason`, of exactly five values:
+  `per_provider_limit` and `section_budget`, covering the two admission stages the registry
+  already distinguishes in behavior but not in its report; `truncated`, for material rendered
+  short by a section's own bound; and `evicted` and `compacted`, covering the two ways the
+  agent's context tool removes a message from the active view;
+- the truncate marker renders inside the section it belongs to, on its own line, and its text is
+
+  ```text
+  [LIONAGI_SECTION_TRUNCATED section=<section> left_out=<n> reason=<reason>]
+  ```
+
+  where `<section>` and `<reason>` are the `SectionBound.section` and `LeftOut.reason` values
+  that produced it, and `<n>` is the count of left-out entries. The marker is D7's own text, not
+  any provider's, and it names the section, the count and the reason, so a model reading the
+  prompt learns that the material is partial and why. The Codex provider's character-counting
+  cut marker is not its shape;
+- the refusal arm raises before any provider call, and the bound records travel on the raised
+  error's `bounds` attribute, so a refused turn remains countable without a compiled request;
+- the context section's posture is **skip**: ADR-0008 D3 already fixes that a context block is
+  admitted whole or skipped whole, never cut, so D7 does not supersede it. A skipped block is
+  named in the marker and carries a `left_out` entry;
+- the marker for a skipped context block renders outside D3's envelope, as one text line
+  immediately above the `LIONAGI_CONTEXT_BLOCKS_JSON` opening line, inside the same guidance
+  section. It is not a JSON entry, so D3's array stays a parseable array of retained blocks;
 - bound records are transient: they live on the compiled request and never on the durable
   `InstructionContent` (D1's lifetime table).
 
@@ -531,8 +595,13 @@ Exact semantics:
 - `SectionAuthority.MATERIAL` is the only default; the code that owns system text or the
   caller's instruction sets the other two explicitly, and no provider-supplied value can reach
   them;
+- the carrier is the contract itself: `ContextBlock` gains `authority: SectionAuthority`,
+  defaulting to `SectionAuthority.MATERIAL`, on D1's type, and `SectionBound` gains `authority`
+  in D7's contract, so each compiled section states the authority of the material in it. Both
+  fields are shown in the contract blocks above;
 - a block's authority reaches the compiled prompt as data: D3's canonical JSON entry gains an
-  `authority` key, and `sort_keys`, escaping and the envelope delimiters are unchanged;
+  `authority` key carrying `block.authority.value`, and `sort_keys`, escaping and the envelope
+  delimiters are unchanged;
 - the check is a constructor refusal (a `ValueError`), so it is testable without a live model;
 - this is an auditability and containment-at-assembly decision. It does not claim the model
   obeys the distinction, and it does not replace D3's statement that attribution and syntactic
@@ -540,9 +609,10 @@ Exact semantics:
 
 What the code does today:
 
-- the compiler does not exist. `TurnRequest`, `ContextBlock`, `CompiledMessage`,
-  `CompiledChatRequest`, `compile_chat_request` and any authority type are absent from
-  `lionagi/operations/types.py`; `_prepare_run_kwargs()` is still the active chat/run path
+- the compiler does not exist. `lionagi/operations/types.py` holds the operation parameter
+  dataclasses only (`ChatParam` at `:102`, `RunParam` at `:141`); `TurnRequest`, `ContextBlock`,
+  `CompiledMessage`, `CompiledChatRequest`, `compile_chat_request` and any authority type are
+  absent from it; `_prepare_run_kwargs()` is still the active chat/run path
   (`lionagi/operations/chat/_prepare.py:174`, called from `lionagi/operations/chat/chat.py:62`
   and `lionagi/operations/run/run.py:429`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
@@ -558,14 +628,33 @@ What the code does today:
   exposes one turn's names (`lionagi/session/branch.py:291-303`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
-- one in-context cut marker does exist, one layer down: the Codex provider bounds a recorded
-  tool result and states the cut in the text it records
-  (`lionagi/providers/openai/codex.py:995-998`). This amendment generalizes that posture to
-  every section of the compiled request; that provider's own bound is unchanged;
-- refusal exists for exactly one case: an empty assembled message list for a non-empty
-  instruction raises `EmptyOutgoingContentError`
-  (`lionagi/operations/chat/_prepare.py:341-354`). No section boundary refuses over its own
-  budget;
+- an eviction path exists outside the compiler: the context tool's `evict` and
+  `evict_action_results` actions remove messages from the active view
+  (`lionagi/tools/context/context.py:290-304`, `:306-323`) by excluding them from
+  `metadata["current_progression"]` (`:144-149`), which `Branch.progression` returns in place of
+  the manager's progression when it is present (`lionagi/session/branch.py:248-254`). An evicted
+  message vanishes from the compiled prompt with no marker and no left-out entry, so
+  "an empty `left_out` means nothing was left out" is false today for any evicted message;
+- a compaction path exists there too: the context tool's `compact` action replaces a span of
+  messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
+  from the active view (`lionagi/tools/context/context.py:353-430`, the summary at `:417-423`).
+  The summary is what the compiler sees, and it does not say which records it stands for;
+- in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
+  head-and-tail cut of a bounded tool result's text, counting characters
+  (`lionagi/providers/openai/codex.py:995-998`); a list's tail replaced by an item counting the
+  entries left out (`:1117-1120`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:1149-1154`), which the file-change echo applies per entry a second time at `:1209-1212`.
+  None names a section: they count characters or entries. This amendment generalizes the posture,
+  not the shape; that provider's own bounds are unchanged;
+- refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
+  first retained message under a system message is not an Instruction
+  (`lionagi/operations/chat/_prepare.py:295`, cited by D2 §3 above), and it raises
+  `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
+  or images (`:341-354`). That guard tests the current turn, the last entry appended to the
+  assembled list, not the whole list: `_current_turn_rendered` is captured for
+  `_last_index` (`:310-311`, `:330-331`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`:395-408`). No section boundary refuses
+  over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action
   results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:234-239`,
@@ -573,20 +662,34 @@ What the code does today:
   tool output share the same "Context" field
   (`lionagi/protocols/messages/instruction.py:206-218`). Material and instruction are one
   untyped list;
+- a second, narrower left-out exists inside one ReAct turn's later calls: the current request
+  renders the caller's context once, on the first rendered instruction carrying it, and later
+  rendered instructions, the current turn included, go out with those items removed
+  (`lionagi/operations/chat/_prepare.py:191-232`). Only that request's copies change, and no
+  marker or record states the removal, so it is a third form of silent dropping the compiler has
+  to account for;
 - per-section bounds: none. The registry has one total (`_DEFAULT_BUDGET = 2000`,
-  `lionagi/protocols/context_providers.py:25`) and per-provider maxima; history and tool results
-  are bounded only by the model-window estimate (`lionagi/service/token_budget.py:106`), which
-  informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler.
+  `lionagi/protocols/context_providers.py:25`) and per-provider maxima; nothing bounds the
+  system section, and the history section is shaped before compilation by the active view rather
+  than by a bound. What exists for history and tool results is the model-window estimate
+  (`lionagi/service/token_budget.py:88`, consumed by `get_token_budget()` at `:150`), whose
+  result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
+  cuts or records anything.
 
-Deltas these decisions narrow: this ADR is Aspirational and enumerates target decisions, so it
-carries no current-vs-ideal delta table of its own; the two deltas they settle are rows of
-ADR-0008's table, and amendments are per-record, so those rows are named here and left unedited
-there.
+Deltas: this ADR is Aspirational and enumerates target decisions, so it carries no
+current-vs-ideal delta table of its own. Two rows of ADR-0008's table touch this amendment, and
+they are named here rather than edited there, because they stay open on that record.
 
-| Delta (ADR-0008) | How this amendment narrows it |
-|---|---|
-| 1 — Add source-attributed data envelopes and separators between system text, each provider block, and guidance | D8 adds each block's authority to the envelope D3 already defines; the separators and escaping D3 fixes are unchanged, so acceptance gains one property rather than losing the others. |
-| 4 — Name the existing total limit as a rendered-token budget and decide whether invocation cost also needs a bound | D7 names each section's bound and posture in the compiled request, so the compiler reads bound records instead of scaling one scalar; invocation cost stays outside this decision. |
+- ADR-0008 delta 1 — add source-attributed data envelopes and separators between system text,
+  each provider block, and guidance. D8 adds the authority property: each canonical JSON entry
+  gains an `authority` key beside `provider_name` and `content`. The separators and escaping D3
+  fixes are unchanged, so this adds one property to the envelope rather than deciding the row.
+- ADR-0008 delta 4 — name the existing total limit as a rendered-token budget and decide whether
+  invocation cost also needs a bound. D7 does not decide this row: it does not name the existing
+  total as a rendered-token budget, and it does not decide whether invocation cost needs a bound.
+  What D7 adds is a per-section bound and posture in the compiled request, so the compiler reads
+  bound records instead of scaling one scalar. Naming the total and the cost bound remain
+  ADR-0008's to decide.
 
 Alternatives considered, still applying here:
 
@@ -618,11 +721,12 @@ Consequences:
   material as operator text, deliberately;
 - reversing either decision costs more than adding it: dropping the authority field returns the
   assembled artifact to untyped concatenation and invalidates any audit built on it, and
-  dropping the bound records restores exactly the silent drop P3 names and the untyped
-  concatenation that leaves P4's boundary unauditable;
-- both arms are assertable without a live model — a constructor refusal, and a bound record
-  computed from a branch and a request — matching D2's claim that a branch plus a request is
-  enough to assert the complete output.
+  dropping the bound records restores the silent drops listed above — the registry's skipped
+  providers and the merge loop's adjacent records — and the untyped concatenation that leaves
+  P4's boundary unauditable;
+- both arms are assertable without a live model: the constructor refusal is a pure constructor
+  call, and a bound record is computed from a branch and a request, the two inputs D2 already
+  makes sufficient to assert the complete output.
 
 ## Consequences
 
