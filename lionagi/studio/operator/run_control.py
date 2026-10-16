@@ -212,12 +212,16 @@ def session_has_control_consumer(session: dict[str, Any]) -> bool:
     admission below answers. A Studio client that offers a steer this would
     refuse gets a control that can never queue, so the offer and the refusal
     read from one rule rather than from two that can drift apart.
+
+    A session of any other kind (an engine run, or no recorded kind) has no
+    consumer for any verb, so it fails too; admission refuses it as
+    ``unsupported_kind``.
     """
     kind = session.get("invocation_kind")
     if kind in {"flow", "play"}:
         return _flow_control_poller_state(session) in _CONTROL_DELIVERY_MARKERS
     if kind != "agent":
-        return True
+        return False
     return bool(session.get("run_id")) and _runner_drains_controls(session)
 
 
@@ -465,8 +469,16 @@ async def execute_run_control_command(
         # the run being reassigned to another project between the check above
         # and this insert. The check above still runs, because it is what
         # distinguishes the refusal reasons for the caller; it is not what
-        # enforces ownership.
-        raise ValueError("run is no longer running")
+        # enforces ownership. The insert does not say which condition failed,
+        # so the row is read again to name it.
+        async with StateDB() as db:
+            after = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        if after is None or after.get("project") != project:
+            raise ValueError("run not found")
+        refusal = _admission_refusal(dict(after), verb)
+        if refusal == "not_running":
+            raise ValueError("run is no longer running")
+        raise ValueError(f"run cannot consume this control ({refusal or 'refused at the write'})")
     return {
         "status": "queued",
         "session_id": session_id,

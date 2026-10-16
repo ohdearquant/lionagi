@@ -823,7 +823,8 @@ def add_orchestrate_subparser(
         "id",
         help=(
             "Running flow to pause, by session, invocation, play, or run id (full, an "
-            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix). "
+            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix "
+            "through the T after its date). "
             "In-flight operations are not interrupted."
         ),
     )
@@ -837,7 +838,8 @@ def add_orchestrate_subparser(
         "id",
         help=(
             "Paused flow to release, by session, invocation, play, or run id (full, an "
-            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix)."
+            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix "
+            "through the T after its date)."
         ),
     )
 
@@ -858,7 +860,7 @@ def add_orchestrate_subparser(
         help=(
             "Running flow, playbook run, or agent leg to message, by session, "
             "invocation, play, or run id (exact, an unambiguous 8-character hex prefix, "
-            "or an unambiguous run-id prefix)."
+            "or an unambiguous run-id prefix through the T after its date)."
         ),
     )
     ctl_msg.add_argument(

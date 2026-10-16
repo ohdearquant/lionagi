@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -89,7 +90,15 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
     return await db.get_session(branch["session_id"])
 
 
-async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] | None:
+# A run id is `YYYYMMDDTHHMMSS-hex6` (`_runs._new_run_id`). Every character before the `T`
+# is a digit, and digits are valid hex, so a prefix that stops short of the `T` can also begin
+# an entity id, or simply be a number or a date. A prefix that reaches it cannot begin a UUID.
+_RUN_ID_THROUGH_T = re.compile(r"\d{8}T")
+
+
+async def _resolve_session_by_run_id(
+    db: Any, entity_id: str, *, prefix_through_t: bool = False
+) -> dict[str, Any] | None:
     """Fallback: resolve *entity_id* as a CLI run id to its most-recent session.
 
     Run ids are not primary keys `_util.resolve_entity` searches — they live
@@ -106,6 +115,9 @@ async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] 
     one is returned rather than assuming a 1:1 mapping. A prefix that fits
     more than one *distinct* run id raises `AmbiguousIdError`, for the same
     reason a colliding table prefix does: there is no correct row to prefer.
+
+    With *prefix_through_t*, a prefix resolves only once it reaches the `T` after
+    the date (ADR-0108, Amendment 2); the commands that act on a run ask for it.
     """
     entity_id = entity_id.strip()
     if not entity_id:
@@ -115,6 +127,8 @@ async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] 
     if exact:
         return max(exact, key=lambda s: s.get("updated_at") or 0)
 
+    if prefix_through_t and not _RUN_ID_THROUGH_T.match(entity_id):
+        return None
     run_ids = await _run_id_candidates(db, entity_id)
     if not run_ids:
         return None
@@ -187,7 +201,9 @@ async def _resolve_play_target(
     return ("session", row) if row is not None else None
 
 
-async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
+async def _resolve_any_target(
+    db: Any, entity_id: str, *, run_prefix_through_t: bool = False
+) -> tuple[str, dict[str, Any]] | None:
     """`li o ctl status <id>` resolution: no kind scoping, id required (no
     latest). Falls back to branch_id, then run_id, after sessions/invocations/plays.
 
@@ -202,7 +218,11 @@ async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, A
     Searching the run-id space last orders it, which is not the same as keeping
     it apart: a string that identifies both an entity and a run is ambiguous
     however late the second space is consulted, so that case is refused rather
-    than resolved.
+    than resolved, after an entity hit and after a branch hit alike.
+
+    *run_prefix_through_t* is passed by the commands that act on the answer:
+    their run-id prefixes must reach the `T` after the date (ADR-0108,
+    Amendment 2), so a number, a date or a label never acts on a run.
     """
     hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
     if hit is not None:
@@ -225,8 +245,15 @@ async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, A
         return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
     if row is not None:
+        also_runs = await _run_id_candidates(db, entity_id)
+        if also_runs:
+            raise AmbiguousIdError(
+                entity_id,
+                None,
+                [f"branch of session {row.get('id')}", *(f"run {r}" for r in also_runs)],
+            )
         return "session", row
-    row = await _resolve_session_by_run_id(db, entity_id)
+    row = await _resolve_session_by_run_id(db, entity_id, prefix_through_t=run_prefix_through_t)
     if row is not None:
         return "session", row
     return None
@@ -328,10 +355,10 @@ def _detect_degraded(
         return False, None
     if primary_session.get("num_turns") is not None:
         return False, None
-    # The stored phase is deliberately not quoted here: a terminal row can keep
-    # one because another writer ended the run (a kill, a reaper) rather than
-    # because teardown ran, so it is not evidence about this record. The
-    # num_turns gap above is the signal.
+    # The stored phase is deliberately not quoted here: a terminal row can still
+    # carry one when its writer was interrupted before the terminal commit, or
+    # when the row predates the phase clear, so it is not evidence about this
+    # record. The num_turns gap above is the signal.
     return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded"
 
 
@@ -467,9 +494,7 @@ def _pending_controls_note(primary_session: dict[str, Any] | None) -> str | None
             metadata = {}
     marker = metadata.get("flow_control_poller") if isinstance(metadata, dict) else None
     if marker == "stopped":
-        return (
-            "the DAG execution poller has stopped; controls queued after that will not be applied"
-        )
+        return "the DAG execution poller has stopped; no queued control will be applied from now on"
     return (
         "flow/play controls wait for the DAG execution poller; none will be applied after it stops"
     )

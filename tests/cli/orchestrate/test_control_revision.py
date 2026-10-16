@@ -699,3 +699,153 @@ async def test_unreadable_invocation_store_refuses_instead_of_traceback(db_path,
     with pytest.raises(flow.FlowPlanError, match="could not be checked"):
         await flow._run_flow("fake/model", "work", invocation_id="self-chosen")
     setup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("entity_id", ["2", "2026", "20260801"])
+async def test_a_run_id_prefix_short_of_the_t_cannot_control_a_run(db_path, entity_id):
+    """Before the `T` a run-id prefix is all digits: a number, a date, or the
+    start of an entity id. It acts on no run, while read-only status keeps the
+    broader lookup.
+    """
+    from lionagi.cli import status
+
+    async with StateDB(db_path) as db:
+        sid = await _named_session(db, "run-backed-session")
+        await db.update_session(sid, run_id="20260801T020202-abc123")
+    _output, rc = await _enqueue_control_inner(entity_id=entity_id, verb="pause", payload=None)
+    assert rc == EXIT_UNKNOWN
+    async with StateDB(db_path) as db:
+        assert await db.list_pending_session_controls(sid) == []
+        hit = await status._resolve_any_target(db, entity_id)
+    assert hit is not None
+    assert hit[1]["id"] == sid
+
+
+async def test_a_run_id_prefix_through_the_t_controls_its_run(db_path):
+    async with StateDB(db_path) as db:
+        sid = await _named_session(db, "run-backed-session")
+        await db.update_session(sid, run_id="20260801T020202-abc123")
+    _output, rc = await _enqueue_control_inner(entity_id="20260801T", verb="pause", payload=None)
+    assert rc == 0
+    async with StateDB(db_path) as db:
+        assert len(await db.list_pending_session_controls(sid)) == 1
+
+
+async def test_a_branch_prefix_that_also_begins_a_run_is_refused(db_path):
+    """The branch fallback refuses a cross-space match, as the entity search does."""
+    from lionagi.cli import status
+    from lionagi.cli._util import AmbiguousIdError
+
+    async with StateDB(db_path) as db:
+        branch_owner = await _named_session(db, "branch-owner-session")
+        await db.create_progression("progression-branch")
+        await db.create_branch(
+            {
+                "id": "20260801-0000-4000-8000-00000000000c",
+                "session_id": branch_owner,
+                "progression_id": "progression-branch",
+            }
+        )
+        run_backed = await _named_session(db, "run-backed-session")
+        await db.update_session(run_backed, run_id="20260801T020202-aaaaaa")
+        with pytest.raises(AmbiguousIdError):
+            await status._resolve_any_target(db, "20260801")
+    output, rc = await _enqueue_control_inner(entity_id="20260801", verb="pause", payload=None)
+    assert rc == EXIT_UNKNOWN
+    assert "ambiguous" in output
+    async with StateDB(db_path) as db:
+        assert await db.list_pending_session_controls(branch_owner) == []
+        assert await db.list_pending_session_controls(run_backed) == []
+
+
+async def test_the_insert_refuses_a_flow_that_lost_its_poller_after_the_read(db_path, monkeypatch):
+    """The admission read saw a live poller; the poller stopped before the write.
+
+    The insert re-checks the marker, so the control is refused, and the refusal
+    names the poller rather than a terminal status the row never reached.
+    """
+    async with StateDB(db_path) as db:
+        sid = await _named_session(db, "losing-poller-session")
+    real_insert = StateDB.insert_session_control
+    stopped: list[str] = []
+
+    async def _stop_then_insert(self, **kwargs):
+        stopped.append(kwargs["session_id"])
+        async with StateDB(db_path) as other:
+            await other.merge_session_node_metadata(
+                kwargs["session_id"], {"flow_control_poller": "stopped"}
+            )
+        return await real_insert(self, **kwargs)
+
+    monkeypatch.setattr(StateDB, "insert_session_control", _stop_then_insert)
+    output, rc = await _enqueue_control_inner(entity_id=sid, verb="pause", payload=None)
+    assert stopped == [sid]
+    assert rc == EXIT_UNKNOWN
+    assert "lost its DAG execution poller" in output
+    assert "terminal" not in output
+    async with StateDB(db_path) as db:
+        assert await db.list_pending_session_controls(sid) == []
+        assert (await db.get_session(sid))["status"] == "running"
+
+
+async def test_teardown_closes_a_control_its_poller_never_applied(db_path, tmp_path, monkeypatch):
+    """A control admitted while the run is live but never applied is closed at teardown.
+
+    The inner run below admits a pause and ends without applying it, as a run
+    does when the control lands after its poller's last poll. Once the session
+    is terminal nothing will apply it, so teardown records it as rejected
+    instead of leaving it pending.
+    """
+    env = _make_env(tmp_path)
+    env.run.run_id = "test-run"
+    env.run.write_manifest = Mock()
+    env._run_manifest = {}
+    env.orc_profile_name = None
+
+    async def start(env, **kwargs):
+        db = StateDB(db_path)
+        await db.open()
+        sid = await _make_session(db)
+        await db.update_session(sid, invocation_kind="flow")
+        await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
+        row = await db.get_session(sid)
+        env._live_persist = {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": row["progression_id"],
+            "shared_db_registered": False,
+        }
+        env.test_session_id = sid
+
+    async def inner(*args, **kwargs):
+        _output, rc = await _enqueue_control_inner(
+            entity_id=env.test_session_id, verb="pause", payload=None
+        )
+        assert rc == 0
+        return "done"
+
+    monkeypatch.setattr(flow, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(flow, "start_live_persist", start)
+    monkeypatch.setattr(flow, "_run_flow_inner", inner)
+    monkeypatch.setattr(
+        "lionagi.state.completion_evidence.check_completion_evidence",
+        lambda cwd: {"checked": False},
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        lambda *args, **kwargs: None,
+    )
+    result, _status = await flow._run_flow("fake/model", "work")
+    assert result == "done"
+    async with StateDB(db_path) as db:
+        session = await db.get_session(env.test_session_id)
+        assert session["status"] == "completed"
+        assert await db.list_pending_session_controls(env.test_session_id) == []
+        controls = await db.fetch_all(
+            "SELECT verb, result, applied_at FROM session_controls WHERE session_id = ?",
+            (env.test_session_id,),
+        )
+    assert len(controls) == 1
+    assert controls[0]["verb"] == "pause"
+    assert controls[0]["applied_at"] is not None
+    assert controls[0]["result"].startswith("rejected: run reached terminal status")

@@ -1,11 +1,30 @@
 # ADR-0108: Agent-run steering at the turn-end boundary
 
 - **Status**: Accepted (2026-08-02, PR #2773); amended 2026-08-02 — the claim
-  condition binds every consumer of a claimed row, not only the agent drain
+  condition binds every consumer of a claimed row, not only the agent drain;
+  Amendment 2 (2026-10-16) — a control command's run-id prefix reaches the `T`
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-08-01
 - **Relations**: extends ADR-0069
+
+## Amendment 2 (2026-10-16) — a control command's run-id prefix reaches the `T`
+
+Decision 1 resolves a run id exactly, then by an unambiguous prefix of any length.
+For the commands that act on the answer, `li o ctl pause`, `resume` and `msg`, that
+is too wide. Before the `T` that follows the date a run id is all digits, so `2` or
+`2026` queued a control on whichever single recorded run started with it. These
+commands now take a run-id prefix only once it reaches the `T` (`YYYYMMDDT` and
+beyond). Such a prefix cannot begin a hexadecimal key, so it can collide only with
+other run ids, which the run-id search already refuses as ambiguous. An eight-digit
+date is still read as a printed hexadecimal prefix of a session, invocation or
+play, never as a run-id prefix. `li o ctl status`, `li wait` and checkpoint
+resolution keep the prefix of any length: status acts on nothing, and the other
+two are outside this amendment.
+
+The branch-id fallback now refuses a prefix that also begins a recorded run id, as
+the entity search already did under Decision 1; before, a branch hit returned
+without the check.
 
 ## Context
 

@@ -587,14 +587,20 @@ Flow/play sessions persist `planning` before calling the planner. Their scalar
 `_execute_dag` starts its poller, regardless of a stale or NULL phase. Stopped
 consumers refuse new controls; missing declarations are refused as predating
 control-delivery tracking. Agent turn-end drain declarations are unchanged.
-The stopped marker is published before the DAG poll loop is cancelled, so a
-control can never be admitted in the gap between the loop dying and the marker
-saying so. The write is shielded, so a native cancellation arriving mid-write
-cannot leave the marker reading active over a dead poller; the poll loop is
-cancelled in either case. Marker writes remain best-effort; a failed write may
-leave a stale active marker. Enqueue re-checks the marker in the same statement
-that inserts the control, so a run that lost its poller between the admission
-read and the write refuses rather than queueing against a consumer that is gone.
+The stopped marker is published before the DAG poll loop is cancelled; once it
+commits, admission refuses new controls. The write is bounded, and shielded
+against cooperative cancellation only. A control admitted before it commits
+(while the write runs, after it outlives its budget, or after a native
+cancellation interrupts the wait) may never be applied once the loop is gone, so
+`_run_flow`'s teardown closes every control still queued and unclaimed as
+`rejected: run reached terminal status before its DAG poller applied the control`
+after the session's terminal status is written, as the agent runner closes its
+undelivered steers; a claimed row is left to its claimant. Marker writes remain
+best-effort, and a failed write may leave a stale active marker; it admits nothing
+once the session is terminal, because the insert also requires a running session.
+Enqueue re-checks the marker and the running status in the same statement that
+inserts the control, so a run that lost its poller or ended between the admission
+read and the write refuses, and the refusal says which.
 Enqueue explicitly says no control will be applied after the poller stops. The
 approximately two-second interval is neither a deadline nor a guarantee before
 the first operation.
@@ -609,9 +615,11 @@ Agent legs drain at the next turn boundary, which can be far later than two seco
 into a provider call.
 
 Every writer that ends a session carries `current_phase=None` in its terminal
-status UPDATE: teardown, the `li kill` writer, the doctor sweep, the monitor's
-linked-engine reconcile, and the studio reapers. A terminal row therefore no
-longer keeps the live phase it had, whichever path ended it. `current_phase` was
+status UPDATE: teardown, the setup-failure sweep, the `li kill` writer, the doctor
+sweep, the monitor's linked-engine reconcile, the engine runner, the studio
+reapers and the studio admin transition. The transcript mirrors write no phase.
+A terminal row therefore no longer keeps the live phase it had, whichever path
+ended it. `current_phase` was
 added to the two session status-patch allowlists; unrelated fields remain refused.
 The existing cancellation shield covers cooperative scopes, not native task
 cancellation: repeated native cancellation can still interrupt the pre-existing
@@ -621,13 +629,15 @@ normalize historical terminal phases while retaining the agent or playbook name
 fallback. Queuing a control does not change the applied phase.
 
 Control actions accept an exact recorded session/invocation/play/run ID, an
-unambiguous 8-character hex prefix, or an unambiguous run-id prefix (ADR-0108).
-Any other string is an exact id: shorter than eight characters or containing a
-non-hex character, it enters the prefix search only when it also prefixes a
-recorded run id, and a string that prefixes both an entity id and a run id is
-refused as ambiguous. A label that prefixes no run id therefore cannot match
-another run's session, invocation or play. Read-only status retains broader
-prefix lookup.
+unambiguous 8-character hex prefix, or an unambiguous run-id prefix that reaches
+the `T` after the date (ADR-0108, Amendment 2). Any other string is an exact id:
+shorter than eight characters or containing a non-hex character, it enters the
+prefix search only when it reaches that `T` and prefixes a recorded run id. Before
+the `T` a run id is all digits, so a number or a date never acts on a run, and an
+eight-digit date is searched only as a printed hex prefix. A string that prefixes
+both a run id and a session, invocation, play or branch id is refused as
+ambiguous. A label therefore cannot match another run's session, invocation or
+play. Read-only status retains broader prefix lookup.
 Foreground flow prints its full persisted Session ID before planning; background
 launch prints the full ID assigned to its child. `--invocation` is validated against
 the real invocation row before setup/planning and before background spawn; register

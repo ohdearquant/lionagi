@@ -766,7 +766,8 @@ async def test_a_poller_that_stops_before_the_insert_queues_nothing(tmp_path: Pa
     monkeypatch.setattr(run_control_mod, "_admission_refusal", _record_admission)
     monkeypatch.setattr(StateDB, "insert_session_control", _stop_then_insert)
 
-    with pytest.raises(ValueError, match="no longer running"):
+    # The run is still running; what it lost is its poller, and the refusal says so.
+    with pytest.raises(ValueError, match=r"cannot consume this control \(no_consumer\)"):
         await execute_run_control_command(
             {"session_id": session_id, "verb": "pause", "payload": None, "project": PROJECT}
         )
@@ -842,3 +843,21 @@ async def test_the_wait_for_a_decision_backs_off_instead_of_polling_at_one_rate(
     assert max(intervals) <= run_control_mod._MAX_PROPOSAL_POLL_SECONDS
     # A whole proposal lifetime costs dozens of reads, not thousands.
     assert sum(intervals) > 8 * run_control_mod._MIN_PROPOSAL_POLL_SECONDS
+
+
+@pytest.mark.parametrize("kind", ["engine", None])
+def test_a_session_kind_no_verb_consumes_offers_no_control(kind):
+    """The read projection and admission agree for kinds no runner drains."""
+    from lionagi.studio.operator.run_control import (
+        _admission_refusal,
+        session_has_control_consumer,
+    )
+
+    session = {
+        "status": "running",
+        "invocation_kind": kind,
+        "run_id": "20260801T010101-abc123",
+        "node_metadata": {"drains_controls": True},
+    }
+    assert session_has_control_consumer(session) is False
+    assert _admission_refusal(session, "message") == "unsupported_kind"

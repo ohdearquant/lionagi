@@ -337,12 +337,13 @@ Foreground flows print `Session: <full ID>` after recording the session, before
 planning. Background launch prints the full session ID assigned to its child.
 Control actions accept an exact recorded session, invocation, play or run ID, an
 unambiguous 8-character hex prefix, or an unambiguous prefix of a run ID (the ID
-`li agent` prints). Any other string is looked up as an exact id first; a string
-shorter than eight characters or carrying a non-hex character is treated as a
-prefix only when it also begins a recorded run ID, and one that begins both a run
-ID and another ID is refused as ambiguous. A self-chosen label that begins no run
-ID therefore cannot match a different run; an eight-hex label is a prefix like
-any other printed id. Shorter prefixes remain available to `status`, which does
+`li agent` prints) that reaches the `T` after its date, such as `20260801T0201`.
+Any other string is looked up as an exact id first; a string shorter than eight
+characters or carrying a non-hex character is treated as a prefix only when it
+reaches that `T` and begins a recorded run ID, and one that begins both a run ID
+and another ID is refused as ambiguous. A number, a date or a self-chosen label
+therefore cannot act on a different run; an eight-hex label is a prefix like any
+other printed id. Shorter prefixes remain available to `status`, which does
 not act on a run. An exact stored ID need not be a UUID. `--invocation` must name an existing
 invocation registered with `li invoke start`; unknown values fail before flow
 setup/planning or background launch, rather than silently disabling persistence.
@@ -357,9 +358,12 @@ Controls will not be applied after the poller stops. Flows whose poller has
 stopped, and older flows without control-delivery tracking, refuse new controls.
 The stop marker is published before the poll loop stops, and enqueue re-checks it
 in the same statement that inserts the control, so a run that has lost its poller
-refuses rather than queueing against a consumer that is gone. Marker writes are
-best-effort: a failed stop-marker write can leave a stale active marker, so enqueue
-is never a delivery guarantee. Check `status` for application.
+refuses rather than queueing against a consumer that is gone. A control admitted
+just before the marker lands can miss the last poll; when the run ends, every
+control still queued and unclaimed is closed as rejected rather than left
+pending. Marker writes are best-effort: a failed stop-marker write can leave a
+stale active marker, so enqueue is never a delivery guarantee. Check `status` for
+application.
 
 Pause/resume acts at operation boundaries before the concurrency limiter.
 Operations already past the pause gate, including those waiting for limiter

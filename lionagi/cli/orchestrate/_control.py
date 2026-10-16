@@ -3,8 +3,8 @@
 """`li o ctl pause|resume|msg` — enqueue session_controls rows for a running flow.
 
 Pure writers: resolve an exact session/invocation/play/run ID, an unambiguous
-eight-character hex prefix or an unambiguous run-id prefix, then insert one row into
-session_controls; do not wait for it to apply. See
+eight-character hex prefix or an unambiguous run-id prefix that reaches the run id's
+`T`, then insert one row into session_controls; do not wait for it to apply. See
 ``docs/internals/cli.md`` (`_control.py`) for consumer wiring and admission
 gating.
 """
@@ -19,6 +19,7 @@ from typing import Any
 from .._logging import log_error
 from .._util import AmbiguousIdError
 from ..status import (
+    _RUN_ID_THROUGH_T,
     EXIT_UNKNOWN,
     _resolve_any_target,
     _resolve_primary_session,
@@ -54,11 +55,13 @@ _CONSUMER_KINDS_BY_VERB: dict[str, frozenset[str]] = {
 async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
     """Resolve an exact ID, an unambiguous eight-character printed prefix, or a run-id prefix.
 
-    Status may search shorter prefixes, but an action must not mistake a label
-    for a partial ID of another run. Exact registered IDs can be any length.
-    A run-id prefix still resolves as ADR-0108 records: run ids open with a
-    date, so a string that also prefixes an entity id is refused as ambiguous
-    by the resolver below rather than resolved to either.
+    Status may search shorter prefixes, but an action must not mistake a label,
+    a number or a date for a partial ID of another run. Exact registered IDs can
+    be any length. A run-id prefix resolves only once it reaches the `T` after
+    the date (ADR-0108, Amendment 2): before it every character is a digit, so
+    `2` or `2026` would act on whichever run happens to start with it. A string
+    that also prefixes an entity id is refused as ambiguous by the resolver
+    below rather than resolved to either.
     """
     if len(entity_id) != 8 or any(char not in "0123456789abcdefABCDEF" for char in entity_id):
         exact = False
@@ -69,10 +72,10 @@ async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
         if (
             not exact
             and not await db.get_sessions_for_run(entity_id)
-            and not await _run_id_candidates(db, entity_id)
+            and not (_RUN_ID_THROUGH_T.match(entity_id) and await _run_id_candidates(db, entity_id))
         ):
             return None
-    target = await _resolve_any_target(db, entity_id)
+    target = await _resolve_any_target(db, entity_id, run_prefix_through_t=True)
     if target is None:
         return None
     entity_type, row = target
@@ -109,7 +112,7 @@ def _flow_control_poller_state(session: dict[str, Any]) -> str | None:
 async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
-    from lionagi.state.db import StateDB, state_db_known_absent
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB, state_db_known_absent
 
     if state_db_known_absent():
         return "state.db not found — no runs recorded yet", EXIT_UNKNOWN
@@ -198,14 +201,26 @@ async def _enqueue_control_inner(
             require_live_flow_poller=True,
         )
         if control_id is None:
-            # The status check above and the insert are two statements, and the
-            # run can reach its terminal status between them. The insert carries
-            # the same running-session condition so that it, not the earlier
-            # read, decides: refusing here is the alternative to leaving a
-            # control queued against a run whose consumer has already gone.
+            # The checks above and the insert are separate statements: the run can
+            # reach its terminal status, or lose its poller, between them. The insert
+            # carries the same conditions so that it, not the earlier read, decides.
+            # It does not say which condition failed, so the row is read again to
+            # name the reason instead of guessing one.
+            after = await db.get_session(session_id) or {}
+            if after.get("status") in SESSION_TERMINAL_STATUSES:
+                reason = f"reached terminal status {after['status']}"
+            elif after.get("status") != "running":
+                reason = f"is {after.get('status') or 'missing'}, not running,"
+            elif kind in {"flow", "play"} and _flow_control_poller_state(after) not in {
+                "pending",
+                "active",
+            }:
+                reason = "lost its DAG execution poller"
+            else:
+                reason = "was refused by the store's admission check"
             return (
-                f"session {session_id[:8]} reached a terminal status while the "
-                "control was being queued — nothing would consume it",
+                f"session {session_id[:8]} {reason} while the control was being "
+                "queued — nothing would consume it",
                 EXIT_UNKNOWN,
             )
 

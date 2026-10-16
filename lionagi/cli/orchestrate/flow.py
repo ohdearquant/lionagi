@@ -275,7 +275,7 @@ async def _persist_control_poller_state_bounded(env, state: str) -> None:
     write = _asyncio.ensure_future(_persist_control_poller_state(env, state))
     _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
     if pending:
-        _warn("control-poller marker write did not land within its budget; write not durable")
+        _warn("control-poller marker write did not land within its budget; it may land later")
         return
     # The write swallows every error it can report itself; what escapes it is a
     # cancellation, and the caller asked for this write, so it is the caller's
@@ -2179,14 +2179,14 @@ async def _execute_dag(
             _hb_task.cancel()
             if _exch_task is not None:
                 _exchange.stop()
-            # Publish the stop before the poll loop is cancelled. Admission reads this
-            # marker, and the poll loop is the only thing that applies a control, so the
-            # marker has to say "stopped" from the moment the loop can no longer run --
-            # otherwise a control admitted in the gap is queued against a consumer that
-            # will never read it. Ordered after the heartbeat and exchange stops above so
-            # the write cannot delay or skip them, and shielded so a native cancellation
-            # arriving mid-write cannot leave the marker reading "active" over a dead
-            # poller. The cancel runs in the finally either way.
+            # Publish the stop, then cancel the poll loop. Once the marker commits,
+            # admission refuses new controls. A control admitted before that, including
+            # while this write runs, runs past its budget or is interrupted by a native
+            # cancellation, may never be applied once the loop is gone; _run_flow's
+            # teardown closes every such control as rejected after the session is
+            # terminal, so none is left pending. Ordered after the heartbeat and exchange
+            # stops above so the write cannot delay or skip them, and shielded against
+            # cooperative cancellation. The cancel runs in the finally either way.
             try:
                 with CancelScope(shield=True):
                     await _persist_control_poller_state_bounded(env, "stopped")
@@ -3053,7 +3053,28 @@ async def _run_flow(
             # Teardown clears the live phase in its terminal status UPDATE.
             # This shield covers cooperative cancel scopes; native task.cancel
             # can still interrupt the existing teardown before that commit.
+            _control_session_id = (env._live_persist or {}).get("session_id")
             effective_status = await stop_live_persist(env, status=_terminal_status)
+            if _control_session_id is not None:
+                # The DAG poller is gone, so a control still queued and unclaimed
+                # will never be applied: close it, as the agent runner closes its
+                # undelivered steers. The sweep refuses a session whose stored status
+                # is not terminal, and leaves a claimed row to whoever claimed it.
+                # Teardown closed the live handle, so it gets a fresh one.
+                from lionagi.cli.agent import _tombstone_pending_steers
+                from lionagi.state.db import StateDB
+
+                try:
+                    async with StateDB() as _sweep_db:
+                        await _tombstone_pending_steers(
+                            {"db": _sweep_db, "session_id": _control_session_id},
+                            result=(
+                                "rejected: run reached terminal status before its DAG "
+                                "poller applied the control"
+                            ),
+                        )
+                except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                    logger.warning("control tombstone write failed: %r", _sweep_exc)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             import time as _time

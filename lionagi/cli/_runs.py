@@ -1811,6 +1811,7 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
                 source="executor",
                 actor=row["id"],
                 expected_statuses={status},
+                extra_fields={"current_phase": None},
             )
             row = await db.get_session(row["id"]) or row
         return row
