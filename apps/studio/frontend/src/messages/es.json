@@ -1251,6 +1251,12 @@
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
     },
+    "accessRequired": {
+      "title": "Este daemon necesita un token de acceso",
+      "body": "Un daemon de lionagi respondió en {base}, pero rechazó esta página. Un daemon solo acepta una página de otro origen con un token de acceso, y el comando li studio le da uno a esta página al abrirla. Al recargar la página, el token se pierde.",
+      "fix": "Ejecuta esto donde se ejecuta el daemon para abrir Studio con acceso:",
+      "command": "li studio"
+    },
     "retry": "Retry",
     "dismiss": "Dismiss"
   },

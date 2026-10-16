@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -339,6 +339,15 @@ class EngineRun:
         # namespace so recall/writeback never crosses runs or projects.
         self.run_id: str = uuid.uuid4().hex[:12]
         self.agents_made: int = 0
+        # Each branch make_agent built while either setting was on: the engine's
+        # agent_env and containment as make_agent read them before building it, the
+        # branch, and the chat and parse models it was built with. With either set,
+        # run_dag runs a node only on such a branch, built under the settings now in
+        # force, still the one the session holds under its id, and still on those
+        # models.
+        self._agent_branches: dict[
+            str, tuple[tuple[dict[str, str] | None, bool], Any, Any, Any]
+        ] = {}
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         # Populated at the shared CLI spawn boundary through a run-scoped
@@ -440,6 +449,7 @@ class EngineRun:
         mcp_servers: list[str] | None = None,
         mcp_config_path: str | None = None,
         extra_prompt: str | None = None,
+        env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
@@ -450,12 +460,21 @@ class EngineRun:
                 f"agent budget exhausted ({self.agents_made}/{self.engine.max_agents})"
             )
         self.agents_made += 1
+        # One reading of the engine's agent settings, taken before any await: the
+        # build below and the record run_dag checks both use it, so a setting
+        # changed while create_agent awaits cannot be recorded as the build's.
+        built_under = (
+            dict(self.engine.agent_env) if self.engine.agent_env else None,
+            bool(self.engine.contain_account_integrations),
+        )
         if cwd is None:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
         if mcp_config_path is None:
             mcp_config_path = self.engine.agent_mcp_config_path
+        if env is None:
+            env = built_under[0]
         # Resolution order: explicit call > engine-wide > role profile. An
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
@@ -492,6 +511,7 @@ class EngineRun:
             # permission, so a leg spawned without this is denied every tool
             # call and reports success with nothing in it.
             yolo=self.engine.yolo,
+            contain_account_integrations=built_under[1],
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -502,7 +522,16 @@ class EngineRun:
 
             _wire_secure_guards(spec, cwd)
         # create_agent is the single grant site; capabilities are granted once here.
-        branch = await create_agent(spec, load_settings=False)
+        # AgentSpec has no env field, so the overlay goes to create_agent, which
+        # hands it to the CLI endpoint it builds: the carrier that reaches the child.
+        branch = await create_agent(spec, load_settings=False, agent_env=env)
+        if built_under[0] is not None or built_under[1]:
+            self._agent_branches[str(branch.id)] = (
+                built_under,
+                branch,
+                branch.chat_model,
+                branch.parse_model,
+            )
         if name:
             branch.name = name
         self.session.include_branches(branch)
@@ -979,8 +1008,226 @@ class EngineRun:
 
         ``skip_signal_ops`` names ops that already ran in an earlier pass, so this
         pass does not signal them a second time. Default signals every node.
+
+        With the engine's ``agent_env`` or ``contain_account_integrations`` set,
+        every node must name a branch ``make_agent`` built while the engine's
+        settings were what they are now, that the session still holds under that
+        id, and whose chat and parse models are still the ones it was built with.
+        A node with no branch runs on the session's default branch or a clone of
+        it, a node whose branch was removed runs on the default branch, and a
+        spawned node may be placed on either, so ``reactive`` is refused. Every
+        node must name a branch operation (``chat``, ``operate``, ``communicate``,
+        ``parse``, ``ReAct``, ``ReActStream``, ``interpret``, ``act``, ``run`` or
+        ``chat_and_record``), and no node may pass a model: not a value other
+        than ``None`` under ``chat_model``, ``parse_model``, ``imodel``,
+        ``interpret_model`` or ``analysis_model``, nor an ``iModel`` under any
+        other keyword, found inside mappings, lists, tuples, sets, frozensets and
+        the declared fields and extras of pydantic models. The node's calls run on
+        such a model, and ``run`` leaves the model it is given on the branch for
+        every later node: it sets the model before it refuses one that is not a
+        CLI model. Nor may a node pass, among its own keywords, in
+        ``interpret_kwargs`` or ``response_kwargs``, or in an ``imodel_kw`` in any
+        of them: ``api_call``, a prebuilt call the model sends as it was built;
+        ``create_event_type`` other than ``APICalling``, an event type whose
+        request this check cannot see being built; ``env`` with ``agent_env`` set, which replaces the overlay for that call;
+        or, with ``contain_account_integrations`` set, that keyword as anything but
+        ``True`` or a non-empty ``account_connectors``, either of which lifts the
+        containment for that call. Not every operation passes each of these
+        keyword sets on to a model call; a keyword is refused in any of them all
+        the same. Each of these raises ``ConfigurationError`` before any node
+        runs. The check is made once, before the first node: a model the caller's
+        own code puts on a built branch, or a keyword it sets on a later node,
+        while the DAG runs is not seen. A codex ``profile``, or a config override
+        under ``profile`` or ``profiles``, is not refused here: under containment
+        the codex request refuses it when it builds the command line, after the
+        nodes before it have run.
+
+        The settings reach only the branches ``make_agent`` builds, through the
+        model it builds for them. The run's ``session`` used directly
+        (``session.flow``, a branch the caller built) does not carry them; a change
+        made inside that model after it was built (its endpoint, its config, or a
+        hook registered on it, such as a ``PreEventCreate`` hook returning an event
+        of its own) is not checked; and a branch built with an explicit ``make_agent(env=...)``
+        runs with that env, as the code that built it wrote, while its record
+        holds the engine's settings, so this check accepts it.
         """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
+
+        settings = [
+            name
+            for name, value in (
+                ("contain_account_integrations", self.engine.contain_account_integrations),
+                ("agent_env", self.engine.agent_env),
+            )
+            if value
+        ]
+        if settings:
+            from lionagi._errors import ConfigurationError  # noqa: PLC0415
+            from lionagi.operations.node import Operation  # noqa: PLC0415
+
+            if reactive:
+                raise ConfigurationError(
+                    f"run_dag(reactive=True) is not supported with {' or '.join(settings)}: "
+                    "a spawned node may run on a branch make_agent did not build, which "
+                    "does not carry the setting."
+                )
+            in_force = (
+                dict(self.engine.agent_env) if self.engine.agent_env else None,
+                bool(self.engine.contain_account_integrations),
+            )
+
+            from typing import get_args  # noqa: PLC0415
+
+            from lionagi.operations.node import BranchOperations  # noqa: PLC0415
+            from lionagi.service.connections.api_calling import APICalling  # noqa: PLC0415
+            from lionagi.service.imodel import iModel  # noqa: PLC0415
+
+            def _carries(op: Operation) -> bool:
+                record = self._agent_branches.get(str(op.branch_id)) if op.branch_id else None
+                if record is None or record[0] != in_force:
+                    return False
+                _, built, chat, parse = record
+                # The lookup the flow makes; a branch it cannot find runs on the default.
+                try:
+                    held = self.session.branches[op.branch_id]
+                except Exception:
+                    return False
+                # Another branch included under the same id, or another chat or parse
+                # model put on the built branch, does not carry the settings.
+                return held is built and built.chat_model is chat and built.parse_model is parse
+
+            def _passed(op: Operation) -> Mapping[str, Any]:
+                params = op.parameters
+                if isinstance(params, Mapping):
+                    return params
+                return {
+                    name: getattr(params, name, None)
+                    for name in getattr(params, "model_fields_set", ())
+                }
+
+            def _call_keywords(op: Operation) -> list[Mapping[str, Any]]:
+                # The node's keywords, and the sets an operation may hand on to a model
+                # call: interpret_kwargs, response_kwargs, and an imodel_kw in any of them.
+                passed = _passed(op)
+                found = [passed]
+                for name in ("interpret_kwargs", "response_kwargs", "imodel_kw"):
+                    inner = passed.get(name)
+                    if isinstance(inner, Mapping):
+                        found.append(inner)
+                        nested = inner.get("imodel_kw")
+                        if isinstance(nested, Mapping):
+                            found.append(nested)
+                return found
+
+            def _lifts_containment(keywords: Mapping[str, Any]) -> bool:
+                return (
+                    "contain_account_integrations" in keywords
+                    and keywords["contain_account_integrations"] is not True
+                ) or bool(keywords.get("account_connectors"))
+
+            def _holds_a_model(value: Any) -> bool:
+                # An operation passes keywords it does not name on to the model call,
+                # so a model under any keyword is looked for, inside mappings, lists,
+                # tuples, sets, frozensets and the declared fields and extras of
+                # pydantic models, at any depth.
+                stack, seen = [value], set()
+                while stack:
+                    item = stack.pop()
+                    if isinstance(item, iModel):
+                        return True
+                    if id(item) in seen:
+                        continue
+                    seen.add(id(item))
+                    if isinstance(item, Mapping):
+                        stack.extend(item.values())
+                    elif isinstance(item, list | tuple | set | frozenset):
+                        stack.extend(item)
+                    elif isinstance(item, BaseModel):
+                        stack.extend(vars(item).values())
+                        stack.extend((item.model_extra or {}).values())
+                return False
+
+            # Every keyword a branch operation takes a model under.
+            model_keys = (
+                "chat_model",
+                "parse_model",
+                "imodel",
+                "interpret_model",
+                "analysis_model",
+            )
+            branch_operations = get_args(BranchOperations)
+            operations = [n for n in graph.internal_nodes.values() if isinstance(n, Operation)]
+            unbuilt = [op for op in operations if not _carries(op)]
+            unknown = [op for op in operations if op.operation not in branch_operations]
+            modelled = [
+                op
+                for op in operations
+                if any(_passed(op).get(key) is not None for key in model_keys)
+                or _holds_a_model(op.request)
+            ]
+            # A prebuilt call reaches the CLI as it was built, without the settings, and
+            # this check cannot see how an event type other than APICalling builds its
+            # request; None for api_call means "build one".
+            prebuilt = [
+                op
+                for op in operations
+                if any(
+                    kw.get("api_call") is not None
+                    or kw.get("create_event_type", APICalling) is not APICalling
+                    for kw in _call_keywords(op)
+                )
+            ]
+            enved = [
+                op
+                for op in operations
+                if in_force[0] is not None and any("env" in kw for kw in _call_keywords(op))
+            ]
+            uncontained = [
+                op
+                for op in operations
+                if in_force[1] and any(_lifts_containment(kw) for kw in _call_keywords(op))
+            ]
+            if unbuilt or unknown or modelled or prebuilt or enved or uncontained:
+                total = len(operations)
+                problems = []
+                if unbuilt:
+                    problems.append(
+                        f"{len(unbuilt)} of {total} nodes name no branch make_agent built "
+                        "under the settings now in force, or one the session no longer holds "
+                        "under that id, or one whose chat or parse model was replaced"
+                    )
+                if unknown:
+                    problems.append(
+                        f"{len(unknown)} of {total} nodes name an operation that is not a "
+                        "branch operation, whose model this check cannot see"
+                    )
+                if modelled:
+                    problems.append(
+                        f"{len(modelled)} of {total} nodes pass a model, which the node's "
+                        "calls run on and run() leaves on the branch"
+                    )
+                if prebuilt:
+                    problems.append(
+                        f"{len(prebuilt)} of {total} nodes pass api_call or create_event_type, "
+                        "a prebuilt call the model sends as it was built or an event type "
+                        "whose request this check cannot see being built"
+                    )
+                if enved:
+                    problems.append(
+                        f"{len(enved)} of {total} nodes pass env, which replaces the "
+                        "agent_env overlay for the node's calls"
+                    )
+                if uncontained:
+                    problems.append(
+                        f"{len(uncontained)} of {total} nodes pass "
+                        "contain_account_integrations other than True or name "
+                        "account_connectors, which lifts the containment for the node's calls"
+                    )
+                raise ConfigurationError(
+                    f"run_dag with {' or '.join(settings)} runs only on branches make_agent "
+                    "built under the settings now in force, on the models it built: "
+                    f"{'; '.join(problems)}. Each could run without the setting."
+                )
 
         async with flow_progress_signals(
             self.session, graph, skip_ops=skip_signal_ops
@@ -1077,6 +1324,11 @@ class EngineResult(str):
         return self._events_by_type(event_type)
 
 
+# How many links of a judge error's chain the refusal search reads before it gives up. A real
+# chain is a few links long: the model layer wraps a provider's error once or twice.
+_JUDGE_CHAIN_LIMIT = 100
+
+
 class Engine:
     """Stateless event-driven engine base; subclasses implement ``_run()``. See docs/reference/engines.md for parameter details."""
 
@@ -1099,8 +1351,10 @@ class Engine:
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
         agent_mcp_config_path: str | None = None,
+        agent_env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
         yolo: bool = False,
+        contain_account_integrations: bool = False,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
@@ -1116,6 +1370,19 @@ class Engine:
         # falling back to the global one. Per-call
         # make_agent(mcp_config_path=...) still wins.
         self.agent_mcp_config_path = agent_mcp_config_path
+        # Environment overlay for every CLI agent this engine spawns, merged over
+        # os.environ by create_agent; per-call make_agent(env=...) still wins.
+        # PlanningEngine refuses it: its workers are not built by make_agent.
+        # A caller running several engines concurrently in one process cannot
+        # give each its own value through os.environ, which every run shares;
+        # this field is the per-engine carrier.
+        if agent_env is not None and not isinstance(agent_env, Mapping):
+            from lionagi._errors import ConfigurationError
+
+            raise ConfigurationError(
+                f"agent_env must be a mapping of strings to strings, got {type(agent_env).__name__}"
+            )
+        self.agent_env = dict(agent_env) if agent_env else None
         # Auto-approve tool permission requests for every agent this engine
         # spawns, applied per provider from the same table the CLI and profile
         # paths use. Default False: auto-approving tool execution is not
@@ -1124,6 +1391,13 @@ class Engine:
         # table is unreachable on this path, and a CLI that cannot prompt for a
         # permission has no way to be granted one.
         self.yolo = yolo
+        # Turn the signed-in account's apps and plugins off for every codex
+        # agent this engine spawns. Codex attaches them from the account,
+        # whatever MCP servers a request carries, and a connector acts as the
+        # account. Default False keeps the agent's request as the account and
+        # config set it. PlanningEngine refuses it: its workers are not built by
+        # make_agent.
+        self.contain_account_integrations = contain_account_integrations
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,
         # None defers to each stage role's agent profile).
@@ -1147,7 +1421,10 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Budget exhaustion stops; any other error fails open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal on the error's chain of causes and contexts, within the first 100 links read, nearest first; and, when the engine contains account integrations, every other error, because no error can show that a contained judge ran, so none can be read as a pass."""
+        from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
+        from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
+
         if not self.judge_model:
             return True
         try:
@@ -1173,8 +1450,40 @@ class Engine:
             return allow
         except EngineBudgetError:
             return False
+        except _AgentSettingError:
+            raise
         except Exception as exc:
+            # The model layer wraps a provider's refusal in its own error, so the refusal is
+            # found on the error's chain: its cause, or its context when a wrapper raised
+            # without `from`. It refuses every call this judge makes; read as a pass, it would
+            # turn the gate off for the whole run. Whatever a link holds is followed, an object
+            # that is not an exception included, and every link read is kept until the walk
+            # ends, so a link an error builds on each read cannot take a visited one's address.
+            # Links are read nearest first, so a long branch cannot spend the limit before a
+            # refusal one link away is read.
+            pending: deque[object] = deque([exc])
+            seen: dict[int, object] = {}
+            while pending and len(seen) < _JUDGE_CHAIN_LIMIT:
+                cause = pending.popleft()
+                if cause is None or id(cause) in seen:
+                    continue
+                seen[id(cause)] = cause
+                if issubclass(type(cause), ContainmentRefusedError):
+                    raise cause from cause.__cause__
+                for name in ("__context__", "__cause__"):
+                    # A read that fails ends that branch. An interrupt, an exit or a cancellation
+                    # raised by the read is not caught.
+                    try:
+                        pending.append(getattr(cause, name, None))
+                    except Exception:  # noqa: S112
+                        continue
+            # No refusal on the chain. A chain that loops back on itself, or one longer than
+            # the limit, lands here too, instead of walking forever. Under containment the
+            # refusal can arrive as any error type (an unreadable directory, a config the
+            # request model rejects), so an error is never read as a pass.
             run.notify("judge_error", eid=eid, error=str(exc))
+            if self.contain_account_integrations:
+                raise
             return True
 
     def new_run(
