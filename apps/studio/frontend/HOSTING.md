@@ -87,10 +87,10 @@ the destination has the same absolute origin as the injected `__STUDIO_API_BASE_
 captured at page load. If the issuing origin is missing, cannot be parsed, or differs
 from the destination, the override receives no token. Changing the injected base
 after load does not change this issuer match.
-Without a viewer override at load time, injected and build-time bases retain token
-authentication, including relative proxy paths such as `/proxy` and the empty
-same-origin base. Adding `?api=` after load no longer withholds the configured-base
-token: both requests and their authentication continue to use the loaded destination
-until reload. These deployment settings are trusted and used as supplied;
-the viewer-override origin check does not validate configured URLs or prevent
+Without a viewer override at load time, the loaded base retains token authentication,
+including relative proxy paths such as `/proxy`, the empty same-origin base, and
+injected or build-time absolute bases. Adding `?api=` after load no longer withholds
+the token for that loaded base: both requests and their authentication continue to use
+the loaded destination until reload. These deployment settings are trusted and used as
+supplied: the viewer-override origin check does not validate configured URLs or prevent
 requests caused by malformed deployment settings.

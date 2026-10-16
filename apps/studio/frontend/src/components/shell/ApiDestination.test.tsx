@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import { API_BASE, listInvocations } from "@/lib/api";
+import { pairedBearer, resetPairingForTests, takePairingCodeFromLocation } from "@/lib/pairing";
 import NoDaemonGate from "./NoDaemonGate";
 import StatusFooter from "./StatusFooter";
 import enMessages from "@/messages/en.json";
@@ -47,6 +48,8 @@ describe("the loaded API destination", () => {
     container.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    resetPairingForTests();
   });
 
   afterAll(() => {
@@ -97,4 +100,33 @@ describe("the loaded API destination", () => {
       }
     },
   );
+
+  it("redeems the pairing code, and reads the bearer, under the override's base", async () => {
+    expect(API_BASE).toBe("http://127.0.0.2:8766");
+    window.history.replaceState(null, "", `?api=${API_BASE}#pair=one-time-code`);
+    takePairingCodeFromLocation();
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>((url) =>
+      Promise.resolve(
+        new Response(url.endsWith("/health") ? '{"status":"ok"}' : '{"token":"launch-bearer"}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () =>
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <NoDaemonGate>app content</NoDaemonGate>
+        </IntlProvider>,
+      ),
+    );
+    expect(container.textContent).toContain("app content");
+
+    const redeemed = fetchMock.mock.calls.filter(([url]) => url.endsWith("/api/studio/pair"));
+    expect(redeemed).toHaveLength(1);
+    expect(new URL(redeemed[0]![0]).origin).toBe(API_BASE);
+    expect(pairedBearer(API_BASE)).toBe("launch-bearer");
+  });
 });

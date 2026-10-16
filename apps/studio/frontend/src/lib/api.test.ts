@@ -933,8 +933,8 @@ describe("normalizeSignalEvent", () => {
 describe("loaded API_BASE ?api= override", () => {
   // Suite-owned storage: the CI runner's test environment has no
   // window.sessionStorage (locally jsdom provides one), and the impl reads
-  // window.sessionStorage under try/catch — so without this stub the four
-  // tests below throw in CI while passing locally.
+  // window.sessionStorage under try/catch — so without this stub the tests
+  // below throw in CI while passing locally.
   const storage = new Map<string, string>();
   const storageStub = {
     getItem: (k: string) => storage.get(k) ?? null,
@@ -1213,8 +1213,8 @@ describe("the shell token does not follow a ?api= override to another daemon", (
       vi.stubGlobal("fetch", fetchMock);
 
       await client.listInvocations();
-      window.location.search = "?api=http://127.0.0.2:8766";
-      expect(window.location.search).toBe("?api=http://127.0.0.2:8766");
+      window.location.search = "?api=http://127.0.0.1:8766";
+      expect(window.location.search).toBe("?api=http://127.0.0.1:8766");
       await client.listInvocations();
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -1364,5 +1364,43 @@ describe("a page paired by `li studio`", () => {
     await expect(api.getStats()).rejects.toThrow();
     expect(refused).not.toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it("redeems and reads the paired bearer under the viewer override's base", async () => {
+    // A viewer override selects the destination at load, so the code has to be
+    // spent against that base and the bearer read back under it: a bearer saved
+    // under one base and read under another would silently send no token.
+    const destination = "http://127.0.0.2:8766";
+    window.history.replaceState(null, "", `/?api=${destination}`);
+    const pairing = await import("./pairing");
+    const api = await import("./api");
+    expect(api.API_BASE).toBe(destination);
+
+    window.history.replaceState(null, "", `/?api=${destination}#pair=one-time-code`);
+    pairing.takePairingCodeFromLocation();
+    const redeem = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({ token: "launch-bearer" }), { status: 200 })),
+    );
+    vi.stubGlobal("fetch", redeem);
+    expect(await pairing.redeemPairingCode(api.API_BASE)).toBe("paired");
+    expect(redeem.mock.calls[0]?.[0]).toBe(`${destination}/api/studio/pair`);
+
+    expect(pairing.pairedBearer(destination)).toBe("launch-bearer");
+    expect(pairing.pairedBearer("http://127.0.0.1:8765")).toBeUndefined();
+    expect(api.resolveAuthToken()).toBe("launch-bearer");
+
+    const captured: RequestInit[] = [];
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      captured.push(init ?? {});
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.getStats();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`${destination}/api/stats`);
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
+    window.history.replaceState(null, "", "/");
+    window.sessionStorage.removeItem("studio.apiBaseOverride");
   });
 });
