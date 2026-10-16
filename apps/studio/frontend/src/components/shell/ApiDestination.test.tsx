@@ -83,7 +83,9 @@ describe("the loaded API destination", () => {
       expect(container.textContent).not.toContain("http://127.0.0.1:8765");
 
       window.history.replaceState(null, "", "?tab=agent");
-      window.sessionStorage.setItem("studio.apiBaseOverride", "http://127.0.0.3:8767");
+      // The injected base the shell token was issued for: a destination read again here
+      // would match it and send the token.
+      window.sessionStorage.setItem("studio.apiBaseOverride", "http://127.0.0.1:8765");
       await act(async () => {
         root.render(render());
         await vi.advanceTimersByTimeAsync(30_000);
@@ -91,6 +93,7 @@ describe("the loaded API destination", () => {
       await listInvocations();
 
       expect(container.textContent).toContain(API_BASE);
+      expect(container.textContent).not.toContain("http://127.0.0.1:8765");
       const calls = fetchMock.mock.calls;
       expect(calls.filter(([url]) => url.endsWith("/health")).length).toBeGreaterThan(1);
       expect(calls.some(([url]) => url.endsWith("/api/invocations/"))).toBe(true);

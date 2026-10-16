@@ -1178,6 +1178,32 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     expect(client.resolveAuthToken()).toBe("shell-token");
   });
 
+  it("sends no token on the file and signal-stream paths when a matching base is injected late", async () => {
+    const destination = "http://127.0.0.2:8766";
+    stubLocation(`?api=${destination}`);
+    setInjected("http://127.0.0.1:8765", "shell-token");
+    const client = await import("./api");
+    expect(client.API_BASE).toBe(destination);
+    window.__STUDIO_API_BASE__ = destination;
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await client.getRunFile("run-1", "out.txt");
+    const close = client.streamSignals("session-1", vi.fn());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    close();
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]!.startsWith(`${destination}/api/runs/run-1/file?`)).toBe(true);
+    expect(urls[1]!.startsWith(`${destination}/api/sessions/session-1/signals?`)).toBe(true);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+    }
+    expect(client.resolveAuthToken()).toBeUndefined();
+  });
+
   it("withholds the token when the injected base is unparseable", async () => {
     stubLocation("?api=http://127.0.0.1:8766");
     setInjected("not a url", "shell-token");
