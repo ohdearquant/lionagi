@@ -30,6 +30,17 @@ function fanIn() {
   };
 }
 
+function backwardChain(length: number, backEdges: number) {
+  const nodes = Array.from({ length }, (_, index) => node(`c${index}`));
+  return {
+    nodes,
+    edges: [
+      ...nodes.slice(1).map((entry, index) => edge(nodes[index].id, entry.id)),
+      ...nodes.slice(0, backEdges).map((entry) => edge(nodes[length - 1].id, entry.id)),
+    ],
+  };
+}
+
 function positions(nodes: Node[]) {
   return Object.fromEntries(nodes.map((n) => [n.id, n.position]));
 }
@@ -53,6 +64,76 @@ function assertNoOverlap(nodes: Node[]) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("bounded graph layout", () => {
+  it.each([
+    [40, 37],
+    [46, 28],
+  ])("bypasses dagre for a %i-node chain with %i back edges", (length, backEdges) => {
+    const layout = vi.spyOn(dagre, "layout");
+    const { nodes, edges } = backwardChain(length, backEdges);
+    const result = getLayoutedElements(nodes, edges);
+    expect(layout).not.toHaveBeenCalled();
+    expect(result.nodes).toHaveLength(length);
+    expect(result.edges.map((entry) => [entry.id, entry.source, entry.target])).toEqual(
+      edges.map((entry) => [entry.id, entry.source, entry.target]),
+    );
+    assertNoOverlap(result.nodes);
+  });
+
+  it.each(["LR", "TB"] as const)(
+    "has stable %s cyclic fallback ranks and positions under input permutations",
+    (direction) => {
+      const { nodes, edges } = backwardChain(46, 28);
+      nodes.push(...Array.from({ length: 84 }, (_, index) => node(`loose-${index}`)));
+      const interlocked = [node("a"), node("b"), node("c")];
+      const paired = interlocked.flatMap((source) =>
+        interlocked
+          .filter((target) => source !== target)
+          .map((target) => edge(source.id, target.id)),
+      );
+      const layout = vi.spyOn(dagre, "layout");
+      for (const graph of [
+        { nodes, edges },
+        { nodes: interlocked, edges: paired },
+      ]) {
+        const original = getLayoutedElements(graph.nodes, graph.edges, direction);
+        const reversed = getLayoutedElements(
+          [...graph.nodes].reverse(),
+          [...graph.edges].reverse(),
+          direction,
+        );
+        expect(Object.fromEntries(reversed.ranks)).toEqual(Object.fromEntries(original.ranks));
+        expect(positions(reversed.nodes)).toEqual(positions(original.nodes));
+        assertNoOverlap(original.nodes);
+      }
+      expect(layout).not.toHaveBeenCalled();
+    },
+  );
+
+  it("charges distinct directed pairs while preserving all parallel edge records", () => {
+    const layout = vi.spyOn(dagre, "layout");
+    const nodes = [node("a"), node("b")];
+    const edges = Array.from({ length: 100 }, (_, index) => ({
+      ...edge("a", "b"),
+      id: `parallel-${index}`,
+      data: { condition: `condition-${index}` },
+    }));
+    const result = getLayoutedElements(nodes, edges);
+    expect(layout).toHaveBeenCalledTimes(1);
+    expect(result.edges).toEqual(edges);
+    expect(positions(result.nodes)).toEqual(
+      positions(getLayoutedElements(nodes, [edge("a", "b")]).nodes),
+    );
+    expect(layout).toHaveBeenCalledTimes(2);
+    getLayoutedElements(nodes, [...edges, edge("b", "a")]);
+    expect(layout).toHaveBeenCalledTimes(2);
+    const loops = Array.from({ length: 100 }, (_, index) => ({
+      ...edge("a", "a"),
+      id: `self-${index}`,
+    }));
+    expect(getLayoutedElements([node("a")], loops).edges).toEqual(loops);
+    expect(layout).toHaveBeenCalledTimes(3);
+  });
+
   it("keeps dagre at the work limit and bypasses it just above", () => {
     const layout = vi.spyOn(dagre, "layout");
     const { nodes, edges } = chain(64);
@@ -76,6 +157,30 @@ describe("bounded graph layout", () => {
     expect(layout).toHaveBeenCalledTimes(1);
     expect(result.nodes).toHaveLength(129);
     assertNoOverlap(result.nodes);
+  });
+
+  it("keeps visual wrap and fold boundaries independent from dagre admission", () => {
+    const layout = vi.spyOn(dagre, "layout");
+    for (const count of [7, 8]) {
+      const leaves = Array.from({ length: count }, (_, index) => node(`leaf-${index}`));
+      const result = getLayoutedElements(
+        [node("root"), ...leaves],
+        leaves.map((entry) => edge("root", entry.id)),
+      );
+      const columns = new Set(
+        result.nodes.filter((entry) => entry.id !== "root").map((entry) => entry.position.x),
+      );
+      expect(columns.size).toBe(count === 7 ? 1 : 3);
+    }
+    const short = chain(5);
+    const longer = chain(6);
+    const beforeFold = getLayoutedElements(short.nodes, short.edges);
+    const afterFold = getLayoutedElements(longer.nodes, longer.edges);
+    expect(new Set(beforeFold.nodes.map((entry) => entry.position.y)).size).toBe(1);
+    expect(new Set(afterFold.nodes.map((entry) => entry.position.y)).size).toBe(2);
+    expect(beforeFold.edges.some((entry) => entry.data?.continuation)).toBe(false);
+    expect(afterFold.edges.some((entry) => entry.data?.continuation)).toBe(true);
+    expect(layout).toHaveBeenCalledTimes(4);
   });
 
   it.each(["LR", "TB"] as const)(

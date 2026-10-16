@@ -312,8 +312,9 @@ export function rankSepForDepth(maxDepth: number, ranksep = 90, minRanksep = 48)
 // long-range routing (ConditionEdge's rankDistance) and the input to
 // rankSepForDepth. A cycle should not happen in a depends_on graph, but a
 // defensive on-stack guard keeps a malformed input from recursing forever —
-// it simply stops deepening along the cyclic edge rather than erroring, the
-// same policy operationGraph's reducer uses for cycles.
+// it stops deepening along the cyclic edge rather than erroring. Canonical
+// node/predecessor order makes that defensive result independent of input order;
+// cyclic ranks are a placement convention, not a valid dependency ordering.
 export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, number> {
   const known = new Set(nodes.map((n) => n.id));
   const preds = new Map<string, string[]>();
@@ -323,6 +324,7 @@ export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, num
     if (list) list.push(e.source);
     else preds.set(e.target, [e.source]);
   }
+  for (const list of preds.values()) list.sort();
 
   const depth = new Map<string, number>();
   const onStack = new Set<string>();
@@ -342,7 +344,7 @@ export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, num
     depth.set(id, d);
     return d;
   };
-  for (const n of nodes) depthOf(n.id);
+  for (const id of [...known].sort()) depthOf(id);
   return depth;
 }
 
@@ -414,8 +416,8 @@ export interface LayoutedGraph {
   nodes: Node[];
   edges: Edge[];
   height: number;
-  /** node id -> longest-path depth (rank index), for edge rank-distance
-   * styling (ConditionEdge's long-range smooth-step routing). */
+  /** node id -> longest-path depth for acyclic input, or a defensive cyclic
+   * rank, for edge rank-distance styling. */
   ranks: Map<string, number>;
   /** UNSCALED bounding-box width, for computeReservedHeight callers. */
   width: number;
@@ -463,8 +465,10 @@ export function computeReservedHeight(
 }
 
 // Bound dagre's normalized rank work before it allocates edge dummy nodes.
-// Its edge-label pass doubles minlen. Counting those spans as well as real
-// nodes catches both long carried-forward edges and dense short-edge graphs.
+// Its edge-label pass doubles minlen, so count real nodes plus those spans
+// over distinct directed pairs, matching graphlib's non-multigraph edges.
+// A cycle can reverse edges before ranking and invalidate the span estimate;
+// reject it when a non-self edge fails to advance the computed rank.
 // These are structural admission limits, not a wall-clock deadline.
 const DAGRE_WORK_LIMIT = 192;
 const DAGRE_NODE_LIMIT = 128;
@@ -472,19 +476,25 @@ const DAGRE_NODE_LIMIT = 128;
 function fitsDagreBudget(nodes: Node[], edges: Edge[], ranks: Map<string, number>): boolean {
   if (nodes.length > DAGRE_NODE_LIMIT) return false;
   let work = nodes.length;
+  const seen = new Map<string, Set<string>>();
   for (const edge of edges) {
     const source = ranks.get(edge.source);
     const target = ranks.get(edge.target);
     if (source === undefined || target === undefined) continue;
+    if (edge.source !== edge.target && target <= source) return false;
+    const targets = seen.get(edge.source) ?? new Set<string>();
+    if (targets.has(edge.target)) continue;
+    targets.add(edge.target);
+    seen.set(edge.source, targets);
     work += 2 * Math.max(1, target - source);
     if (work > DAGRE_WORK_LIMIT) return false;
   }
   return true;
 }
 
-// Large graphs retain exact ASAP ranks but use stable sibling order instead
-// of dagre's crossing optimization. Final edge routes use these endpoints;
-// dagre's polylines are not part of the returned graph.
+// Graphs that bypass dagre retain the computed ranks and stable sibling order.
+// Acyclic ranks are exact ASAP depths; cyclic ranks are a defensive convention.
+// Final edge routes use these endpoints, not dagre's polylines.
 function placeAsapRanks(
   nodes: Node[],
   ranks: Map<string, number>,
@@ -554,13 +564,12 @@ export function getLayoutedElements(
     for (const node of nodes) {
       g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
     }
-    // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
+    // Rank assignment is ours: `ranks` above already
     // computed each node's ASAP depth. dagre's own rankers — network-simplex
     // included, which is the untouched default here — minimize total edge
     // length instead, which is a different objective and disagrees with ASAP
-    // whenever a node's result is consumed much later than it is produced (the
-    // P2 case). Rather than fight that objective with a `ranker` option (the
-    // ADR is explicit that no ranker choice changes the outcome), pin every
+    // whenever a node's result is consumed much later than it is produced.
+    // Rather than changing the `ranker` option, pin every
     // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
     // satisfies every constraint with equality, so its total edge span equals
     // the sum of the minlens, which is the lower bound any feasible assignment

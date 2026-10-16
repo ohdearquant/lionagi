@@ -45,19 +45,85 @@ Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 
 ## Canvas layout
 
-Small execution graphs use Dagre with exact ASAP ranks: a node's column is its
-longest dependency path from a source. Before layout, the client estimates work
-as the node count plus twice the sum of pinned edge-rank spans. Graphs above
-192 work units or 128 nodes use deterministic placement within the same ASAP
-ranks, with siblings ordered by node ID. This avoids expanding long edges into
-large numbers of Dagre dummy nodes. All nodes and dependency edges remain
-available; larger graphs trade crossing optimization for bounded layout work.
+Small acyclic execution graphs use Dagre with exact ASAP ranks: a node's column
+is its longest dependency path from a source. Before layout, the client counts
+real nodes plus twice the sum of pinned rank spans over **distinct directed
+endpoint pairs**, matching graphlib's non-multigraph edges. Unknown endpoints
+do not contribute. Self-loops are charged conservatively. Graphs above 192 work
+units or 128 nodes use placement within the same ranks, with siblings ordered
+by node ID, instead of Dagre's crossing optimization. All original node and edge
+records remain available, including parallel edges.
 
-Both paths retain the existing wrapping, chain folding, rank-gap spacing, and
-viewport sizing. The wrap threshold remains a visual choice after placement;
-it does not control the cost of Dagre. Resize reuses the stored graph bounds,
-and expanding a graph applies the same layout policy. The limits target typical
-interactive layout time, rather than promising a fixed deadline on every device.
+A known non-self edge that does not advance its computed rank also bypasses
+Dagre: its cycle-breaking pass can reverse edges and invalidate the original
+span estimate. Depth traversal uses sorted node and predecessor IDs so fallback
+positions are stable by ID under input permutations. Cyclic ranks are a
+defensive placement convention; they cannot describe a valid dependency order.
+
+The limits are an empirical reference-host choice, not a wall-clock deadline.
+The committed benchmark runs the full layout pipeline with one warm-up and
+seven uninstrumented timing samples per fixed shape. A separate untimed run
+counts Dagre calls and normalization dummies; it does not modify dependencies.
+Run it from this directory with Node 24 or newer:
+
+```sh
+node benchmarks/layout-budget.mjs
+```
+
+`--sweep` runs all candidate boundary families; `--chord-sweep` runs only the
+long-chord candidate family; `--fixtures` runs the configured production fixtures.
+
+The measured sweep paired work/node caps at 96/64, 144/96, 192/128 and 240/160.
+The declared selection criterion was the largest pair whose sampled boundary
+families all had a median at or below 20 ms on the reference host. Families
+include chains, a long chord, isolated-node caps, node caps with chain edges,
+fan-out, fan-in with many dummies, and complete two- and three-layer components.
+Padding isolated nodes makes the work-bound fixtures reach each exact limit.
+
+Node 26.7.0, Dagre 0.8.5, Darwin arm64, Apple M2 Max; memory pressure was 2
+before each phase. Other machine load was not controlled. These are sampled
+observations, not a universal worst-case proof or a browser-frame measurement:
+
+| Work / node caps | Largest family median | Largest sample | Decision        |
+| ---------------- | --------------------: | -------------: | --------------- |
+| 96 / 64          |              9.168 ms |      14.074 ms | Qualified       |
+| 144 / 96         |             14.550 ms |      19.487 ms | Qualified       |
+| 192 / 128        |             16.158 ms |      17.156 ms | Selected        |
+| 240 / 160        |             21.888 ms |      28.375 ms | Did not qualify |
+
+The first fixed seven-family sweep also admitted 240/160 (largest median
+18.811 ms). A long-chord supplement added one fixed family at all four pairs.
+A subsequent production-fixture run unintentionally repeated the 240/160
+families; its three-layer median was 21.888 ms and its fan-out maximum was
+28.375 ms. Those unfavorable observations are retained in the decision above;
+the benchmark was not rerun to obtain a passing result. The selected 192/128
+pair includes a measured 128-isolated-node cap and exact 192-work cases. This
+does not imply that node 129 is inherently slow, or independently optimize the
+two caps. An additional 39-node long-chord control at work 191 had an 18.671 ms
+maximum, further illustrating that the caps do not promise a 16 ms frame.
+
+Wrapping and folding were re-checked alongside admission and remain downstream
+geometry choices. Seven fan-out siblings occupy one column (566 × 747 including
+margins); eight wrap into three columns (1042 × 327). Their work is only 22 and
+25 respectively, so both still use Dagre. Lowering the wrap threshold would
+not avoid normalization work already paid before wrapping. The 111-node fan-in
+instead bypasses Dagre before wrapping its wide rank.
+
+The 1500 px fold row admits six 210 px cards at the deep-rank minimum 48 px gap:
+`6 × 210 + 5 × 48 = 1500`. With 56 px horizontal margins its width is 1556 px;
+on a 1280 px panel the existing 15% fit padding gives zoom 0.715, above the
+0.65 readability floor. Seven such cards need 1758 px before margins and would
+fall below that floor. With the shallow 90 px gap, five cards occupy 1410 px;
+the sixth crosses 1500 and starts another safe chain row. Final correctness
+tests retain the seven/eight sibling and five/six chain boundaries, along with
+folding on the fallback path. Branch/join boundaries and tall graphs still
+prevent folding. The two visual thresholds do not decide Dagre admission.
+
+There is no hysteresis or position cache across graph changes. Crossing an
+admission boundary can move many existing nodes, and Dagre can also reposition
+nodes when a graph grows within the admitted range. Resize reuses stored bounds;
+expanding a graph applies the same layout policy. Browser painting, input
+latency, panning, and viewport culling are outside these measurements.
 
 ## API resolution
 
