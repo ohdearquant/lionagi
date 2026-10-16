@@ -186,18 +186,32 @@ def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
     credential, so only the position is returned, and the caller raises its refusal after
     this handler has ended.
 
-    The text is read as the plain text of the bytes the spawn would encode: ``os.fsencode``
-    calls a ``str`` subclass's own ``encode`` and answers with whatever it returns, so the
-    text it read is reduced to a plain ``str`` and encoded again here. The bytes that answer
-    for the entry are then the bytes the spawn would send, not the first encoder's own answer.
+    The text is read as ``env_as_the_spawn_encodes_it`` reads it: ``os.fsencode`` calls a
+    ``str`` subclass's own ``encode`` and answers with whatever it returns, so a ``bytes``
+    answer is taken through the base type's own slice, decoded, reduced to a plain ``str``
+    and encoded again here. The bytes that answer for the entry are then the bytes the spawn
+    would send, not the first encoder's own answer. An answer that is not text or bytes is
+    refused by position with ``TypeError``, as the spawn refuses it.
     """
     for index, (key, val) in enumerate(env.items()):
-        for part, text in (("key", key), ("value", val)):
+        for part, item in (("key", key), ("value", val)):
+            unreadable = False
             try:
-                text = str.__str__(os.fsdecode(os.fsencode(text)))
-                os.fsencode(text)
+                encoded = os.fsencode(item)
+                if isinstance(encoded, bytes):
+                    encoded = bytes.__getitem__(encoded, slice(None))
+                os.fsencode(str.__str__(os.fsdecode(encoded)))
             except UnicodeEncodeError:
                 return f"The environment entry {index} {part}"
+            except TypeError:
+                unreadable = True
+            if unreadable:
+                # Raised after the handler, so the refusal keeps no error as its context;
+                # the wording is the spawn copy's own refusal for the same entry.
+                raise TypeError(
+                    f"The environment entry {index} {part}, of type {type(item).__name__}, "
+                    "could not be read as text, so it cannot be passed to a CLI process."
+                )
     return None
 
 

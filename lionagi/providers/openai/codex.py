@@ -12,7 +12,7 @@ import re
 import subprocess
 import unicodedata
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -185,7 +185,14 @@ def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
         if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
             return False, value
         if len(path) == 1 and isinstance(value, Mapping):
-            value = {k: v for k, v in value.items() if k not in _ACCOUNT_INTEGRATION_FEATURES}
+            # Each switch name is compared and kept as plain text, so the name the check
+            # reads is the name the inline table renders.
+            kept = {}
+            for k, v in value.items():
+                k = _plain_text(k)
+                if k not in _ACCOUNT_INTEGRATION_FEATURES:
+                    kept[k] = v
+            value = kept
             if not value:
                 return False, value
     return True, value
@@ -289,18 +296,34 @@ def _toml_string(value: str) -> str:
     return f'"{body}"'
 
 
+def _plain_text(item: Any) -> Any:
+    """``item`` as a plain ``str`` when it is text, else ``item`` unchanged.
+
+    A ``str`` subclass's own ``__str__``, ``__format__`` or ``__eq__`` can answer a
+    containment check one way and the renderer another; ``str.__str__`` returns an exact
+    copy of its characters without calling any of them.
+    """
+    return str.__str__(item) if issubclass(type(item), str) else item
+
+
+def _plain_pairs(pairs: Iterable[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    return [(_plain_text(key), _plain_text(value)) for key, value in pairs]
+
+
 def _override_pairs(overrides: Mapping | None) -> list[tuple[Any, Any]]:
-    """The `-c` overrides as one list of key/value pairs, read from ``items()`` once.
+    """The `-c` overrides as one list of key/value pairs, read from ``items()`` once,
+    with every text key and value reduced to a plain ``str``.
 
     A containment decision and the rendered command line are two readers of one such
     list, so a mapping whose iteration and ``items()`` disagree, or whose ``items()``
-    answers differently on each call, cannot answer a check and a renderer differently.
-    Only ``None`` reads as no overrides: a mapping is read through ``items()`` whether
-    or not its length agrees.
+    answers differently on each call, cannot answer a check and a renderer differently,
+    and a key whose own methods answer differently on each read reaches both as the same
+    characters. Only ``None`` reads as no overrides: a mapping is read through ``items()``
+    whether or not its length agrees.
     """
     if overrides is None:
         return []
-    return list(overrides.items())
+    return _plain_pairs(overrides.items())
 
 
 def _refuse_oversized_cli_inputs(
@@ -1040,6 +1063,7 @@ class CodexCodeRequest(BaseModel):
         through the refusal either.
         """
         refusal: CLIInputRefusedError | None = None
+        contained_refusal = False
         try:
             _refuse_oversized_cli_inputs(
                 self.prompt,
@@ -1050,7 +1074,13 @@ class CodexCodeRequest(BaseModel):
             )
         except ValueError as exc:
             refusal = CLIInputRefusedError(str(exc))
+            contained_refusal = issubclass(type(exc), ContainmentRefusedError)
         if refusal is not None:
+            if contained_refusal:
+                # A judge finds a containment refusal on the error's chain, so the refusal
+                # carries a fresh one as its cause: a key containment cannot read refuses
+                # the judge's engine at construction as it does at the spawn.
+                raise refusal from ContainmentRefusedError(str(refusal))
             raise refusal
         return self
 
@@ -1100,7 +1130,9 @@ class CodexCodeRequest(BaseModel):
         """
         args: list[str] = ["exec", "--json"]
         cwd = self.cwd()
-        pairs = _override_pairs(self.config_overrides) if overrides is None else list(overrides)
+        pairs = (
+            _override_pairs(self.config_overrides) if overrides is None else _plain_pairs(overrides)
+        )
 
         args.extend(self._build_declarative_args(pairs))
 

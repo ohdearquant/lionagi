@@ -1942,3 +1942,150 @@ async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_pl
     assert handed == {"HOME": "/h", "OPENAI_API_KEY": _SECRET_IN_A_VALUE}
     assert os.fsencode(handed["OPENAI_API_KEY"]) == _SECRET_IN_A_VALUE.encode("utf-8")
     assert _TextWhoseOwnEncoderAnswersOtherBytes.encodes == 0
+
+
+# ── an override key is read once, as plain text ──────────────────────────────
+
+
+class _AnswersAnotherKeyAfterItsFirstRead(str):
+    """An override key whose first ``__str__`` answers its own text and every later one
+    answers ``later``: a check and a renderer that each read it would see different keys."""
+
+    later = ""
+    reads = 0
+
+    def __str__(self):
+        self.reads += 1
+        return str.__str__(self) if self.reads == 1 else self.later
+
+
+def _key_answering(text: str, later: str) -> _AnswersAnotherKeyAfterItsFirstRead:
+    key = _AnswersAnotherKeyAfterItsFirstRead(text)
+    key.later = later
+    return key
+
+
+def _contained_over(tmp_path, overrides) -> CodexCodeRequest:
+    return CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True
+    ).model_copy(update={"config_overrides": overrides})
+
+
+@pytest.mark.parametrize("later", ["profile", "features.apps"])
+def test_a_key_whose_later_reads_answer_another_key_renders_the_key_the_check_read(
+    tmp_path, monkeypatch, later
+):
+    """Containment and the command line read one plain-text copy of each key, so a key whose
+    own ``__str__`` answers differently on a later read cannot pass the check as one key and
+    reach the CLI as a profile or an account-integration switch."""
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    key = _key_answering("ok", later)
+
+    args = _contained_over(tmp_path, {key: "work"}).as_cmd_args()
+
+    assert 'ok="work"' in args
+    assert not any(argument.startswith(f"{later}=") for argument in args)
+    assert key.reads == 0
+
+
+@pytest.mark.asyncio
+async def test_a_key_whose_later_reads_answer_a_profile_reaches_the_spawn_as_the_key_checked(
+    tmp_path, monkeypatch
+):
+    """The spawn's check and its command line read the same plain-text copy of the key."""
+    started = []
+
+    async def spawned(cmd, **_kwargs):
+        started.append(cmd)
+        return
+        yield
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+    key = _key_answering("ok", "profile")
+
+    async for _ in codex_mod._ndjson_from_cli(_contained_over(tmp_path, {key: "work"})):
+        pass
+
+    (cmd,) = started
+    assert 'ok="work"' in cmd
+    assert not any(argument.startswith("profile=") for argument in cmd)
+    assert key.reads == 0
+
+
+class _EqualToNothing(str):
+    def __eq__(self, other):
+        return False
+
+    __hash__ = str.__hash__
+
+
+def test_an_inline_features_switch_is_compared_by_its_text(tmp_path, monkeypatch):
+    """A switch name in an inline `features` table is compared as plain text, so a name whose
+    own ``__eq__`` answers no to every comparison is still the `apps` switch containment
+    drops, and the table renders without it."""
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    overrides = {"features": {_EqualToNothing("apps"): True, "web_search": True}}
+
+    args = _contained_over(tmp_path, overrides).as_cmd_args()
+
+    assert "features={ web_search = true }" in args
+    assert not any(argument.startswith("features=") and "apps" in argument for argument in args)
+
+
+# ── an environment entry whose encoder answers bytes or something else ───────
+
+
+class _DecodesToALoneSurrogate(bytes):
+    def decode(self, *_args, **_kwargs):
+        return "\ud800"
+
+
+class _EncodesToBytesWhoseOwnDecodeDiffers(str):
+    def encode(self, *_args, **_kwargs):
+        return _DecodesToALoneSurrogate(str.__str__(self).encode("utf-8"))
+
+
+class _EncodesToAnInteger(str):
+    def encode(self, *_args, **_kwargs):
+        return 5
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_a_bytes_answer_is_checked_as_the_bytes_the_spawn_sends(part):
+    """The construction check takes a ``bytes`` answer through the base type's slice, as the
+    spawn copy does, so a subclass's own ``decode`` cannot refuse an entry the spawn sends."""
+    from lionagi.providers import _cli_subprocess
+
+    value = _EncodesToBytesWhoseOwnDecodeDiffers("ok")
+    entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
+
+    assert _cli_subprocess.unencodable_env_entry({"HOME": "/h", **entry}) is None
+    copied = _cli_subprocess.env_as_the_spawn_encodes_it({"HOME": "/h", **entry})
+    assert ("ok" in copied) if part == "key" else (copied["OPENAI_API_KEY"] == "ok")
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_an_encoder_answering_neither_text_nor_bytes_is_refused_by_position_at_construction(
+    part,
+):
+    """The construction check refuses the entry with the spawn copy's own refusal: by
+    position and type, as a TypeError, with no error kept as its context."""
+    from lionagi.providers import _cli_subprocess
+
+    value = _EncodesToAnInteger(_SECRET_IN_A_VALUE)
+    entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
+    expected = (
+        f"The environment entry 1 {part}, of type _EncodesToAnInteger, could not be read as "
+        "text, so it cannot be passed to a CLI process."
+    )
+
+    with pytest.raises(TypeError) as at_construction:
+        _cli_subprocess.unencodable_env_entry({"HOME": "/h", **entry})
+    with pytest.raises(TypeError) as at_the_spawn:
+        _cli_subprocess.env_as_the_spawn_encodes_it({"HOME": "/h", **entry})
+
+    assert str(at_construction.value) == expected == str(at_the_spawn.value)
+    assert at_construction.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(at_construction.value)

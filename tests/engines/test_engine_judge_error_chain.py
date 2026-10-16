@@ -501,3 +501,32 @@ async def test_a_containment_refusal_naming_an_unreadable_override_keeps_the_typ
     assert "is not a TOML key" in str(raised)
     assert allowed is None
     assert events == []
+
+
+async def test_a_construction_refusal_naming_an_unreadable_override_is_raised_by_the_judge(
+    tmp_path,
+):
+    """A key containment cannot read refuses the request at construction. That refusal is a
+    CLIInputRefusedError, so pydantic does not wrap it, and it carries a containment refusal
+    as its cause, so a judge whose engine is built over such a key raises instead of passing."""
+    from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    with pytest.raises(CLIInputRefusedError) as refused:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            contain_account_integrations=True,
+            config_overrides={"a b": 1},
+        )
+
+    assert type(refused.value.__cause__) is ContainmentRefusedError
+    assert str(refused.value.__cause__) == str(refused.value)
+    assert "a b" not in str(refused.value)
+
+    raised, allowed, events = await _judge_outside_the_handler(refused.value)
+
+    assert isinstance(raised, ContainmentRefusedError)
+    assert "is not a TOML key" in str(raised)
+    assert allowed is None
+    assert events == []
