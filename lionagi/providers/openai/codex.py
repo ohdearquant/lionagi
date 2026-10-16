@@ -21,7 +21,7 @@ import toml
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
-from lionagi._errors import CLIInputRefusedError
+from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -49,6 +49,12 @@ from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
+from ._codex_profile import (
+    codex_config_defining_profile,
+    configured_codex_profile,
+    is_generated_codex_profile,
+    project_codex_profile,
+)
 from ._config import CodexConfigs
 
 try:
@@ -723,6 +729,14 @@ class CodexCodeRequest(BaseModel):
             "Turn the signed-in account's `apps` and `plugins` features off "
             "(`--disable apps --disable plugins`) and drop either from "
             "`enable_features` and from `features` entries in `config_overrides`. "
+            "A profile other than the one lionagi writes for MCP server secrets is "
+            "refused, named by `profile`, by a `profile` or `profiles` override, or "
+            "by a root `profile` key in the codex config or in a project "
+            "`.codex/config.toml` from the working directory up to its git root, "
+            "because codex before 0.135 applies a profile's features after `--disable`. "
+            "A working directory those configs cannot be read from -- one that cannot "
+            "be resolved or does not exist -- is refused too, since containment cannot "
+            "be enforced without knowing which configs apply. "
             "Off by default: the request reaches whatever the account and the "
             "config give it. Lifted by naming `account_connectors`."
         ),
@@ -929,9 +943,59 @@ class CodexCodeRequest(BaseModel):
         check_path_safe(str(v), "output_schema/output_last_message")
         return v
 
+    def __init__(self, **data: Any) -> None:
+        # The working directory decides which codex configs apply, so under
+        # containment it is checked here. Constructed directly, the refusal is
+        # raised whole: a ContainmentRefusedError raised inside a validator
+        # would be wrapped in pydantic's ValidationError. Through model_validate
+        # it still arrives wrapped.
+        super().__init__(**data)
+        self._refuse_an_unusable_working_directory()
+
+    def _refuse_an_unusable_working_directory(self) -> None:
+        """Refuse a working directory containment cannot read the configs of.
+
+        A directory the walk cannot resolve (a symlink loop), that does not
+        exist, or that this process cannot list and enter leaves the walk with
+        nothing it can read, so a caller cannot tell which codex configs apply
+        and containment cannot be enforced. Each is refused before the request
+        is used, naming the directory and the reason, chained from the error
+        the filesystem raised.
+        """
+        if not self._contains_account_integrations():
+            return
+        repo = str(self.repo)
+        try:
+            self.repo.resolve()
+        except (RuntimeError, OSError) as exc:
+            raise ContainmentRefusedError(
+                f"contain_account_integrations cannot use the working directory "
+                f"{repo!r}: it cannot be resolved ({exc})"
+            ) from exc
+        # The same validation the spawn path uses, so the refusal names the
+        # directory the same way and is chained from the value error it raises.
+        try:
+            resolve_cli_workspace(self.repo, None)
+        except (ValueError, OSError) as exc:
+            raise ContainmentRefusedError(
+                f"contain_account_integrations cannot use the working directory: {exc}"
+            ) from exc
+        if not os.access(self.repo, os.R_OK | os.X_OK):
+            raise ContainmentRefusedError(
+                f"contain_account_integrations cannot use the working directory "
+                f"{repo!r}: this process cannot list and enter it"
+            )
+
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
-        repo_root = self.repo.resolve()
+        try:
+            repo_root = self.repo.resolve()
+        except RuntimeError:
+            if self._contains_account_integrations():
+                # Deferred to __init__, which raises the refusal outside
+                # pydantic's validation and so keeps its own type.
+                return self
+            raise
         if self.images:
             contain_paths_in_repo(self.images, repo_root, "images")
         if self.output_schema is not None:
@@ -1139,9 +1203,80 @@ class CodexCodeRequest(BaseModel):
                     fields.append((name, feature))
         return fields
 
+    def _refuse_a_profile_under_containment(self) -> None:
+        # `--disable` sets the features in the root config. Codex before 0.135 (read at
+        # the 0.120.0 and 0.130.0 tags) applies the active profile's `[features]` after
+        # it, so a profile can turn either one back on; the active profile is `-p`, else a
+        # root `profile` key in the user config or a trusted project's `.codex/config.toml`.
+        # From 0.135 a profile is a config file layered under `-c`, and codex refuses a
+        # root `profile` key itself. The profile lionagi writes for MCP server secrets
+        # holds only `mcp_servers`.
+        if self.profile is not None and not is_generated_codex_profile(self.profile):
+            raise ValueError(
+                f"contain_account_integrations cannot be combined with profile={self.profile!r}: "
+                "codex before 0.135 applies a profile's features after --disable, so the "
+                "profile could turn apps or plugins back on"
+            )
+        for index, key in enumerate(self.config_overrides):
+            # A key that is not a string, or holds '=', is refused by position where
+            # as_cmd_args renders the overrides, after this check.
+            if not isinstance(key, str) or "=" in key:
+                continue
+            unreadable = None
+            try:
+                path = _override_key_path(key, f"The key of the config override entry {index}")
+            except ValueError as exc:
+                unreadable = str(exc)
+            if unreadable is not None:
+                # Raised after the handler, so the refusal keeps no error as its context.
+                raise ContainmentRefusedError(unreadable)
+            if path[0] in ("profile", "profiles"):
+                raise ValueError(
+                    "contain_account_integrations cannot be combined with the config "
+                    f"override entry {index}: it selects or changes a profile, and codex "
+                    "before 0.135 applies a profile's features after --disable"
+                )
+        if self.profile is not None:
+            # The profile lionagi writes is a file of its own, but codex before 0.135 reads `-p`
+            # as a `[profiles.<name>]` table in the configs it merges, and one defined there under
+            # this name could turn either feature back on.
+            defined = codex_config_defining_profile(self.profile, self.env, self.cwd())
+            if defined is not None:
+                raise ValueError(
+                    f"contain_account_integrations cannot be combined with profile={self.profile!r} "
+                    f"while {str(defined)!r} defines a profile of that name: codex before 0.135 "
+                    "applies its features after --disable"
+                )
+        else:
+            sources = [("the codex config", configured_codex_profile(self.env))]
+            project = project_codex_profile(self.cwd())
+            if project is not None:
+                sources.append((f"the project codex config {str(project[0])!r}", project[1]))
+            for where, value in sources:
+                if value is None:
+                    continue
+                # A key that is not a string is named by its type: its content is not echoed.
+                if isinstance(value, str):
+                    named = f"profile = {value!r}"
+                else:
+                    named = f"a root profile key of type {type(value).__name__}"
+                raise ValueError(
+                    f"contain_account_integrations cannot be combined with {named} in {where}: "
+                    "with no -p, codex before 0.135 makes it the active profile and applies "
+                    "its features after --disable (from 0.135 codex refuses the key itself)"
+                )
+
     def _build_declarative_args(self) -> list[str]:
         if not self._contains_account_integrations():
             return build_declarative_cli_args(self)
+        try:
+            self._refuse_a_profile_under_containment()
+        except ContainmentRefusedError:
+            raise
+        except (ValueError, OSError) as exc:
+            # A combination that could let a profile turn a feature back on, and an override
+            # key or a codex config the check cannot read to rule that out, are both refused.
+            raise ContainmentRefusedError(str(exc)) from exc
         disabled = list(self.disable_features or ())
         settled = self.model_copy(
             update={

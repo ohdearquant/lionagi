@@ -17,6 +17,7 @@ __all__ = (
     "OperationError",
     "ExecutionError",
     "ConfigurationError",
+    "ContainmentRefusedError",
     "TimeoutError",
     "EmptyOutgoingContentError",
     "CLIInputRefusedError",
@@ -147,6 +148,15 @@ class ConfigurationError(LionError, ValueError):
 
     default_message = "Invalid configuration"
     default_status_code = 500
+    __slots__ = ()
+
+
+class ContainmentRefusedError(ConfigurationError):
+    """A request under ``contain_account_integrations`` was refused before it ran: its
+    configuration could turn account integrations back on, or could not be read to rule
+    that out."""
+
+    default_message = "Account-integration containment refused the request"
     __slots__ = ()
 
 

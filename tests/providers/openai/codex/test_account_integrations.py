@@ -12,10 +12,13 @@ they reach the live call and are never written down.
 from __future__ import annotations
 
 import logging
+import os
+import re
+from pathlib import Path
 
 import pytest
 
-from lionagi._errors import CLIInputRefusedError
+from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
 from lionagi.cli._providers import (
     AgentProfile,
     _parse_profile,
@@ -23,6 +26,7 @@ from lionagi.cli._providers import (
     build_imodel_from_spec,
     profile_config,
 )
+from lionagi.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
 from lionagi.providers.openai.codex import CodexCodeRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.imodel import iModel
@@ -172,12 +176,13 @@ def test_toml_decodes_a_quoted_dotted_key():
 
 
 def test_containment_keeps_a_nested_key_under_another_table():
+    """A profile's table is refused instead (below)."""
     args = CodexCodeRequest(
         prompt="hi",
         contain_account_integrations=True,
-        config_overrides={"profiles.work.features.apps": True},
+        config_overrides={"tui.features.apps": True},
     ).as_cmd_args()
-    assert "profiles.work.features.apps=true" in _overrides(args)
+    assert "tui.features.apps=true" in _overrides(args)
 
 
 def test_containment_drops_a_nested_account_feature_override():
@@ -351,3 +356,549 @@ def test_build_chat_model_hands_both_fields_to_codex(captor):
     kw = captor.captures[-1]
     assert kw["account_connectors"] == ["github"]
     assert kw["contain_account_integrations"] is True
+
+
+# ── a profile under containment ─────────────────────────────────────────
+# `--disable` sets the features in the root config; codex before 0.135 applies
+# the active profile's `[features]` after it, so a profile could turn either back
+# on. The active profile is `-p`, else a root `profile` key in the user config or
+# in a project `.codex/config.toml`.
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ["work", "", CODEX_MCP_PROFILE_PREFIX + "0" * 31, CODEX_MCP_PROFILE_PREFIX + "A" * 32],
+    ids=["named", "empty", "short-generated-shape", "uppercase-generated-shape"],
+)
+def test_containment_refuses_a_profile_lionagi_did_not_write(profile):
+    req = CodexCodeRequest(prompt="hi", contain_account_integrations=True, profile=profile)
+    with pytest.raises(ValueError, match=re.escape(f"profile={profile!r}")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_the_profile_lionagi_writes_for_mcp_server_secrets(tmp_path):
+    """That profile holds only mcp_servers."""
+    name = CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2
+    args = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True, profile=name
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == name
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "profile",
+        '"profile"',
+        "profiles",
+        "profiles.work.features.apps",
+        'profiles."work".features',
+        '"\\u0070rofiles".work.features.plugins',
+    ],
+)
+def test_containment_refuses_an_override_that_selects_or_changes_a_profile(key):
+    req = CodexCodeRequest(
+        prompt="hi", contain_account_integrations=True, config_overrides={key: True}
+    )
+    # Named by position: an override key is never printed, whatever it holds.
+    with pytest.raises(ValueError, match=re.escape("override entry 0: it selects")) as exc:
+        req.as_cmd_args()
+    assert repr(key) not in str(exc.value)
+
+
+def test_containment_keeps_an_override_whose_first_part_only_starts_like_profile(tmp_path):
+    args = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides={"profile_note": 1, "tools.profiles": 2},
+    ).as_cmd_args()
+    assert {"profile_note=1", "tools.profiles=2"} <= set(_overrides(args))
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"contain_account_integrations": True, "account_connectors": ["github"]}],
+    ids=["uncontained", "granted"],
+)
+def test_a_profile_is_left_as_named_without_containment(fields, tmp_path):
+    args = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        profile="work",
+        config_overrides={"profiles.work.model_verbosity": "low"},
+        **fields,
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == "work"
+    assert 'profiles.work.model_verbosity="low"' in _overrides(args)
+
+
+def test_containment_refuses_a_profile_a_model_profile_file_selects(tmp_path):
+    """A model naming a codex config profile file brings its scalar keys as overrides."""
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "leg.config.toml").write_text('model = "gpt-5.5"\nprofile = "work"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        model="leg",
+        env={"CODEX_HOME": str(home)},
+        contain_account_integrations=True,
+    )
+    assert req.model == "gpt-5.5"
+    assert req.config_overrides == {"profile": "work"}
+    with pytest.raises(ValueError, match=re.escape("override entry 0: it selects")):
+        req.as_cmd_args()
+
+
+def _codex_home(tmp_path, config: str) -> dict[str, str]:
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(config)
+    return {"CODEX_HOME": str(home)}
+
+
+def test_containment_refuses_a_profile_the_codex_config_selects(tmp_path):
+    env = _codex_home(tmp_path, 'profile = "work"\n[profiles.work.features]\napps = true\n')
+    req = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match=re.escape("profile = 'work'")):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    ("config", "fields"),
+    [
+        (None, {"profile": "work"}),
+        (None, {"config_overrides": {"profile": "work"}}),
+        ('profile = "work"\n', {}),
+        ("profile = \n", {}),
+    ],
+    ids=[
+        "profile",
+        "override-selects-a-profile",
+        "config-selects-a-profile",
+        "config-unreadable",
+    ],
+)
+def test_every_containment_refusal_carries_its_own_type(config, fields, tmp_path):
+    """A caller tells a containment refusal from any other ValueError by its type."""
+    env = _codex_home(tmp_path, config) if config is not None else None
+    req = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True, **fields
+    )
+    with pytest.raises(ContainmentRefusedError):
+        req.as_cmd_args()
+
+
+def test_an_override_key_containment_cannot_read_is_refused_when_the_request_is_built(tmp_path):
+    """Containment reads every override key, so one TOML cannot read is refused as the
+    request is built, by position, as an input the CLI cannot take: a ValueError raised
+    there would arrive wrapped with the whole input."""
+    with pytest.raises(CLIInputRefusedError, match="config override entry 0 is not a TOML key"):
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            contain_account_integrations=True,
+            config_overrides={"a b": 1},
+        )
+
+
+def test_containment_reads_the_codex_config_of_the_home_the_child_runs_under(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text('profile = ""\n')
+    req = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env={"HOME": str(home)}, contain_account_integrations=True
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = ''")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_a_codex_config_without_a_root_profile(tmp_path):
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n[profiles.work.features]\napps = true\n')
+    args = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True
+    ).as_cmd_args()
+    assert "-p" not in args
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+def test_containment_with_the_profile_lionagi_writes_leaves_the_config_profile_to_codex(tmp_path):
+    """`-p` names the active profile, so the config's root key is not the one applied."""
+    env = _codex_home(tmp_path, 'profile = "work"\n')
+    name = CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2
+    args = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True, profile=name
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == name
+
+
+def test_containment_refuses_a_codex_config_it_cannot_read(tmp_path):
+    env = _codex_home(tmp_path, "profile = \n")
+    req = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"contain_account_integrations": True, "account_connectors": ["github"]}],
+    ids=["uncontained", "granted"],
+)
+def test_the_codex_config_profile_is_read_only_under_containment(fields, tmp_path):
+    """A config that cannot be parsed is refused only when containment reads it."""
+    env = _codex_home(tmp_path, "profile = \n")
+    args = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, **fields).as_cmd_args()
+    assert "-p" not in args
+
+
+def _repo(tmp_path, marker: str = "dir"):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if marker == "dir":
+        (repo / ".git").mkdir()
+    else:
+        (repo / ".git").write_text("gitdir: elsewhere\n")
+    return repo
+
+
+def _project_config(directory, config: str) -> None:
+    (directory / ".codex").mkdir(parents=True, exist_ok=True)
+    (directory / ".codex" / "config.toml").write_text(config)
+
+
+@pytest.mark.parametrize("at", ["", "a", "a/b"], ids=["git-root", "between", "cwd"])
+def test_containment_refuses_a_profile_a_project_codex_config_selects(tmp_path, at):
+    """A trusted project's config is merged too, so its root profile key selects the active
+    profile; every file from the working directory up to the git root is read."""
+    repo = _repo(tmp_path)
+    cwd = repo / "a" / "b"
+    cwd.mkdir(parents=True)
+    _project_config(repo / at, 'profile = "w"\n[profiles.w.features]\napps = true\n')
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=cwd, env=env, contain_account_integrations=True)
+    with pytest.raises(
+        ValueError, match=r"profile = 'w' in the project codex config '.*config\.toml'"
+    ):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize("marker", ["dir", "file"])
+def test_containment_reads_no_project_codex_config_above_the_git_root(tmp_path, marker):
+    repo = _repo(tmp_path, marker)
+    _project_config(tmp_path, 'profile = "w"\n')
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    args = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True
+    ).as_cmd_args()
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+def test_containment_without_a_git_root_reads_every_ancestors_project_codex_config(tmp_path):
+    cwd = tmp_path / "plain" / "x"
+    cwd.mkdir(parents=True)
+    _project_config(tmp_path, 'profile = "w"\n')
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=cwd, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="the project codex config"):
+        req.as_cmd_args()
+
+
+def test_containment_refuses_a_project_codex_config_it_cannot_read(tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "profile = \n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=repo, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"contain_account_integrations": True, "account_connectors": ["github"]}],
+    ids=["uncontained", "granted"],
+)
+def test_a_project_codex_config_is_read_only_under_containment(fields, tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "profile = \n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    CodexCodeRequest(prompt="hi", repo=repo, env=env, **fields).as_cmd_args()
+
+
+_GENERATED = CODEX_MCP_PROFILE_PREFIX + "0123456789abcdef" * 2
+
+
+@pytest.mark.parametrize("where", ["user", "project"])
+def test_containment_refuses_a_config_defining_a_profile_under_the_generated_name(tmp_path, where):
+    """Codex before 0.135 reads `-p` as a `[profiles.<name>]` table in the configs it merges."""
+    table = f"[profiles.{_GENERATED}.features]\napps = true\n"
+    repo = _repo(tmp_path)
+    if where == "user":
+        env = _codex_home(tmp_path, table)
+    else:
+        env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+        _project_config(repo, table)
+    req = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True, profile=_GENERATED
+    )
+    with pytest.raises(ValueError, match=re.escape(f"profile={_GENERATED!r} while")):
+        req.as_cmd_args()
+
+
+def test_containment_keeps_the_generated_profile_beside_other_profiles(tmp_path):
+    repo = _repo(tmp_path)
+    env = _codex_home(tmp_path, 'profile = "work"\n[profiles.work.features]\napps = true\n')
+    _project_config(repo, 'profile = "w"\n[profiles.w.features]\nplugins = true\n')
+    args = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True, profile=_GENERATED
+    ).as_cmd_args()
+    assert args[args.index("-p") + 1] == _GENERATED
+    assert _features_switched(args) == [("--disable", "apps"), ("--disable", "plugins")]
+
+
+def test_containment_with_the_generated_profile_refuses_a_config_it_cannot_read(tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "profile = \n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi", repo=repo, env=env, contain_account_integrations=True, profile=_GENERATED
+    )
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+def test_containment_walks_the_resolved_path_of_a_symlinked_working_directory(tmp_path):
+    real = _repo(tmp_path)
+    _project_config(real, 'profile = "w"\n')
+    (real / "sub").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real / "sub", target_is_directory=True)
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=link, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_collapses_a_dot_dot_in_the_working_directory(tmp_path):
+    """`a/b/../c` is `a/c`: the walk reads `a` and above, not the git root at `a/b`."""
+    _project_config(tmp_path, 'profile = "w"\n')
+    (tmp_path / "a" / "b" / ".git").mkdir(parents=True)
+    (tmp_path / "a" / "c").mkdir()
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path / "a" / "b" / ".." / "c",
+        env=env,
+        contain_account_integrations=True,
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_walks_the_spelled_path_beside_the_resolved_one(tmp_path):
+    """`x/link/../c`, with `link` pointing into a git root at `far`, is `x/c` as spelled and
+    `far/c` as resolved; the two trees differ, and the spelled one holds the config."""
+    _project_config(tmp_path / "x", 'profile = "w"\n')
+    (tmp_path / "far" / ".git").mkdir(parents=True)
+    (tmp_path / "far" / "deep").mkdir()
+    (tmp_path / "far" / "c").mkdir()
+    (tmp_path / "x" / "link").symlink_to(tmp_path / "far" / "deep", target_is_directory=True)
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path / "x" / "link" / ".." / "c",
+        env=env,
+        contain_account_integrations=True,
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_walks_the_resolved_path_beside_the_spelled_one(tmp_path):
+    """The mirror of the case above: the config sits only on the resolved chain.
+
+    `x/link/../c`, with `link` pointing into a git root at `far`, is `x/c` as spelled and
+    `far/c` as resolved. The spelled tree holds no config here, so a walk that covers
+    only the spelled path misses one codex will read for the child's own directory.
+    """
+    (tmp_path / "x").mkdir()
+    (tmp_path / "far" / ".git").mkdir(parents=True)
+    (tmp_path / "far" / "deep").mkdir()
+    (tmp_path / "far" / "c").mkdir()
+    _project_config(tmp_path / "far", 'profile = "w"\n')
+    (tmp_path / "x" / "link").symlink_to(tmp_path / "far" / "deep", target_is_directory=True)
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path / "x" / "link" / ".." / "c",
+        env=env,
+        contain_account_integrations=True,
+    )
+    with pytest.raises(ValueError, match=re.escape("profile = 'w' in the project codex config")):
+        req.as_cmd_args()
+
+
+def test_containment_refuses_a_project_codex_config_nested_too_deep_to_parse(tmp_path):
+    repo = _repo(tmp_path)
+    _project_config(repo, "x = " + "[" * 3000 + "]" * 3000 + "\n")
+    env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+    req = CodexCodeRequest(prompt="hi", repo=repo, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="cannot read the codex config"):
+        req.as_cmd_args()
+
+
+@pytest.mark.parametrize("where", ["user", "project"])
+def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, where):
+    config = '[profile]\nname = "not-echoed"\n'
+    repo = _repo(tmp_path)
+    if where == "user":
+        env = _codex_home(tmp_path, config)
+    else:
+        env = _codex_home(tmp_path, 'model = "gpt-5.5"\n')
+        _project_config(repo, config)
+    req = CodexCodeRequest(prompt="hi", repo=repo, env=env, contain_account_integrations=True)
+    with pytest.raises(ValueError, match="a root profile key of type dict") as raised:
+        req.as_cmd_args()
+    assert "not-echoed" not in str(raised.value)
+
+
+def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp_path):
+    """The config walk cannot resolve such a directory, so it cannot read the configs
+    codex would apply. The refusal names the directory and the reason it cannot be used."""
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    # Python before 3.13 cannot resolve the loop; 3.13 and later resolve it and find no
+    # directory there. Either way the refusal names the directory.
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
+        CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
+
+
+def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
+    missing = tmp_path / "missing"
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))) as raised:
+        CodexCodeRequest(prompt="hi", repo=missing, contain_account_integrations=True)
+    assert "does not exist or is not a directory" in str(raised.value)
+
+
+def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp_path):
+    """Control: the refusal is containment's, not a new restriction on every request."""
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    missing = tmp_path / "missing"
+
+    try:
+        looped = CodexCodeRequest(prompt="hi", repo=loop)
+    except RuntimeError as exc:
+        # Python before 3.13 raises while resolving the loop, as it did before containment.
+        assert "Symlink loop" in str(exc)
+    else:
+        with pytest.raises(ValueError, match="does not exist or is not a directory"):
+            looped.as_cmd_args()
+    req = CodexCodeRequest(prompt="hi", repo=missing)
+    with pytest.raises(ValueError, match="does not exist or is not a directory"):
+        req.as_cmd_args()
+
+
+def _unusable_directory(tmp_path, kind):
+    """A directory this process cannot list and enter, and the paths to restore after."""
+    if kind == "no-permissions":
+        target = tmp_path / "locked"
+        target.mkdir()
+        return target, [(target, 0o000)]
+    if kind == "read-without-search":
+        target = tmp_path / "unsearchable"
+        target.mkdir()
+        return target, [(target, 0o600)]
+    parent = tmp_path / "locked-parent"
+    target = parent / "child"
+    target.mkdir(parents=True)
+    return target, [(parent, 0o000)]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+@pytest.mark.parametrize("kind", ["no-permissions", "read-without-search", "child-of-locked"])
+def test_containment_refuses_a_working_directory_it_cannot_enter(tmp_path, kind):
+    """Without permission to list and enter the directory the walk cannot read the
+    configs codex would apply, so containment refuses it, naming the directory."""
+    target, modes = _unusable_directory(tmp_path, kind)
+    for path, mode in modes:
+        path.chmod(mode)
+    try:
+        with pytest.raises(ContainmentRefusedError, match=re.escape(str(target))):
+            CodexCodeRequest(prompt="hi", repo=target, contain_account_integrations=True)
+    finally:
+        for path, _ in modes:
+            path.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_without_containment_a_directory_it_cannot_enter_is_not_refused_at_construction(
+    tmp_path,
+):
+    """Control: the check is containment's; an ordinary request is built as before."""
+    target, modes = _unusable_directory(tmp_path, "no-permissions")
+    for path, mode in modes:
+        path.chmod(mode)
+    try:
+        CodexCodeRequest(prompt="hi", repo=target)
+    finally:
+        for path, _ in modes:
+            path.chmod(0o755)
+
+
+def test_a_profile_file_that_is_not_utf8_is_refused_naming_it(tmp_path):
+    """The profile read decodes the file; bytes that are not UTF-8 make it unreadable."""
+    from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "deep.config.toml").write_bytes(b'model = "\xff\xfe"\n')
+    with pytest.raises(ValueError, match=re.escape("deep.config.toml") + ".*could not be read"):
+        resolve_codex_config_profile("deep", env={"CODEX_HOME": str(home)})
+
+
+def test_a_codex_home_holding_a_nul_reads_as_having_no_profile():
+    """A path the operating system cannot name holds no file, as ``Path.is_file()`` says:
+    a bare model name is sent as a model id, and the request is built."""
+    from lionagi.providers.openai._codex_profile import _is_file, resolve_codex_config_profile
+
+    env = {"CODEX_HOME": "/nonexistent/a\0b"}
+    assert _is_file(Path("/nonexistent/a\0b/o3.config.toml")) is False
+    assert resolve_codex_config_profile("o3", env=env) is None
+    assert CodexCodeRequest(prompt="hi", model="o3", env=env).model == "o3"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_a_profile_that_cannot_be_checked_is_refused_naming_it(tmp_path):
+    """A codex home this process cannot search leaves the profile unknown, not absent."""
+    from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "deep.config.toml").write_text('model = "gpt-5.5"\n')
+    home.chmod(0o600)
+    try:
+        with pytest.raises(ValueError, match=re.escape("deep.config.toml")):
+            resolve_codex_config_profile("deep", env={"CODEX_HOME": str(home)})
+    finally:
+        home.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_a_project_config_that_cannot_be_checked_is_refused_on_every_python(tmp_path):
+    """From Python 3.14 Path.is_file() answers False for a permission error; the walk must
+    still refuse a project config it cannot check rather than read it as absent."""
+    from lionagi.providers.openai._codex_profile import project_codex_profile
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    codex_dir = repo / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text('profile = "deep"\n')
+    codex_dir.chmod(0o600)
+    try:
+        with pytest.raises(ValueError, match=re.escape(str(codex_dir / "config.toml"))):
+            project_codex_profile(repo)
+    finally:
+        codex_dir.chmod(0o755)
