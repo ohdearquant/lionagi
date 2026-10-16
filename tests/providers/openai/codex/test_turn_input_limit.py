@@ -1214,3 +1214,90 @@ def test_a_surrogate_in_an_override_value_is_refused_naming_the_value(tmp_path):
     message = str(caught.value)
     assert message.startswith("The value of the config override entry 0")
     assert "The key of the config override" not in message
+
+
+class _SecretPath:
+    """A path-like value, which the spawn encodes through ``__fspath__``."""
+
+    def __fspath__(self):
+        return f"{_SECRET_IN_A_VALUE}\ud800"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param({"HOME": "/h", "OPENAI_API_KEY": _SecretPath()}, id="path-like-value"),
+        pytest.param(
+            _ItemsHideAKey({"HOME": "/h", "OPENAI_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}),
+            id="items-hide-it",
+        ),
+        pytest.param(
+            _IterationHidesAKey({"HOME": "/h", "OPENAI_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}),
+            id="iteration-hides-it",
+        ),
+    ],
+)
+async def test_a_copied_environment_is_checked_as_the_spawn_copies_it(tmp_path, monkeypatch, env):
+    """The spawn copies the mapping with dict() and encodes every key and value of the
+    copy, so the check reads that copy the same way: an entry a view of the mapping
+    leaves out, or a value the spawn reaches through ``__fspath__``, is refused by
+    position before any process starts."""
+    from lionagi.providers import _cli_subprocess
+
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
+    with pytest.raises(ValueError) as refused:
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert str(refused.value) == (
+        "The environment entry 1 value holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_a_claude_code_environment_the_spawn_cannot_encode_is_refused_at_construction(part):
+    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    entry = (
+        {f"K{_SECRET_IN_A_VALUE}\ud800": "v"}
+        if part == "key"
+        else {"ANTHROPIC_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}
+    )
+    with pytest.raises(TypeError) as refused:
+        ClaudeCodeRequest(prompt="hi", env={"HOME": "/h", **entry})
+
+    assert str(refused.value) == (
+        f"The environment entry 1 {part} holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+@pytest.mark.parametrize("field", ["reasoning_effort", "plan_mode_reasoning_effort"])
+@pytest.mark.parametrize("effort", [b"ultra", bytearray(b"ultra")], ids=["bytes", "bytearray"])
+def test_an_effort_given_as_bytes_is_refused_rather_than_read_past_the_clamp(
+    tmp_path, field, effort
+):
+    """Field validation reads bytes as text, so an effort given as bytes would reach the
+    command line unclamped; the request refuses it by the field's name."""
+    with pytest.raises(pydantic.ValidationError) as refused:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, model="gpt-5.5", **{field: effort})
+
+    assert f"{field} must be a string, not {type(effort).__name__}" in str(refused.value)
+    assert (
+        CodexCodeRequest(
+            prompt="hi", repo=tmp_path, model="gpt-5.5", **{field: "ultra"}
+        ).model_dump()[field]
+        == "xhigh"
+    )

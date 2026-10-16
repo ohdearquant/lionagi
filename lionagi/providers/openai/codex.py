@@ -383,8 +383,7 @@ def _refuse_oversized_cli_inputs(
     # the efforts are open strings, but no effort name holds a NUL either. Other C0
     # control characters and DEL in an effort are escaped and sent, as are `"` and `\`,
     # and any other character is sent as it is; the per-model clamp ignores control,
-    # format and line or
-    # paragraph separator characters when it reads the name.
+    # format and line or paragraph separator characters when it reads the name.
     for what, text in text_fields or ():
         if failure is not None:
             break
@@ -841,6 +840,9 @@ class CodexCodeRequest(BaseModel):
         model = values.get("model", cls.model_fields["model"].default)
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
             effort = values.get(key)
+            if isinstance(effort, (bytes, bytearray)):
+                # Field validation reads bytes as text, after the clamp has passed them by.
+                raise ValueError(f"{key} must be a string, not {type(effort).__name__}")
             if isinstance(effort, str):
                 values[key] = _clamp_codex_effort(effort, model)
 

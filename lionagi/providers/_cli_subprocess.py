@@ -184,19 +184,23 @@ def unencodable_env_entry(env: Mapping) -> str | None:
     """The first ``env`` key or value the spawn cannot encode, named by its position, else
     None.
 
-    The spawn encodes the environment with ``os.fsencode``, so a surrogate escape (U+DC80
-    to U+DCFF) passes as the byte it stands for and any other lone surrogate fails. The
-    codec's error holds the whole key or value, which can be a credential, so only the
-    position is returned, and the caller raises its refusal after this handler has ended.
+    The spawn copies the mapping with ``dict()`` and encodes every key and value of the
+    copy with ``os.fsencode``, so this reads the same copy the same way: a mapping whose
+    ``items()`` leaves an entry out is still checked, and a path-like value is encoded
+    through its ``__fspath__``. A surrogate escape (U+DC80 to U+DCFF) passes as the byte
+    it stands for and any other lone surrogate fails. The codec's error holds the whole
+    key or value, which can be a credential, so only the position is returned, and the
+    caller raises its refusal after this handler has ended. A key or value ``os.fsencode``
+    does not take at all is left to the spawn, whose ``TypeError`` names only its type.
     """
-    for index, (key, val) in enumerate(env.items()):
+    for index, (key, val) in enumerate(dict(env).items()):
         for part, text in (("key", key), ("value", val)):
-            if not isinstance(text, str):
-                continue
             try:
                 os.fsencode(text)
             except UnicodeEncodeError:
                 return f"The environment entry {index} {part}"
+            except TypeError:
+                continue
     return None
 
 
