@@ -23,6 +23,7 @@ from lionagi.operations.run.run import (
     run_and_collect,
 )
 from lionagi.operations.types import ChatParam
+from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
@@ -1056,6 +1057,7 @@ async def test_imodel_stream_propagates_cancellation():
     api_call.stream = fake_core_stream
     m.executor = types.SimpleNamespace(
         append=AsyncMock(),
+        pending=Progression(),
         pile=types.SimpleNamespace(pop=lambda *a, **kw: None),
         processor=types.SimpleNamespace(
             _concurrency_sem=None,

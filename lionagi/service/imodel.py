@@ -461,6 +461,12 @@ class iModel:  # noqa: N801
             kw["stream"] = True
             api_call = await self.create_event(**kw)
             await self.executor.append(api_call)
+        # A streamed call is driven by its consumer, never by the executor's
+        # queue, so it must not stay in the pending queue once this call owns
+        # it. A pending entry left behind here is popped by the next forward()
+        # on this executor and looked up in the pile, which the teardown below
+        # has already emptied for it.
+        self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
 
         if self.executor.processor is None or self.executor.processor.is_stopped():
