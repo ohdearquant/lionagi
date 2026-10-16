@@ -490,7 +490,7 @@ def test_a_long_override_key_is_not_printed_in_its_refusal(tmp_path):
     with pytest.raises(CLIInputRefusedError) as caught:
         CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={key: 1})
 
-    assert "k" * 200 not in str(caught.value)
+    assert "k" * 8 not in str(caught.value)
 
 
 # ── the turn prompt ──────────────────────────────────────────────────────────
@@ -910,10 +910,13 @@ _SECRET_IN_A_VALUE = "sk-SECRET-VALUE-789"
 @pytest.mark.parametrize(
     "update,named",
     [
-        ({"config_overrides": {"k": f"v{_SECRET_IN_A_VALUE}\udcff"}}, "config override entry 0"),
+        (
+            {"config_overrides": {"k": f"v{_SECRET_IN_A_VALUE}\udcff"}},
+            "The value of the config override entry 0",
+        ),
         (
             {"config_overrides": {"k": {"inner": f"{_SECRET_IN_A_VALUE}\ud800"}}},
-            "config override entry 0",
+            "The value of the config override entry 0",
         ),
         ({"system_prompt": f"{_SECRET_IN_A_VALUE}\udcff"}, "The system prompt"),
         ({"reasoning_effort": f"high{_SECRET_IN_A_VALUE}\udcff"}, "reasoning_effort"),
@@ -921,8 +924,9 @@ _SECRET_IN_A_VALUE = "sk-SECRET-VALUE-789"
             {"plan_mode_reasoning_effort": f"high{_SECRET_IN_A_VALUE}\udcff"},
             "plan_mode_reasoning_effort",
         ),
+        ({"ask_for_approval": f"on-request{_SECRET_IN_A_VALUE}\ud800"}, "ask_for_approval"),
     ],
-    ids=["override-value", "inline-table", "system-prompt", "effort", "plan-effort"],
+    ids=["override-value", "inline-table", "system-prompt", "effort", "plan-effort", "approval"],
 )
 def test_a_copy_the_command_builder_cannot_encode_is_refused_without_its_text(
     tmp_path, update, named
@@ -934,11 +938,75 @@ def test_a_copy_the_command_builder_cannot_encode_is_refused_without_its_text(
     with pytest.raises(ValueError) as built:
         copied.as_cmd_args()
 
-    assert named in str(built.value)
+    assert str(built.value) == (
+        f"{named} holds a character strict UTF-8 cannot encode: a lone surrogate cannot "
+        "be passed to the Codex CLI."
+    )
     assert not isinstance(built.value, UnicodeEncodeError)
     assert built.value.__context__ is None
     assert built.value.__cause__ is None
     assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(built.value)
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_an_environment_the_spawn_cannot_encode_is_refused_at_construction(tmp_path, part):
+    """The spawn encodes the environment with os.fsencode, whose error holds the whole key
+    or value; the request refuses it first, naming the entry by position."""
+    entry = (
+        {f"K{_SECRET_IN_A_VALUE}\ud800": "v"}
+        if part == "key"
+        else {"OPENAI_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}
+    )
+    with pytest.raises(TypeError) as refused:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, env={"HOME": "/h", **entry})
+
+    assert str(refused.value) == (
+        f"The environment entry 1 {part} holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+def test_an_environment_holding_a_surrogate_escape_is_accepted(tmp_path):
+    """U+DC80 to U+DCFF stand for undecodable bytes, which the spawn passes as those bytes."""
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, env={"PATH_BYTES": "a\udcffb"})
+
+    assert request.env == {"PATH_BYTES": "a\udcffb"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("part", ["key", "value"])
+async def test_a_copied_environment_the_spawn_cannot_encode_is_refused_before_it(
+    tmp_path, monkeypatch, part
+):
+    """A copy skips validation, so the spawn helper every CLI provider shares checks the
+    environment itself, before any process starts."""
+    from lionagi.providers import _cli_subprocess
+
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    entry = (
+        {f"K{_SECRET_IN_A_VALUE}\ud800": "v"}
+        if part == "key"
+        else {"OPENAI_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}
+    )
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": entry})
+    with pytest.raises(ValueError) as refused:
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert str(refused.value) == (
+        f"The environment entry 0 {part} holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert not isinstance(refused.value, UnicodeEncodeError)
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
 
 
 def test_an_argument_exec_cannot_encode_is_refused_without_its_text():

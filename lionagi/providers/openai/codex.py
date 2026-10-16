@@ -156,8 +156,8 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
             what = f"Command-line argument {position}"
         # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
         # exec, so a path holding a byte that is not UTF-8 counts that byte once. A
-        # character it cannot encode is refused by name after the handler, since the
-        # codec's error holds the whole argument.
+        # character it cannot encode is refused after the handler, naming the argument by
+        # its position or its flag, since the codec's error holds the whole argument.
         try:
             encoded = os.fsencode(argument)
         except UnicodeEncodeError:
@@ -271,8 +271,8 @@ def _toml_string(value: str) -> str:
     control character wrongly (``"a\x01b"`` comes back as ``"ax01b"``, a different value)
     and raises IndexError on a leading one, which would escape where containment drops
     the override. Every C0 control character and DEL is written as a ``\uXXXX`` escape,
-    which TOML reads back as the same character; every other character, U+0085 and U+2028
-    among them, is kept as it is.
+    which TOML reads back as the same character, and ``"`` and ``\`` as ``\"`` and
+    ``\\``; every other character, U+0085 and U+2028 among them, is kept as it is.
     """
     # Strict UTF-8 first: a lone surrogate has no encoding a child process can decode,
     # so it is refused here rather than reaching the CLI as a raw byte. Escapes are
@@ -381,8 +381,9 @@ def _refuse_oversized_cli_inputs(
     # policy are written as TOML strings, where a NUL would be escaped rather than
     # refused. The approval policy is a closed choice no value with a NUL belongs to;
     # the efforts are open strings, but no effort name holds a NUL either. Other C0
-    # control characters and DEL in an effort are escaped and sent, and any other
-    # character is sent as it is; the per-model clamp ignores control, format and line or
+    # control characters and DEL in an effort are escaped and sent, as are `"` and `\`,
+    # and any other character is sent as it is; the per-model clamp ignores control,
+    # format and line or
     # paragraph separator characters when it reads the name.
     for what, text in text_fields or ():
         if failure is not None:
@@ -1023,12 +1024,8 @@ class CodexCodeRequest(BaseModel):
             if self.ask_for_approval:
                 # The config key has the same mode vocabulary as the former CLI
                 # flag and remains available in builds that no longer expose it.
-                args.extend(
-                    [
-                        "-c",
-                        f"approval_policy={toml_override_value(self.ask_for_approval)}",
-                    ]
-                )
+                rendered = _rendered_override_value(self.ask_for_approval, "ask_for_approval")
+                args.extend(["-c", f"approval_policy={rendered}"])
             if self.sandbox:
                 args.extend(["-s", self.sandbox])
 

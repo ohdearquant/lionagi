@@ -175,6 +175,36 @@ def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
             "env must map strings to strings; these entries do not: "
             + ", ".join([*sorted(named), *unnamed])
         )
+    unencodable = unencodable_env_entry(value)
+    if unencodable is not None:
+        raise TypeError(_unencodable_env_message(unencodable))
+
+
+def unencodable_env_entry(env: Mapping) -> str | None:
+    """The first ``env`` key or value the spawn cannot encode, named by its position, else
+    None.
+
+    The spawn encodes the environment with ``os.fsencode``, so a surrogate escape (U+DC80
+    to U+DCFF) passes as the byte it stands for and any other lone surrogate fails. The
+    codec's error holds the whole key or value, which can be a credential, so only the
+    position is returned, and the caller raises its refusal after this handler has ended.
+    """
+    for index, (key, val) in enumerate(env.items()):
+        for part, text in (("key", key), ("value", val)):
+            if not isinstance(text, str):
+                continue
+            try:
+                os.fsencode(text)
+            except UnicodeEncodeError:
+                return f"The environment entry {index} {part}"
+    return None
+
+
+def _unencodable_env_message(what: str) -> str:
+    return (
+        f"{what} holds a character the process environment cannot encode: a lone "
+        "surrogate cannot be passed to a CLI process."
+    )
 
 
 def redact_runtime_fields_in_place(data) -> None:
@@ -696,6 +726,12 @@ async def ndjson_from_cli(
     propagates through the teardown below, which ends the child's group.
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
+    # A request copied with model_copy(update=...) skips validation, and the spawn's own
+    # encode error would hold the whole key or value, so the environment is checked here.
+    if env is not None:
+        unencodable = unencodable_env_entry(env)
+        if unencodable is not None:
+            raise ValueError(_unencodable_env_message(unencodable))
     # Every CLI provider spawns through here, so a secret the child must read
     # from its own environment is filled in one place rather than four. Purely
     # additive: with nothing configured this returns ``env`` unchanged, and a
