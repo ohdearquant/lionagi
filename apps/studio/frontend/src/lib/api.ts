@@ -52,7 +52,9 @@ declare global {
  *
  * Without a viewer override at load time, trusted runtime/build configuration
  * retains its token behavior, including relative bases and same-origin requests.
- * For a viewer override, withhold the token if its issuing origin is unknown.
+ * For a viewer override, the injected issuing base is captured at load time too.
+ * Withhold the token if that origin is unknown, unparseable, or different from
+ * the loaded destination. Later injection changes cannot establish new trust.
  */
 export function resolveAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
@@ -61,7 +63,7 @@ export function resolveAuthToken(): string | undefined {
 
   if (!API_OVERRIDE) return token;
 
-  const issuedFor = window.__STUDIO_API_BASE__;
+  const issuedFor = TOKEN_ISSUING_BASE;
   if (!issuedFor) return undefined;
   try {
     return new URL(issuedFor).origin === new URL(API_BASE).origin ? token : undefined;
@@ -125,13 +127,13 @@ function resolveApiOverride(): string | undefined {
   }
 }
 
-export function resolveApiBase(): string {
+function resolveApiBase(): string {
   // Priority: ?api= loopback override (per-tab) >
   // window.__STUDIO_API_BASE__ (runtime injection) >
   // VITE_STUDIO_API_BASE (build-time env) > origin logic.
   // Treat empty string as "not configured" — defense against baking an empty
   // env var that silently produced same-origin /api/* requests.
-  return resolveApiOverride() ?? resolveConfiguredApiBase();
+  return API_OVERRIDE ?? resolveConfiguredApiBase();
 }
 
 function resolveConfiguredApiBase(): string {
@@ -160,7 +162,8 @@ function resolveConfiguredApiBase(): string {
 }
 
 const API_OVERRIDE = resolveApiOverride();
-export const API_BASE = API_OVERRIDE ?? resolveConfiguredApiBase();
+const TOKEN_ISSUING_BASE = typeof window === "undefined" ? undefined : window.__STUDIO_API_BASE__;
+export const API_BASE = resolveApiBase();
 
 export class ApiError extends Error {
   readonly status: number;

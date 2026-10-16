@@ -1,39 +1,45 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { normalizeSignalEvent, resolveApiBase, resolveAuthToken } from "./api";
+import { normalizeSignalEvent, resolveAuthToken } from "./api";
 import type { SignalEvent } from "./api";
 
-describe("resolveApiBase", () => {
+// A new module load selects the destination for the current page configuration.
+async function loadApiBase(): Promise<string> {
+  vi.resetModules();
+  return (await import("./api")).API_BASE;
+}
+
+describe("loaded API_BASE", () => {
   beforeEach(() => {
     // Reset any window overrides between tests
     delete (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__;
     vi.unstubAllGlobals();
   });
 
-  it("returns window.__STUDIO_API_BASE__ when set", () => {
+  it("returns window.__STUDIO_API_BASE__ when set", async () => {
     (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
       "http://custom-host:9000";
-    expect(resolveApiBase()).toBe("http://custom-host:9000");
+    expect(await loadApiBase()).toBe("http://custom-host:9000");
   });
 
-  it("ignores empty __STUDIO_API_BASE__", () => {
+  it("ignores empty __STUDIO_API_BASE__", async () => {
     (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ = "";
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     // Falls through to same-origin ("") for jsdom (no port) — must not be the override value
     expect(result).not.toBe("http://custom-host:9000");
   });
 
-  it("returns same-origin empty string when no overrides and no port (production)", () => {
+  it("returns same-origin empty string when no overrides and no port (production)", async () => {
     // jsdom default: window.location.port === '' — production same-origin deployment
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
       location: { ...window.location, port: "", hostname: "server.example", protocol: "http:" },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("returns same-origin empty string for port 8765 (single-origin production)", () => {
+  it("returns same-origin empty string for port 8765 (single-origin production)", async () => {
     // Browser opened http://server.example:8765 — SPA and API on same origin
     vi.stubGlobal("window", {
       ...window,
@@ -45,11 +51,11 @@ describe("resolveApiBase", () => {
         protocol: "http:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("uses the same-origin Vite proxy on dev port 3000", () => {
+  it("uses the same-origin Vite proxy on dev port 3000", async () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -60,11 +66,11 @@ describe("resolveApiBase", () => {
         protocol: "http:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("uses the same-origin Vite proxy on dev port 5173", () => {
+  it("uses the same-origin Vite proxy on dev port 5173", async () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -75,11 +81,11 @@ describe("resolveApiBase", () => {
         protocol: "http:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("keeps a remotely accessed dev server on its same-origin proxy", () => {
+  it("keeps a remotely accessed dev server on its same-origin proxy", async () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -90,11 +96,11 @@ describe("resolveApiBase", () => {
         protocol: "http:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("same-origin for non-localhost host on port 8765", () => {
+  it("same-origin for non-localhost host on port 8765", async () => {
     // Docker/remote deployment: http://192.0.2.10:8765 → same origin
     vi.stubGlobal("window", {
       ...window,
@@ -106,11 +112,11 @@ describe("resolveApiBase", () => {
         protocol: "http:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("is same-origin for HTTPS on a non-local hostname (single-origin Docker deploy)", () => {
+  it("is same-origin for HTTPS on a non-local hostname (single-origin Docker deploy)", async () => {
     // https://server.example — Docker/reverse-proxy deployment serving the
     // SPA and API from one origin behind TLS termination.
     vi.stubGlobal("window", {
@@ -123,11 +129,11 @@ describe("resolveApiBase", () => {
         protocol: "https:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("still honors an explicit runtime override for a hosted-static deploy on HTTPS", () => {
+  it("still honors an explicit runtime override for a hosted-static deploy on HTTPS", async () => {
     // https://lion-studio.khive.ai — static SPA driving a separate local
     // daemon must opt in explicitly rather than relying on a hostname guess.
     vi.stubGlobal("window", {
@@ -140,11 +146,11 @@ describe("resolveApiBase", () => {
         protocol: "https:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("http://127.0.0.1:8765");
   });
 
-  it("does not apply the hosted-https default over plain http on a remote hostname", () => {
+  it("does not apply the hosted-https default over plain http on a remote hostname", async () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -155,11 +161,11 @@ describe("resolveApiBase", () => {
         protocol: "http:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
-  it("does not apply the hosted-https default for https on localhost", () => {
+  it("does not apply the hosted-https default for https on localhost", async () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -170,7 +176,7 @@ describe("resolveApiBase", () => {
         protocol: "https:",
       },
     });
-    const result = resolveApiBase();
+    const result = await loadApiBase();
     expect(result).toBe("");
   });
 
@@ -179,34 +185,34 @@ describe("resolveApiBase", () => {
       vi.unstubAllEnvs();
     });
 
-    it("uses VITE_STUDIO_API_BASE when no runtime override is set", () => {
+    it("uses VITE_STUDIO_API_BASE when no runtime override is set", async () => {
       vi.stubEnv("VITE_STUDIO_API_BASE", "https://api.hosted.example");
       vi.stubGlobal("window", {
         ...window,
         __STUDIO_API_BASE__: undefined,
         location: { ...window.location, port: "", hostname: "server.example", protocol: "https:" },
       });
-      expect(resolveApiBase()).toBe("https://api.hosted.example");
+      expect(await loadApiBase()).toBe("https://api.hosted.example");
     });
 
-    it("ignores an empty VITE_STUDIO_API_BASE and falls through to origin logic", () => {
+    it("ignores an empty VITE_STUDIO_API_BASE and falls through to origin logic", async () => {
       vi.stubEnv("VITE_STUDIO_API_BASE", "");
       vi.stubGlobal("window", {
         ...window,
         __STUDIO_API_BASE__: undefined,
         location: { ...window.location, port: "", hostname: "server.example", protocol: "http:" },
       });
-      expect(resolveApiBase()).toBe("");
+      expect(await loadApiBase()).toBe("");
     });
 
-    it("prefers the runtime override over VITE_STUDIO_API_BASE when both are set", () => {
+    it("prefers the runtime override over VITE_STUDIO_API_BASE when both are set", async () => {
       vi.stubEnv("VITE_STUDIO_API_BASE", "https://api.hosted.example");
       vi.stubGlobal("window", {
         ...window,
         __STUDIO_API_BASE__: "http://127.0.0.1:8765",
         location: { ...window.location, port: "", hostname: "server.example", protocol: "https:" },
       });
-      expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+      expect(await loadApiBase()).toBe("http://127.0.0.1:8765");
     });
   });
 });
@@ -924,7 +930,7 @@ describe("normalizeSignalEvent", () => {
   });
 });
 
-describe("resolveApiBase ?api= override", () => {
+describe("loaded API_BASE ?api= override", () => {
   // Suite-owned storage: the CI runner's test environment has no
   // window.sessionStorage (locally jsdom provides one), and the impl reads
   // window.sessionStorage under try/catch — so without this stub the four
@@ -962,11 +968,11 @@ describe("resolveApiBase ?api= override", () => {
     });
   };
 
-  it("a loopback ?api= wins over the baked base", () => {
+  it("a loopback ?api= wins over the baked base", async () => {
     stubLocation("?api=http://127.0.0.1:8766");
     (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
       "http://127.0.0.1:8765";
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
+    expect(await loadApiBase()).toBe("http://127.0.0.1:8766");
   });
 
   it.each([
@@ -979,14 +985,14 @@ describe("resolveApiBase ?api= override", () => {
     ["http://localhost:8766", "http://localhost:8766"],
     ["http://[::1]:8766", "http://[::1]:8766"],
     ["http://[0:0:0:0:0:0:0:1]:8766", "http://[::1]:8766"],
-  ])("accepts and persists the loopback origin %s", (raw, origin) => {
+  ])("accepts and persists the loopback origin %s", async (raw, origin) => {
     stubLocation(`?${new URLSearchParams({ api: raw })}`);
     (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
       "http://127.0.0.1:8765";
-    expect(resolveApiBase()).toBe(origin);
+    expect(await loadApiBase()).toBe(origin);
     expect(storage.get("studio.apiBaseOverride")).toBe(origin);
     stubLocation("");
-    expect(resolveApiBase()).toBe(origin);
+    expect(await loadApiBase()).toBe(origin);
   });
 
   it.each([
@@ -1005,28 +1011,28 @@ describe("resolveApiBase ?api= override", () => {
     "http://127.0.0.256:8766",
     "ftp://127.0.0.2:8766",
     "ws://127.0.0.2:8766",
-  ])("ignores an unsafe override from either query or storage: %s", (raw) => {
+  ])("ignores an unsafe override from either query or storage: %s", async (raw) => {
     stubLocation(`?${new URLSearchParams({ api: raw })}`);
     (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
       "http://127.0.0.1:8765";
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    expect(await loadApiBase()).toBe("http://127.0.0.1:8765");
     expect(storage.has("studio.apiBaseOverride")).toBe(false);
 
     storage.set("studio.apiBaseOverride", raw);
     stubLocation("");
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    expect(await loadApiBase()).toBe("http://127.0.0.1:8765");
   });
 
-  it("a malformed ?api= is ignored", () => {
+  it("a malformed ?api= is ignored", async () => {
     stubLocation("?api=notaurl");
-    expect(resolveApiBase()).toBe("");
+    expect(await loadApiBase()).toBe("");
   });
 
-  it("the override persists for the tab after the query param is gone", () => {
+  it("the override persists for the tab after the query param is gone", async () => {
     stubLocation("?api=http://localhost:8766");
-    expect(resolveApiBase()).toBe("http://localhost:8766");
+    expect(await loadApiBase()).toBe("http://localhost:8766");
     stubLocation("");
-    expect(resolveApiBase()).toBe("http://localhost:8766");
+    expect(await loadApiBase()).toBe("http://localhost:8766");
   });
 });
 
@@ -1090,7 +1096,7 @@ describe("the shell token does not follow a ?api= override to another daemon", (
       setInjected("http://127.0.0.1:8765", "shell-token");
       const { resolveAuthToken } = await import("./api");
       // Precondition, so this is not asserting against a base that never moved.
-      expect(resolveApiBase()).toBe(`http://${host}:8766`);
+      expect((await import("./api")).API_BASE).toBe(`http://${host}:8766`);
       expect(resolveAuthToken()).toBeUndefined();
     },
   );
@@ -1103,7 +1109,7 @@ describe("the shell token does not follow a ?api= override to another daemon", (
       stubLocation(`?api=http://${host}:8765`);
       setInjected(`http://${host}:8765`, "shell-token");
       const { resolveAuthToken } = await import("./api");
-      expect(resolveApiBase()).toBe(`http://${host}:8765`);
+      expect((await import("./api")).API_BASE).toBe(`http://${host}:8765`);
       expect(resolveAuthToken()).toBe("shell-token");
       const { listInvocations } = await import("./api");
       const fetchMock = vi
@@ -1124,6 +1130,52 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     setInjected(undefined, "shell-token");
     const { resolveAuthToken } = await import("./api");
     expect(resolveAuthToken()).toBeUndefined();
+  });
+
+  it.each([undefined, "http://127.0.0.1:8765"])(
+    "does not grant an override credentials after the injected issuer changes from %s",
+    async (issuer) => {
+      const destination = "http://127.0.0.2:8766";
+      stubLocation(`?api=${destination}`);
+      setInjected(issuer, "shell-token");
+      const client = await import("./api");
+      expect(client.resolveAuthToken()).toBeUndefined();
+      window.__STUDIO_API_BASE__ = destination;
+      const fetchMock = vi.fn<typeof fetch>(() =>
+        Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await client.listInvocations();
+
+      expect(client.API_BASE).toBe(destination);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe(`${destination}/api/invocations/`);
+      expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+      expect(client.resolveAuthToken()).toBeUndefined();
+    },
+  );
+
+  it("keeps authenticating the captured issuing origin after the injection changes", async () => {
+    const destination = "http://127.0.0.2:8766";
+    stubLocation(`?api=${destination}`);
+    setInjected(`${destination}/shell`, "shell-token");
+    const client = await import("./api");
+    expect(client.resolveAuthToken()).toBe("shell-token");
+    window.__STUDIO_API_BASE__ = "http://127.0.0.1:8765";
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await client.listInvocations();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${destination}/api/invocations/`);
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer shell-token");
+    expect(client.resolveAuthToken()).toBe("shell-token");
   });
 
   it("withholds the token when the injected base is unparseable", async () => {
@@ -1162,7 +1214,7 @@ describe("the shell token does not follow a ?api= override to another daemon", (
 
       await client.listInvocations();
       window.location.search = "?api=http://127.0.0.2:8766";
-      expect(client.resolveApiBase()).toBe("http://127.0.0.2:8766");
+      expect(window.location.search).toBe("?api=http://127.0.0.2:8766");
       await client.listInvocations();
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -1179,7 +1231,7 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     stubLocation("?api=https://evil.example");
     setInjected("http://127.0.0.1:8765", "shell-token");
     const { resolveAuthToken } = await import("./api");
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    expect((await import("./api")).API_BASE).toBe("http://127.0.0.1:8765");
     expect(resolveAuthToken()).toBe("shell-token");
   });
 
@@ -1191,7 +1243,7 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     const { resolveAuthToken } = await import("./api");
     expect(resolveAuthToken()).toBeUndefined();
     stubLocation("");
-    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
+    expect((await import("./api")).API_BASE).toBe("http://127.0.0.1:8766");
     expect(resolveAuthToken()).toBeUndefined();
   });
   it.each(["unavailable storage", "rewritten query"] as const)(
@@ -1217,8 +1269,6 @@ describe("the shell token does not follow a ?api= override to another daemon", (
       expect(client.resolveAuthToken()).toBeUndefined();
       window.location.search =
         navigation === "unavailable storage" ? "" : "?api=http://127.0.0.1:8765";
-      // Re-resolving the current URL no longer describes the loaded client.
-      expect(client.resolveApiBase()).toBe("http://127.0.0.1:8765");
       expect(client.API_BASE).toBe("http://127.0.0.2:8766");
       const fetchMock = vi
         .fn()

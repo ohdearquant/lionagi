@@ -89,7 +89,7 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
     });
   }, [check]);
 
-  const displayBase = apiBase || "http://127.0.0.1:8765";
+  const displayBase = apiBase || window.location.origin;
 
   if (status === "connected") return <>{children}</>;
 

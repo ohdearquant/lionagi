@@ -108,7 +108,7 @@ export default function StatusFooter() {
           }}
         />
         <span className="truncate tabular-nums text-[length:var(--t-xs)]">
-          {apiBase || "localhost"}
+          {apiBase || window.location.origin}
         </span>
       </span>
 

@@ -36,8 +36,9 @@ page is exempt from mixed-content blocking, so this works from a hosted TLS orig
 no login and no server-side state for the hosted deploy to manage — if `/health` at the
 resolved API base doesn't answer, or something other than the daemon answers there (another
 program already on port 8765), `NoDaemonGate` (`src/components/shell/NoDaemonGate.tsx`)
-shows a dismissible banner with the fix for each case rather than blanking the app; the
-rest of the shell keeps rendering underneath it, and it retries in the background.
+shows a recovery screen with the fix for each case and retries in the background.
+The data-dependent application renders only after a daemon answers successfully;
+the recovery screen cannot be dismissed to reveal it.
 
 On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode built
 for this deploy: it starts only the local daemon and prints/opens this hosted URL,
@@ -71,10 +72,14 @@ health probes, and the endpoint display. Query or session storage changes during
 client-side navigation take effect only after reloading the page.
 
 When a viewer override selects that destination, the shell token is sent only if
-the destination has the same absolute origin as the injected `__STUDIO_API_BASE__`.
-If the issuing origin is missing or cannot be parsed, the override receives no token.
+the destination has the same absolute origin as the injected `__STUDIO_API_BASE__`
+captured at page load. If the issuing origin is missing, cannot be parsed, or differs
+from the destination, the override receives no token. Changing the injected base
+after load does not change this issuer match.
 Without a viewer override at load time, injected and build-time bases retain token
 authentication, including relative proxy paths such as `/proxy` and the empty
-same-origin base. These deployment settings are trusted and used as supplied;
+same-origin base. Adding `?api=` after load no longer withholds the configured-base
+token: both requests and their authentication continue to use the loaded destination
+until reload. These deployment settings are trusted and used as supplied;
 the viewer-override origin check does not validate configured URLs or prevent
 requests caused by malformed deployment settings.

@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
-import { API_BASE, listInvocations, resolveApiBase } from "@/lib/api";
+import { API_BASE, listInvocations } from "@/lib/api";
 import NoDaemonGate from "./NoDaemonGate";
 import StatusFooter from "./StatusFooter";
 import enMessages from "@/messages/en.json";
@@ -61,7 +61,6 @@ describe("the loaded API destination", () => {
     "keeps the %s health probes and endpoint display aligned with data after navigation",
     async (surface) => {
       expect(API_BASE).toBe("http://127.0.0.2:8766");
-      expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
       const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>((url) =>
         Promise.resolve(
           new Response(url.endsWith("/health") ? '{"status":"unavailable"}' : "{}", {
@@ -82,7 +81,6 @@ describe("the loaded API destination", () => {
 
       window.history.replaceState(null, "", "?tab=agent");
       window.sessionStorage.setItem("studio.apiBaseOverride", "http://127.0.0.3:8767");
-      expect(resolveApiBase()).toBe("http://127.0.0.3:8767");
       await act(async () => {
         root.render(render());
         await vi.advanceTimersByTimeAsync(30_000);
