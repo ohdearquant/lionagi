@@ -26,6 +26,7 @@ from lionagi.state.compat import (
     _operation,
     _sql_tokens,
     _statement_kind,
+    _trigger_slot,
     _write_refusal,
     read_closure,
 )
@@ -1664,6 +1665,105 @@ async def test_a_trigger_without_a_timing_is_ordered_with_the_before_triggers(tm
     assert {(o.name, o.position) for o in closure.objects} == {("t1", 0), ("t2", 1)}
 
 
+# A trigger's place in the order SQLite fires, read from its header (D2)
+
+
+_ORDER_TABLE = "CREATE TABLE fired (seq INTEGER PRIMARY KEY AUTOINCREMENT, who TEXT NOT NULL);\n"
+_ORDER_SETUP = (
+    "INSERT INTO runs (id, status) VALUES ('r1', 'running')",
+    "INSERT INTO events (run_id, body) VALUES ('r1', 'b')",
+)
+
+
+def _order_trigger(header: str, who: str) -> str:
+    """A trigger whose header is *header* and whose body logs *who* when it fires."""
+    return f"CREATE TRIGGER {header} BEGIN INSERT INTO fired (who) VALUES ('{who}'); END;\n"
+
+
+def _fired_order(path: Path, writes) -> list:
+    """The *who* values the store's triggers log, in the order they fired."""
+    with closing(sqlite3.connect(path)) as conn:
+        for statement in writes:
+            conn.execute(statement)
+        conn.commit()
+        return [row[0] for row in conn.execute("SELECT who FROM fired ORDER BY seq")]
+
+
+async def _refusal_of(store: Path, profile: CompatibilityProfile) -> str | None:
+    """The reason *store* is refused against *profile*, or None when it is admitted."""
+    db = _RunsDB(store, compatibility=profile)
+    try:
+        await db.open()
+        return None
+    except StateCompatibilityRefused as exc:
+        return exc.reason
+    finally:
+        await db.close()
+
+
+async def test_update_and_update_of_in_the_other_order_are_refused(tmp_path):
+    """UPDATE and UPDATE OF are one event, so SQLite fires those triggers in creation order: the
+    same two created in the other order are another closure and the store is refused."""
+    plain = _order_trigger("ux AFTER UPDATE ON events", "x")
+    of_column = _order_trigger("uz AFTER UPDATE OF body ON events", "z")
+    writes = (*_ORDER_SETUP, "UPDATE events SET body = 'u' WHERE seq = 1")
+    schema = _SCHEMA + _ORDER_TABLE
+    reference = _store(tmp_path / "reference.db", schema + plain + of_column)
+    store = _store(tmp_path / "managed.db", schema + of_column + plain)
+    assert _fired_order(reference, writes) != _fired_order(store, writes)
+    reason = await _refusal_of(store, _profile(reference))
+    assert reason is not None and "creation order" in reason
+
+
+_SAME_SLOT_HEADERS = {
+    "bare name spelled as a timing word": "after INSERT ON events",
+    "quoted name spelled as a timing word": '"after" INSERT ON events',
+    "block comment spelled as a timing word": "x /* after */ INSERT ON events",
+    "line comment spelled as a timing word": "x -- after\n INSERT ON events",
+    "schema-qualified name spelled as a timing word": "main.after INSERT ON events",
+    "IF NOT EXISTS, no timing": "IF NOT EXISTS x INSERT ON events",
+    "lower-case keywords": "x before insert on events",
+    "quoted table name": 'x BEFORE INSERT ON "events"',
+    "upper-case table name": "x BEFORE INSERT ON EVENTS",
+    "mixed-case event, no timing": "x Insert ON events",
+    "a name that is a trigger event word": '"insert" BEFORE INSERT ON events',
+}
+
+
+@pytest.mark.parametrize("header", _SAME_SLOT_HEADERS.values(), ids=list(_SAME_SLOT_HEADERS))
+async def test_a_trigger_header_reads_the_timing_and_event_past_the_name(header, tmp_path):
+    """A trigger's own name may spell a timing or an event word, or be schema-qualified, so the
+    name is skipped before the timing and the event are read. Each header below names a BEFORE
+    INSERT trigger, the one slot the second trigger shares with it, so SQLite fires the two in
+    creation order and one order is another closure."""
+    assert _trigger_slot(f"CREATE TRIGGER {header} BEGIN SELECT 1; END") == ("before", "insert")
+    header_trigger = _order_trigger(header, "n")
+    other = _order_trigger("yb BEFORE INSERT ON events", "y")
+    schema = _SCHEMA + _ORDER_TABLE
+    reference = _store(tmp_path / "reference.db", schema + header_trigger + other)
+    store = _store(tmp_path / "managed.db", schema + other + header_trigger)
+    assert _fired_order(reference, _ORDER_SETUP) != _fired_order(store, _ORDER_SETUP)
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    positions = sorted(o.position for o in closure.objects if o.type == "trigger")
+    assert positions == [0, 1]
+    reason = await _refusal_of(store, _profile(reference))
+    assert reason is not None and "creation order" in reason
+
+
+async def test_a_trigger_header_read_the_same_way_in_the_same_order_is_admitted(tmp_path):
+    """The reading is of the header, not a blanket refusal: the same two triggers in the same
+    order are one closure."""
+    header_trigger = _order_trigger(
+        _SAME_SLOT_HEADERS["schema-qualified name spelled as a timing word"], "n"
+    )
+    other = _order_trigger("yb BEFORE INSERT ON events", "y")
+    schema = _SCHEMA + _ORDER_TABLE + header_trigger + other
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    assert await _refusal_of(store, _profile(reference)) is None
+
+
 _LEDGER_TRIGGER = (
     "CREATE TRIGGER keep AFTER INSERT ON events BEGIN "
     "INSERT INTO ledger (entry) VALUES (NEW.body); END;\n"
@@ -1764,6 +1864,101 @@ async def test_a_quoted_name_is_not_the_bare_word_or_literal_spelled_alike(
     reference = _store(tmp_path / "reference.db", reference_schema)
     store = _store(tmp_path / "managed.db", store_schema)
     reason = await _refused_against(reference, store, _profile_with_column(reference, name))
+    assert "runs" in reason
+
+
+_CURRENT_WORDS = ("current_date", "current_time", "current_timestamp")
+
+
+@pytest.mark.parametrize("word", _CURRENT_WORDS)
+async def test_a_quoted_column_named_like_a_current_word_is_not_the_bare_word(word, tmp_path):
+    """A bare ``current_date``, ``current_time`` or ``current_timestamp`` in a CHECK is the value
+    SQLite computes, so a column whose CHECK quotes the word reads differently and refuses a row
+    the bare word admits."""
+    reference_schema = _with_column(f'"{word}" TEXT CHECK ("{word}" IS NOT NULL)')
+    store_schema = _with_column(f'"{word}" TEXT CHECK ({word} IS NOT NULL)')
+    assert not _runs_accepts(reference_schema, f'"{word}"', None)
+    assert _runs_accepts(store_schema, f'"{word}"', None)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, word))
+    assert "runs" in reason
+
+
+_VALUE_WORD_COLUMNS = ("true", "false")
+
+
+@pytest.mark.parametrize("word", _VALUE_WORD_COLUMNS)
+async def test_a_column_named_true_or_false_is_read_as_the_column(word, tmp_path):
+    """``true`` and ``false`` are values only where no column of that name stands. With such a
+    column the bare and the quoted spelling in a CHECK both name it, so the two refuse and admit
+    the same rows and each is admitted against the other."""
+    quoted = f'"{word}" TEXT CHECK ("{word}" IS NOT NULL)'
+    bare = f"{word} TEXT CHECK ({word} IS NOT NULL)"
+    assert _runs_accepts(_with_column(quoted), f'"{word}"', "value")
+    assert _runs_accepts(_with_column(bare), f'"{word}"', "value")
+    assert not _runs_accepts(_with_column(quoted), f'"{word}"', None)
+    assert not _runs_accepts(_with_column(bare), f'"{word}"', None)
+    reference = _store(tmp_path / "reference.db", _with_column(quoted))
+    for index, store_sql in enumerate((quoted, bare)):
+        store = _store(tmp_path / f"managed-{index}.db", _with_column(store_sql))
+        db = await _open(store, _profile_with_column(reference, word))
+        await db.close()
+
+
+_CALL_SPELLINGS = {
+    "bare call": "abs_n INTEGER CHECK (abs(abs_n) >= 0)",
+    "quoted call": 'abs_n INTEGER CHECK ("abs"(abs_n) >= 0)',
+    "quoted call with a space": 'abs_n INTEGER CHECK ("abs" (abs_n) >= 0)',
+}
+
+
+@pytest.mark.parametrize("store_sql", _CALL_SPELLINGS.values(), ids=list(_CALL_SPELLINGS))
+async def test_a_quoted_function_name_in_a_check_reads_as_the_bare_call(store_sql, tmp_path):
+    """A double-quoted token followed by ``(``, after optional whitespace, is a function's name to
+    SQLite, so a CHECK that quotes the call is the bare call in either store."""
+    bare_sql = _CALL_SPELLINGS["bare call"]
+    assert _runs_accepts(_with_column(bare_sql), "note", "x")
+    assert _runs_accepts(_with_column(store_sql), "note", "x")
+    for index, (reference_sql, managed_sql) in enumerate(
+        ((bare_sql, store_sql), (store_sql, bare_sql))
+    ):
+        reference = _store(tmp_path / f"reference-{index}.db", _with_column(reference_sql))
+        store = _store(tmp_path / f"managed-{index}.db", _with_column(managed_sql))
+        db = await _open(store, _profile_with_column(reference, "abs_n"))
+        await db.close()
+
+
+async def test_a_quoted_operand_without_a_call_is_still_a_literal(tmp_path):
+    """``"abs"`` with no ``(`` after it is no call, so it stays a double-quoted literal and is not
+    the single-quoted string ``'abs'``."""
+    reference = _store(tmp_path / "reference.db", _with_column('abs_n INTEGER CHECK ("abs" >= 0)'))
+    store = _store(tmp_path / "managed.db", _with_column("abs_n INTEGER CHECK ('abs' >= 0)"))
+    reason = await _refused_against(reference, store, _profile_with_column(reference, "abs_n"))
+    assert "runs" in reason
+
+
+async def test_a_single_quoted_parent_column_in_a_references_list_reads_as_the_name(tmp_path):
+    """SQLite's grammar takes a string in a ``REFERENCES`` column list as the column's name, so
+    ``REFERENCES runs ('id')`` is the same key as ``REFERENCES runs (id)``."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA.replace("REFERENCES runs(id)", "REFERENCES runs ('id')", 1)
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_single_quoted_literal_outside_a_references_list_is_still_a_literal(tmp_path):
+    """A single-quoted token is a name only inside a ``REFERENCES`` column list; anywhere else it
+    is the string it spells, so a CHECK that differs in its case is another definition."""
+    reference_schema = _SCHEMA.replace("    note TEXT,", "    note TEXT CHECK (note <> 'x'),", 1)
+    store_schema = _SCHEMA.replace("    note TEXT,", "    note TEXT CHECK (note <> 'X'),", 1)
+    assert not _runs_accepts(reference_schema, "note", "x")
+    assert _runs_accepts(store_schema, "note", "x")
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store)
     assert "runs" in reason
 
 

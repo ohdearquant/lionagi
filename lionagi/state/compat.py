@@ -109,11 +109,11 @@ _NAME_POSITIONS = frozenset(
         "constraint",
     }
 )
-# Words SQLite can read as a value where a name may also stand: a quoted name spelled like one of
-# these is a name, the bare word is not.
-_VALUE_WORDS = frozenset(
-    {"null", "true", "false", "current_date", "current_time", "current_timestamp"}
-)
+# Words SQLite reads as a value wherever one of them stands, whether a column of that name is in
+# scope or not: a quoted name spelled like one of them is that name, the bare word is the value.
+# ``true`` and ``false`` are deliberately absent: a bare ``true`` is the value only when no column
+# is named ``true``, and where one is, the column wins and the two spellings read alike.
+_VALUE_WORDS = frozenset({"null", "current_date", "current_time", "current_timestamp"})
 
 
 def _fold(name: str) -> str:
@@ -127,11 +127,13 @@ def _identifier_char(ch: str) -> bool:
 
 
 def _spelled_name(name: str) -> str:
-    """A quoted name as *spelled* compares it: folded, and bare when no other token reads the same.
+    """A quoted name as *spelled* compares it: folded, and bare when a bare word spells it too.
 
-    A name that a bare word cannot spell, or that a bare word would read as a value (``"null"``),
-    is kept in backquotes, with any backquote in it doubled. A string literal keeps its double
-    quotes and a bare word has none, so neither can equal it.
+    The folded name is compared bare when a bare word can spell it (it is not empty, does not
+    start with a digit and holds only identifier characters) and it is not one of
+    :data:`_VALUE_WORDS`, which a bare word reads as a value (``"null"``); otherwise it is kept in
+    backquotes, with any backquote in it doubled. A string literal keeps its double quotes and a
+    bare word has none, so neither can equal the backquoted form.
     """
     folded = _fold(name)
     if (
@@ -142,6 +144,16 @@ def _spelled_name(name: str) -> str:
     ):
         return folded
     return "`" + folded.replace("`", "``") + "`"
+
+
+def _opens_a_call(sql: str, index: int) -> bool:
+    """Whether the token at *index*, past optional whitespace, opens a parenthesis.
+
+    A quoted token immediately before one is a function's name to SQLite, not a string literal.
+    """
+    while index < len(sql) and sql[index] in " \t\n\v\f\r":
+        index += 1
+    return sql[index : index + 1] == "("
 
 
 def _sql_tokens(
@@ -170,11 +182,14 @@ def _sql_tokens(
     for comparing a table's definition and an index's terms as ``sqlite_master`` holds them: one
     that names no column is a literal, and keeps its quotes, so ``WHERE status = "running"``
     differs from ``WHERE status = "Running"`` and neither equals the bare word ``running``. A
-    double-quoted token after a dot or a word that takes a name (``REFERENCES "Runs"``,
-    ``ON "Runs"``, ``COLLATE "NOCASE"``, ``CONSTRAINT "uq"``), in the column list after
-    ``REFERENCES <table>``, or naming one of *columns*, is a name, and is folded; a quoted name
-    that a bare word would read otherwise (``"null"``, or one holding a quote) is kept in
-    backquotes (:func:`_spelled_name`).
+    double-quoted token is a name where SQLite reads a name: after a dot, after a word that takes
+    a name (``REFERENCES "Runs"``, ``ON "Runs"``, ``COLLATE "NOCASE"``, ``CONSTRAINT "uq"``), in
+    the column list after ``REFERENCES <table>``, naming one of *columns*, or immediately before a
+    ``(``, which makes it a function's name rather than a string. Such a name is compared as
+    :func:`_spelled_name` spells it, folded to the bare word where a bare word spells it the same
+    and kept in backquotes otherwise (``"null"``, or a name holding a quote). A double-quoted token
+    in a type position, as in ``id "TEXT"``, stands where SQLite reads no name, so it stays a
+    double-quoted literal and is refused against the same type spelled any other way.
     """
     tokens: list[tuple[str, str]] = []
     # Inside the parenthesized column list after REFERENCES <table>, where every token is a name.
@@ -202,7 +217,13 @@ def _sql_tokens(
             j = i + 1
             while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
                 j += 2 if sql[j] == "'" else 1
-            tokens.append((_STRING, sql[i : j + 1]))
+            if in_parent_columns and not verbatim:
+                # SQLite's grammar takes a string in a REFERENCES column list as the name it
+                # spells, alone among the places a string may stand.
+                name = sql[i + 1 : j].replace("''", "'")
+                tokens.append((_IDENT, _spelled_name(name) if spelled else _fold(name)))
+            else:
+                tokens.append((_STRING, sql[i : j + 1]))
             i = j + 1
         elif ch in '"`[':
             close = "]" if ch == "[" else ch
@@ -226,6 +247,7 @@ def _sql_tokens(
                     in_parent_columns
                     or last == (_PUNCT, ".")
                     or (last[0] == _WORD and last[1] in _NAME_POSITIONS)
+                    or _opens_a_call(sql, j + 1)
                 )
                 literal = spelled and ch == '"' and not named and _fold(name) not in columns
                 if literal:
