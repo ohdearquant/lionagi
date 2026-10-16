@@ -681,9 +681,9 @@ async def test_marker_write_parked_in_the_driver_busy_wait_holds_the_lock_to_bus
     abandoned. It cannot bound the store. A write parked in SQLite's busy wait
     is inside the driver, and cancelling the task does not interrupt it, so the
     store's write lock is held until that call returns at the busy timeout
-    (here lowered to a few hundred milliseconds). This test pins both halves:
-    the helper returns at its budget, and the lock frees within the busy timeout
-    plus the grace period, not at the budget.
+    (here 1.5 seconds). This test pins both halves: the helper returns at its
+    budget, and the lock stays held until the busy timeout, then frees within
+    it plus the grace period, measured from the helper call.
     """
     # A busy timeout well above the budget, so a helper that is bounded returns
     # long before the parked call ends and the two are far apart in time rather
@@ -695,8 +695,16 @@ async def test_marker_write_parked_in_the_driver_busy_wait_holds_the_lock_to_bus
     monkeypatch.setattr(
         state_engine, "SQLITE_BUSY_TIMEOUT_MS", state_engine._busy_timeout_from_env()
     )
-    grace = 0.05
+    # Wide enough that the write reaches the driver's busy wait before the
+    # budget cancels it, even on a loaded machine; a cancel that lands before
+    # the driver call unwinds cleanly and is not the case under test.
+    grace = 0.2
     monkeypatch.setattr(flow, "_DRAIN_GRACE_SECONDS", grace)
+    # Opening the store announces the busy timeout once per process; keep that
+    # flag as it was so other tests see the state they expect.
+    monkeypatch.setattr(
+        state_engine, "_busy_timeout_announced", state_engine._busy_timeout_announced
+    )
 
     db = StateDB(db_path)
     await db.open()
@@ -716,13 +724,14 @@ async def test_marker_write_parked_in_the_driver_busy_wait_holds_the_lock_to_bus
         await flow._persist_control_poller_state_bounded(env, "stopped")
         returned_after = time.monotonic() - t0
         held_still = await _write_lock_wait(db, window=0.0)
-        freed_after = await _write_lock_wait(db, window=busy_timeout_ms / 1000 + 2 * grace + 0.5)
+        freed_after = await _write_lock_wait(db, window=busy_timeout_ms / 1000 + 3.0)
+        freed_at = time.monotonic() - t0
     finally:
         holder.execute("ROLLBACK")
         holder.close()
         await db.close()
 
-    assert returned_after < 0.5, (
+    assert returned_after < 2 * grace + 0.25, (
         f"the helper returned after {returned_after:.2f}s, not at its budget "
         f"({2 * grace:.2f}s); a parked driver call must not hold the caller"
     )
@@ -734,8 +743,12 @@ async def test_marker_write_parked_in_the_driver_busy_wait_holds_the_lock_to_bus
         "the write lock was still held past the busy timeout plus grace; the "
         "parked driver call never returned"
     )
-    assert freed_after <= busy_timeout_ms / 1000 + 2 * grace + 0.5, (
-        f"the lock freed {freed_after:.2f}s after the helper was called, past "
+    assert freed_at >= busy_timeout_ms / 1000 * 0.8, (
+        f"the lock freed {freed_at:.2f}s after the helper was called, well before "
+        f"the busy timeout ({busy_timeout_ms}ms); the write was not parked in the driver"
+    )
+    assert freed_at <= busy_timeout_ms / 1000 + 2 * grace + 0.5, (
+        f"the lock freed {freed_at:.2f}s after the helper was called, past "
         f"the busy timeout ({busy_timeout_ms}ms) plus grace ({grace}s)"
     )
     assert any("abandoned" in w for w in warnings), (
