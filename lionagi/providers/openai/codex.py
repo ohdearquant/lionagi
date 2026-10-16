@@ -289,10 +289,24 @@ def _toml_string(value: str) -> str:
     return f'"{body}"'
 
 
+def _override_pairs(overrides: Mapping | None) -> list[tuple[Any, Any]]:
+    """The `-c` overrides as one list of key/value pairs, read from ``items()`` once.
+
+    A containment decision and the rendered command line are two readers of one such
+    list, so a mapping whose iteration and ``items()`` disagree, or whose ``items()``
+    answers differently on each call, cannot answer a check and a renderer differently.
+    Only ``None`` reads as no overrides: a mapping is read through ``items()`` whether
+    or not its length agrees.
+    """
+    if overrides is None:
+        return []
+    return list(overrides.items())
+
+
 def _refuse_oversized_cli_inputs(
     prompt: str,
     system_prompt: str | None = None,
-    config_overrides: dict[str, Any] | None = None,
+    override_pairs: Sequence[tuple[Any, Any]] | None = None,
     *,
     text_fields: Sequence[tuple[str, str]] | None = None,
     contained: bool = False,
@@ -308,7 +322,7 @@ def _refuse_oversized_cli_inputs(
     encode raises holds the whole text in its ``.object``, and raising inside the
     handler would chain the refusal to it.
     """
-    failure: ValueError | None = None
+    failure: ValueError | TypeError | None = None
     measured: list[tuple[str, bytes]] = []
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
         raise ValueError(
@@ -327,13 +341,14 @@ def _refuse_oversized_cli_inputs(
         if failure is None:
             argument = f"developer_instructions={toml_override_value(system_prompt)}"
             measured.append(("The system prompt", argument.encode("utf-8")))
-    for index, (key, value) in enumerate((config_overrides or {}).items()):
+    for index, (key, value) in enumerate(override_pairs or ()):
         if failure is not None:
             break
         if not isinstance(key, str):
             # Reached only by a request built without validation, whose field validator
-            # refuses such a key; named by position and type, never by the key.
-            failure = ValueError(
+            # refuses such a key; named by position and type, never by the key, and with
+            # the TypeError that validator raises so both paths refuse it the same way.
+            failure = TypeError(
                 f"The config override entry {index} has a key that is not a string "
                 f"({type(key).__name__})."
             )
@@ -361,8 +376,9 @@ def _refuse_oversized_cli_inputs(
                 )
             except ValueError as exc:
                 # A key containment cannot read is refused here, by its position, so
-                # construction refuses it as the spawn does.
-                failure = ValueError(str(exc))
+                # construction refuses it as the spawn does, and with the type a
+                # containment refusal carries, so a judge reads it as a refusal.
+                failure = ContainmentRefusedError(str(exc))
                 break
             if not kept:
                 continue
@@ -1028,7 +1044,7 @@ class CodexCodeRequest(BaseModel):
             _refuse_oversized_cli_inputs(
                 self.prompt,
                 self.system_prompt,
-                self.config_overrides,
+                _override_pairs(self.config_overrides),
                 text_fields=self._argument_text_fields(),
                 contained=self._contains_account_integrations(),
             )
@@ -1074,12 +1090,19 @@ class CodexCodeRequest(BaseModel):
 
     # ── CLI command builder ───────────────────────────────────────
 
-    def as_cmd_args(self) -> list[str]:
-        """Build argument list for ``codex exec`` subcommand."""
+    def as_cmd_args(self, overrides: Sequence[tuple[Any, Any]] | None = None) -> list[str]:
+        """Build argument list for ``codex exec`` subcommand.
+
+        ``overrides`` is one read of ``config_overrides``: containment decides from these
+        pairs and the command line is rendered from them. A caller that already took that
+        read hands its list in (the spawn path, whose own check reads the same pairs),
+        rather than letting this method read a mapping that can answer twice.
+        """
         args: list[str] = ["exec", "--json"]
         cwd = self.cwd()
+        pairs = _override_pairs(self.config_overrides) if overrides is None else list(overrides)
 
-        args.extend(self._build_declarative_args())
+        args.extend(self._build_declarative_args(pairs))
 
         for git_root in _linked_worktree_git_writable_roots(cwd):
             if str(git_root) not in (self.add_dir or []):
@@ -1138,7 +1161,7 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-i", image])
 
         containing = self._contains_account_integrations()
-        for index, (key, value) in enumerate(self.config_overrides.items()):
+        for index, (key, value) in enumerate(pairs):
             if not isinstance(key, str):
                 # Only a request built without validation holds one; named by
                 # position and type, never by the key.
@@ -1203,7 +1226,7 @@ class CodexCodeRequest(BaseModel):
                     fields.append((name, feature))
         return fields
 
-    def _refuse_a_profile_under_containment(self) -> None:
+    def _refuse_a_profile_under_containment(self, overrides: Sequence[tuple[Any, Any]]) -> None:
         # `--disable` sets the features in the root config. Codex before 0.135 (read at
         # the 0.120.0 and 0.130.0 tags) applies the active profile's `[features]` after
         # it, so a profile can turn either one back on; the active profile is `-p`, else a
@@ -1217,7 +1240,7 @@ class CodexCodeRequest(BaseModel):
                 "codex before 0.135 applies a profile's features after --disable, so the "
                 "profile could turn apps or plugins back on"
             )
-        for index, key in enumerate(self.config_overrides):
+        for index, (key, _value) in enumerate(overrides):
             # A key that is not a string, or holds '=', is refused by position where
             # as_cmd_args renders the overrides, after this check.
             if not isinstance(key, str) or "=" in key:
@@ -1266,11 +1289,11 @@ class CodexCodeRequest(BaseModel):
                     "its features after --disable (from 0.135 codex refuses the key itself)"
                 )
 
-    def _build_declarative_args(self) -> list[str]:
+    def _build_declarative_args(self, overrides: Sequence[tuple[Any, Any]]) -> list[str]:
         if not self._contains_account_integrations():
             return build_declarative_cli_args(self)
         try:
-            self._refuse_a_profile_under_containment()
+            self._refuse_a_profile_under_containment(overrides)
         except ContainmentRefusedError:
             raise
         except (ValueError, OSError) as exc:
@@ -1302,14 +1325,17 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     # model_copy(update=...) skips validation, so check again where inputs reach the process.
+    # One read of the overrides serves the check and the render: a mapping whose items()
+    # answers twice cannot pass a profile to one and hide it from the other.
+    overrides = _override_pairs(request.config_overrides)
     _refuse_oversized_cli_inputs(
         request.prompt,
         request.system_prompt,
-        request.config_overrides,
+        overrides,
         text_fields=request._argument_text_fields(),
         contained=request._contains_account_integrations(),
     )
-    cmd = [CODEX_CLI, *request.as_cmd_args()]
+    cmd = [CODEX_CLI, *request.as_cmd_args(overrides)]
     _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.

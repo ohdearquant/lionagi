@@ -185,10 +185,16 @@ def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
     other lone surrogate fails. The codec's error holds the whole key or value, which can be a
     credential, so only the position is returned, and the caller raises its refusal after
     this handler has ended.
+
+    The text is read as the plain text of the bytes the spawn would encode: ``os.fsencode``
+    calls a ``str`` subclass's own ``encode`` and answers with whatever it returns, so the
+    text it read is reduced to a plain ``str`` and encoded again here. The bytes that answer
+    for the entry are then the bytes the spawn would send, not the first encoder's own answer.
     """
     for index, (key, val) in enumerate(env.items()):
         for part, text in (("key", key), ("value", val)):
             try:
+                text = str.__str__(os.fsdecode(os.fsencode(text)))
                 os.fsencode(text)
             except UnicodeEncodeError:
                 return f"The environment entry {index} {part}"
@@ -236,7 +242,14 @@ def env_as_the_spawn_encodes_it(env: Mapping) -> dict[str, str]:
                 encoded = os.fsencode(item)
                 if isinstance(encoded, bytes):
                     encoded = bytes.__getitem__(encoded, slice(None))
-                texts.append(os.fsdecode(encoded))
+                # ``os.fsencode`` calls a str subclass's own ``encode`` and ``os.fsdecode``
+                # hands its answer back unchecked, so the text is reduced to a plain ``str``
+                # and encoded again here: the bytes checked are the bytes the spawn builds
+                # from this copy, and an encoder that answers a lone surrogate is refused
+                # here rather than failing the spawn's own encode with the value on it.
+                text = str.__str__(os.fsdecode(encoded))
+                os.fsencode(text)
+                texts.append(text)
             except UnicodeEncodeError:
                 refusal = _unencodable_env_message(f"The environment entry {index} {part}")
             except Exception as exc:

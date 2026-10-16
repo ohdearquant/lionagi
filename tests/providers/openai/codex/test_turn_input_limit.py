@@ -572,16 +572,38 @@ def test_a_key_that_is_not_a_string_is_refused_by_position_and_type(tmp_path, ke
 async def test_a_copied_key_that_is_not_a_string_is_refused_before_the_cli_starts(
     tmp_path, monkeypatch
 ):
+    """Refused with the ``TypeError`` the field validator raises for the same key at
+    construction, so a key that is not a string is refused the same way on both paths."""
     _refuse_a_spawn(monkeypatch)
     request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
         update={"config_overrides": {(SECRET_OVERRIDE_KEY, 1): "v \udcff"}}
     )
 
-    with pytest.raises(ValueError, match="entry 0 has a key that is not a string") as caught:
+    with pytest.raises(TypeError, match="entry 0 has a key that is not a string") as caught:
         async for _ in codex_mod.stream_codex_cli(request):
             pass
 
+    assert type(caught.value) is TypeError
     assert SECRET_OVERRIDE_KEY not in str(caught.value)
+
+
+def test_a_copied_key_that_is_not_a_string_is_refused_with_the_type_construction_uses(tmp_path):
+    """Construction refuses a non-string key with ``TypeError``; a copied request is refused
+    with the same type where the process would start, not a ``ValueError``."""
+    overrides = {(SECRET_OVERRIDE_KEY, 1): "v"}
+    with pytest.raises(TypeError) as constructed:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides=overrides)
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"config_overrides": overrides}
+    )
+    with pytest.raises(TypeError) as built:
+        copied.as_cmd_args()
+    with pytest.raises(TypeError) as spawned:
+        codex_mod._refuse_oversized_cli_inputs("hi", None, list(overrides.items()), contained=False)
+
+    assert type(constructed.value) is type(built.value) is type(spawned.value) is TypeError
+    for caught in (constructed, built, spawned):
+        assert SECRET_OVERRIDE_KEY not in str(caught.value)
 
 
 def test_a_missing_prompt_carries_no_config_override(tmp_path):
@@ -1730,3 +1752,193 @@ def test_an_effort_given_as_bytes_is_refused_rather_than_read_past_the_clamp(
         ).model_dump()[field]
         == "xhigh"
     )
+
+
+# ── text whose own encoder answers something else ────────────────────────────
+# ``os.fsencode`` calls a ``str`` subclass's own ``encode``, and ``os.fsdecode``
+# returns whatever it answered unchecked. A value whose ``encode`` answers text
+# holding a lone surrogate would fail later, at the spawn, with the whole value
+# on the error; one whose ``encode`` answers another text subclass would be
+# encoded a second time by the spawn, so the bytes the check measured would not
+# be the bytes the child receives.
+
+
+class _EncodesToAPlainStringHoldingALoneSurrogate(str):
+    """A text value whose own ``encode`` answers a plain string holding a lone surrogate."""
+
+    def encode(self, *_args, **_kwargs):
+        return "\ud800" + str.__str__(self)
+
+
+class _TextWhoseOwnEncoderAnswersOtherBytes(str):
+    """A text subclass whose own ``encode`` answers bytes other than its text's."""
+
+    encodes = 0
+
+    def encode(self, *_args, **_kwargs):
+        type(self).encodes += 1
+        return b"bytes-the-spawn-would-send"
+
+
+class _EncodesToAnotherTextSubclass(str):
+    """A text value whose own ``encode`` answers another text subclass."""
+
+    def encode(self, *_args, **_kwargs):
+        return _TextWhoseOwnEncoderAnswersOtherBytes(str.__str__(self))
+
+
+class _EncodesToAnotherTextSubclassHoldingALoneSurrogate(str):
+    """A text value whose own ``encode`` answers another text subclass holding a lone
+    surrogate in its text."""
+
+    def encode(self, *_args, **_kwargs):
+        return _EncodesToAPlainStringHoldingALoneSurrogate(str.__str__(self))
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_a_text_encoding_to_a_lone_surrogate_is_refused_by_the_read_the_spawn_makes(part):
+    """The copy is re-encoded from its plain text under this refusal, so the failure names
+    the entry and carries none of the value rather than surfacing at the spawn."""
+    from lionagi.providers import _cli_subprocess
+
+    value = _EncodesToAPlainStringHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
+    entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
+
+    with pytest.raises(ValueError) as refused:
+        _cli_subprocess.env_as_the_spawn_encodes_it({"HOME": "/h", **entry})
+
+    assert str(refused.value) == (
+        f"The environment entry 1 {part} holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert not isinstance(refused.value, UnicodeEncodeError)
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_a_text_encoding_to_a_lone_surrogate_is_refused_by_the_check_the_spawn_reads_with(part):
+    """The construction-time check reads the same plain text the copy does, so it refuses the
+    entry the spawn could not encode, by position and with no part of the value."""
+    from lionagi.providers import _cli_subprocess
+
+    value = _EncodesToAPlainStringHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
+    entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
+
+    assert (
+        _cli_subprocess.unencodable_env_entry({"HOME": "/h", **entry})
+        == f"The environment entry 1 {part}"
+    )
+    with pytest.raises(TypeError) as refused:
+        _cli_subprocess.raise_if_env_is_not_a_string_map({"HOME": "/h", **entry})
+
+    assert str(refused.value) == (
+        f"The environment entry 1 {part} holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+def test_a_text_encoding_to_another_subclass_is_kept_as_plain_text():
+    """The subclass the value's own ``encode`` answered is reduced to a plain ``str`` and
+    encoded again here, so the bytes the spawn builds are the bytes that were checked and the
+    subclass's own encoder is never reached a second time."""
+    from lionagi.providers import _cli_subprocess
+
+    value = _EncodesToAnotherTextSubclass(_SECRET_IN_A_VALUE)
+    copied = _cli_subprocess.env_as_the_spawn_encodes_it({"HOME": "/h", "OPENAI_API_KEY": value})
+
+    assert type(copied["OPENAI_API_KEY"]) is str
+    assert copied["OPENAI_API_KEY"] == _SECRET_IN_A_VALUE
+    assert os.fsencode(copied["OPENAI_API_KEY"]) == _SECRET_IN_A_VALUE.encode("utf-8")
+    assert _TextWhoseOwnEncoderAnswersOtherBytes.encodes == 0
+
+
+@pytest.mark.parametrize("part", ["key", "value"])
+def test_a_text_subclass_encoding_to_another_subclass_is_read_as_its_plain_text(part):
+    """An ``encode`` that answers another text subclass is read once, and its answer is
+    reduced to plain text and re-encoded here, so the subclass's own encoder is never applied
+    a second time: the entry is admitted with the plain-text bytes the spawn would send."""
+    from lionagi.providers import _cli_subprocess
+
+    value = _EncodesToAnotherTextSubclassHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
+    entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
+
+    assert _cli_subprocess.unencodable_env_entry({"HOME": "/h", **entry}) is None
+    copied = _cli_subprocess.env_as_the_spawn_encodes_it({"HOME": "/h", **entry})
+
+    if part == "key":
+        assert list(copied) == ["HOME", _SECRET_IN_A_VALUE]
+    else:
+        assert copied == {"HOME": "/h", "OPENAI_API_KEY": _SECRET_IN_A_VALUE}
+    for text in copied:
+        assert type(text) is str
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("part", ["key", "value"])
+async def test_a_lone_surrogate_behind_a_subclass_encoder_is_refused_without_its_value(
+    tmp_path, monkeypatch, part
+):
+    """On the path where the process would start, the refusal names the entry: the spawn's own
+    encode error is never reached, so no error holds the value in its object, message or args."""
+    from lionagi.providers import _cli_subprocess
+
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    value = _EncodesToAPlainStringHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
+    entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"env": {"HOME": "/h", **entry}}
+    )
+
+    with pytest.raises(ValueError) as refused:
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert str(refused.value) == (
+        f"The environment entry 1 {part} holds a character the process environment cannot "
+        "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert not isinstance(refused.value, UnicodeEncodeError)
+    assert getattr(refused.value, "object", "") == ""
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_plain_text(
+    tmp_path, monkeypatch
+):
+    """The copy read the value's own encoder once and reduces its answer to plain text, so the
+    child is handed text whose bytes the check measured, not a subclass the spawn would encode
+    a second time."""
+    from lionagi.ln._proc import _PROCESS_GROUP_MARKER
+    from lionagi.providers import _cli_subprocess
+
+    given = {}
+
+    def spawned(*_args, **kwargs):
+        given.update(kwargs["env"])
+        raise _StoppedAtTheSpawn
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    value = _EncodesToAnotherTextSubclass(_SECRET_IN_A_VALUE)
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"env": {"HOME": "/h", "OPENAI_API_KEY": value}}
+    )
+    with pytest.raises(_StoppedAtTheSpawn):
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    handed = {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER}
+    assert handed == {"HOME": "/h", "OPENAI_API_KEY": _SECRET_IN_A_VALUE}
+    assert os.fsencode(handed["OPENAI_API_KEY"]) == _SECRET_IN_A_VALUE.encode("utf-8")
+    assert _TextWhoseOwnEncoderAnswersOtherBytes.encodes == 0
