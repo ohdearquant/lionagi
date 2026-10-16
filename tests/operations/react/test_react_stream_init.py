@@ -80,7 +80,7 @@ async def test_single_tool_invocation():
 
 
 @pytest.mark.asyncio
-async def test_multiple_tool_calls_sequential_strategy():
+async def test_extension_round_is_prepared_from_the_concurrent_default():
     """A round is prepared from the concurrent default, never from the round before it.
 
     The round that declares ``sequential`` narrows its own batch inside ``operate``,

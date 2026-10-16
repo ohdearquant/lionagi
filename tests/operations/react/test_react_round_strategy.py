@@ -1,14 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Each ReAct round's batch runs under the action strategy that round declares."""
+"""A round declaring 'sequential' narrows its own batch; a caller's strategy is kept."""
 
 import asyncio
 import json
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lionagi.ln import AlcallParams
 from lionagi.operations._defaults import make_parse_param
@@ -288,3 +288,78 @@ async def test_a_response_models_default_is_not_a_declaration():
 
     await branch.operate(instruction="run both", response_format=SequentialByDefault, actions=True)
     assert state["peak"] == 2
+
+
+class SequentialByFactoryDefault(BaseModel):
+    """A response model whose own default for the field comes from a factory."""
+
+    analysis: str = ""
+    extension_needed: bool = False
+    action_strategy: Literal["sequential", "concurrent"] = Field(
+        default_factory=lambda: "sequential"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_factory_default_is_not_a_declaration():
+    """An omitted field whose default is a factory leaves the caller's concurrent strategy."""
+    state = {"now": 0, "peak": 0}
+    turn = {
+        "analysis": "Use the requested tools",
+        "action_requests": [
+            {"function": "hold", "arguments": {"name": "left"}},
+            {"function": "hold", "arguments": {"name": "right"}},
+        ],
+    }
+    branch = TestBranch.from_text([json.dumps(turn)], tools=[in_flight_tool(state)])
+
+    await branch.operate(
+        instruction="run both",
+        response_format=SequentialByFactoryDefault,
+        actions=True,
+    )
+    assert state["peak"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_turn_declaring_the_models_own_default_still_narrows():
+    """A response that sets the field to the model's default narrows; only an omitted field does not."""
+    trace = []
+    turn = {
+        "analysis": "Use the requested tools",
+        "extension_needed": False,
+        "action_strategy": "sequential",
+        "action_requests": calls(("left", 1), ("right", 2)),
+    }
+    branch = TestBranch.from_text([json.dumps(turn)], tools=traced_tools(trace))
+
+    await branch.operate(
+        instruction="run both",
+        response_format=SequentialByDefault,
+        actions=True,
+    )
+    assert trace == one_at_a_time(("left", 1), ("right", 2))
+
+
+@pytest.mark.asyncio
+async def test_a_max_concurrent_kw_entry_does_not_widen_a_narrowed_batch():
+    """The caller's own max_concurrent cannot undo a narrowing the turn declares."""
+    state = {"now": 0, "peak": 0}
+    turn = {
+        "analysis": "Use the requested tools",
+        "extension_needed": False,
+        "action_strategy": "sequential",
+        "action_requests": [
+            {"function": "hold", "arguments": {"name": "left"}},
+            {"function": "hold", "arguments": {"name": "right"}},
+        ],
+    }
+    branch = TestBranch.from_text([json.dumps(turn)], tools=[in_flight_tool(state)])
+
+    await branch.operate(
+        instruction="run both",
+        response_format=ReActAnalysis,
+        actions=True,
+        call_params=AlcallParams(kw={"max_concurrent": 3}),
+    )
+    assert state["peak"] == 1

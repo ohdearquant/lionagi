@@ -66,11 +66,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Flow synthesis now reuses the bounded observer-write drain before state storage is closed,
   including failure and cancellation paths. Branch-status and segment metadata writes created
   during synthesis receive the same cleanup as writes from the execution phase (#3211).
-- A ReAct round runs its tool calls under the action strategy it declares. Through `ReAct()`, the
-  first round ran concurrently whatever it declared, and each extension round ran under the
-  strategy the round before it declared. `operate` now runs a turn that declares `"sequential"`
-  one call at a time, in request order, under the caller's `call_params`; the declaration only
-  narrows, so a caller that passes a `"sequential"` strategy keeps it on every round.
+- A ReAct round that declares `"sequential"` runs its tool calls one at a time. `operate` reads
+  the declaration from the parsed turn and runs that turn's batch in request order with one call
+  in flight, under the caller's `call_params` except `max_concurrent`, which is 1 for that batch.
+  The declaration only narrows, so a caller that passes a `"sequential"` strategy keeps it on
+  every round and a turn that declares nothing keeps the prepared strategy. Through `ReAct()`,
+  the first round used to run concurrently whatever it declared, and each extension round used to
+  run under the strategy the round before it declared.
 
 ## [0.35.5] - 2026-10-11
 

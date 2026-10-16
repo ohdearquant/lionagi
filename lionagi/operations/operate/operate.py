@@ -288,10 +288,11 @@ async def operate(
     if isinstance(result, BaseModel):
         requests = getattr(result, "action_requests", None)
         declared_strategy = getattr(result, "action_strategy", None)
-        # Parsing fills an omitted field with its default, and model_fields_set cannot tell
-        # the two apart here, so a value equal to the field's own default is not a declaration.
-        strategy_field = type(result).model_fields.get("action_strategy")
-        if strategy_field is not None and declared_strategy == strategy_field.default:
+        # Parsing fills an omitted field from the model's default, so an omitted field must
+        # not read as a declaration. The parsed response records the fields it actually set,
+        # so an explicit value that happens to equal the model's default (static or built by
+        # a factory) still narrows.
+        if "action_strategy" not in result.model_fields_set:
             declared_strategy = None
     elif isinstance(result, dict):
         requests = result.get("action_requests")
@@ -308,12 +309,19 @@ async def operate(
         # declaration can only narrow the prepared strategy: a caller that asked for
         # 'sequential' keeps it whatever the turn says, and a turn that declares nothing
         # keeps the prepared value. The batch stays on the caller's call parameters with
-        # one call in flight, so the caller's timeout, retry and throttle bounds still
-        # apply to it; the calls start in request order.
+        # max_concurrent 1, so the caller's timeout, retry and throttle bounds still apply
+        # to it; the calls start in request order. One difference from act()'s sequential
+        # branch: with suppress_errors=False a failing call does not stop the batch before
+        # the next call starts.
         if declared_strategy == "sequential" and action_param.strategy == "concurrent":
             call_params = action_param.action_call_params or _get_default_call_params()
+            extra_kw = call_params.kw
+            if isinstance(extra_kw, dict) and "max_concurrent" in extra_kw:
+                # default_kw() lets these extra keyword arguments override the fields, so a
+                # caller's max_concurrent must be dropped for the bound to hold.
+                extra_kw = {k: v for k, v in extra_kw.items() if k != "max_concurrent"}
             action_param = action_param.with_updates(
-                action_call_params=call_params.with_updates(max_concurrent=1)
+                action_call_params=call_params.with_updates(max_concurrent=1, kw=extra_kw)
             )
 
         action_response_models = await act(branch, requests, action_param)

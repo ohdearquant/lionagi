@@ -373,7 +373,11 @@ Exact action and enrichment semantics:
 - Execution requires an `ActionParam` and `requests is not None`. An absent field does nothing; an
   empty list dispatches but yields no responses and therefore no enrichment.
 - All requests go through `act()`. `"concurrent"` uses the configured `AlcallParams` callable;
-  `"sequential"` awaits requests in input order; any other strategy raises `ConfigurationError`.
+  `"sequential"` awaits requests in input order and does not apply `AlcallParams` (no timeout,
+  retries or throttle); any other strategy raises `ConfigurationError`. A turn whose own
+  `action_strategy` declares `"sequential"` narrows a prepared `"concurrent"` batch instead:
+  `operate` keeps the caller's `AlcallParams` and forces `max_concurrent=1`, so the bound holds
+  and the calls still start in request order.
 - The default action `AlcallParams` sets `output_dropna=True` and otherwise inherits library
   defaults. No operations-level rationale is recorded for additional concurrency or retry numbers
   because none are fixed here.

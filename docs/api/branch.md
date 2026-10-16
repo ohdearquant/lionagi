@@ -108,9 +108,13 @@ and streaming persistence. Registered tools are only exposed and invoked when `a
 | `sender` / `recipient` | `SenderRecipient` | `None` | Override message identity |
 
 A response that sets `action_strategy` to `"sequential"` narrows a `"concurrent"` call for that
-turn only: its tool calls run one at a time, in request order, under the same `call_params`
-(timeout, retries, throttle). A value equal to the response model's own default for the field is
-not read as a declaration, and a response never widens a `"sequential"` call.
+turn only: its tool calls run one at a time, in request order, under the caller's `call_params`
+except `max_concurrent`, which is 1 for that batch (the timeout, retries and throttle still
+apply). A field the response omits is not read as a declaration, even when the response model's
+own default for it is `"sequential"`; an explicit `"sequential"` narrows even when it equals that
+default. A response never widens a `"sequential"` call, and an `action_strategy="sequential"`
+argument is not narrowed this way: `act()` awaits its calls in request order without applying
+`call_params`.
 
 Returns: `list | BaseModel | None | dict | str`
 
