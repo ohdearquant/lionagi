@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 import subprocess
+import unicodedata
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
@@ -903,6 +905,321 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
     yield {"type": "done"}
 
 
+#: The most of one tool result this provider keeps, and of a command, a file change or a
+#: function call's arguments it echoes as the call's input, in characters. No Codex thread is
+#: resumed here: each turn renders the branch's history into its prompt, and the tool calls
+#: and results recorded here can be part of it, so one broad search recorded whole could fill
+#: a later prompt on its own. The bound is per record and on the recorded text: a turn with
+#: many results still renders all of them, and the rendering can be longer than the text it
+#: renders: up to ten times where a control character or a lone surrogate makes it escape the
+#: text (a character outside the Basic Multilingual Plane is then written as ten), and a string
+#: of many lines nested deep repeats its indentation on every line, so it grows with the number
+#: of lines times the depth.
+CODEX_TOOL_OUTPUT_MAX_CHARS = 20_000
+
+#: How far a cut moves to keep a character with its marks before it gives up and cuts where
+#: the bound falls.
+_CUT_BACKOFF_CHARS = 32
+
+
+def _continues_previous(text: str, i: int) -> bool:
+    """Whether the character at ``i`` belongs with the one before it: a character with a
+    nonzero combining class, a zero-width joiner, the text or emoji variation selector
+    (U+FE0E, U+FE0F), a skin-tone modifier, or anything after a joiner."""
+    ch = text[i]
+    return (
+        unicodedata.combining(ch) != 0
+        or ch in "\u200d\ufe0e\ufe0f"
+        or "\U0001f3fb" <= ch <= "\U0001f3ff"
+        or (i > 0 and text[i - 1] == "\u200d")
+    )
+
+
+def _escaped_length(text: str) -> int:
+    """The length of ``text`` as JSON writes it inside a string, escapes included."""
+    return len(json.dumps(text, ensure_ascii=False)) - 2
+
+
+def _longest_within(text: str, budget: int, *, from_end: bool) -> int:
+    """How many characters from the start (or the end) of ``text`` fit in ``budget`` as JSON
+    writes them. An escape is never shorter than its character, so the answer is at most
+    ``budget``; that is tried first, and text with nothing to escape needs no search."""
+
+    def fits(count: int) -> bool:
+        part = text[len(text) - count :] if from_end else text[:count]
+        return _escaped_length(part) <= budget
+
+    lo, hi = 0, min(budget, len(text))
+    if fits(hi):
+        return hi
+    hi -= 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _cut_text(text: str, limit: int, *, escaped: bool = False) -> str:
+    """``text`` when its length is at most ``limit``; otherwise its head and tail, half of
+    ``limit`` each, with a line between them naming how many characters were cut. With
+    ``escaped``, a length is that of the text as JSON writes it inside a string, so a
+    character JSON escapes counts as its escape does (a quote or a newline two, a control
+    character six).
+
+    Each cut moves up to ``_CUT_BACKOFF_CHARS`` characters so as not to separate a
+    character from the ones ``_continues_previous`` joins to it, and cuts where the bound
+    falls when the run is longer than that. Other clusters (spacing marks, Hangul jamo,
+    tag sequences, flag pairs) can be split."""
+    if len(text) <= limit and (not escaped or _escaped_length(text) <= limit):
+        return text
+    half = max(limit, 0) // 2
+    if escaped:
+        head_len = _longest_within(text, half, from_end=False)
+        tail_len = _longest_within(text, half, from_end=True)
+    else:
+        head_len = tail_len = half
+    head_end = head_len
+    while (
+        head_end > 0
+        and head_len - head_end < _CUT_BACKOFF_CHARS
+        and _continues_previous(text, head_end)
+    ):
+        head_end -= 1
+    if _continues_previous(text, head_end):
+        head_end = head_len
+    tail_start = len(text) - tail_len
+    while (
+        tail_start < len(text)
+        and tail_start - (len(text) - tail_len) < _CUT_BACKOFF_CHARS
+        and _continues_previous(text, tail_start)
+    ):
+        tail_start += 1
+    if tail_start < len(text) and _continues_previous(text, tail_start):
+        tail_start = len(text) - tail_len
+    return (
+        f"{text[:head_end]}\n[output truncated: {tail_start - head_end:,} of {len(text):,} "
+        f"characters omitted here]\n{text[tail_start:]}"
+    )
+
+
+def _too_deep(value: Any) -> str:
+    return f"[{type(value).__name__} nested too deep to show]"
+
+
+def _bounded_tool_output(output: Any) -> Any:
+    """Keep the head and tail of an oversized result and say what was cut, so the model
+    reading it on the next turn knows the result is partial and can narrow the command.
+
+    Text is cut by ``_cut_text`` at ``CODEX_TOOL_OUTPUT_MAX_CHARS``. A result that is not
+    text is measured as its JSON text and, when that is over the bound, replaced by the cut
+    JSON text; one nested too deep to encode is replaced by a line saying so.
+
+    The cut text is what the caller, the callbacks and the branch's record receive. The
+    chunk's ``metadata`` still holds the CLI's whole event: it is not written to a run's
+    buffer file, but a non-streaming call returns its chunks with it, so a logger that
+    records call results keeps the event whole.
+    """
+    text = output
+    if not isinstance(output, str):
+        if output is None:
+            return output
+        try:
+            text = json.dumps(output, ensure_ascii=False, default=str)
+        except RecursionError:
+            return _too_deep(output)
+    if len(text) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+        return output
+    return _cut_text(text, CODEX_TOOL_OUTPUT_MAX_CHARS)
+
+
+#: Room an entry cut to fit keeps inside its share of the bound for the line or entry
+#: that says what was cut from it.
+_CUT_NOTE_CHARS = 96
+
+#: The least room worth cutting an entry into; with less left, the entry is left out.
+_MIN_CUT_CHARS = 256
+
+
+def _key_text(key: Any) -> str:
+    """The string a mapping key becomes in JSON: a string key as it is, and None, a bool or a
+    number as ``json.dumps`` spells it."""
+    if isinstance(key, str):
+        return key
+    if key is None or isinstance(key, (bool, int, float)):
+        return json.dumps(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
+
+
+def _json_size(value: Any, sizes: dict[int, int]) -> int:
+    """``len(json.dumps(value, ensure_ascii=False, default=str))``, summed from the parts so
+    that each mapping and list is measured once however deep it sits; ``sizes`` keeps
+    their lengths by id while the value is alive."""
+    if not isinstance(value, (dict, list)):
+        return len(json.dumps(value, ensure_ascii=False, default=str))
+    size = sizes.get(id(value))
+    if size is None:
+        # Plain loops, not comprehensions, so a level of nesting costs one frame.
+        size = 2  # the brackets, and ", " after every entry but the last
+        if isinstance(value, dict):
+            for key, item in value.items():
+                size += _json_size(_key_text(key), sizes) + 2 + _json_size(item, sizes) + 2
+        else:
+            for item in value:
+                size += _json_size(item, sizes) + 2
+        if value:
+            size -= 2
+        sizes[id(value)] = size
+    return size
+
+
+def _bounded_leaves(
+    value: Any,
+    limit: int = CODEX_TOOL_OUTPUT_MAX_CHARS,
+    sizes: dict[int, int] | None = None,
+) -> Any:
+    """``value`` with its JSON text brought within about ``limit`` characters, keeping its
+    shape so a reader that expects a mapping or a list still gets one. A value within the
+    bound is returned as it came, and a string over it is cut by ``_cut_text``, measured
+    as JSON writes it, escapes included.
+
+    A list keeps its items in order up to the first that does not fit. When the room left
+    is worth it, that item is cut to the room less the share its note keeps, and an item
+    naming how many were left out comes last. A mapping keeps every entry that fits whole,
+    in order; then, while the room left is worth it, the entries that did not fit are cut,
+    in order, each to that room less its key and its note's share, and an
+    ``"[omitted]"`` entry names how many entries were left out. A key is never cut, since a
+    reader can classify an entry by its key (a redactor looking for a credential name in
+    it): an entry whose key, as JSON writes it, takes more than half the room left is left
+    out whole. An entry cut to fit keeps its own note inside the room it was given, so only
+    the outermost note and a cut line inside it come on top of ``limit``. Each level keeps
+    that room for its own note, so the leaf of a chain of one-entry mappings more than about
+    190 levels deep (fewer with longer keys), or of one-item lists more than about 200, is
+    left out, with a note saying so.
+    """
+    if sizes is None:
+        sizes = {}
+    if isinstance(value, str):
+        return _cut_text(value, max(limit - 2, 0), escaped=True)  # less the quotes
+    if not isinstance(value, (dict, list)):
+        return value
+    if _json_size(value, sizes) <= limit:
+        return value
+    if isinstance(value, list):
+        kept_items: list[Any] = []
+        used = 2  # the brackets
+        for item in value:
+            sep = 2 if kept_items else 0
+            size = _json_size(item, sizes)
+            if used + sep + size <= limit:
+                kept_items.append(item)
+                used += sep + size
+                continue
+            room = limit - used - sep
+            if room >= _MIN_CUT_CHARS:
+                kept_items.append(_bounded_leaves(item, room - _CUT_NOTE_CHARS, sizes))
+            break
+        if len(kept_items) < len(value):
+            kept_items.append(
+                f"[{len(value) - len(kept_items):,} of {len(value):,} items not shown]"
+            )
+        return kept_items
+    whole: set[Any] = set()
+    used = 2  # the braces
+    for key, item in value.items():
+        size = _json_size(_key_text(key), sizes) + 2 + _json_size(item, sizes)
+        sep = 2 if whole else 0
+        if used + sep + size <= limit:
+            whole.add(key)
+            used += sep + size
+    cut: dict[Any, Any] = {}
+    for key, item in value.items():
+        if key in whole:
+            continue
+        room = limit - used - 2
+        if room < _MIN_CUT_CHARS:
+            break
+        key_size = _json_size(_key_text(key), sizes) + 2
+        if key_size > room // 2:
+            continue
+        item = _bounded_leaves(item, room - key_size - _CUT_NOTE_CHARS, sizes)
+        cut[key] = item
+        used += 2 + key_size + _json_size(item, sizes)
+    kept: dict[Any, Any] = {}
+    for key, item in value.items():
+        if key in whole:
+            kept[key] = item
+        elif key in cut:
+            kept[key] = cut[key]
+    left_out = len(value) - len(kept)
+    if left_out:
+        note = "[omitted]"
+        while note in kept:
+            note = f"[{note}]"
+        kept[note] = f"{left_out:,} of {len(value):,} keys not shown"
+    return kept
+
+
+def _bounded_arguments(arguments: Any) -> Any:
+    """A function call's arguments as echoed for the call's input, bounded as
+    ``_bounded_leaves`` bounds a value. JSON text naming an object or an array is decoded,
+    bounded and encoded again, so it still parses, though a value that was cut reads
+    differently and the spelling can differ (escapes, numbers, a repeated key keeps its
+    last value); a mapping or a list is bounded the same way; any other text, and JSON
+    nested too deep to decode, is cut as a result is, and a mapping or a list nested too
+    deep to measure is bounded as a result is."""
+    if not isinstance(arguments, str):
+        try:
+            return _bounded_leaves(arguments)
+        except RecursionError:
+            return _bounded_tool_output(arguments)
+    if len(arguments) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+        return arguments
+    try:
+        decoded = json.loads(arguments)
+        if isinstance(decoded, (dict, list)):
+            return json.dumps(_bounded_leaves(decoded), ensure_ascii=False)
+    except (ValueError, RecursionError):
+        pass
+    return _bounded_tool_output(arguments)
+
+
+def _bounded_changes(changes: Any) -> Any:
+    """A file change's ``changes`` as echoed for the call's input. A list over the bound
+    keeps its entries in order up to the first that does not fit whole, so a reader of the
+    list still finds each kept entry's ``path``; when the first entry alone is over, it is
+    cut as ``_bounded_leaves`` cuts a value. An entry naming how many were left out comes
+    last.
+    Anything else is bounded as ``_bounded_leaves`` bounds a value, and a value nested too
+    deep to measure is bounded as a result is."""
+    try:
+        if not isinstance(changes, list):
+            return _bounded_leaves(changes)
+        sizes: dict[int, int] = {}
+        if _json_size(changes, sizes) <= CODEX_TOOL_OUTPUT_MAX_CHARS:
+            return changes
+        kept: list[Any] = []
+        used = 2  # the brackets
+        for entry in changes:
+            size = _json_size(entry, sizes) + 2  # and a separator
+            if used + size > CODEX_TOOL_OUTPUT_MAX_CHARS:
+                if not kept:
+                    room = CODEX_TOOL_OUTPUT_MAX_CHARS - used - _CUT_NOTE_CHARS
+                    kept.append(_bounded_leaves(entry, room, sizes))
+                break
+            kept.append(entry)
+            used += size
+    except RecursionError:
+        return _bounded_tool_output(changes)
+    if len(kept) < len(changes):
+        kept.append(
+            {"omitted": f"{len(changes) - len(kept):,} of {len(changes):,} changes not shown"}
+        )
+    return kept
+
+
 def _pp_text(text: str, theme: str = "light") -> None:
     txt = f"""
     > 🟢 Codex:
@@ -1017,9 +1334,11 @@ async def stream_codex_cli(
                     tu = {
                         "id": item.get("id", item.get("call_id", "")),
                         "name": item.get("name", item.get("function", "")),
-                        "input": item.get(
-                            "arguments",
-                            item.get("input", item.get("args", {})),
+                        "input": _bounded_arguments(
+                            item.get(
+                                "arguments",
+                                item.get("input", item.get("args", {})),
+                            )
                         ),
                     }
                     session.tool_uses.append(tu)
@@ -1040,11 +1359,12 @@ async def stream_codex_cli(
                 elif item_type == "command_execution":
                     item_id = item.get("id", "")
                     command = item.get("command", "")
-                    output = item.get("aggregated_output", "")
+                    output = _bounded_tool_output(item.get("aggregated_output", ""))
                     exit_code = item.get("exit_code")
                     status = item.get("status", "")
                     is_error = status == "failed" or (exit_code is not None and exit_code != 0)
 
+                    command = _bounded_tool_output(command)
                     tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
                     session.tool_uses.append(tu)
                     if on_tool_use:
@@ -1082,8 +1402,9 @@ async def stream_codex_cli(
                     changes = item.get("changes", [])
                     status = item.get("status", "")
                     is_error = status == "failed"
+                    echoed = _bounded_changes(changes)
 
-                    tu = {"id": item_id, "name": "Edit", "input": {"changes": changes}}
+                    tu = {"id": item_id, "name": "Edit", "input": {"changes": echoed}}
                     session.tool_uses.append(tu)
                     if on_tool_use:
                         await maybe_await(on_tool_use(tu))
@@ -1093,7 +1414,7 @@ async def stream_codex_cli(
                         type="tool_use",
                         tool_name="Edit",
                         tool_id=item_id,
-                        tool_input={"changes": changes},
+                        tool_input={"changes": echoed},
                         metadata=obj,
                     )
                     session.chunks.append(sc)
@@ -1106,7 +1427,7 @@ async def stream_codex_cli(
                     ]
                     tr = {
                         "tool_use_id": item_id,
-                        "content": "; ".join(summary_parts) or status,
+                        "content": _bounded_tool_output("; ".join(summary_parts) or status),
                         "is_error": is_error,
                     }
                     session.tool_results.append(tr)
@@ -1127,7 +1448,9 @@ async def stream_codex_cli(
                 elif item_type == "function_call_output":
                     tr = {
                         "tool_use_id": item.get("call_id", item.get("id", "")),
-                        "content": item.get("output", item.get("content", "")),
+                        "content": _bounded_tool_output(
+                            item.get("output", item.get("content", ""))
+                        ),
                         "is_error": item.get("is_error", False),
                     }
                     session.tool_results.append(tr)
@@ -1326,7 +1649,9 @@ async def stream_codex_cli(
                             tu = {
                                 "id": blk.get("id", ""),
                                 "name": blk.get("name", blk.get("function", {}).get("name", "")),
-                                "input": blk.get("input", blk.get("arguments", {})),
+                                "input": _bounded_arguments(
+                                    blk.get("input", blk.get("arguments", {}))
+                                ),
                             }
                             session.tool_uses.append(tu)
                             if on_tool_use:
