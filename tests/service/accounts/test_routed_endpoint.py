@@ -3536,3 +3536,135 @@ def test_renaming_many_masked_names_rebuilds_the_object_once():
     assert list(value.items()) == list(expected.items())
     assert value.clears == 1
     assert len(renames) == sum(mask_key_runs(name, key) != name for name in names) == 2001
+
+
+@pytest.mark.asyncio
+async def test_a_later_message_starts_placeholder_count_does_not_undo_a_final_one(
+    monkeypatch, tmp_path
+):
+    """A message_delta's output count is the final one for the attempt; a message_start
+    after it carries a placeholder count and must not replace it, so the attempt settles
+    at the same cost as a stream that ends where the delta does."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["usage"]["output_tokens"] = 1
+    final = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    events = [start, _PARTIAL_TEXT, final, copy.deepcopy(start), {"type": "message_stop"}]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    control_model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events[:3] + events[4:])])])
+    assert [chunk async for chunk in control_model.endpoint.stream(REQUEST)]
+
+    late, control = _attempts(path)
+    assert late[2:] == control[2:] == ("settled", 250_000, "complete"), (late, control)
+
+
+def test_a_masked_name_taking_a_recorded_place_still_masks_its_value():
+    """A name renamed onto one that a recorded place names, though the object carries no
+    such name, is no exemption: the value of the renamed entry is still masked."""
+    from pydantic import SecretStr
+
+    from lionagi.providers.anthropic.messages import _mask_key_runs_in_strings
+    from lionagi.service.accounts._router import mask_key_runs
+
+    key = SecretStr(CANARY)
+    run = CANARY[4:20]
+    value = {run: CANARY}
+    assert mask_key_runs(run, key) == "[REDACTED]"
+
+    changed = _mask_key_runs_in_strings(value, key, {(id(value), "[REDACTED]")})
+
+    assert changed is True
+    assert value == {"[REDACTED]": "[REDACTED]"}
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (401, RouterErrorCode.AUTH_FAILED),
+        (403, RouterErrorCode.AUTH_FAILED),
+        (400, RouterErrorCode.REQUEST_REJECTED),
+    ],
+)
+@pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+@pytest.mark.asyncio
+async def test_a_routed_refusal_keeps_an_acyclic_cause_chain_without_key_text(
+    monkeypatch, tmp_path, streamed, status, code
+):
+    """A routed 401, 403 or other 4xx reaches the caller as the public routed error,
+    carrying no key text in its linked errors, and a walk of ``__cause__`` from it ends
+    instead of looping."""
+    _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [StubResponse(status, {"error": CANARY})])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        if streamed:
+            async for _ in model.endpoint.stream(REQUEST):
+                pass
+        else:
+            await model.endpoint.call(REQUEST)
+
+    assert type(caught.value) is AccountRoutingError
+    assert caught.value.code is code
+    assert len(transport.calls) == 1
+
+    seen, cause = set(), caught.value
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        assert cause.__cause__ is not cause
+        cause = cause.__cause__
+    assert len(seen) <= 4
+
+    linked = _every_linked_error(caught.value)
+    assert not any(CANARY in repr(item.args) for item in linked)
+
+
+@pytest.mark.asyncio
+async def test_a_later_message_start_that_omits_a_field_keeps_what_the_first_one_said(
+    monkeypatch, tmp_path
+):
+    """A second message_start that leaves out the model, the id or the usage says nothing
+    about that field, so the attempt keeps the first one's values and settles complete;
+    its own clean id and counts still take their places."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    final = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    omitted = {"type": "message_start", "message": {"id": "msg_b"}}
+    events = [
+        copy.deepcopy(_MESSAGE_START),
+        _PARTIAL_TEXT,
+        final,
+        omitted,
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    (row,) = _attempts(path)
+    assert row[2:] == ("settled", 250_000, "complete"), row
+    assert _request_ids(path) == ["msg_b"]
+
+
+@pytest.mark.asyncio
+async def test_a_later_message_starts_id_that_holds_a_run_keeps_the_recorded_one(
+    monkeypatch, tmp_path
+):
+    """An id holding a run is not recorded, so it leaves a clean id an earlier
+    message_start gave where it was rather than clearing it; a clean one still takes
+    that place."""
+    key = "sk-ant-api03-ab34567890123cd"
+    path = _install_accounts(monkeypatch, tmp_path, key=key)
+    held = {"type": "message_start", "message": {"id": "msg_34567890123c"}}
+    events = [
+        copy.deepcopy(_MESSAGE_START),
+        _PARTIAL_TEXT,
+        held,
+        {"type": "message_delta", "usage": {"output_tokens": 5}},
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    (row,) = _attempts(path)
+    assert row[2:] == ("settled", row[3], "complete"), row
+    assert _request_ids(path) == ["msg_s"]

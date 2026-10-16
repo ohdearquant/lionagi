@@ -426,7 +426,10 @@ def mask_key_runs(text: str, key: SecretStr) -> str:
 
 def provider_request_id(value: Any, key: SecretStr) -> str | None:
     """A provider's message id as an attempt's settlement may record it: the id when it is
-    a string holding no run of the key, else None, so the ledger never stores key text."""
+    a string holding no run of ``StreamTextRedactor.MIN_RUN`` or more characters of the
+    key (the whole key, for a shorter key) matched exactly, else None. A shorter run, and
+    any run that differs from the key in case, is not masked, so the ledger keeps no more
+    of the key than the mask itself can tell from other text."""
     if not isinstance(value, str) or mask_key_runs(value, key) != value:
         return None
     return value

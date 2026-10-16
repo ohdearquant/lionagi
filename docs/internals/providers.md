@@ -72,7 +72,8 @@ the call ended:
   ints); `None` when the shape is unrecognized or the call never produced
   one. Never the raw provider usage mapping. A count that a routed account
   masked, because its text held a run of the key, is text by then and reads
-  as 0; the account's ledger prices the provider's own count.
+  as 0; with neither count left, the summary has no tokens. The account's
+  ledger prices the provider's own count.
 
 ## Run stream cleanup cascade
 

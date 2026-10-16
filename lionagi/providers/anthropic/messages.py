@@ -232,17 +232,20 @@ def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) 
 
     changed = False
     if isinstance(value, dict):
+        entries = list(value.items())
         renames = _rename_masked_names(
-            value, [name for name in value if (id(value), name) not in skip], key
+            value, [name for name, _ in entries if (id(value), name) not in skip], key
         )
         changed = bool(renames)
-        items = list(value.items())
+        # A place is exempt by the name it had before its rename, so a renamed name that
+        # reads as an exempt one does not make its own value exempt.
+        items = [(renames.get(name, name), item, name) for name, item in entries]
     elif isinstance(value, list):
-        items = list(enumerate(value))
+        items = [(name, item, name) for name, item in enumerate(value)]
     else:
         return False
-    for name, item in items:
-        if (id(value), name) in skip:
+    for name, item, recorded in items:
+        if (id(value), recorded) in skip:
             continue
         if isinstance(item, str):
             masked = mask_key_runs(item, key)
@@ -269,7 +272,7 @@ def _settlement_reading(event: Any) -> dict | None:
     event before a count whose text holds a run of the key is replaced by its masked text
     in place; the event itself is masked as usual. A ``message_start`` yields the model,
     the id and the usage of its message, a ``message_delta`` its usage; None is yielded
-    for anything else.
+    for anything else, a ``message_start`` whose message is not an object included.
     """
     import copy
 
@@ -842,12 +845,17 @@ class AnthropicMessagesEndpoint(Endpoint):
                 event_type = event.get("type") if isinstance(event, dict) else None
                 if event_type == "message_start":
                     # A message_start whose message is not an object says nothing about the
-                    # attempt, so it leaves what an earlier one said in place.
+                    # attempt, and one that leaves a field out says nothing about that field,
+                    # so each leaves what an earlier event said in place. Its counts are
+                    # placeholders, so a start after a message_delta's final count leaves that
+                    # count, and the attempt's cost, alone.
                     if settlement is not None:
-                        served_model = settlement.get("model")
-                        request_id = provider_request_id(settlement.get("id"), attempt.key)
+                        served_model = settlement.get("model") or served_model
+                        request_id = (
+                            provider_request_id(settlement.get("id"), attempt.key) or request_id
+                        )
                         initial_usage = settlement.get("usage")
-                        if isinstance(initial_usage, dict):
+                        if isinstance(initial_usage, dict) and not saw_final_usage:
                             usage.update(initial_usage)
                 elif event_type == "message_delta":
                     delta_usage = settlement.get("usage") if settlement else None
