@@ -1178,7 +1178,7 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     expect(client.resolveAuthToken()).toBe("shell-token");
   });
 
-  it("sends no token on the file and signal-stream paths when a matching base is injected late", async () => {
+  it("sends no token on the file, signal and operator-stream paths when a late base matches the override origin, not the captured issuer", async () => {
     const destination = "http://127.0.0.2:8766";
     stubLocation(`?api=${destination}`);
     setInjected("http://127.0.0.1:8765", "shell-token");
@@ -1192,16 +1192,69 @@ describe("the shell token does not follow a ?api= override to another daemon", (
 
     await client.getRunFile("run-1", "out.txt");
     const close = client.streamSignals("session-1", vi.fn());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const closeOperator = client.streamOperatorConversation("conversation-1", 0, {
+      onFrame: vi.fn(),
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     close();
+    closeOperator();
 
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
-    expect(urls[0]!.startsWith(`${destination}/api/runs/run-1/file?`)).toBe(true);
-    expect(urls[1]!.startsWith(`${destination}/api/sessions/session-1/signals?`)).toBe(true);
+    // Membership rather than index order: the two streams start concurrently.
+    for (const expected of [
+      `${destination}/api/runs/run-1/file?`,
+      `${destination}/api/sessions/session-1/signals?`,
+      `${destination}/api/operator/conversations/conversation-1/stream?`,
+    ]) {
+      expect(urls.filter((url) => url.startsWith(expected))).toHaveLength(1);
+    }
     for (const [, init] of fetchMock.mock.calls) {
       expect(new Headers(init?.headers).has("Authorization")).toBe(false);
     }
     expect(client.resolveAuthToken()).toBeUndefined();
+  });
+
+  it("sends the token on the run-file read when the override matches its issuing origin", async () => {
+    const destination = "http://127.0.0.2:8766";
+    stubLocation(`?api=${destination}`);
+    setInjected(destination, "shell-token");
+    const client = await import("./api");
+    expect(client.API_BASE).toBe(destination);
+    expect(client.resolveAuthToken()).toBe("shell-token");
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await client.getRunFile("run-1", "out.txt");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url).startsWith(`${destination}/api/runs/run-1/file?`)).toBe(true);
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer shell-token");
+  });
+
+  it("sends the token on the operator stream when the override matches its issuing origin", async () => {
+    const destination = "http://127.0.0.2:8766";
+    stubLocation(`?api=${destination}`);
+    setInjected(destination, "shell-token");
+    const client = await import("./api");
+    expect(client.API_BASE).toBe(destination);
+    expect(client.resolveAuthToken()).toBe("shell-token");
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const close = client.streamOperatorConversation("conversation-1", 0, { onFrame: vi.fn() });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    close();
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(
+      String(url).startsWith(`${destination}/api/operator/conversations/conversation-1/stream?`),
+    ).toBe(true);
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer shell-token");
   });
 
   it("withholds the token when the injected base is unparseable", async () => {

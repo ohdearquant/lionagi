@@ -93,6 +93,7 @@ injected or build-time absolute bases. Adding `?api=` after load no longer withh
 the token for that loaded base: both requests and their authentication continue to use
 the loaded destination until reload. The token itself is read when each request is made,
 so a token injected after load is sent to the loaded destination under these same rules;
-a base injected after load changes neither the destination nor the issuing origin. These deployment settings are trusted and used as
-supplied: the viewer-override origin check does not validate configured URLs or prevent
-requests caused by malformed deployment settings.
+a base injected after load changes neither the destination nor the issuing origin.
+These deployment settings are trusted and used as supplied: the viewer-override origin
+check does not validate configured URLs or prevent requests caused by malformed
+deployment settings.
