@@ -12,6 +12,7 @@ error that carries the whole input.
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 
 import pydantic
 import pytest
@@ -805,8 +806,18 @@ def test_a_surrogate_in_a_second_feature_entry_is_refused_too(tmp_path):
         ({"enable_features": ["ok", "x\x00"]}, "enable_features"),
         ({"disable_features": ["x\x00"]}, "disable_features"),
         ({"config_overrides": {"a\x00b": 1}}, "The config override key"),
+        ({"reasoning_effort": "high\x00"}, "reasoning_effort"),
+        ({"plan_mode_reasoning_effort": "high\x00"}, "plan_mode_reasoning_effort"),
     ],
-    ids=["model", "profile", "enable-features", "disable-features", "override-key"],
+    ids=[
+        "model",
+        "profile",
+        "enable-features",
+        "disable-features",
+        "override-key",
+        "reasoning-effort",
+        "plan-mode-effort",
+    ],
 )
 def test_a_nul_in_any_argument_text_is_refused_at_construction(tmp_path, fields, named):
     """exec refuses an argument holding a NUL with a message that names nothing, so
@@ -824,13 +835,29 @@ def test_a_nul_in_an_override_value_is_escaped_not_refused(tmp_path):
     assert 'k="a\\u0000b"' in request.as_cmd_args()
 
 
-@pytest.mark.parametrize("field", ["reasoning_effort", "plan_mode_reasoning_effort"])
-def test_a_nul_in_an_effort_is_escaped_not_refused(tmp_path, field):
-    """An effort is written as a TOML string, which escapes a NUL like any control
-    character, so the CLI can take it and it is not refused."""
-    request = CodexCodeRequest(prompt="hi", repo=tmp_path, **{field: "high\x00"})
+@pytest.mark.parametrize(
+    "key",
+    ["a=b", 'model="gpt-5"#', '"a=b"'],
+    ids=["bare", "sets-another-key", "quoted"],
+)
+@pytest.mark.parametrize("contained", [False, True], ids=["uncontained", "contained"])
+def test_an_override_key_holding_an_equals_sign_is_refused(tmp_path, key, contained):
+    """The CLI ends a `-c` key at its first `=`, so such a key would set the key
+    before it: `model="gpt-5"#=1` reads as setting `model`."""
+    with pytest.raises(CLIInputRefusedError, match="holds '='") as caught:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            contain_account_integrations=contained,
+            config_overrides={key: 1},
+        )
+    assert repr(key) in str(caught.value)
 
-    assert f'{field}="high\\u0000"' in request.as_cmd_args()
+    copied = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=contained
+    ).model_copy(update={"config_overrides": {key: 1}})
+    with pytest.raises(ValueError, match="holds '='"):
+        copied.as_cmd_args()
 
 
 class _IterationHidesAKey(dict):
@@ -891,23 +918,67 @@ def test_a_copied_key_that_is_not_a_string_is_refused_by_the_command_builder(tmp
 
 
 def test_a_key_containment_cannot_read_is_named_by_its_first_80_characters(tmp_path):
+    """Refused by name at construction, and by the command builder for a copy."""
     key = "not a key " + "x" * 120
+    with pytest.raises(CLIInputRefusedError, match="is not a TOML key") as constructed:
+        CodexCodeRequest(
+            prompt="hi", repo=tmp_path, contain_account_integrations=True, config_overrides={key: 1}
+        )
     request = CodexCodeRequest(
-        prompt="hi", repo=tmp_path, contain_account_integrations=True, config_overrides={key: 1}
-    )
-
-    with pytest.raises(ValueError, match="is not a TOML key") as caught:
+        prompt="hi", repo=tmp_path, contain_account_integrations=True
+    ).model_copy(update={"config_overrides": {key: 1}})
+    with pytest.raises(ValueError, match="is not a TOML key") as built:
         request.as_cmd_args()
 
-    assert repr(key[:80]) in str(caught.value)
-    assert key not in str(caught.value)
+    for caught in (constructed, built):
+        assert repr(key[:80]) in str(caught.value)
+        assert key not in str(caught.value)
+
+
+class _KeysHideAKey(Mapping):
+    """A mapping, not a dict, whose keys() omits a key its items() yields."""
+
+    def __init__(self, hidden):
+        self._hidden = hidden
+
+    def __getitem__(self, key):
+        if key == "k":
+            return "v"
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(["k"])
+
+    def __len__(self):
+        return 1
+
+    def items(self):
+        return [("k", "v"), (self._hidden, "v")]
+
+
+def test_overrides_are_validated_as_the_plain_copy_of_a_mapping(tmp_path):
+    """The copy reads the mapping's keys, so a key only items() yields is not
+    copied, and pydantic never reads items() of the caller's mapping, where it would
+    quote the key in its validation error."""
+    request = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        config_overrides=_KeysHideAKey((SECRET_OVERRIDE_KEY, 1)),
+    )
+
+    assert dict(request.config_overrides) == {"k": "v"}
+    assert SECRET_OVERRIDE_KEY not in repr(request)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "update,named",
-    [({"model": "gpt-5.4\x00"}, "model"), ({"images": ["a\x00.png"]}, "-i")],
-    ids=["model", "image-path"],
+    [
+        ({"model": "gpt-5.4\x00"}, "model"),
+        ({"images": ["a\x00.png"]}, "-i"),
+        ({"ask_for_approval": "never\x00"}, "ask_for_approval"),
+    ],
+    ids=["model", "image-path", "approval-policy"],
 )
 async def test_a_copied_nul_is_refused_before_the_cli_starts(tmp_path, monkeypatch, update, named):
     """A path field is not a text field the construction check reads, so the spawn

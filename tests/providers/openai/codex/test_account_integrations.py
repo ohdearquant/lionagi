@@ -15,6 +15,7 @@ import logging
 
 import pytest
 
+from lionagi._errors import CLIInputRefusedError
 from lionagi.cli._providers import (
     AgentProfile,
     _parse_profile,
@@ -188,22 +189,19 @@ def test_containment_drops_a_nested_account_feature_override():
     assert _overrides(args) == []
 
 
-def test_containment_refuses_an_override_key_toml_cannot_read():
-    req = CodexCodeRequest(
-        prompt="hi", contain_account_integrations=True, config_overrides={"a b": 1}
+@pytest.mark.parametrize(
+    "key,refusal",
+    [("a b", "is not a TOML key"), ("x = 1\nfeatures.apps", "holds '='")],
+    ids=["unreadable", "multiline-with-equals"],
+)
+def test_containment_refuses_an_override_key_it_cannot_read(key, refusal):
+    with pytest.raises(CLIInputRefusedError, match=refusal):
+        CodexCodeRequest(prompt="hi", contain_account_integrations=True, config_overrides={key: 1})
+    copied = CodexCodeRequest(prompt="hi", contain_account_integrations=True).model_copy(
+        update={"config_overrides": {key: True}}
     )
-    with pytest.raises(ValueError, match="is not a TOML key"):
-        req.as_cmd_args()
-
-
-def test_containment_refuses_a_multiline_override_key_by_name():
-    req = CodexCodeRequest(
-        prompt="hi",
-        contain_account_integrations=True,
-        config_overrides={"x = 1\nfeatures.apps": True},
-    )
-    with pytest.raises(ValueError, match="is not a TOML key"):
-        req.as_cmd_args()
+    with pytest.raises(ValueError, match=refusal):
+        copied.as_cmd_args()
 
 
 # ── naming a connector lifts the containment ────────────────────────────

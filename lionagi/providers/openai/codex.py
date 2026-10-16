@@ -200,15 +200,17 @@ def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     return None
 
 
-# The argument text fields as_cmd_args writes as a TOML string (`-c key="..."`) rather
-# than as a raw argument.
-_TOML_STRING_TEXT_FIELDS = frozenset(
-    {"reasoning_effort", "plan_mode_reasoning_effort", "ask_for_approval"}
-)
-
-
 def _nul_refusal_message(what: str) -> str:
     return f"{what} holds a NUL character, which no command-line argument can hold."
+
+
+def _equals_in_key_refusal(key: str) -> ValueError:
+    # `-c key=value` is split at its first `=`, so a key holding one would set the key
+    # before it to the rest of the argument: `model="x"#` reads as setting `model`.
+    return ValueError(
+        f"The config override key {key[:80]!r} holds '=', where the CLI ends a -c key, "
+        "so it would set a different key."
+    )
 
 
 def _argument_text_failure(text: str, what: str) -> ValueError | None:
@@ -319,6 +321,9 @@ def _refuse_oversized_cli_inputs(
                 f"({type(key).__name__})."
             )
             break
+        if "=" in key:
+            failure = _equals_in_key_refusal(key)
+            break
         # Encoded before containment reads the key, so a value the encoder refuses
         # refuses the request whether or not containment would drop it.
         try:
@@ -335,8 +340,11 @@ def _refuse_oversized_cli_inputs(
         if contained:
             try:
                 kept, kept_value = _contain_override(key, value)
-            except ValueError:
-                continue  # as_cmd_args refuses the key itself
+            except ValueError as exc:
+                # A key containment cannot read is refused here, by name, so construction
+                # refuses it as the spawn does. A new error, so the parser's is not chained.
+                failure = ValueError(str(exc))
+                break
             if not kept:
                 continue
             if kept_value is not value:
@@ -356,17 +364,14 @@ def _refuse_oversized_cli_inputs(
         if failure is None:
             measured.append((f"The config override {key[:80]!r}", argument.encode("utf-8")))
     # The text fields that reach the CLI as an argument of their own, each encoded
-    # strictly and checked for a NUL under its own name.
+    # strictly and checked for a NUL under its own name. The efforts and the approval
+    # policy are written as TOML strings, where a NUL would be escaped rather than
+    # refused, but each is a closed choice no value with a NUL belongs to, and an
+    # escaped effort would pass the per-model effort clamp, which matches exact names.
     for what, text in text_fields or ():
         if failure is not None:
             break
-        # A field written as a TOML string has its NUL escaped like any control
-        # character, so only strict UTF-8 can refuse it; every other field reaches
-        # the CLI raw, where a NUL cannot be carried.
-        if what in _TOML_STRING_TEXT_FIELDS:
-            failure = _strict_utf8_failure(text, what)
-        else:
-            failure = _argument_text_failure(text, what)
+        failure = _argument_text_failure(text, what)
         if failure is None:
             measured.append((what, text.encode("utf-8")))
     if failure is not None:
@@ -1039,6 +1044,8 @@ class CodexCodeRequest(BaseModel):
                     f"config_overrides entry {index} has a key that is not a string "
                     f"({type(key).__name__})"
                 )
+            if "=" in key:
+                raise _equals_in_key_refusal(key)
             # Containment removes overrides under `features.apps` and
             # `features.plugins`, plus those keys from an inline `features`
             # table. Config profiles can contribute either form alongside the
