@@ -549,8 +549,11 @@ project, which is the fallback execution root it uses only when its own stored
 declaration produces, the `--project` its command receives. A row that a
 null-spelled member had given the document's project loses both on its next
 apply: with no project and an unusable `action_cwd`, the scheduler refuses the
-fire (`SchedulerCwdInheritRefusedError`) rather than running in the project's
-path.
+fire (`SchedulerCwdInheritRefusedError`) where it would have run in the project's
+registered path, if that path was usable; with no usable path the fire was refused
+before as well. A row whose `action_cwd` is usable still runs there, and its `agent`
+or `flow_yaml` command, now without `--project`, takes the project detected in that
+directory.
 
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:
