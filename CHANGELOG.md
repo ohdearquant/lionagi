@@ -58,13 +58,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   on a list or dict).
 - `li schedule apply` reads a member's `execution.project` written as YAML null
   (`project: null`, `project: ~` or a blank `project:`) as no project. Earlier
-  releases gave that member the document's `metadata.project`, so re-applying an
-  export of a row stored without a project gave the row the export's project. An
-  omitted project, or `project: ""`, still inherits the document's. A document
-  already applied whose member writes its project as null in any of those
-  spellings plans an `UPDATE` on its next apply that removes the project the
-  member ran under. `li schedule export` writes every member's stored project,
-  `null` included.
+  releases gave that member the document's `metadata.project` in a project-scoped
+  document, so re-applying an export of a row stored without a project gave the
+  row the export's project. An omitted project, or `project: ""`, still inherits
+  the document's `metadata.project` in a project-scoped document (a global one
+  has none). A project-scoped document already applied whose member writes its
+  project as null in any of those spellings plans an `UPDATE` on its next apply
+  that removes the project the member ran under. `li schedule export` writes
+  every member's stored project, `null` included.
 
 ### Fixed
 

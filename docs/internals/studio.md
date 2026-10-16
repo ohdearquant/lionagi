@@ -538,13 +538,15 @@ flow by hand. Declaration/cli re-export (`managed_by IN ('cli',
 
 `resolve_member` reads an `execution.project` written as YAML null (`null`,
 `~` or a blank value) as no project; an omitted project or an empty string
-inherits `metadata.project` (none under `scope: global`). The managed export writes each member's project from the row's stored
-`action_project` (`null` when it has none) rather than as authored: the export's
-document is project-scoped even for a global set, so an omitted or empty project
-written back would re-apply under the export's project. Reading the null as
-"inherit" did the same for a row stored without a project. Either way the
-re-applied row changed its fallback working directory and, for an agent, flow,
-fanout or flow_yaml target, the `--project` its command receives.
+inherits `metadata.project` (none under `scope: global`). The managed export
+writes each member's project from the row's stored `action_project` (`null` when
+it has none) rather than as authored: the export's document is project-scoped
+even for a global set, so an omitted or empty project written back would
+re-apply under the export's project. Reading the null as "inherit" did the same
+for a row stored without a project. Either way the re-applied row changed its
+project, which is the fallback execution root it uses only when its own stored
+`action_cwd` is unusable and, for the `agent` and `flow_yaml` targets a
+declaration produces, the `--project` its command receives.
 
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:

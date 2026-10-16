@@ -639,9 +639,10 @@ def _resolve_project(execution: Execution, *, project: str | None, is_global: bo
     reads alike) declares that the member has no project, which is what an export
     writes for a row stored without one; an omitted project or an empty string
     inherits the document's (none in a global document). The difference is real at
-    spawn time: the project is the fallback execution root of every schedule and is
-    passed as ``--project`` to an agent, flow, fanout or flow_yaml command, so reading an explicit
-    null as "inherit" would change what an exported row does on re-apply.
+    spawn time: the project is the schedule's fallback execution root, used only
+    when its own stored ``cwd`` is unusable, and is passed as ``--project`` to the
+    agent and flow_yaml commands a declaration spawns, so reading an explicit null
+    as "inherit" would change what an exported row does on re-apply.
     """
     if execution.project:
         return execution.project
@@ -674,6 +675,11 @@ def resolve_member(
     }
     digest = _digest_of(resolved)
     authored = member.model_dump(mode="json")
+    # The stored spec is read back as a member on export and on re-apply, so an
+    # omitted project must stay omitted: writing a null in its place would read
+    # back as "no project" and drop the project the member inherited from the
+    # document.
+    authored["execution"] = member.execution.model_dump(mode="json", exclude_unset=True)
     db_fields = _to_db_fields(resolved_trigger, resolved_target, member, cwd, resolved_project)
 
     return ResolvedMember(

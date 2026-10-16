@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from lionagi.state.db import StateDB
 from lionagi.studio.services.schedule_declaration import (
+    ScheduleMember,
     ScheduleSetDocument,
     ScheduleSetError,
     apply_schedule_set,
@@ -492,6 +493,38 @@ def test_a_member_project_inherits_the_document_unless_named_or_null(
     assert resolved.qualified_name == "demo/nightly"
     assert resolved.db_fields["action_project"] == expected
     assert resolved.resolved["execution"]["project"] == expected
+
+
+@pytest.mark.parametrize(
+    ("project_line", "expected_stored"),
+    [
+        ("", "absent"),
+        ("      project: null", None),
+    ],
+    ids=["omitted-stays-absent", "null-stays-null"],
+)
+def test_stored_authored_spec_preserves_an_omitted_project(
+    agent_profile, project_line, expected_stored
+):
+    """The stored ``authored_spec`` must keep an omitted project omitted.
+
+    A null project read on its own declares no project, so dumping an inherited
+    project as ``project: null`` would store a different schedule than the one
+    applied: re-reading that spec beside a project-scoped document would drop
+    the project instead of inheriting it.
+    """
+    doc = parse_schedule_set(
+        _agent_manifest("nightly", cwd=agent_profile, extra_member=project_line)
+    )
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    execution = resolved.authored["execution"]
+    reread = ScheduleMember.model_validate(resolved.authored)
+    if expected_stored == "absent":
+        assert "project" not in execution
+        assert "project" not in reread.execution.model_fields_set
+    else:
+        assert execution["project"] is None
+        assert "project" in reread.execution.model_fields_set
 
 
 def test_resolve_cron_trigger_persists_timezone(agent_profile):

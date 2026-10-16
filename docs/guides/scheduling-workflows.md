@@ -125,11 +125,15 @@ Notes:
   `metadata.project`; in a global document it has no project unless it names one.
   A project written as YAML null, whether `project: null`, `project: ~` or
   `project:` with nothing after it, means the schedule has no project: YAML reads
-  those three alike. `li schedule export` writes every member's stored project
-  explicitly, `null` included, so re-applying an export reproduces it. The
-  difference matters: the project is the fallback working directory of every
-  schedule and is passed as `--project` to an `agent`, `flow`, `fanout` or
-  `flow_yaml` command.
+  those three alike, so quote a project actually named `null` (`project: "null"`)
+  to name that project rather than declare none. A quoted name is used verbatim,
+  but it still has to be a runnable identifier to spawn -- `project: "~"` or
+  `project: "  "` name projects that fail at fire time. `li schedule export`
+  writes every member's stored project explicitly, `null` included, so re-applying
+  an export reproduces it. The difference matters: a declaration always gives its
+  member a working directory of its own, so the project is a fallback directory
+  used only when that one is unusable, and it is passed as `--project` to the
+  `agent` and `flow_yaml` commands a declaration spawns.
 
 ## Event-driven recipe: review every PR change
 
