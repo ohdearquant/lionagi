@@ -1938,11 +1938,13 @@ async def test_a_tool_result_whose_use_was_never_mirrored_keeps_an_empty_name(
 
 
 @pytest.mark.asyncio
-async def test_naming_unnamed_results_reads_the_store_once_per_pass(temp_db_path: Path) -> None:
+async def test_naming_unnamed_results_reads_the_store_once_per_chunk_of_500(
+    temp_db_path: Path,
+) -> None:
     """A pass whose results link to uses never mirrored must not open one read per result.
 
     Each such result needs the name off its use's stored row; the naming step must batch
-    those lookups into one query rather than one ``get_message`` each."""
+    those lookups into one query per 500 ids rather than one ``get_message`` each."""
     from sqlalchemy import event
 
     events = [_user_text("u1", "hi")] + [
@@ -3726,19 +3728,70 @@ def test_an_unset_flag_still_takes_the_computed_default(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_result_takes_a_name_only_from_a_stored_use_row() -> None:
+    from lionagi.protocols.messages.action_request import ActionRequest
+    from lionagi.protocols.messages.action_response import ActionResponse
     from lionagi.state._mirror_common import name_answered_results
+
+    def _stored(message) -> dict:
+        # The shape StateDB.get_messages returns: content as to_dict(mode="db") left
+        # it and the resolved class of the row as lion_class_str.
+        row = message.to_dict(mode="db")
+        return {"content": row["content"], "lion_class_str": message.class_name(full=True)}
 
     class _Store:
         async def get_messages(self, ids):
             rows = {
-                "use": {"content": {"function": "Bash", "arguments": {}}},
-                "result": {"content": {"function": "Edit", "output": "x", "arguments": {}}},
+                "use": _stored(ActionRequest(content={"function": "Bash", "arguments": {}})),
+                "result": _stored(
+                    ActionResponse(
+                        content={"function": "Edit", "output": "x", "action_request_id": None}
+                    )
+                ),
+                # An ActionResponse whose output is None keeps arguments: {} once
+                # to_dict(mode="db") drops the field, so it looks like a use by its fields
+                # alone; only its recorded class tells it apart.
+                "silent": _stored(
+                    ActionResponse(
+                        content={"function": "Edit", "output": None, "action_request_id": None}
+                    )
+                ),
+                # A row with no recorded class (an older or non-mirror writer) is told
+                # apart by its fields: no output and no arguments means it is no use.
+                "bare": {"content": {"function": "Bash"}},
+                "unclassed_use": {"content": {"function": "Grep", "arguments": {}}},
             }
             return {i: rows[i] for i in ids if i in rows}
 
     rows = [
         {"id": "r1", "content": {"function": "", "output": "a", "action_request_id": "use"}},
         {"id": "r2", "content": {"function": "", "output": "b", "action_request_id": "result"}},
+        {"id": "r3", "content": {"function": "", "output": "c", "action_request_id": "silent"}},
+        {"id": "r4", "content": {"function": "", "output": "d", "action_request_id": "bare"}},
+        {
+            "id": "r5",
+            "content": {"function": "", "output": "e", "action_request_id": "unclassed_use"},
+        },
     ]
     await name_answered_results(_Store(), rows)
-    assert [row["content"]["function"] for row in rows] == ["Bash", ""]
+    assert [row["content"]["function"] for row in rows] == ["Bash", "", "", "", "Grep"]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_row_without_arguments_is_not_a_use() -> None:
+    """A result may take a name only from a stored use row, and a use row carries arguments.
+
+    A stored row with a function name and no arguments (and no recorded class) is not a
+    use row, so a result linked to it keeps the empty name rather than taking that name.
+    """
+    from lionagi.state._mirror_common import name_answered_results
+
+    class _Store:
+        async def get_messages(self, ids):
+            rows = {"naked": {"content": {"function": "Bash"}}}
+            return {i: rows[i] for i in ids if i in rows}
+
+    rows = [
+        {"id": "r1", "content": {"function": "", "output": "a", "action_request_id": "naked"}},
+    ]
+    await name_answered_results(_Store(), rows)
+    assert rows[0]["content"]["function"] == ""

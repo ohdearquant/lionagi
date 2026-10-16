@@ -284,9 +284,7 @@ async def test_an_empty_batch_writes_nothing(db: StateDB):
 async def test_get_messages_reads_in_chunks_of_500(db: StateDB):
     stored = [uid() for _ in range(3)]
     await db.insert_messages([_msg(i) for i in stored])
-    wanted = [uid() for _ in range(1200)]
-    for position, mid in zip((0, 600, 1199), stored, strict=True):
-        wanted[position] = mid
+
     reads: list[str] = []
 
     def _spy(conn, cursor, statement, parameters, context, executemany):
@@ -294,11 +292,24 @@ async def test_get_messages_reads_in_chunks_of_500(db: StateDB):
         if upper.startswith("SELECT") and "FROM MESSAGES" in upper:
             reads.append(statement)
 
-    event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
-    try:
-        found = await db.get_messages(wanted)
-    finally:
-        event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
+    async def _read(wanted: list[str]) -> dict:
+        reads.clear()
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+        try:
+            return await db.get_messages(wanted)
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
 
+    # A full chunk of 500 ids fits in one query; one id past it takes a second. Both
+    # sizes are pinned so the chunk bound is fixed at 500 rather than any smaller value.
+    wanted = [uid() for _ in range(501)]
+    for position, mid in zip((0, 499, 500), stored, strict=True):
+        wanted[position] = mid
+
+    found = await _read(wanted[:500])
+    assert sorted(found) == sorted(stored[:2])
+    assert len(reads) == 1
+
+    found = await _read(wanted)
     assert sorted(found) == sorted(stored)
-    assert len(reads) == 3
+    assert len(reads) == 2

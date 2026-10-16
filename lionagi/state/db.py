@@ -2237,7 +2237,7 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def get_messages(self, message_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
-        """Read many messages in one query, keyed by id; absent ids are simply missing.
+        """Read many messages in one query per 500 ids, keyed by id; absent ids are missing.
 
         A caller that needs N rows by id (e.g. recovering a name from a stored tool use)
         reads them in bounded chunks rather than one ``get_message`` per row, which reopens

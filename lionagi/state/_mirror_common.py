@@ -407,6 +407,19 @@ async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> 
     the use's own row instead: one in this batch, else the stored one. A result whose use is in
     neither keeps the empty name, and so does one whose stored row with that id is not a use. The
     batch's stored lookups are read together, one query per 500 ids, not one read per result."""
+    # A stored row lends its name only when it is a use row, and the row is judged two ways. Both
+    # mirrors write their rows through ``to_dict(mode="db")``, which records the class in
+    # ``node_metadata.lion_class``; ``insert_messages`` resolves that to a ``message_types`` row
+    # and the readers return it as ``lion_class_str``, so a mirrored use row reads back as
+    # ``lionagi.protocols.messages.action_request.ActionRequest`` and a result row as
+    # ``...action_response.ActionResponse``. A recorded class that is not ActionRequest is refused
+    # outright: an ActionResponse whose ``output`` is None keeps its default ``arguments: {}``
+    # once the omitted field is dropped, so it would pass a field-shape test. Rows with no
+    # recorded class (an older or non-mirror writer) fall back to the field shape, as
+    # ``_bound_content`` tells the classes apart: a use carries function and arguments without
+    # output, a result carries output. The field test is kept for the unclassed row alone; a
+    # recorded class always wins over it.
+    use_class = "lionagi.protocols.messages.action_request.ActionRequest"
     # Rows are told apart by their fields, as _bound_content does: a result carries both
     # function and output, a use function and arguments without output.
     requested: dict[str, Any] = {}
@@ -441,8 +454,10 @@ async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> 
         if name is None:
             stored_row = stored.get(link)
             stored_content = stored_row.get("content") if stored_row is not None else None
+            recorded_class = stored_row.get("lion_class_str") if stored_row is not None else None
             if (
                 isinstance(stored_content, dict)
+                and (not recorded_class or recorded_class == use_class)
                 and "arguments" in stored_content
                 and "output" not in stored_content
             ):
