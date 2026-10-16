@@ -231,7 +231,8 @@ def _env_write_spans(tree: ast.AST) -> list[ast.AST]:
     conditional expression, a loop test) is dropped too, and that is a limit.
     The iterable of the loop a variable name is drawn from is dropped as well,
     as in a clean-up loop over the names a fixture set. The call itself names
-    the variable to write it, so its argument reads nothing.
+    the variable to write it, so a read in one of its value arguments, or in the
+    iterable of the loop it sits in, is dropped with the blanked statement.
     """
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
@@ -553,8 +554,7 @@ def test_no_step_or_script_reads_a_variable_through_the_api() -> None:
     assert WORKFLOWS / "ci.yml" in files
     assert REPO / "scripts" / "check_issue_links.py" in files
     # Limit: this scan reads `.github` and `scripts` only, so an endpoint reached
-    # from a file under `tests/` is out of it; the code scan, which does read
-    # `tests/`, refuses the environment names an endpoint there would use instead.
+    # from a file under `tests/` is out of it.
     assert REPO / "tests" / "conftest.py" not in files
     hits = [path for path in files if _api_reads(path.read_text(errors="replace"))]
     assert hits == []
@@ -1136,7 +1136,36 @@ CI_GATE_CONDITIONAL_GATES = {
     "lion1": "lion1",
 }
 
-CI_GATE_HEREDOC = re.compile(r"<<'PY'\n(?P<body>.*?)\n\s*PY\s*$", re.DOTALL)
+# The aggregate job's own keys, its one step's keys, and the path filters the
+# `changes` job parses. Each is the value the file holds now; a deliberate change
+# edits the pin beside the edit. A key added to the job (`if:` reading the event
+# name, `continue-on-error: true`) can make the required check report success
+# without the aggregate judging anything, and a path dropped from a filter can
+# let a conditional job skip on the pull requests that change it.
+CI_GATE_JOB_KEYS = {"if": "${{ always() }}", "runs-on": "ubuntu-latest"}
+CI_GATE_STEP_KEYS = frozenset({"name", "env", "run"})
+CI_CHANGES_FILTERS = {
+    "studio": [
+        "apps/studio/**",
+        "lionagi/**",
+        "pyproject.toml",
+        "README.md",
+        "LICENSE",
+        "marketplace/**",
+        ".claude-plugin/**",
+        ".dockerignore",
+        ".github/workflows/ci.yml",
+    ],
+    "adr": ["docs/adr/**", "lionagi/state/lifecycle/**"],
+    "imports": ["lionagi/**", "pyproject.toml", "uv.lock", ".github/workflows/ci.yml"],
+    "lionrs": ["lionrs/**", ".github/workflows/ci.yml"],
+    "lion1": ["lion1/**", ".github/workflows/ci.yml"],
+}
+
+# Anchored at the start of the `run:` text and at its end: the heredoc has to feed
+# it alone, so a command before `python - <<'PY'` (an `exit 0`) or in place of it
+# (an `echo`) is not skipped past the match.
+CI_GATE_HEREDOC = re.compile(r"\Apython - <<'PY'\n(?P<body>.*?)\n\s*PY\s*\Z", re.DOTALL)
 
 
 def _ci_gate_source() -> ast.Module:
@@ -1145,6 +1174,142 @@ def _ci_gate_source() -> ast.Module:
     match = CI_GATE_HEREDOC.search(run)
     assert match, "the aggregate check no longer runs a Python heredoc"
     return ast.parse(textwrap.dedent(match.group("body")))
+
+
+def _ci_gate_text() -> str:
+    return (WORKFLOWS / "ci.yml").read_text()
+
+
+def _changes_filters(workflows: Path = WORKFLOWS) -> dict:
+    """The path filters the `changes` job parses, as its own action reads them."""
+    steps = _parse((workflows / "ci.yml").read_text())["jobs"]["changes"]["steps"]
+    filter_step = next(step for step in steps if step.get("id") == "filter")
+    return yaml.safe_load(filter_step["with"]["filters"])
+
+
+def _ci_gate_body(text: str) -> str:
+    """The heredoc body in *text*, refusing a `run:` the heredoc does not fill."""
+    run = _parse(text)["jobs"]["ci-gate"]["steps"][0]["run"]
+    match = CI_GATE_HEREDOC.search(run)
+    assert match, "the aggregate check no longer runs a Python heredoc"
+    return match.group("body")
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        pytest.param(
+            "      run: |\n        python - <<'PY'\n",
+            "      run: |\n        exit 0\n        python - <<'PY'\n",
+            id="command-before-heredoc",
+        ),
+        pytest.param(
+            "      run: |\n        python - <<'PY'\n",
+            "      run: |\n        echo python - <<'PY'\n",
+            id="other-command-before-heredoc",
+        ),
+    ],
+)
+def test_the_aggregate_check_reads_only_its_heredoc(old: str, new: str) -> None:
+    # The step reports python's exit status only while the heredoc is the command
+    # that runs. `exit 0` before it passes the step whatever the gate says, and
+    # `echo` in its place never runs the gate; both leave the script text intact,
+    # so the match is anchored at the start and end of the `run:` value.
+    text = _ci_gate_text()
+    assert _ci_gate_body(text)
+    mutated = text.replace(old, new, 1)
+    assert mutated != text
+    with pytest.raises(AssertionError):
+        _ci_gate_body(mutated)
+
+
+def test_the_changes_job_keeps_its_path_filters() -> None:
+    # Each filter decides whether a conditional job runs or skips. Dropping a path
+    # from one makes that job report its inputs unchanged on the pull requests that
+    # change only that path, so the job skips and the aggregate accepts the skip;
+    # the required check then passes with the job never run on its own paths.
+    assert _changes_filters() == CI_CHANGES_FILTERS
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "            - 'lion1/**'\n",
+        "            - 'apps/studio/**'\n",
+        "            - 'uv.lock'\n",
+        "            - 'docs/adr/**'\n",
+        "            - 'lionrs/**'\n",
+    ],
+    ids=["lion1", "studio", "imports", "adr", "lionrs"],
+)
+def test_the_changes_job_pin_refuses_a_dropped_path(path: str, tmp_path: Path) -> None:
+    # One arm per filter, so dropping a path from any of them is caught: a path
+    # shared by several filters would hide a drop from one alone.
+    text = _ci_gate_text().replace(path, "", 1)
+    assert text != _ci_gate_text()
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text)
+    assert _changes_filters(workflows) != CI_CHANGES_FILTERS
+
+
+def _ci_gate_job_is_pinned(workflows: Path = WORKFLOWS) -> None:
+    """Refuse any edit to the aggregate job's own keys, steps or first step."""
+    job = _parse((workflows / "ci.yml").read_text())["jobs"]["ci-gate"]
+    assert {k: v for k, v in job.items() if k not in ("needs", "steps")} == CI_GATE_JOB_KEYS
+    assert len(job["steps"]) == 1
+    assert set(job["steps"][0]) == CI_GATE_STEP_KEYS
+
+
+def test_the_aggregate_job_keeps_its_own_keys() -> None:
+    # The gate it runs is decided by more than the script inside it. A job `if:`
+    # that reads the event name skips the aggregate on pull requests, leaving a
+    # skipped required check; `continue-on-error` at either level, or a step `if`,
+    # passes the job while its command does not decide the result. The job's keys
+    # other than `needs` and `steps`, its one step, and that step's keys are each
+    # pinned exactly, so an edit to any of them fails here.
+    _ci_gate_job_is_pinned()
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        pytest.param(
+            "    if: ${{ always() }}\n",
+            "    if: ${{ always() && github.event_name != 'pull_request' }}\n",
+            id="job-if-event-name",
+        ),
+        pytest.param(
+            "    runs-on: ubuntu-latest\n    steps:\n",
+            "    runs-on: ubuntu-latest\n    continue-on-error: true\n    steps:\n",
+            id="job-continue-on-error",
+        ),
+        pytest.param(
+            "        NEEDS_CONTEXT: ${{ toJSON(needs) }}\n",
+            "        NEEDS_CONTEXT: ${{ toJSON(needs) }}\n      continue-on-error: true\n",
+            id="step-continue-on-error",
+        ),
+        pytest.param(
+            "      run: |\n",
+            "      if: github.event_name == 'push'\n      run: |\n",
+            id="step-if-event-name",
+        ),
+    ],
+)
+def test_the_aggregate_job_pin_refuses_an_edit(old: str, new: str, tmp_path: Path) -> None:
+    # Each edit above leaves the gate's script untouched and would otherwise be
+    # invisible here: the script answers with the same exit code while the job
+    # above it stops reading that answer, or skips entirely.
+    text = _ci_gate_text()
+    job = text.split("  ci-gate:\n", 1)[1].split("  publish:\n", 1)[0]
+    assert job.count(old) == 1, old
+    edited_job = job.replace(old, new, 1)
+    text = text.replace(job, edited_job, 1)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text)
+    with pytest.raises(AssertionError):
+        _ci_gate_job_is_pinned(workflows)
 
 
 def _needs_context(results: dict[str, str], outputs: dict[str, str] | None) -> dict:
@@ -1211,13 +1376,16 @@ def test_the_aggregate_check_keeps_its_conditional_gates(
 
 
 @pytest.mark.parametrize("name", CI_GATE_HARD_GATES)
-def test_every_hard_gate_failure_fails_the_aggregate(
-    name: str, monkeypatch: pytest.MonkeyPatch, capsys
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled"])
+def test_no_hard_gate_may_fail_skip_or_cancel_the_aggregate(
+    name: str, result: str, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    # One arm per name, so a change that stops judging a particular gate (a slice
-    # in the loop, a rename in the list) is caught for the gate it drops and not
-    # only for the first.
-    rc, out = _run_ci_gate(_needs_context({name: "failure"}, {}), monkeypatch, capsys)
+    # One arm per name and result, so a change that stops judging a particular
+    # gate or a particular result (a slice in the loop, a rename in the list) is
+    # caught for the gate and the result it drops and not only for the first. A
+    # skipped or cancelled required job reports neither success nor failure, so
+    # it has to fail the aggregate like a failed one does.
+    rc, out = _run_ci_gate(_needs_context({name: result}, {}), monkeypatch, capsys)
     assert rc == 1, out
 
 
@@ -1225,10 +1393,9 @@ def test_every_hard_gate_failure_fails_the_aggregate(
     ("results", "outputs", "expected"),
     [
         pytest.param({}, {}, 0, id="all-success"),
-        pytest.param({"test": "failure"}, {}, 1, id="hard-gate-failure"),
-        pytest.param({"test": "skipped"}, {}, 1, id="hard-gate-skipped"),
-        pytest.param({"test": "cancelled"}, {}, 1, id="hard-gate-cancelled"),
         pytest.param({"lion1": "skipped"}, {"lion1": "true"}, 1, id="conditional-changed-skip"),
+        pytest.param({"lion1": "cancelled"}, {"lion1": "true"}, 1, id="conditional-changed-cancel"),
+        pytest.param({"lion1": "failure"}, {"lion1": "true"}, 1, id="conditional-changed-failure"),
         pytest.param(
             {"lion1": "failure"}, {"lion1": "false"}, 1, id="conditional-unchanged-failure"
         ),
@@ -1261,3 +1428,17 @@ def test_a_conditional_job_may_skip_an_unchanged_run_but_not_cancel_one(
     outputs = {CI_GATE_CONDITIONAL_GATES[job]: "false"}
     rc, out = _run_ci_gate(_needs_context({job: result}, outputs), monkeypatch, capsys)
     assert rc == expected, out
+
+
+@pytest.mark.parametrize("job", sorted(CI_GATE_CONDITIONAL_GATES))
+@pytest.mark.parametrize("result", ["cancelled", "failure"])
+def test_a_conditional_job_that_is_not_success_fails_a_changed_run(
+    job: str, result: str, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # The inputs a conditional job filters on changed, so the job has to run and
+    # succeed: a cancelled or failed job means the check the merge depends on saw
+    # nothing, so the aggregate fails. The unchanged arms above cover the other
+    # direction, so a comparison that accepts either result is caught here.
+    outputs = {CI_GATE_CONDITIONAL_GATES[job]: "true"}
+    rc, out = _run_ci_gate(_needs_context({job: result}, outputs), monkeypatch, capsys)
+    assert rc == 1, out
