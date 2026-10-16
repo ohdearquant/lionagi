@@ -334,6 +334,41 @@ async def test_dedup_stage_exception_releases_finding_to_extract():
 
 
 @pytest.mark.asyncio
+async def test_a_tracker_search_that_answers_nothing_releases_the_finding_once():
+    """A search agent that runs and posts no verdict releases the finding to extraction,
+    once, and records that the verdict is missing."""
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+    built: list[str] = []
+
+    async def make_agent(role, *, name=None, **kwargs):
+        built.append(name)
+        return _StubAgent(name, None)
+
+    operated: list[str] = []
+
+    async def operate_with_repair(agent, *args, **kwargs):
+        operated.append(agent.name)
+        return None
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+
+    await run.emit(FindingPosted(description="the search finds nothing to say"))
+    await run.wait_quiescence()
+
+    assert [name.split("-")[0] for name in built] == ["dedup"]
+    assert operated == built
+    assert [s for s, _ in calls] == ["extract"]
+    assert sum(e["type"] == "dedup_missing" for e in events) == 1
+    assert not any(e["type"] == "stage_error" for e in events)
+
+
+@pytest.mark.asyncio
 async def test_dedup_stage_exception_does_not_double_release_with_late_verdict():
     """A dedup leg that raises after already emitting a verdict must not
     double-spawn extraction."""

@@ -18,7 +18,10 @@ turns the gate off for the whole run. Three cases are now raised instead:
   engine's `agent_env` on a judge model that takes no environment (an API
   model), and an MCP server allowlist that cannot be enforced where an engine's
   `make_agent` is handed one (`Engine.judge` passes none itself). The build's
-  error is raised as it is, with no `judge_error`.
+  error is raised as it is, with no `judge_error`. Any other error building the
+  judge, an `agent_mcp_config_path` that does not parse among them, is not one
+  of these: without containment it fails open as before, and under containment
+  the third case raises it.
 - A `ContainmentRefusedError` is found anywhere on the error's cause chain. The
   model layer wraps a provider's refusal in its own error, so the chain is walked;
   the refusal is raised.
@@ -33,9 +36,13 @@ D3's fail-open rule for every other error. The cost is the one D3's rejected
 alternative named: under containment a judge provider failure stops what the
 judge gates instead of letting it expand. Where an engine runs its stages under
 a guard that records a stage's error and carries on (the hypothesis engine),
-that is the item being judged, not the whole run; a stage whose own failure
-releases its item onward runs the judge before that release, so a judge that
-raises ends the item. An engine that needs the judge to be optional
+that is the item being judged, and the run goes on with its other items; a
+stage whose own failure releases its item onward runs the judge before that
+release, so a judge that raises ends the item. The item is recorded as that
+stage's error and the run returns what its other items produced: the hypothesis
+engine raises only when nothing past its seeds was produced, and every item its
+judge sees comes after the run has produced a question, so a judge that raises
+does not bring a run to that point. An engine that needs the judge to be optional
 leaves `judge_model` unset.
 
 ## Context
