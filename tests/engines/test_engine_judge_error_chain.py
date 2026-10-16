@@ -223,3 +223,39 @@ async def test_the_chain_from_a_provider_4xx_ends_and_names_the_response():
 
     assert len(seen) <= 8
     assert "ClientResponseError" in kinds
+
+
+async def test_an_uncontained_judge_raises_a_refusal_its_call_raises():
+    """The refusal itself, with nothing wrapping it, is the first error the walk reads."""
+    from lionagi._errors import ContainmentRefusedError
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+
+    with pytest.raises(ContainmentRefusedError, match="refuses its containment"):
+        await _judge(Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(refusal))
+
+
+async def test_a_link_that_is_not_an_exception_ends_the_walk():
+    """An error class may answer ``__cause__`` with something that is not an exception;
+    the walk follows exceptions only, so the judge fails open as for any other error."""
+
+    class NotAnError:
+        __cause__ = None
+
+    class OddLinks(RuntimeError):
+        @property
+        def __cause__(self):
+            return NotAnError()
+
+    # Read outside the handler: an error raised with this chain as its context could not be
+    # reported by a traceback that walks the same links.
+    raised = None
+    try:
+        allowed, events = await _judge(
+            Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(OddLinks("odd links"))
+        )
+    except Exception as exc:
+        raised = f"{type(exc).__name__}: {exc}"
+    assert raised is None, raised
+    assert allowed is True
+    assert [kind for kind, _ in events] == ["judge_error"]

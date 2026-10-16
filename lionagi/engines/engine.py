@@ -1460,7 +1460,11 @@ class Engine:
                 if isinstance(cause, ContainmentRefusedError):
                     raise cause from cause.__cause__
                 seen.add(id(cause))
-                pending.extend((cause.__context__, cause.__cause__))
+                pending.extend(
+                    link
+                    for link in (cause.__context__, cause.__cause__)
+                    if isinstance(link, BaseException)
+                )
             # No refusal on the chain. A chain that loops back on itself lands
             # here too, instead of walking forever. Under containment the refusal
             # can arrive as any error type (an unreadable directory, a config the

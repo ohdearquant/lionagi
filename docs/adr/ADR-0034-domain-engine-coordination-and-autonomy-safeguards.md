@@ -582,7 +582,7 @@ indirectly. Enforceable agent creation and monotonic deadline checks are require
 This would prevent expansion whenever quality cannot be proven. It lost because a
 judge provider or parse failure would become a global availability dependency.
 Budget exhaustion still fails closed; other judge errors fail open under the hard
-bounds. Amendment 1 raises every judge error under `contain_account_integrations`.
+bounds. Amendment 1 raises every other judge error under `contain_account_integrations`.
 
 ### Fabricate a minimal event after repair exhaustion
 
