@@ -38,5 +38,5 @@ class LatticeEmbedEndpoint(Endpoint):
     """Embeddings from a running `lattice serve`; no API key."""
 
     def __init__(self, config=None, **kwargs):
-        _setup_lattice_endpoint(kwargs)
+        _setup_lattice_endpoint(config, kwargs)
         super().__init__(config, **kwargs)

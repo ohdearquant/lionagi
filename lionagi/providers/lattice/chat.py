@@ -29,8 +29,9 @@ class LatticeLoraSelection(BaseModel):
 class LatticeChatCompletionsRequest(OpenAIChatCompletionsRequest):
     """Request body for Lattice `POST /v1/chat/completions`.
 
-    The server refuses `tools`, `tool_choice`, `n` above 1, the `tool` and `developer` roles,
-    and a conversation that does not end on a user message; `model` must be the id it serves.
+    The OpenAI fields are forwarded, not validated here: a request that sets `tools`,
+    `tool_choice`, `n` above 1, a `tool` or `developer` role, or one that does not end on a
+    user message is refused by the server. `model` must be the id the server serves.
     """
 
     reasoning_budget: int | None = Field(
@@ -56,5 +57,5 @@ class LatticeChatEndpoint(Endpoint):
     """Chat completions from a running `lattice serve`; no API key."""
 
     def __init__(self, config=None, **kwargs):
-        _setup_lattice_endpoint(kwargs)
+        _setup_lattice_endpoint(config, kwargs)
         super().__init__(config, **kwargs)

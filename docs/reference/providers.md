@@ -49,10 +49,11 @@ DeepSeek's `reasoning_effort` field maps lionagi effort levels: `low`/`medium` �
 `xhigh` → `"max"`. DeepSeek native values (`low`, `medium`, `high`, `max`) pass through unchanged.
 
 Lattice is a local inference server started with `lattice serve`. lionagi calls it at
-`http://127.0.0.1:8080/v1` unless `base_url=` names another address, and `model` must be the id
-the server reports at `GET /v1/models`. The server refuses tool calling. Its requests also take
-`reasoning_budget`, `top_k`, `repetition_penalty`, and `lora`, an ordered list of resident
-adapters (`{"id": ..., "scale": ...}`).
+`http://127.0.0.1:8080/v1`. Its address guard admits Lattice only on the loopback hosts
+`localhost`, `127.0.0.1` and `::1` — a `base_url=` may change the port or the path but not the
+host — and `model` must be the id the server reports at `GET /v1/models`. The server refuses
+tool calling. Its requests also take `reasoning_budget`, `top_k`, `repetition_penalty`, and
+`lora`, an ordered list of resident adapters (`{"id": ..., "scale": ...}`).
 
 ```python
 model = li.iModel(provider="lattice", model="qwen3.5-0.8b")
@@ -303,6 +304,12 @@ endpoint automatically. This registry edit is for built-in providers. Third-part
 providers should normally be declared by a plugin; trusted, enabled plugin provider
 targets are imported lazily after a built-in miss, and cannot override a built-in
 provider name.
+
+**Step 5 — add the provider to the inventories**
+
+The provider list above, the chat/embed and resolution tables in `docs/api/imodel.md`,
+and the provider package list in `CLAUDE.md` are each hand-maintained. Add the provider to
+all three; nothing else prompts the update.
 
 ## Default provider config
 

@@ -6,6 +6,7 @@ server shaped like `lattice serve`."""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -18,12 +19,18 @@ from aiohttp.test_utils import TestServer
 from pydantic import ValidationError
 
 from lionagi.providers.lattice._config import LATTICE_DEFAULT_BASE_URL
-from lionagi.providers.lattice.chat import LatticeChatCompletionsRequest, LatticeChatEndpoint
+from lionagi.providers.lattice.chat import (
+    LatticeChatCompletionsRequest,
+    LatticeChatEndpoint,
+    LatticeLoraSelection,
+)
 from lionagi.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
+from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel
 
 MODEL = "qwen3.5-0.8b"
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def _chat_reply(content: str) -> dict:
@@ -206,3 +213,113 @@ async def test_imodel_embed_round_trip_sends_only_the_fields_set(lattice_server)
     assert request["path"] == "/v1/embeddings"
     assert request["body"] == {"model": MODEL, "input": ["a", "b"]}
     assert "Authorization" not in request["headers"]
+
+
+def _lattice_doc_paragraph() -> str:
+    doc = (REPO_ROOT / "docs" / "reference" / "providers.md").read_text()
+    start = doc.index("Lattice is a local inference server")
+    end = doc.index("```python", start)
+    return doc[start:end]
+
+
+def test_the_documented_local_addresses_are_the_ones_the_guard_admits():
+    """The docs and the endpoint's address guard have to say the same thing: the port may
+    change, the host may not move off loopback."""
+    endpoint = match_endpoint(provider="lattice", endpoint="chat", model=MODEL, base_url=None)
+    for admitted in (LATTICE_DEFAULT_BASE_URL, "http://localhost:9999/v1", "http://[::1]:8080/v1"):
+        endpoint.config.base_url = admitted
+        endpoint._assert_ssrf_safe_url()
+
+    endpoint.config.base_url = "http://192.168.1.50:8080/v1"
+    with pytest.raises(PermissionError):
+        endpoint._assert_ssrf_safe_url()
+
+    paragraph = _lattice_doc_paragraph()
+    for host in ("localhost", "127.0.0.1", "::1"):
+        assert host in paragraph
+    assert "loopback" in paragraph
+    assert "names another address" not in paragraph
+
+
+def test_a_supplied_api_key_is_dropped_like_the_other_keyless_endpoint():
+    endpoint = match_endpoint(
+        provider="lattice", endpoint="chat", model=MODEL, api_key="sk-not-a-lattice-key"
+    )
+
+    assert endpoint.config.api_key is None
+    assert endpoint.config._api_key is None
+    _, headers = endpoint.create_payload(
+        {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}
+    )
+    assert not {"Authorization", "x-api-key"} & set(headers)
+
+
+def test_an_endpoint_rebuilds_from_its_own_serialized_config():
+    endpoint = match_endpoint(provider="lattice", endpoint="chat", model=MODEL)
+
+    rebuilt = LatticeChatEndpoint(config=endpoint.to_dict()["config"])
+
+    assert rebuilt.config.allow_local_network is True
+    assert rebuilt.config.serialize_by_alias is True
+
+
+def test_a_caller_supplied_local_network_setting_survives_every_construction_path():
+    config = EndpointConfig(
+        provider="lattice",
+        endpoint="chat/completions",
+        name="lattice_chat",
+        base_url=LATTICE_DEFAULT_BASE_URL,
+        auth_type="none",
+        allow_local_network=False,
+    )
+    direct = LatticeChatEndpoint(config=config)
+
+    assert direct.config.allow_local_network is False
+    assert (
+        LatticeChatEndpoint(config=direct.config.model_copy(deep=True)).config.allow_local_network
+        is False
+    )
+    assert (
+        match_endpoint(
+            provider="lattice", endpoint="chat", model=MODEL, allow_local_network=False
+        ).config.allow_local_network
+        is False
+    )
+
+
+def test_an_adapter_instance_is_serialized_and_a_null_adapter_list_is_omitted():
+    endpoint = match_endpoint(provider="lattice", endpoint="chat", model=MODEL)
+    messages = [{"role": "user", "content": "hi"}]
+
+    payload, _ = endpoint.create_payload(
+        {"model": MODEL, "messages": messages, "lora": [LatticeLoraSelection(id=3, scale=0.25)]}
+    )
+    assert payload["lora"] == [{"id": 3, "scale": 0.25}]
+    assert json.dumps(payload)  # a selection instance here raised TypeError before
+
+    null_payload, _ = endpoint.create_payload({"model": MODEL, "messages": messages, "lora": None})
+    assert "lora" not in null_payload
+
+
+def test_the_openai_fields_the_server_refuses_are_forwarded_unchanged():
+    """lionagi narrows nothing here; the server is what rejects these."""
+    endpoint = match_endpoint(provider="lattice", endpoint="chat", model=MODEL)
+    request = LatticeChatCompletionsRequest(
+        model=MODEL,
+        messages=[{"role": "user", "content": "hi"}],
+        n=2,
+        tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
+    )
+
+    payload, _ = endpoint.create_payload(request)
+
+    assert payload["n"] == 2
+    assert payload["tools"] == [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+
+
+def test_the_provider_inventories_name_lattice():
+    imodel_doc = (REPO_ROOT / "docs" / "api" / "imodel.md").read_text()
+    claude_md = (REPO_ROOT / "CLAUDE.md").read_text()
+
+    assert imodel_doc.count('"lattice"') >= 3  # chat table, embed table, resolution table
+    assert "`lattice`" in claude_md

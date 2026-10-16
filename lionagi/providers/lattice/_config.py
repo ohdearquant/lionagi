@@ -33,10 +33,28 @@ LatticeConfigs._PROVIDER = "lattice"
 LatticeConfigs._PROVIDER_ALIASES = []
 
 
-def _setup_lattice_endpoint(kwargs: dict) -> None:
-    """Shared init for Lattice endpoints. The server listens on loopback by default, which
-    the endpoint's address guard refuses unless local addresses are allowed."""
-    kwargs.setdefault("allow_local_network", True)
+def _setup_lattice_endpoint(config, kwargs: dict) -> None:
+    """Shared init for Lattice endpoints: never carry a credential, and default the address
+    guard and payload serialization to what a keyless, loopback, OpenAI-shaped server needs.
+
+    The server listens on loopback, which the guard refuses unless local addresses are allowed,
+    so each endpoint opts in. A value the caller already stated -- in a config dict or on an
+    ``EndpointConfig`` -- is left as it is; only an unstated one takes the Lattice default. The
+    defaults go through ``kwargs``, never on top of a config that already names the field, so
+    rebuilding an endpoint from its own serialized config does not pass the field twice.
+    """
+    if isinstance(config, dict):
+        stated = frozenset(config)
+    elif config is not None:
+        stated = frozenset(getattr(config, "model_fields_set", ()) or ())
+    else:
+        stated = frozenset()
+
+    if "allow_local_network" not in stated:
+        kwargs.setdefault("allow_local_network", True)
+    if "serialize_by_alias" not in stated:
+        kwargs.setdefault("serialize_by_alias", True)
+    kwargs.pop("api_key", None)
 
 
 __all__ = ("LATTICE_DEFAULT_BASE_URL", "LatticeConfigs", "_setup_lattice_endpoint")
