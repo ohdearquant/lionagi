@@ -3,6 +3,26 @@ import { expect, test } from "@playwright/test";
 const SMOKE_SCHEDULE_NAME = "e2e-smoke-nightly-report";
 const SMOKE_SESSION_NAME = "e2e-smoke-completed-run";
 
+// React Flow's viewport before any fit has run: with no defaultViewport given,
+// the store starts at transform [0, 0, 1], which the canvas serializes into the
+// viewport's style as `translate(0px,0px) scale(1)`.
+const initialViewport = { x: 0, y: 0, zoom: 1 };
+
+type ViewportTransform = { x: number; y: number; zoom: number };
+
+/** The run graph's viewport translate and scale, parsed out of its style. */
+function viewportTransform(style: string): ViewportTransform {
+  const parts = /translate\(([^,]+),\s*([^)]+)\)\s*scale\(([^)]+)\)/.exec(style);
+  if (parts === null) {
+    throw new Error(`run graph viewport has no transform: ${style}`);
+  }
+  const [x, y, zoom] = [parts[1], parts[2], parts[3]].map((part) => Number.parseFloat(part));
+  if (![x, y, zoom].every(Number.isFinite)) {
+    throw new Error(`run graph viewport has an unparseable transform: ${style}`);
+  }
+  return { x, y, zoom };
+}
+
 test.describe("mobile schedule detail controls", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -65,24 +85,40 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   const expand = page.getByRole("button", { name: "Expand execution graph", exact: true });
   await expect(expand).toBeVisible();
   const inlineViewport = page.locator("#run-dag .react-flow__viewport").first();
-  // The inline graph fits itself on a later frame, once its nodes are laid out and
-  // its container has grown to them, so a transform read straight away can be the
-  // unfitted one. Take the baseline only after the nodes are drawn and the
-  // transform has held still between two reads.
+  // The panel grows to the layout's reported height in the same commit that lays
+  // the nodes out, and React Flow fits the view in the call that measures those
+  // nodes; this canvas fits once more on a later animation frame. The nodes can
+  // therefore be drawn before that second fit has run, while the viewport is still
+  // on its unfitted initial transform, so take the baseline only once the transform
+  // has both moved off that initial viewport and held still between two reads.
   await expect(page.locator("#run-dag .react-flow__node").first()).toBeVisible();
-  let lastRead: string | null | undefined;
+  let lastRead: ViewportTransform | null = null;
   await expect
     .poll(
       async () => {
-        const current = await inlineViewport.getAttribute("style");
-        const held = current === lastRead;
-        lastRead = current;
-        return held;
+        const style = await inlineViewport.getAttribute("style");
+        const fitted = style === null ? null : viewportTransform(style);
+        if (fitted === null) {
+          lastRead = null;
+          return false;
+        }
+        const movedOffInitial =
+          fitted.x !== initialViewport.x ||
+          fitted.y !== initialViewport.y ||
+          fitted.zoom !== initialViewport.zoom;
+        const held =
+          lastRead !== null &&
+          fitted.x === lastRead.x &&
+          fitted.y === lastRead.y &&
+          fitted.zoom === lastRead.zoom;
+        lastRead = fitted;
+        return movedOffInitial && held;
       },
       { intervals: [250] },
     )
     .toBe(true);
   const inlineTransform = await inlineViewport.getAttribute("style");
+  expect(inlineTransform).not.toBeNull();
 
   await expand.click();
   const dialog = page.getByRole("dialog", { name: "Execution graph", exact: true });
@@ -106,7 +142,7 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   await expect(dialog).toBeHidden();
   await expect(expand).toBeFocused();
   await expect(page.locator("#main-content")).toHaveCSS("overflow-y", "auto");
-  await expect(inlineViewport).toHaveAttribute("style", inlineTransform ?? "");
+  await expect(inlineViewport).toHaveAttribute("style", inlineTransform!);
 
   await expand.click();
   await dialog.getByRole("button", { name: "Collapse execution graph", exact: true }).click();
