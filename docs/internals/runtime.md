@@ -67,24 +67,31 @@ whose schema another application manages, and never migrates, stamps or reconfig
   in a table's or an index's definition is read as a name where SQLite reads a name: after a dot,
   after a word that takes a name (`REFERENCES`, `ON`, `COLLATE`, `CONSTRAINT` and the like), in
   the column list after `REFERENCES <table>`, or immediately before a `(`, which makes it a
-  function's name rather than a string. Everywhere else it is a string literal when it names no
-  column, and a literal keeps its quotes and equals only the same literal written the same way; a
-  token in a type position, as in `id "TEXT"`, is compared the same way, so quoting a type name is
-  refused against the bare type even though SQLite reads it as the type name. In the column list
-  after `REFERENCES <table>` a single-quoted token is a name too, since SQLite's grammar takes a
-  string there; anywhere else it is compared as the string it spells, so a single-quoted name that
+  function's name, or in a column's type a sized type's name, rather than a string. Everywhere
+  else it is a string literal when it names no column, and a literal keeps its quotes and equals
+  only the same literal written the same way; a token in a type position with no size, as in
+  `id "TEXT"`, is compared the same way, so quoting a type name is refused against the bare type
+  even though SQLite reads it as the type name. A sized one (`id "VARCHAR"(10)`) opens a
+  parenthesis, so its definition equals the bare `VARCHAR(10)`, and it is refused by its column's
+  type instead, which SQLite reports without the size. In the column list after
+  `REFERENCES <table>` a single-quoted token is a name too, since SQLite's grammar takes a string
+  there; anywhere else it is compared as the string it spells, so a single-quoted name that
   SQLite also reads as a name (`REFERENCES 'runs'`, `COLLATE 'NOCASE'`) is refused against the
   bare spelling. A quoted name that a bare word would read as a value (`"null"`,
   `"current_date"`, `"current_time"`, `"current_timestamp"`) or as the `NOT` operator (`"not"`),
-  or a name holding a quote, equals only
-  the same name quoted, never the bare word, though a plain quoted name like `"status"` equals its
-  bare spelling. A blob literal (`x'41'`) is a token of its own. The mode fails closed,
-  since whether SQLite reads a quoted token as a name or as a string literal depends on the scope
-  it appears in and on the connection's double-quoted-string setting. A table whose constraints
-  declare any conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or
-  `FAIL`), or a trigger or view that names one (`INSERT OR REPLACE`, `REPLACE INTO`,
-  `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the authorizer cannot
-  see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution ends.
+  or that a bare word cannot spell (a name holding a quote, a space or punctuation, or starting
+  with a digit), equals only the same name quoted, never the bare word, though a plain quoted
+  name like `"status"` equals its bare spelling. A blob literal (`x'41'`) is a token of its own.
+  A virtual table's definition is its module's name, compared without regard to case as SQLite
+  looks it up, and each module argument as written, since SQLite hands the module the argument's
+  text: `USING fts4("x"(1))` and `USING fts4(x(1))` differ, as do `fts3(x)` and `fts4(x)`. The
+  mode fails closed, since whether SQLite reads a quoted token as a name or as a string literal
+  depends on the scope it appears in and on the connection's double-quoted-string setting. A
+  table whose constraints declare any conflict resolution but ABORT (`ON CONFLICT REPLACE`,
+  `ROLLBACK`, `IGNORE` or `FAIL`), or a trigger or view that names one (`INSERT OR REPLACE`,
+  `REPLACE INTO`, `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the
+  authorizer cannot see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution
+  ends.
 - **Operations.** A StateDB method marked as an operation the profile names runs inside that
   operation's scope (a context variable, so code the operation calls inherits it). The scope ends
   when the operation returns, even for a task the operation started. `_tx()` and the

@@ -2009,6 +2009,56 @@ async def test_a_single_quoted_literal_outside_a_references_list_is_still_a_lite
     assert "runs" in reason
 
 
+async def test_a_single_quoted_collation_after_a_references_list_is_still_a_literal(tmp_path):
+    """The column list after ``REFERENCES <table>`` ends at its closing parenthesis, so a
+    single-quoted collation after it is the string it spells and refused against the bare name."""
+    old = "REFERENCES runs(id)"
+    reference = _store(
+        tmp_path / "reference.db",
+        _SCHEMA.replace(old, "REFERENCES runs (id) COLLATE NOCASE", 1),
+    )
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA.replace(old, "REFERENCES runs (id) COLLATE 'NOCASE'", 1)
+    )
+    reason = await _refused_against(reference, store)
+    assert "events" in reason
+
+
+def _virtual_table(statement: str):
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(statement)
+        (table,) = read_closure(conn, ["notes"]).tables
+    return table
+
+
+_VIRTUAL_TABLE_PAIRS = {
+    "a quoted call in an argument": ('fts4("x"(1))', "fts4(x(1))"),
+    "an argument in another case": ("fts4(x)", "fts4(X)"),
+    "another module": ("fts4(x)", "fts3(x)"),
+}
+
+
+@pytest.mark.parametrize(
+    ("reference", "store"), _VIRTUAL_TABLE_PAIRS.values(), ids=list(_VIRTUAL_TABLE_PAIRS)
+)
+def test_a_virtual_table_is_compared_by_its_module_and_each_argument_as_written(reference, store):
+    """SQLite hands a virtual table's module each argument's text, which the module reads as it
+    chooses, so two tables whose columns read alike differ when an argument is spelled otherwise
+    or the module is another."""
+    expected = _virtual_table(f"CREATE VIRTUAL TABLE notes USING {reference}")
+    observed = _virtual_table(f"CREATE VIRTUAL TABLE notes USING {store}")
+    assert expected.columns == observed.columns
+    assert expected.options == observed.options == frozenset({"virtual"})
+    assert expected.definitions != observed.definitions
+
+
+def test_a_virtual_table_module_is_named_without_regard_to_case():
+    """SQLite looks a module up without regard to ASCII case."""
+    assert _virtual_table("CREATE VIRTUAL TABLE notes USING FTS4(x)") == _virtual_table(
+        "CREATE VIRTUAL TABLE notes USING fts4(x)"
+    )
+
+
 _SAME_NAME_PAIRS = {
     "null in two quote styles": (
         "null",

@@ -109,9 +109,12 @@ _NAME_POSITIONS = frozenset(
         "constraint",
     }
 )
-# Words SQLite never reads as a name when written bare, whether a column of that name is in scope
-# or not: a quoted name spelled like one of them is that name, the bare word is a value, or for
-# ``not`` the NOT operator, so ``not (x)`` negates while ``"not" (x)`` calls a function named not.
+# Words SQLite never reads as a name when written bare in an expression, whether a column of that
+# name is in scope or not: a quoted name spelled like one of them is that name, the bare word is a
+# value, or for ``not`` the NOT operator, so ``not (x)`` negates while ``"not" (x)`` calls a
+# function named not. A column may still be declared under one of them bare
+# (``current_date TEXT``); its definition keeps the bare word, which the same column declared
+# quoted does not equal, so a store that quotes it is refused against one that does not.
 # ``true`` and ``false`` are deliberately absent: a bare ``true`` is the value only when no column
 # is named ``true``, and where one is, the column wins and the two spellings read alike.
 _VALUE_WORDS = frozenset({"null", "current_date", "current_time", "current_timestamp", "not"})
@@ -133,9 +136,9 @@ def _spelled_name(name: str) -> str:
     The folded name is compared bare when a bare word can spell it (it is not empty, does not
     start with a digit and holds only identifier characters) and it is not one of
     :data:`_VALUE_WORDS`, which a bare word reads as a value or an operator (``"null"``,
-    ``"not"``); otherwise it is kept in
-    backquotes, with any backquote in it doubled. A string literal keeps its double quotes and a
-    bare word has none, so neither can equal the backquoted form.
+    ``"not"``); otherwise it is kept in backquotes, with any backquote in it doubled. A string
+    literal keeps its double quotes and a bare word has none, so neither can equal the
+    backquoted form.
     """
     folded = _fold(name)
     if (
@@ -151,9 +154,10 @@ def _spelled_name(name: str) -> str:
 def _opens_a_call(sql: str, index: int) -> bool:
     """Whether the token at *index*, past optional whitespace, opens a parenthesis.
 
-    A quoted token immediately before one is a function's name to SQLite, not a string literal.
-    Only whitespace is skipped: a comment between the token and the parenthesis leaves the token
-    a literal, so such a definition is refused even though SQLite reads it as the call.
+    A quoted token immediately before one is a name to SQLite, not a string literal: a function's
+    name, or in a column's type the name of a sized type (``"VARCHAR"(10)``). Only whitespace is
+    skipped: a comment between the token and the parenthesis leaves the token a literal, so such
+    a definition is refused even though SQLite reads it as the call.
     """
     while index < len(sql) and sql[index] in " \t\n\v\f\r":
         index += 1
@@ -192,9 +196,12 @@ def _sql_tokens(
     ``(``, which makes it a function's name rather than a string. Such a name is compared as
     :func:`_spelled_name` spells it, folded to the bare word where a bare word spells it the same
     and kept in backquotes otherwise (``"null"``, or a name holding a quote). A double-quoted token
-    in a type position, as in ``id "TEXT"``, is kept as a double-quoted literal and refused against
-    the same type spelled any other way, although SQLite reads it as the type name: the comparison
-    refuses that spelling rather than read it as SQLite does.
+    in a type position with no size, as in ``id "TEXT"``, is kept as a double-quoted literal and
+    refused against the same type spelled any other way, although SQLite reads it as the type
+    name: the comparison refuses that spelling rather than read it as SQLite does. A sized one, as
+    in ``id "VARCHAR"(10)``, opens a parenthesis, so its definition reads it as a name and equals
+    the bare ``VARCHAR(10)``; SQLite reports that column's type without the size (``VARCHAR``),
+    so the column differs and the store is refused all the same.
     """
     tokens: list[tuple[str, str]] = []
     # Inside the parenthesized column list after REFERENCES <table>, where every token is a name.
@@ -498,6 +505,11 @@ class TableShape:
     (``NO ACTION``, ``COLLATE BINARY``, ``ASC``), constraints in another order, a column's
     ``UNIQUE`` and the table's, ``<>`` and ``!=``. A column's ``default`` is compared as written,
     since SQLite stores the word as given: ``DEFAULT open`` and ``DEFAULT Open`` differ.
+    A virtual table's ``definitions`` are instead its module's name, folded, and each module
+    argument as written, with only whitespace and comments set aside: SQLite looks a module up
+    without regard to ASCII case and hands it each argument's text, which the module reads as it
+    chooses, so ``USING fts4("x"(1))`` and ``USING fts4(x(1))`` differ, as do ``fts3(x)`` and
+    ``fts4(x)``, whose columns read alike.
     Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
     a store built by the managing application.
     """
@@ -659,6 +671,24 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
     return frozenset(found)
 
 
+def _module_arguments(sql: str) -> frozenset[str]:
+    """A virtual table's module and each of its arguments, for ``TableShape.definitions``.
+
+    The module's name is folded, since SQLite looks a module up without regard to ASCII case; each
+    argument keeps every token as written, since SQLite hands the module the argument's text.
+    """
+    tokens = _sql_tokens(sql, verbatim=True)
+    # The module's argument list is the statement's first parenthesis: a table name holding one is
+    # quoted, and a quoted name is a single token.
+    start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), len(tokens))
+    if start < 2:
+        return frozenset()
+    found = {"using " + _fold(tokens[start - 1][1])}
+    if start < len(tokens):
+        found.update(_joined(group) for group in _groups(tokens, start))
+    return frozenset(found)
+
+
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
     """The terms of a CREATE INDEX, each in one spelling: a column, an expression, a COLLATE."""
     tokens = _sql_tokens(index_sql, spelled=True, columns=columns)
@@ -718,14 +748,15 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
             key.append("where " + _predicate(index_sql, names))
         unique.add(tuple(key))
     tokens = _sql_tokens(sql, spelled=True, columns=names)
+    options = _options(tokens)
     return TableShape(
         _fold(name),
         columns,
         frozenset(unique),
         _checks(tokens),
-        _options(tokens),
+        options,
         _conflicts(tokens),
-        _definitions(tokens),
+        _module_arguments(sql) if "virtual" in options else _definitions(tokens),
     )
 
 
