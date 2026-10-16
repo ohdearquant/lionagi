@@ -484,7 +484,7 @@ def test_an_encoding_refusal_names_the_field(tmp_path, fields, named):
     assert named in str(caught.value)
 
 
-def test_an_override_key_refusal_cuts_the_key_like_the_argument_refusal(tmp_path):
+def test_a_long_override_key_is_not_printed_in_its_refusal(tmp_path):
     key = "k" * 200 + "\udcff"
 
     with pytest.raises(CLIInputRefusedError) as caught:
@@ -902,6 +902,75 @@ def test_a_refused_override_key_is_never_printed(tmp_path, key, contained):
         assert _SECRET_IN_A_KEY not in str(caught.value)
         assert _SECRET_IN_A_KEY not in repr(caught.value)
     assert _SECRET_IN_A_KEY not in str(constructed.value.to_dict(include_cause=True))
+
+
+_SECRET_IN_A_VALUE = "sk-SECRET-VALUE-789"
+
+
+@pytest.mark.parametrize(
+    "update,named",
+    [
+        ({"config_overrides": {"k": f"v{_SECRET_IN_A_VALUE}\udcff"}}, "config override entry 0"),
+        (
+            {"config_overrides": {"k": {"inner": f"{_SECRET_IN_A_VALUE}\ud800"}}},
+            "config override entry 0",
+        ),
+        ({"system_prompt": f"{_SECRET_IN_A_VALUE}\udcff"}, "The system prompt"),
+        ({"reasoning_effort": f"high{_SECRET_IN_A_VALUE}\udcff"}, "reasoning_effort"),
+        (
+            {"plan_mode_reasoning_effort": f"high{_SECRET_IN_A_VALUE}\udcff"},
+            "plan_mode_reasoning_effort",
+        ),
+    ],
+    ids=["override-value", "inline-table", "system-prompt", "effort", "plan-effort"],
+)
+def test_a_copy_the_command_builder_cannot_encode_is_refused_without_its_text(
+    tmp_path, update, named
+):
+    """model_copy(update=...) skips validation, so the command builder is the first to
+    encode a copy's text: it names the field, and neither the refusal nor its chain holds
+    the text, which the codec's own error holds whole."""
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update=update)
+    with pytest.raises(ValueError) as built:
+        copied.as_cmd_args()
+
+    assert named in str(built.value)
+    assert not isinstance(built.value, UnicodeEncodeError)
+    assert built.value.__context__ is None
+    assert built.value.__cause__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(built.value)
+
+
+def test_an_argument_exec_cannot_encode_is_refused_without_its_text():
+    with pytest.raises(ValueError) as refused:
+        codex_mod._refuse_oversized_command(["codex", "-c", f"k={_SECRET_IN_A_VALUE}\ud800"])
+
+    assert "-c override at argument 2" in str(refused.value)
+    assert not isinstance(refused.value, UnicodeEncodeError)
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_key_refusal_keeps_no_parser_error(tmp_path, monkeypatch):
+    """The TOML parser's error can quote the key it could not read, so the refusal keeps
+    it neither as its cause nor as its context, on the command builder's path and on the
+    path where the process would start."""
+    _refuse_a_spawn(monkeypatch)
+    key = f'"{_SECRET_IN_A_KEY}\x01"'
+    copied = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True
+    ).model_copy(update={"config_overrides": {key: 1}})
+    with pytest.raises(ValueError) as built:
+        copied.as_cmd_args()
+    with pytest.raises(ValueError) as streamed:
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    for caught in (built, streamed):
+        assert "config override entry 0" in str(caught.value)
+        assert caught.value.__context__ is None
+        assert caught.value.__cause__ is None
 
 
 class _IterationHidesAKey(dict):

@@ -91,6 +91,9 @@ def _clamp_name(text: str) -> str:
 
 def _clamp_codex_effort(effort: str, model: str | None) -> str:
     """Clamp max/ultra down to the target codex model's supported ceiling."""
+    if not isinstance(effort, str):
+        # Left for the request's own validation to refuse.
+        return effort
     name = _clamp_name(effort)
     if name not in ("max", "ultra"):
         return effort

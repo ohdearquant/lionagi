@@ -155,8 +155,15 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
         else:
             what = f"Command-line argument {position}"
         # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
-        # exec, so a path holding a byte that is not UTF-8 counts that byte once.
-        encoded = os.fsencode(argument)
+        # exec, so a path holding a byte that is not UTF-8 counts that byte once. A
+        # character it cannot encode is refused by name after the handler, since the
+        # codec's error holds the whole argument.
+        try:
+            encoded = os.fsencode(argument)
+        except UnicodeEncodeError:
+            encoded = None
+        if encoded is None:
+            raise _refuse_text_strict_utf8_cannot_encode(what)
         if b"\x00" in encoded:
             raise ValueError(_nul_refusal_message(what))
         _refuse_oversized_argument(encoded, what)
@@ -209,7 +216,7 @@ def _nul_refusal_message(what: str) -> str:
 def _equals_in_key_refusal(index: int) -> ValueError:
     # `-c key=value` is split at its first `=`, so a key holding one would set the key
     # before it to the rest of the argument: `model="x"#` reads as setting `model`. Named
-    # by position: a key holding `=` is often a value written into it, a secret included.
+    # by position: a key holding `=` may be a value written into it, a secret included.
     return ValueError(
         f"The key of the config override entry {index} holds '=', where the CLI ends a "
         "-c key, so it would set a different key."
@@ -263,8 +270,9 @@ def _toml_string(value: str) -> str:
     Rendered here rather than through the ``toml`` package: that encoder renders a
     control character wrongly (``"a\x01b"`` comes back as ``"ax01b"``, a different value)
     and raises IndexError on a leading one, which would escape where containment drops
-    the override. Every control character is written as a ``\uXXXX`` escape, which TOML
-    reads back as the same character; every other character is kept as it is.
+    the override. Every C0 control character and DEL is written as a ``\uXXXX`` escape,
+    which TOML reads back as the same character; every other character, U+0085 and U+2028
+    among them, is kept as it is.
     """
     # Strict UTF-8 first: a lone surrogate has no encoding a child process can decode,
     # so it is refused here rather than reaching the CLI as a raw byte. Escapes are
@@ -346,8 +354,8 @@ def _refuse_oversized_cli_inputs(
                     key, value, f"The key of the config override entry {index}"
                 )
             except ValueError as exc:
-                # A key containment cannot read is refused here, by name, so construction
-                # refuses it as the spawn does. A new error, so the parser's is not chained.
+                # A key containment cannot read is refused here, by its position, so
+                # construction refuses it as the spawn does.
                 failure = ValueError(str(exc))
                 break
             if not kept:
@@ -363,7 +371,7 @@ def _refuse_oversized_cli_inputs(
                     )
                     break
         argument = f"{key}={encoded}"
-        # The value is rendered with every control character escaped, so a NUL left in
+        # The value is rendered with every C0 control character escaped, so a NUL left in
         # the argument is the key's.
         failure = _argument_text_failure(argument, f"The key of the config override entry {index}")
         if failure is None:
@@ -372,9 +380,10 @@ def _refuse_oversized_cli_inputs(
     # strictly and checked for a NUL under its own name. The efforts and the approval
     # policy are written as TOML strings, where a NUL would be escaped rather than
     # refused. The approval policy is a closed choice no value with a NUL belongs to;
-    # the efforts are open strings, but no effort name holds a NUL either. Other control
-    # characters in an effort are escaped and sent, and the per-model clamp ignores
-    # them when it reads the name.
+    # the efforts are open strings, but no effort name holds a NUL either. Other C0
+    # control characters and DEL in an effort are escaped and sent, and any other
+    # character is sent as it is; the per-model clamp ignores control, format and line or
+    # paragraph separator characters when it reads the name.
     for what, text in text_fields or ():
         if failure is not None:
             break
@@ -406,15 +415,20 @@ def _override_key_path(key: str, what: str) -> list[str]:
     key the CLI reads it as: a quoted part loses its quotes and its escapes, so
     `features."\\u0061pps"` names the same switch as `features.apps`. A key
     TOML cannot read is refused here, as ``what``, rather than handed to the CLI;
-    neither the key nor the parser's message, which can quote it, is printed."""
+    neither the key nor the parser's message, which can quote it, is printed or kept on
+    the refusal."""
+    path: list[str] | None = []
     try:
         table: Any = _tomllib.loads(f"{key} = 1")
-        path: list[str] = []
         while isinstance(table, dict):
             ((part, table),) = table.items()
             path.append(part)
     except Exception:
-        raise ValueError(f"{what} is not a TOML key.") from None
+        path = None
+    if path is None:
+        # Raised after the handler: one raised inside it, even `from None`, keeps the
+        # parser's error as its __context__.
+        raise ValueError(f"{what} is not a TOML key.")
     return path
 
 
@@ -436,6 +450,17 @@ def toml_override_value(value: Any) -> str:
     if isinstance(value, str | int | float | bool):
         return _toml_scalar(value)
     raise TypeError(f"Unsupported codex `-c` override value type: {type(value)!r}")
+
+
+def _rendered_override_value(value: Any, what: str) -> str:
+    """``toml_override_value(value)`` for ``as_cmd_args``, which a copy reaches unchecked
+    (``model_copy(update=...)`` skips validation): text strict UTF-8 cannot encode is
+    refused as ``what`` after the handler, since the codec's error holds the whole text."""
+    try:
+        return toml_override_value(value)
+    except UnicodeEncodeError:
+        pass
+    raise _refuse_text_strict_utf8_cannot_encode(what)
 
 
 def _linked_worktree_git_writable_roots(cwd: Path) -> tuple[Path, ...]:
@@ -1019,7 +1044,8 @@ class CodexCodeRequest(BaseModel):
         # string: written raw, a prompt that parses as TOML ("true", "42", '"quoted"')
         # would reach codex as that value instead of as its own text.
         if self.system_prompt:
-            args.extend(["-c", f"developer_instructions={toml_override_value(self.system_prompt)}"])
+            rendered = _rendered_override_value(self.system_prompt, "The system prompt")
+            args.extend(["-c", f"developer_instructions={rendered}"])
 
         # Encoded like every other `-c` override below. While these fields were
         # a closed Literal of eight bare words, emitting them unencoded was
@@ -1027,15 +1053,13 @@ class CodexCodeRequest(BaseModel):
         # arbitrary value inside its own override is codex's own leniency about
         # the right-hand side, which is not a contract lionagi owns.
         if self.reasoning_effort:
-            args.extend(["-c", f"reasoning_effort={toml_override_value(self.reasoning_effort)}"])
+            rendered = _rendered_override_value(self.reasoning_effort, "reasoning_effort")
+            args.extend(["-c", f"reasoning_effort={rendered}"])
         if self.plan_mode_reasoning_effort:
-            args.extend(
-                [
-                    "-c",
-                    "plan_mode_reasoning_effort="
-                    f"{toml_override_value(self.plan_mode_reasoning_effort)}",
-                ]
+            rendered = _rendered_override_value(
+                self.plan_mode_reasoning_effort, "plan_mode_reasoning_effort"
             )
+            args.extend(["-c", f"plan_mode_reasoning_effort={rendered}"])
 
         if self.fast_mode:
             args.extend(["-c", "service_tier=fast"])
@@ -1064,7 +1088,10 @@ class CodexCodeRequest(BaseModel):
                 )
                 if not kept:
                     continue
-            args.extend(["-c", f"{key}={toml_override_value(value)}"])
+            rendered = _rendered_override_value(
+                value, f"The value of the config override entry {index}"
+            )
+            args.extend(["-c", f"{key}={rendered}"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])

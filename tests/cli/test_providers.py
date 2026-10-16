@@ -376,6 +376,13 @@ def test_clamp_codex_effort_is_model_aware(model, effort, expected):
     assert _clamp_codex_effort(effort, model) == expected
 
 
+@pytest.mark.parametrize("effort", [5, ["max"]], ids=["int", "list"])
+def test_clamp_codex_effort_leaves_a_non_string_for_validation(effort):
+    from lionagi.service.providers import _clamp_codex_effort
+
+    assert _clamp_codex_effort(effort, "gpt-5.3-codex-spark") is effort
+
+
 def test_codex_code_request_clamps_effort_when_model_kwarg_omitted():
     """CodexCodeRequest(reasoning_effort="max") with no explicit model= kwarg
     must clamp against the field's own default model, matching the result of
