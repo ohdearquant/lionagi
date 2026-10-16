@@ -3,7 +3,8 @@ import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import { IconPort, IconTerminal } from "@/components/ui/icons";
 import { resolveApiBase } from "@/lib/api";
-import { onConnectivityFailure } from "@/lib/connectivity";
+import { onAccessRefused, onConnectivityFailure } from "@/lib/connectivity";
+import { hasPendingPairingCode, redeemPairingCode } from "@/lib/pairing";
 
 const POLL_INTERVAL_MS = 5000;
 // Floor between two connectivity-failure-triggered re-probes, so a burst of
@@ -11,7 +12,7 @@ const POLL_INTERVAL_MS = 5000;
 // one /health check instead of one per request.
 const FAILURE_REPROBE_THROTTLE_MS = 2000;
 
-type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp";
+type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp" | "accessRequired";
 
 /**
  * Probe the configured API base's /health endpoint and classify what answered.
@@ -39,6 +40,20 @@ async function probeDaemon(apiBase: string): Promise<"connected" | "unreachable"
 }
 
 /**
+ * Probe the daemon, then spend a pairing code the page was opened with once the
+ * daemon answers, before any request needs the bearer it returns. A refused code
+ * leaves the page without access; a code that did not reach the daemon is kept
+ * and tried again on the next probe.
+ */
+async function connect(apiBase: string): Promise<ConnectivityStatus> {
+  const result = await probeDaemon(apiBase);
+  if (result !== "connected" || !hasPendingPairingCode()) return result;
+  const paired = await redeemPairingCode(apiBase);
+  if (paired === "paired") return "connected";
+  return paired === "refused" ? "accessRequired" : "unreachable";
+}
+
+/**
  * Wraps the app shell with connectivity awareness. The daemon is the
  * operator's own `li studio` process, not a backend this app controls — a
  * failed probe means "not started yet" or "something else is on this port",
@@ -54,7 +69,7 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
   const lastReprobeRef = useRef(0);
 
   const check = useCallback(async () => {
-    const result = await probeDaemon(apiBase);
+    const result = await connect(apiBase);
     if (!activeRef.current) return;
     setStatus(result);
   }, [apiBase]);
@@ -71,8 +86,10 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
   // traffic). Once connected, stay quiet — a live daemon later failing a
   // request is caught by the connectivity-failure subscription below instead
   // of a background poll that never stops.
+  // Not while access is refused: /health answers, so a poll would read
+  // "connected", mount the app, and be refused again on its first request.
   useEffect(() => {
-    if (status === "connected" || status === "checking") return;
+    if (status === "connected" || status === "checking" || status === "accessRequired") return;
     const id = setInterval(() => void check(), POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [status, check]);
@@ -89,12 +106,22 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
     });
   }, [check]);
 
+  // A running daemon can still refuse this page (401). /health stays public, so
+  // the probe cannot see that; the API layer reports it.
+  useEffect(() => {
+    return onAccessRefused(() => {
+      if (activeRef.current) setStatus("accessRequired");
+    });
+  }, []);
+
   const displayBase = apiBase || "http://127.0.0.1:8765";
 
   if (status === "connected") return <>{children}</>;
 
   const isChecking = status === "checking";
   const isWrongApp = status === "wrongApp";
+  const isAccessRequired = status === "accessRequired";
+  const problem = isWrongApp ? "wrongApp" : isAccessRequired ? "accessRequired" : "unreachable";
 
   return (
     <div className="flex h-dvh min-h-[32rem] overflow-hidden bg-surface-base text-content-primary">
@@ -123,7 +150,7 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
           </span>
           <span className="ml-auto inline-flex items-center gap-1.5 text-meta text-content-muted">
             <span className="size-1.5 rounded-full bg-status-pending" />
-            {isChecking ? null : isWrongApp ? t("wrongApp.title") : t("unreachable.title")}
+            {isChecking ? null : t(`${problem}.title`)}
           </span>
         </header>
 
@@ -156,7 +183,7 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
               <div className="flex items-start gap-4">
                 <span
                   className={`grid size-11 shrink-0 place-items-center rounded-lg ${
-                    isWrongApp
+                    isWrongApp || isAccessRequired
                       ? "bg-status-warning-bg text-status-warning"
                       : "bg-surface-overlay text-content-secondary"
                   }`}
@@ -165,22 +192,20 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
                 </span>
                 <div className="min-w-0">
                   <h1 className="text-xl font-semibold tracking-tight text-content-primary">
-                    {isWrongApp ? t("wrongApp.title") : t("unreachable.title")}
+                    {t(`${problem}.title`)}
                   </h1>
                   <p className="mt-2 text-body leading-relaxed text-content-secondary">
-                    {isWrongApp
-                      ? t("wrongApp.body", { base: displayBase })
-                      : t("unreachable.body", { base: displayBase })}
+                    {t(`${problem}.body`, { base: displayBase })}
                   </p>
                 </div>
               </div>
 
               <div className="mt-6 border-t border-edge pt-5">
-                {isWrongApp ? (
+                {isWrongApp || isAccessRequired ? (
                   <>
-                    <p className="text-body text-content-secondary">{t("wrongApp.fix")}</p>
+                    <p className="text-body text-content-secondary">{t(`${problem}.fix`)}</p>
                     <code className="mt-2 block overflow-x-auto rounded-md border border-edge bg-surface-base px-3 py-2.5 font-data text-xs text-content-primary">
-                      {t("wrongApp.command")}
+                      {t(`${problem}.command`)}
                     </code>
                   </>
                 ) : (
