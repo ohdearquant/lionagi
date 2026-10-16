@@ -63,6 +63,7 @@ async def run_update_status(
     override: bool,
     override_actor: str | None,
     override_justification: str | None,
+    fill_only_if_absent: frozenset[str] = frozenset(),
 ) -> bool:
     """Route StateDB.update_status()'s kwargs through the lifecycle service
     and map the TransitionOutcome onto its legacy bool/raise contract."""
@@ -88,7 +89,9 @@ async def run_update_status(
         ),
     )
     outcome = await service._transition(  # noqa: SLF001 -- same-package internal API
-        command, raise_on_unguarded_conflict=True
+        command,
+        raise_on_unguarded_conflict=True,
+        fill_only_if_absent=fill_only_if_absent,
     )
     if outcome.result == "applied":
         return True

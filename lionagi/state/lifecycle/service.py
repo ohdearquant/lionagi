@@ -46,6 +46,16 @@ class _TxProvider(Protocol):
 
     async def _require_owned(self, conn: Any, table: str, row_id: Any, what: str) -> None: ...
 
+    async def _prepare_status_patch(
+        self,
+        conn: Any,
+        entity_type: str,
+        entity_id: str,
+        patch: Mapping[str, Any],
+        *,
+        fill_only_if_absent: frozenset[str] = ...,
+    ) -> Mapping[str, Any]: ...
+
 
 def _json_list(evidence_refs: tuple) -> list:
     return [dict(e) for e in evidence_refs]
@@ -194,7 +204,12 @@ class SQLAlchemyLifecycleService:
         placeholders = "".join(f", :_owner{i}" for i in range(len(owned)))
         return columns, placeholders, {f"_owner{i}": v for i, v in enumerate(owned.values())}
 
-    async def transition(self, command: TransitionCommand) -> TransitionOutcome:
+    async def transition(
+        self,
+        command: TransitionCommand,
+        *,
+        fill_only_if_absent: frozenset[str] = frozenset(),
+    ) -> TransitionOutcome:
         if command.reason.code not in VALID_REASON_CODES:
             raise LifecycleValidationError(
                 f"invalid reason_code: {command.reason.code!r}; must be one of "
@@ -221,6 +236,7 @@ class SQLAlchemyLifecycleService:
             enforce_edges=True,
             undeclared_edge_mode="reject",
             write_reason_columns=policy.reason_columns,
+            fill_only_if_absent=fill_only_if_absent,
         )
 
     async def _emit_terminal_event(
@@ -255,6 +271,7 @@ class SQLAlchemyLifecycleService:
         undeclared_edge_mode: str = "raise",
         raise_on_unguarded_conflict: bool = False,
         write_reason_columns: bool = True,
+        fill_only_if_absent: frozenset[str] = frozenset(),
     ) -> TransitionOutcome:
         policy = self._registry.get(command.entity_type)
 
@@ -300,6 +317,18 @@ class SQLAlchemyLifecycleService:
             await self._db._require_owned(
                 conn, policy.table, command.entity_id, command.entity_type
             )
+            # A status change carries its node_metadata into this same transaction, where the
+            # store merges it by key rather than letting the patch below write it whole
+            # (ADR-0128 D6); natively the patch is unchanged.
+            prepared = await self._db._prepare_status_patch(
+                conn,
+                command.entity_type,
+                command.entity_id,
+                command.patch,
+                fill_only_if_absent=fill_only_if_absent,
+            )
+            if prepared is not command.patch:
+                command = replace(command, patch=prepared)
             guard_cols = list(extra_guard)
             # A caller may guard one of the duration-basis columns. Keep the
             # SELECT unique, but never let that guard disable the terminal-end

@@ -565,6 +565,19 @@ async def _linked_engine_session(
     return None
 
 
+async def _teardown_write(committed: list[str] | None, name: str, call: Any) -> Any:
+    """Run one of teardown's own store writes, recording *name* once it returns.
+
+    Each store operation opens its own transaction, so a refusal raised by a later write names
+    only that write and reads as if nothing had committed. The names collected here are the ones
+    the run's reason carries instead (ADR-0128 D6).
+    """
+    result = await call
+    if committed is not None:
+        committed.append(name)
+    return result
+
+
 async def _teardown_common(
     db: StateDB,
     *,
@@ -586,6 +599,7 @@ async def _teardown_common(
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
     reason_out: dict | None = None,
+    committed: list[str] | None = None,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
@@ -644,7 +658,7 @@ async def _teardown_common(
         markers = identity_markers or {}
         if db.mode == "compatibility":
             # A compatibility-mode store merges node_metadata by key inside its write, so it is
-            # handed only this run's keys and keeps any another writer added since the read above.
+            # handed only this run's keys and keeps any other writer added since the read above.
             update_kwargs["node_metadata"] = {**extras, **markers}
         else:
             existing_metadata = session_before_teardown.get("node_metadata") or {}
@@ -658,7 +672,9 @@ async def _teardown_common(
             update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
     if update_kwargs:
-        await db.update_session(session_id, **update_kwargs)
+        await _teardown_write(
+            committed, "update_session", db.update_session(session_id, **update_kwargs)
+        )
 
     reason_code, reason_summary, evidence_refs = resolve_run_reason(
         status=status, exception=exception
@@ -671,7 +687,11 @@ async def _teardown_common(
     contract = artifact_contract or session_row.get("artifact_contract_json")
     artifacts_root = artifacts_path or session_row.get("artifacts_path")
     verification = verify_artifact_contract(contract, artifacts_root=artifacts_root)
-    await db.update_artifact_verification(session_id, verification)
+    await _teardown_write(
+        committed,
+        "update_artifact_verification",
+        db.update_artifact_verification(session_id, verification),
+    )
 
     final_status = status
     final_reason_code = reason_code
@@ -697,7 +717,11 @@ async def _teardown_common(
         # whole-column update_session() write below.
         metadata = dict(metadata or {})
         metadata["linked_engine_session_id"] = linked_id
-        await db.merge_session_node_metadata(session_id, {"linked_engine_session_id": linked_id})
+        await _teardown_write(
+            committed,
+            "merge_session_node_metadata",
+            db.merge_session_node_metadata(session_id, {"linked_engine_session_id": linked_id}),
+        )
 
         if linked is not None and linked["status"] in SESSION_TERMINAL_STATUSES:
             reason_by_status = {
@@ -948,21 +972,25 @@ async def _teardown_common(
             )
     else:
         try:
-            written = await db.update_status(
-                "session",
-                session_id,
-                new_status=final_status,
-                reason_code=final_reason_code,
-                reason_summary=final_reason_summary,
-                evidence_refs=final_evidence_refs,
-                source="executor",
-                actor=session_id,
-                metadata=metadata,
-                expected_statuses={pre_write_status},
-                extra_fields=(
-                    {"ended_at": ended_at}
-                    if duration_ms is None
-                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+            written = await _teardown_write(
+                committed,
+                "update_status",
+                db.update_status(
+                    "session",
+                    session_id,
+                    new_status=final_status,
+                    reason_code=final_reason_code,
+                    reason_summary=final_reason_summary,
+                    evidence_refs=final_evidence_refs,
+                    source="executor",
+                    actor=session_id,
+                    metadata=metadata,
+                    expected_statuses={pre_write_status},
+                    extra_fields=(
+                        {"ended_at": ended_at}
+                        if duration_ms is None
+                        else {"ended_at": ended_at, "duration_ms": duration_ms}
+                    ),
                 ),
             )
             if not written:
@@ -1039,8 +1067,15 @@ async def teardown_persist(
         return status
 
     db = ctx["db"]
+    committed: list[str] = []
     try:
         await _flush_pending_message_events(ctx)
+        # A signal write the store refused is not a dropped one to read past: the store declined
+        # it for good, so this teardown fails with that refusal rather than writing a status that
+        # would read as a run which succeeded without its signals (ADR-0128 D6).
+        signal_refusal = _signal_persist_refusal(ctx)
+        if signal_refusal is not None:
+            raise signal_refusal
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
@@ -1061,7 +1096,15 @@ async def teardown_persist(
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,
             reason_out=ctx,
+            committed=committed,
         )
+
+        # A signal emitted while this teardown ran is refused the same way as one emitted before
+        # it: the store declined the write, so the run does not read as one that succeeded
+        # without it (ADR-0128 D6).
+        signal_refusal = _signal_persist_refusal(ctx)
+        if signal_refusal is not None:
+            raise signal_refusal
 
         from lionagi.hooks.bus import HookPoint
 
@@ -1129,7 +1172,13 @@ async def teardown_persist(
             # reaching it.
             _log.error("live persist teardown refused: %s", refusal)
             _unroute_message_hooks(ctx)
-            ctx["terminal_reason"] = ("failed", f"The store refused a write: {refusal}")
+            reason = f"The store refused a write: {refusal}"
+            if committed:
+                # Each store operation commits on its own, so the refusal above reads as if the
+                # teardown had committed nothing. Name what it did commit, so the run's record
+                # does not send a reader looking for state that is already durable.
+                reason += f"; already committed in this teardown: {', '.join(committed)}"
+            ctx["terminal_reason"] = ("failed", reason)
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's
@@ -1182,6 +1231,18 @@ async def teardown_persist(
             from lionagi.state.db import close_shared_db
 
             await close_shared_db()
+
+
+def _signal_persist_refusal(ctx: dict) -> BaseException | None:
+    """The first signal write this run's observer saw the store refuse, if any.
+
+    A refusal is not a drop: the signal was not persisted and will not be retried, so teardown
+    fails the run with it instead of reading back a status the store could not have accepted
+    with the signal (ADR-0128 D6).
+    """
+    session_obj = ctx.get("session")
+    observer = getattr(session_obj, "observer", None)
+    return getattr(observer, "persist_refusal", None)
 
 
 def _unroute_message_hooks(ctx: dict) -> None:

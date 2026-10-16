@@ -156,6 +156,17 @@ def _is_lock_refusal(exc: BaseException) -> bool:
     )
 
 
+def _is_store_refusal(exc: BaseException) -> bool:
+    """Whether *exc* is the store's compatibility-mode refusal.
+
+    Imported lazily so this module stays import-light, and read from the exception's own class
+    rather than a copy: a refusal raised by a store handle is the same class object here.
+    """
+    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
+    return isinstance(exc, StateCompatibilityRefused)
+
+
 def _writer_lock_refusal(exc: BaseException) -> BaseException | None:
     """Return the driver error for a writer-lock refusal, if one is wrapped by *exc*."""
     chain: list[BaseException] = []
@@ -187,6 +198,10 @@ class _SignalPersistState:
 
     session_id: str
     dropped: int = 0
+    # The first write this binding's store refused in compatibility mode, if any. A refusal is
+    # not a drop: the store declined the write for good, so the run's teardown must fail with
+    # this rather than read back a status it could not persist (ADR-0128 D6).
+    refusal: Any = None
     # Signals taken and not yet finished with, from before their fields are read to the
     # end of the write. None is confirmed until it finishes, so a count read while they
     # are in flight includes them.
@@ -258,6 +273,15 @@ class SessionObserver(Observer):
         # The latest binding's persistence state; kept after unbind so its count
         # can still be read.
         self._persist: _SignalPersistState | None = None
+
+    @property
+    def persist_refusal(self) -> Any:
+        """The first write the latest bound persistence sink saw the store refuse, if any.
+
+        A refusal means the signal was not persisted and will not be retried, so a run's teardown
+        fails with it instead of reading back a status it could not write (ADR-0128 D6).
+        """
+        return self._persist.refusal if self._persist is not None else None
 
     @property
     def persist_dropped(self) -> int:
@@ -502,6 +526,21 @@ class SessionObserver(Observer):
                                     payload=payload,
                                 )
                 except Exception as exc:  # noqa: BLE001 — persistence never breaks the session bus
+                    # A store refusal is not a failed write to count and move past: the store
+                    # declined this signal for good, so it is kept for teardown to fail the run
+                    # with (ADR-0128 D6). The first refusal is kept and every later one logged,
+                    # so none goes unreported, and none is counted dropped -- the run is told,
+                    # not left believing the signal landed.
+                    if _is_store_refusal(exc):
+                        if state.refusal is None:
+                            state.refusal = exc
+                        else:
+                            logger.error(
+                                "signal persistence for session %s refused another signal: %s",
+                                session_id,
+                                exc,
+                            )
+                        return
                     # The signal is already in flight while its error is classified and logged.
                     try:
                         refusal = _writer_lock_refusal(exc)

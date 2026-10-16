@@ -10,6 +10,7 @@ newer schema manages, built synthetically.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -1071,6 +1072,333 @@ async def test_a_refused_setup_stops_the_run(store, monkeypatch):
 
     assert degraded == []
     assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(0,)]
+
+
+def _dump(store: Path) -> list[str]:
+    with closing(sqlite3.connect(store)) as conn:
+        return list(conn.iterdump())
+
+
+async def test_a_refused_signal_write_fails_the_teardown_with_it(db, store):
+    """A signal the store refused is not a dropped one to read past: the run fails with the
+    refusal, and the drop counter does not absorb it (ADR-0128 D6)."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.session.signal import Signal
+
+    await _setup_run(db)
+    session = Session()
+    session.observer.bind_db_persistence("s1", db=db)
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+    await session.observer.emit(Signal(data={"step": 1}))
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:a' WHERE id = 's1'")
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "session": session,
+        "shared_db_registered": False,
+    }
+
+    result = await _runs.teardown_persist(ctx, status="completed")
+
+    assert result == "failed"
+    status, reason = ctx["terminal_reason"]
+    assert status == "failed"
+    assert "The store refused a write" in reason and "does not belong to" in reason
+    assert ctx["signal_persist_dropped"] == 0
+    # The refused write is not a dropped one: it was not persisted, and nothing retried it.
+    assert _rows(store, "SELECT COUNT(*) FROM session_signals WHERE session_id = 's1'") == [(0,)]
+
+
+async def test_a_signal_emitted_during_teardown_that_is_refused_fails_the_run(db, store):
+    """The same refusal raised while teardown itself runs, after the signal sink's own emit, also
+    fails the run rather than reading back a status the store could not take with it."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.session.signal import Signal
+
+    await _setup_run(db)
+    session = Session()
+    session.observer.bind_db_persistence("s1", db=db)
+    original = db.update_artifact_verification
+
+    async def owner_moves_then_signal(session_id, verification):
+        _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+        await session.observer.emit(Signal(data={"late": 1}))
+        _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:a' WHERE id = 's1'")
+        await original(session_id, verification)
+
+    db.update_artifact_verification = owner_moves_then_signal
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "session": session,
+        "shared_db_registered": False,
+    }
+
+    result = await _runs.teardown_persist(ctx, status="completed")
+
+    assert result == "failed"
+    assert ctx["terminal_reason"][0] == "failed"
+    assert "The store refused a write" in ctx["terminal_reason"][1]
+
+
+async def test_a_teardown_reason_names_the_operations_that_already_committed(db, store):
+    """A refusal from a later write says nothing committed, because each operation opens its own
+    scope. The run's reason names what this teardown did commit (ADR-0128 D6)."""
+    from lionagi.cli import _runs
+
+    await _setup_run(db)
+    original = db.update_artifact_verification
+
+    async def owner_moves_then_write(session_id, verification):
+        _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+        await original(session_id, verification)
+
+    db.update_artifact_verification = owner_moves_then_write
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "shared_db_registered": False,
+    }
+
+    result = await _runs.teardown_persist(ctx, status="completed", extras={"run": 1})
+
+    assert result == "failed"
+    status, reason = ctx["terminal_reason"]
+    assert status == "failed"
+    assert "already committed in this teardown: update_session" in reason
+    assert _stored_node_metadata(store) == {"run": 1}
+
+
+async def test_a_teardown_reason_without_a_commit_names_none(db, store):
+    """The first write refused leaves the reason as it was: nothing to name."""
+    from lionagi.cli import _runs
+
+    await _setup_run(db)
+    _execute(store, f"UPDATE sessions SET {OWNER} = 'principal:b' WHERE id = 's1'")
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "shared_db_registered": False,
+    }
+
+    result = await _runs.teardown_persist(ctx, status="completed", extras={"run": 1})
+
+    assert result == "failed"
+    assert "already committed in this teardown" not in ctx["terminal_reason"][1]
+
+
+def _stored_node_metadata(store: Path, session_id: str = "s1") -> dict:
+    ((value,),) = _rows(store, "SELECT node_metadata FROM sessions WHERE id = ?", (session_id,))
+    return json.loads(value)
+
+
+def _set_node_metadata(store: Path, value: str, session_id: str = "s1") -> None:
+    _execute(store, "UPDATE sessions SET node_metadata = ? WHERE id = ?", (value, session_id))
+
+
+# --- A status change merges node_metadata by key (ADR-0128 Appendix A, teardown update_session) ---
+
+
+async def test_a_status_change_merges_node_metadata_by_key(db, store):
+    """A key another writer stored survives a status write that carries its own metadata."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    _set_node_metadata(store, '{"managed": "kept"}')
+
+    await db.update_session(
+        "s1",
+        status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        reason_actor="s1",
+        node_metadata={"run": 1},
+    )
+
+    assert _stored_node_metadata(store) == {"managed": "kept", "run": 1}
+    assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("completed",)]
+
+
+@pytest.mark.parametrize(
+    "given", ["[1]", "not json", None, 7], ids=["array", "text", "null", "int"]
+)
+async def test_a_status_change_refuses_node_metadata_that_is_not_an_object(db, store, given):
+    """The by-key contract a status write now shares with the merge refuses the same values."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    before = _dump(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="is not a JSON object"):
+        await db.update_session(
+            "s1",
+            status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            reason_actor="s1",
+            node_metadata=given,
+        )
+
+    assert _dump(store) == before
+
+
+async def test_a_status_change_honours_set_if_null_for_node_metadata(db, store):
+    """``set_if_null`` reaches a status write's node_metadata, so a stored object is kept."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    _set_node_metadata(store, '{"managed": "kept"}')
+
+    await db.update_session(
+        "s1",
+        status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        reason_actor="s1",
+        node_metadata={"run": 1},
+        set_if_null=frozenset({"node_metadata"}),
+    )
+
+    assert _stored_node_metadata(store) == {"managed": "kept"}
+
+
+async def test_a_status_change_fills_node_metadata_over_a_stored_json_null(db, store):
+    """A stored JSON null is an absence, so ``set_if_null`` writes the given keys into it."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    _set_node_metadata(store, "null")
+
+    await db.update_session(
+        "s1",
+        status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        reason_actor="s1",
+        node_metadata={"run": 1},
+        set_if_null=frozenset({"node_metadata"}),
+    )
+
+    assert _stored_node_metadata(store) == {"run": 1}
+
+
+async def test_a_set_if_null_write_fills_node_metadata_over_a_stored_json_null(db, store):
+    """The write that carries no status merges through the store's own SQL, which treats a stored
+    JSON null as an absence just as the status path does."""
+    await _setup_run(db)
+    _set_node_metadata(store, "null")
+
+    await db.update_session(
+        "s1", node_metadata={"run": 1}, set_if_null=frozenset({"node_metadata"})
+    )
+
+    assert _stored_node_metadata(store) == {"run": 1}
+
+
+async def test_a_status_change_replaces_a_nested_object_under_a_key(db, store):
+    """The merge is by top-level key, so a nested object replaces the stored one under that key."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    _set_node_metadata(store, '{"khive_injection": {"other": 1}}')
+
+    await db.update_session(
+        "s1",
+        status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        reason_actor="s1",
+        node_metadata={"khive_injection": {"hits": 2}},
+    )
+
+    assert _stored_node_metadata(store) == {"khive_injection": {"hits": 2}}
+
+
+# --- Links are checked against the target row's current owner ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "link, table, target",
+    [
+        ("first_msg_id", "messages", "m-sys"),
+        ("last_msg_id", "messages", "m-sys"),
+        ("invocation_id", "invocations", "inv-1"),
+    ],
+)
+async def test_a_session_update_refuses_a_link_reowned_after_creation(
+    db, store, link, table, target
+):
+    """A row this run created but that since changed hands is not this run's to link."""
+    await _setup_run(db)
+    if table == "invocations":
+        _execute(
+            store,
+            f"INSERT INTO invocations (id, skill, started_at, created_at, updated_at, {OWNER}) "
+            "VALUES ('inv-1', 'review', 0, 0, 0, 'principal:a')",
+        )
+    _execute(store, f"UPDATE {table} SET {OWNER} = 'principal:b' WHERE id = ?", (target,))
+    before = _dump(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="does not belong to 'principal:a'"):
+        await db.update_session("s1", **{link: target})
+
+    assert _dump(store) == before
+
+
+async def test_a_session_update_links_a_row_this_run_still_owns(db, store):
+    await _setup_run(db)
+
+    await db.update_session("s1", first_msg_id="m-sys", last_msg_id="m-sys")
+
+    assert _rows(store, "SELECT first_msg_id, last_msg_id FROM sessions WHERE id = 's1'") == [
+        ("m-sys", "m-sys")
+    ]
+
+
+async def test_an_invocation_id_update_is_refused_by_the_profile_allowlist(db, store):
+    """The link is checked like the others, and the write behind it is then refused: the profile's
+    update allowlist does not admit sessions.invocation_id, so no writer moves that column here."""
+    await _setup_run(db)
+    _execute(
+        store,
+        f"INSERT INTO invocations (id, skill, started_at, created_at, updated_at, {OWNER}) "
+        "VALUES ('inv-1', 'review', 0, 0, 0, 'principal:a')",
+    )
+    before = _dump(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="authorizer denied"):
+        await db.update_session("s1", invocation_id="inv-1")
+
+    assert _dump(store) == before
+
+
+# --- The merge keeps a stored non-object under _discarded_node_metadata ---------------------------
+
+
+async def test_a_merge_keeps_a_stored_non_object_under_a_discarded_key(db, store):
+    """``update_session`` refuses a non-object payload, while the merge keeps a stored one."""
+    await _setup_run(db)
+    _set_node_metadata(store, "[1]")
+
+    await db.merge_session_node_metadata("s1", {"linked": "engine-1"})
+
+    stored = _stored_node_metadata(store)
+    assert stored["linked"] == "engine-1"
+    assert stored["_discarded_node_metadata"] == [1]
+
+
+async def test_a_merge_over_a_stored_non_object_is_refused_through_update_session(db, store):
+    """The two entry points agree: a non-object value handed in is refused, whether it is given
+    to the merge or to a status write."""
+    await _setup_run(db)
+    _set_node_metadata(store, "[1]")
+    before = _dump(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="is not a JSON object"):
+        await db.update_session("s1", node_metadata=[1])
+
+    assert _dump(store) == before
 
 
 class _Message:

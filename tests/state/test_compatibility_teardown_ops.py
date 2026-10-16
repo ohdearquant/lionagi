@@ -179,18 +179,30 @@ async def test_a_teardown_op_refuses_a_session_its_run_did_not_create(db, store,
     assert _dump(store) == before
 
 
-@pytest.mark.parametrize("link", ["first_msg_id", "last_msg_id", "progression_id"])
+@pytest.mark.parametrize("link", ["first_msg_id", "last_msg_id"])
 async def test_a_session_update_links_only_rows_its_run_created(db, store, link):
     await _setup_run(db)
     _execute(
         store,
-        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
-        "VALUES ('foreign', 1.0, '[]', 'principal:a')",
+        f"INSERT INTO messages (id, created_at, content, role, lion_class, {OWNER}) "
+        "VALUES ('foreign', 1.0, '{}', 'system', 1, 'principal:a')",
     )
     before = _dump(store)
 
     with pytest.raises(StateCompatibilityRefused, match="was not created by this run"):
         await db.update_session("s1", **{link: "foreign"})
+
+    assert _dump(store) == before
+
+
+async def test_a_session_update_leaves_a_non_link_column_alone(db, store):
+    """``progression_id`` is the session's own progression, not an updatable column, so a link
+    check on it would be dead code: the column allowlist refuses the write first."""
+    await _setup_run(db)
+    before = _dump(store)
+
+    with pytest.raises(ValueError, match="Invalid column"):
+        await db.update_session("s1", progression_id="foreign")
 
     assert _dump(store) == before
 
@@ -349,6 +361,39 @@ async def test_teardown_hands_a_compatibility_store_only_its_own_metadata_keys(d
         f"SELECT previous_status, {OWNER} FROM status_transitions "
         "WHERE entity_id = 's1' AND previous_status IS NOT NULL",
     ) == [("running", "principal:a")]
+
+
+async def test_teardowns_own_node_metadata_write_still_merges(db, store):
+    """The teardown's node_metadata-only write goes through the same by-key merge, so a key
+    another writer stored survives it."""
+    from lionagi.cli import _runs
+
+    await _setup_run(db)
+    _execute(store, """UPDATE sessions SET node_metadata = '{"managed": "kept"}' WHERE id = 's1'""")
+
+    await _runs._teardown_common(
+        db,
+        session_id="s1",
+        session_prog_id="sp",
+        status="completed",
+        exception=None,
+        artifacts_path=None,
+        artifact_contract=None,
+        extras={"run": 1},
+    )
+
+    assert _node_metadata(store) == {"managed": "kept", "run": 1}
+
+
+async def test_the_reason_code_warning_still_names_the_caller_in_compatibility_mode(db, store):
+    """The operation wrapper adds a frame in compatibility mode too, and the deprecation warning
+    still points at the caller."""
+    await _setup_run(db)
+
+    with pytest.warns(DeprecationWarning, match="called without reason_code") as caught:
+        await db.update_session("s1", status="completed", reason_actor="s1")
+
+    assert [warning.filename for warning in caught] == [__file__]
 
 
 async def test_the_reason_code_warning_still_names_the_caller(tmp_path):
