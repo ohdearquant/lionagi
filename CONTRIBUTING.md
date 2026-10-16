@@ -98,7 +98,10 @@ existing warning-level diagnostics remain visible in the CI summary and the
    `[tool.ruff]` in `pyproject.toml` is the source of truth — line length
    **100**, target `py310`. CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14
    on `main`/`develop` pushes. Merging into `main` requires the `ci-gate`
-   status check, which aggregates every PR-facing CI job.
+   status check, which aggregates every PR-facing CI job. The `Benchmarks`,
+   `Type Check (advisory)` and `Issue links` checks are not required: they skip
+   draft pull requests, and maintainers can switch their pull-request runs off
+   by setting the repository variable `ADVISORY_PR_CHECKS` to `off`.
 
 2. **PEP 8 / PEP 257**: follow standard style and docstring conventions; ruff's
    `E F W B I UP N S A` rule set enforces most of this (incl. import sorting,

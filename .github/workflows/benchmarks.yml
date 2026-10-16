@@ -16,6 +16,9 @@ on:
   # If a benchmark result is ever made a required check, add ready_for_review
   # here too, with [ opened, synchronize, reopened ] listed back alongside it.
   pull_request:
+    # ready_for_review: the job skips drafts (below), so a draft gets its first
+    # run when it is marked ready.
+    types: [ opened, synchronize, reopened, ready_for_review ]
     branches: [ main, master ]
 
 permissions:
@@ -29,6 +32,12 @@ concurrency:
 
 jobs:
   run-benchmarks:
+    # Pull-request runs of this advisory job can be switched off without editing
+    # this file: set the repository variable ADVISORY_PR_CHECKS to "off" and the
+    # job is skipped without taking a runner. Draft pull requests skip it too.
+    # Other events always run. It is not a required check, so a skip blocks no
+    # merge.
+    if: github.event_name != 'pull_request' || (vars.ADVISORY_PR_CHECKS != 'off' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

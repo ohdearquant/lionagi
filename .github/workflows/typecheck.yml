@@ -25,6 +25,12 @@ concurrency:
 
 jobs:
   pyright:
+    # Pull-request runs of this advisory job can be switched off without editing
+    # this file: set the repository variable ADVISORY_PR_CHECKS to "off" and the
+    # job is skipped without taking a runner. Draft pull requests skip it too.
+    # Other events always run. It is not a required check, so a skip blocks no
+    # merge.
+    if: github.event_name != 'pull_request' || (vars.ADVISORY_PR_CHECKS != 'off' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
