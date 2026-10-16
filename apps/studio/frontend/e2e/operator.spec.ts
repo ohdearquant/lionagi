@@ -136,8 +136,11 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
 test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
   test.setTimeout(90_000);
-  // One silent-stream recovery takes 15 seconds plus reconnect backoff.
-  // Give both decisions room to reconnect and replay their durable frames.
+  // Each DOM assertion gets 30s: one silent-stream stall replays at 15.750s,
+  // or up to three failed reconnects replay at 23.904s, measured from silence.
+  // More failures, a hung reconnect, or another silent stream can exceed 30s.
+  // The 90s case cap budgets 2 * 30s for decision confirmations plus 30s for
+  // setup, reload and other checks; it cannot cover every wait taking 30s.
   const streamTimeout = { timeout: 30_000 };
   // Decisions go over the real permission route with no credential of any kind:
   // Studio is a loopback-local tool and carries no browser-held token.
