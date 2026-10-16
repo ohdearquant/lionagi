@@ -405,6 +405,20 @@ duplicating or dropping the spawn decision. A failure raises
 node(s): no entry is rebuilt, so a checkpoint carrying one unreconstructible
 spawn is not resumed at all.
 
+A checkpoint's planned `completed` and `failed` entries are read the same way
+on the same pass: `_apply_checkpoint_precompletion` pre-marks a planned node
+`COMPLETED` from the entry's recorded `status` and hands it the recorded
+`response`, with no check of anything the node produced, and a checkpoint that
+records a failed planned or spawned node refuses the resume unless
+`--retry-failed` is passed. A completed spawned entry is pre-marked the same
+way from its own recorded `status`. Nothing on either path reads or re-checks
+the declared artifact set, and the artifact root the resumed run is given is
+the fresh run's, not the original run's. What a result-verifying resume would
+need — reading the persisted `artifact_contract_json`, checking the declared
+set, the completion-time digest for contract-less nodes, the byte-level check,
+the consumed-producer refusal, and threading the original artifact root — is
+ADR-0069's delta rows 2 and 6-9, not shipped behavior.
+
 Spawn-id sequencing: on resume, the ordinal sequence must start past the MAX
 existing ordinal among restored spawns + 1 (not `count`, since a crashed run
 can leave gaps — an allocated-but-never-completed spawn never made it into
