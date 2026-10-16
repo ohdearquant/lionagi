@@ -47,15 +47,26 @@ Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 
 Each Library tab loads only its own catalog; Playbook loads both bundled templates
 and custom playbooks. All loads the visible catalogs. Hidden workflow and engine
-catalogs are loaded only for an explicit detail deep link, on any visible tab;
-withheld tab names alone do not load them. Selecting or leaving a hidden detail does
-not reload the visible catalog. Hooks owns its configuration requests independently.
+catalogs are loaded only for an explicit detail deep link on a catalog tab;
+withheld tab names alone do not load them. Hooks is a full-page configuration surface:
+it owns its configuration requests and does not load a hidden Library detail.
+Selecting or leaving a hidden detail does not reload the visible catalog.
 Switching tabs reloads the selected sources; a late response from the previous tab
 cannot replace the active list or its errors. Create, delete, and clone completions
 refresh the current tab even if navigation occurred while the change was pending.
-Unavailable sources are identified in the error banner and can be retried; failed
-reloads clear previously loaded agent and engine detail data. The
+They update selection only if the tab still matches the tab where the action began,
+and do not navigate after the Library unmounts. Visible catalog failures are named
+in the master banner; hidden failures and loading appear in their detail pane.
+Retrying one pane does not reload the other pane's catalogs. Failed reloads clear
+previously loaded agent and engine detail data. A missing engine is reported as
+not found only after a successful catalog response. The
 `tab` and `sel` query parameters remain the links to a tab and selected item.
+
+Catalog-list request counts are one for Agent, Skill, Plugin or MCP; two for Playbook;
+six for All; and zero for Hooks or a withheld tab name alone. An explicit hidden detail
+adds one request outside Hooks. Row selection adds none; visiting a tab loads its sources
+again. A completion refreshes the current tab's sources and any current hidden detail.
+A workflow created on All loads six visible sources plus its workflow catalog.
 
 ## API resolution
 

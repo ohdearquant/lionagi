@@ -384,18 +384,30 @@ function LibraryPage() {
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
   const parsed = parseSel(sel);
-  const selectedHiddenKind = parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+  const selectedHiddenKind =
+    kindFilter !== "hooks" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [reloadToken, setReloadToken] = useState(0);
+  const [visibleRetryToken, setVisibleRetryToken] = useState(0);
+  const [hiddenRetryToken, setHiddenRetryToken] = useState(0);
   // Completion callbacks can outlive the tab where they were created. Refresh
   // the current effects instead of issuing requests for a captured tab.
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
-  const visible = useLibraryData(kindFilter, reloadToken);
+  const retryVisible = useCallback(() => setVisibleRetryToken((token) => token + 1), []);
+  const retryHidden = useCallback(() => setHiddenRetryToken((token) => token + 1), []);
+  const visible = useLibraryData(kindFilter, reloadToken + visibleRetryToken);
   // Detail navigation must not reload or hide the visible catalog.
-  const hidden = useLibraryData(selectedHiddenKind, reloadToken, true);
+  const hidden = useLibraryData(selectedHiddenKind, reloadToken + hiddenRetryToken, true);
   const items = [...visible.items, ...hidden.items];
   const { loading, allAgents } = visible;
   const { allEngines } = hidden;
-  const error = visible.error || hidden.error;
+  const error = visible.error;
   const kindStatus = { ...visible.kindStatus };
   if (selectedHiddenKind) kindStatus[selectedHiddenKind] = hidden.kindStatus[selectedHiddenKind];
   const selectionLoading = !!selectedHiddenKind && hidden.loading;
@@ -442,7 +454,7 @@ function LibraryPage() {
 
   // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
   useEffect(() => {
-    if (loading || selectionLoading) return;
+    if (kindFilter === "hooks" || loading || selectionLoading) return;
 
     // Keep any sel that resolves in the current filtered list — this is what
     // makes deep links into the Library work. A sel from another tab won't be
@@ -458,6 +470,7 @@ function LibraryPage() {
       if (
         isOptimisticWorkflow ||
         isHiddenSelection ||
+        (parsed?.kind === "engine" && hidden.kindStatus.engine === "loaded") ||
         (parsed && kindStatus[parsed.kind] === "failed") ||
         (parsed &&
           filtered.some(
@@ -543,8 +556,10 @@ function LibraryPage() {
     kindFilter === "hooks"
       ? false
       : kindFilter === "all"
-        ? LIBRARY_KINDS.some((kind) => !UNFINISHED_KINDS.has(kind) && kindStatus[kind] === "failed")
-        : kindStatus[kindFilter as LibraryKind] === "failed";
+        ? LIBRARY_KINDS.some(
+            (kind) => !UNFINISHED_KINDS.has(kind) && visible.kindStatus[kind] === "failed",
+          )
+        : visible.kindStatus[kindFilter as LibraryKind] === "failed";
 
   const createLabel =
     kindFilter === "mcp"
@@ -599,11 +614,13 @@ function LibraryPage() {
         >
           <span>
             {t("loadError")}{" "}
-            {ALL_KIND_TABS.filter((tab) => kindStatus[tab.value as LibraryKind] === "failed")
+            {ALL_KIND_TABS.filter(
+              (tab) => visible.kindStatus[tab.value as LibraryKind] === "failed",
+            )
               .map((tab) => tab.label)
               .join(", ")}
           </span>
-          <Button size="sm" variant="secondary" onClick={reload}>
+          <Button size="sm" variant="secondary" onClick={retryVisible}>
             {tDaemon("retry")}
           </Button>
         </div>
@@ -624,7 +641,7 @@ function LibraryPage() {
                     {t("empty.clearFilters")}
                   </Button>
                 )}
-                <Button size="sm" variant="secondary" onClick={reload}>
+                <Button size="sm" variant="secondary" onClick={retryVisible}>
                   {tDaemon("retry")}
                 </Button>
               </div>
@@ -762,10 +779,14 @@ function LibraryPage() {
       <div className="flex h-full flex-col overflow-hidden">
         <CreateMcpServerPanel
           onCreated={(name) => {
+            if (!mounted.current) return;
             setShowCreate(false);
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("mcp", name) }),
+              search: (prev) =>
+                (prev.tab ?? "all") === kindFilter
+                  ? { ...prev, sel: encodeSel("mcp", name) }
+                  : prev,
               replace: false,
             });
           }}
@@ -780,10 +801,14 @@ function LibraryPage() {
     detailPane = (
       <CreateAgentPanel
         onCreated={(name) => {
+          if (!mounted.current) return;
           setShowCreate(false);
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("agent", name) }),
+            search: (prev) =>
+              (prev.tab ?? "all") === kindFilter
+                ? { ...prev, sel: encodeSel("agent", name) }
+                : prev,
             replace: false,
           });
         }}
@@ -798,11 +823,15 @@ function LibraryPage() {
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
           onCreated={(workflow) => {
+            if (!mounted.current) return;
             setOptimisticWorkflow(workflow);
             setShowCreate(false);
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", workflow.name) }),
+              search: (prev) =>
+                (prev.tab ?? "all") === kindFilter
+                  ? { ...prev, sel: encodeSel("workflow", workflow.name) }
+                  : prev,
               replace: false,
             });
           }}
@@ -813,16 +842,41 @@ function LibraryPage() {
         />
       </div>
     );
+  } else if (
+    selectedHiddenKind &&
+    !selectedWorkflowId &&
+    (hidden.loading || hidden.kindStatus[selectedHiddenKind] === "failed")
+  ) {
+    const failed = !hidden.loading && hidden.kindStatus[selectedHiddenKind] === "failed";
+    detailPane = (
+      <div className="flex h-full flex-col overflow-hidden">
+        <DrawerBackButton onClick={handleBack}>{t("drawer.back")}</DrawerBackButton>
+        <DrawerHeader
+          name={parsed!.name}
+          badge={ALL_KIND_TABS.find((tab) => tab.value === selectedHiddenKind)?.label}
+        />
+        <div className="flex items-center gap-3 p-4" role={failed ? "alert" : "status"}>
+          <span>{t(failed ? "loadError" : "loading")}</span>
+          {failed && (
+            <Button size="sm" variant="secondary" onClick={retryHidden}>
+              {tDaemon("retry")}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
   } else if (parsed?.kind === "mcp") {
     detailPane = (
       <McpServerDetail
         name={parsed.name}
         onBack={handleBack}
         onDeleted={() => {
+          if (!mounted.current) return;
           void reload();
           handleBack();
           void navigate({
             search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -838,10 +892,12 @@ function LibraryPage() {
         agent={selectedAgent}
         onBack={handleBack}
         onDeleted={() => {
+          if (!mounted.current) return;
           setDetailActive(false);
           void reload();
           void navigate({
             search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -860,9 +916,13 @@ function LibraryPage() {
         isBuiltin={parsed.subKind === "builtin"}
         onBack={handleBack}
         onCloned={(clonedName) => {
+          if (!mounted.current) return;
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("playbook", clonedName, "custom") }),
+            search: (prev) =>
+              (prev.tab ?? "all") === kindFilter
+                ? { ...prev, sel: encodeSel("playbook", clonedName, "custom") }
+                : prev,
             replace: false,
           });
         }}
