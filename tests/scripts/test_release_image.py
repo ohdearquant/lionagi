@@ -576,6 +576,7 @@ def assert_workflow_contract(document):
     assert "if" not in revalidate
     assert not revalidate.get("continue-on-error", False)
     image = next(s for s in docker["steps"] if s.get("id") == "image")
+    digest_verify = docker["steps"][-1]
     assert docker["steps"].index(revalidate) < docker["steps"].index(image)
     # An unlisted step could retag latest between the revalidation and the
     # build, and the registry check only reads latest when this run publishes
@@ -592,6 +593,73 @@ def assert_workflow_contract(document):
         ("Log in to GitHub Container Registry", LOGIN_ACTION, None),
         ("Build and push Docker image (multi-arch)", IMAGE_ACTION, "image"),
         ("Verify the published image digest", None, None),
+    ]
+    # Every step is pinned whole, not by identity: a checkout that recurses
+    # into submodules, a different Python, a QEMU input, a Buildx driver image,
+    # a removed Buildx retry, or a login identity swap changes who publishes
+    # and how the image is built without changing a step's name or action, so
+    # `with`, `env`, `if` and `continue-on-error` are all part of the contract.
+    assert docker["steps"] == [
+        guard,
+        {
+            "uses": CHECKOUT_ACTION,
+            "with": {
+                "ref": "${{ github.sha }}",
+                "path": ".release-control",
+                "persist-credentials": False,
+            },
+        },
+        {
+            "uses": CHECKOUT_ACTION,
+            "with": {
+                "ref": "${{ needs.source.outputs.sha }}",
+                "path": "source",
+                "persist-credentials": False,
+            },
+        },
+        {"uses": SETUP_PYTHON_ACTION, "with": {"python-version": "3.12"}},
+        {
+            "name": "Revalidate the source and published wheel",
+            "id": "release",
+            "env": {
+                "GH_TOKEN": "${{ github.token }}",
+                "RESOLVED_SHA": "${{ needs.source.outputs.sha }}",
+                "RESOLVED_VERSION": "${{ needs.source.outputs.version }}",
+            },
+            "run": "python .release-control/scripts/resolve_image_release.py --prepare-image",
+        },
+        {"name": "Set up QEMU", "uses": QEMU_ACTION},
+        {
+            "name": "Set up Docker Buildx",
+            "id": "buildx",
+            "continue-on-error": True,
+            "uses": BUILDX_ACTION,
+        },
+        {
+            "name": "Set up Docker Buildx (second attempt)",
+            "if": "steps.buildx.outcome == 'failure'",
+            "uses": BUILDX_ACTION,
+        },
+        {
+            "name": "Log in to GitHub Container Registry",
+            "uses": LOGIN_ACTION,
+            "with": {
+                "registry": "ghcr.io",
+                "username": "${{ github.actor }}",
+                "password": "${{ secrets.GITHUB_TOKEN }}",
+            },
+        },
+        image,
+        {
+            "name": "Verify the published image digest",
+            "if": "${{ !cancelled() && steps.image.outcome != 'skipped' }}",
+            "env": {
+                "VERSION": "${{ needs.source.outputs.version }}",
+                "EXPECTED_DIGEST": "${{ steps.image.outputs.digest }}",
+                "PUBLISH_LATEST": "${{ steps.release.outputs.publish_latest }}",
+            },
+            "run": "bash .release-control/scripts/verify_release_image.sh",
+        },
     ]
     assert docker["steps"][0] == guard
     assert image == {
@@ -618,16 +686,7 @@ def assert_workflow_contract(document):
     }
     assert jobs["verify-image"]["needs"] == ["source", "docker"]
     assert jobs["verify-image"]["if"] == ("${{ always() && needs.source.result == 'success' }}")
-    digest_verify = docker["steps"][-1]
     assert docker["steps"].index(digest_verify) == docker["steps"].index(image) + 1
-    assert digest_verify["if"] == "${{ !cancelled() && steps.image.outcome != 'skipped' }}"
-    assert digest_verify["env"] == {
-        "VERSION": "${{ needs.source.outputs.version }}",
-        "EXPECTED_DIGEST": "${{ steps.image.outputs.digest }}",
-        "PUBLISH_LATEST": "${{ steps.release.outputs.publish_latest }}",
-    }
-    assert digest_verify["run"] == "bash .release-control/scripts/verify_release_image.sh"
-    assert not digest_verify.get("continue-on-error", False)
     assert len(jobs["verify-image"]["steps"]) == 1
     verify = jobs["verify-image"]["steps"][0]
     assert verify["env"] == {
@@ -722,6 +781,12 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "docker-runs-on-changed",
         "guard-run-retags",
         "deploy-timeout-removed",
+        "docker-checkout-submodules",
+        "setup-python-version-changed",
+        "qemu-input-added",
+        "buildx-driver-options",
+        "buildx-retry-soft-failure-removed",
+        "login-identity-replaced",
     ],
 )
 def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
@@ -889,6 +954,28 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
             )
     elif mutation == "deploy-timeout-removed":
         deploy.pop("timeout-minutes", None)
+    elif mutation == "docker-checkout-submodules":
+        next(s for s in docker["steps"] if s.get("with", {}).get("path") == ".release-control")[
+            "with"
+        ]["submodules"] = "recursive"
+    elif mutation == "setup-python-version-changed":
+        next(s for s in docker["steps"] if s.get("uses") == SETUP_PYTHON_ACTION)["with"][
+            "python-version"
+        ] = "3.13"
+    elif mutation == "qemu-input-added":
+        next(s for s in docker["steps"] if s.get("name") == "Set up QEMU")["with"] = {
+            "cache": "false"
+        }
+    elif mutation == "buildx-driver-options":
+        next(s for s in docker["steps"] if s.get("id") == "buildx")["with"] = {
+            "driver-opts": "image=moby/buildkit:master"
+        }
+    elif mutation == "buildx-retry-soft-failure-removed":
+        next(s for s in docker["steps"] if s.get("id") == "buildx").pop("continue-on-error", None)
+    elif mutation == "login-identity-replaced":
+        next(s for s in docker["steps"] if s.get("uses") == LOGIN_ACTION)["with"]["password"] = (
+            "${{ secrets.PUBLISH_TOKEN }}"
+        )
     with pytest.raises((AssertionError, KeyError)):
         assert_workflow_contract(document)
 
@@ -976,8 +1063,10 @@ def test_registry_reads_are_bounded_in_time(registry):
     lines = arguments.read_text().splitlines()
     assert lines, "the verifier must have called curl"
     for line in lines:
-        assert "--connect-timeout" in line, line
-        assert "--max-time" in line, line
+        # The values, not just the flag names: `--max-time 86400` satisfies the
+        # presence of the flag and is not a deadline that bounds the slot.
+        assert "--connect-timeout 10" in line, line
+        assert "--max-time 30" in line, line
 
 
 def test_registry_verifies_both_published_digests(registry):
@@ -1122,6 +1211,36 @@ def test_digest_verification_checks_each_registry_snapshot(registry):
     # Each matching registry snapshot verifies its own build digest.
     assert run(after_a).returncode == 0
     assert run(after_b, VERSION="1.2.4", EXPECTED_DIGEST=digest_b).returncode == 0
+
+
+def test_failed_read_is_not_described_as_a_recorded_reading():
+    """The job summary is written by the last step, which a failed read skips, so
+    a comment promising a reading on every run would claim a record that a
+    failed read never leaves behind."""
+    text = " ".join((ROOT / ".github/workflows/image-matches-pypi.yml").read_text().split())
+    assert "Every run writes its readings" not in text
+    assert "Every completed reading writes its readings" in text
+
+
+def test_daily_check_guidance_does_not_claim_an_older_image_on_a_missing_tag():
+    """`li studio` pulls `:latest` rather than a version tag, so when no `latest`
+    exists the pull fails; the issue must not tell that reader they are on an
+    older image."""
+    text = " ".join((ROOT / ".github/workflows/image-matches-pypi.yml").read_text().split())
+    assert "is on the older image until this is repaired" not in text
+    assert "is on an older image, or has none, until this is repaired" in text
+
+
+def test_ci_note_states_what_the_repair_and_refusal_actually_do():
+    """The note must say the repair reruns the released commit's tests (the image
+    job waits on the test job), that the refusal follows from the missing upload
+    record rather than from any image failure, and that the later image run it
+    names is not scheduled by anything."""
+    text = " ".join((ROOT / "docs/internals/ci.md").read_text().split())
+    assert "repair also reruns the released commit's test matrix" in text
+    assert "This also applies when that release's image job later failed" not in text
+    assert "it applies whether or not that release's image job also failed" in text
+    assert "Nothing schedules that run" in text
 
 
 def test_daily_check_guidance_does_not_offer_a_new_release_as_recovery():

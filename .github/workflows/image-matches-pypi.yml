@@ -12,7 +12,8 @@ name: Image matches PyPI
 # any moment by anyone, it does not depend on catching a failure as it happens,
 # and it stays red until someone fixes it instead of scrolling away.
 #
-# Every run writes its readings to the job summary, pass or fail. That is
+# Every completed reading writes its readings to the job summary; a failed
+# read skips that record. That is
 # deliberate. An alarm whose only output is silence-on-success cannot be told
 # apart from an alarm that stopped running, so the run history carries a dated
 # sequence of readings and a gap in it is a missed run rather than a quiet one.
@@ -223,8 +224,8 @@ jobs:
 
           ${readings}
 
-          Anyone running \`li studio --docker\`, or pulling \`:latest\`, is on the older
-          image until this is repaired.
+          Anyone running \`li studio --docker\`, or pulling \`:latest\`, is on an older
+          image, or has none, until this is repaired.
 
           To repair: dispatch the Release workflow from the default branch,
           with \`version\` set to the version above. Changes to the image source
@@ -241,8 +242,9 @@ jobs:
           without one.
 
           A queued image job can be cancelled when another image job takes its
-          pending slot. Rerun a displaced release-event run, or dispatch a manual
-          repair again when successful upload evidence is retained. Avoid
+          pending slot. Rerun a displaced release-event run (Actions, then the run,
+          then \`Re-run all jobs\`), or dispatch a manual repair again when
+          successful upload evidence is retained. Avoid
           overlapping recovery dispatches. This daily check will report the
           current PyPI version again if its image is still missing or stale.
 

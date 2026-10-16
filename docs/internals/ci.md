@@ -26,7 +26,9 @@ also retains that release's Dockerfile; package, frontend or Dockerfile changes
 require a new release rather than republishing changed source under an old tag.
 The rebuild still resolves its base images, apt packages and Python dependencies
 on the dispatch day, so a repaired image matches the released one in the source
-it builds from, not byte for byte.
+it builds from, not byte for byte. The image job waits on the test job, so a
+repair also reruns the released commit's test matrix and a red test there blocks
+the image repair.
 The manual repair requires all of:
 
 - A published, non-draft GitHub release with the exact version tag.
@@ -48,8 +50,9 @@ wheel upload, and the image job runs after it. A moved tag without matching
 publication evidence is refused. If an upload reached PyPI
 but no attempt recorded a successful upload, a default-branch repair is refused
 with `no successful release workflow wheel upload binds this tag to its commit`.
-This also applies when that release's image job later failed, for example during
-Buildx setup. Dispatching a repair cannot recover this case. For release-event
+This refusal depends on the missing upload record alone, so it applies whether or
+not that release's image job also failed, for example during Buildx setup.
+Dispatching a repair cannot recover this case. For release-event
 runs that already include this workflow version, rerun the original release-event
 workflow to retry its image job while GitHub still permits a rerun. That path
 compares the tag with the recorded event commit and source package version, then
@@ -78,8 +81,9 @@ queued job can cancel and replace an older pending job even though
 `cancel-in-progress` is false. The displaced release can therefore finish red
 without publishing an image. The daily `Image matches PyPI` workflow detects a
 missing current-version image or stale `latest`. Rerun the displaced release-event
-run to recover its image while reruns remain available; if a manual repair was
-displaced, dispatch it again from the default branch when its evidence is retained.
+run (Actions, then the run, then `Re-run all jobs`) to recover its image while
+reruns remain available; if a manual repair was displaced, dispatch it again from
+the default branch when its evidence is retained.
 Avoid overlapping recovery dispatches so they do not replace another pending job.
 See
 [GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
@@ -95,10 +99,11 @@ expect the tag's digest to change. PyPI's version index can lag a fresh upload,
 so a release whose own version is not yet the version PyPI reports as current
 leaves `latest` untouched on that run; the daily `Image matches PyPI` check names
 `latest` as stale, and a later image run whose revalidation reads the advanced
-version moves it. Older versions and prereleases that PyPI does not select
-therefore leave `latest` alone. This serializes these image jobs, not external
-publishers or wheel publication; PyPI can advance while an image builds, before
-its newer image job runs.
+version moves it. Nothing schedules that run: it is the next release's image
+job or a manual default-branch dispatch for that version. Older versions and
+prereleases that PyPI does not select therefore leave `latest` alone. This
+serializes these image jobs, not external publishers or wheel publication; PyPI
+can advance while an image builds, before its newer image job runs.
 
 The image carries its version and source SHA as OCI labels. Before releasing
 the concurrency slot, verification compares registry manifest digests with the
