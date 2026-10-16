@@ -1254,6 +1254,12 @@
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
     },
+    "accessRequired": {
+      "title": "Daemon này cần mã truy cập",
+      "body": "Một daemon lionagi đã phản hồi tại {base} nhưng từ chối trang này. Daemon chỉ chấp nhận trang từ nguồn gốc khác khi có mã truy cập, và lệnh li studio cấp mã đó cho trang này khi mở nó. Tải lại trang sẽ làm mất mã.",
+      "fix": "Chạy lệnh này ở nơi daemon đang chạy để mở Studio với quyền truy cập:",
+      "command": "li studio"
+    },
     "retry": "Retry",
     "dismiss": "Dismiss"
   },

@@ -1254,6 +1254,12 @@
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
     },
+    "accessRequired": {
+      "title": "Этому демону нужен токен доступа",
+      "body": "Демон lionagi ответил по адресу {base}, но отклонил эту страницу. Демон принимает страницу с другого источника только с токеном доступа, а команда li studio передаёт его этой странице, когда открывает её. При перезагрузке страницы токен теряется.",
+      "fix": "Выполните это там, где работает демон, чтобы открыть Studio с доступом:",
+      "command": "li studio"
+    },
     "retry": "Retry",
     "dismiss": "Dismiss"
   },

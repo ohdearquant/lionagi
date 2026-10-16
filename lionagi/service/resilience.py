@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, NoReturn, TypeVar
 
 from lionagi.ln.concurrency import Lock
 from lionagi.ln.concurrency import retry as _canonical_retry
@@ -268,6 +268,19 @@ class RetryConfig:
         }
 
 
+def _reraise_inner(inner: Exception) -> NoReturn:
+    """Re-raise ``inner`` keeping the cause it was itself raised with.
+
+    A retry layer hides the original error inside a wrapper so the retry engine
+    sees a type it excludes, and re-raises the original once it gives up.
+    Raising it from the wrapper's ``__cause__`` — which is that same original —
+    would set the error as its own cause, and a walk of ``__cause__`` from it
+    would never reach an end. Raising it from its own cause keeps the chain
+    acyclic.
+    """
+    raise inner from inner.__cause__
+
+
 async def retry_with_backoff(
     func: Callable[..., Awaitable[T]],
     *args: Any,
@@ -313,7 +326,7 @@ async def retry_with_backoff(
                 jitter=jitter_factor if jitter else 0.0,
             )
         except _Excluded as wrapper:
-            raise wrapper.inner from wrapper.__cause__
+            _reraise_inner(wrapper.inner)
 
     return await _canonical_retry(
         _fn,

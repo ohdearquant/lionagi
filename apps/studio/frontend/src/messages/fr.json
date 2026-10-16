@@ -1254,6 +1254,12 @@
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
     },
+    "accessRequired": {
+      "title": "Ce démon a besoin d'un jeton d'accès",
+      "body": "Un démon lionagi a répondu à {base}, mais il a refusé cette page. Un démon n'accepte une page d'une autre origine qu'avec un jeton d'accès, et la commande li studio en donne un à cette page lorsqu'elle l'ouvre. Recharger la page fait perdre le jeton.",
+      "fix": "Exécutez ceci là où tourne le démon pour ouvrir Studio avec accès :",
+      "command": "li studio"
+    },
     "retry": "Retry",
     "dismiss": "Dismiss"
   },
