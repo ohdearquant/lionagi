@@ -1129,6 +1129,10 @@ async def test_a_refused_signal_write_fails_the_teardown_with_it(db, store):
     status, reason = ctx["terminal_reason"]
     assert status == "failed"
     assert "The store refused a write" in reason and "does not belong to" in reason
+    # The refusal itself is kept beside the reason: an Operator turn reads it to record
+    # `store_refused` rather than whatever outcome the turn had recorded.
+    assert isinstance(ctx["store_refusal"], StateCompatibilityRefused)
+    assert "does not belong to" in str(ctx["store_refusal"])
     assert ctx["signal_persist_dropped"] == 0
     # The refused write is not a dropped one: it was not persisted, and nothing retried it.
     assert _rows(store, "SELECT COUNT(*) FROM session_signals WHERE session_id = 's1'") == [(0,)]
