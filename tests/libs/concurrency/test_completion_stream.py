@@ -130,6 +130,36 @@ async def test_completion_stream_early_break_exits_cleanly(anyio_backend):
     assert (sorted(started), sorted(settled)) == at_exit
 
 
+async def test_completion_stream_leaving_early_waits_for_remaining_tasks(anyio_backend):
+    """Test that leaving the iteration early does not cancel the remaining awaitables.
+
+    A ``break`` out of ``async for`` stops consuming results only. The block's
+    ``__aexit__`` waits for every awaitable, so all of them have finished by the
+    time the block is left.
+    """
+    finished = []
+    NUM_TASKS = 20
+    LIMIT = 5
+
+    async def task(x):
+        await anyio.sleep(0.005)
+        finished.append(x)
+        return x
+
+    with anyio.fail_after(5):
+        async with CompletionStream([task(i) for i in range(NUM_TASKS)], limit=LIMIT) as stream:
+            async for _idx, _result in stream:
+                # The consumer stops after one result while the tail of the work
+                # is still queued behind the concurrency limit.
+                assert len(finished) < NUM_TASKS
+                break
+
+    # Not just the awaitables the loop consumed: __aexit__ ran every one of them.
+    assert sorted(finished) == list(range(NUM_TASKS))
+    await anyio.sleep(0.05)
+    assert sorted(finished) == list(range(NUM_TASKS))
+
+
 # Test removed - timing-dependent behavior hard to test reliably
 
 
