@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from lionagi.state.engine import (
+    _RollbackOnCloseConnection,
     dialect_of,
     make_engine,
     make_readonly_engine,
@@ -174,6 +175,84 @@ async def test_make_readonly_engine_rejects_writes(tmp_path):
                 await conn.execute(sa.text("INSERT INTO t (v) VALUES ('nope')"))
     finally:
         await ro_engine.dispose()
+
+
+# SQLite close lifecycle and connection options
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["uncommitted", "committed"])
+def test_native_close_preserves_rows_with_an_unfinished_cursor(tmp_path, committed):
+    path = tmp_path / "retained-cursor.db"
+    connection = sqlite3.connect(path, isolation_level=None, factory=_RollbackOnCloseConnection)
+    connection.execute("CREATE TABLE probe (x INTEGER)")
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("INSERT INTO probe VALUES (1)")
+    if committed:
+        connection.execute("COMMIT")
+    cursor = connection.execute("SELECT x FROM probe")
+    try:
+        connection.close()
+        connection.close()  # native close remains idempotent
+        external = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            assert external.execute("SELECT x FROM probe").fetchall() == (
+                [(1,)] if committed else []
+            )
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+        assert cursor is not None  # retained until after the external writer succeeds
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("error_type", [sqlite3.OperationalError, RuntimeError])
+def test_native_close_logs_a_rollback_error_and_still_closes(caplog, error_type):
+    class BrokenRollback(_RollbackOnCloseConnection):
+        def rollback(self):
+            raise error_type("controlled rollback failure")
+
+    connection = sqlite3.connect(":memory:", isolation_level=None, factory=BrokenRollback)
+    connection.execute("BEGIN")
+    connection.close()
+    assert "Could not roll back SQLite transaction before closing" in caplog.text
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+    connection.close()
+
+
+@pytest.mark.parametrize("readonly", [False, True], ids=["writable", "readonly"])
+@pytest.mark.parametrize("custom_factory", [False, True], ids=["default-factory", "custom-factory"])
+async def test_sqlite_engine_default_factory_preserves_connection_options(
+    tmp_path, readonly, custom_factory
+):
+    path = tmp_path / "options.db"
+    sqlite3.connect(path).close()
+    supplied = {"timeout": 0.25}
+    seen = []
+
+    def factory(*args, **kwargs):
+        seen.append(kwargs.copy())
+        return sqlite3.Connection(*args, **kwargs)
+
+    if custom_factory:
+        supplied["factory"] = factory
+    original = supplied.copy()
+    maker = make_readonly_engine if readonly else make_engine
+    engine = maker(f"sqlite+aiosqlite:///{path}", connect_args=supplied)
+    try:
+        async with engine.connect() as connection:
+            raw = await connection.get_raw_connection()
+            native = raw.driver_connection._conn
+            if custom_factory:
+                assert type(native) is sqlite3.Connection
+                assert seen[0]["timeout"] == 0.25
+            else:
+                assert isinstance(native, _RollbackOnCloseConnection)
+        assert supplied == original
+    finally:
+        await engine.dispose()
 
 
 # Schema-parity: MetaData vs schema.sql (SQLite leg, always runs)

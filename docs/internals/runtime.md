@@ -10,6 +10,17 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
 
 ### `state/engine.py`
 
+- SQLite engines default to a native connection factory that rolls back an open
+  transaction before closing. Cancellation can leave a statement cursor retained
+  in SQLAlchemy's traceback after its pooled connection has been discarded.
+  [SQLite's deferred close](https://www.sqlite.org/c3ref/close.html) can then keep
+  the transaction and writer reservation alive until that statement is finalized.
+  Explicit rollback runs on the driver's thread before native close, releasing
+  the reservation without depending on traceback collection. Writable and
+  read-only engines and Studio's `open_db()` share this factory. Explicit engine
+  connection factories and other `connect_args` remain caller-controlled. A
+  rollback error is logged and native close still runs; committed rows are
+  unaffected.
 - `make_readonly_engine()` — read-only `AsyncEngine` over an **existing** SQLite file, opened
   through SQLite's own URI read-only mode (`mode=ro`), not through `make_engine()`. This
   matters because: (1) no schema/PRAGMA write ever reaches the file — the OS-level open is

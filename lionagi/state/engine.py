@@ -146,6 +146,24 @@ def _warn_if_wal_reset_unfixed() -> None:
 _NOT_STOPPED = object()
 
 
+class _RollbackOnCloseConnection(sqlite3.Connection):
+    """End a transaction before native close can defer it behind retained cursors."""
+
+    def close(self) -> None:
+        try:
+            in_transaction = self.in_transaction
+        except sqlite3.ProgrammingError:
+            # Preserve sqlite3's idempotent close (and its wrong-thread error).
+            return super().close()
+        try:
+            if in_transaction:
+                self.rollback()
+        except Exception:
+            _log.warning("Could not roll back SQLite transaction before closing", exc_info=True)
+        finally:
+            super().close()
+
+
 @functools.cache
 def _stop_once_class(cls: type) -> type:
     """A subclass of the aiosqlite connection class *cls* that stops once.
@@ -751,6 +769,10 @@ def make_engine(url: str, **overrides):
         announce_busy_timeout()
         kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
         kwargs.update(overrides)
+        kwargs["connect_args"] = {
+            "factory": _RollbackOnCloseConnection,
+            **kwargs.get("connect_args", {}),
+        }
         engine = create_async_engine(url, **kwargs)
 
         def _apply_pragmas(dbapi_conn, connection_record):
@@ -817,6 +839,10 @@ def make_readonly_engine(url: str, **overrides):
     ro_url = f"{_SQLITE_ASYNC_PREFIX}file:{raw_path}?mode=ro&uri=true"
     kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
     kwargs.update(overrides)
+    kwargs["connect_args"] = {
+        "factory": _RollbackOnCloseConnection,
+        **kwargs.get("connect_args", {}),
+    }
     engine = create_async_engine(ro_url, **kwargs)
 
     def _apply_readonly_pragmas(dbapi_conn, connection_record):
