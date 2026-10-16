@@ -457,24 +457,34 @@ def test_package_failure_is_not_evidence_about_the_zone(tz_host, monkeypatch, fa
     A failed checksum, a compressed stream the reader cannot handle and a
     member it refuses to open all mean the same thing here: no evidence about
     the host's zone from this package. The host's file is readable, so the
-    resolution refuses rather than quietly interpreting schedules in UTC.
+    resolution refuses rather than quietly interpreting schedules in UTC. The
+    refusal has to come from the failed read, so this asserts the package was
+    reached at all; without that it passes wherever the package is never
+    consulted.
     """
     from importlib import resources
 
     link, set_roots, zone_file = tz_host
     link.symlink_to(zone_file("outside/zoneinfo"))
     set_roots("empty")
+    opened = []
 
     class FailingZone:
         def joinpath(self, child):
             return self
 
         def open(self, mode):
+            opened.append("tzdata.zoneinfo")
             raise failure
 
-    monkeypatch.setattr(resources, "files", lambda name: FailingZone())
+    def failing_package(name):
+        assert name == "tzdata.zoneinfo"
+        return FailingZone()
+
+    monkeypatch.setattr(resources, "files", failing_package)
     with pytest.raises(config.SystemTimezoneUnreadableError):
         config._system_local_tz_name()
+    assert opened, "the package resource was never consulted"
 
 
 def test_package_failure_does_not_escape_when_nothing_was_readable(tz_host, monkeypatch):

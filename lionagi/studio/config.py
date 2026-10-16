@@ -194,8 +194,9 @@ def _zone_name_from_path(
     Containment alone isn't enough: with several roots configured, an
     earlier one holding the same key can shadow a later one, so a candidate
     is accepted only if resolving it the way the stdlib will arrives back at
-    rules the host reads identically: the same offset, DST flag and name at
-    every transition of either file, with the same POSIX footer text.
+    rules the host reads identically: the same UTC offset, daylight offset
+    and name at every transition of either file, with the same POSIX footer
+    text.
     """
     cache = {} if cache is None else cache
     host_rules = _path_zone_rules(path, cache)

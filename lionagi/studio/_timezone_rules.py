@@ -38,12 +38,18 @@ def rules_equal(left: tuple | None, right: tuple | None) -> bool:
     """Whether two values from :func:`tzif_rules` carry the same rules.
 
     Files whose stored tables differ still carry the same rules when loading
-    each of them gives the same UTC offset, DST flag and name at every instant
-    either of them stores a change, and weekly while one reads its footer and
-    the other a table, and when both carry the same POSIX footer text. A
-    build of a zone may store a transition another build leaves to its footer,
-    so the stored tables are deliberately not the comparison: only the rules
-    they decode to are. A file this reader cannot interpret keeps its exact
+    each of them gives the same UTC offset, daylight offset and name at every
+    instant either of them stores a change, and weekly while one reads its
+    footer and the other a table, and when both carry the same POSIX footer
+    text. A build of a zone may store a transition another build leaves to its
+    footer, so the stored tables are deliberately not the comparison: only the
+    rules they decode to are. The daylight offset is the one the loaded rules
+    report for an instant, so two builds of one release that disagree only
+    there, a rearguard and a vanguard build of the same tzdata, are not equal.
+    The weekly reads that catch a rule one table leaves out cover 1900 to 2100,
+    and a rule lasting under a week there is not looked for. An instant whose
+    behaviour cannot be read is not evidence of agreement, so the two files are
+    not equal through it. A file this reader cannot interpret keeps its exact
     bytes as its only evidence.
     """
     if left is None or right is None or left[0] != right[0]:
@@ -56,8 +62,16 @@ def rules_equal(left: tuple | None, right: tuple | None) -> bool:
     compared = 0
     points = _change_points(left[3]) | _change_points(right[3])
     for when in points | frozenset(_footer_points(left[3], right[3])):
-        mine = _behaviour(left[1], when, read[0])
-        theirs = _behaviour(right[1], when, read[1])
+        try:
+            mine = _behaviour(left[1], when, read[0])
+            theirs = _behaviour(right[1], when, read[1])
+        except (OverflowError, ValueError):
+            # The instant itself is representable, but applying the file's own
+            # offset to it is not: a transition near the end of the
+            # representable range overflows, and an offset outside a day is
+            # refused by ``datetime``. That behaviour cannot be read, so it is
+            # not evidence of agreement.
+            return False
         if mine is None or theirs is None:
             # An instant this platform cannot represent is not evidence about
             # either file, so it is passed over rather than counted as a match.
@@ -98,7 +112,7 @@ def _footer_points(left: tuple, right: tuple) -> range:
 
 
 def _behaviour(zone: zoneinfo.ZoneInfo, when: int, cache: dict[int, tuple | None]) -> tuple | None:
-    """The offset, DST flag and name *zone* reads at *when*, read once and kept."""
+    """The UTC offset, daylight offset and name *zone* reads at *when*, kept once read."""
     if when not in cache:
         try:
             moment = datetime.fromtimestamp(when, tz=timezone.utc)
@@ -127,13 +141,62 @@ def read_tzif(path: Path, *, limit: int = MAX_TZIF_BYTES) -> bytes | None:
         return None
 
 
+def _daylight_offset_reads_past_the_table(
+    data: bytes, cursor: int, width: int, counts: tuple
+) -> bool:
+    """Whether the public loader would read past this table's transitions.
+
+    The loader assigns each daylight type the difference to the neighbouring
+    standard offset, and where the stored transitions leave one unplaced it
+    looks at the transition after the current one. On the last transition that
+    is one past the table, which the process reads as memory rather than data.
+    This walks the same assignment over the block the loader reads and reports
+    when it would step past the end.
+    """
+    count, type_count = counts[3], counts[4]
+    indices = data[cursor + count * width : cursor + count * (width + 1)]
+    records = data[cursor + count * (width + 1) : cursor + count * (width + 1) + type_count * 6]
+    offsets = []
+    daylight = []
+    for offset, is_dst, _name in struct.iter_unpack(">lbb", records):
+        offsets.append(offset)
+        # A type is daylight to the loader whenever its flag is not zero, so
+        # this mirrors the flag rather than assuming the two declared values.
+        daylight.append(bool(is_dst))
+    placed = [False] * len(daylight)
+    remaining = sum(daylight)
+    found = 0
+    for position in range(1, len(indices)):
+        if found == remaining:
+            return False
+        index = indices[position]
+        if not daylight[index] or placed[index]:
+            continue
+        difference = 0
+        before = indices[position - 1]
+        if not daylight[before]:
+            difference = offsets[index] - offsets[before]
+        if not difference and index < type_count - 1:
+            if position + 1 >= len(indices):
+                return True
+            after = indices[position + 1]
+            if daylight[after]:
+                continue
+            difference = offsets[index] - offsets[after]
+        if difference:
+            found += 1
+            placed[index] = True
+    return False
+
+
 def tzif_rules(data: bytes | None) -> tuple | None:
     """One file's rules as evidence, without the layout that encodes them.
 
     Modern readers use the 64-bit block. Abbreviation padding, the compatibility
     block and trailing bytes do not identify its rules. Compare two of these
-    with :func:`rules_equal`: files whose stored tables differ but whose
-    offsets, DST flags, names and POSIX footer agree describe the same rules.
+    with :func:`rules_equal`: files whose stored tables differ but whose UTC
+    offsets, daylight offsets, names and POSIX footer agree describe the same
+    rules.
     This does not prove equivalence between different footer expressions for the
     same recurrence. A loadable file outside this reader's boundary keeps its
     exact bytes as its only evidence.
@@ -158,6 +221,22 @@ def tzif_rules(data: bytes | None) -> tuple | None:
         types = data[cursor + count * width : cursor + count * (width + 1)]
         if any(index >= type_count for index in types):
             raise ValueError("TZif transition type out of range")
+        # The loader takes any flag but zero as daylight, so a flag outside the
+        # two declared values drives its table walk into places this reader
+        # cannot mirror. Such a value is not a time type this reader interprets,
+        # so the file is refused rather than handed over.
+        flags = data[cursor + count * (width + 1) : cursor + count * (width + 1) + type_count * 6]
+        if any(
+            is_dst not in (0, 1) for _offset, is_dst, _name in struct.iter_unpack(">lbb", flags)
+        ):
+            raise ValueError("Invalid TZif daylight flag")
+        # The loader infers each daylight type's offset from the transitions
+        # around it, and can turn to the transition after the last one when the
+        # last one leaves that offset unplaced. A table with no such transition
+        # makes the pure-Python loader raise and the C accelerator read out of
+        # bounds, so the table is refused before either of them sees it.
+        if _daylight_offset_reads_past_the_table(data, cursor, width, counts):
+            raise ValueError("TZif transition table too short for its daylight types")
         zone = zoneinfo.ZoneInfo.from_file(io.BytesIO(data))
     except (ValueError, OverflowError, IndexError, struct.error, UnicodeError, AssertionError):
         return None

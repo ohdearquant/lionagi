@@ -3,6 +3,8 @@
 import io
 import os
 import struct
+import subprocess
+import sys
 import zoneinfo
 from datetime import datetime, timezone
 from importlib import resources
@@ -81,7 +83,7 @@ def _host_zone_bytes(zone):
 
 
 def _without_transitions_the_footer_covers(data):
-    """*data* with the transitions past the 32-bit range removed.
+    """*data* with the transitions its POSIX footer already covers removed.
 
     A zone's POSIX footer describes its recurrence, so a build may store those
     transitions or leave them to the footer. Dropping the records a footer
@@ -101,11 +103,12 @@ def _without_transitions_the_footer_covers(data):
     end = standard_offset + standard2 + utc2
     footer_end = data.index(b"\n", end + 1)
     footer = data[end + 1 : footer_end]
-    # 2038-01-19T03:14:08Z is the last instant the 32-bit block can describe;
-    # the recurring rule beyond it lives in the footer.
+    # America/New_York's footer carries the recurrence in force from 2008 on,
+    # so the 2008-01-01T00:00:00Z cutoff keeps only the transitions the footer
+    # does not already describe; dropping the rest leaves the same behaviour.
     keep = sum(1 for when in times if when < 1_199_145_600)
     if not 0 < keep < count2:
-        pytest.skip("this zone stores no transition past the 32-bit range")
+        pytest.skip("this zone stores no transition the footer already covers")
     header = data[second_header : second_header + 5] + bytes(15)
     header += struct.pack(">6I", utc2, standard2, leap2, keep, types2, chars2)
     block = struct.pack(f">{keep}q", *times[:keep])
@@ -224,10 +227,11 @@ class _EofGuarded(io.BytesIO):
 def test_unterminated_footer_never_reaches_the_public_loader(monkeypatch, truncate):
     """A footer with no closing newline is refused, not handed to the loader.
 
-    The complete file is accepted, so the truncations above only remove the
-    footer's terminating newline. Handing one of them to the public loader
-    would loop inside it forever, which for a value read while a module
-    constant is being built means a process that never starts.
+    The complete file is accepted. Each truncation above removes or
+    overwrites the newline that ends the footer, so none of them has a
+    terminated footer. Handing one of them to the public loader would loop
+    inside it forever, which for a value read while a module constant is being
+    built means a process that never starts.
     """
     complete = _tzif(footer=b"STD0DST,M3.2.0,M11.1.0")
     assert rules.tzif_rules(complete) is not None
@@ -256,7 +260,7 @@ def test_every_installed_package_zone_is_parsed_and_self_equivalent():
     )
 
 
-def test_read_limit_is_independent_of_file_identity(tmp_path, monkeypatch):
+def test_oversized_file_is_refused_before_it_is_opened(tmp_path, monkeypatch):
     path = tmp_path / "zone"
     path.write_bytes(b"x" * 65)
     original_open = os.open
@@ -370,3 +374,135 @@ def test_open_race_to_fifo_remains_nonblocking(tmp_path, monkeypatch):
 @pytest.mark.parametrize("data", [None, b"", b"not TZif", b"TZif" + b"\0" * 40])
 def test_unloadable_data_has_no_evidence(data):
     assert rules.tzif_rules(data) is None
+
+
+def _all_daylight_tzif():
+    """A TZif whose last transition leaves a daylight offset unplaced.
+
+    Both local time types carry the daylight flag and the previous transition
+    is a daylight type too, so the loader cannot take the offset from it. The
+    type is not the last of its table, so the loader turns to the transition
+    after the last one, which its table does not have.
+    """
+    names = b"\0"
+    compatibility = _header(b"2", 0, 1, 1) + bytes(7)
+    modern = _header(b"2", 2, 2, len(names))
+    modern += struct.pack(">2q", -1000000, 2000000) + bytes(2)
+    modern += struct.pack(">iBBiBB", -18000, 1, 0, -14400, 1, 0) + names
+    return compatibility + modern + b"\n\n"
+
+
+def _crafted_tzif(types, indices):
+    """A version-2 TZif with the given local time types and transition indices."""
+    names = b"\0"
+    times = [-1000000, 2000000][: len(indices)]
+    compatibility = _header(b"2", 0, 1, 1) + bytes(7)
+    modern = _header(b"2", len(indices), len(types), len(names))
+    modern += struct.pack(f">{len(times)}q", *times)
+    modern += bytes(indices)
+    for offset, flag, name_index in types:
+        modern += struct.pack(">iBB", offset, flag, name_index)
+    return compatibility + modern + names + b"\n\n"
+
+
+# Each table walks the loader into a read past its transition table. The first
+# leaves a daylight offset unplaced at the last transition; the flags are
+# outside the two the format declares, which the loader still reads as
+# daylight.
+_READ_PAST_TABLES = [
+    pytest.param(_all_daylight_tzif(), id="unplaceable-daylight-offset"),
+    pytest.param(
+        _crafted_tzif([(-18000, 0x80, 0), (-14400, 1, 0)], [0, 0]), id="read-past-flag-0x80"
+    ),
+    pytest.param(
+        _crafted_tzif([(-18000, 0xFF, 0), (-14400, 1, 0)], [0, 0]), id="read-past-flag-0xff"
+    ),
+]
+
+# A flag outside ``{0, 1}`` on a type whose offset the walk can still place: a
+# standard type follows it, so nothing reads past the table and only the flag
+# itself makes this file one the loader cannot be trusted to walk.
+_UNPLACEABLE_FLAG_TABLES = [
+    pytest.param(
+        _crafted_tzif([(-18000, 0x80, 0), (-14400, 0, 0)], [0, 1]), id="unplaceable-flag-0x80"
+    ),
+    pytest.param(
+        _crafted_tzif([(-18000, 0xFF, 0), (-14400, 0, 0)], [0, 1]), id="unplaceable-flag-0xff"
+    ),
+]
+
+_CRAFTED_TABLES = _READ_PAST_TABLES + _UNPLACEABLE_FLAG_TABLES
+
+
+@pytest.mark.parametrize("data", _CRAFTED_TABLES)
+def test_crafted_table_never_reaches_the_public_loader(monkeypatch, data):
+    """A table the loader cannot walk is refused before it gets it.
+
+    Placing the flagged type's offset steps one transition past the table. The
+    pure-Python loader raises ``IndexError`` there; the C accelerator reads out
+    of bounds and the process dies, so a check after the loader returns would
+    come too late.
+    """
+    valid = _tzif()
+    assert rules.tzif_rules(valid) is not None
+
+    def forbidden_loader(*args, **kwargs):
+        raise RuntimeError("a table the loader cannot walk reached the public loader")
+
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", type("Loader", (), {"from_file": forbidden_loader}))
+    # The check does not refuse well-formed tables: this one still reaches the
+    # loader, which the stub reports by raising.
+    with pytest.raises(RuntimeError):
+        rules.tzif_rules(valid)
+    assert rules.tzif_rules(data) is None
+
+
+@pytest.mark.parametrize("data", _CRAFTED_TABLES)
+def test_crafted_table_does_not_kill_the_process(data):
+    """Each table, loaded in a child process so a crash is reported.
+
+    A walk past the table is a memory error rather than a refusal, so it has to
+    be reproduced where it cannot take the test session with it. The child
+    prints what the reader made of the bytes, and the parent requires a refusal
+    and a clean exit: a signal or a hang fails the test rather than being read
+    as a pass. The child is bounded by a timeout for the same reason.
+    """
+    root = str(Path(rules.__file__).resolve().parents[2])
+    env = {**os.environ, "PYTHONPATH": root + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    child = (
+        "import sys\n"
+        "from lionagi.studio import _timezone_rules as rules\n"
+        "data = bytes.fromhex(sys.argv[1])\n"
+        "outcome = rules.tzif_rules(data)\n"
+        "print('refused' if outcome is None else 'accepted:' + str(outcome[0]))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", child, data.hex()],
+        capture_output=True,
+        timeout=60,
+        env=env,
+    )
+    assert done.returncode == 0, done.stderr.decode()[-400:]
+    assert done.stdout.strip() == b"refused", done.stdout.decode()[-200:]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"times": (253402300798,)},
+        {"times": (-62135596800,), "offset": -3600},
+        {"times": (0,), "offset": 86400},
+    ],
+    ids=["latest-offsettable-instant", "earliest-offsettable-instant", "offset-outside-a-day"],
+)
+def test_a_comparison_that_cannot_be_made_is_not_equality(change):
+    """An instant whose behaviour cannot be computed is not evidence of agreement.
+
+    The instant itself is representable, but applying the file's own offset to
+    it overflows or produces an offset ``datetime`` rejects. Loading that file
+    gives no readable behaviour, so two files cannot be shown equal through it.
+    """
+    data = _tzif(**change)
+    parsed = rules.tzif_rules(data)
+    assert parsed is not None and parsed[0] == "tzif"
+    assert not rules.rules_equal(parsed, parsed)
