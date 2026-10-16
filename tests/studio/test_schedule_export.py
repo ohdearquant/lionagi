@@ -583,6 +583,66 @@ async def test_managed_mixed_project_export_round_trips_exact_qualified_names(
     assert doubled is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "project_line", "expected"),
+    [
+        (None, None, "demo"),
+        (None, "project: null", None),
+        (None, "project: ''", "demo"),
+        ("global", None, None),
+        ("global", "project: null", None),
+        ("global", "project: ''", None),
+    ],
+    ids=["omitted", "null", "empty", "global-omitted", "global-null", "global-empty"],
+)
+async def test_a_managed_row_keeps_its_project_through_export_and_reapply(
+    tmp_path, monkeypatch, agent_profile, scope, project_line, expected
+):
+    """The exported member carries the project the row runs with. The export writes a
+    project-scoped document even for a global set, so an omitted or empty project
+    written back as authored would re-apply under the export's project."""
+    lines = [
+        "apiVersion: lionagi.io/v1alpha1",
+        "kind: ScheduleSet",
+        "metadata:",
+        "  name: automation",
+        "  project: demo",
+        *([f"  scope: {scope}"] if scope else []),
+        "schedules:",
+        "  nightly:",
+        "    trigger:",
+        "      cron:",
+        '        expression: "0 2 * * *"',
+        "        timezone: UTC",
+        "    target:",
+        "      kind: agent",
+        "      profile: reviewer",
+        "      prompt: check things",
+        "    execution:",
+        f"      cwd: {agent_profile}",
+        *([f"      {project_line}"] if project_line else []),
+    ]
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "source.db")
+    async with StateDB() as db:
+        await apply_schedule_set(db, parse_schedule_set("\n".join(lines) + "\n"), agent_profile)
+        rows = await db.list_schedules()
+    (source,) = rows
+    assert source["action_project"] == expected
+
+    docs, report = build_managed_export_document(rows)
+    assert [line.status for line in report] == ["READY"]
+    (doc,) = docs
+    reread = parse_schedule_set(dump_schedule_set_yaml(doc))
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "fresh.db")
+    async with StateDB() as db:
+        await apply_schedule_set(db, reread, agent_profile)
+        (fresh,) = await db.list_schedules()
+    assert fresh["action_project"] == expected
+    assert fresh["resolved_digest"] == source["resolved_digest"]
+
+
 # flow_yaml action_model override -- BLOCKED, not silently dropped
 
 

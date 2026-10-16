@@ -636,10 +636,11 @@ def _resolve_project(execution: Execution, *, project: str | None, is_global: bo
     """The project a member runs under: its own, else the document's.
 
     ``project: null`` written out declares that the member has no project, which is
-    what an export writes for a row stored without one; only an omitted project
-    inherits the document's. The difference is real at spawn time: the project is
-    passed to the spawned command and is the fallback execution root, so reading an
-    explicit null as "inherit" would change what an exported row does on re-apply.
+    what an export writes for a row stored without one; an omitted or empty project
+    inherits the document's (none in a global document). The difference is real at
+    spawn time: the project is the fallback execution root of every schedule and is
+    passed as ``--project`` to an agent, flow, fanout or flow_yaml command, so reading an explicit
+    null as "inherit" would change what an exported row does on re-apply.
     """
     if execution.project:
         return execution.project

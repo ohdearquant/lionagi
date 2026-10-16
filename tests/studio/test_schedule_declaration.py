@@ -461,10 +461,11 @@ def test_wrong_api_version_rejected():
         ("", "demo"),
         ("      project: other", "other"),
         ("      project: null", None),
+        ("      project: ''", "demo"),
     ],
-    ids=["omitted-inherits", "named", "explicit-null-is-none"],
+    ids=["omitted-inherits", "named", "explicit-null-is-none", "empty-inherits"],
 )
-def test_a_member_project_inherits_the_document_only_when_omitted(
+def test_a_member_project_inherits_the_document_unless_named_or_null(
     agent_profile, project_line, expected
 ):
     """An explicit ``project: null`` is a project of None, never the document's.

@@ -536,11 +536,15 @@ flow by hand. Declaration/cli re-export (`managed_by IN ('cli',
 'declaration')`) simply re-validates each row's already-typed
 `authored_spec` back into a `ScheduleMember`.
 
-A row stored without a project exports as `execution.project: null`, and
-`resolve_member` reads an explicit null as no project; only an omitted
-project inherits `metadata.project`. Reading the null as "inherit" gave the
-re-applied member the document's project, so re-applying an export changed
-what such a row passes to the command it spawns.
+`resolve_member` reads an explicit `execution.project: null` as no project;
+an omitted or empty project inherits `metadata.project` (none under `scope:
+global`). The managed export writes each member's project from the row's stored
+`action_project` (`null` when it has none) rather than as authored: the export's
+document is project-scoped even for a global set, so an omitted or empty project
+written back would re-apply under the export's project. Reading the null as
+"inherit" did the same for a row stored without a project. Either way the
+re-applied row changed its fallback working directory and, for an agent, flow,
+fanout or flow_yaml target, the `--project` its command receives.
 
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:

@@ -120,11 +120,16 @@ Notes:
 - Target kinds: `agent`, `command`, `playbook`, `flow`. A schedule this set created
   that later disappears from the file is disabled on the next apply (not deleted —
   its run history stays queryable).
-- A member runs under the document's `metadata.project` unless its `execution`
-  names another. `project: null` written out there means the schedule has no
-  project, which is how `li schedule export` writes a row stored without one. The
-  difference matters: the project is passed to the command the schedule spawns and
-  is its fallback working directory.
+- In a project-scoped document a member whose `execution` omits `project`, or
+  leaves it empty, runs under the document's `metadata.project`; in a global
+  document it has no project unless it names one. `project: null` written out means
+  the schedule has no project. `li schedule export` writes every member's stored
+  project explicitly, `null` included, so re-applying an export reproduces it. The
+  difference matters: the project is the fallback working directory of every
+  schedule and is passed as `--project` to an `agent`, `flow`, `fanout` or
+  `flow_yaml` command. A document already applied whose member says `project: null`
+  ran that member under the document's project before this was read as no project;
+  applying it again plans an `UPDATE` that removes the project.
 
 ## Event-driven recipe: review every PR change
 
