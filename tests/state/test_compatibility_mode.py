@@ -2031,6 +2031,14 @@ def _virtual_table(statement: str):
     return table
 
 
+def _virtual_shape(statement: str, name: str = "docs"):
+    """The shape ``read_closure`` reads of the one table *statement* creates, named *name*."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(statement)
+        (table,) = read_closure(conn, [name]).tables
+    return table
+
+
 _VIRTUAL_TABLE_PAIRS = {
     "a quoted call in an argument": ('fts4("x"(1))', "fts4(x(1))"),
     "an argument in another case": ("fts4(x)", "fts4(X)"),
@@ -2057,6 +2065,199 @@ def test_a_virtual_table_module_is_named_without_regard_to_case():
     assert _virtual_table("CREATE VIRTUAL TABLE notes USING FTS4(x)") == _virtual_table(
         "CREATE VIRTUAL TABLE notes USING fts4(x)"
     )
+
+
+# A virtual table whose module arguments name a closure table is part of the closure
+
+
+_VIRTUAL_TABLES_NAMING_EVENTS = {
+    "a content and a rowid": (
+        "CREATE VIRTUAL TABLE docs USING fts5(body, content='events', content_rowid='seq');\n"
+    ),
+    "a double-quoted content": 'CREATE VIRTUAL TABLE docs USING fts5(body, content="events");\n',
+    "a bare content": "CREATE VIRTUAL TABLE docs USING fts5(body, content=events);\n",
+    "a bare column argument": "CREATE VIRTUAL TABLE docs USING fts4(events);\n",
+}
+
+
+@pytest.mark.parametrize(
+    "extra", _VIRTUAL_TABLES_NAMING_EVENTS.values(), ids=_VIRTUAL_TABLES_NAMING_EVENTS
+)
+async def test_a_virtual_table_that_names_a_closure_table_is_refused_without_the_profile(
+    extra, tmp_path
+):
+    """A virtual table a closure table's name reaches through its module arguments is a table of
+    the closure, whatever spelling of the name its arguments carry, so a profile that does not
+    list it refuses the store by the virtual table's name."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA + extra)
+    reason = await _refused_against(reference, store)
+    assert "table docs is not in the profile" in reason
+
+
+_FTS5_OVER_EVENTS = (
+    "CREATE VIRTUAL TABLE docs USING fts5(body, content='events', content_rowid='seq');\n"
+)
+
+
+async def test_a_virtual_table_that_names_a_closure_table_is_admitted_when_the_profile_lists_it(
+    tmp_path,
+):
+    """A virtual table that names a closure table is compared as the other tables are, so a store
+    whose copy is the profile's is admitted."""
+    schema = _SCHEMA + _FTS5_OVER_EVENTS
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_virtual_table_that_names_no_closure_table_stays_out_of_the_closure(tmp_path):
+    """A virtual table whose module arguments name no closure table is not in the closure, so a
+    store that holds one against a profile that does not is admitted."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA + "CREATE VIRTUAL TABLE docs USING fts5(body);\n"
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+def _inject(store: Path, rows: list[tuple]) -> None:
+    """Add rows to *store*'s ``sqlite_master`` directly, for a table SQLite cannot create here."""
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("PRAGMA writable_schema = ON")
+        for row in rows:
+            conn.execute(
+                "INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) "
+                "VALUES (?, ?, ?, ?, ?)",
+                row,
+            )
+        conn.execute("PRAGMA writable_schema = RESET")
+        conn.commit()
+
+
+async def test_a_virtual_table_whose_module_is_absent_is_refused_by_its_name(tmp_path):
+    """A virtual table whose module this SQLite lacks cannot be read, so the store is refused by
+    the table's name rather than by the driver's error alone."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA)
+    _inject(
+        store,
+        [
+            (
+                "table",
+                "docs",
+                "docs",
+                0,
+                "CREATE VIRTUAL TABLE docs USING nosuchmodule(content='events')",
+            )
+        ],
+    )
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await db.open()
+    assert "table docs could not be read" in caught.value.reason
+    assert db._engine is None
+
+
+# A virtual table's arguments are compared in order, a table-level constraint's are not
+
+
+_VIRTUAL_ARGUMENT_PAIRS = {
+    "two arguments reordered": (
+        "fts4(body, content='events', prefix=2, prefix=3)",
+        "fts4(body, content='events', prefix=3, prefix=2)",
+    ),
+    "an argument repeated": (
+        "fts4(body, content='events', prefix=2)",
+        "fts4(body, content='events', prefix=2, prefix=2)",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("reference", "store"), _VIRTUAL_ARGUMENT_PAIRS.values(), ids=_VIRTUAL_ARGUMENT_PAIRS
+)
+def test_a_virtual_table_with_its_arguments_reordered_or_repeated_is_another_table(
+    reference, store
+):
+    """SQLite hands the module the arguments' text, so the arguments' tokens in order are part of
+    the table's definition: the same tokens in another order, or one twice, are another table,
+    while the spacing between the tokens of one argument is not."""
+    expected = _virtual_shape(f"CREATE VIRTUAL TABLE docs USING {reference}")
+    observed = _virtual_shape(f"CREATE VIRTUAL TABLE docs USING {store}")
+    assert expected.options == observed.options == frozenset({"virtual"})
+    assert expected.definitions != observed.definitions
+    assert _virtual_shape("CREATE VIRTUAL TABLE docs USING fts4(body,  content='events')") == (
+        _virtual_shape("CREATE VIRTUAL TABLE docs USING fts4(body, content='events')")
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference", "store"), _VIRTUAL_ARGUMENT_PAIRS.values(), ids=_VIRTUAL_ARGUMENT_PAIRS
+)
+async def test_a_virtual_table_with_its_arguments_reordered_or_repeated_is_refused(
+    reference, store, tmp_path
+):
+    """A store whose virtual table reorders or repeats its module arguments is refused against
+    the profile, whose table spells them otherwise."""
+    reference_path = _store(
+        tmp_path / "reference.db",
+        _SCHEMA + f"CREATE VIRTUAL TABLE docs USING {reference};\n",
+    )
+    store_path = _store(
+        tmp_path / "managed.db", _SCHEMA + f"CREATE VIRTUAL TABLE docs USING {store};\n"
+    )
+    reason = await _refused_against(reference_path, store_path)
+    assert "definitions of docs" in reason
+
+
+async def test_a_quoted_module_name_is_the_module_name(tmp_path):
+    """A module's name is read between its quotes, so ``USING "fts5"(...)`` is ``USING fts5(...)``
+    while another module stays another table."""
+    statement = "CREATE VIRTUAL TABLE docs USING fts5(body, content='events');\n"
+    quoted = "CREATE VIRTUAL TABLE docs USING \"fts5\"(body, content='events');\n"
+    other = "CREATE VIRTUAL TABLE docs USING \"fts4\"(body, content='events');\n"
+    reference = _store(tmp_path / "reference.db", _SCHEMA + statement)
+    store = _store(tmp_path / "managed.db", _SCHEMA + quoted)
+    db = await _open(store, _profile(reference))
+    await db.close()
+    store_other = _store(tmp_path / "other.db", _SCHEMA + other)
+    reason = await _refused_against(reference, store_other)
+    assert "definitions of docs" in reason
+
+
+async def test_a_single_quoted_references_table_is_the_bare_name(tmp_path):
+    """SQLite's grammar takes the single-quoted token after ``REFERENCES`` as the table's name, as
+    the list's single-quoted token is a column's, so both spellings are the same key."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(
+        tmp_path / "managed.db",
+        _SCHEMA.replace("REFERENCES runs(id)", "REFERENCES 'runs' ('id')", 1),
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_CONSTRAINT_ORDER = {
+    "a unique key and a check": (
+        "    UNIQUE (run_id, body),\n    CHECK (body <> '')",
+        "    CHECK (body <> ''),\n    UNIQUE (run_id, body)",
+    ),
+}
+
+
+@pytest.mark.parametrize(("reference", "store"), _CONSTRAINT_ORDER.values(), ids=_CONSTRAINT_ORDER)
+async def test_table_level_constraints_in_another_order_are_admitted(reference, store, tmp_path):
+    """Table-level constraints are compared as a set, so their order is not part of a table's
+    definition."""
+    old = "    UNIQUE (run_id, body)"
+    assert old in _SCHEMA
+    reference_path = _store(tmp_path / "reference.db", _SCHEMA.replace(old, reference, 1))
+    store_path = _store(tmp_path / "managed.db", _SCHEMA.replace(old, store, 1))
+    db = await _open(store_path, _profile(reference_path))
+    await db.close()
 
 
 _SAME_NAME_PAIRS = {

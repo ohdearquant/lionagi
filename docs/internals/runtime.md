@@ -47,8 +47,11 @@ whose schema another application manages, and never migrates, stamps or reconfig
   closure's triggers and views) and refuses unless it equals the profile's closure. What joins the
   closure is a fixed point: a trigger or view whose SQL may name one of the tables, in any
   spelling and a quoted string included, joins, and so does one whose SQL may name another object of
-  the closure; a view or a table a closure object reads joins in turn, until nothing new joins,
-  and a table only the store's closure reaches is refused as not in the profile. A trigger's place
+  the closure; a virtual table whose `CREATE VIRTUAL TABLE` statement names a table of the closure
+  in any argument token, bare, single-quoted or double-quoted, joins as a table of the closure and
+  is compared like one, and a virtual table that names no closure table stays out of the closure; a
+  view or a table a closure object reads joins in turn, until nothing new joins, and a table only
+  the store's closure reaches is refused as not in the profile. A trigger's place
   among the closure triggers on its own table that fire on the same event and timing is part of
   the closure, since SQLite fires those in an order fixed by when they were created; triggers
   for different events or timings may be created in any order.
@@ -73,22 +76,25 @@ whose schema another application manages, and never migrates, stamps or reconfig
   `id "TEXT"`, is compared the same way, so quoting a type name is refused against the bare type
   even though SQLite reads it as the type name. A sized one (`id "VARCHAR"(10)`) opens a
   parenthesis, so its definition equals the bare `VARCHAR(10)`, and it is refused by its column's
-  type instead, which SQLite reports without the size. In the column list after
-  `REFERENCES <table>` a single-quoted token is a name too, since SQLite's grammar takes a string
-  there; anywhere else it is compared as the string it spells, so a single-quoted name that
-  SQLite also reads as a name (`REFERENCES 'runs'`, `COLLATE 'NOCASE'`) is refused against the
-  bare spelling. A quoted name that a bare word would read as a value (`"null"`,
+  type instead, which SQLite reports without the size. A single-quoted token after `REFERENCES`
+  is the table's name, and a single-quoted token in the column list after `REFERENCES <table>` is
+  a name too, since SQLite's grammar takes a string in both places; anywhere else it is compared as
+  the string it spells, so a single-quoted name SQLite also reads as a name elsewhere
+  (`COLLATE 'NOCASE'`) is refused against the bare spelling. A quoted name that a bare word would
+  read as a value in an expression (`"null"`,
   `"current_date"`, `"current_time"`, `"current_timestamp"`) or as the `NOT` operator (`"not"`),
   or that a bare word cannot spell (a name holding a quote, a space or punctuation, or starting
   with a digit), equals only the same name quoted, never the bare word, though a plain quoted
   name like `"status"` equals its bare spelling. A blob literal (`x'41'`) is a token of its own.
-  A virtual table's definition is its module's name, compared without regard to case as SQLite
-  looks it up, and each module argument as written, since SQLite hands the module the argument's
-  text: `USING fts4("x"(1))` and `USING fts4(x(1))` differ, as do `fts3(x)` and `fts4(x)`. The
-  mode fails closed, since whether SQLite reads a quoted token as a name or as a string literal
-  depends on the scope it appears in and on the connection's double-quoted-string setting. A
-  table whose constraints declare any conflict resolution but ABORT (`ON CONFLICT REPLACE`,
-  `ROLLBACK`, `IGNORE` or `FAIL`), or a trigger or view that names one (`INSERT OR REPLACE`,
+  A virtual table's definition is its module's name, read between its quotes and compared without
+  regard to case as SQLite looks it up, and the arguments' tokens in order, spacing aside, since
+  SQLite hands the module each argument's text: `USING fts4("x"(1))` and `USING fts4(x(1))` differ
+  where they reorder or repeat a token, `USING "fts4"(x)` is `USING fts4(x)`, and `fts3(x)` and
+  `fts4(x)` differ. The mode fails closed, since whether SQLite reads a quoted token as a name or
+  as a string literal depends on the scope it appears in and on the connection's
+  double-quoted-string setting. A table whose constraints declare any conflict resolution but
+  ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a trigger or view that names
+  one (`INSERT OR REPLACE`,
   `REPLACE INTO`, `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the
   authorizer cannot see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution
   ends.

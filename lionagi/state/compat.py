@@ -93,7 +93,7 @@ _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 # Words after which SQLite reads a double-quoted token as a name, never as a string literal. The
 # rule belongs to *spelled* below, which compares a table's or index's definition; a trigger body,
 # a view body and a column's DEFAULT are compared verbatim, as they are written. The column list
-# after ``REFERENCES <table>`` is read as names too.
+# after ``REFERENCES <table>``, and a single-quoted token right after ``REFERENCES``, are names too.
 _NAME_POSITIONS = frozenset(
     {
         "references",
@@ -111,12 +111,13 @@ _NAME_POSITIONS = frozenset(
 )
 # Words SQLite never reads as a name when written bare in an expression, whether a column of that
 # name is in scope or not: a quoted name spelled like one of them is that name, the bare word is a
-# value, or for ``not`` the NOT operator, so ``not (x)`` negates while ``"not" (x)`` calls a
-# function named not. A column may still be declared under one of them bare
+# value in an expression, or for ``not`` the NOT operator, so ``not (x)`` negates while
+# ``"not" (x)`` calls a function named not. A column may still be declared under one of them bare
 # (``current_date TEXT``); its definition keeps the bare word, which the same column declared
 # quoted does not equal, so a store that quotes it is refused against one that does not.
-# ``true`` and ``false`` are deliberately absent: a bare ``true`` is the value only when no column
-# is named ``true``, and where one is, the column wins and the two spellings read alike.
+# ``true`` and ``false`` are deliberately absent: a bare ``true`` is the value in an expression
+# only when no column is named ``true``, and where one is, the column wins and the two spellings
+# read alike.
 _VALUE_WORDS = frozenset({"null", "current_date", "current_time", "current_timestamp", "not"})
 
 
@@ -135,9 +136,9 @@ def _spelled_name(name: str) -> str:
 
     The folded name is compared bare when a bare word can spell it (it is not empty, does not
     start with a digit and holds only identifier characters) and it is not one of
-    :data:`_VALUE_WORDS`, which a bare word reads as a value or an operator (``"null"``,
-    ``"not"``); otherwise it is kept in backquotes, with any backquote in it doubled. A string
-    literal keeps its double quotes and a bare word has none, so neither can equal the
+    :data:`_VALUE_WORDS`, which a bare word reads as a value in an expression, or as an operator
+    (``"null"``, ``"not"``); otherwise it is kept in backquotes, with any backquote in it doubled.
+    A string literal keeps its double quotes and a bare word has none, so neither can equal the
     backquoted form.
     """
     folded = _fold(name)
@@ -229,9 +230,11 @@ def _sql_tokens(
             j = i + 1
             while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
                 j += 2 if sql[j] == "'" else 1
-            if in_parent_columns and not verbatim:
-                # SQLite's grammar takes a string in a REFERENCES column list as the name it
-                # spells, alone among the places a string may stand.
+            after_references = bool(tokens) and tokens[-1] == (_WORD, "references")
+            if (in_parent_columns or after_references) and not verbatim:
+                # SQLite's grammar takes a string in a REFERENCES column list, and the string right
+                # after REFERENCES, as the name it spells, alone among the places a string may
+                # stand.
                 name = sql[i + 1 : j].replace("''", "'")
                 tokens.append((_IDENT, _spelled_name(name) if spelled else _fold(name)))
             else:
@@ -353,6 +356,26 @@ def _name_of(kind: str, text: str) -> str:
     return _fold(text)
 
 
+def _unquoted(kind: str, text: str) -> str:
+    """A token's name, whatever kind of token spells it, folded as SQLite folds a name.
+
+    A bare word is its own text; a double-quoted, backquoted, bracketed or single-quoted token is
+    read between its quotes, a doubled quote standing for the character itself. SQLite reads a
+    module's name, a table's name and a column's name without regard to how they are quoted.
+    """
+    if kind == _WORD:
+        return _fold(text)
+    if kind == _STRING:
+        return _fold(text[1:-1].replace("''", "'"))
+    if text[:1] in ('"', "`", "["):
+        close = "]" if text[:1] == "[" else text[0]
+        inner = text[1:-1]
+        if close != "]":
+            inner = inner.replace(close * 2, close)
+        return _fold(inner)
+    return _fold(text)
+
+
 def _names(tokens: list[tuple[str, str]]) -> set[str]:
     """Every token of a trigger or view body that may name an object, folded as SQLite folds names.
 
@@ -467,6 +490,20 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
 # Structure
 
 
+class _UnreadableTableError(RuntimeError):
+    """A table's structure could not be read from the store, named for the caller's message.
+
+    A virtual table whose module this SQLite lacks is the case: the ``table_xinfo``,
+    ``index_list`` and ``foreign_key_list`` reads raise for it, and the store cannot be compared
+    to the profile. ``table`` is the table's name and ``error`` the driver's error.
+    """
+
+    def __init__(self, table: str, error: Exception) -> None:
+        self.table = table
+        self.error = error
+        super().__init__(f"the table {table} could not be read: {error}")
+
+
 @dataclass(frozen=True)
 class ColumnShape:
     """One column as ``PRAGMA table_xinfo`` reports it.
@@ -502,14 +539,16 @@ class TableShape:
     collation, a generated column's expression, a ``DEFERRABLE`` foreign key, ``AUTOINCREMENT``.
     Two definitions SQLite reads alike but spells differently differ: ``REFERENCES runs`` and
     ``REFERENCES runs(id)``, a constraint with and without a name, a default spelled out
-    (``NO ACTION``, ``COLLATE BINARY``, ``ASC``), constraints in another order, a column's
-    ``UNIQUE`` and the table's, ``<>`` and ``!=``. A column's ``default`` is compared as written,
-    since SQLite stores the word as given: ``DEFAULT open`` and ``DEFAULT Open`` differ.
-    A virtual table's ``definitions`` are instead its module's name, folded, and each module
-    argument as written, with only whitespace and comments set aside: SQLite looks a module up
-    without regard to ASCII case and hands it each argument's text, which the module reads as it
-    chooses, so ``USING fts4("x"(1))`` and ``USING fts4(x(1))`` differ, as do ``fts3(x)`` and
-    ``fts4(x)``, whose columns read alike.
+    (``NO ACTION``, ``COLLATE BINARY``, ``ASC``), a column's ``UNIQUE`` and the table's, ``<>``
+    and ``!=``. Table-level constraints are compared as a set, so their order is not part of a
+    table's definition. A column's ``default`` is compared as written, since SQLite stores the
+    word as given: ``DEFAULT open`` and ``DEFAULT Open`` differ.
+    A virtual table's ``definitions`` are instead its module's name, read between its quotes and
+    folded, and the arguments' tokens in order, spacing aside: SQLite looks a module up without
+    regard to ASCII case and hands it each argument's text, which the module reads as it chooses,
+    so a reordered or repeated argument is another definition, while ``USING fts4("x"(1))``
+    differs from ``USING fts4(x(1))``, ``USING "fts4"(x)`` is ``USING fts4(x)``, and ``fts3(x)``
+    differs from ``fts4(x)``, whose columns read alike.
     Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
     a store built by the managing application.
     """
@@ -559,10 +598,11 @@ class SchemaObject:
 class Closure:
     """The structure of a set of tables and of everything in the store that touches them.
 
-    ``foreign_keys`` holds every key into or out of the tables; ``objects`` every trigger and view
-    whose SQL may name one of the tables or of the other objects, and, in turn, whose own SQL may
-    bring in a view or a table of its own: the closure follows what its objects read, until
-    nothing new joins.
+    A virtual table whose module arguments name one of the tables is a table of the closure, so
+    its shape is compared like any other. ``foreign_keys`` holds every key into or out of the
+    tables; ``objects`` every trigger and view whose SQL may name one of the tables or of the
+    other objects, and, in turn, whose own SQL may bring in a view or a table of its own: the
+    closure follows what its objects read, until nothing new joins.
     """
 
     tables: tuple[TableShape, ...]
@@ -672,10 +712,12 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
 
 
 def _module_arguments(sql: str) -> frozenset[str]:
-    """A virtual table's module and each of its arguments, for ``TableShape.definitions``.
+    """A virtual table's module and the tokens of each of its arguments, for ``definitions``.
 
-    The module's name is folded, since SQLite looks a module up without regard to ASCII case; each
-    argument keeps every token as written, since SQLite hands the module the argument's text.
+    The module's name is read between its quotes and folded, since SQLite looks a module up without
+    regard to ASCII case, so ``USING "fts4"(x)`` equals ``USING fts4(x)``. The arguments' tokens
+    in order are compared, spacing aside, since SQLite hands the module each argument's text, which
+    the module reads as it chooses.
     """
     tokens = _sql_tokens(sql, verbatim=True)
     # The module's argument list is the statement's first parenthesis: a table name holding one is
@@ -683,10 +725,33 @@ def _module_arguments(sql: str) -> frozenset[str]:
     start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), len(tokens))
     if start < 2:
         return frozenset()
-    found = {"using " + _fold(tokens[start - 1][1])}
-    if start < len(tokens):
-        found.update(_joined(group) for group in _groups(tokens, start))
-    return frozenset(found)
+    kind, text = tokens[start - 1]
+    found = "using " + _unquoted(kind, text)
+    # The arguments are one ordered tuple, each in one spelling from its own tokens: a reordered or
+    # repeated argument is another definition, while the spacing between the tokens of one is not,
+    # and an empty argument list is no argument list.
+    arguments = [_joined(group) for group in _groups(tokens, start)]
+    if arguments:
+        found += " (" + ", ".join(arguments) + ")"
+    return frozenset({found})
+
+
+def _virtual_table_names(tokens: list[tuple[str, str]]) -> set[str]:
+    """The names a virtual table's module arguments may carry, for the closure scan.
+
+    A virtual table touches the closure when its ``CREATE VIRTUAL TABLE`` statement names a table
+    of the closure among its module arguments, as ``content='events'`` names ``events``. Only the
+    argument list is read, so the statement's keywords, the table's own name and the module's name
+    name nothing in the store. Every token of an argument counts, a bare word, a single-quoted
+    string and a double-quoted name alike, since a quoted token may be read either way. An empty
+    set means the statement is not a ``CREATE VIRTUAL TABLE`` or names no argument.
+    """
+    if _top_level_words(tokens)[:3] != ["create", "virtual", "table"]:
+        return set()
+    start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), None)
+    if start is None:
+        return set()
+    return _names(tokens[start:])
 
 
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
@@ -719,20 +784,27 @@ _Fetch = Callable[[str], list]
 
 def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableShape:
     quoted = _quote(name)
-    columns = tuple(
-        ColumnShape(
-            name=_fold(str(row[1])),
-            type=" ".join(str(row[2] or "").upper().split()),
-            notnull=bool(row[3]),
-            default=None if row[4] is None else _spelled_sql(str(row[4])),
-            pk=int(row[5]),
-            hidden=int(row[6]),
+    try:
+        columns = tuple(
+            ColumnShape(
+                name=_fold(str(row[1])),
+                type=" ".join(str(row[2] or "").upper().split()),
+                notnull=bool(row[3]),
+                default=None if row[4] is None else _spelled_sql(str(row[4])),
+                pk=int(row[5]),
+                hidden=int(row[6]),
+            )
+            for row in fetch(f"PRAGMA table_xinfo({quoted})")
         )
-        for row in fetch(f"PRAGMA table_xinfo({quoted})")
-    )
+        index_rows = fetch(f"PRAGMA index_list({quoted})")
+    except (sqlite3.Error, DBAPIError) as exc:
+        # A virtual table whose module this SQLite lacks raises here, as the module is only looked
+        # up when the table is read: the store cannot be compared to the profile, so the read is
+        # refused by the table's name rather than by the driver's message alone.
+        raise _UnreadableTableError(name, exc) from exc
     names = frozenset(column.name for column in columns)
     unique: set[tuple[str, ...]] = set()
-    for row in fetch(f"PRAGMA index_list({quoted})"):
+    for row in index_rows:
         index_name, is_unique, partial = str(row[1]), row[2], row[4]
         if not is_unique:
             continue
@@ -762,20 +834,26 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
 
 def _foreign_keys(fetch: _Fetch, table: str) -> list[ForeignKeyShape]:
     groups: dict[Any, list] = {}
-    for row in fetch(f"PRAGMA foreign_key_list({_quote(table)})"):
+    try:
+        rows = fetch(f"PRAGMA foreign_key_list({_quote(table)})")
+    except (sqlite3.Error, DBAPIError) as exc:
+        # As in _table_shape: a table whose module this SQLite lacks raises when it is read, so the
+        # read is refused by the table's name rather than by the driver's message alone.
+        raise _UnreadableTableError(table, exc) from exc
+    for row in rows:
         groups.setdefault(row[0], []).append(row)
     keys = []
-    for rows in groups.values():
-        rows.sort(key=lambda row: row[1])
-        parent_columns = tuple(_fold(str(row[4])) for row in rows if row[4] is not None)
+    for key_rows in groups.values():
+        key_rows.sort(key=lambda row: row[1])
+        parent_columns = tuple(_fold(str(row[4])) for row in key_rows if row[4] is not None)
         keys.append(
             ForeignKeyShape(
                 table=_fold(table),
-                columns=tuple(_fold(str(row[3])) for row in rows),
-                parent=_fold(str(rows[0][2])),
-                parent_columns=parent_columns if len(parent_columns) == len(rows) else (),
-                on_update=str(rows[0][5]).upper(),
-                on_delete=str(rows[0][6]).upper(),
+                columns=tuple(_fold(str(row[3])) for row in key_rows),
+                parent=_fold(str(key_rows[0][2])),
+                parent_columns=parent_columns if len(parent_columns) == len(key_rows) else (),
+                on_update=str(key_rows[0][5]).upper(),
+                on_delete=str(key_rows[0][6]).upper(),
             )
         )
     return keys
@@ -809,10 +887,17 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
         (str(row[0]), _fold(str(row[1]))): row
         for row in fetch("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY rowid")
     }
-    bodies = {
-        key: _sql_tokens(row[3])
+    # A trigger's or a view's body may name closure objects, a virtual table's module arguments may
+    # name a closure table: each is read as the tokens it carries a name in.
+    reads = {
+        key: _names(_sql_tokens(row[3]))
         for key, row in entries.items()
         if key[0] in ("trigger", "view") and row[3]
+    }
+    virtual = {
+        key[1]: names
+        for key, row in entries.items()
+        if key[0] == "table" and row[3] and (names := _virtual_table_names(_sql_tokens(row[3])))
     }
     # A table is named with its ASCII letters in either case, as SQLite matches it, and a quoted
     # token may be read as a name or as a string literal depending on its scope and on the
@@ -824,18 +909,26 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
     joined: set[tuple[str, str]] = set()
     while True:
         found = {
-            key
-            for key, tokens in bodies.items()
-            if key not in joined and inside.intersection(_names(tokens))
+            key for key, names in reads.items() if key not in joined and inside.intersection(names)
         }
         # An object whose own name the closure already holds joins too: what a closure object
         # reads is part of the closure, and that includes an object it reads by name.
-        found |= {key for key in bodies if key not in joined and key[1] in inside}
-        if not found:
+        found |= {key for key in reads if key not in joined and key[1] in inside}
+        # A virtual table whose arguments name a closure table is part of the closure too, and, its
+        # name being a table of the closure, is compared as one.
+        found_virtual = {
+            name for name, names in virtual.items() if name not in inside and inside & names
+        }
+        if not found and not found_virtual:
             break
         joined |= found
+        inside |= found_virtual
+        for name in found_virtual:
+            # What the virtual table's arguments name joins with it, as what a view's body names
+            # does: the closure follows every object it reads.
+            inside |= virtual[name] & known
         for key in found:
-            inside |= _names(bodies[key]) & known
+            inside |= reads[key] & known
     shapes = [
         _table_shape(fetch, str(row[1]), row[3] or "", entries)
         for name in sorted(inside)
@@ -1181,7 +1274,17 @@ class _Guard:
 
     def _differences(self, fetch: _Fetch) -> list[str]:
         expected = self.profile.closure
-        return _closure_differences(expected, _read_closure(fetch, expected.table_names))
+        try:
+            observed = _read_closure(fetch, expected.table_names)
+        except _UnreadableTableError as exc:
+            # A table the store holds but this SQLite cannot read - a virtual table whose module
+            # is absent - leaves the closure unknown, so the store is refused by the table's name
+            # rather than by the driver's error alone.
+            raise self.refusal(
+                f"the closure could not be read: the table {exc.table} could not be read "
+                f"({exc.error})"
+            ) from exc
+        return _closure_differences(expected, observed)
 
     def _check_store(self, fetch: _Fetch, when: str, operation: str | None) -> None:
         declared = [
