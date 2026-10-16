@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import fs from "node:fs";
 import path from "node:path";
+import vm from "node:vm";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -37,17 +38,19 @@ export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plu
 }
 
 // The hosted Studio fronts page analytics with a self-hosted Umami tracker.
-// The tracker is injected ONLY into the hosted Vercel build: the build must set
-// VERCEL=1 (the same signal hostedApiBaseInjector above reads, set by every
-// Vercel build) AND STUDIO_UMAMI_WEBSITE_ID (the Vercel project env for
-// lion-studio.khive.ai) to a UUID. Both gates matter. VERCEL alone would cover
-// any Vercel deploy, and the id alone would cover the desktop build: the Tauri
-// shell loads this same dist/ (its tauri.conf.json frontendDist points at it),
-// its page holds the desktop's per-launch auth token, and its CSP is null, so a
-// packaged build that exported the id from its environment would ship the
-// tracker into the authenticated desktop document. Local, source, Docker,
-// desktop, and packaged builds therefore carry no tag and never contact the
-// analytics host. Vite does not copy `.env*` files into the config's process
+// The tracker is injected ONLY into the hosted production build: the build must
+// set VERCEL=1 (set by every Vercel build), VERCEL_ENV=production (set by Vercel
+// for a production deployment, never for a preview) AND STUDIO_UMAMI_WEBSITE_ID
+// (the Vercel project env for lion-studio.khive.ai) to a UUID. Each gate
+// matters. VERCEL alone would cover every Vercel deploy, previews included, and
+// the id alone would cover the desktop build: the Tauri shell loads this same
+// dist/ (its tauri.conf.json frontendDist points at it), its page holds the
+// desktop's per-launch auth token, and its CSP is null, so a packaged build that
+// exported the id from its environment would ship the tracker into the
+// authenticated desktop document. The desktop's build.rs also refuses a dist/
+// whose index.html loads the tracker. Local, source, Docker, preview, desktop,
+// and packaged builds therefore carry no tag and never contact the analytics
+// host. Vite does not copy `.env*` files into the config's process
 // environment, so setting the variable in an `.env` file does not turn the
 // tracker on; the build process itself must export it.
 //
@@ -67,8 +70,10 @@ export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plu
 // at analytics/umami-script.pinned.js, for the test that checks the pin against
 // it; the build never loads it. When the host's tracker changes, update the
 // pinned copy and TRACKER_INTEGRITY together, or the browser refuses the script.
-// A malformed website id, or a hook or loader whose text is not the expected
-// shape, fails the build here instead of reaching the page.
+// A malformed website id, a hook that does not compile as a script, a loader
+// that is not one function expression, or either text holding `</script` (which
+// would end the inline script early) fails the build here instead of reaching
+// the page.
 export const TRACKER_INTEGRITY =
   "sha384-KovSIPpdrAZNHs+M91d7FOrLat5rqcpTtQUq/GLIzYwAt+eN0EQHlgdUgm/0U2j+";
 
@@ -95,21 +100,41 @@ export function hostedAnalyticsInjector(
     );
   }
   // Fail closed on a script whose text is not the shape the injected inline
-  // script relies on: the hook must be a complete statement list ending in a
-  // semicolon, and the loader must be a single parenthesized IIFE so the call
-  // appended below joins the same expression.
-  if (!/;\s*$/.test(sources.hook)) {
-    throw new Error("analytics/before-send.js must end in a semicolon");
+  // script relies on. The hook must compile as a script. The loader, its final
+  // semicolon removed, must evaluate (in an empty context, without being called)
+  // to one function expression; it is wrapped in parentheses that close on a
+  // line of their own, so a trailing comment cannot swallow the call joined
+  // after it, and the call starts after a semicolon, so a hook that ends without
+  // one cannot be called by it.
+  if (/<\/script/i.test(sources.hook) || /<\/script/i.test(sources.loader)) {
+    throw new Error(
+      "analytics/before-send.js and analytics/load-tracker.js must not contain </script",
+    );
   }
-  const loaderSource = sources.loader.replace(/;\s*$/, "");
-  if (!/\)$/.test(loaderSource)) {
-    throw new Error("analytics/load-tracker.js must end in a parenthesized function expression");
+  const loaderSource = sources.loader.trim().replace(/;$/, "");
+  let loader: unknown;
+  try {
+    new vm.Script(sources.hook, { filename: "analytics/before-send.js" });
+  } catch (error) {
+    throw new Error(`analytics/before-send.js does not compile: ${(error as Error).message}`);
+  }
+  try {
+    loader = vm.runInNewContext(
+      `(${loaderSource}\n)`,
+      {},
+      { filename: "analytics/load-tracker.js" },
+    );
+  } catch (error) {
+    throw new Error(`analytics/load-tracker.js does not compile: ${(error as Error).message}`);
+  }
+  if (typeof loader !== "function") {
+    throw new Error("analytics/load-tracker.js must be one function expression");
   }
   return {
     name: "studio-hosted-analytics",
     apply: "build",
     transformIndexHtml() {
-      if (env.VERCEL !== "1" || !websiteId) return;
+      if (env.VERCEL !== "1" || env.VERCEL_ENV !== "production" || !websiteId) return;
       const trackerAttrs = {
         src: "https://analytics.khive.ai/script.js",
         integrity: TRACKER_INTEGRITY,
@@ -118,12 +143,13 @@ export function hostedAnalyticsInjector(
         "data-domains": "lion-studio.khive.ai",
         "data-exclude-search": "true",
         "data-exclude-hash": "true",
+        "data-do-not-track": "true",
         "data-before-send": "__studioAnalyticsBeforeSend",
       };
       return [
         {
           tag: "script",
-          children: `${sources.hook}\n${loaderSource}(${JSON.stringify(trackerAttrs)});`,
+          children: `${sources.hook}\n;(${loaderSource}\n)(${JSON.stringify(trackerAttrs)});`,
           injectTo: "head",
         },
       ];

@@ -61,34 +61,43 @@ commit it.
 
 ## Page analytics on the hosted deploy
 
-The hosted deploy reports aggregate, privacy-preserving page views to a
+The hosted deploy reports page views, reduced to route templates, to a
 self-hosted Umami tracker at `https://analytics.khive.ai`. It is gated on the
-hosted build: `hostedAnalyticsInjector` in `vite.config.mts` injects the tracker
-only when the build sets `VERCEL=1` (the same signal the API-base injector
-reads) AND `STUDIO_UMAMI_WEBSITE_ID` to a UUID, so the Vercel project sets both
-and every other build sets neither. Both gates matter. `VERCEL` alone would
-cover any Vercel deploy, and the id alone would cover the desktop build: the
-Tauri shell loads this same `dist/`, its page holds the desktop's per-launch
-auth token, and its CSP is null, so a packaged build that exported the id from
-its environment would ship the tracker into the authenticated desktop document.
-Local, source, Docker, desktop, and packaged builds contain no analytics script
-and contact no analytics host. Vite does not copy `.env*` files into the
-config's process environment, so a value set only in an `.env` file is ignored;
-the build process itself must export both variables. A value that is not a UUID
-fails the build; the error names the variable and reports the length of the
-offending value rather than echoing it.
+hosted production build: `hostedAnalyticsInjector` in `vite.config.mts` injects
+the tracker only when the build sets `VERCEL=1` (the signal the API-base
+injector reads), `VERCEL_ENV=production` (which Vercel sets for a production
+deployment and never for a preview), and `STUDIO_UMAMI_WEBSITE_ID` to a UUID.
+Each gate matters. `VERCEL` alone would cover every Vercel deploy, previews
+included, and the id alone would cover the desktop build: the Tauri shell loads
+this same `dist/`, its page holds the desktop's per-launch auth token, and its
+CSP is null, so a packaged build that exported the id from its environment would
+ship the tracker into the authenticated desktop document. As a second check for
+that case, the desktop shell's build script
+(`apps/studio/desktop/src-tauri/build.rs`) refuses to build when
+`dist/index.html` names `analytics.khive.ai`, so a frontend built with all three
+variables exported cannot be packaged into the desktop app. Local, source,
+Docker, preview, desktop, and packaged builds contain no analytics script and
+contact no analytics host. Vite does not copy `.env*` files into the config's
+process environment, so a value set only in an `.env` file is ignored; the build
+process itself must export the variables. A value that is not a UUID fails the
+build; the error names the variable and reports the length of the offending
+value rather than echoing it.
 
-When both are set, the build injects one inline script into `<head>`: the
+When all three are set, the build injects one inline script into `<head>`: the
 before-send hook (`analytics/before-send.js`) followed by a loader
 (`analytics/load-tracker.js`) that is called with the tracker's attributes. The
+build fails when either file does not have the shape that script relies on: the
+hook must compile, the loader must be one function expression, and neither may
+contain `</script`. The
 loader creates the tracker `<script>` element only when the hook is present, so
 the tracker loads only after the hook exists; if the inline script does not run,
 no tracker is added and no page view is sent at all. The element is async: it
 fetches and runs as soon as it arrives and does not hold up the page's own
 parsing. The tracker is told the hook's name by `data-before-send` and is
-restricted to the hosted domain by `data-domains`. The tracker sends with
-`fetch` and calls the hook before every send, dropping the send when the hook
-returns a falsy value.
+restricted to the hosted domain by `data-domains`. `data-do-not-track` makes it
+send nothing at all from a browser whose Do Not Track setting is on. The tracker
+sends with `fetch` and calls the hook before every send, dropping the send when
+the hook returns a falsy value.
 
 The tracker element is pinned by Subresource Integrity: its `integrity`
 attribute holds the SHA-384 of the tracker build `https://analytics.khive.ai`
@@ -99,24 +108,28 @@ hash and compare it with the constant; the build never loads that copy. When the
 host's tracker changes, its hash changes, the browser refuses the script, and
 page views stop, so update the pinned copy and the `TRACKER_INTEGRITY` constant
 in `vite.config.mts` together. A test in `src/lib/hostedAnalytics.test.ts` fails
-when the copy and the constant disagree, so the two cannot drift apart silently.
+when the copy and the constant disagree. Nothing here checks that the host still
+serves that build; when it changes, the browser's refusal is the signal.
 
 A page view carries the allowlisted fields, `website`, `hostname`, `screen`,
-`language`, `url`, `referrer`, and `title`, and each value comes from the page.
+`language`, `url`, `referrer`, and `title`. Four of them come from the page:
 `hostname` is read from `location.hostname`, `screen` from the screen's width
 and height, `language` from `navigator.language`, and `website` from the tracker
-element's `data-website-id`, so a caller's own `hostname`, `screen`, `language`,
-or `website` does not reach the tracker. The hook sends nothing when the tracker
-element is absent, since there is then no website id to send. `url` and `title`
-carry the route template; a same-origin referrer is reduced to the previous
-route's template, and a referrer from another origin is reduced to its origin
-alone. A referrer that is not a string is dropped rather than sent. The
-templated routes are `/runs/<id>`, `/invocations/<id>`, `/playbooks/<name>`, and
-`/playbooks/<name>/edit`; every other path that is not a known static route
-collapses to `/(other)`. The hook sends nothing for any send type other than
-`event`, and nothing for an `event` payload that has a `name`, so Studio's lack
-of `identify` calls and custom events is enforced even if another script tries
-them.
+element's `data-website-id`, read at the first send that finds the element and
+kept, so a caller's own `hostname`, `screen`, `language`, or `website` does not
+reach the tracker. The hook sends nothing while the tracker element is absent,
+since there is then no website id to send. `url`, `title`, and `referrer` come
+from the caller and are reduced: `url` and `title` to the route template, a
+same-origin referrer to the previous route's template, and a referrer from
+another origin to its origin alone. A referrer that is not a string is dropped
+rather than sent. The templated routes are `/runs/<id>`, `/invocations/<id>`,
+`/playbooks/<name>`, and `/playbooks/<name>/edit`; every other path that is not
+a known static route collapses to `/(other)`. The hook sends nothing for any
+send type other than `event`, and nothing for an `event` payload that has a
+`name`, so a tracker call that would identify a visitor or record a custom
+event is dropped. Studio makes neither call. The hook shapes what the tracker
+sends; it is not a boundary against other code on the page, which could remove
+the hook or post to the collector itself.
 
 A new route needs a template entry. Adding a route under `src/routes/` without
 adding its path to the hook's static list, or without a dynamic pattern if it

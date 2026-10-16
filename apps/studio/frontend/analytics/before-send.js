@@ -4,18 +4,20 @@
  * The tracker calls `window[data-before-send](type, payload)` before every
  * send and awaits the result: a falsy value drops the send, any other value is
  * sent as the payload. The hook rebuilds the payload from an allowlist of
- * page-view fields, so the payload holds those fields and nothing else. Each
- * value comes from the page rather than from the caller's object: `hostname`
+ * page-view fields, so the payload holds those fields and nothing else. Four
+ * of them come from the page rather than from the caller's object: `hostname`
  * from `location.hostname`, `screen` from the screen's width and height,
  * `language` from `navigator.language`, and `website` from the tracker
- * element's `data-website-id`. So a `hostname`, `screen`, `language`, or
- * `website` that a caller passed to `umami.track({...})` is replaced by the
- * page's own value. `url` and `title` are replaced by the route template, and a
- * referrer is reduced to the previous route's template or to its origin. The
- * hook sends nothing for any send type other than `event`, and nothing for an
- * `event` payload that carries a `name`. It is injected inline into the hosted
- * `index.html` by `hostedAnalyticsInjector` in vite.config.mts, ahead of the
- * tracker loader, and is present only in the hosted Vercel build.
+ * element's `data-website-id`, read at the first send that finds it and kept. So a
+ * `hostname`, `screen`, `language`, or `website` that a caller passed to
+ * `umami.track({...})` is replaced by the page's own value. `url`, `title` and
+ * `referrer` come from the caller and are reduced: `url` and `title` to the
+ * route template (an unknown path to `/(other)`), a referrer to the previous
+ * route's template or to its origin. The hook sends nothing for any send type
+ * other than `event`, and nothing for an `event` payload that carries a `name`.
+ * It is injected inline into the hosted `index.html` by
+ * `hostedAnalyticsInjector` in vite.config.mts, ahead of the tracker loader,
+ * and is present only in the hosted production build.
  */
 (function () {
   "use strict";
@@ -110,6 +112,9 @@
     return null;
   }
 
+  // The website id, once a send has read it from the tracker element.
+  var website = null;
+
   window.__studioAnalyticsBeforeSend = function (type, payload) {
     try {
       // The tracker sends page views, and page views only; anything else —
@@ -135,15 +140,20 @@
 
       // The tracker's own defaults are absent from the payload it hands the
       // hook for a call like `umami.track({...})`, so the page values are read
-      // here. Without the tracker element there is no website id to send, and
-      // the hook sends nothing at all.
-      var element = trackerElement();
-      if (!element) {
-        return false;
-      }
-      var website = element.getAttribute("data-website-id");
-      if (typeof website !== "string" || website === "") {
-        return false;
+      // here. The website id is read from the tracker element at the first
+      // send that finds it and kept, so an attribute changed later, or another
+      // element added later, does not change it. Without the tracker element
+      // there is no website id to send, and the hook sends nothing at all.
+      if (website === null) {
+        var element = trackerElement();
+        if (!element) {
+          return false;
+        }
+        var id = element.getAttribute("data-website-id");
+        if (typeof id !== "string" || id === "") {
+          return false;
+        }
+        website = id;
       }
       result.website = website;
       result.hostname = location.hostname;

@@ -1,21 +1,23 @@
 /**
  * Hosted-analytics injection and before-send hook.
  *
- * `hostedAnalyticsInjector` gates the Umami tracker on the hosted Vercel build
- * (VERCEL=1) together with a STUDIO_UMAMI_WEBSITE_ID, and injects one inline head
+ * `hostedAnalyticsInjector` gates the Umami tracker on the hosted production
+ * build (VERCEL=1 and VERCEL_ENV=production) together with a
+ * STUDIO_UMAMI_WEBSITE_ID, and injects one inline head
  * script: the before-send hook followed by the tracker loader. These tests
  * evaluate the shipped hook text (the exact children the plugin returns) against
  * the values the page and the tracker produce, so the assertions are about the
  * string that reaches the deployed page, not a reimplementation.
  *
  * The tracker the page loads is pinned by Subresource Integrity; the copy of that
- * build at analytics/umami-script.pinned.js exists so the hash constant and the
- * build the host serves cannot drift apart silently.
+ * build at analytics/umami-script.pinned.js exists so a test fails when the copy
+ * and the hash constant disagree. Whether the host still serves that build is
+ * not checked here: when it changes, the browser refuses the script.
  *
  * The route-coverage block walks src/routes/ and fails, naming the file, when a
  * route has no template — the intent is that a new route cannot ship without a
- * template entry, because an untemplated path would then reach the tracker as a
- * raw path and page title rather than a collapsed template.
+ * template entry, because its pages would otherwise be reported as `/(other)`,
+ * never under their own template.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -30,13 +32,17 @@ vi.mock("@tanstack/router-plugin/vite", () => ({
 import { hostedAnalyticsInjector, TRACKER_INTEGRITY } from "../../vite.config.mjs";
 
 const UUID = "00000000-0000-4000-8000-000000000000";
-const HOSTED_ENV: NodeJS.ProcessEnv = { VERCEL: "1", STUDIO_UMAMI_WEBSITE_ID: UUID };
+const HOSTED_ENV: NodeJS.ProcessEnv = {
+  VERCEL: "1",
+  VERCEL_ENV: "production",
+  STUDIO_UMAMI_WEBSITE_ID: UUID,
+};
 const HOOK_PATH = path.resolve(__dirname, "../../analytics/before-send.js");
 const HOOK_SOURCE = fs.readFileSync(HOOK_PATH, "utf-8");
 const LOADER_PATH = path.resolve(__dirname, "../../analytics/load-tracker.js");
-// The plugin drops the formatter's trailing semicolon before appending its
-// call, so the tested text is the bare IIFE too.
-const LOADER_SOURCE = fs.readFileSync(LOADER_PATH, "utf-8").replace(/;\s*$/, "");
+// The plugin drops the formatter's trailing semicolon before wrapping the loader
+// in parentheses and calling it, so the tested text is the bare expression too.
+const LOADER_SOURCE = fs.readFileSync(LOADER_PATH, "utf-8").trim().replace(/;$/, "");
 
 // The pinned tracker build without its header line: the bytes the host serves
 // today, and the bytes the integrity pin covers.
@@ -54,6 +60,7 @@ const TRACKER_ATTRS = {
   "data-domains": "lion-studio.khive.ai",
   "data-exclude-search": "true",
   "data-exclude-hash": "true",
+  "data-do-not-track": "true",
   "data-before-send": "__studioAnalyticsBeforeSend",
 };
 
@@ -151,6 +158,7 @@ async function trackerPage(): Promise<{
   track: (argumentSource: string) => Promise<Sent[]>;
 }> {
   document.head.innerHTML = "";
+  forgetTracker();
   const sent: Sent[] = [];
   (document.documentElement as unknown as Record<string, unknown>).__analyticsSent = sent;
 
@@ -172,6 +180,15 @@ async function trackerPage(): Promise<{
     return sent.slice(before);
   };
   return { track };
+}
+
+/**
+ * The tracker installs `window.umami` only when it is not already there, so a
+ * page that ran it before would keep calling that earlier run. The global is
+ * removed from inside the page's realm, where the tracker installed it.
+ */
+function forgetTracker(): void {
+  addInlineScript("delete window.umami;");
 }
 
 function onlySent(sent: Sent[]): Record<string, unknown> {
@@ -208,7 +225,16 @@ describe("hostedAnalyticsInjector", () => {
   });
 
   it("injects nothing when the build is Vercel but the id is unset", () => {
-    expect(tagsFor({ VERCEL: "1" })).toEqual([]);
+    expect(tagsFor({ VERCEL: "1", VERCEL_ENV: "production" })).toEqual([]);
+  });
+
+  it("injects nothing for a Vercel preview or development build", () => {
+    for (const vercelEnv of [undefined, "preview", "development", "Production"]) {
+      expect(
+        tagsFor({ VERCEL: "1", VERCEL_ENV: vercelEnv, STUDIO_UMAMI_WEBSITE_ID: UUID }),
+        String(vercelEnv),
+      ).toEqual([]);
+    }
   });
 
   it("emits exactly one tag for the hosted Vercel build", () => {
@@ -223,7 +249,7 @@ describe("hostedAnalyticsInjector", () => {
     // The children are the hook's source, then the loader call.
     const children = tags[0].children ?? "";
     expect(children.startsWith(HOOK_SOURCE)).toBe(true);
-    expect(children).toContain(`${LOADER_SOURCE}(${JSON.stringify(TRACKER_ATTRS)});`);
+    expect(children).toContain(`\n;(${LOADER_SOURCE}\n)(${JSON.stringify(TRACKER_ATTRS)});`);
     expect(children.indexOf(HOOK_SOURCE)).toBeLessThan(children.indexOf(LOADER_SOURCE));
 
     // Evaluating the children installs the hook and adds exactly one tracker
@@ -242,6 +268,7 @@ describe("hostedAnalyticsInjector", () => {
     expect(script.getAttribute("data-domains")).toBe("lion-studio.khive.ai");
     expect(script.getAttribute("data-exclude-search")).toBe("true");
     expect(script.getAttribute("data-exclude-hash")).toBe("true");
+    expect(script.getAttribute("data-do-not-track")).toBe("true");
     expect(script.getAttribute("data-before-send")).toBe("__studioAnalyticsBeforeSend");
     expect(script.attributes.length).toBe(Object.keys(TRACKER_ATTRS).length);
     document.head.innerHTML = "";
@@ -279,22 +306,75 @@ describe("hostedAnalyticsInjector", () => {
     expect(document.head.querySelectorAll("script")).toHaveLength(0);
   });
 
-  it("throws when the hook source does not end in a semicolon", () => {
+  /** Evaluates the plugin's children for the given sources on a clean head. */
+  function scriptsAddedBy(sources: { hook: string; loader: string }): number {
+    const children = (
+      hostedAnalyticsInjector(HOSTED_ENV, sources).transformIndexHtml as () => HtmlTag[]
+    )()[0].children;
+    document.head.innerHTML = "";
+    delete (window as unknown as { __studioAnalyticsBeforeSend?: unknown })
+      .__studioAnalyticsBeforeSend;
+    evalWindow.eval(children ?? "");
+    const added = document.head.querySelectorAll("script").length;
+    document.head.innerHTML = "";
+    return added;
+  }
+
+  it("still adds the tracker for a hook without a final semicolon", () => {
+    // The call starts after a semicolon, so the hook's last expression is never
+    // called with the loader as its argument.
+    expect(
+      scriptsAddedBy({ hook: HOOK_SOURCE.replace(/;\s*$/, "\n"), loader: LOADER_SOURCE }),
+    ).toBe(1);
+  });
+
+  it("still adds the tracker for a loader that is a bare function expression", () => {
+    const bare = LOADER_SOURCE.replace(/\(function \(attrs\)/, "function (attrs)").replace(
+      /\}\)$/,
+      "}",
+    );
+    expect(bare).not.toBe(LOADER_SOURCE);
+    expect(scriptsAddedBy({ hook: HOOK_SOURCE, loader: bare })).toBe(1);
+  });
+
+  it("still adds the tracker for a loader ending in a line comment", () => {
+    // The parentheses close on a line of their own, so the comment cannot take
+    // the call with it.
+    expect(
+      scriptsAddedBy({ hook: HOOK_SOURCE, loader: `${LOADER_SOURCE} // see the note (1)\n` }),
+    ).toBe(1);
+  });
+
+  it("throws on a loader that is not one function expression", () => {
+    for (const loader of [
+      LOADER_SOURCE.replace(/if \(typeof/, "if typeof"),
+      LOADER_SOURCE.replace(/\)$/, ";}\n"),
+      `${LOADER_SOURCE};\n(function () {})`,
+      '"not a function"',
+    ]) {
+      expect(
+        () => hostedAnalyticsInjector(HOSTED_ENV, { hook: HOOK_SOURCE, loader }),
+        loader.slice(-40),
+      ).toThrow(/load-tracker\.js/);
+    }
+  });
+
+  it("throws on a hook that does not compile", () => {
     expect(() =>
       hostedAnalyticsInjector(HOSTED_ENV, {
-        hook: HOOK_SOURCE.replace(/;\s*$/, "\n"),
+        hook: HOOK_SOURCE.replace(/\}\)\(\);\s*$/, "}));\n"),
         loader: LOADER_SOURCE,
       }),
     ).toThrow(/before-send\.js/);
   });
 
-  it("throws when the loader source is not a parenthesized function expression", () => {
-    expect(() =>
-      hostedAnalyticsInjector(HOSTED_ENV, {
-        hook: HOOK_SOURCE,
-        loader: LOADER_SOURCE.replace(/\)\s*$/, ";}\n"),
-      }),
-    ).toThrow(/load-tracker\.js/);
+  it("throws on a hook or loader holding a closing script tag", () => {
+    for (const sources of [
+      { hook: `${HOOK_SOURCE}\n// </script>\n`, loader: LOADER_SOURCE },
+      { hook: HOOK_SOURCE, loader: `/* </SCRIPT */ ${LOADER_SOURCE}` },
+    ]) {
+      expect(() => hostedAnalyticsInjector(HOSTED_ENV, sources)).toThrow(/<\/script/);
+    }
   });
 });
 
@@ -457,6 +537,24 @@ describe("before-send hook", () => {
     // loadHook clears the head, so no element carries the website id.
     const hook = loadHook();
     expect(hook("event", pageView("/fleet"))).toBeFalsy();
+    // A send that found no element keeps nothing: the element added later is read.
+    addTrackerElement();
+    expect((hook("event", pageView("/fleet")) as Record<string, string>).website).toBe(UUID);
+  });
+
+  it("keeps the website id read at the first send", () => {
+    const hook = loadHookOnPage();
+    expect((hook("event", pageView("/fleet")) as Record<string, string>).website).toBe(UUID);
+
+    const element = document.head.querySelector("script[data-website-id]") as HTMLScriptElement;
+    element.setAttribute("data-website-id", "another-site");
+    const earlier = document.createElement("script");
+    earlier.setAttribute("data-website-id", "earlier-site");
+    earlier.setAttribute("data-before-send", "__studioAnalyticsBeforeSend");
+    document.head.insertBefore(earlier, document.head.firstChild);
+
+    const result = hook("event", pageView("/fleet")) as Record<string, string>;
+    expect(result.website).toBe(UUID);
   });
 
   it("fills the page's own values and leaves an absent referrer absent", () => {
@@ -513,6 +611,44 @@ describe("before-send hook", () => {
 });
 
 describe("tracker calls through the shipped hook", () => {
+  /** Runs the pinned tracker with the shipped attributes and returns what it sent. */
+  async function sendsWithDoNotTrack(browserSetting: string | undefined): Promise<Sent[]> {
+    document.head.innerHTML = "";
+    forgetTracker();
+    const sent: Sent[] = [];
+    (document.documentElement as unknown as Record<string, unknown>).__analyticsSent = sent;
+    Object.defineProperty(window.navigator, "doNotTrack", {
+      value: browserSetting,
+      configurable: true,
+    });
+    try {
+      addInlineScript(`window.fetch = function (url, init) {
+        document.documentElement.__analyticsSent.push(JSON.parse(init.body));
+        return Promise.resolve({ json: function () { return Promise.resolve({}); } });
+      };`);
+      addInlineScript(HOOK_SOURCE);
+      // The tracker reads its attributes as it runs, so they go on before the text.
+      const element = document.createElement("script");
+      element.setAttribute("data-website-id", UUID);
+      element.setAttribute("data-domains", window.location.hostname);
+      element.setAttribute("data-before-send", "__studioAnalyticsBeforeSend");
+      element.setAttribute("data-do-not-track", TRACKER_ATTRS["data-do-not-track"]);
+      element.textContent = PINNED_TRACKER;
+      document.head.appendChild(element);
+      addInlineScript(`window.umami.track({ url: "/fleet", title: "t" });`);
+      for (let i = 0; i < 20; i += 1) await flush();
+      return sent.slice();
+    } finally {
+      delete (window.navigator as unknown as { doNotTrack?: unknown }).doNotTrack;
+      forgetTracker();
+    }
+  }
+
+  it("sends nothing from a browser that asks not to be tracked", async () => {
+    expect(await sendsWithDoNotTrack("1")).toEqual([]);
+    expect((await sendsWithDoNotTrack(undefined)).length).toBeGreaterThan(0);
+  });
+
   it("sends the page's hostname for the object form, not the caller's", async () => {
     const { track } = await trackerPage();
     const sent = await track(`{ url: "/fleet", hostname: "visitor-42" }`);
@@ -540,14 +676,22 @@ describe("tracker calls through the shipped hook", () => {
     expect(onlySent(sent).language).toBe(window.navigator.language);
   });
 
-  it("sends the page's hostname for the function form, not the caller's", async () => {
+  it("sends the page's own values for the function form, not the caller's", async () => {
     const { track } = await trackerPage();
     const sent = await track(`function (context) {
-      return Object.assign({}, context, { hostname: "visitor-42" });
+      return Object.assign({}, context, {
+        hostname: "visitor-42",
+        website: "visitor-43",
+        screen: "visitor-44",
+        language: "visitor-45",
+      });
     }`);
     const payload = onlySent(sent);
     expect(payload.hostname).toBe(window.location.hostname);
-    expect(JSON.stringify(payload)).not.toContain("visitor-42");
+    expect(payload.website).toBe(UUID);
+    expect(payload.screen).toBe(`${window.screen.width}x${window.screen.height}`);
+    expect(payload.language).toBe(window.navigator.language);
+    expect(JSON.stringify(payload)).not.toContain("visitor-4");
   });
 
   it("does not send a referrer given as an object or an array", async () => {
