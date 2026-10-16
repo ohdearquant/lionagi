@@ -635,8 +635,9 @@ def _to_db_fields(
 def _resolve_project(execution: Execution, *, project: str | None, is_global: bool) -> str | None:
     """The project a member runs under: its own, else the document's.
 
-    ``project: null`` written out declares that the member has no project, which is
-    what an export writes for a row stored without one; an omitted or empty project
+    A project written as YAML null (``null``, ``~`` or a blank value, which the parser
+    reads alike) declares that the member has no project, which is what an export
+    writes for a row stored without one; an omitted project or an empty string
     inherits the document's (none in a global document). The difference is real at
     spawn time: the project is the fallback execution root of every schedule and is
     passed as ``--project`` to an agent, flow, fanout or flow_yaml command, so reading an explicit

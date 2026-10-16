@@ -56,6 +56,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   releases read High). An effort that is not a string also counts as none (earlier releases
   read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
   on a list or dict).
+- `li schedule apply` reads a member's `execution.project` written as YAML null
+  (`project: null`, `project: ~` or a blank `project:`) as no project. Earlier
+  releases gave that member the document's `metadata.project`, so re-applying an
+  export of a row stored without a project gave the row the export's project. An
+  omitted project, or `project: ""`, still inherits the document's. A document
+  already applied whose member writes its project as null in any of those
+  spellings plans an `UPDATE` on its next apply that removes the project the
+  member ran under. `li schedule export` writes every member's stored project,
+  `null` included.
 
 ### Fixed
 

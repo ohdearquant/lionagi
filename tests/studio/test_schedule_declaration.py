@@ -461,14 +461,25 @@ def test_wrong_api_version_rejected():
         ("", "demo"),
         ("      project: other", "other"),
         ("      project: null", None),
+        ("      project: ~", None),
+        ("      project:", None),
         ("      project: ''", "demo"),
     ],
-    ids=["omitted-inherits", "named", "explicit-null-is-none", "empty-inherits"],
+    ids=[
+        "omitted-inherits",
+        "named",
+        "explicit-null-is-none",
+        "tilde-is-none",
+        "blank-is-none",
+        "empty-inherits",
+    ],
 )
 def test_a_member_project_inherits_the_document_unless_named_or_null(
     agent_profile, project_line, expected
 ):
-    """An explicit ``project: null`` is a project of None, never the document's.
+    """A project written as YAML null is a project of None, never the document's.
+
+    ``null``, ``~`` and a blank value parse alike, so all three declare no project.
 
     It is what an export writes for a row stored without a project, and the project
     reaches the spawned command, so inheriting there would change the row on re-apply.

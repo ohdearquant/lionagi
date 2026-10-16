@@ -121,15 +121,15 @@ Notes:
   that later disappears from the file is disabled on the next apply (not deleted —
   its run history stays queryable).
 - In a project-scoped document a member whose `execution` omits `project`, or
-  leaves it empty, runs under the document's `metadata.project`; in a global
-  document it has no project unless it names one. `project: null` written out means
-  the schedule has no project. `li schedule export` writes every member's stored
-  project explicitly, `null` included, so re-applying an export reproduces it. The
+  sets it to an empty string (`project: ""`), runs under the document's
+  `metadata.project`; in a global document it has no project unless it names one.
+  A project written as YAML null, whether `project: null`, `project: ~` or
+  `project:` with nothing after it, means the schedule has no project: YAML reads
+  those three alike. `li schedule export` writes every member's stored project
+  explicitly, `null` included, so re-applying an export reproduces it. The
   difference matters: the project is the fallback working directory of every
   schedule and is passed as `--project` to an `agent`, `flow`, `fanout` or
-  `flow_yaml` command. A document already applied whose member says `project: null`
-  ran that member under the document's project before this was read as no project;
-  applying it again plans an `UPDATE` that removes the project.
+  `flow_yaml` command.
 
 ## Event-driven recipe: review every PR change
 

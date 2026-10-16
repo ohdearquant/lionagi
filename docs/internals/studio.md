@@ -536,9 +536,9 @@ flow by hand. Declaration/cli re-export (`managed_by IN ('cli',
 'declaration')`) simply re-validates each row's already-typed
 `authored_spec` back into a `ScheduleMember`.
 
-`resolve_member` reads an explicit `execution.project: null` as no project;
-an omitted or empty project inherits `metadata.project` (none under `scope:
-global`). The managed export writes each member's project from the row's stored
+`resolve_member` reads an `execution.project` written as YAML null (`null`,
+`~` or a blank value) as no project; an omitted project or an empty string
+inherits `metadata.project` (none under `scope: global`). The managed export writes each member's project from the row's stored
 `action_project` (`null` when it has none) rather than as authored: the export's
 document is project-scoped even for a global set, so an omitted or empty project
 written back would re-apply under the export's project. Reading the null as
