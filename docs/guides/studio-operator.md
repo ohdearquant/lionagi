@@ -29,10 +29,10 @@ after a reconnect.
 
 ### Stop an active turn
 
-While Operator is working, **Stop** appears in the dock header. It requests
-cancellation of the current turn and ends that turn as stopped. History and
-completed tool results remain visible; Stop does not roll back work that
-already finished.
+While a turn is running, **Stop** replaces **Send** in the composer. It
+requests cancellation of the current turn and ends that turn as stopped.
+History and completed tool results remain visible; Stop does not roll back
+work that already finished.
 
 If a permission decision is waiting, **Stop** cancels the whole turn. **Deny**
 only rejects the individual proposed operation.
@@ -49,7 +49,11 @@ the conversation shows a **Permission required** card and Operator waits.
   blanket approval for the rest of the turn.
 
 Operator waits until you decide or the request expires, currently ten minutes
-after creation. Expiry denies the request; it never approves it.
+after creation. Expiry marks the request expired and releases the waiting turn;
+it never approves the request. A separate **Auto-allow proposals** checkbox in
+the composer is off by default and saved per browser; when you turn it on,
+Operator allows each pending proposal as it arrives instead of waiting for a
+click. Leave it off to decide each request yourself.
 
 ### Follow work into Fleet and Runs
 

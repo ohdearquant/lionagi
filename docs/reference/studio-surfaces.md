@@ -91,16 +91,19 @@ service `schedules.py`.
 **Library** groups reusable definitions. Browse all visible kinds together or
 choose a kind tab, search by name, and select an item for its detail.
 
-- **Agents** are named profiles. Inspect their configuration and use the
-  creation and editing controls for profiles that are not protected.
-- **Playbooks** includes bundled templates and your installed playbooks.
-  Inspect their agent, inputs, and prompt; clone a bundled template to
-  customize it or launch a playbook. Bundled templates remain read-only.
-- **Skills** and **Plugins** expose installed instructions and packaged
-  components. Inspect their contents and usage. Install these through their
-  filesystem or plugin tooling; Library has no new-skill or new-plugin form.
-- **MCP servers** exposes server registrations and their configuration.
-- **Hooks** exposes hook assemblies and configuration.
+The kind tabs read **Agent**, **Playbook**, **Skill**, **Plugin**,
+**MCP Server**, and **Hooks**.
+
+- **Agent**: named profiles. Inspect their configuration and use the creation
+  and editing controls for profiles that are not protected.
+- **Playbook**: bundled templates and your installed playbooks. Inspect their
+  agent, inputs, and prompt; clone a bundled template to customize it, or use
+  **Run** to launch it. Bundled templates remain read-only.
+- **Skill** and **Plugin**: installed instructions and packaged components.
+  Inspect their contents and usage. Install these through their filesystem or
+  plugin tooling; Library has no new-skill or new-plugin form.
+- **MCP Server**: server registrations and their configuration.
+- **Hooks**: hook assemblies and configuration.
 
 ### Currently unavailable Library kinds
 

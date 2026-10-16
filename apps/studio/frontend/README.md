@@ -37,11 +37,11 @@ experience, use `li studio --dev`.
 | `/mission`   | Attention, active work, recent history, pulse, and spend   |
 | `/library`   | Agents, playbooks, skills, plugins, teams, and MCP servers |
 | `/schedules` | Calendar, schedule editing, and execution history          |
-| `/designer`  | Visual orchestration designer                              |
 | `/system`    | Health, maintenance, definitions, engines, and engine runs |
 
-Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
-`/admin/maintenance` remain routed to their current space.
+Legacy deep links such as `/designer` (redirects to the Library workflow tab),
+`/runs/:id`, `/playbooks/:name`, `/teams`, and `/admin/maintenance` remain
+routed to their current space.
 
 ## API resolution
 

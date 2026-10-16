@@ -39,6 +39,10 @@ LionAGI for a subscription-backed login. See the
 [Claude Code setup guide](https://code.claude.com/docs/en/setup) for supported
 installation and enterprise authentication options.
 
+Operator runs that CLI on the host. The Studio image contains LionAGI and the
+frontend bundle but no Claude Code CLI, so Operator does not run inside
+`li studio --docker`; use a host install for Operator.
+
 ## Start Studio
 
 ```bash
@@ -58,29 +62,36 @@ second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
 
 ### Authentication and browser trust
 
-By default, `LIONAGI_STUDIO_AUTH_TOKEN` is unset and the daemon does not require
-authentication for `/api` requests. Any caller that can reach it and passes
-the Host-header check can use those endpoints, subject to normal request
-validation. The default browser-origin allowlist, `CORS_ORIGINS`, includes
-`https://lion-studio.khive.ai`. A page served from that origin can therefore
-drive the no-token local daemon, including sending Operator proposal approval
-decisions. The Host check and CORS are not caller authentication or proof of
-a human decision.
+By default, `LIONAGI_STUDIO_AUTH_TOKEN` is unset and the daemon requires no
+bearer token, but its API is not open to every caller that can reach it. A
+request with no `Origin` header, as from the CLI or a script, is accepted. A
+browser page is accepted when its origin is loopback (`localhost`,
+`127.0.0.0/8`, or `::1`), when it is the daemon's own origin, or when it sends
+the bearer this launch paired it with. A page on any other origin is refused
+with 401. `li studio` opens the hosted page with a one-time pairing code and
+the page exchanges that code for the bearer, which is how the hosted page works
+without a token configured. Host validation and CORS do not authenticate the
+caller and are not proof that a human approved a request.
+
+The default browser origins, `CORS_ORIGINS`, are `http://localhost:5173`,
+`http://localhost:3000`, `http://localhost:3765`, and
+`https://lion-studio.khive.ai`. Only a page on one of these origins can redeem
+a pairing code; the first three are local development ports.
 
 Set `LIONAGI_STUDIO_AUTH_TOKEN` in the daemon's environment before starting it
 to require `Authorization: Bearer <token>` for API requests and the
 schema/docs endpoints. `/health` and CORS preflight remain unauthenticated.
-The hosted client has no
-token-entry UI and does not receive a token from this environment variable.
-Setting it on the daemon alone therefore does not authenticate the hosted
-page. Use a client that supplies the matching bearer header; the desktop
-shell injects a token for its own daemon into its frontend. The ordinary
-hosted page does not provide that token-delivery path.
+Pairing hands a page the configured token, so the hosted page keeps working
+once it is paired, and every other client must supply the matching bearer. The
+bundled UI in `--docker` mode has no token-entry field either, so with a token
+set inside the container its API calls get 401; the desktop shell injects a
+token for its own daemon into its frontend.
 
 Authentication, Host validation, and browser origins are defined in
-`lionagi/studio/app.py` and `lionagi/studio/config.py`. Operator decisions
-use `lionagi/studio/services/operator.py`; frontend credential handling is
-defined in `apps/studio/frontend/src/lib/api.ts`.
+`lionagi/studio/app.py` and `lionagi/studio/config.py`, and pairing in
+`lionagi/studio/services/pairing.py`. Operator decisions use
+`lionagi/studio/services/operator.py`; frontend credential handling is defined
+in `apps/studio/frontend/src/lib/api.ts`.
 
 ### Choose a launch mode
 
@@ -98,13 +109,25 @@ Choose a launch mode for your setup:
 `--no-open` applies to hosted-client mode. In a noninteractive terminal, the
 default also leaves opening the browser to you.
 
+`--host` sets the daemon's bind address and defaults to `127.0.0.1`; it applies
+to the default, `--no-frontend`, and `--dev` modes. A non-loopback value such
+as `--host 0.0.0.0` exposes the API to other machines, and the daemon also
+reports that in a startup warning. Docker mode takes no host address:
+`li studio --docker` publishes the port on all interfaces by default, as
+described below. `LIONAGI_STUDIO_HOST` sets the same address for a daemon
+started without the flag.
+
 Docker mode pulls `ghcr.io/ohdearquant/lion-studio:latest` and serves the bundled
 UI and API on port 8765 by default. It bind-mounts `~/.lionagi` read-write at
 `/root/.lionagi` so state persists outside the container. If present,
-`~/.claude/plugins` is mounted read-only. Targets of symlinks in the `agents`,
-`skills`, `playbooks`, and `teams` directories under `~/.lionagi` are also
-mounted read-only when they pass the launcher's allowed-root check;
-disallowed targets are skipped with a warning.
+`~/.claude/plugins` is mounted read-only. A symlink in the `agents`, `skills`,
+`playbooks`, or `teams` directory under `~/.lionagi` is followed to its target,
+and that target is mounted read-only when it passes the launcher's allowed-root
+check; disallowed targets are skipped with a warning. A symlink to a directory
+mounts the directory. A symlink to a file mounts the directory that contains
+the file, so every sibling file in it becomes readable in the container too; a
+target file that sits directly in the home directory would mount all of the
+home directory.
 
 The launcher currently uses `-p 8765:8765`, without a host address, and the
 container listens on `0.0.0.0:8765`. With Docker's default port-binding
