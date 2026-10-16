@@ -11,7 +11,12 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
-from lionagi.service.resilience import CircuitBreaker, RetryConfig, retry_with_backoff
+from lionagi.service.resilience import (
+    CircuitBreaker,
+    RetryConfig,
+    _reraise_inner,
+    retry_with_backoff,
+)
 from lionagi.service.types.stream_chunk import StreamChunk
 
 from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
@@ -386,7 +391,10 @@ class Endpoint:
                 try:
                     return await retry_with_backoff(self._call, p, h, **kw, **retry_kwargs)
                 except _NonRetryableClientError as exc:
-                    raise exc.original from exc.__cause__
+                    # Unwrap the sentinel without making the original its own cause:
+                    # the judge walks __cause__ to find a provider refusal, and a
+                    # self-cause would make that walk never end.
+                    _reraise_inner(exc.original)
                 except _RoutedAttemptError as exc:
                     raise self._public_routed_failure(exc) from None
 
@@ -619,7 +627,7 @@ class Endpoint:
                 jitter_factor=0.5,
             )
         except _NonRetryableClientError as exc:
-            raise exc.original from exc.__cause__
+            _reraise_inner(exc.original)
         except _RoutedAttemptError as exc:
             raise self._public_routed_failure(exc) from None
 
