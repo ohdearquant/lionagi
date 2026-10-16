@@ -517,6 +517,12 @@ class AnthropicMessagesEndpoint(Endpoint):
         except get_cancelled_exc_class():
             if not request_entered:
                 await router.settle_not_sent(attempt)
+            else:
+                # The request may have reached the provider, so the attempt stays open
+                # with its ceiling held and records why, as a cancelled stream does. The
+                # write is shielded and bounded so the cancellation cannot cut it short;
+                # an attempt that already settled is left as it is.
+                await router.settle_stream_end(attempt, None, reason="cancelled")
             raise
         except AccountRoutingError as exc:
             raise _RoutedNoRetryError(
@@ -848,9 +854,11 @@ class AnthropicMessagesEndpoint(Endpoint):
                     # attempt, and one that leaves a field out says nothing about that field,
                     # so each leaves what an earlier event said in place. Its counts are
                     # placeholders, so a start after a message_delta's final count leaves that
-                    # count, and the attempt's cost, alone.
+                    # count alone, and its model too: the final count is priced at the model
+                    # that produced it, so the attempt's cost stays put.
                     if settlement is not None:
-                        served_model = settlement.get("model") or served_model
+                        if not saw_final_usage:
+                            served_model = settlement.get("model") or served_model
                         request_id = (
                             provider_request_id(settlement.get("id"), attempt.key) or request_id
                         )

@@ -1550,7 +1550,7 @@ async def test_cancellation_settles_only_when_the_transport_was_not_entered(monk
     with pytest.raises(asyncio.CancelledError):
         await task
     row = _attempts(path)[0]
-    assert row[2] == "open" and row[3] is None
+    assert row[2:] == ("open", None, "cancelled")
 
 
 def _sse(events) -> bytes:
@@ -3560,6 +3560,30 @@ async def test_a_later_message_starts_placeholder_count_does_not_undo_a_final_on
     assert late[2:] == control[2:] == ("settled", 250_000, "complete"), (late, control)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_model", ["claude-opus-5-5", "claude-not-priced"])
+async def test_a_later_message_start_does_not_reprice_a_final_count(
+    monkeypatch, tmp_path, late_model
+):
+    """A message_start after the final count names no model for that count: the attempt
+    settles at the price of the model that produced it, and a start naming an unpriced
+    model does not leave the attempt open."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["usage"]["output_tokens"] = 1
+    final = {"type": "message_delta", "usage": {"output_tokens": 5}}
+    late = {"type": "message_start", "message": {"id": "msg_s", "model": late_model}}
+    events = [start, _PARTIAL_TEXT, final, late, {"type": "message_stop"}]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    control_model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events[:3] + events[4:])])])
+    assert [chunk async for chunk in control_model.endpoint.stream(REQUEST)]
+
+    late_row, control = _attempts(path)
+    assert late_row[2:] == control[2:] == ("settled", 250_000, "complete"), (late_row, control)
+
+
 def test_a_masked_name_taking_a_recorded_place_still_masks_its_value():
     """A name renamed onto one that a recorded place names, though the object carries no
     such name, is no exemption: the value of the renamed entry is still masked."""
@@ -3592,7 +3616,7 @@ def test_a_masked_name_taking_a_recorded_place_still_masks_its_value():
 async def test_a_routed_refusal_keeps_an_acyclic_cause_chain_without_key_text(
     monkeypatch, tmp_path, streamed, status, code
 ):
-    """A routed 401, 403 or other 4xx reaches the caller as the public routed error,
+    """A routed 401, 403 or 400 reaches the caller as the public routed error,
     carrying no key text in its linked errors, and a walk of ``__cause__`` from it ends
     instead of looping."""
     _install_accounts(monkeypatch, tmp_path)
@@ -3626,7 +3650,7 @@ async def test_a_later_message_start_that_omits_a_field_keeps_what_the_first_one
 ):
     """A second message_start that leaves out the model, the id or the usage says nothing
     about that field, so the attempt keeps the first one's values and settles complete;
-    its own clean id and counts still take their places."""
+    its own clean id still takes the recorded id's place."""
     path = _install_accounts(monkeypatch, tmp_path)
     final = {"type": "message_delta", "usage": {"output_tokens": 5}}
     omitted = {"type": "message_start", "message": {"id": "msg_b"}}
