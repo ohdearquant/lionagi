@@ -376,6 +376,39 @@ async def test_a_link_that_cannot_be_read_ends_that_branch_only():
     assert raised is refusal
 
 
+async def test_a_context_that_cannot_be_read_still_lets_the_cause_be_read():
+    """The context is read before the cause; a read that fails ends only the link it reads."""
+    from lionagi._errors import ContainmentRefusedError
+
+    class UnreadableContext(RuntimeError):
+        @property
+        def __context__(self):
+            raise ValueError("this link cannot be read")
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    error = UnreadableContext("unreadable")
+    error.__cause__ = refusal
+    raised, _, _ = await _judge_outside_the_handler(error)
+    assert raised is refusal
+
+
+class _Interrupt(BaseException):
+    """Stands in for an interrupt or a cancellation, which no read may swallow."""
+
+
+async def test_an_interrupt_raised_by_a_read_leaves_the_judge():
+    class InterruptingCause(RuntimeError):
+        @property
+        def __cause__(self):
+            raise _Interrupt("stop")
+
+    with pytest.raises(_Interrupt, match="stop"):
+        await _judge(
+            Engine(judge_model="openai/gpt-4.1"),
+            _JudgeWhoseCallRaises(InterruptingCause("interrupted")),
+        )
+
+
 def _linear_chain(length: int, last: BaseException) -> RuntimeError:
     """*length* links, each the cause of the one before it, the last of them *last*."""
     links: list[BaseException] = [RuntimeError(f"link {i}") for i in range(1, length)]
