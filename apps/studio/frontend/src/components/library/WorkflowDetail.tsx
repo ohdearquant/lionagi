@@ -35,9 +35,9 @@ export function WorkflowDetail({ id, onBack, onDeleted }: WorkflowDetailProps) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [armedDelete, setArmedDelete] = useState(false);
-  // A save or delete can outlive the workflow it started on: the detail is
-  // keyed by `id`, so a response for an earlier workflow must not be written
-  // into whichever workflow the pane now shows.
+  // A save can outlive the workflow it started on: the detail is keyed by
+  // `id`, so a response for an earlier workflow must not be written into
+  // whichever workflow the pane now shows while it is still saving.
   const currentId = useRef(id);
   useEffect(() => {
     currentId.current = id;

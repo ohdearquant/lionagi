@@ -915,6 +915,55 @@ describe("Library catalog loading", () => {
     expect(container.querySelector("tbody")?.textContent).not.toContain("doomed-agent");
   });
 
+  it("refetches the tab where an MCP create completed after the viewer left it", async () => {
+    api.listMcpServers.mockResolvedValue({ servers: [{ name: "existing-mcp" }] });
+    const creation = deferred<void>();
+    mutations.createMcp.mockReturnValue(creation.promise);
+    await renderLibrary({ tab: "mcp" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newMcpServer"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-mcp"]')!.click(),
+    );
+    expect(mutations.createMcp).toHaveBeenCalledOnce();
+
+    await clickTab("filterSkill");
+    api.listMcpServers.mockResolvedValue({
+      servers: [{ name: "existing-mcp" }, { name: "created-mcp" }],
+    });
+    creation.resolve();
+    await flush();
+
+    await clickTab("filterMcp");
+    expect(api.listMcpServers).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("tbody")?.textContent).toContain("created-mcp");
+  });
+
+  it("refetches the tab where an MCP delete completed after the viewer left it", async () => {
+    api.listMcpServers.mockResolvedValue({
+      servers: [{ name: "existing-mcp" }, { name: "doomed-mcp" }],
+    });
+    const deletion = deferred<void>();
+    mutations.deleteMcp.mockReturnValue(deletion.promise);
+    await renderLibrary({ tab: "mcp", sel: "mcp:doomed-mcp" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-mcp"]')!.click(),
+    );
+    expect(mutations.deleteMcp).toHaveBeenCalledOnce();
+
+    await clickTab("filterSkill");
+    api.listMcpServers.mockResolvedValue({ servers: [{ name: "existing-mcp" }] });
+    deletion.resolve();
+    await flush();
+
+    await clickTab("filterMcp");
+    expect(api.listMcpServers).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("tbody")?.textContent).not.toContain("doomed-mcp");
+  });
+
   it("refetches the tab where a playbook clone completed after the viewer left it", async () => {
     api.listBuiltinPlaybooks.mockResolvedValue({ playbooks: [{ name: "bundled" }] });
     api.listPlaybooks.mockResolvedValue({ playbooks: [] });
@@ -993,6 +1042,26 @@ describe("Library catalog loading", () => {
     expect(container.querySelector("tbody")?.textContent).toContain("alpha-skill");
   });
 
+  it("drops a failed banner while its retry is still in flight", async () => {
+    api.listSkills.mockRejectedValueOnce(new Error("skill catalog unavailable"));
+    await renderLibrary({ tab: "skill" });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("loadError");
+
+    // The revisit starts the source's request but does not settle it: the
+    // failed state must already be gone rather than lingering behind the
+    // banner until the response arrives.
+    const retry = deferred<{ skills: { name: string }[] }>();
+    api.listSkills.mockReturnValue(retry.promise);
+    await clickTab("filterAgent");
+    await clickTab("filterSkill");
+    expect(api.listSkills).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    retry.resolve({ skills: [{ name: "alpha-skill" }] });
+    await flush();
+    expect(container.querySelector("tbody")?.textContent).toContain("alpha-skill");
+  });
+
   it("resets the detail pane when the tab changes", async () => {
     api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
     await renderLibrary({ tab: "agent" });
@@ -1008,6 +1077,37 @@ describe("Library catalog loading", () => {
     expect(
       container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
     ).toBe("false");
+  });
+
+  it("does not reopen a created workflow after its detail deletes it", async () => {
+    const creation = deferred<void>();
+    mutations.createWorkflow.mockReturnValue(creation.promise);
+    await renderLibrary({ tab: "all" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newWorkflow"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-workflow"]')!.click(),
+    );
+    creation.resolve();
+    await flush();
+    expect(router.search.sel).toBe("workflow:created-flow");
+    expect(container.querySelector('[data-testid="workflow-detail"]')?.textContent).toBe(
+      "created-flow-id",
+    );
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-workflow"]')!.click(),
+    );
+    await flush();
+    expect(router.search.sel).toBeUndefined();
+
+    // The created workflow is gone from the catalog and its detail was
+    // deleted, so returning to its old selection must not reopen the pane.
+    await renderLibrary({ tab: "all", sel: "workflow:created-flow" });
+    expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
   });
 
   it("clears the workflow selection and its row when the detail deletes it", async () => {
@@ -1029,5 +1129,38 @@ describe("Library catalog loading", () => {
     await renderLibrary({ sel: "workflow:saved-flow" });
     expect(api.listWorkflowDefs).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
+  });
+  it("refetches the agent tab when a pending list answers after a create resolved elsewhere", async () => {
+    const listed = deferred<{ agents: { name: string }[] }>();
+    api.listAgents.mockReturnValue(listed.promise);
+    const creation = deferred<void>();
+    mutations.createAgent.mockReturnValue(creation.promise);
+    await renderLibrary({ tab: "agent" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    expect(mutations.createAgent).toHaveBeenCalledOnce();
+
+    await clickTab("filterSkill");
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "existing-agent" }, { name: "created-agent" }],
+    });
+    creation.resolve();
+    await flush();
+
+    // The list request issued before the create answers now with the rows it
+    // read before it; that stale answer must not stand in for the refreshed
+    // catalog once the viewer returns.
+    listed.resolve({ agents: [{ name: "existing-agent" }] });
+    await flush();
+
+    await clickTab("filterAgent");
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("tbody")?.textContent).toContain("created-agent");
   });
 });

@@ -296,6 +296,13 @@ function useLibraryData(
         }
         return changed ? next : prev;
       });
+      // A dropped source may still have a request in flight from before the
+      // completion. Bump its version so a late response for it cannot refill
+      // the cache the drop just cleared.
+      for (const source of dropped) {
+        if (refetched.has(source)) continue;
+        requestVersion.current[source] = (requestVersion.current[source] ?? 0) + 1;
+      }
     }
 
     const sources = wantedSources.filter((source) => {
@@ -309,6 +316,17 @@ function useLibraryData(
     if (sources.length === 0) return;
 
     for (const source of sources) {
+      // A source being retried is no longer in its failed state: clear the
+      // recorded failure so the tab shows its loading state instead of the
+      // stale error banner until the response arrives.
+      if (cache[source] === "failed") {
+        setCache((prev) => {
+          if (prev[source] !== "failed") return prev;
+          const next = { ...prev };
+          delete next[source];
+          return next;
+        });
+      }
       const version = (requestVersion.current[source] ?? 0) + 1;
       requestVersion.current[source] = version;
       SOURCE_REQUESTS[source]().then(
@@ -1025,6 +1043,7 @@ function LibraryPage() {
           if (!mounted.current) return;
           const deleted = parsed.name;
           if (completionOnTab(kindFilter)) setDetailActive(false);
+          if (optimisticWorkflow?.name === deleted) setOptimisticWorkflow(null);
           invalidate("workflow");
           void reload();
           void navigate({

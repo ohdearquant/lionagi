@@ -62,8 +62,9 @@ collapsed layout to its list. Create, delete, and clone completions refresh the
 current tab even if navigation occurred while the change was pending, and drop
 the completed kind's catalog so a tab that lists it fetches it again on its next
 visit. They update selection only if the tab still matches the tab where the
-action began and the selection has not moved, and do not navigate after the
-Library unmounts. Visible catalog failures are named
+action began: a create or clone writes a selection only while it has not moved
+since the action began, and a delete clears it only while it still names the
+deleted item. They do not navigate after the Library unmounts. Visible catalog failures are named
 in the master banner; hidden failures and loading appear in their detail pane.
 Retrying one pane does not reload the other pane's catalogs. Failed reloads clear
 previously loaded agent and engine detail data. A missing engine is reported as
@@ -71,13 +72,15 @@ not found only after a successful catalog response. The
 `tab` and `sel` query parameters remain the links to a tab and selected item.
 
 Catalog-list request counts are one for Agent, Skill, Plugin or MCP; two for Playbook;
-six for All; and zero for Hooks or a withheld tab name alone. An explicit hidden detail
-adds one request outside Hooks; a workflow detail adds a second for the engine catalog
-its editor picks from, and retries only that catalog when it fails. Row selection adds
-none; a tab already visited renders what it fetched and requests nothing again, except
-a source that failed, which is attempted again on the next visit. Retry requests only
-the sources that failed. A completion refreshes the current tab's sources and any
-current hidden detail.
+six for All; and zero for Hooks or a withheld tab name alone. In development React
+StrictMode mounts each effect twice, so a tab's first load issues each of these requests
+twice; the second request is a development artifact, not a duplicate the page issues in
+production. An explicit hidden detail adds one request outside Hooks; a workflow detail
+adds a second for the engine catalog its editor picks from, and retries only that catalog
+when it fails. Row selection adds none; a tab already visited renders what it fetched
+and requests nothing again, except a source that failed or one a completion dropped,
+which are attempted again on the next visit. Retry requests only the sources that
+failed. A completion refreshes the current tab's sources and any current hidden detail.
 A workflow created on All loads six visible sources plus its workflow catalog, along
 with the engine catalog its editor picks from.
 
