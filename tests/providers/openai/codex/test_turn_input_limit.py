@@ -1314,10 +1314,19 @@ async def test_the_process_receives_the_environment_the_check_read(tmp_path, mon
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [ValueError, TypeError])
+@pytest.mark.parametrize(
+    ("value", "error", "type_name"),
+    [
+        pytest.param(_CannotBeRead(ValueError), ValueError, "_CannotBeRead", id="ValueError"),
+        pytest.param(_CannotBeRead(TypeError), TypeError, "_CannotBeRead", id="TypeError"),
+        pytest.param(789, TypeError, "int", id="not-text"),
+    ],
+)
 async def test_a_copied_environment_value_that_cannot_be_read_is_refused_without_its_text(
-    tmp_path, monkeypatch, error
+    tmp_path, monkeypatch, value, error, type_name
 ):
+    """Refused by position, with ``TypeError`` when the read raised it, as the spawn's own
+    encoding would have."""
     from lionagi.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
@@ -1327,15 +1336,61 @@ async def test_a_copied_environment_value_that_cannot_be_read_is_refused_without
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
-        update={"env": {"HOME": "/h", "OPENAI_API_KEY": _CannotBeRead(error)}}
+        update={"env": {"HOME": "/h", "OPENAI_API_KEY": value}}
     )
+    with pytest.raises(error) as refused:
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert type(refused.value) is error
+    assert str(refused.value) == (
+        f"The environment entry 1 value, of type {type_name}, could not be read as text, "
+        "so it cannot be passed to a CLI process."
+    )
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env", "first", "second"),
+    [
+        pytest.param(
+            {
+                "HOME": "/h",
+                "\u00e9": f"{_SECRET_IN_A_VALUE}-1",
+                "\udcc3\udca9": f"{_SECRET_IN_A_VALUE}-2",
+            },
+            1,
+            2,
+            id="surrogate-escaped-twin",
+        ),
+        pytest.param(
+            {b"PATH": f"/{_SECRET_IN_A_VALUE}/a".encode(), "PATH": "/b"}, 0, 1, id="bytes-and-text"
+        ),
+    ],
+)
+async def test_keys_that_name_one_variable_once_encoded_are_refused_by_position(
+    tmp_path, monkeypatch, env, first, second
+):
+    """Two keys that encode to the same bytes are one variable: the process would read one of
+    the two values, and the copy would keep only the last, so the pair is refused."""
+    from lionagi.providers import _cli_subprocess
+
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
     with pytest.raises(ValueError) as refused:
         async for _ in codex_mod._ndjson_from_cli(copied):
             pass
 
     assert str(refused.value) == (
-        "The environment entry 1 value, of type _CannotBeRead, could not be read as text, "
-        "so it cannot be passed to a CLI process."
+        f"The environment entries {first} and {second} name the same variable once encoded, "
+        "so they cannot be passed to a CLI process."
     )
     assert refused.value.__context__ is None
     assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)

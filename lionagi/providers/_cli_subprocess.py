@@ -184,8 +184,8 @@ def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
     """The first key or value of a string environment the spawn cannot encode, named by
     its position, else None.
 
-    A surrogate escape (U+DC80 to U+DCFF) passes as the byte it stands for and any other
-    lone surrogate fails. The codec's error holds the whole key or value, which can be a
+    On POSIX a surrogate escape (U+DC80 to U+DCFF) passes as the byte it stands for and any
+    other lone surrogate fails. The codec's error holds the whole key or value, which can be a
     credential, so only the position is returned, and the caller raises its refusal after
     this handler has ended.
     """
@@ -202,32 +202,49 @@ def env_as_the_spawn_encodes_it(env: Mapping) -> dict[str, str]:
     """``env`` copied once, each key and value read once and kept as the text of the bytes
     the spawn passes.
 
-    The spawn copies the mapping with ``dict()`` and encodes every key and value of the
-    copy with ``os.fsencode``. Doing both here, once, and handing this copy to the spawn
-    means the entries checked are the entries passed, whatever a view of the mapping or a
-    path-like value answers on a later read. A surrogate escape (U+DC80 to U+DCFF) passes
-    as the byte it stands for, so the spawn encodes the copy to the same bytes. A key or
-    value that cannot be encoded, or cannot be read as a path at all, is refused by its
-    position: the codec's error, or the error a path-like value raises, can hold the whole
-    key or value, which can be a credential, so the refusal is raised after that handler
-    has ended and carries no part of it.
+    The spawn builds the process environment from a copy of the mapping
+    (``prepare_process_group_env``), and on POSIX the subprocess module encodes every key and
+    value of that copy with ``os.fsencode``. Doing both here, once, and handing this copy to
+    the spawn means the entries checked are the entries passed, whatever a view of the mapping
+    or a path-like value answers on a later read. On POSIX a surrogate escape (U+DC80 to
+    U+DCFF) passes as the byte it stands for, so the spawn encodes the copy to the same bytes.
+
+    A key or value that cannot be encoded, or whose read raises an ``Exception``, is refused by
+    its position: the codec's error, or the error a path-like value raises, can hold the whole
+    key or value, which can be a credential, so the refusal is raised after that handler has
+    ended and carries no part of it. A read that raised ``TypeError`` (a value that is not
+    text, bytes or path-like) is refused with ``TypeError``, any other with ``ValueError``. Two
+    keys that encode to the same bytes name one variable, which value the process would read
+    is undefined, and this copy would keep only the last, so the pair is refused by position
+    too. An exception that is not an ``Exception``, or one the caller's own mapping raises while
+    ``dict()`` copies it, propagates unchanged.
     """
     copied: dict[str, str] = {}
+    first_index: dict[str, int] = {}
     for index, (key, val) in enumerate(dict(env).items()):
         texts: list[str] = []
         for part, item in (("key", key), ("value", val)):
             refusal = None
+            refused_as: type[Exception] = ValueError
             try:
                 texts.append(os.fsdecode(os.fsencode(item)))
             except UnicodeEncodeError:
                 refusal = _unencodable_env_message(f"The environment entry {index} {part}")
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, TypeError):
+                    refused_as = TypeError
                 refusal = (
                     f"The environment entry {index} {part}, of type {type(item).__name__}, "
                     "could not be read as text, so it cannot be passed to a CLI process."
                 )
             if refusal is not None:
-                raise ValueError(refusal)
+                raise refused_as(refusal)
+        if texts[0] in first_index:
+            raise ValueError(
+                f"The environment entries {first_index[texts[0]]} and {index} name the same "
+                "variable once encoded, so they cannot be passed to a CLI process."
+            )
+        first_index[texts[0]] = index
         copied[texts[0]] = texts[1]
     return copied
 
