@@ -312,31 +312,56 @@ Only the turn's last text is read: markup in an earlier message was superseded
 by a later one, a completed call after the message clears it, and a message
 with no visible text leaves the text it followed in place. Text inside code
 is a quotation of the markup rather than a call, so a call the model writes
-inside code completes the turn and never runs; the code a line can be, and
-the block boundaries that end an inline span, follow CommonMark. Line ends
-are normalised first, so CRLF text reads like LF text. A fence opens on a
-line of three or more backticks or tildes (a backtick fence's information
-string holds no backtick) and closes only on a line of the same character, at
-least as long as the opener, with nothing else on it: a backtick fence closed
-by `~~~`, or a four-backtick fence by three backticks, stays open. A fence
-line carries at most three spaces of indentation, and a blockquote marker or
-a list marker before it puts the fence in that container, so a fence inside a
-list item or a quote is code like any other. A line indented four spaces or
-more is an indented code block. A fence that never closes is not treated as
-code, so the text after its opener is still read and markup there fails the
-turn, where CommonMark would read the rest of the document as code. An inline
-span stays within one paragraph — a blank line, a fence line, an indented
-code line and a line that starts a block all end the paragraph before them —
-closes only on a backtick run of its own length, and is escaped only by an odd
-run of backslashes. A legacy `result`/`response`/`session.end` event's own
-text is read like a message: markup in it fails the turn at the stream end,
-and text that is not a string is not read. A tag in plain prose fails the
+inside code completes the turn and never runs.
+
+The check reads the text with a small block reader of its own — fenced code
+blocks, indented code blocks, blockquote and list containers, ATX headings,
+thematic breaks, setext underlines and paragraph boundaries. It is not a
+Markdown parser and does not claim to follow one; what it does is stated here
+and beside each rule in `codex.py`. Line ends are normalised first, so CRLF
+text reads like LF text. A fence opens on a line of three or more backticks or
+tildes (a backtick fence's information string holds no backtick) and closes on
+a line of the same character, at least as long as the opener, followed by
+nothing but spaces or tabs: a backtick fence closed by `~~~`, or a
+four-backtick fence by three backticks, stays open. An opener carries at most
+three spaces of indentation after its containers, and a blockquote marker or a
+list marker before it puts the fence in that container, so a fence inside a
+list item or a quote is code like any other. Its body and closer stay in the
+same containers: the first non-blank line that drops a quote marker or that
+is indented less than the list item's content ends the fence, and a line
+carrying a further container of its own is body text rather than a closer, so
+a line outside the opener's quote does not close a quoted fence and a quoted
+line does not close a fence outside a quote. An indented line cannot
+interrupt an open paragraph, so four spaces after a paragraph line — or after
+a list or quote line — are that paragraph's text and not code, while four
+spaces under a heading or a blank line are an indented code block. A list marker interrupts an open paragraph only as a
+bullet, or as `1.` or `1)`, followed by an item; any other ordered marker
+continues the paragraph. A setext underline (`=` or `-` under a paragraph
+line) ends that paragraph. An inline span stays within one paragraph — a blank
+line, an ATX heading, a thematic break, a setext underline, a fence line and
+an indented code line all end the paragraph before them — and closes on the
+next backtick run of its own length; a backtick a backslash escapes opens no
+span, and it may close one. A legacy `result`/`response`/`session.end` event's
+own text is read like a message: markup in it fails the turn at the stream
+end, and text that is not a string is not read. A tag in plain prose fails the
 reply as well; a reply that needs to name one writes it between backticks.
-An HTML entity that spells the tag names one too, since it reads as the tag
-on screen. The markup itself is the tuple `_TOOL_CALL_MARKUP_PATTERNS`, one
-compiled pattern per call markup the CLI can surface; another model's markup
-is supported by adding one entry there. The patterns match markup tags only —
-never the word DSML or a bare `|` in ordinary prose.
+An HTML entity that spells the tag names one too, since it reads as the tag on
+screen, but only where the reference ends with a semicolon and names a real
+entity: a bare `&lt` is literal text. The markup itself is the tuple
+`_TOOL_CALL_MARKUP_PATTERNS`, one compiled pattern per call markup the CLI can
+surface; another model's markup is supported by adding one entry there. The
+patterns match markup tags only — never the word DSML or a bare `|` in
+ordinary prose.
+
+Two cases this reader leaves to the side, both erring toward failing a turn
+that was fine and neither letting markup a reader would see as prose pass: a
+fence that never closes inside its container is not read as code, so the text
+after its opener is read and markup there fails the turn; and a line indented
+four spaces under a bare, empty list marker reads as an indented code block,
+because the item's content column is not carried past its own marker line.
+Neither case can pass markup as a completed turn, which is the failure this
+check exists to prevent; a turn that was fine and is failed is the direction
+they take.
 
 ## Codex turn-completed usage delta
 

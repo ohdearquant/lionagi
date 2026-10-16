@@ -391,8 +391,30 @@ def _call_item(item_type: str) -> dict:
     return {"type": "item.completed", "item": items[item_type]}
 
 
+# The call item types the parser knows, written out here so a type dropped from
+# the parser's own set leaves this list and its case behind rather than taking
+# both away.
+CALL_ITEM_TYPES = [
+    "command_execution",
+    "file_change",
+    "function_call",
+    "function_call_output",
+    "mcp_tool_call",
+    "tool_call",
+    "web_search",
+]
+
+
+def test_the_call_item_types_are_the_ones_this_file_pins():
+    """The parser's set is the list above, so a type removed there fails here."""
+    assert sorted(_CALL_ITEM_TYPES) == CALL_ITEM_TYPES, (
+        "the call item types the parser supersedes with have moved: "
+        f"{sorted(_CALL_ITEM_TYPES)} != {CALL_ITEM_TYPES}"
+    )
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("call", sorted(_CALL_ITEM_TYPES))
+@pytest.mark.parametrize("call", CALL_ITEM_TYPES)
 async def test_a_call_after_the_markup_supersedes_it(call):
     """A completed call is a real call: the turn ends on it, so the markup message
     before it is not the turn's last text and does not fail the turn."""
@@ -1154,4 +1176,206 @@ async def test_clean_legacy_result_text_does_not_replace_pending_markup():
     chunks, session = await _parse(events)
 
     assert session.is_error is True, "clean result text superseded the pending markup"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- an indented line cannot interrupt an open paragraph ---
+
+
+@pytest.mark.asyncio
+async def test_an_indented_line_after_a_paragraph_line_is_that_paragraphs_text():
+    """Four spaces after a paragraph line continue it, so the markup is prose."""
+    text = f'Let me run it:\n    <{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, (
+        f"an indented line after a paragraph line was read as code: {text!r}"
+    )
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_tab_indented_line_after_a_paragraph_line_is_that_paragraphs_text():
+    """A tab is the same: it cannot interrupt an open paragraph either."""
+    text = f'Let me run it:\n\t<{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a tab-indented line hid the markup: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_indented_line_under_a_list_item_line_is_that_items_text():
+    """A list item's continuation at four spaces is the item's text, not code."""
+    text = f'- Call:\n    <{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a list-item continuation was read as code: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_indented_line_under_a_quote_line_is_that_quotes_text():
+    """A quoted paragraph's continuation at four spaces is its text, not code."""
+    text = f'> Here:\n>     <{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a quoted continuation was read as code: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_indented_line_after_a_heading_is_an_indented_code_block():
+    """A heading opens no paragraph, so an indented line under it is code."""
+    text = f'# Title\n    <{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a heading did not end the paragraph above it: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+# --- a closer may carry trailing spaces or tabs ---
+
+
+@pytest.mark.asyncio
+async def test_a_closer_with_trailing_spaces_closes_the_fence():
+    """A closer's trailing spaces are not content, so the fence closes."""
+    text = f'```xml\n<{BAR}DSML{BAR} invoke name="x">\n```  '
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a closer with trailing spaces did not close: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_closer_with_a_trailing_tab_closes_the_fence():
+    """A tab after a tilde closer is not content either."""
+    text = f'~~~\n<{BAR}DSML{BAR} invoke name="x">\n~~~\t'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a closer with a trailing tab did not close: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+# --- a fence inside nested containers, and a closer outside them ---
+
+
+@pytest.mark.asyncio
+async def test_a_fence_inside_a_list_item_quote_quotes_the_markup():
+    """A list marker and a quote marker before a fence are both containers of it."""
+    text = f'- > ```\n  > <{BAR}DSML{BAR} invoke name="x">\n  > ```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a fence in nested containers was read as a call: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_fence_inside_an_ordered_list_item_quote_quotes_the_markup():
+    """The ordered-list form works the same way."""
+    text = f'1. > ```\n   > <{BAR}DSML{BAR} invoke name="x">\n   > ```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"an ordered nested fence was read as a call: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_line_outside_the_openers_quote_ends_the_fence():
+    """A body line that drops the quote marker leaves the quote, so the fence ends
+    there and the markup after it is prose."""
+    text = f'> ```xml\n<{BAR}DSML{BAR} invoke name="x">\n> ```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a quoted fence held on to a line outside its quote: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_line_outside_the_openers_list_indent_ends_the_fence():
+    """A body line indented less than the list item's content leaves the item, so
+    the fence ends there and the markup after it is prose."""
+    text = f'- ```xml\n  <{BAR}DSML{BAR} invoke name="x">\n```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, (
+        f"a list-item fence held on to a line outside the item: {text!r}"
+    )
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- an escaped backtick may close a span ---
+
+
+@pytest.mark.asyncio
+async def test_an_escaped_backtick_closes_an_open_span():
+    """A backslash-escaped backtick opens no span, but it does close one."""
+    text = f'`code\\` <{BAR}DSML{BAR} invoke name="x">`'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"an escaped closer hid the markup: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- a setext underline ends a paragraph ---
+
+
+@pytest.mark.asyncio
+async def test_a_setext_underline_ends_the_paragraph_before_it():
+    """A run of `=` under a paragraph line makes it a heading, so the markup after
+    the underline is prose."""
+    text = f'Stray `a\n===\n<{BAR}DSML{BAR} invoke name="x">\n`'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a setext underline did not end the paragraph: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- a numbered marker other than `1.` does not interrupt a paragraph ---
+
+
+@pytest.mark.asyncio
+async def test_a_numbered_marker_other_than_one_does_not_interrupt_a_paragraph():
+    """`2.` cannot start a list inside an open paragraph, so the span stays open
+    and the tag in it is code."""
+    text = f'Use `<{BAR}DSML{BAR} invoke name="x">\n2. y`'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"`2.` interrupted the paragraph: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_numbered_marker_of_one_does_interrupt_a_paragraph():
+    """`1.` does start a list inside an open paragraph, so the span before it ends
+    and the tag is prose."""
+    text = f'Use `<{BAR}DSML{BAR} invoke name="x">\n1. y`'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"`1.` did not interrupt the paragraph: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- an entity needs its semicolon ---
+
+
+@pytest.mark.asyncio
+async def test_an_entity_without_a_semicolon_names_no_tag():
+    """A bare `&lt` is literal text to a reader, so the tag it would spell is not
+    on screen and the turn completes."""
+    text = f'&lt{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a bare `&lt` was decoded as a tag: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_thematic_break_ends_the_paragraph_before_it():
+    """A run of `-` on its own line is a thematic break, so the stray backtick
+    above it quotes nothing and the markup after it is prose."""
+    text = f'Stray ` backtick\n---\n<{BAR}DSML{BAR} invoke name="x">'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a thematic break did not end the paragraph: {text!r}"
     assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"

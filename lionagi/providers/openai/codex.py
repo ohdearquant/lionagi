@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import html
+import html.entities
 import json
 import logging
 import os
@@ -136,26 +136,47 @@ _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
-# CommonMark block structure decides which lines the markup check can see.
-# A fenced code block opens on a line of three or more backticks or tildes
-# (a backtick fence's information string holds no backtick) and closes on a
-# line of the same character, at least as long as the opener, with nothing
-# else on it. A fence line carries at most three spaces of indentation; four
-# or more (or a tab) is an indented code block, whose text is code as well. A
-# blockquote marker or a list marker before the fence puts the fence in that
-# container, and the container prefix is removed before the fence is matched,
-# so a fence inside a list item or a quote is code like any other. A fence
-# that never closes is not a block: its text stays visible.
-_QUOTE_MARKER_RE = re.compile(r"^ {0,3}>[ \t]?")
-_LIST_MARKER_RE = re.compile(r"^ {0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)")
+# Which lines the markup check can see is decided by a small block reader:
+# fenced code blocks, indented code blocks, blockquote and list containers,
+# ATX headings, thematic breaks, setext underlines and paragraph boundaries.
+# It is not a full Markdown parser, and every case it leaves to the side is
+# named where it is handled.
+#
+# A fenced code block opens on a line of three or more backticks or tildes (a
+# backtick fence's information string holds no backtick) and closes on a line
+# of the same character, at least as long as the opener, followed by nothing
+# but spaces or tabs. An opener carries at most three spaces of indentation
+# after its containers; four or more, or a tab, is an indented code block
+# instead, whose text is code as well. Blockquote and list markers before the
+# opener put the fence in those containers, and its body and closer stay in
+# them: the first non-blank line that drops a quote marker or that is indented
+# less than the list item's content ends the fence, and a line carrying a
+# further container of its own is body text rather than a closer. A fence that
+# never closes inside its container is not read as code: the text after its
+# opener is read, and markup there fails the turn. That is one case where this
+# reader reads markup a reader would see as code, and it errs toward failing a
+# turn that was fine.
+#
+# A paragraph is open until a blank line, an ATX heading, a thematic break, a
+# setext underline, a fence or an indented code line ends it. An indented line
+# cannot interrupt an open paragraph, so four spaces after a paragraph line
+# are that paragraph's text and not code. A list marker interrupts a paragraph
+# only as a bullet, or as `1.` or `1)`, followed by an item; any other ordered
+# marker continues the open paragraph. Two cases this reader leaves to the
+# side, both erring toward failing a turn that was fine: a line indented four
+# spaces under a bare, empty list marker reads as an indented code block,
+# because the item's content column is not carried past its own marker line;
+# and a setext underline is read only where a paragraph is open.
+_QUOTE_MARKER_RE = re.compile(r" {0,3}>[ \t]?")
+_LIST_MARKER_RE = re.compile(r" {0,3}(?P<marker>[-+*]|\d{1,9}[.)])(?P<gap>[ \t]+|$)")
 _ATX_HEADING_RE = re.compile(r"^#{1,6}(?:[ \t]|$)")
 _THEMATIC_BREAK_RE = re.compile(r"^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+_SETEXT_UNDERLINE_RE = re.compile(r"^(?:=+|-+)[ \t]*$")
 _FENCE_OPEN_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
-# An inline code span: text between runs of the same length of backticks, on
-# one paragraph. A span does not cross a blank line or a block boundary, a
-# three-backtick run is not closed by a two-backtick run, and a backtick after
-# an odd run of backslashes is escaped, so it opens and closes none.
-_INLINE_CODE_RE = re.compile(r"(?<![`])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.S)
+# An HTML character reference is decoded only where it ends with a semicolon
+# and names an entry of the HTML entity table. A bare `&lt` is literal text to
+# a reader, so it names no tag.
+_ENTITY_RE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{0,30});")
 
 # Completed items that are a call the CLI ran, or a call's result. One of these
 # after a message means the turn went on past that message, so the message is
@@ -182,44 +203,233 @@ _TOOL_CALL_MARKUP_FAILURE = (
 
 def _indent_width(whitespace: str) -> int:
     """Width of a leading run of spaces and tabs, a tab advancing to the next
-    multiple of four columns as it does in CommonMark."""
+    multiple of four columns as this reader counts them."""
     width = 0
     for ch in whitespace:
         width += 1 if ch == " " else 4 - (width % 4)
     return width
 
 
-def _classify_line(line: str) -> tuple[str, int, bool]:
-    """Strip a block container from ``line``: return its content, the width of
-    the indentation left on the content, and whether the line starts a block.
+def _scan_markers(line: str) -> tuple[list[tuple[str, int, str]], str]:
+    """The block containers ``line`` opens, and the rest of the line after them.
 
-    Blockquote markers and one list marker are removed, then the remaining
-    leading whitespace is measured. A line starts a block when a container
-    preceded it, when it is an ATX heading or a thematic break, or when it is
-    indented far enough to be an indented code block.
+    A quote marker is ``("quote", 0, "")``; a list marker is ``("list", col,
+    marker)`` where ``col`` is the column the item's content starts at. Markers
+    are read until neither kind matches, so a quote inside a list item, a list
+    inside a quote and any nesting of the two are all read.
     """
-    rest = line
-    block_start = False
+    containers: list[tuple[str, int, str]] = []
+    pos = 0
     while True:
-        m = _QUOTE_MARKER_RE.match(rest)
-        if m is None:
-            break
-        rest = rest[m.end() :]
-        block_start = True
-    m = _LIST_MARKER_RE.match(rest)
-    if m is not None:
-        rest = rest[m.end() :]
-        block_start = True
+        m = _QUOTE_MARKER_RE.match(line, pos)
+        if m is not None:
+            containers.append(("quote", 0, ""))
+            pos = m.end()
+            continue
+        m = _LIST_MARKER_RE.match(line, pos)
+        if m is not None:
+            col = pos + _column(line[pos : m.end()])
+            containers.append(("list", col, m["marker"]))
+            pos = m.end()
+            continue
+        break
+    return containers, line[pos:]
+
+
+def _column(text: str) -> int:
+    """Width of ``text`` in columns: each character is one column and a tab
+    advances to the next multiple of four."""
+    width = 0
+    for ch in text:
+        width += 4 - (width % 4) if ch == "\t" else 1
+    return width
+
+
+def _split_indent(rest: str) -> tuple[int, str]:
+    """The width of ``rest``'s leading whitespace, and the content after it."""
     i = 0
     while i < len(rest) and rest[i] in " \t":
         i += 1
-    indent = _indent_width(rest[:i])
-    content = rest[i:]
-    if not block_start and (
-        indent >= 4 or _ATX_HEADING_RE.match(content) or _THEMATIC_BREAK_RE.match(content)
-    ):
-        block_start = True
-    return content, indent, block_start
+    return _indent_width(rest[:i]), rest[i:]
+
+
+def _continues(line: str, containers: list[tuple[str, int, str]]) -> tuple[bool, str]:
+    """Whether ``line`` stays inside ``containers`` (a fence opener's own), and
+    the rest of the line after them.
+
+    A blank line stays inside. A quote marker must be there for the line to
+    stay in that quote; a list item's lines are indented at least to the
+    column its content starts at. The first line that fails either test leaves
+    the container and ends the fence.
+    """
+    if not line.strip():
+        return True, ""
+    pos = 0
+    for kind, col, _ in containers:
+        if kind == "quote":
+            m = _QUOTE_MARKER_RE.match(line, pos)
+            if m is None:
+                return False, line[pos:]
+            pos = m.end()
+            continue
+        width = 0
+        j = pos
+        while j < len(line) and width < col:
+            ch = line[j]
+            if ch == " ":
+                width += 1
+            elif ch == "\t":
+                width += 4 - (width % 4)
+            else:
+                break
+            j += 1
+        if width < col:
+            return False, line[pos:]
+        pos = j
+    return True, line[pos:]
+
+
+def _closes_fence(content: str, indent: int, char: str, length: int) -> bool:
+    """Whether ``content`` is a line that closes a fence of ``char`` at least
+    ``length`` long: a run of that one character with nothing after it but
+    spaces or tabs."""
+    stripped = content.rstrip(" \t")
+    return indent <= 3 and bool(stripped) and set(stripped) == {char} and len(stripped) >= length
+
+
+def _fence_run_after(
+    lines: list[str],
+) -> dict[str, list[int]]:
+    """The longest bare fence run at or after each line, per fence character.
+
+    A bare run is a line whose content, after its containers, is a run of one
+    fence character with nothing else on it. A closer is found by one lookup
+    against this table, so the fence scan stays linear however many fences open
+    without closing. The table ignores containers, so a hit only means a closer
+    may be there; the scan confirms it in the opener's own containers.
+    """
+    table = {"`": [0] * (len(lines) + 1), "~": [0] * (len(lines) + 1)}
+    for i in range(len(lines) - 1, -1, -1):
+        _, rest = _scan_markers(lines[i])
+        indent, content = _split_indent(rest)
+        stripped = content.rstrip(" \t")
+        run = len(stripped) if indent <= 3 and stripped and set(stripped) in ({"`"}, {"~"}) else 0
+        for char in ("`", "~"):
+            bare = run if stripped.startswith(char) else 0
+            table[char][i] = max(table[char][i + 1], bare)
+    return table
+
+
+def _find_fence_closer(
+    lines: list[str],
+    start: int,
+    containers: list[tuple[str, int, str]],
+    char: str,
+    length: int,
+    run_after: dict[str, list[int]],
+) -> int | None:
+    """The index of the first line at or after ``start`` that closes the fence
+    opened in ``containers``, or ``None`` when no line does.
+
+    A line that leaves ``containers`` ends the fence there, so a closer in
+    another quote or list container cannot close it. ``run_after`` is the
+    precomputed table above: when it shows no bare run long enough anywhere
+    later, the fence cannot close and the scan is skipped.
+    """
+    if run_after[char][start] < length:
+        return None
+    for j in range(start, len(lines)):
+        inside, rest = _continues(lines[j], containers)
+        if not inside:
+            return None
+        indent, content = _split_indent(rest)
+        if _closes_fence(content, indent, char, length):
+            return j
+    return None
+
+
+def _strip_code_spans(segment: str) -> str:
+    """Replace every inline code span in ``segment`` with a space.
+
+    A span opens on a run of backticks and closes on the next run of the same
+    length, where a run is read as written: a backtick that a backslash escapes
+    is literal text and opens no span, and the backticks after it in the same
+    run are a run of their own, while a closer is the next run of the length
+    that is looked for and a backslash inside an open span is that span's text.
+    The runs are read once, so the cost is linear in the number of runs however
+    many open without closing.
+    """
+    if "`" not in segment:
+        return segment
+    runs: list[tuple[int, int, bool]] = []
+    i = 0
+    n = len(segment)
+    while i < n:
+        if segment[i] != "`":
+            i += 1
+            continue
+        start = i
+        while i < n and segment[i] == "`":
+            i += 1
+        backslashes = 0
+        j = start - 1
+        while j >= 0 and segment[j] == "\\":
+            backslashes += 1
+            j -= 1
+        runs.append((start, i - start, bool(backslashes % 2)))
+    openers: list[tuple[int, int]] = []
+    spans: list[tuple[int, int]] = []
+    for start, length, escaped in runs:
+        closing = next(
+            (k for k, (open_length, _) in enumerate(openers) if open_length == length), None
+        )
+        if closing is not None:
+            spans.append((openers[closing][1], start + length))
+            # The runs inside the span are its text and pair with nothing.
+            del openers[closing:]
+            continue
+        if escaped:
+            if length == 1:
+                continue
+            openers.append((length - 1, start + 1))
+            continue
+        openers.append((length, start))
+    if not spans:
+        return segment
+    out: list[str] = []
+    pos = 0
+    for start, end in sorted(spans):
+        out.append(segment[pos:start])
+        out.append(" ")
+        pos = end
+    out.append(segment[pos:])
+    return "".join(out)
+
+
+def _decode_references(text: str) -> str:
+    """Decode the HTML character references a reader sees as a character.
+
+    Only a reference that ends with a semicolon and names an entry of the HTML
+    entity table (or a numeric reference) is decoded; a bare ``&lt`` stays
+    literal text.
+    """
+    if "&" not in text:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        body = match.group(0)[1:-1]
+        if body[:1] == "#":
+            try:
+                code = int(body[2:], 16) if body[1] in "xX" else int(body[1:])
+            except ValueError:
+                return match.group(0)
+            if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF:
+                return chr(code)
+            return match.group(0)
+        value = html.entities.html5.get(body + ";")
+        return match.group(0) if value is None else value
+
+    return _ENTITY_RE.sub(_replace, text)
 
 
 def _strip_code_regions(text: str) -> str:
@@ -229,29 +439,12 @@ def _strip_code_regions(text: str) -> str:
     Markup inside code is being shown, not written as a call, so the regions
     are dropped before the markup patterns are matched. Line ends are
     normalised first, so a CRLF blank line ends a span and a CRLF fence line
-    closes a block. A fence line, an indented code line, a blank line and a
-    line that starts a block each end the paragraph before them, so an inline
-    span never reaches across one; the fence scan is a single pass over the
-    lines however many fences open without closing.
+    closes a block. The lines are read once, so the cost is linear in the
+    number of lines.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
-    meta = [_classify_line(line) for line in lines]
-
-    # The longest bare fence run at or after each line, per fence character,
-    # so a closer is found by one lookup and the scan stays linear.
-    longest_after = {"`": [0] * (len(lines) + 1), "~": [0] * (len(lines) + 1)}
-    for i in range(len(lines) - 1, -1, -1):
-        content, indent, _ = meta[i]
-        run = len(content) if content and indent <= 3 and set(content) == {content[0]} else 0
-        for char in ("`", "~"):
-            bare = run if content.startswith(char) else 0
-            longest_after[char][i] = max(longest_after[char][i + 1], bare)
-
-    def _closer(i: int, char: str, length: int) -> bool:
-        content, indent, _ = meta[i]
-        return indent <= 3 and bool(content) and set(content) == {char} and len(content) >= length
-
+    run_after = _fence_run_after(lines)
     paragraphs: list[str] = []
     current: list[str] = []
 
@@ -260,53 +453,85 @@ def _strip_code_regions(text: str) -> str:
             paragraphs.append("\n".join(current))
             current.clear()
 
+    paragraph_open = False
     i = 0
     while i < len(lines):
-        content, indent, block_start = meta[i]
-        if indent >= 4:
-            _flush()
-            i += 1
-            continue
-        m = _FENCE_OPEN_RE.match(content)
-        if m is not None and not (m["fence"][0] == "`" and "`" in m["info"]):
-            char, length = m["fence"][0], len(m["fence"])
-            if longest_after[char][i + 1] >= length:
-                _flush()
-                i += 1
-                while not _closer(i, char, length):
-                    i += 1
-                i += 1
-                continue
-            # The fence never closes, so it is not code, but its line still
-            # starts a new block: the runs it would have opened on do not pair.
-            block_start = True
+        containers, rest = _scan_markers(lines[i])
+        indent, content = _split_indent(rest)
+
         if not content.strip():
             _flush()
+            paragraph_open = False
             i += 1
             continue
-        if block_start:
+
+        if indent >= 4:
+            # An indented line cannot interrupt an open paragraph, so four
+            # spaces under a paragraph line are that paragraph's text; with no
+            # paragraph open the line is an indented code block.
+            if paragraph_open:
+                current.append(content)
+            else:
+                _flush()
+            i += 1
+            continue
+
+        fence = _FENCE_OPEN_RE.match(content) if indent <= 3 else None
+        if fence is not None and not (fence["fence"][0] == "`" and "`" in fence["info"]):
+            char, length = fence["fence"][0], len(fence["fence"])
+            closer = _find_fence_closer(lines, i + 1, containers, char, length, run_after)
+            if closer is not None:
+                _flush()
+                paragraph_open = False
+                i = closer + 1
+                continue
+            # The fence never closes inside its container, so it is not code,
+            # but its line still starts a block: the backtick runs it would
+            # have opened on do not pair with later runs.
+            _flush()
+            current.append(content)
+            paragraph_open = True
+            i += 1
+            continue
+
+        if paragraph_open and not containers and _SETEXT_UNDERLINE_RE.match(content):
+            # A setext underline ends the paragraph before it, so the line
+            # after it starts fresh.
+            _flush()
+            paragraph_open = False
+            i += 1
+            continue
+
+        if _ATX_HEADING_RE.match(content) or _THEMATIC_BREAK_RE.match(content):
+            _flush()
+            current.append(content)
+            paragraph_open = False
+            i += 1
+            continue
+
+        if containers and paragraph_open and not _markers_interrupt(containers):
+            # Only a bullet, or `1.`/`1)`, opens a block inside an open
+            # paragraph; any other ordered marker continues it.
+            current.append(content)
+            i += 1
+            continue
+
+        if containers:
             _flush()
         current.append(content)
+        paragraph_open = True
         i += 1
+
     _flush()
-    return "\n".join(_INLINE_CODE_RE.sub(" ", _blank_escaped_backticks(p)) for p in paragraphs)
+    return "\n".join(_strip_code_spans(p) for p in paragraphs)
 
 
-def _blank_escaped_backticks(segment: str) -> str:
-    """Blank a backtick that a backslash-escaped run precedes: an odd run of
-    backslashes escapes it, an even run does not, so it is no code delimiter."""
-    if "`" not in segment:
-        return segment
-    out: list[str] = []
-    backslashes = 0
-    for ch in segment:
-        if ch == "\\":
-            backslashes += 1
-            out.append(ch)
-            continue
-        out.append(" " if ch == "`" and backslashes % 2 else ch)
-        backslashes = 0
-    return "".join(out)
+def _markers_interrupt(containers: list[tuple[str, int, str]]) -> bool:
+    """Whether the outermost of ``containers`` opens a block inside an open
+    paragraph. A quote and a bullet always do; an ordered marker does only as
+    `1.` or `1)`."""
+    kind, _, marker = containers[0]
+    return kind == "quote" or not marker[:1].isdigit() or marker in ("1.", "1)")
 
 
 def _has_tool_call_markup(text: object) -> bool:
@@ -317,7 +542,7 @@ def _has_tool_call_markup(text: object) -> bool:
     """
     if not isinstance(text, str) or not text:
         return False
-    visible = html.unescape(_strip_code_regions(text))
+    visible = _decode_references(_strip_code_regions(text))
     return any(p.search(visible) for p in _TOOL_CALL_MARKUP_PATTERNS)
 
 
