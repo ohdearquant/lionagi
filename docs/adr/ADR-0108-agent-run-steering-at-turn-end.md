@@ -1,7 +1,7 @@
 # ADR-0108: Agent-run steering at the turn-end boundary
 
-- **Status**: Accepted (2026-08-02, PR #2773); amended 2026-08-02 — the claim
-  condition binds every consumer of a claimed row, not only the agent drain;
+- **Status**: Accepted (2026-08-02, PR #2773); Amendment 1 (2026-08-02) — the
+  claim condition binds every consumer of a claimed row, not only the agent drain;
   Amendment 2 (2026-10-16) — a control command's run-id prefix reaches the `T`
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
