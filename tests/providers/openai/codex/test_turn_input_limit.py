@@ -11,6 +11,7 @@ error that carries the whole input.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Mapping
 
@@ -1291,8 +1292,50 @@ class _UndecodableBytes(bytes):
         raise TypeError(f"cannot decode {_SECRET_IN_A_VALUE}")
 
 
+class _ChangingBytes(bytes):
+    """A bytes value whose ``__bytes__`` answers with bytes other than the ones it holds."""
+
+    def __bytes__(self):
+        return b"other"
+
+
+class _UnreadableBytesMethod(bytes):
+    """A bytes value whose ``__bytes__`` raises, while the bytes it holds encode fine."""
+
+    def __bytes__(self):
+        raise TypeError(f"cannot read {_SECRET_IN_A_VALUE}")
+
+
+class _BytesMethodAnswersWithText(bytes):
+    """A bytes value whose ``__bytes__`` answers with text rather than bytes."""
+
+    def __bytes__(self):
+        return "not bytes"
+
+
+class _BytesMethodAnswersWithUndecodable(bytes):
+    """A bytes value whose ``__bytes__`` answers with a bytes value whose ``decode`` raises."""
+
+    def __bytes__(self):
+        return _UndecodableBytes(b"x")
+
+
 class _StoppedAtTheSpawn(Exception):
     pass
+
+
+def _the_entries_the_spawn_builds(env):
+    """The bytes of each environment entry as the spawn builds it: the encoded key, an equals
+    sign, and the encoded value, concatenated."""
+    return [os.fsencode(key) + b"=" + os.fsencode(val) for key, val in env.items()]
+
+
+def _the_copy_the_spawn_reads(env):
+    """The environment the spawn's own entries spell, decoded back: one value per encoded name."""
+    copied = {}
+    for key, val in (entry.split(b"=", 1) for entry in _the_entries_the_spawn_builds(env)):
+        copied[os.fsdecode(key)] = os.fsdecode(val)
+    return copied
 
 
 @pytest.mark.asyncio
@@ -1365,8 +1408,9 @@ async def test_a_copied_environment_value_that_cannot_be_read_is_refused_without
 async def test_a_bytes_value_whose_own_decode_raises_is_passed_as_the_spawn_would(
     tmp_path, monkeypatch
 ):
-    """The spawn encodes a bytes value without calling any method of its class, so the copy
-    takes the plain bytes and the child receives their text."""
+    """The spawn concatenates each encoded entry, which reads a bytes value as the bytes it
+    holds and never calls the subclass's ``decode``, so the copy takes those bytes and the
+    child receives their text."""
     from lionagi.providers import _cli_subprocess
 
     given = {}
@@ -1388,6 +1432,89 @@ async def test_a_bytes_value_whose_own_decode_raises_is_passed_as_the_spawn_woul
 
     assert given["SPAWN_BYTES"] == "x"
     assert _UndecodableBytes.decodes == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param(
+            {"HOME": "/h", "SPAWN_BYTES": _ChangingBytes(b"x")},
+            id="value-whose-bytes-method-differs",
+        ),
+        pytest.param({_ChangingBytes(b"SPAWN_BYTES"): "x"}, id="key-whose-bytes-method-differs"),
+        pytest.param(
+            {"HOME": "/h", "SPAWN_BYTES": _UnreadableBytesMethod(b"x")},
+            id="value-whose-bytes-method-raises",
+        ),
+        pytest.param(
+            {"HOME": "/h", "SPAWN_BYTES": _BytesMethodAnswersWithText(b"x")},
+            id="value-whose-bytes-method-answers-with-text",
+        ),
+        pytest.param(
+            {"HOME": "/h", "SPAWN_BYTES": _BytesMethodAnswersWithUndecodable(b"x")},
+            id="value-whose-bytes-method-answers-with-undecodable",
+        ),
+    ],
+)
+async def test_a_bytes_value_is_read_as_the_spawn_reads_it_not_by_its_own_bytes_method(
+    tmp_path, monkeypatch, env
+):
+    """The spawn concatenates each encoded entry, which takes the bytes a bytes value holds;
+    a value whose ``__bytes__`` answers differently is read here as the bytes it holds, so
+    the child receives what the spawn passes and not the answer of a method the spawn never
+    calls."""
+    from lionagi.ln._proc import _PROCESS_GROUP_MARKER
+    from lionagi.providers import _cli_subprocess
+
+    given = {}
+
+    def spawned(*_args, **kwargs):
+        given.update(kwargs["env"])
+        raise _StoppedAtTheSpawn
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
+    with pytest.raises(_StoppedAtTheSpawn):
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER} == (
+        _the_copy_the_spawn_reads(env)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bytes_value_beside_its_text_twin_is_taken_as_one_entry(tmp_path, monkeypatch):
+    """A key spelled as text and one spelled as the same bytes hold one encoded name, and a
+    value holding the bytes its twin spells out holds one encoded value: the spawn passes two
+    equal entries, the pair is admitted, and the child receives one entry."""
+    from lionagi.ln._proc import _PROCESS_GROUP_MARKER
+    from lionagi.providers import _cli_subprocess
+
+    given = {}
+
+    def spawned(*_args, **kwargs):
+        given.update(kwargs["env"])
+        raise _StoppedAtTheSpawn
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    env = {"HOME": "/h", "\u00e9": "x", b"\xc3\xa9": _ChangingBytes(b"x")}
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
+    with pytest.raises(_StoppedAtTheSpawn):
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    twin_entries = _the_entries_the_spawn_builds(env)
+    assert twin_entries[1] == twin_entries[2] == b"\xc3\xa9=x"
+    assert {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER} == (
+        _the_copy_the_spawn_reads(env)
+    )
+    assert list(_the_copy_the_spawn_reads(env)).count("\u00e9") == 1
 
 
 @pytest.mark.asyncio
@@ -1449,7 +1576,8 @@ async def test_keys_that_name_one_variable_once_encoded_are_refused_by_position(
     tmp_path, monkeypatch, env, first, second
 ):
     """Two keys that encode to the same bytes are one variable: the process would read one of
-    the two values, and the copy would keep only the last, so the pair is refused."""
+    the two values, and the copy would keep only the last, so the pair is refused when the
+    values differ."""
     from lionagi.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
@@ -1497,6 +1625,36 @@ async def test_keys_that_name_one_variable_once_encoded_are_taken_when_their_val
 
     assert given["\u00e9"] == "x"
     assert list(given).count("\u00e9") == 1
+
+
+@pytest.mark.asyncio
+async def test_keys_and_values_spelled_two_ways_that_encode_alike_are_taken(tmp_path, monkeypatch):
+    """A key spelled as itself and one spelled as the escape sequence for the same bytes hold
+    one encoded name, and the two values spell the same bytes too: the spawn passes one entry
+    with equal sides, so the pair is admitted and the child receives that one entry."""
+    from lionagi.ln._proc import _PROCESS_GROUP_MARKER
+    from lionagi.providers import _cli_subprocess
+
+    given = {}
+
+    def spawned(*_args, **kwargs):
+        given.update(kwargs["env"])
+        raise _StoppedAtTheSpawn
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    env = {"\u00e9": "\u00e9", "\udcc3\udca9": "\udcc3\udca9"}
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
+    with pytest.raises(_StoppedAtTheSpawn):
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    entries = _the_entries_the_spawn_builds(env)
+    assert entries[0] == entries[1] == b"\xc3\xa9=\xc3\xa9"
+    assert {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER} == {
+        "\u00e9": "\u00e9"
+    }
 
 
 @pytest.mark.asyncio

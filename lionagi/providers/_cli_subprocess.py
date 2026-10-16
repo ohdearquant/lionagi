@@ -205,23 +205,25 @@ def env_as_the_spawn_encodes_it(env: Mapping) -> dict[str, str]:
     The spawn builds the process environment from a copy of the mapping
     (``prepare_process_group_env``), and on POSIX the subprocess module encodes every key and
     value of that copy with ``os.fsencode``. Doing both here, once, and handing this copy to
-    the spawn means every entry the caller passes is checked here and is the entry passed,
-    whatever a view of the mapping or a path-like value answers on a later read. The secret
-    fill and the process-group marker add entries after this check; both are text the codec
-    cannot refuse, so neither can fail it. On POSIX a surrogate escape (U+DC80 to U+DCFF)
-    passes as the byte it stands for, so the spawn encodes the copy to the same bytes.
+    the spawn means every entry the caller passes is read and checked here once, and the spawn
+    is handed that read, whatever a view of the mapping or a path-like value answers on a
+    later read. The secret fill and the process-group marker add or replace entries after this
+    check; both are text the codec cannot refuse, so neither can fail it. On POSIX a surrogate
+    escape (U+DC80 to U+DCFF) passes as the byte it stands for, so the spawn encodes the copy
+    to the same bytes.
 
     A key or value that cannot be encoded, or whose read raises an ``Exception``, is refused by
     its position: the codec's error, or the error a path-like value raises, can hold the whole
     key or value, which can be a credential, so the refusal is raised after that handler has
     ended and carries no part of it. A read that raised ``TypeError`` is refused with
     ``TypeError``, any other with ``ValueError``. A value that is ``bytes`` is read as the
-    plain bytes of its class, so a subclass's own ``decode`` is not called, which is what the
-    spawn's concatenation of the encoded entries does. Two keys that encode to the same bytes
-    name one variable: the pair is taken when their values are equal, since the process then
-    has one well-defined value to read, and refused by position when they differ. An exception
-    that is not an ``Exception``, or one the caller's own mapping raises while ``dict()``
-    copies it, propagates unchanged.
+    bytes it holds, taken through the base ``bytes`` type's own slice, so a subclass's own
+    ``decode``, ``__bytes__``, ``__getitem__``, ``__len__`` and ``__index__`` do not run and
+    cannot change the text or fail the read. Two keys that encode to the same bytes name one
+    variable: the pair is taken when their values are equal, since the process then has one
+    well-defined value to read, and refused by position when they differ. An exception that
+    is not an ``Exception``, or one the caller's own mapping raises while ``dict()`` copies
+    it, propagates unchanged.
     """
     copied: dict[str, str] = {}
     first_index: dict[str, int] = {}
@@ -231,12 +233,13 @@ def env_as_the_spawn_encodes_it(env: Mapping) -> dict[str, str]:
             refusal = None
             refused_as: type[Exception] = ValueError
             try:
-                # The spawn concatenates the encoded entries, which reads a bytes value as
-                # plain bytes; taking those bytes here keeps a subclass's own ``decode``
-                # out of the check, so it cannot fail the read the spawn would not make.
-                if isinstance(item, bytes):
-                    item = bytes(item)
-                texts.append(os.fsdecode(os.fsencode(item)))
+                # The spawn concatenates the encoded entries, so a bytes value is read as the
+                # bytes it holds, taken through the base type's own slice: a subclass's own
+                # ``decode``, ``__bytes__`` or ``__getitem__`` cannot change or fail the read.
+                encoded = os.fsencode(item)
+                if isinstance(encoded, bytes):
+                    encoded = bytes.__getitem__(encoded, slice(None))
+                texts.append(os.fsdecode(encoded))
             except UnicodeEncodeError:
                 refusal = _unencodable_env_message(f"The environment entry {index} {part}")
             except Exception as exc:
