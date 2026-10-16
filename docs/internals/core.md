@@ -133,7 +133,7 @@ reactive bus (ADR-0033), `schema_version=1`. Payload fields per signal kind
 `NodeCompleted`, `NodeFailed`, `NodeAwaitingApproval`, `NodeEscalated`,
 `NodePaused`, `GateDenied`, `MessageAdded`, `DispatchSignal` (ADR-0059)) are
 enumerated in the module. Version policy: `schema_version` bumps only on
-breaking field removal/rename; adding nullable fields is non-breaking.
+breaking field removal/rename; adding a field (with a default) is non-breaking.
 
 - `RunEnd.total_cost_usd` is `None` (unknown) unless a provider actually
   reports a dollar cost — providers that don't (bare API endpoints) must
@@ -153,10 +153,7 @@ breaking field removal/rename; adding nullable fields is non-breaking.
 - `_extract_usage_dims` normalizes both provider usage shapes to "uncached
   prompt tokens" for input. Anthropic-style: `input_tokens` already excludes
   cache activity; cache reads/writes arrive separately as
-  `cache_read_input_tokens` / `cache_creation_input_tokens`, and
-  `_extract_cache_write_ttl` splits the writes by lifetime from
-  `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`
-  (zero for any other shape; `cache_write_tokens` stays the total). OpenAI-style:
+  `cache_read_input_tokens` / `cache_creation_input_tokens`. OpenAI-style:
   `prompt_tokens` *includes* cached reads, split out under
   `prompt_tokens_details.cached_tokens`, so it's subtracted here. `is_valid`
   is False when an OpenAI-style report violates the token-count invariants (a
@@ -165,6 +162,20 @@ breaking field removal/rename; adding nullable fields is non-breaking.
   caller that ignores validity still gets a sane aggregate, but a billing
   consumer that checks `is_valid` can distinguish a genuine full-cache hit
   from a provider sending garbage.
+- `_extract_cache_write_ttl` reads an Anthropic-style report's cache-write
+  lifetime split (`cache_creation.ephemeral_5m_input_tokens` /
+  `ephemeral_1h_input_tokens`) against the `cache_creation_input_tokens` total
+  it splits, and reports it only when each part is a non-negative integer (an
+  integral float such as `200.0` states 200 tokens) and the parts sum exactly
+  to that total. Otherwise both lifetimes are 0. A report that carries no
+  split at all -- no `cache_creation`, a non-mapping one, any non-Anthropic
+  shape -- makes no claim to check, so the report stays valid; a split that
+  cannot be priced (a part that is not a count, or parts that do not sum to
+  the total) zeroes both and sets `usage_valid` False. A claude_code
+  `modelUsage` map supersedes the flat usage dict and reports no split; a
+  split on that flat dict covers the top-level loop only and cannot be
+  attributed to the whole-tree totals, so it is never reported and
+  `usage_valid` is False. `cache_write_tokens` stays the total either way.
 - `_sum_model_usage` sums per-model whole-tree token counts from a
   claude_code CLI `modelUsage` map; unlike the flat top-level `usage` field
   (top-level-loop only), each entry here already includes descendant

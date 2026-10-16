@@ -328,7 +328,9 @@ _RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
 def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     """Merge a "result" chunk's metadata into the in-progress accumulator.
 
-    Numeric usage/cost/turn fields are summed; everything else is overwritten
+    Numeric usage/cost/turn fields are summed -- including the numeric
+    children of the nested ``usage.cache_creation`` cache-write lifetime map,
+    which a provider may split across chunks; everything else is overwritten
     with the latest value.
     """
     for key, value in metadata.items():
@@ -337,6 +339,19 @@ def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
             for uk, uv in value.items():
                 if isinstance(uv, (int, float)) and not isinstance(uv, bool):
                     usage[uk] = usage.get(uk, 0) + uv
+                elif uk == "cache_creation" and isinstance(uv, dict):
+                    # The cache-write lifetime split is a nested map: one
+                    # result chunk may report the five-minute writes and the
+                    # next the one-hour writes, so its numeric children are
+                    # summed like the flat counters rather than replaced.
+                    merged = usage.setdefault(uk, {})
+                    if not isinstance(merged, dict):
+                        usage[uk] = merged = {}
+                    for lk, lv in uv.items():
+                        if isinstance(lv, (int, float)) and not isinstance(lv, bool):
+                            merged[lk] = merged.get(lk, 0) + lv
+                        else:
+                            merged[lk] = lv
                 else:
                     usage[uk] = uv
         elif (

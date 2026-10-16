@@ -10,7 +10,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `RunEnd` and the run usage totals report cache writes by lifetime, `cache_write_5m_tokens` and
   `cache_write_1h_tokens`, read from Anthropic's `usage.cache_creation`; `cache_write_tokens` stays
-  the total, and both new fields are 0 for providers that do not report the split.
+  the total. Both fields are 0 unless the split's parts sum exactly to that total: a report that
+  carries no split, or any non-Anthropic shape, reads 0 for both and stays valid, while a split that
+  cannot be priced zeroes both and marks the usage invalid. A claude_code report's flat split sits
+  beside a whole-tree `modelUsage` map it does not cover, so it is never reported and marks the
+  usage invalid.
 
 ### Changed
 

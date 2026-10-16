@@ -769,28 +769,164 @@ def test_collect_branch_usage_splits_anthropic_cache_writes_by_lifetime():
     assert usage["cache_write_5m_tokens"] == 240
     assert usage["cache_write_1h_tokens"] == 500
     assert usage["cached_tokens"] == 2500
+    assert usage["usage_valid"] is True
 
 
 def test_cache_write_lifetimes_read_zero_without_a_split():
+    """No split is claimed, so nothing can be contradicted: an Anthropic-shaped
+    report that omits ``cache_creation``, an OpenAI-shaped one, and any other
+    shape -- even one carrying a ``cache_creation`` mapping -- read zero for
+    both lifetimes and leave the report valid."""
     usage = _collect_branch_usage(
         _branch_with_usage_dicts(
             {"input_tokens": 80, "cache_creation_input_tokens": 25},
             {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 10}},
-            {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": -5}},
+            {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 300}},
             {"input_tokens": 1, "cache_creation": "not a mapping"},
         )
     )
     assert usage["cache_write_tokens"] == 25
     assert usage["cache_write_5m_tokens"] == 0
     assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is True
+
+
+def test_anthropic_split_that_does_not_sum_to_its_total_is_dropped_and_flagged():
+    """A split is only worth pricing when it adds up to the cache-write total
+    beside it. A short, one-sided or long split must not reach a billing
+    consumer as if it were exact: both lifetimes read 0 and the report is not
+    valid."""
+    for total, creation in (
+        (700, {"ephemeral_5m_input_tokens": 200, "ephemeral_1h_input_tokens": 300}),
+        (700, {"ephemeral_5m_input_tokens": 200}),
+        (700, {"ephemeral_5m_input_tokens": 600, "ephemeral_1h_input_tokens": 300}),
+    ):
+        usage = _collect_branch_usage(
+            _branch_with_usage_dicts(
+                {
+                    "input_tokens": 1,
+                    "cache_creation_input_tokens": total,
+                    "cache_creation": creation,
+                }
+            )
+        )
+        assert usage["cache_write_tokens"] == total
+        assert usage["cache_write_5m_tokens"] == 0
+        assert usage["cache_write_1h_tokens"] == 0
+        assert usage["usage_valid"] is False
+
+
+def test_anthropic_split_with_a_non_count_part_is_dropped_and_flagged():
+    """A part that cannot be a token count -- a negative, a numeric-looking
+    string, a fractional float, a bool, an explicit None -- leaves the split
+    uncertifiable: zero for both lifetimes and an invalid report."""
+    for part in (-5, "700", 200.5, True, None):
+        usage = _collect_branch_usage(
+            _branch_with_usage_dicts(
+                {
+                    "input_tokens": 1,
+                    "cache_creation_input_tokens": 200,
+                    "cache_creation": {"ephemeral_5m_input_tokens": part},
+                }
+            )
+        )
+        assert usage["cache_write_5m_tokens"] == 0
+        assert usage["cache_write_1h_tokens"] == 0
+        assert usage["usage_valid"] is False
+
+
+def test_anthropic_split_keeps_an_integral_float_part():
+    """A provider reporting 200.0 states 200 tokens: an integral float is read
+    as that integer, a fractional one is not a count at all."""
+    usage = _collect_branch_usage(
+        _branch_with_usage_dicts(
+            {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 200,
+                "cache_creation": {"ephemeral_5m_input_tokens": 200.0},
+            }
+        )
+    )
+    assert usage["cache_write_tokens"] == 200
+    assert usage["cache_write_5m_tokens"] == 200
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is True
+
+
+def _model_usage_response(flat_usage: dict, cache_creation_input_tokens: int):
+    return {
+        "usage": flat_usage,
+        "model_usage": {
+            "claude-sonnet-5": {
+                "inputTokens": 3,
+                "outputTokens": 5,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": cache_creation_input_tokens,
+            },
+        },
+    }
+
+
+def _branch_with_model_usage(model_response: dict):
+    msg = MagicMock()
+    msg.metadata = {"model_response": model_response}
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    return branch
+
+
+def test_flat_split_beside_a_valid_model_usage_is_dropped_and_flagged():
+    """The claude_code CLI reports a whole-tree per-model map beside a flat
+    usage dict that covers the top-level loop only. A split on the flat dict
+    cannot be attributed to the whole-tree cache-write total the map carries,
+    so it is not reported -- not even when its parts happen to sum to that
+    total -- and the report is not valid. A flat dict that claims no split
+    makes no claim to check, so the map's totals stay valid."""
+    flat = {
+        "input_tokens": 3,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 1234,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 1000,
+            "ephemeral_1h_input_tokens": 234,
+        },
+    }
+
+    for whole_tree_total in (1234, 2000):
+        usage = _collect_branch_usage(
+            _branch_with_model_usage(_model_usage_response(flat, whole_tree_total))
+        )
+        assert usage["cache_write_tokens"] == whole_tree_total
+        assert usage["cache_write_5m_tokens"] == 0
+        assert usage["cache_write_1h_tokens"] == 0
+        assert usage["usage_valid"] is False
+
+    unsplit = _collect_branch_usage(
+        _branch_with_model_usage(
+            _model_usage_response({"input_tokens": 3, "output_tokens": 5}, 1234)
+        )
+    )
+    assert unsplit["cache_write_tokens"] == 1234
+    assert unsplit["cache_write_5m_tokens"] == 0
+    assert unsplit["cache_write_1h_tokens"] == 0
+    assert unsplit["usage_valid"] is True
 
 
 def test_run_end_carries_cache_write_lifetimes_across_branches():
     first = _branch_with_usage_dicts(
-        {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 300}}
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 300,
+            "cache_creation": {"ephemeral_1h_input_tokens": 300},
+        }
     )
     second = _branch_with_usage_dicts(
-        {"input_tokens": 1, "cache_creation": {"ephemeral_5m_input_tokens": 70}}
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 70,
+            "cache_creation": {"ephemeral_5m_input_tokens": 70},
+        }
     )
     usage = _collect_multi_branch_usage([first, second])
     assert (usage["cache_write_5m_tokens"], usage["cache_write_1h_tokens"]) == (70, 300)

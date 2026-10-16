@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from lionagi.operations.run.run import (
     RunParam,
+    _accumulate_result_meta,
     _stream_with_deadline,
     _stream_with_liveness,
     _write_branch_snapshot,
@@ -1645,3 +1646,39 @@ async def test_run_idle_watchdog_default_skips_buffered_endpoint(monkeypatch):
     text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
     assert [msg.response for msg in text_msgs] == ["buffered result"]
     assert len(create_event_calls) == 1
+
+
+def test_accumulate_result_meta_sums_cache_write_lifetimes_across_result_chunks():
+    """A provider can report the cache-write lifetime split across more than
+    one result chunk in the same flush window -- one chunk's writes at five
+    minutes, the next chunk's at one hour. The nested ``cache_creation`` map
+    must be summed per lifetime like the flat counters, not overwritten, or
+    the earlier chunk's writes vanish from both the split and the total it
+    certifies against."""
+    result_meta: dict = {}
+    _accumulate_result_meta(
+        result_meta,
+        {
+            "usage": {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 100,
+                "cache_creation": {"ephemeral_5m_input_tokens": 100},
+            }
+        },
+    )
+    _accumulate_result_meta(
+        result_meta,
+        {
+            "usage": {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 50,
+                "cache_creation": {"ephemeral_1h_input_tokens": 50},
+            }
+        },
+    )
+    usage = result_meta["usage"]
+    assert usage["cache_creation_input_tokens"] == 150
+    assert usage["cache_creation"] == {
+        "ephemeral_5m_input_tokens": 100,
+        "ephemeral_1h_input_tokens": 50,
+    }

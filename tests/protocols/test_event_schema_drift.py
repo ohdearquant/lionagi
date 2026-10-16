@@ -16,9 +16,9 @@ signal class, ``EventStatus``, ``NodeLifecycleState``, and ``FlowEvent``,
 and construct each signal from its documented fields so a construction-site
 break (e.g. inside ``lionagi/engines/flow_signals.py``) is caught here too.
 
-An intentional schema change bumps ``SIGNAL_SCHEMA_VERSION`` in
-``lionagi/session/signal.py`` and updates the golden tables below in the
-same change.
+A breaking schema change -- removing or renaming a field -- bumps
+``SIGNAL_SCHEMA_VERSION`` in ``lionagi/session/signal.py``; adding a field
+does not. Either way the golden tables below move in the same change.
 """
 
 from __future__ import annotations
@@ -304,9 +304,10 @@ def test_signal_payload_field_set_golden(name):
     expected = tuple(sorted(EXPECTED_SIGNAL_FIELDS[name]))
     assert actual == expected, (
         f"{name} field set drifted: expected {expected}, got {actual}. "
-        "If this is an intentional schema change, bump SIGNAL_SCHEMA_VERSION "
-        "in lionagi/session/signal.py and update the golden table in "
-        "tests/protocols/test_event_schema_drift.py alongside it."
+        "Update the golden table in tests/protocols/test_event_schema_drift.py "
+        "alongside the change; a field removal or rename also bumps "
+        "SIGNAL_SCHEMA_VERSION in lionagi/session/signal.py, while an added "
+        "field does not."
     )
 
 

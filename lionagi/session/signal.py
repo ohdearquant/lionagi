@@ -59,7 +59,7 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
+    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. cache_write_5m_tokens/cache_write_1h_tokens split cache_write_tokens by the lifetime Anthropic billed each write at (its ``usage.cache_creation``); each part must be a non-negative integer (an integral float such as 200.0 states 200 tokens) and they are 0 unless the parts sum exactly to the cache-write total, and a split that cannot be priced -- including a claude_code flat split beside the whole-tree modelUsage totals it does not cover -- zeroes both and makes usage_valid False. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -281,6 +281,12 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
     return state
 
 
+def _anthropic_usage_shape(usage: dict[str, Any]) -> bool:
+    """Whether *usage* is the shape ``_extract_usage_dims`` reads as Anthropic:
+    cache activity reported separately from ``input_tokens``."""
+    return "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage
+
+
 def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool]:
     """Split a raw provider usage dict into (input, output, cached,
     cache_write, is_valid) tokens, normalizing Anthropic- and OpenAI-style
@@ -289,7 +295,7 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     ``is_valid``.
     """
     output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
-    if "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage:
+    if _anthropic_usage_shape(usage):
         cached = int(usage.get("cache_read_input_tokens", 0) or 0)
         cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
         input_tokens = int(usage.get("input_tokens", 0) or 0)
@@ -304,19 +310,45 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     return prompt_tokens - cached, output_tokens, cached, 0, is_valid
 
 
-def _extract_cache_write_ttl(usage: dict[str, Any]) -> tuple[int, int]:
-    """Split a provider's cache writes by lifetime as (five-minute, one-hour) tokens.
+def _extract_cache_write_ttl(usage: dict[str, Any], total: int) -> tuple[int, int, bool]:
+    """Split a usage dict's cache writes by lifetime as (five-minute, one-hour, certified).
 
-    Only Anthropic reports the split, under ``usage["cache_creation"]``; any other
-    shape, or a value that is not a token count, reads as zero for both, and
-    ``cache_write_tokens`` keeps the total either way.
+    Anthropic reports the split under ``usage["cache_creation"]``, beside the
+    ``cache_creation_input_tokens`` *total* the caller passes in. The split is
+    read only from that shape: any other shape, a missing or non-mapping
+    ``cache_creation``, or a report that simply does not split its writes
+    reads as zero for both lifetimes and certifies nothing (``certified`` is
+    True -- the provider made no claim to check, and ``cache_write_tokens``
+    keeps the total either way).
+
+    A part that cannot be a token count -- a negative, a bool, a
+    numeric-looking string, an explicit None, a fractional float -- or parts
+    that do not sum exactly to *total* is a claim that cannot be priced: both
+    lifetimes read zero and ``certified`` is False, so the caller marks the
+    whole report invalid rather than passing off a partial split as exact. An
+    integral float such as ``200.0`` states 200 tokens and is read as that.
     """
+    if not _anthropic_usage_shape(usage):
+        return 0, 0, True
     creation = usage.get("cache_creation")
     if not isinstance(creation, dict):
-        return 0, 0
-    five_min = _as_nonneg_int(creation.get("ephemeral_5m_input_tokens", 0)) or 0
-    one_hour = _as_nonneg_int(creation.get("ephemeral_1h_input_tokens", 0)) or 0
-    return five_min, one_hour
+        return 0, 0, True
+    # A lifetime the response does not mention had no writes: absent reads as
+    # zero. A lifetime it does mention has to be a count.
+    five_min = _ttl_part(creation, "ephemeral_5m_input_tokens")
+    one_hour = _ttl_part(creation, "ephemeral_1h_input_tokens")
+    if five_min is None or one_hour is None or five_min + one_hour != total:
+        return 0, 0, False
+    return five_min, one_hour, True
+
+
+def _ttl_part(creation: dict[str, Any], key: str) -> int | None:
+    """One lifetime's share of a cache-write split: 0 when the response does
+    not mention it, its count when it does, None when what it mentions cannot
+    be a token count."""
+    if key not in creation:
+        return 0
+    return _as_nonneg_int(creation.get(key))
 
 
 _MODEL_USAGE_ENTRY_KEYS = frozenset(
@@ -404,13 +436,21 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             m_in, m_out, m_cached, m_cache_write, has_valid_model_usage = _sum_model_usage(
                 model_usage
             )
+        usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
         if not has_valid_model_usage:
-            usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
             m_in, m_out, m_cached, m_cache_write, m_valid = _extract_usage_dims(usage)
             usage_valid = usage_valid and m_valid
-            m_write_5m, m_write_1h = _extract_cache_write_ttl(usage)
+            m_write_5m, m_write_1h, split_certified = _extract_cache_write_ttl(usage, m_cache_write)
+            usage_valid = usage_valid and split_certified
             cache_write_5m_tokens += m_write_5m
             cache_write_1h_tokens += m_write_1h
+        elif _anthropic_usage_shape(usage) and isinstance(usage.get("cache_creation"), dict):
+            # The totals above are the whole tree's, from modelUsage, which
+            # reports no split; the flat dict's split covers the top-level
+            # loop only and so cannot be attributed to them -- not even when
+            # its parts happen to sum to the whole-tree total. It is not
+            # reported and the report is not valid.
+            usage_valid = False
         input_tokens += m_in
         output_tokens += m_out
         cached_tokens += m_cached
