@@ -236,7 +236,9 @@ jobs:
           original release-event run to retry its image job while GitHub permits
           reruns, provided that run already includes the release source and wheel
           checks. Rerunning an older workflow does not add those checks; if that
-          recovery is unavailable, publish a new release.
+          recovery is unavailable, publish a new release. A newer release does not
+          restore this version's image: once its image becomes the one this check
+          follows, the issue closes and the version above is left without one.
 
           A queued image job can be cancelled when another image job takes its
           pending slot. Rerun a displaced release-event run, or dispatch a manual

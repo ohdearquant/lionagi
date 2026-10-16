@@ -25,6 +25,12 @@ SHA = "a" * 40
 OTHER_SHA = "b" * 40
 REPO = "example/lionagi"
 PREFIX = f"repos/{REPO}"
+# Pinned to commit SHAs: a moving major tag would let the release build change
+# without a commit to this repository.
+QEMU_ACTION = "docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1"
+BUILDX_ACTION = "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069"
+LOGIN_ACTION = "docker/login-action@dbcb813823bdd20940b903addbd779551569679f"
+IMAGE_ACTION = "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc"
 RUNS = (
     f"{PREFIX}/actions/workflows/release.yml/runs?event=release&head_sha={SHA}&per_page=100&page=1"
 )
@@ -342,6 +348,11 @@ def workflow():
     return yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
 
 
+def step_identity(step):
+    """What identifies one step in an ordered list: its name, action and id."""
+    return (step.get("name"), step.get("uses"), step.get("id"))
+
+
 def assert_workflow_contract(document):
     jobs = document["jobs"]
     assert document["permissions"] == {"contents": "read"}
@@ -354,6 +365,10 @@ def assert_workflow_contract(document):
     }
     assert set(jobs) == {"source", "test", "deploy", "docker", "verify-image"}
     for name, job in jobs.items():
+        # A job-level value overrides the workflow-level pin, and a soft-failing
+        # job leaves the run green without the result the gate requires.
+        assert "env" not in job, f"{name} overrides the pinned workflow environment"
+        assert not job.get("continue-on-error", False), f"{name} may fail without failing the run"
         expected = {"contents": "read"}
         if name in {"source", "docker"}:
             expected["actions"] = "read"
@@ -375,6 +390,24 @@ def assert_workflow_contract(document):
     )
     assert jobs["test"]["needs"] == "source"
     assert "if" not in jobs["test"]
+    assert jobs["test"]["strategy"] == {
+        "matrix": {"python-version": ["3.10", "3.11", "3.12", "3.13"]}
+    }
+    # The test job is what makes a red commit refuse the release; its steps are
+    # pinned by name so a replaced command cannot pass as an install or a test.
+    assert [step_identity(step) for step in jobs["test"]["steps"]] == [
+        ("Require the resolved source commit", None, None),
+        (None, "actions/checkout@v7", None),
+        ("Set up Python ${{ matrix.python-version }}", "actions/setup-python@v7", None),
+        ("Install uv", None, None),
+        ("Install dependencies", None, None),
+        ("Run tests", None, None),
+    ]
+    test_run = next(s for s in jobs["test"]["steps"] if s.get("name") == "Run tests")
+    assert test_run["run"].strip() == (
+        "source .venv/bin/activate\n"
+        "uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/"
+    )
     assert jobs["deploy"]["needs"] == ["source", "test"]
     assert jobs["deploy"]["if"] == "github.event_name == 'release'"
     publish = next(s for s in jobs["deploy"]["steps"] if s.get("name") == "Publish package to PyPI")
@@ -430,13 +463,44 @@ def assert_workflow_contract(document):
     assert not revalidate.get("continue-on-error", False)
     image = next(s for s in docker["steps"] if s.get("id") == "image")
     assert docker["steps"].index(revalidate) < docker["steps"].index(image)
-    assert image["with"]["context"] == "./source"
-    assert image["with"]["file"] == "source/apps/studio/Dockerfile"
-    assert image["with"]["tags"] == (
-        "ghcr.io/ohdearquant/lion-studio:${{ needs.source.outputs.version }}\n"
-        "${{ steps.release.outputs.publish_latest == 'true' && "
-        "'ghcr.io/ohdearquant/lion-studio:latest' || '' }}\n"
-    )
+    # An unlisted step could retag latest between the revalidation and the
+    # build, and the registry check only reads latest when this run publishes
+    # it, so the ordered step list and the image inputs are both pinned.
+    assert [step_identity(step) for step in docker["steps"]] == [
+        ("Require the resolved source commit", None, None),
+        (None, "actions/checkout@v7", None),
+        (None, "actions/checkout@v7", None),
+        (None, "actions/setup-python@v7", None),
+        ("Revalidate the source and published wheel", None, "release"),
+        ("Set up QEMU", QEMU_ACTION, None),
+        ("Set up Docker Buildx", BUILDX_ACTION, "buildx"),
+        ("Set up Docker Buildx (second attempt)", BUILDX_ACTION, None),
+        ("Log in to GitHub Container Registry", LOGIN_ACTION, None),
+        ("Build and push Docker image (multi-arch)", IMAGE_ACTION, "image"),
+        ("Verify the published image digest", None, None),
+    ]
+    assert image == {
+        "name": "Build and push Docker image (multi-arch)",
+        "id": "image",
+        "uses": IMAGE_ACTION,
+        "with": {
+            "context": "./source",
+            "file": "source/apps/studio/Dockerfile",
+            "push": True,
+            "platforms": "linux/amd64,linux/arm64",
+            "tags": (
+                "ghcr.io/ohdearquant/lion-studio:${{ needs.source.outputs.version }}\n"
+                "${{ steps.release.outputs.publish_latest == 'true' && "
+                "'ghcr.io/ohdearquant/lion-studio:latest' || '' }}\n"
+            ),
+            "labels": (
+                "org.opencontainers.image.version=${{ needs.source.outputs.version }}\n"
+                "org.opencontainers.image.revision=${{ needs.source.outputs.sha }}\n"
+            ),
+            "cache-from": "type=gha",
+            "cache-to": "type=gha,mode=max",
+        },
+    }
     assert jobs["verify-image"]["needs"] == ["source", "docker"]
     assert jobs["verify-image"]["if"] == ("${{ always() && needs.source.result == 'success' }}")
     digest_verify = docker["steps"][-1]
@@ -513,6 +577,20 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "no-image-timeout",
         "verify-skipped-docker",
         "verify-before-image",
+        "job-env-overrides-default-branch",
+        "job-soft-failure-source",
+        "job-soft-failure-verify-image",
+        "job-soft-failure-deploy",
+        "job-soft-failure-test",
+        "job-soft-failure-docker",
+        "test-run-replaced",
+        "test-matrix-reduced",
+        "retag-step-before-image",
+        "image-revision-from-event-sha",
+        "image-single-platform",
+        "image-action-tag-not-sha",
+        "image-push-disabled",
+        "image-step-gated-on-latest",
     ],
 )
 def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
@@ -595,6 +673,46 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         )
     elif mutation == "verify-before-image":
         digest_verify["if"] = "${{ !cancelled() }}"
+    elif mutation == "job-env-overrides-default-branch":
+        jobs["source"]["env"] = {"DEFAULT_BRANCH": "feature"}
+        docker["env"] = {"DEFAULT_BRANCH": "feature"}
+    elif mutation == "job-soft-failure-source":
+        jobs["source"]["continue-on-error"] = True
+    elif mutation == "job-soft-failure-verify-image":
+        jobs["verify-image"]["continue-on-error"] = True
+    elif mutation == "job-soft-failure-deploy":
+        jobs["deploy"]["continue-on-error"] = True
+    elif mutation == "job-soft-failure-test":
+        jobs["test"]["continue-on-error"] = True
+    elif mutation == "job-soft-failure-docker":
+        jobs["docker"]["continue-on-error"] = True
+    elif mutation == "test-run-replaced":
+        next(s for s in jobs["test"]["steps"] if s.get("name") == "Run tests").update(
+            {"run": "true"}
+        )
+    elif mutation == "test-matrix-reduced":
+        jobs["test"]["strategy"]["matrix"]["python-version"] = ["3.12"]
+    elif mutation == "retag-step-before-image":
+        docker["steps"].insert(
+            docker["steps"].index(image),
+            {
+                "name": "Retag latest",
+                "run": "docker buildx imagetools create -t ghcr.io/ohdearquant/lion-studio:latest"
+                " ghcr.io/ohdearquant/lion-studio:1.2.3",
+            },
+        )
+    elif mutation == "image-revision-from-event-sha":
+        image["with"]["labels"] = image["with"]["labels"].replace(
+            "needs.source.outputs.sha", "github.sha"
+        )
+    elif mutation == "image-single-platform":
+        image["with"]["platforms"] = "linux/amd64"
+    elif mutation == "image-action-tag-not-sha":
+        image["uses"] = "docker/build-push-action@v7"
+    elif mutation == "image-push-disabled":
+        image["with"]["push"] = False
+    elif mutation == "image-step-gated-on-latest":
+        image["if"] = "steps.release.outputs.publish_latest == 'true'"
     with pytest.raises((AssertionError, KeyError)):
         assert_workflow_contract(document)
 
@@ -810,3 +928,14 @@ def test_digest_verification_checks_each_registry_snapshot(registry):
     # Each matching registry snapshot verifies its own build digest.
     assert run(after_a).returncode == 0
     assert run(after_b, VERSION="1.2.4", EXPECTED_DIGEST=digest_b).returncode == 0
+
+
+def test_daily_check_guidance_does_not_promise_a_new_release_restores_an_old_image():
+    """The daily check follows PyPI's current version, so the issue it files for an
+    older version closes as soon as a newer image becomes current. Guidance that
+    offered a new release as recovery would leave that version without an image
+    while the issue that reported it closed."""
+    text = " ".join((ROOT / ".github/workflows/image-matches-pypi.yml").read_text().split())
+    assert "publish a new release. A newer release does not restore this version's image" in text
+    assert "the issue closes and the version above is left without one" in text
+    assert yaml.safe_load((ROOT / ".github/workflows/image-matches-pypi.yml").read_text())
