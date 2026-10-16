@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
+from lionagi.state import compat
 from lionagi.state.compat import (
     CompatibilityProfile,
     OwnerRule,
@@ -1176,17 +1177,46 @@ _OWNER_COLUMN_SHAPES = [
         "nocase",
         "named CONSTRAINT",
     ),
+    ('"c a" TEXT, c TEXT COLLATE NOCASE', "c", "nocase", "a sibling named with the name and more"),
+    ('"c a" TEXT, c TEXT COLLATE NOCASE', "c a", "binary", "that sibling itself"),
+    ('"c a" TEXT COLLATE NOCASE, c TEXT', "c", "binary", "a sibling of another collation"),
+    ('"primary" KEY(10)', "primary", "binary", "named PRIMARY, a type spelled KEY"),
+    ('"foreign" KEY(10)', "foreign", "binary", "named FOREIGN, a type spelled KEY"),
+    ('"constraint" TEXT CHECK (1)', "constraint", "binary", "named CONSTRAINT, then a CHECK"),
+    ('"c d" TEXT', "c d", "binary", "a name with a space"),
+    ('"collate" TEXT', "collate", "binary", "named COLLATE"),
+    ('"collate" TEXT COLLATE NOCASE', "collate", "nocase", "named COLLATE, with a clause"),
 ]
 
 
 def test_an_owner_column_whose_definition_cannot_be_read_is_not_taken_as_binary():
-    """A column the lookup cannot find a definition for is refused, never assumed binary."""
+    """A column the lookup cannot find a definition for reads as no collation at all, never as
+    binary."""
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.execute("CREATE TABLE t (c TEXT COLLATE NOCASE)")
         table = next(shape for shape in read_closure(conn, ["t"]).tables if shape.name == "t")
 
     assert _ordered_collation(table, "c") == "nocase"
-    assert _ordered_collation(table, "absent") != "binary"
+    assert _ordered_collation(table, "absent") is None
+
+
+async def test_an_owner_column_whose_collation_cannot_be_read_is_refused_as_unread(
+    tmp_path, monkeypatch
+):
+    """An owner column whose collation the table's SQL does not show is refused, and the refusal
+    says the collation could not be read rather than naming one."""
+    store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
+    profile = _profile(store)
+    monkeypatch.setattr(compat, "_ordered_collation", lambda table, column: None)
+    handle = StateDB(store, compatibility=profile, owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await handle.open()
+
+    assert "could not be read from the table's SQL" in caught.value.reason
+    assert f"messages.{OWNER}" in caught.value.reason
+    assert "compares under" not in caught.value.reason
+    assert handle._engine is None
 
 
 @pytest.mark.parametrize(
@@ -1198,8 +1228,8 @@ def test_the_owner_column_collation_is_read_however_its_definition_starts(
     body, column, expected, what
 ):
     """The lookup finds the column's own definition whether a type, a constraint or nothing
-    follows its name, and however the name is spelled, and never reads a table constraint whose
-    first word is the column's name as that column."""
+    follows its name, never reads a table constraint whose first word is the column's name as
+    that column, and never reads a quoted name as a keyword or as the start of a longer name."""
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.execute(f"CREATE TABLE t ({body})")
         conn.execute(f"INSERT INTO t (\"{column}\") VALUES ('a')")
@@ -1404,31 +1434,32 @@ def test_what_sqlite_makes_of_a_multi_event_trigger_and_of_new_and_old():
     def fired(sql: str, statements: list[str]) -> tuple:
         with closing(sqlite3.connect(":memory:")) as conn:
             conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY, col TEXT)")
-            conn.execute("CREATE TABLE log (v TEXT)")
+            conn.execute("CREATE TABLE log (col TEXT)")
             conn.execute(sql)
             for statement in statements:
                 try:
                     conn.execute(statement)
                 except sqlite3.Error as exc:
                     return ("error", str(exc))
-            return ("rows", conn.execute("SELECT v FROM log").fetchall())
+            return ("rows", conn.execute("SELECT col FROM log").fetchall())
 
-    assert fired(
-        "CREATE TRIGGER d AFTER DELETE ON t BEGIN INSERT INTO log VALUES (NEW.col); END",
-        ["INSERT INTO t VALUES ('1', 'a')", "DELETE FROM t WHERE id = '1'"],
-    ) == ("error", "no such column: NEW.col")
-    assert fired(
-        "CREATE TRIGGER i AFTER INSERT ON t BEGIN INSERT INTO log VALUES (OLD.col); END",
-        ["INSERT INTO t VALUES ('1', 'a')"],
-    ) == ("error", "no such column: OLD.col")
-    assert fired(
-        "CREATE TRIGGER d AFTER DELETE ON t BEGIN INSERT INTO log VALUES (OLD.col); END",
-        ["INSERT INTO t VALUES ('1', 'a')", "DELETE FROM t WHERE id = '1'"],
-    ) == ("rows", [("a",)])
-    assert fired(
-        "CREATE TRIGGER i AFTER INSERT ON t BEGIN INSERT INTO log VALUES (NEW.col); END",
-        ["INSERT INTO t VALUES ('1', 'a')"],
-    ) == ("rows", [("a",)])
+    deleted = ["INSERT INTO t VALUES ('1', 'a')", "DELETE FROM t WHERE id = '1'"]
+    inserted = ["INSERT INTO t VALUES ('1', 'a')"]
+    cases = [
+        ("DELETE", "NEW", deleted, ("error", "no such column: NEW.col")),
+        ("INSERT", "OLD", inserted, ("error", "no such column: OLD.col")),
+        ("DELETE", "OLD", deleted, ("rows", [("a",)])),
+        ("INSERT", "NEW", inserted, ("rows", [("a",)])),
+    ]
+    for event, row, statements, outcome in cases:
+        sql = (
+            f"CREATE TRIGGER x AFTER {event} ON t BEGIN "
+            f"INSERT INTO log (col) VALUES ({row}.col); END"
+        )
+        assert fired(sql, statements) == outcome, (event, row)
+        # The reader admits exactly the copies SQLite fills with the row that fired the trigger.
+        admitted = _trigger_owner_problems(sql, "col", frozenset({"log"})) == []
+        assert admitted == (outcome[0] == "rows"), (event, row)
 
 
 _DELETE_SWEEP = (
@@ -1501,6 +1532,54 @@ async def test_a_delete_trigger_comparing_the_owner_with_the_updated_row_is_refu
         await handle.open()
 
     assert f"OLD.{OWNER}" in caught.value.reason
+    assert handle._engine is None
+
+
+_ALIASED_UPDATES = [
+    ("INSERT", "new"),
+    ("UPDATE", "old"),
+    ("UPDATE", "new"),
+    ("DELETE", "old"),
+    ("INSERT", '"NEW"'),
+    ("INSERT", "[new]"),
+    ("DELETE", "'old'"),
+]
+
+
+@pytest.mark.parametrize(("event", "alias"), _ALIASED_UPDATES)
+def test_a_trigger_update_under_the_alias_new_or_old_is_refused(event, alias):
+    """``UPDATE t AS new`` names the updated row NEW inside the statement, so a term comparing
+    the owner with NEW.<column> compares each row with itself and holds for every owner's row;
+    OLD likewise."""
+    sql = (
+        f"CREATE TRIGGER t AFTER {event} ON messages BEGIN "
+        f"UPDATE messages AS {alias} SET content = '' WHERE {OWNER} = {alias}.{OWNER}; END"
+    )
+    shown = alias.strip("\"'[]").upper()
+
+    assert _trigger_owner_problems(sql, OWNER, frozenset({"messages"})) == [
+        f"updates messages under the alias {shown}, which hides the row that fired it"
+    ]
+
+
+@pytest.mark.skipif(
+    not _sqlite_aliases_a_trigger_update(),
+    reason=f"SQLite {sqlite3.sqlite_version} refuses a table alias in a trigger's UPDATE",
+)
+async def test_a_store_whose_trigger_updates_under_the_alias_new_is_refused(tmp_path):
+    """Run on its own, the trigger rewrites every owner's message when one owner writes one."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER blank AFTER INSERT ON messages BEGIN "
+        f"UPDATE messages AS new SET content = '\"\"' WHERE {OWNER} = new.{OWNER}; END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger blank") as caught:
+        await handle.open()
+
+    assert "under the alias NEW" in caught.value.reason
     assert handle._engine is None
 
 
