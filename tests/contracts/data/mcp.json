@@ -2564,7 +2564,7 @@
           },
           "host": {
             "type": "string",
-            "description": "Host to bind (default: 127.0.0.1)",
+            "description": "Host to bind (default: 127.0.0.1). `docker` also publishes the container port on this host, so anything else there exposes the daemon to that interface.",
             "x-flag": "--host"
           },
           "frontend_port": {
@@ -2589,7 +2589,7 @@
           },
           "docker": {
             "type": "boolean",
-            "description": "Run the bundled frontend + backend via Docker",
+            "description": "Run the bundled frontend + backend via Docker. The port is published on `host` (loopback by default)",
             "x-flag": "--docker"
           },
           "no_frontend": {

@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
+  (`127.0.0.1`) by default, where it published on every host interface, so with
+  `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The
+  container's own bind inside the image is unchanged; the host half of the port mapping is what
+  decides who can reach it. Pass `--host` an address to publish there, which exposes the daemon
+  to that interface, or run the image with your own `docker run -p`.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

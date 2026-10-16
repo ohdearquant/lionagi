@@ -66,7 +66,11 @@ li studio          # starts the local daemon and opens https://lion-studio.khive
 **Self-contained local build (Docker or same-origin serve)**:
 
 ```bash
-li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on :8765
+li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on
+                   # 127.0.0.1:8765. The container port is published on --host,
+                   # loopback by default; another address publishes it there:
+                   # li studio --docker --host 0.0.0.0 (set
+                   # LIONAGI_STUDIO_AUTH_TOKEN first — see Authentication)
 ```
 
 **Dev mode (hot-reload)**:

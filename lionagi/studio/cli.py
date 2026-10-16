@@ -74,7 +74,11 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
     parser.add_argument(
         "--host",
         default=_default("127.0.0.1"),
-        help="Host to bind (default: 127.0.0.1)",
+        help=(
+            "Host to bind (default: 127.0.0.1). --docker also publishes the "
+            "container port on this host, so anything else there exposes the "
+            "daemon to that interface."
+        ),
     )
     parser.add_argument(
         "--frontend-port",
@@ -108,7 +112,10 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
         "--docker",
         action="store_true",
         default=_default(False),
-        help="Run the bundled frontend + backend via Docker",
+        help=(
+            "Run the bundled frontend + backend via Docker. The port is "
+            "published on --host (loopback by default)"
+        ),
     )
     mode.add_argument(
         "--no-frontend",
@@ -345,6 +352,30 @@ def _start_backend_only(host: str, port: int) -> int:
     return 0
 
 
+_STUDIO_CONTAINER_PORT = 8765
+
+
+def _docker_publish_spec(host: str, api_port: int) -> str:
+    """The ``-p`` value publishing the container's port on *host* at *api_port*.
+
+    A host half is always written: a bare ``PORT:PORT`` mapping publishes on
+    every host interface, which puts an unauthenticated daemon on the local
+    network. An IPv6 literal is bracketed, since its own colons would otherwise
+    read as the mapping's separators. A blank host is the loopback default
+    rather than a request to publish everywhere: an empty host half means
+    every interface to docker, the opposite of what an unset flag asks for.
+    """
+    stripped = host.strip() or "127.0.0.1"
+    if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = stripped[1:-1]
+    try:
+        is_ipv6 = ipaddress.ip_address(stripped).version == 6
+    except ValueError:
+        is_ipv6 = False
+    address = f"[{stripped}]" if is_ipv6 else stripped
+    return f"{address}:{api_port}:{_STUDIO_CONTAINER_PORT}"
+
+
 def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     lionagi_home = Path.home() / ".lionagi"
     ensure_lionagi_dir(lionagi_home)
@@ -370,7 +401,10 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         "run",
         "--rm",
         "-p",
-        f"{api_port}:8765",
+        # The image's uvicorn binds 0.0.0.0 inside the container, which is what
+        # makes the published port reachable at all; the host half of this
+        # mapping, not that bind, decides who can reach it.
+        _docker_publish_spec(host, api_port),
         "-v",
         f"{lionagi_home}:/root/.lionagi",
     ]

@@ -4,7 +4,13 @@
 #   docker build -f apps/studio/Dockerfile -t lion-studio .
 #
 # Run:
-#   docker run -p 8765:8765 -v ~/.lionagi:/root/.lionagi -v "$PWD:/workspace" lion-studio
+#   docker run -p 127.0.0.1:8765:8765 -v ~/.lionagi:/root/.lionagi \
+#     -v "$PWD:/workspace" lion-studio
+#
+# The host half of -p decides who can reach the port: the image's uvicorn
+# binds 0.0.0.0 so the published port works at all, and 127.0.0.1 keeps
+# that reach to this machine. Publish on another address only with
+# LIONAGI_STUDIO_AUTH_TOKEN set.
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 # Pinned to BUILDPLATFORM on purpose. This stage emits /build/dist, a static

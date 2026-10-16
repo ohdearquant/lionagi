@@ -65,6 +65,23 @@ li studio --no-frontend  # local API only
 li studio --dev          # source checkout with frontend hot reload
 ```
 
+`li studio --docker` publishes the container's port on the address `--host`
+names, which defaults to `127.0.0.1`: only this machine reaches the container.
+To publish it on another interface, either pass `--host` that address, or run
+the image with your own `docker run -p`:
+
+```bash
+li studio --docker --host 192.168.1.5   # reachable at 192.168.1.5:8765
+docker run --rm -p 192.168.1.5:8765:8765 -v ~/.lionagi:/root/.lionagi \
+  ghcr.io/ohdearquant/lion-studio:latest
+```
+
+Publishing anywhere other than loopback exposes the daemon to everyone who can
+reach that address, and with `LIONAGI_STUDIO_AUTH_TOKEN` unset nothing else
+stands between them and the API. Set the token before publishing on another
+interface, as described in
+[Hosting the Studio frontend](../../apps/studio/frontend/HOSTING.md).
+
 In a second terminal, confirm daemon reachability:
 
 ```bash
