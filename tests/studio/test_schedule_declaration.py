@@ -455,6 +455,33 @@ def test_wrong_api_version_rejected():
 # Trigger resolution
 
 
+@pytest.mark.parametrize(
+    ("project_line", "expected"),
+    [
+        ("", "demo"),
+        ("      project: other", "other"),
+        ("      project: null", None),
+    ],
+    ids=["omitted-inherits", "named", "explicit-null-is-none"],
+)
+def test_a_member_project_inherits_the_document_only_when_omitted(
+    agent_profile, project_line, expected
+):
+    """An explicit ``project: null`` is a project of None, never the document's.
+
+    It is what an export writes for a row stored without a project, and the project
+    reaches the spawned command, so inheriting there would change the row on re-apply.
+    The qualified name keeps the document's namespace either way.
+    """
+    doc = parse_schedule_set(
+        _agent_manifest("nightly", cwd=agent_profile, extra_member=project_line)
+    )
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    assert resolved.qualified_name == "demo/nightly"
+    assert resolved.db_fields["action_project"] == expected
+    assert resolved.resolved["execution"]["project"] == expected
+
+
 def test_resolve_cron_trigger_persists_timezone(agent_profile):
     text = _agent_manifest("nightly", cwd=agent_profile)
     doc = parse_schedule_set(text)

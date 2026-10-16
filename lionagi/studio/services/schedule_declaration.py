@@ -632,6 +632,22 @@ def _to_db_fields(
     return fields
 
 
+def _resolve_project(execution: Execution, *, project: str | None, is_global: bool) -> str | None:
+    """The project a member runs under: its own, else the document's.
+
+    ``project: null`` written out declares that the member has no project, which is
+    what an export writes for a row stored without one; only an omitted project
+    inherits the document's. The difference is real at spawn time: the project is
+    passed to the spawned command and is the fallback execution root, so reading an
+    explicit null as "inherit" would change what an exported row does on re-apply.
+    """
+    if execution.project:
+        return execution.project
+    if execution.project is None and "project" in execution.model_fields_set:
+        return None
+    return None if is_global else project
+
+
 def resolve_member(
     name: str,
     member: ScheduleMember,
@@ -644,7 +660,7 @@ def resolve_member(
     resolved_trigger = _resolve_trigger(member.trigger)
     resolved_target = _resolve_target(member.target, manifest_dir)
     cwd = _resolve_cwd(member.execution, manifest_dir=manifest_dir, is_global=is_global)
-    resolved_project = member.execution.project or (None if is_global else project)
+    resolved_project = _resolve_project(member.execution, project=project, is_global=is_global)
 
     resolved = {
         "trigger": resolved_trigger,

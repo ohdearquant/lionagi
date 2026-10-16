@@ -20,7 +20,11 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 import yaml
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedule_declaration import apply_schedule_set, parse_schedule_set
+from lionagi.studio.services.schedule_declaration import (
+    apply_schedule_set,
+    parse_schedule_set,
+    resolve_schedule_set,
+)
 from lionagi.studio.services.schedule_export import (
     build_managed_export_document,
     convert_legacy_rows,
@@ -791,7 +795,8 @@ async def test_legacy_row_without_project_but_qualified_name_round_trips_exactly
     temp_db_path, agent_profile
 ):
     """A row whose project column is empty but whose name is qualified must
-    group under its name's prefix, so re-applying reproduces the name."""
+    group under its name's prefix, so re-applying reproduces the name, and must
+    still have no project once the written document is read back."""
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("np1", "demo/nightly", cwd=agent_profile, action_project=None)
@@ -807,6 +812,12 @@ async def test_legacy_row_without_project_but_qualified_name_round_trips_exactly
     assert "nightly" in doc.schedules
     # doc project + local key reconstructs the original qualified name
     assert f"{doc.metadata.project}/nightly" == "demo/nightly"
+    # The document writes `project: null`; read back, that is no project rather than
+    # the document's, so re-applying leaves the row's project as it was.
+    reread = parse_schedule_set(dump_schedule_set_yaml(doc))
+    resolved = resolve_schedule_set(reread, agent_profile)["nightly"]
+    assert resolved.qualified_name == "demo/nightly"
+    assert resolved.db_fields["action_project"] is None
 
 
 @pytest.mark.asyncio
