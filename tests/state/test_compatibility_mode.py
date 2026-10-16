@@ -746,8 +746,18 @@ def test_compatibility_needs_sqlite_and_is_not_readonly(reference):
         "UPDATE schema_meta SET value = 'lionagi' WHERE key = 'lineage'",
         "UPDATE schema_meta SET value = '' WHERE key = 'lineage'",
         "UPDATE schema_meta SET value = '  ' WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = X'' WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = X'6d616e61676572' WHERE key = 'lineage'",
     ],
-    ids=["no-schema-meta", "no-lineage-row", "names-this-package", "empty", "blank"],
+    ids=[
+        "no-schema-meta",
+        "no-lineage-row",
+        "names-this-package",
+        "empty",
+        "blank",
+        "empty-blob",
+        "name-as-blob",
+    ],
 )
 async def test_a_store_that_names_no_other_manager_is_not_admitted(tmp_path, reference, lineage):
     """A native open in another process refuses a store only by a lineage row naming another

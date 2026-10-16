@@ -209,16 +209,40 @@ and names an application other than lionagi. lionagi never writes the row into a
 manage. A compatibility open that wrote it on first use would leave every native open before that
 write, in any process, free to migrate the store.
 
-A writable native open refuses a store whose `lineage` row names another application, raising
-`ForeignLineageError`. On SQLite each writable connection reads the row right after its busy
-timeout, before the connection settings of P2, from the file SQLite opened, so the refusal comes
-before those settings and before any statement of `_apply_schema()`, however the URL spells the
-path; this is what refuses a second process opening a store this process holds in compatibility
-mode. The read is made on the writable connection, so a hot rollback journal is rolled back by it,
-as on any writable open. A refused open closes its engine. Every transaction of `_apply_schema()`
-that writes reads the row again under its write lock, ahead of the version, so a store whose
-`lineage` names another application and whose version is above `SCHEMA_VERSION` is refused on its
-lineage by either check.
+A writable native `StateDB` open refuses a store whose `lineage` row names another application,
+raising `ForeignLineageError`; this is what refuses a second process opening a store this process
+holds in compatibility mode. On SQLite the row is read before any writable connection exists, from
+the file SQLAlchemy opens for the URL however the URL spells the path, and a refused open leaves the
+store as it was: the file, its rollback journal, its write-ahead log and the log's `-shm` index keep
+their bytes and modification times, whether or not another process has the store open. The first
+read opens the file immutable, so SQLite takes no lock and reads no journal, log or index. It
+decides every store whose row is in the file, including one beside a hot rollback journal, where a
+table the interrupted transaction left half-written is skipped rather than failing the read. A row
+still only in the write-ahead log is invisible to it, so when a non-empty log is beside the file the
+row is read again read-only. That read changes nothing while another process has the store open.
+On a store nobody has open, it is the one case in which a refused open changes a file: SQLite builds
+the log's index in the `-shm` file, which holds no durable content, and leaves the store file and the
+log as they are. SQLite offers no read-only read of a log that avoids this: a read-only open of a
+WAL store with `locking_mode = EXCLUSIVE` fails with a disk I/O error, and one with `nolock=1` cannot
+open the file.
+
+A read that fails decides nothing; the writable connection then decides. Each writable connection
+reads the row again right after its busy timeout, before the connection settings of P2 and before
+any statement of `_apply_schema()`, which refuses a row written between the first reads and the
+writable connection. A connection that refuses is closed. That read is the writable connection's,
+so a hot rollback journal is rolled back by it, as on any writable open, and if no other connection
+has the store open when it closes, SQLite folds the log into the file. A refused open, and an open
+whose first connection never read the store, leaves no engine. A connection a native handle opened
+before the row was written is not asked again; only its later connections read the row. Every
+transaction of `_apply_schema()` that writes reads the row again under its write lock, ahead of the
+version, so a store whose `lineage` names another application and whose version is above
+`SCHEMA_VERSION` is refused on its lineage by any of these checks.
+
+While a writable native handle in this process has a file open, compatibility mode does not admit
+that file: the handle's connections write without the profile, and those already open would never
+read the row. A native handle in another process is not visible to that check. These refusals cover
+writable opens through `StateDB`. A read-only `StateDB` open applies nothing and is not checked, and
+Studio's `open_db` and other code that connects to the file natively are not covered.
 
 ### D8: acceptance
 
@@ -292,13 +316,19 @@ before any data or DDL statement. Every step `_apply_schema()` runs ahead of its
 the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
 any of it. Compatibility mode (D1) runs none of these steps.
 
-A writable native open of a store whose `lineage` row names another application raises
-`ForeignLineageError` (D7) from its first connection, before the connection settings of P2 and
-before any statement of `_apply_schema()`, and wherever the lineage and the version are both read,
-the lineage is checked first. While this process holds a store open in compatibility mode, a native
-open of that file from this process is refused before any setting or statement changes it, whatever
-the row says and however the URL spells the path: by the URL before an engine exists, and by the
-file's device and inode on the connection's first read.
+A writable native `StateDB` open of a store whose `lineage` row names another application raises
+`ForeignLineageError` (D7) before any writable connection exists, leaving the store file, its
+journal, its log and its `-shm` index as they were, except that a store nobody has open whose row is
+still only in its log has that index built. A row written after those reads is refused by the
+writable connection's first read, before the connection settings of P2 and before any statement of
+`_apply_schema()`. Wherever the lineage and the version are both read, the lineage is checked
+first. While this process holds a store open in compatibility mode, a writable native open of that
+file from this process is refused before any writable connection exists, whatever the row says and
+however the URL spells the path: by the URL before an engine exists, and by the file's device and
+inode on the first read. While a writable native handle in this process has a file open,
+compatibility admission of that file is refused. These refusals cover writable `StateDB` opens; a
+read-only open applies nothing and is not checked, and Studio's `open_db` and other code that
+connects to the file natively are not covered.
 
 ### A.1 Entry points
 

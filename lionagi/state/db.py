@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
 from sqlalchemy.engine import make_url
@@ -33,7 +34,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, shield
+from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, run_sync, shield
 from lionagi.state.compat import (
     _LINEAGE_KEY,
     CompatibilityProfile,
@@ -46,6 +47,7 @@ from lionagi.state.compat import (
 from lionagi.state.compat import _Guard as _CompatibilityGuard
 from lionagi.state.compat import _quote as _quote_identifier
 from lionagi.state.engine import (
+    SQLITE_BUSY_TIMEOUT_MS,
     dialect_of,
     make_compatibility_engine,
     make_engine,
@@ -635,6 +637,11 @@ class StateDB:
         # The (device, inode) of the file a compatibility handle holds open, so a native open in
         # this process is refused for that file however its URL spells it.
         self._held_file: tuple[int, int] | None = None
+        # The (device, inode) of the file a writable native handle has open, so compatibility
+        # admission in this process is refused while that handle's connections can still write.
+        self._native_file: tuple[int, int] | None = None
+        # Whether a connection of this handle's writable engine has read the store (ADR-0128 D7).
+        self._connection_read = False
         if compatibility is None and owner is not None:
             raise ValueError("an owner is written in compatibility mode only")
         if compatibility is not None:
@@ -763,20 +770,33 @@ class StateDB:
                 "open",
             )
         if self.dialect == "sqlite":
-            # P2: the writable connection's settings change the file, so each new connection
-            # reads, before them, which file SQLite opened and that file's lineage (ADR-0128 D7).
+            # P2: a refused open leaves the store as it was, so the file and its lineage are read
+            # before any writable connection exists, and each new writable connection reads them
+            # again before its settings change the file, for a row written in between (ADR-0128
+            # D7).
+            await run_sync(self._read_lineage_without_writing)
+            self._connection_read = False
             self._engine = make_engine(self.url, before_settings=self._refuse_a_managed_store)
             _install_begin_immediate(self._engine.sync_engine)
         else:
             self._engine = make_engine(self.url)
         try:
             await self._apply_schema()
-        except (ForeignLineageError, StateCompatibilityRefused):
-            # A refused open leaves no writable engine on the store for a caller that keeps the
-            # object.
-            with CancelScope(shield=True):
-                await self.close()
+        except BaseException as exc:
+            # A refused open, or one whose first connection never read the store (a lock held past
+            # the busy timeout, a file that is not a database), leaves no engine, so a caller that
+            # keeps the object can open it again. After any other failure the engine stays, as
+            # before.
+            unread = self.dialect == "sqlite" and not self._connection_read
+            if unread or isinstance(exc, (ForeignLineageError, StateCompatibilityRefused)):
+                with CancelScope(shield=True):
+                    await self.close()
             raise
+        p = self.path
+        if self.dialect == "sqlite" and p is not None and str(p) != ":memory:":
+            # SQLAlchemy opens the absolute path of a SQLite URL's database, resolved lexically.
+            self._native_file = _file_identity(os.path.abspath(p))
+            _OPEN_NATIVE.add(self)
 
     def _refuse_a_managed_store(self, dbapi_conn) -> None:
         """Refuse a writable native connection to a file this process holds in compatibility
@@ -786,16 +806,9 @@ class StateDB:
         cursor = dbapi_conn.cursor()
         try:
             cursor.execute("PRAGMA database_list")
-            filename = next((row[2] for row in cursor.fetchall() if row[1] == "main"), "")
-            identity = _file_identity(filename) if filename else None
-            if identity is not None:
-                for held in list(_OPEN_COMPAT):
-                    if held._engine is not None and held._held_file == identity:
-                        raise held._compat.refusal(
-                            "this process holds the store in compatibility mode, and a native "
-                            "open would apply this package's schema to it",
-                            "open",
-                        )
+            self._refuse_a_held_file(
+                next((row[2] for row in cursor.fetchall() if row[1] == "main"), "")
+            )
             cursor.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
             )
@@ -807,6 +820,56 @@ class StateDB:
         finally:
             cursor.close()
         self._raise_if_foreign_lineage(lineage)
+        self._connection_read = True
+
+    def _read_lineage_without_writing(self) -> None:
+        """Refuse a file this process holds in compatibility mode, or a store whose ``lineage`` row
+        names another application, before any writable connection opens it (ADR-0128 D7).
+
+        The first read opens the file immutable: SQLite takes no lock and reads no journal,
+        write-ahead log or shared-memory index, so a refused store keeps its bytes and times, a hot
+        journal and a log another process holds included. That read cannot see a row still only in
+        the log, so when a non-empty log is beside the file the row is read again read-only. That
+        read changes nothing while another process has the store open; on a store nobody has open,
+        SQLite builds the log's index in the ``-shm`` file and leaves the file and the log as they
+        are, and no read-only read of a log avoids that. A read that fails decides nothing here:
+        the writable connection reads the row again before its settings.
+        """
+        from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
+
+        try:
+            (filename,), options = SQLiteDialect_aiosqlite().create_connect_args(make_url(self.url))
+        except Exception:  # noqa: BLE001 -- make_engine reports a URL it cannot open
+            return
+        uri = bool(options.get("uri"))
+        target = _read_only_uri(filename, uri, immutable=True)
+        read = _read_lineage(target) if target is not None else None
+        if read is None:
+            return
+        opened, lineage = read
+        self._refuse_a_held_file(opened)
+        self._raise_if_foreign_lineage(lineage)
+        try:
+            logged = bool(opened) and os.path.getsize(f"{opened}-wal") > 0
+        except OSError:
+            logged = False
+        if logged:
+            read = _read_lineage(_read_only_uri(filename, uri, immutable=False))
+            if read is not None:
+                self._raise_if_foreign_lineage(read[1])
+
+    @staticmethod
+    def _refuse_a_held_file(filename: str) -> None:
+        identity = _file_identity(filename) if filename else None
+        if identity is None:
+            return
+        for held in list(_OPEN_COMPAT):
+            if held._engine is not None and held._held_file == identity:
+                raise held._compat.refusal(
+                    "this process holds the store in compatibility mode, and a native open would "
+                    "apply this package's schema to it",
+                    "open",
+                )
 
     async def _open_compatibility(self) -> None:
         # Never _apply_schema(), create_all, a rebuild, a backfill or a version stamp: the store's
@@ -816,11 +879,24 @@ class StateDB:
         p = self.path
         if p is None or str(p) == ":memory:":
             raise guard.refusal("compatibility mode opens an existing store file", "open")
-        if not p.exists():
+        # SQLAlchemy opens the absolute path of a SQLite URL's database, resolved lexically, so
+        # that is the path checked: through a symlink, `..` names another file.
+        lexical = os.path.abspath(p)
+        if not os.path.exists(lexical):
             raise guard.refusal(
                 f"no store at {mask_credentials(str(p))}; compatibility mode never creates one",
                 "open",
             )
+        identity = _file_identity(lexical)
+        for native in list(_OPEN_NATIVE):
+            if native._engine is not None and native._native_file == identity:
+                # Its connections write without the profile, and those already open would never
+                # read the guard (ADR-0128 D7).
+                raise guard.refusal(
+                    "this process holds the store open natively, and that handle's connections "
+                    "write without the profile",
+                    "open",
+                )
         self._engine = make_compatibility_engine(self.url, guard)
         try:
             async with self.read_snapshot() as conn:
@@ -829,8 +905,7 @@ class StateDB:
             with CancelScope(shield=True):
                 await self.close()
             raise
-        # SQLAlchemy opens the absolute path of a SQLite URL's database, resolved lexically.
-        self._held_file = _file_identity(os.path.abspath(p))
+        self._held_file = _file_identity(lexical)
         _OPEN_COMPAT.add(self)
 
     def _refuse_in_compatibility(self, operation: str, reason: str) -> None:
@@ -917,6 +992,7 @@ class StateDB:
 
     async def close(self) -> None:
         _OPEN_COMPAT.discard(self)
+        _OPEN_NATIVE.discard(self)
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
@@ -1287,6 +1363,9 @@ class StateDB:
                     existing = await conn.run_sync(
                         lambda c, t=table: [col["name"] for col in inspect(c).get_columns(t)]
                     )
+            except (ForeignLineageError, StateCompatibilityRefused):
+                # A new connection's own refusal (ADR-0128 D7), not a failed inspection.
+                raise
             except Exception as exc:  # noqa: BLE001
                 _log.error(
                     "failed to inspect migration columns for table %r: %r",
@@ -6790,6 +6869,9 @@ def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | Non
 # one is open on a store, a native open of that store refuses, and so does the shared lookup unless
 # it can hand out the compatibility handle itself.
 _OPEN_COMPAT: weakref.WeakSet[StateDB] = weakref.WeakSet()
+# Every writable native handle open on a SQLite file in this process. While one is open on a
+# store, compatibility admission of that store refuses.
+_OPEN_NATIVE: weakref.WeakSet[StateDB] = weakref.WeakSet()
 
 
 def _file_identity(path: str) -> tuple[int, int] | None:
@@ -6799,6 +6881,57 @@ def _file_identity(path: str) -> tuple[int, int] | None:
     except OSError:
         return None
     return stat.st_dev, stat.st_ino
+
+
+def _read_only_uri(filename: str, uri: bool, *, immutable: bool) -> str | None:
+    """A URI opening the file SQLAlchemy's SQLite dialect opens as *filename*, read-only:
+    ``immutable`` reads the file alone, otherwise its journal or log is read with it. None for an
+    in-memory or temporary database."""
+    if uri:
+        location, _, query = filename.partition("?")
+        parameters = parse_qsl(query, keep_blank_values=True)
+        if location in ("file:", "file::memory:") or ("mode", "memory") in parameters:
+            return None
+        parameters = [(k, v) for k, v in parameters if k not in ("mode", "immutable", "nolock")]
+    else:
+        if filename in ("", ":memory:"):
+            return None
+        try:
+            location = Path(filename).as_uri()
+        except ValueError:
+            return None
+        parameters = []
+    parameters.append(("immutable", "1") if immutable else ("mode", "ro"))
+    return f"{location}?{urlencode(parameters)}"
+
+
+def _read_lineage(uri: str) -> tuple[str, Any] | None:
+    """The file SQLite opened for *uri* and that file's ``lineage`` row, or None when it could not
+    be read."""
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+    except sqlite3.Error:
+        return None
+    try:
+        # A file an interrupted transaction left beside a hot journal can list a table whose pages
+        # it does not hold yet, and SQLite refuses to load such a schema; this skips that entry
+        # rather than the whole read. The connection is read-only, so it still writes nothing.
+        conn.execute("PRAGMA writable_schema = ON")
+        rows = conn.execute("PRAGMA database_list").fetchall()
+        opened = next((row[2] for row in rows if row[1] == "main"), "")
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+        ).fetchone()
+        if table is None:
+            return opened, None
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (_LINEAGE_KEY,)
+        ).fetchone()
+        return opened, row[0] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def _open_in_compatibility_mode(url: str) -> StateDB | None:

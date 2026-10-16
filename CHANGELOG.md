@@ -16,12 +16,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   authorizer, and anything outside the profile raises `StateCompatibilityRefused`. The minimum
   aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
 - A writable `StateDB` open refuses a store whose `schema_meta` `lineage` row names another
-  application, raising `ForeignLineageError` (exported from `lionagi.state`). Each writable
-  connection reads the row from the file it opened before its own settings, so the refusal comes
-  before any migration or connection setting changes the store. The managing application writes
-  that row when it creates the store, and compatibility mode admits only a store that has it, so a
-  native open in another process cannot migrate a store being written in compatibility mode. A store
-  without the row opens and migrates natively as before.
+  application, raising `ForeignLineageError` (exported from `lionagi.state`). The row is read from
+  the file the URL opens before any writable connection exists, so a refused store keeps its bytes,
+  journal and write-ahead log included; the one exception is a store nobody has open whose row is
+  still only in its log, for which SQLite builds the log's `-shm` index. Each writable connection
+  reads the row again before its own settings, for a row written in between. The managing
+  application writes that row when it creates the store, and compatibility mode admits only a store
+  that has it, so a native open in another process cannot migrate a store being written in
+  compatibility mode; compatibility mode in turn refuses a store this process has open natively. A
+  store without the row opens and migrates natively as before. Studio's own store opener is not
+  covered yet.
 
 ### Changed
 

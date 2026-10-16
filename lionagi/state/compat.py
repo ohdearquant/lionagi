@@ -1712,10 +1712,17 @@ class _Guard:
         )
         row = fetch("SELECT value FROM schema_meta WHERE key = 'lineage'") if present else []
         lineage = row[0][0] if row else None
-        if not _names_another_application(lineage) or not str(lineage).strip():
+        named = isinstance(lineage, str) and bool(lineage.strip())
+        if not named or not _names_another_application(lineage):
             # Without a row naming its manager, a native open in another process would migrate
-            # the store under this one's writes (ADR-0128 D7).
-            shown = "no lineage row" if lineage is None else f"lineage {str(lineage)[:80]!r}"
+            # the store under this one's writes (ADR-0128 D7). A name is text: a BLOB or a number
+            # names no application.
+            if lineage is None:
+                shown = "no lineage row"
+            elif not isinstance(lineage, str):
+                shown = f"a lineage that is not text ({type(lineage).__name__})"
+            else:
+                shown = f"lineage {lineage[:80]!r}"
             raise self.refusal(
                 f"admission: the store's schema_meta has {shown}; compatibility mode admits only "
                 "a store whose managing application names itself there when it creates the store",
