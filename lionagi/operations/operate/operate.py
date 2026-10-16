@@ -288,6 +288,11 @@ async def operate(
     if isinstance(result, BaseModel):
         requests = getattr(result, "action_requests", None)
         declared_strategy = getattr(result, "action_strategy", None)
+        # Parsing fills an omitted field with its default, and model_fields_set cannot tell
+        # the two apart here, so a value equal to the field's own default is not a declaration.
+        strategy_field = type(result).model_fields.get("action_strategy")
+        if strategy_field is not None and declared_strategy == strategy_field.default:
+            declared_strategy = None
     elif isinstance(result, dict):
         requests = result.get("action_requests")
         declared_strategy = result.get("action_strategy")
@@ -297,14 +302,19 @@ async def operate(
 
     action_response_models = None
     if action_param and requests is not None:
-        from ..act.act import act
+        from ..act.act import _get_default_call_params, act
 
         # A turn that declares 'sequential' runs its own batch one call at a time. The
         # declaration can only narrow the prepared strategy: a caller that asked for
         # 'sequential' keeps it whatever the turn says, and a turn that declares nothing
-        # (a response model may default the field to 'concurrent') keeps the prepared value.
-        if declared_strategy == "sequential":
-            action_param = action_param.with_updates(strategy="sequential")
+        # keeps the prepared value. The batch stays on the caller's call parameters with
+        # one call in flight, so the caller's timeout, retry and throttle bounds still
+        # apply to it; the calls start in request order.
+        if declared_strategy == "sequential" and action_param.strategy == "concurrent":
+            call_params = action_param.action_call_params or _get_default_call_params()
+            action_param = action_param.with_updates(
+                action_call_params=call_params.with_updates(max_concurrent=1)
+            )
 
         action_response_models = await act(branch, requests, action_param)
 

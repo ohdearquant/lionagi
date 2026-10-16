@@ -107,6 +107,11 @@ and streaming persistence. Registered tools are only exposed and invoked when `a
 | `reason` | `bool` | `False` | Enable chain-of-thought reasoning field |
 | `sender` / `recipient` | `SenderRecipient` | `None` | Override message identity |
 
+A response that sets `action_strategy` to `"sequential"` narrows a `"concurrent"` call for that
+turn only: its tool calls run one at a time, in request order, under the same `call_params`
+(timeout, retries, throttle). A value equal to the response model's own default for the field is
+not read as a declaration, and a response never widens a `"sequential"` call.
+
 Returns: `list | BaseModel | None | dict | str`
 
 For cookbook usage, see [Research synthesis](../cookbook/research-synthesis.md).

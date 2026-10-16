@@ -528,11 +528,11 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
 
         from ..act.act import _get_default_call_params
 
-        # Each round starts from the concurrent default; a round that declares
-        # 'sequential' narrows its own batch inside operate, so no round inherits the
-        # strategy the round before it declared.
+        # Each round runs under the caller's action parameters (the concurrent default
+        # when there are none); a round that declares 'sequential' narrows its own batch
+        # inside operate, so no round inherits the strategy the round before it declared.
         _actx = (
-            action_param.with_updates(strategy="concurrent")
+            action_param
             if action_param
             else ActionParam(
                 action_call_params=_get_default_call_params(),

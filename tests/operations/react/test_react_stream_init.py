@@ -116,7 +116,9 @@ async def test_multiple_tool_calls_sequential_strategy():
         assert result == "50"
         assert mock_operate.call_count == 3
 
-        # Round 1 declared sequential; the extension round does not inherit it.
+        # This branch has no tools, so the extension round is prepared from the concurrent
+        # default rather than from round 1's declaration. Round 2's own 'sequential' would
+        # narrow its batch inside operate, which is mocked here.
         extension_call = mock_operate.call_args_list[1]
         action_param = extension_call[1]["action_param"]
         assert action_param.strategy == "concurrent"
