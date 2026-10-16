@@ -376,8 +376,9 @@ Exact action and enrichment semantics:
   `"sequential"` awaits requests in input order and does not apply `AlcallParams` (no timeout,
   retries or throttle); any other strategy raises `ConfigurationError`. A turn whose own
   `action_strategy` declares `"sequential"` narrows a prepared `"concurrent"` batch instead:
-  `operate` keeps the caller's `AlcallParams` and forces `max_concurrent=1`, so the bound holds
-  and the calls still start in request order.
+  `operate` keeps the caller's `AlcallParams` fields, drops a `max_concurrent` entry in their extra
+  keyword arguments (which would otherwise override the fields), and forces `max_concurrent=1`, so
+  the bound holds and the calls still start in request order.
 - The default action `AlcallParams` sets `output_dropna=True` and otherwise inherits library
   defaults. No operations-level rationale is recorded for additional concurrency or retry numbers
   because none are fixed here.

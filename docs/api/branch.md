@@ -110,11 +110,14 @@ and streaming persistence. Registered tools are only exposed and invoked when `a
 A response that sets `action_strategy` to `"sequential"` narrows a `"concurrent"` call for that
 turn only: its tool calls run one at a time, in request order, under the caller's `call_params`
 except `max_concurrent`, which is 1 for that batch (the timeout, retries and throttle still
-apply). A field the response omits is not read as a declaration, even when the response model's
-own default for it is `"sequential"`; an explicit `"sequential"` narrows even when it equals that
-default. A response never widens a `"sequential"` call, and an `action_strategy="sequential"`
-argument is not narrowed this way: `act()` awaits its calls in request order without applying
-`call_params`.
+apply). The guard reads the fields the parsed response actually set, so a field the turn omits
+is not read as a declaration even when the response model's own default for it is `"sequential"`,
+while an explicit `"sequential"` narrows even when it equals that default. A value a validator
+assigns or injects counts as a declaration, because the parsed model has set the field; the field
+is read by its field name, so a turn that sends only an alias leaves it at its default and does
+not narrow unless the model accepts the field name too (`populate_by_name=True`). A response
+never widens a `"sequential"` call, and an `action_strategy="sequential"` argument is not
+narrowed this way: `act()` awaits its calls in request order without applying `call_params`.
 
 Returns: `list | BaseModel | None | dict | str`
 

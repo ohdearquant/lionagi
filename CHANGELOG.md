@@ -69,10 +69,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - A ReAct round that declares `"sequential"` runs its tool calls one at a time. `operate` reads
   the declaration from the parsed turn and runs that turn's batch in request order with one call
   in flight, under the caller's `call_params` except `max_concurrent`, which is 1 for that batch.
-  The declaration only narrows, so a caller that passes a `"sequential"` strategy keeps it on
-  every round and a turn that declares nothing keeps the prepared strategy. Through `ReAct()`,
-  the first round used to run concurrently whatever it declared, and each extension round used to
-  run under the strategy the round before it declared.
+  Only a field the parsed turn actually set is a declaration, so a response model that defaults
+  the field does not narrow a turn that omits it, while a value a validator assigns or injects
+  counts. The declaration only narrows: a turn that declares nothing keeps the prepared strategy,
+  and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
+  every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
+  and each extension round used to run under the strategy the round before it declared.
 
 ## [0.35.5] - 2026-10-11
 

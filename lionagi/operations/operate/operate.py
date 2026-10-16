@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal, Union
 
 from pydantic import BaseModel, JsonValue
@@ -291,7 +292,8 @@ async def operate(
         # Parsing fills an omitted field from the model's default, so an omitted field must
         # not read as a declaration. The parsed response records the fields it actually set,
         # so an explicit value that happens to equal the model's default (static or built by
-        # a factory) still narrows.
+        # a factory) still narrows, and a value a validator assigns or injects is one the
+        # parsed model set, so it counts as a declaration too.
         if "action_strategy" not in result.model_fields_set:
             declared_strategy = None
     elif isinstance(result, dict):
@@ -308,15 +310,17 @@ async def operate(
         # A turn that declares 'sequential' runs its own batch one call at a time. The
         # declaration can only narrow the prepared strategy: a caller that asked for
         # 'sequential' keeps it whatever the turn says, and a turn that declares nothing
-        # keeps the prepared value. The batch stays on the caller's call parameters with
-        # max_concurrent 1, so the caller's timeout, retry and throttle bounds still apply
-        # to it; the calls start in request order. One difference from act()'s sequential
-        # branch: with suppress_errors=False a failing call does not stop the batch before
-        # the next call starts.
+        # keeps the prepared value. A value a validator assigns or injects is one the parsed
+        # model sets and counts as a declaration. The batch stays on the caller's call
+        # parameters with max_concurrent 1, so the caller's timeout, retry and throttle
+        # bounds still apply to it; the calls start in request order. One difference from
+        # act()'s sequential branch: with suppress_errors=False a failing call does not stop
+        # the batch before the next call starts, and a call in flight when an earlier call
+        # fails is cancelled rather than left running to its own end.
         if declared_strategy == "sequential" and action_param.strategy == "concurrent":
             call_params = action_param.action_call_params or _get_default_call_params()
             extra_kw = call_params.kw
-            if isinstance(extra_kw, dict) and "max_concurrent" in extra_kw:
+            if isinstance(extra_kw, Mapping) and "max_concurrent" in extra_kw:
                 # default_kw() lets these extra keyword arguments override the fields, so a
                 # caller's max_concurrent must be dropped for the bound to hold.
                 extra_kw = {k: v for k, v in extra_kw.items() if k != "max_concurrent"}

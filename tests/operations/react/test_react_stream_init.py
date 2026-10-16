@@ -81,7 +81,8 @@ async def test_single_tool_invocation():
 
 @pytest.mark.asyncio
 async def test_extension_round_is_prepared_from_the_concurrent_default():
-    """A round is prepared from the concurrent default, never from the round before it.
+    """When the caller gives no action parameters, a round is prepared from the concurrent
+    default, never from the round before it.
 
     The round that declares ``sequential`` narrows its own batch inside ``operate``,
     which is mocked here; test_react_round_strategy.py runs that path for real.

@@ -5,10 +5,11 @@
 
 import asyncio
 import json
+from types import MappingProxyType
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi.ln import AlcallParams
 from lionagi.operations._defaults import make_parse_param
@@ -361,5 +362,134 @@ async def test_a_max_concurrent_kw_entry_does_not_widen_a_narrowed_batch():
         response_format=ReActAnalysis,
         actions=True,
         call_params=AlcallParams(kw={"max_concurrent": 3}),
+    )
+    assert state["peak"] == 1
+
+
+class SequentialSetByAfterValidator(BaseModel):
+    """A response model whose after-validator sets the field when the turn leaves it out."""
+
+    analysis: str = ""
+    extension_needed: bool = False
+    action_strategy: Literal["sequential", "concurrent"] = "concurrent"
+
+    @model_validator(mode="after")
+    def _narrow_when_omitted(self):
+        if "action_strategy" not in self.model_fields_set:
+            self.action_strategy = "sequential"
+        return self
+
+
+class SequentialSetByBeforeValidator(BaseModel):
+    """A response model whose before-validator injects the field when the turn leaves it out."""
+
+    analysis: str = ""
+    extension_needed: bool = False
+    action_strategy: Literal["sequential", "concurrent"] = "concurrent"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _narrow_when_omitted(cls, data):
+        if isinstance(data, dict) and "action_strategy" not in data:
+            return {**data, "action_strategy": "sequential"}
+        return data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_cls",
+    [SequentialSetByAfterValidator, SequentialSetByBeforeValidator],
+    ids=["after-validator", "before-validator"],
+)
+async def test_a_value_a_validator_assigns_counts_as_a_declaration(model_cls):
+    """A validator that assigns or injects 'sequential' narrows the turn; the guard reads the parsed fields set."""
+    trace = []
+    turn = {
+        "analysis": "Use the requested tools",
+        "extension_needed": False,
+        "action_requests": calls(("left", 1), ("right", 2)),
+    }
+    branch = TestBranch.from_text([json.dumps(turn)], tools=traced_tools(trace))
+
+    await branch.operate(instruction="run both", response_format=model_cls, actions=True)
+    assert trace == one_at_a_time(("left", 1), ("right", 2))
+
+
+class AliasedStrategy(BaseModel):
+    """A response model carrying its strategy field under an alias only."""
+
+    analysis: str = ""
+    extension_needed: bool = False
+    action_strategy: Literal["sequential", "concurrent"] = Field(
+        "concurrent", alias="actionStrategy"
+    )
+
+
+class AliasedStrategyByName(BaseModel):
+    """An aliased strategy field whose model also accepts the field name."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    analysis: str = ""
+    extension_needed: bool = False
+    action_strategy: Literal["sequential", "concurrent"] = Field(
+        "concurrent", alias="actionStrategy"
+    )
+
+
+def in_flight_turn(declared):
+    return {
+        "analysis": "Use the requested tools",
+        "extension_needed": False,
+        "action_requests": [
+            {"function": "hold", "arguments": {"name": "left"}},
+            {"function": "hold", "arguments": {"name": "right"}},
+        ],
+        **declared,
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_aliased_field_is_read_by_its_field_name_not_its_alias():
+    """A turn that sends only the alias leaves the field at its default, so both calls stay in flight."""
+    state = {"now": 0, "peak": 0}
+    branch = TestBranch.from_text(
+        [json.dumps(in_flight_turn({"actionStrategy": "sequential"}))],
+        tools=[in_flight_tool(state)],
+    )
+
+    await branch.operate(instruction="run both", response_format=AliasedStrategy, actions=True)
+    assert state["peak"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_aliased_field_with_populate_by_name_narrows_from_the_alias_key():
+    """The same alias narrows once the model accepts the field name the parser writes."""
+    state = {"now": 0, "peak": 0}
+    branch = TestBranch.from_text(
+        [json.dumps(in_flight_turn({"actionStrategy": "sequential"}))],
+        tools=[in_flight_tool(state)],
+    )
+
+    await branch.operate(
+        instruction="run both", response_format=AliasedStrategyByName, actions=True
+    )
+    assert state["peak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_max_concurrent_entry_in_a_mapping_does_not_widen_a_narrowed_batch():
+    """A max_concurrent held in a read-only mapping is dropped like one held in a dict."""
+    state = {"now": 0, "peak": 0}
+    branch = TestBranch.from_text(
+        [json.dumps(in_flight_turn({"action_strategy": "sequential"}))],
+        tools=[in_flight_tool(state)],
+    )
+
+    await branch.operate(
+        instruction="run both",
+        response_format=ReActAnalysis,
+        actions=True,
+        call_params=AlcallParams(kw=MappingProxyType({"max_concurrent": 3})),
     )
     assert state["peak"] == 1
