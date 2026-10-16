@@ -11,7 +11,10 @@ name: Issue links
 on:
   pull_request:
     # ready_for_review: the job skips drafts (below), so a draft gets its first
-    # check when it is marked ready.
+    # check when it is marked ready. A pull request converted back to draft and
+    # marked ready again while its run is in progress gets one duplicate run: the
+    # new run cancels the one in progress (cancel-in-progress below) and checks
+    # the same body again. This check is not required, so nothing waits on it.
     types: [ opened, edited, reopened, synchronize, ready_for_review ]
     branches: [ main, develop ]
 

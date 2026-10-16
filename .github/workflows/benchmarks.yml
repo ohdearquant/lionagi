@@ -11,11 +11,12 @@ on:
     branches: [ main, master ]
   # ready_for_review is listed because the job skips drafts (below): without it
   # a draft marked ready would get no run until its next push. That costs one
-  # benchmark run each time a draft is marked ready. A pull request converted
-  # back to draft and marked ready again while its run is in progress cancels
-  # that run and starts the same commit again, because converted_to_draft is not
-  # listed and pull-request runs cancel in progress; the cost is one duplicate
-  # run, and nothing is decided by it, since this check is not required.
+  # benchmark run each time a draft is marked ready. Converting a pull request
+  # back to draft starts no run (converted_to_draft is not listed), so a run in
+  # progress goes on; marking it ready again starts a run in the same
+  # concurrency group, which cancels the one in progress and runs the same
+  # commit again. The cost is one duplicate run, and nothing is decided by it,
+  # since this check is not required.
   # Naming types replaces the defaults, so the three defaults are listed back.
   pull_request:
     types: [ opened, synchronize, reopened, ready_for_review ]

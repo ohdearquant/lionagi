@@ -77,9 +77,35 @@ def test_an_advisory_workflow_keeps_its_triggers(name: str) -> None:
     assert _triggers(_load(name)) == TRIGGERS[name]
 
 
+# The duplicate run the workflows' comments describe (a draft marked ready again
+# while its run is in progress) comes from these blocks, so they are pinned too.
+CONCURRENCY = {
+    "benchmarks.yml": {
+        "group": "${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    },
+    "typecheck.yml": {
+        "group": "${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    },
+    "issue-links.yml": {
+        "group": "issue-links-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": True,
+    },
+}
+
+
+@pytest.mark.parametrize("name", sorted(ADVISORY_JOBS))
+def test_an_advisory_workflow_keeps_its_concurrency(name: str) -> None:
+    assert _load(name)["concurrency"] == CONCURRENCY[name]
+
+
 def test_only_the_advisory_workflows_read_the_switch() -> None:
-    # GitHub loads workflows with either suffix.
+    # GitHub loads workflows with either suffix. The name is matched without
+    # regard to case, so a reader spelling it in lower case is found too.
     workflows = [*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]
-    readers = sorted(path.name for path in workflows if "ADVISORY_PR_CHECKS" in path.read_text())
+    readers = sorted(
+        path.name for path in workflows if "advisory_pr_checks" in path.read_text().lower()
+    )
     assert readers == sorted(ADVISORY_JOBS)
-    assert "ADVISORY_PR_CHECKS" not in (WORKFLOWS / "ci.yml").read_text()
+    assert "advisory_pr_checks" not in (WORKFLOWS / "ci.yml").read_text().lower()
