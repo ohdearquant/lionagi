@@ -5,18 +5,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi._errors import ConfigurationError
 from lionagi.casts.emission import SpawnRequest
 from lionagi.orchestration import (
     build_dag_graph,
+    grant_spawn,
     plan,
     role_node_builder,
-    spawn_roles,
 )
 
 from .engine import Engine, EngineRun
+
+if TYPE_CHECKING:
+    from lionagi.session.branch import Branch
 
 __all__ = ("PlanningEngine", "PlanError")
 
@@ -41,6 +44,19 @@ def _synthesis_instruction(prompt: str, outputs: list[str]) -> str:
     )
 
 
+def _inherit_worker_providers(branch: Branch) -> None:
+    """Carry managed worker context providers with independent registry accounting."""
+    source = branch.metadata.get("clone_from")
+    if source is None or source._context_providers is None:
+        return
+    registry = source._context_providers
+    branch.providers.budget = registry.budget
+    for entry in registry._entries:
+        branch.providers.register(
+            entry.provider, priority=entry.priority, max_tokens=entry.max_tokens, name=entry.name
+        )
+
+
 class PlanningEngine(Engine):
     """Plan-then-execute engine over the reactive DAG executor (stateless config). See docs/reference/engines.md for parameter details."""
 
@@ -58,13 +74,12 @@ class PlanningEngine(Engine):
         self.roles = roles
         self.synthesis_role = synthesis_role
         self.reactive = reactive
-        self._refuse_settings_workers_drop()
+        self._refuse_unproven_worker_settings()
 
-    def _refuse_settings_workers_drop(self) -> None:
-        # Workers are built by spawn_roles from the assignee's role alone, not
-        # through make_agent, so they get neither setting: a worker would run
-        # uncontained, or without the overlay, beside an orchestrator that has it.
-        dropped = [
+    def _refuse_unproven_worker_settings(self) -> None:
+        # DAG assignments run on clones of the managed role templates. Their
+        # environment/containment provenance is not tracked by EngineRun.run_dag.
+        unsupported = [
             name
             for name, value in (
                 ("contain_account_integrations", self.contain_account_integrations),
@@ -72,11 +87,10 @@ class PlanningEngine(Engine):
             )
             if value
         ]
-        if dropped:
+        if unsupported:
             raise ConfigurationError(
-                f"PlanningEngine does not support {' or '.join(dropped)}: its workers are "
-                "built from their role alone, without the engine's agent settings, so the "
-                "setting would reach the orchestrator and the synthesizer but not the workers."
+                f"PlanningEngine does not support {' or '.join(unsupported)}: managed-DAG "
+                "worker clones do not have verified environment/containment provenance."
             )
 
     # -- lifecycle ------------------------------------------------------------
@@ -84,7 +98,7 @@ class PlanningEngine(Engine):
     async def _run(self, run: EngineRun, prompt: str, *, max_ops: int = 0) -> str:
         """Plan *prompt* into a DAG, execute it (reactively when self.reactive), then synthesize worker outputs."""
         # Checked again here: both are plain attributes a caller can set after construction.
-        self._refuse_settings_workers_drop()
+        self._refuse_unproven_worker_settings()
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt is empty")
@@ -94,10 +108,16 @@ class PlanningEngine(Engine):
         # One role-template branch per distinct assignee; build_dag_graph runs each
         # assignment on a clone. Every assignee role may grow the live DAG when reactive.
         assignees = {ta.assignee for ta in assignments}
-        spawners = tuple(assignees) if self.reactive else ()
-        roles = await spawn_roles(run.session, self._worker_specs(assignees), spawners=spawners)
+        roles = {}
+        for assignee in assignees:
+            branch = await run.make_agent(assignee, name=assignee)
+            if self.reactive:
+                grant_spawn(branch, assignees=assignees)
+            roles[assignee] = branch
 
         graph, node_ids = build_dag_graph(run.session, assignments, roles)
+        for node in graph.internal_nodes:
+            _inherit_worker_providers(run.session.branches[node.branch_id])
         run.notify("executing", assignments=len(assignments))
         result = await run.run_dag(
             graph,
@@ -105,30 +125,12 @@ class PlanningEngine(Engine):
             spawn_type=SpawnRequest if self.reactive else None,
             node_builder=role_node_builder(roles) if self.reactive else None,
             max_concurrent=max(len(assignments), 1),
+            on_branch_created=_inherit_worker_providers,
             verbose=False,
         )
         return await self._synthesize(run, prompt, assignments, node_ids, result)
 
     # -- stages ---------------------------------------------------------------
-
-    def _worker_specs(self, assignees: set[str]) -> dict[str, Any]:
-        """Compose one worker spec per assignee, carrying the engine-wide MCP config.
-
-        Workers are spawned through ``spawn_roles`` rather than ``make_agent``,
-        so nothing on that path reads the engine's agent settings. Passing bare
-        role strings therefore had every worker resolve ambient MCP
-        configuration, silently exempting the fan-out from the config the
-        engine declared for its agents.
-        """
-        from lionagi.agent import AgentSpec  # noqa: PLC0415
-
-        specs: dict[str, Any] = {}
-        for assignee in assignees:
-            spec = AgentSpec.compose(assignee)
-            if self.agent_mcp_config_path is not None:
-                spec.mcp_config_path = self.agent_mcp_config_path
-            specs[assignee] = spec
-        return specs
 
     async def _plan(self, run: EngineRun, prompt: str, max_ops: int) -> list:
         """Decompose *prompt* into TaskAssignment list; retries once with explicit guidance, then raises PlanError."""

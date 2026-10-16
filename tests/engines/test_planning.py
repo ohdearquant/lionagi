@@ -107,24 +107,30 @@ async def test_synthesize_skips_dropped_nodes():
 
 @pytest.mark.asyncio
 async def test_run_wires_plan_build_execute_synth(monkeypatch):
-    """_run threads plan → spawn_roles → build_dag_graph → run_dag → synthesize,
+    """_run threads plan → make_agent → build_dag_graph → run_dag → synthesize,
     and reactive=True propagates SpawnRequest + a node_builder into run_dag."""
     eng = PlanningEngine(reactive=True)
     run = eng.new_run()
 
     assignments = [TaskAssignment(task="x", assignee="researcher")]
     captured: dict = {}
+    graph = SimpleNamespace(internal_nodes=[])
 
     async def fake_plan(_run, prompt, max_ops):
         captured["planned"] = prompt
         return assignments
 
-    async def fake_spawn_roles(session, specs, *, spawners=()):
-        captured["spawners"] = spawners
-        return {"researcher": SimpleNamespace(name="researcher")}
+    async def fake_make(role, *, name):
+        captured["worker"] = SimpleNamespace(name=name)
+        assert role == "researcher"
+        return captured["worker"]
+
+    def fake_grant_spawn(branch, *, assignees):
+        captured["spawners"] = (branch, set(assignees))
 
     def fake_build_dag_graph(session, asg, roles):
-        return ("GRAPH", ["n1"])
+        assert roles == {"researcher": captured["worker"]}
+        return (graph, ["n1"])
 
     def fake_role_node_builder(roles):
         return "NODE_BUILDER"
@@ -140,15 +146,16 @@ async def test_run_wires_plan_build_execute_synth(monkeypatch):
     eng._plan = fake_plan
     eng._synthesize = fake_synth
     run.run_dag = fake_run_dag
-    monkeypatch.setattr("lionagi.engines.planning.spawn_roles", fake_spawn_roles)
+    run.make_agent = fake_make
+    monkeypatch.setattr("lionagi.engines.planning.grant_spawn", fake_grant_spawn)
     monkeypatch.setattr("lionagi.engines.planning.build_dag_graph", fake_build_dag_graph)
     monkeypatch.setattr("lionagi.engines.planning.role_node_builder", fake_role_node_builder)
 
     out = await eng._run(run, "do the work")
     assert out == "FINAL"
     assert captured["planned"] == "do the work"
-    assert captured["spawners"] == ("researcher",)  # reactive → assignees may spawn
-    assert captured["run_dag"]["graph"] == "GRAPH"
+    assert captured["spawners"] == (captured["worker"], {"researcher"})
+    assert captured["run_dag"]["graph"] is graph
     assert captured["run_dag"]["reactive"] is True
     assert captured["run_dag"]["spawn_type"] is SpawnRequest
     assert captured["run_dag"]["node_builder"] == "NODE_BUILDER"
@@ -166,9 +173,8 @@ async def test_run_non_reactive_disables_spawn(monkeypatch):
     async def fake_plan(_run, prompt, max_ops):
         return assignments
 
-    async def fake_spawn_roles(session, specs, *, spawners=()):
-        captured["spawners"] = spawners
-        return {"researcher": SimpleNamespace(name="researcher")}
+    def fail_grant_spawn(*args, **kwargs):
+        raise AssertionError("non-reactive worker was granted spawn")
 
     async def fake_run_dag(graph, **kw):
         captured["run_dag"] = kw
@@ -180,11 +186,14 @@ async def test_run_non_reactive_disables_spawn(monkeypatch):
     eng._plan = fake_plan
     eng._synthesize = fake_synth
     run.run_dag = fake_run_dag
-    monkeypatch.setattr("lionagi.engines.planning.spawn_roles", fake_spawn_roles)
-    monkeypatch.setattr("lionagi.engines.planning.build_dag_graph", lambda *a: ("G", ["n1"]))
+    run.make_agent = _fake_make
+    monkeypatch.setattr("lionagi.engines.planning.grant_spawn", fail_grant_spawn)
+    monkeypatch.setattr(
+        "lionagi.engines.planning.build_dag_graph",
+        lambda *a: (SimpleNamespace(internal_nodes=[]), ["n1"]),
+    )
 
     await eng._run(run, "task")
-    assert captured["spawners"] == ()
     assert captured["run_dag"]["reactive"] is False
     assert captured["run_dag"]["spawn_type"] is None
     assert captured["run_dag"]["node_builder"] is None

@@ -103,6 +103,19 @@ Extends `Engine` with:
 | `synthesis_role` | `"synthesizer"` | Casts role that writes the final deliverable from worker outputs. |
 | `reactive` | `True` | When `True`, every worker is granted `SpawnRequest` so the live DAG self-expands. `False` runs a flat, fully-planned DAG. |
 
+Worker roles use the shared engine agent builder, so `model`, `effort`, `yolo`,
+`agent_cwd`, `agent_extra_prompt`, `agent_mcp_config_path`, and `khive_injection`
+apply to workers as well as the planning and synthesis stages. Engine settings
+override role-profile defaults; injection receives the run's namespace unless
+the caller pins one. Planned and reactively spawned worker clones retain their
+template's context providers, with separate registry budgets and statistics.
+
+Each distinct worker role template counts toward `max_agents` and triggers
+`on_branch_created`; task clones do not consume another agent slot. Synthesis
+keeps its existing budget exemption. `agent_env` and
+`contain_account_integrations=True` remain unsupported: managed-DAG worker
+clones do not yet have verified environment/containment provenance.
+
 Pipeline shape: orchestrate (produce DAG) → execute reactively → synthesize outputs into deliverable.
 
 ---

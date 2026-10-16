@@ -403,6 +403,115 @@ def _mcp_file(tmp_path, name):
     return str(path)
 
 
+async def _planning_workers(monkeypatch, engine, *, on_branch_created=None, spawn_base=None):
+    """Construct real worker templates and DAG clones without executing a provider."""
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.engines import engine as engine_mod
+    from lionagi.orchestration import patterns
+
+    specs = []
+    workers = []
+    real_create = engine_mod.create_agent
+
+    async def capture(spec, **kwargs):
+        specs.append(spec)
+        return await real_create(spec, **kwargs)
+
+    # Observe both construction paths so a regression is a dropped setting,
+    # rather than a test coupled to which helper the engine calls.
+    monkeypatch.setattr(engine_mod, "create_agent", capture)
+    monkeypatch.setattr(patterns, "create_agent", capture)
+    run = engine.new_run(on_branch_created=on_branch_created)
+
+    async def plan(_run, prompt, max_ops):
+        return [
+            TaskAssignment(task="first", assignee="researcher"),
+            TaskAssignment(task="second", assignee="researcher"),
+            TaskAssignment(task="third", assignee="analyst"),
+        ]
+
+    async def execute(graph, **kwargs):
+        workers.extend(run.session.branches[node.branch_id] for node in graph.internal_nodes)
+        if spawn_base is not None:
+            from lionagi.casts.emission import SpawnRequest
+            from lionagi.operations.flow import ReactiveExecutor
+
+            emitter = next(iter(graph.internal_nodes))
+            request = SpawnRequest(
+                instruction="Follow up", assignee="researcher" if spawn_base == "role" else None
+            )
+            child = kwargs["node_builder"](request, emitter)
+            executor = ReactiveExecutor(
+                run.session, graph, on_branch_created=kwargs["on_branch_created"]
+            )
+            executor.operation_branches[emitter.id] = workers[0]
+            executor._assign_injected_branch(child, emitter.id, independent=False)
+            workers.append(run.session.branches[child.branch_id])
+        return {"operation_results": {}}
+
+    async def synthesize(*args):
+        return "done"
+
+    monkeypatch.setattr(engine, "_plan", plan)
+    monkeypatch.setattr(engine, "_synthesize", synthesize)
+    monkeypatch.setattr(run, "run_dag", execute)
+    assert await engine._run(run, "a task") == "done"
+    return run, specs, workers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "setting,value,spec_field",
+    [
+        ("model", "codex/gpt-5.5", "model"),
+        ("effort", "high", "effort"),
+        ("yolo", True, "yolo"),
+        ("agent_cwd", "workspace", "cwd"),
+        ("agent_extra_prompt", "Keep the worker evidence concise.", "extra_prompt"),
+        ("khive_injection", True, "khive_injection"),
+    ],
+    ids=["model", "effort", "yolo", "cwd", "extra-prompt", "injection"],
+)
+async def test_planning_worker_settings_reach_real_agents(
+    monkeypatch, tmp_path, setting, value, spec_field
+):
+    from lionagi.engines import PlanningEngine
+
+    monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
+    if setting == "agent_cwd":
+        workspace = tmp_path / value
+        workspace.mkdir()
+        value = str(workspace)
+    settings = {
+        "model": "codex/gpt-5.5",
+        "khive_injection": False,
+        "agent_mcp_config_path": _mcp_file(tmp_path, "workers.mcp.json"),
+        setting: value,
+    }
+    run, specs, workers = await _planning_workers(monkeypatch, PlanningEngine(**settings))
+    expected = (
+        {"namespace": f"planningengine:{run.run_id}"} if setting == "khive_injection" else value
+    )
+
+    assert len(specs) == 2  # one template per role, not per assignment
+    for spec in specs:
+        assert getattr(spec, spec_field) == expected
+    assert len(workers) == 3
+    for worker in workers:
+        kwargs = worker.chat_model.endpoint.config.kwargs
+        if setting == "model":
+            assert worker.chat_model.model_name == "gpt-5.5"
+        elif setting == "effort":
+            assert kwargs["reasoning_effort"] == value
+        elif setting == "yolo":
+            assert kwargs["full_auto"] is True
+            assert kwargs["skip_git_repo_check"] is True
+        elif setting == "agent_cwd":
+            assert str(kwargs["repo"]) == value
+        elif setting == "agent_extra_prompt":
+            assert value in worker._system_text()
+
+
 @pytest.mark.asyncio
 async def test_engine_wide_mcp_config_path_reaches_the_agent_spec(monkeypatch, tmp_path):
     """An engine can name the .mcp.json its agents resolve.
@@ -460,32 +569,84 @@ async def test_unset_mcp_config_path_leaves_resolution_untouched(monkeypatch, tm
     assert specs[-1].mcp_config_path is None
 
 
-def test_planning_worker_specs_carry_the_engine_wide_mcp_config(tmp_path):
-    """Planning workers must not be exempt from the config the engine declared.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [True, False], ids=["explicit", "ambient"])
+async def test_planning_workers_preserve_engine_mcp_resolution(monkeypatch, tmp_path, declared):
+    from lionagi.engines import PlanningEngine
 
-    They are spawned through the role-spawning helper rather than make_agent,
-    so nothing on that path reads engine-wide agent settings: bare role
-    strings had every worker resolve ambient MCP configuration while the
-    engine's own orchestrator and synthesizer honoured the declared file —
-    the feature working on the paths that were tested and silently not on
-    the fan-out.
-    """
-    from lionagi.agent import AgentSpec
-    from lionagi.engines.planning import PlanningEngine
+    path = _mcp_file(tmp_path, "declared.mcp.json") if declared else None
+    engine = PlanningEngine(model="codex/gpt-5.5", agent_mcp_config_path=path)
+    _, specs, _ = await _planning_workers(monkeypatch, engine)
+    assert len(specs) == 2
+    assert all(spec.mcp_config_path == path for spec in specs)
 
-    declared = _mcp_file(tmp_path, "declared.mcp.json")
-    engine = PlanningEngine(agent_mcp_config_path=declared)
 
-    specs = engine._worker_specs({"researcher", "analyst"})
+@pytest.mark.asyncio
+async def test_planning_worker_templates_use_agent_accounting(monkeypatch, tmp_path):
+    from lionagi.engines import PlanningEngine
 
-    assert set(specs) == {"researcher", "analyst"}
-    for spec in specs.values():
-        # Composed specs, not bare strings: the spawning helper applies its
-        # own compose to strings, which cannot see the engine's setting.
-        assert isinstance(spec, AgentSpec)
-        assert spec.mcp_config_path == declared
+    created = []
+    engine = PlanningEngine(
+        model="codex/gpt-5.5", agent_mcp_config_path=_mcp_file(tmp_path, "workers.mcp.json")
+    )
+    run, specs, workers = await _planning_workers(
+        monkeypatch, engine, on_branch_created=created.append
+    )
+    assert run.agents_made == len(specs) == len(created) == 2
+    assert {branch.name for branch in created} == {"researcher", "analyst"}
+    assert {str(branch.id) for branch in created}.isdisjoint(str(worker.id) for worker in workers)
 
-    # Unset engine-wide config keeps the workers on ambient resolution,
-    # exactly as bare role strings behaved.
-    for spec in PlanningEngine()._worker_specs({"researcher"}).values():
-        assert spec.mcp_config_path is None
+
+@pytest.mark.asyncio
+async def test_planning_workers_respect_the_agent_budget(monkeypatch, tmp_path):
+    from lionagi.engines import PlanningEngine
+    from lionagi.engines.engine import EngineBudgetError
+
+    created = []
+    engine = PlanningEngine(
+        model="codex/gpt-5.5",
+        max_agents=1,
+        agent_mcp_config_path=_mcp_file(tmp_path, "workers.mcp.json"),
+    )
+    with pytest.raises(EngineBudgetError, match="agent budget exhausted"):
+        await _planning_workers(monkeypatch, engine, on_branch_created=created.append)
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "spawn_base", [None, "role", "worker"], ids=["planned", "role-child", "worker-child"]
+)
+async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_base):
+    from lionagi.engines import PlanningEngine
+    from lionagi.testing import scripted_imodel
+    from lionagi.tools.khive_injection import KhiveInjectionProvider
+
+    monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
+    namespaces = []
+
+    async def recall(provider, query):
+        namespaces.append(provider.policy.namespace)
+        return "WORKER-ONLY-REFERENCE"
+
+    monkeypatch.setattr(KhiveInjectionProvider, "_recall", recall)
+    engine = PlanningEngine(
+        model="codex/gpt-5.5",
+        khive_injection=True,
+        agent_mcp_config_path=_mcp_file(tmp_path, "workers.mcp.json"),
+    )
+    run, _, workers = await _planning_workers(monkeypatch, engine, spawn_base=spawn_base)
+    for worker in workers:
+        # Swap only the model transport: real agent construction, cloning,
+        # provider registration and operate's pre-turn fold still run.
+        model = scripted_imodel([{"type": "text", "content": "done"}])
+        worker.chat_model = worker.parse_model = model
+        await worker.operate(instruction="Verify the worker evidence")
+        messages = model.endpoint.calls[0].payload["messages"]
+        assert "WORKER-ONLY-REFERENCE" in messages[0]["content"]
+        assert "WORKER-ONLY-REFERENCE" not in str(worker.msgs.messages)
+        source = worker.metadata["clone_from"]
+        assert worker.providers is not source.providers
+        assert worker.providers.budget == source.providers.budget
+        assert worker.providers.stats["blocks_injected"] == 1
+    assert namespaces == [f"planningengine:{run.run_id}"] * len(workers)
