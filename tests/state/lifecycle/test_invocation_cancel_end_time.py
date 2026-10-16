@@ -106,7 +106,7 @@ async def test_invocation_cancel_null_patch_keeps_recorded_end_time(ended_at):
 
 
 @pytest.mark.parametrize("entity_type", ["session", "schedule_run", "play"])
-async def test_other_entities_keep_explicit_end_time_write(entity_type):
+async def test_other_entities_keep_explicit_end_time_write(entity_type, tmp_path):
     async with StateDB(":memory:") as db:
         status = "cancelled"
         reason_code = RunReasons.CANCELLED_MANUAL_KILL
@@ -140,7 +140,12 @@ async def test_other_entities_keep_explicit_end_time_write(entity_type):
             table = "schedule_runs"
         else:
             await db.create_show(
-                {"id": "show", "topic": "example", "show_dir": "/private/tmp", "status": "active"}
+                {
+                    "id": "show",
+                    "topic": "example",
+                    "show_dir": str(tmp_path),
+                    "status": "active",
+                }
             )
             await db.create_play(
                 {"id": "run", "show_id": "show", "name": "example", "status": "running"}

@@ -4330,7 +4330,15 @@ class StateDB:
             return (time.time() - float(last_healthy)) / 60.0
 
         if metric == "p95_latency_ms":
-            # Cancellation end times may mark cleanup observation, not execution latency.
+            # Cancellation end times record when the cancellation was observed, not the length
+            # of the work, so those rows are excluded: a cancelled row's ended_at may mark a
+            # delayed cleanup. The lifecycle reaper's timed_out rows are NOT excluded, even
+            # though its ended_at is the same kind of observation time for a stale run. Nothing
+            # on the row separates a reaper-observed timed_out from the run's own: both carry
+            # reason code run.timed_out.deadline, the reaper's basis (deadline, action kind)
+            # rides only status_transitions.metadata, and the reason summaries are display text
+            # rather than a key any reader filters on. So a run started long before it was reaped
+            # still enters this sample at its full observed age.
             async with self._read() as conn:
                 rows = (
                     (

@@ -109,3 +109,75 @@ async def test_terminal_writers_finish_running_invocation(tmp_path, monkeypatch,
         row = await db.get_invocation("run")
         assert row["status"] == ("cancelled" if writer == "launch_cancel" else "completed")
         assert row["ended_at"] >= row["started_at"]
+
+
+async def test_refused_exit_write_is_logged(tmp_path, monkeypatch, caplog):
+    """A terminal row refuses the post-exit write; the refusal names the run,
+    the stored status, and the status that was refused."""
+    import logging
+
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_invocation(
+            {"id": "run", "skill": "example", "started_at": 100.0, "status": "running"}
+        )
+        await db.update_status(
+            "invocation",
+            "run",
+            new_status="cancelled",
+            reason_code=RunReasons.CANCELLED_MANUAL_KILL,
+            reason_summary="Cancellation observed",
+            source="admin",
+            actor="user",
+            expected_statuses={"running"},
+            extra_fields={"ended_at": 200.0},
+        )
+
+    async def spawn(*args, **kwargs):
+        return (0, "")
+
+    monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
+    with caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"):
+        await launches._spawn_detached(["unused"], "run", tmp_path=None)
+
+    assert "run" in caplog.text
+    assert "cancelled" in caplog.text
+    assert "completed" in caplog.text
+
+
+async def test_refused_cancellation_write_is_logged(tmp_path, monkeypatch, caplog):
+    """The cancellation path logs the same refusal shape when the row already
+    reached a terminal status."""
+    import logging
+
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_invocation(
+            {"id": "run", "skill": "example", "started_at": 100.0, "status": "running"}
+        )
+        await db.update_status(
+            "invocation",
+            "run",
+            new_status="cancelled",
+            reason_code=RunReasons.CANCELLED_MANUAL_KILL,
+            reason_summary="Cancellation observed",
+            source="admin",
+            actor="user",
+            expected_statuses={"running"},
+            extra_fields={"ended_at": 200.0},
+        )
+
+    async def spawn(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
+    with (
+        caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await launches._spawn_detached(["unused"], "run", tmp_path=None)
+
+    assert "run" in caplog.text
+    assert "cancelled" in caplog.text

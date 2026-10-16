@@ -1530,3 +1530,52 @@ async def test_metric_value_p95_latency_excludes_cancelled_observation_time(
         assert await db.metric_value("p95_latency_ms", window_start=50.0) == (
             5000.0 if include_finished else 0.0
         )
+
+
+async def test_p95_latency_counts_reaper_observed_timeout_rows(tmp_path, monkeypatch):
+    """A reaped ``timed_out`` row's end time is the reaper's observation, so its
+    whole 8000s age enters the latency sample even though nothing ran that long.
+
+    Nothing on the invocation row separates a reaper-observed ``timed_out``
+    from one the run wrote itself: both carry reason code
+    ``run.timed_out.deadline``, the reaper's metadata lives in
+    ``status_transitions``, not the row, and only the reason summary text differs.
+    This pins the resulting number and names the gap.
+    """
+    import time as _time
+    from types import SimpleNamespace
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services import lifecycle as lifecycle_mod
+
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(lifecycle_mod, "time", SimpleNamespace(time=lambda: 1_000_000.0))
+    async with StateDB(path) as db:
+        await db.create_invocation(
+            {
+                "id": "reaped",
+                "skill": "agent",
+                "status": "running",
+                "started_at": 992_000.0,
+                "session_count": 1,
+            }
+        )
+        await db.create_invocation(
+            {
+                "id": "finished",
+                "skill": "agent",
+                "status": "completed",
+                "started_at": 999_970.0,
+                "ended_at": 999_940.0,
+            }
+        )
+
+    assert await lifecycle_mod.reap_stale_invocations(deadline_seconds=7200) == 1
+
+    async with StateDB(path) as db:
+        reaped = await db.get_invocation("reaped")
+        assert reaped["status"] == "timed_out"
+        assert reaped["ended_at"] == 1_000_000.0
+        # The 8000s observation, not the 30s of real work, is what the metric reports.
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 8_000_000.0

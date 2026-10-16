@@ -241,3 +241,34 @@ async def test_usage_request_returns_the_aggregates(db_path, monkeypatch):
     assert result["completed_total"] == 1
     assert result["finished_total"] == 3
     assert result["latest_started_at"] == 300
+
+
+async def test_latest_start_counts_a_fire_that_never_launched(db_path):
+    """``latest_started_at`` is the maximum recorded start over every row, so an
+    abandoned fire counts as the last use even though no process ever ran.
+
+    The scheduler writes the invocation row at fire time and then abandons it as
+    ``cancelled`` when its occurrence write loses the claim
+    (``run.cancelled.stale_auto``, ``started_at`` kept). That reason code is also
+    written by the stale sweep, which cancels rows that did launch, and the row
+    carries no other mark of "never launched" -- the abandon's basis rides only
+    ``status_transitions.actor`` and its ``status_evidence_refs``, not a column a
+    dialect-neutral query can filter on. So the row is counted, pinned here.
+    """
+    async with StateDB(db_path) as db:
+        await insert(db, "ran", started_at=100, status="completed")
+        await insert(db, "never-launched", started_at=400)
+        await db.update_status(
+            "invocation",
+            "never-launched",
+            new_status="cancelled",
+            reason_code="run.cancelled.stale_auto",
+            reason_summary="Fire abandoned: another scheduler advanced the schedule first.",
+            source="system",
+            actor="scheduler_cursor_claim",
+            evidence_refs=[{"kind": "schedule", "id": "sched"}],
+            expected_statuses={"running"},
+            extra_fields={"ended_at": 401},
+        )
+
+    assert (await query())["latest_started_at"] == 400

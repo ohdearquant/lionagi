@@ -67,9 +67,11 @@ async def test_invocation_cancel_records_observation_time_atomically(
 
 @pytest.mark.parametrize("status", ["completed", "cancelled"])
 @pytest.mark.parametrize("ended_at", [None, 200.0])
-async def test_invocation_cancel_preserves_terminal_end_time(
+async def test_invocation_cancel_pre_check_skips_non_running_rows(
     tmp_path, monkeypatch, status, ended_at
 ):
+    """The pre-check refuses a row that is already terminal, so the guarded
+    write below it is never reached and the row is untouched."""
     monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db, status=status, ended_at=ended_at)
