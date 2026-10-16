@@ -9,9 +9,11 @@ docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -52,10 +54,28 @@ def is_generated_codex_profile(name: object) -> bool:
     return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
 
+def _is_file(path: Path) -> bool:
+    """True for a regular file, False when nothing is there; OSError when it cannot be checked.
+
+    ``Path.is_file()`` answers False for a permission error from Python 3.14 on, and raises
+    it before that, so an unreadable profile or config would read as an absent one on some
+    supported versions only. This keeps the earlier meaning on all of them.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EBADF):
+            return False
+        raise
+
+
 def _unreadable_symlink_target(path: Path) -> str | None:
     """Return a broken/non-file symlink's declared target, if applicable."""
-    if not path.is_symlink() or path.is_file():
-        return None
+    try:
+        if not path.is_symlink() or _is_file(path):
+            return None
+    except OSError:
+        return "<unreadable>"
     try:
         return str(path.readlink())
     except OSError:
@@ -89,7 +109,15 @@ def resolve_codex_config_profile(
 
     codex_home = codex_home_for_env(env)
     profile_path = codex_home / f"{model}.config.toml"
-    if not profile_path.is_file():
+    try:
+        is_file = _is_file(profile_path)
+    except OSError as exc:
+        raise ValueError(
+            f"codex config profile {str(profile_path)!r} could not be checked "
+            f"({type(exc).__name__}: {exc}). Fix its permissions; running without it "
+            f"would send {model!r} to codex as a model id instead."
+        ) from exc
+    if not is_file:
         # A broken symlink is not the same as no profile: is_file() answers
         # False for both, and falling through would send the name to codex as
         # a literal model id.
@@ -259,7 +287,7 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
 
 def _read_codex_config(config_path: Path) -> dict[str, Any] | None:
     try:
-        if not config_path.is_file():
+        if not _is_file(config_path):
             return None
         return _tomllib.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, RecursionError, _tomllib.TOMLDecodeError) as e:

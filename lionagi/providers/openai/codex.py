@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import subprocess
 import warnings
@@ -586,28 +587,29 @@ class CodexCodeRequest(BaseModel):
 
     def __init__(self, **data: Any) -> None:
         # The working directory decides which codex configs apply, so under
-        # containment it is checked here, where the refusal is raised whole:
-        # a ContainmentRefusedError raised inside a validator would be wrapped
-        # in pydantic's ValidationError, and nothing downstream could tell the
-        # refusal from an ordinary malformed request.
+        # containment it is checked here. Constructed directly, the refusal is
+        # raised whole: a ContainmentRefusedError raised inside a validator
+        # would be wrapped in pydantic's ValidationError. Through model_validate
+        # it still arrives wrapped.
         super().__init__(**data)
         self._refuse_an_unusable_working_directory()
 
     def _refuse_an_unusable_working_directory(self) -> None:
         """Refuse a working directory containment cannot read the configs of.
 
-        A directory the walk cannot resolve (a symlink loop) or that does not
-        exist leaves the walk with nothing to read, so a caller cannot tell
-        which codex configs apply and containment cannot be enforced. Both are
-        refused before the request is used, naming the directory and the
-        reason, chained from the error the filesystem raised.
+        A directory the walk cannot resolve (a symlink loop), that does not
+        exist, or that this process cannot list and enter leaves the walk with
+        nothing it can read, so a caller cannot tell which codex configs apply
+        and containment cannot be enforced. Each is refused before the request
+        is used, naming the directory and the reason, chained from the error
+        the filesystem raised.
         """
         if not self._contains_account_integrations():
             return
         repo = str(self.repo)
         try:
             self.repo.resolve()
-        except RuntimeError as exc:
+        except (RuntimeError, OSError) as exc:
             raise ContainmentRefusedError(
                 f"contain_account_integrations cannot use the working directory "
                 f"{repo!r}: it cannot be resolved ({exc})"
@@ -616,10 +618,15 @@ class CodexCodeRequest(BaseModel):
         # directory the same way and is chained from the value error it raises.
         try:
             resolve_cli_workspace(self.repo, None)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             raise ContainmentRefusedError(
                 f"contain_account_integrations cannot use the working directory: {exc}"
             ) from exc
+        if not os.access(self.repo, os.R_OK | os.X_OK):
+            raise ContainmentRefusedError(
+                f"contain_account_integrations cannot use the working directory "
+                f"{repo!r}: this process cannot list and enter it"
+            )
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
@@ -833,7 +840,7 @@ class CodexCodeRequest(BaseModel):
             return build_declarative_cli_args(self)
         try:
             self._refuse_a_profile_under_containment()
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             # A combination that could let a profile turn a feature back on, and an override
             # key or a codex config the check cannot read to rule that out, are both refused.
             raise ContainmentRefusedError(str(exc)) from exc

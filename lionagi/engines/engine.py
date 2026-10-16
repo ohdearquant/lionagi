@@ -1416,7 +1416,7 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, except a judge agent that cannot carry the engine's agent_env or containment, which is raised, whether its build refuses it or the provider refuses the contained call before it runs: no judge ran, so there is no verdict to read as a pass."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal anywhere on the error's cause chain; and, when the engine contains account integrations, any error at all, because no error can show that a contained judge ran, so none can be read as a pass."""
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
@@ -1458,8 +1458,12 @@ class Engine:
                 seen.add(id(cause))
                 cause = cause.__cause__
             # No refusal on the chain. A chain that loops back on itself lands
-            # here too, instead of walking forever.
+            # here too, instead of walking forever. Under containment the refusal
+            # can arrive as any error type (an unreadable directory, a config the
+            # request model rejects), so an error is never read as a pass.
             run.notify("judge_error", eid=eid, error=str(exc))
+            if self.contain_account_integrations:
+                raise
             return True
 
     def new_run(

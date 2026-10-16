@@ -765,19 +765,26 @@ async def test_the_judge_raises_when_codex_refuses_its_containment(
     config, refusal, tmp_path, monkeypatch
 ):
     """Codex refuses a contained call whose config could select a profile, before it
-    runs and on every call; no judge ran, so the refusal is raised, never read as a pass."""
+    runs and on every call; no judge ran, so the refusal is raised, never read as a pass.
+    No codex binary is needed: the refusal comes before any process would start."""
+    import lionagi.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
     home = tmp_path / "codex-home"
     home.mkdir()
     (home / "config.toml").write_text(config)
     monkeypatch.setenv("CODEX_HOME", str(home))
-    engine = Engine(contain_account_integrations=True, judge_model=_CLI_MODEL)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+    started = _record_cli_spawns(monkeypatch)
+    engine = Engine(
+        contain_account_integrations=True, judge_model=_CLI_MODEL, agent_cwd=str(tmp_path)
+    )
     run = engine.new_run()
     events: list[tuple] = []
     monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
     with pytest.raises(ContainmentRefusedError, match=re.escape(refusal)):
         await engine.judge(run, "e1", "a subject")
+    assert started == []
     assert events == []
 
 
@@ -886,3 +893,111 @@ async def test_the_judge_refuses_a_working_directory_that_does_not_exist(tmp_pat
         await engine.judge(run, "e1", "a subject")
     assert started == []
     assert events == []
+
+
+async def test_a_contained_judge_raises_any_error_instead_of_passing(monkeypatch):
+    """Under containment no error can show that a contained judge ran, so none reads as a pass."""
+    engine = Engine(contain_account_integrations=True, judge_model=_CLI_MODEL)
+    run = engine.new_run()
+    events: list[tuple] = []
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
+
+    async def make_agent(*args, **kwargs):
+        raise RuntimeError("an error with no refusal on its chain")
+
+    monkeypatch.setattr(run, "make_agent", make_agent)
+    with pytest.raises(RuntimeError, match="no refusal on its chain"):
+        await engine.judge(run, "e1", "a subject")
+    assert events == [
+        ("judge_error", {"eid": "e1", "error": "an error with no refusal on its chain"})
+    ]
+
+
+async def test_an_uncontained_judge_still_reads_an_error_as_a_pass(monkeypatch):
+    """Control: without containment a judge error keeps failing open."""
+    engine = Engine(judge_model=_CLI_MODEL)
+    run = engine.new_run()
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: None)
+
+    async def make_agent(*args, **kwargs):
+        raise RuntimeError("an error with no refusal on its chain")
+
+    monkeypatch.setattr(run, "make_agent", make_agent)
+    assert await engine.judge(run, "e1", "a subject") is True
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+async def test_the_judge_refuses_a_working_directory_it_cannot_enter(tmp_path, monkeypatch):
+    """A cwd with no permissions is refused before any process starts, naming it."""
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi._errors import ContainmentRefusedError
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+    started = _record_cli_spawns(monkeypatch)
+    engine = Engine(
+        contain_account_integrations=True, judge_model=_CLI_MODEL, agent_cwd=str(locked)
+    )
+    run = engine.new_run()
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: None)
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(ContainmentRefusedError, match=re.escape(str(locked))):
+            await engine.judge(run, "e1", "a subject")
+    finally:
+        locked.chmod(0o755)
+    assert started == []
+
+
+async def test_a_contained_judge_raises_over_a_profile_nested_too_deep_to_parse(
+    tmp_path, monkeypatch
+):
+    """The request model rejects the profile; under containment that error is raised."""
+    import lionagi.providers.openai.codex as codex_mod
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "deep.config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+    started = _record_cli_spawns(monkeypatch)
+    engine = Engine(
+        contain_account_integrations=True, judge_model="codex/deep", agent_cwd=str(tmp_path)
+    )
+    run = engine.new_run()
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: None)
+    with pytest.raises(ValueError, match="deep.config.toml"):
+        await engine.judge(run, "e1", "a subject")
+    assert started == []
+
+
+async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_path, monkeypatch):
+    """An explicit allowlist whose ambient servers cannot be discovered is a setting the
+    judge cannot carry, so it is raised with containment off too."""
+    import subprocess
+
+    from lionagi._errors import ConfigurationError
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+    def _run(argv, **kwargs):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    engine = Engine(judge_model=_CLI_MODEL, agent_cwd=str(tmp_path))
+    run = engine.new_run()
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: None)
+    real = run.make_agent
+
+    async def make_agent(*args, **kwargs):
+        return await real(*args, mcp_servers=[], **kwargs)
+
+    monkeypatch.setattr(run, "make_agent", make_agent)
+    with pytest.raises(
+        ConfigurationError, match="Cannot enforce the explicit codex MCP server allowlist"
+    ):
+        await engine.judge(run, "e1", "a subject")

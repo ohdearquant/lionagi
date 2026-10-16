@@ -1090,7 +1090,7 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
         )
         listed = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        raise ConfigurationError(
+        raise _AgentSettingError(
             "Cannot enforce the explicit codex MCP server allowlist: failed "
             f"to discover ambient/profile-configured servers via both "
             f"{str(config_path)!r} and `codex mcp list --json` "
@@ -1100,7 +1100,7 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
         ) from exc
 
     if not isinstance(listed, list):
-        raise ConfigurationError(
+        raise _AgentSettingError(
             "Cannot enforce the explicit codex MCP server allowlist: "
             f"`codex mcp list --json` returned unexpected output "
             f"(expected a JSON array, got {type(listed).__name__})."

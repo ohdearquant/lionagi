@@ -12,6 +12,7 @@ they reach the live call and are never written down.
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 import pytest
@@ -756,9 +757,10 @@ def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp
     codex would apply. The refusal names the directory and the reason it cannot be used."""
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))) as raised:
+    # Python before 3.13 cannot resolve the loop; 3.13 and later resolve it and find no
+    # directory there. Either way the refusal names the directory.
+    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
         CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
-    assert "cannot be resolved" in str(raised.value)
 
 
 def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
@@ -774,8 +776,107 @@ def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp
     loop.symlink_to(loop)
     missing = tmp_path / "missing"
 
-    with pytest.raises(RuntimeError, match="Symlink loop"):
-        CodexCodeRequest(prompt="hi", repo=loop)
+    try:
+        looped = CodexCodeRequest(prompt="hi", repo=loop)
+    except RuntimeError as exc:
+        # Python before 3.13 raises while resolving the loop, as it did before containment.
+        assert "Symlink loop" in str(exc)
+    else:
+        with pytest.raises(ValueError, match="does not exist or is not a directory"):
+            looped.as_cmd_args()
     req = CodexCodeRequest(prompt="hi", repo=missing)
     with pytest.raises(ValueError, match="does not exist or is not a directory"):
         req.as_cmd_args()
+
+
+def _unusable_directory(tmp_path, kind):
+    """A directory this process cannot list and enter, and the paths to restore after."""
+    if kind == "no-permissions":
+        target = tmp_path / "locked"
+        target.mkdir()
+        return target, [(target, 0o000)]
+    if kind == "read-without-search":
+        target = tmp_path / "unsearchable"
+        target.mkdir()
+        return target, [(target, 0o600)]
+    parent = tmp_path / "locked-parent"
+    target = parent / "child"
+    target.mkdir(parents=True)
+    return target, [(parent, 0o000)]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+@pytest.mark.parametrize("kind", ["no-permissions", "read-without-search", "child-of-locked"])
+def test_containment_refuses_a_working_directory_it_cannot_enter(tmp_path, kind):
+    """Without permission to list and enter the directory the walk cannot read the
+    configs codex would apply, so containment refuses it, naming the directory."""
+    target, modes = _unusable_directory(tmp_path, kind)
+    for path, mode in modes:
+        path.chmod(mode)
+    try:
+        with pytest.raises(ContainmentRefusedError, match=re.escape(str(target))):
+            CodexCodeRequest(prompt="hi", repo=target, contain_account_integrations=True)
+    finally:
+        for path, _ in modes:
+            path.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_without_containment_a_directory_it_cannot_enter_is_not_refused_at_construction(
+    tmp_path,
+):
+    """Control: the check is containment's; an ordinary request is built as before."""
+    target, modes = _unusable_directory(tmp_path, "no-permissions")
+    for path, mode in modes:
+        path.chmod(mode)
+    try:
+        CodexCodeRequest(prompt="hi", repo=target)
+    finally:
+        for path, _ in modes:
+            path.chmod(0o755)
+
+
+def test_a_profile_file_that_is_not_utf8_is_refused_naming_it(tmp_path):
+    """The profile read decodes the file; bytes that are not UTF-8 make it unreadable."""
+    from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "deep.config.toml").write_bytes(b'model = "\xff\xfe"\n')
+    with pytest.raises(ValueError, match=re.escape("deep.config.toml") + ".*could not be read"):
+        resolve_codex_config_profile("deep", env={"CODEX_HOME": str(home)})
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_a_profile_that_cannot_be_checked_is_refused_naming_it(tmp_path):
+    """A codex home this process cannot search leaves the profile unknown, not absent."""
+    from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "deep.config.toml").write_text('model = "gpt-5.5"\n')
+    home.chmod(0o600)
+    try:
+        with pytest.raises(ValueError, match=re.escape("deep.config.toml")):
+            resolve_codex_config_profile("deep", env={"CODEX_HOME": str(home)})
+    finally:
+        home.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_a_project_config_that_cannot_be_checked_is_refused_on_every_python(tmp_path):
+    """From Python 3.14 Path.is_file() answers False for a permission error; the walk must
+    still refuse a project config it cannot check rather than read it as absent."""
+    from lionagi.providers.openai._codex_profile import project_codex_profile
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    codex_dir = repo / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text('profile = "deep"\n')
+    codex_dir.chmod(0o600)
+    try:
+        with pytest.raises(ValueError, match=re.escape(str(codex_dir / "config.toml"))):
+            project_codex_profile(repo)
+    finally:
+        codex_dir.chmod(0o755)
