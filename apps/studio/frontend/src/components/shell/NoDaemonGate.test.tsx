@@ -26,7 +26,7 @@ import enMessages from "@/messages/en.json";
 import { reportConnectivityFailure } from "@/lib/connectivity";
 
 vi.mock("@/lib/api", () => ({
-  resolveApiBase: () => "http://127.0.0.1:8765",
+  API_BASE: "http://127.0.0.1:8765",
 }));
 
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Response {

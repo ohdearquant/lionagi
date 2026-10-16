@@ -1141,6 +1141,38 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     expect(resolveAuthToken()).toBe("shell-token");
   });
 
+  it.each([
+    ["build", "https://api.example"],
+    ["build", "/proxy"],
+    ["runtime", "https://api.example"],
+    ["runtime", "/proxy"],
+    ["same-origin", ""],
+  ])(
+    "authenticates the configured %s base %s after a later override appears",
+    async (source, base) => {
+      stubLocation("");
+      setInjected(source === "runtime" ? base : undefined, "shell-token");
+      if (source === "build") vi.stubEnv("VITE_STUDIO_API_BASE", base);
+      const client = await import("./api");
+      expect(client.API_BASE).toBe(base);
+      const fetchMock = vi.fn<typeof fetch>(() =>
+        Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await client.listInvocations();
+      window.location.search = "?api=http://127.0.0.2:8766";
+      expect(client.resolveApiBase()).toBe("http://127.0.0.2:8766");
+      await client.listInvocations();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      for (const [url, init] of fetchMock.mock.calls) {
+        expect(url).toBe(`${base}/api/invocations/`);
+        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer shell-token");
+      }
+    },
+  );
+
   it("is unchanged when a rejected override leaves the baked base in place", async () => {
     // A non-loopback ?api= never becomes the base, so nothing was redirected
     // and there is no reason to withhold.

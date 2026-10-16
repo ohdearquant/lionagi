@@ -44,21 +44,22 @@ declare global {
 }
 
 /**
- * Return the desktop shell's bearer token only for its issuing API origin.
+ * Constrain the desktop shell's bearer token when a viewer overrides the API.
  * Requests use the base selected when this module loaded. Later SPA query or
  * storage changes cannot change that destination, so credential admission must
  * use the same frozen base. A loopback address alone does not establish trust:
  * another local process can listen on a different address or port.
  *
- * Same-origin requests retain their existing token behavior. For a configured
- * API base, withhold the token if either origin cannot be established.
+ * Without a viewer override at load time, trusted runtime/build configuration
+ * retains its token behavior, including relative bases and same-origin requests.
+ * For a viewer override, withhold the token if its issuing origin is unknown.
  */
 export function resolveAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const token = window.__STUDIO_AUTH_TOKEN__;
   if (!token) return undefined;
 
-  if (!API_BASE) return token;
+  if (!API_OVERRIDE) return token;
 
   const issuedFor = window.__STUDIO_API_BASE__;
   if (!issuedFor) return undefined;
@@ -130,10 +131,10 @@ export function resolveApiBase(): string {
   // VITE_STUDIO_API_BASE (build-time env) > origin logic.
   // Treat empty string as "not configured" — defense against baking an empty
   // env var that silently produced same-origin /api/* requests.
-  const override = resolveApiOverride();
-  if (override) {
-    return override;
-  }
+  return resolveApiOverride() ?? resolveConfiguredApiBase();
+}
+
+function resolveConfiguredApiBase(): string {
   if (typeof window !== "undefined" && window.__STUDIO_API_BASE__) {
     return window.__STUDIO_API_BASE__;
   }
@@ -158,7 +159,8 @@ export function resolveApiBase(): string {
   return "http://localhost:8765";
 }
 
-export const API_BASE = resolveApiBase();
+const API_OVERRIDE = resolveApiOverride();
+export const API_BASE = API_OVERRIDE ?? resolveConfiguredApiBase();
 
 export class ApiError extends Error {
   readonly status: number;

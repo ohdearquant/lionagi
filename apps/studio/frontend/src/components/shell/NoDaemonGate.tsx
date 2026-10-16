@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import { IconPort, IconTerminal } from "@/components/ui/icons";
-import { resolveApiBase } from "@/lib/api";
+import { API_BASE } from "@/lib/api";
 import { onConnectivityFailure } from "@/lib/connectivity";
 
 const POLL_INTERVAL_MS = 5000;
@@ -48,7 +48,7 @@ async function probeDaemon(apiBase: string): Promise<"connected" | "unreachable"
  */
 export default function NoDaemonGate({ children }: { children: ReactNode }) {
   const t = useTranslations("daemon");
-  const apiBase = resolveApiBase();
+  const apiBase = API_BASE;
   const [status, setStatus] = useState<ConnectivityStatus>("checking");
   const activeRef = useRef(true);
   const lastReprobeRef = useRef(0);

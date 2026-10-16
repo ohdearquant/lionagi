@@ -66,7 +66,15 @@ non-loopback daemon is currently for API/desktop-shell use; treat the hosted pag
 loopback-only until a token prompt ships. Rotate the token like any credential; never
 commit it.
 
-For a configured API base, the shell token is sent only when the request destination
-selected at page load has the same origin as the injected `__STUDIO_API_BASE__`.
-Changing the query string or session storage after page load does not change that
-destination or authorize a different daemon to receive the token.
+The API destination is selected once at page load and shared by data requests,
+health probes, and the endpoint display. Query or session storage changes during
+client-side navigation take effect only after reloading the page.
+
+When a viewer override selects that destination, the shell token is sent only if
+the destination has the same absolute origin as the injected `__STUDIO_API_BASE__`.
+If the issuing origin is missing or cannot be parsed, the override receives no token.
+Without a viewer override at load time, injected and build-time bases retain token
+authentication, including relative proxy paths such as `/proxy` and the empty
+same-origin base. These deployment settings are trusted and used as supplied;
+the viewer-override origin check does not validate configured URLs or prevent
+requests caused by malformed deployment settings.

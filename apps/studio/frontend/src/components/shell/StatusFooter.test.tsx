@@ -21,7 +21,7 @@ import enMessages from "@/messages/en.json";
 const getStats = vi.fn();
 
 vi.mock("@/lib/api", () => ({
-  resolveApiBase: () => "http://127.0.0.1:8765",
+  API_BASE: "http://127.0.0.1:8765",
   getStats: (...args: unknown[]) => getStats(...args),
 }));
 
