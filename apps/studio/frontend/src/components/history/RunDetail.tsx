@@ -1977,8 +1977,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, []);
   // ADR-0113 D6: the selected node is URL-addressable the same way `view`
   // is — read once at mount (never re-read after) and restored against the
-  // first session load's branches. `initialNodeAppliedRef` bounds that
-  // restore to the run that was live when the component first mounted, so
+  // original run's branches. Capture that run before any fetch resolves, so
   // a later run swap (the Fleet view keeps this component mounted and only
   // changes `id`) never re-applies a stale deep link onto the new run.
   const [initialUrlNodeKey] = useState<string | null>(() =>
@@ -1987,6 +1986,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       : new URLSearchParams(window.location.search).get(RUN_DETAIL_NODE_QUERY_KEY),
   );
   const initialNodeAppliedRef = useRef(false);
+  const [initialNodeRunId] = useState(id);
   const writeSelectedNodeToUrl = useCallback((key: string | null) => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -2058,10 +2058,10 @@ export default function RunDetail({ id }: RunDetailProps) {
     // The Fleet view keeps this component mounted and swaps `id` — the
     // selection is scoped to the run it was made on, so a run switch must
     // drop it rather than let it read as the new run's selection.
-    // `initialNodeAppliedRef` only flips true once the FIRST run's session
-    // has resolved (below), so this leaves the deep-link restore below
-    // untouched on that very first load.
-    if (initialNodeAppliedRef.current) {
+    // A switch also consumes a still-pending deep link: a later response
+    // must never apply the original run's node to a different run.
+    if (initialNodeAppliedRef.current || id !== initialNodeRunId) {
+      initialNodeAppliedRef.current = true;
       setSelectedStepKey(null);
       setUnmatchedNodeId(null);
       writeSelectedNodeToUrl(null);
@@ -2128,7 +2128,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => {
       cancelled = true;
     };
-  }, [id, initialUrlNodeKey, writeSelectedNodeToUrl]);
+  }, [id, initialNodeRunId, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
   useEffect(() => {
     if (!id || !resumeWatch || resumeWatch.run_id !== id) return;

@@ -84,6 +84,7 @@ describe("Operator project context", () => {
       },
     });
     router.location = { pathname: "/fleet", search: {} };
+    window.history.replaceState(null, "", "/fleet");
     api.getOperatorConversation.mockResolvedValue({
       conversation: { id: "conversation-1", status: "active", activeRequestId: null },
       frames: [],
@@ -193,6 +194,9 @@ describe("Operator project context", () => {
   it.each([
     { project: { name: "unvalidated" } },
     { project: "" },
+    { project: " ".repeat(10) },
+    { project: "p".repeat(513) },
+    { project: "🦁".repeat(513) },
     { project: "list-project", project_null: true },
     { project: "list-project", project_null: "true" },
     { project: "list-project", invocation: "pending-invocation" },
@@ -202,6 +206,16 @@ describe("Operator project context", () => {
     expect(await viewProject()).toBeUndefined();
     expect(await sendProject()).toBeUndefined();
   });
+
+  it.each(["P2", "p".repeat(512), "🦁".repeat(512)])(
+    "normalizes a bounded project filter before reporting and submitting",
+    async (project) => {
+      router.location.search = { project: `  ${project}  ` };
+      await render();
+      expect(await viewProject()).toBe(project);
+      expect(await sendProject()).toBe(project);
+    },
+  );
 
   it("uses the validated selection from an array-valued link", async () => {
     router.location.search = { s: ["", "selected", "other"], project: "list-project" };
@@ -215,6 +229,7 @@ describe("Operator project context", () => {
     router.location.search = { s: "selected", project: "list-project" };
     api.getSession.mockResolvedValue(session("different", "different-project"));
     await render("selected");
+    expect(container.textContent).toContain("Session response does not match the selected session");
     expect(await viewProject()).toBeUndefined();
     expect(await sendProject()).toBeUndefined();
   });
@@ -263,6 +278,35 @@ describe("Operator project context", () => {
     },
   );
 
+  it.each(["resolve", "reject"] as const)(
+    "does not restore a deep-linked node onto a new run before the original run's delayed %s",
+    async (outcome) => {
+      window.history.replaceState(null, "", "/fleet?node=A&view=list");
+      const previous = deferred<SessionDetail>();
+      const selected = deferred<SessionDetail>();
+      api.getSession.mockReturnValueOnce(previous.promise).mockReturnValueOnce(selected.promise);
+      router.location.search = { s: "previous" };
+      await render("previous");
+      router.location = { pathname: "/fleet", search: { s: "selected" } };
+      await render("selected");
+      await act(async () =>
+        selected.resolve({
+          ...session("selected", "selected-project"),
+          branches: [{ id: "branch-a", name: "A", created_at: 1, messages: [] }],
+        }),
+      );
+      expect(container.querySelectorAll("[data-selected=true]")).toHaveLength(0);
+      expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
+      expect(new URLSearchParams(window.location.search).has("node")).toBe(false);
+      await act(async () => {
+        if (outcome === "resolve") previous.resolve(session("previous", "previous-project"));
+        else previous.reject(new Error("Previous detail unavailable"));
+      });
+      expect(await viewProject()).toBe("selected-project");
+      expect(container.querySelectorAll("[data-selected=true]")).toHaveLength(0);
+    },
+  );
+
   it("clears a detail project when selection is removed or the route changes", async () => {
     router.location.search = { s: "selected" };
     api.getSession.mockResolvedValue(session("selected", "selected-project"));
@@ -272,6 +316,15 @@ describe("Operator project context", () => {
     router.location = { pathname: "/fleet", search: {} };
     await render();
     expect(await viewProject()).toBeUndefined();
+
+    const refreshed = deferred<SessionDetail>();
+    api.getSession.mockReturnValueOnce(refreshed.promise);
+    router.location = { pathname: "/fleet", search: { s: "selected" } };
+    await render("selected");
+    expect(await viewProject()).toBeUndefined();
+    await act(async () => refreshed.resolve(session("selected", "refreshed-project")));
+    expect(await viewProject()).toBe("refreshed-project");
+
     router.location = { pathname: "/system", search: { project: "other-project" } };
     await render();
     expect(await viewProject()).toBeUndefined();

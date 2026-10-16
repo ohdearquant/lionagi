@@ -43,5 +43,7 @@ export function useOperatorProject(pathname: string, search: Record<string, unkn
   // An invocation link can still be resolving its session selection. Only an
   // unselected list may use the router's scalar project filter as its scope.
   if (search.invocation != null || search.project_null === true) return null;
-  return typeof search.project === "string" && search.project.trim() ? search.project : null;
+  const project = typeof search.project === "string" ? search.project.trim() : "";
+  // Match the turn-context limit in Unicode code points, as the server does.
+  return project && [...project].length <= 512 ? project : null;
 }
