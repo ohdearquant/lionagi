@@ -11,7 +11,7 @@ from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.types.stream_chunk import StreamChunk
 
-from ._config import LatticeConfigs, _setup_lattice_endpoint
+from ._config import LatticeConfigs, LatticeRedirectsRefused, _setup_lattice_endpoint
 
 __all__ = ("LatticeChatCompletionsRequest", "LatticeChatEndpoint", "LatticeLoraSelection")
 
@@ -41,6 +41,17 @@ class LatticeChatCompletionsRequest(OpenAIChatCompletionsRequest):
     entirely, and it accepts `top_k` and `repetition_penalty` without applying them.
     """
 
+    top_p: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        description="Nucleus sampling; the server takes a value in (0.0, 1.0].",
+    )
+    seed: int | None = Field(
+        default=None,
+        ge=0,
+        description="Sampling seed; the server reads it as an unsigned integer.",
+    )
     reasoning_budget: int | None = Field(
         default=None,
         ge=0,
@@ -58,15 +69,17 @@ class LatticeChatCompletionsRequest(OpenAIChatCompletionsRequest):
     lora: list[LatticeLoraSelection] | None = Field(
         default=None,
         description=(
-            "Resident adapters to apply, in order. Omitted lets the server choose; an empty "
-            "list applies none."
+            "Resident adapters to apply, in order. Omitted selects the base model on today's "
+            "servers and lets a server that enables routing choose; an empty list pins the "
+            "base model."
         ),
     )
 
 
 @LatticeConfigs.CHAT.register
-class LatticeChatEndpoint(Endpoint):
-    """Chat completions from a running `lattice serve`; no API key.
+class LatticeChatEndpoint(LatticeRedirectsRefused, Endpoint):
+    """Chat completions from a running `lattice serve`; no API key, and no redirect is
+    followed.
 
     A reply whose `content` opens with the server's inline `<think>` reasoning block has
     that block moved to `reasoning_content`, so a structured-output parse sees the answer
@@ -74,7 +87,7 @@ class LatticeChatEndpoint(Endpoint):
     """
 
     def __init__(self, config=None, **kwargs):
-        _setup_lattice_endpoint(config, kwargs)
+        config = _setup_lattice_endpoint(config, kwargs, LatticeChatCompletionsRequest)
         super().__init__(config, **kwargs)
 
     async def _call(self, payload: dict, headers: dict, **kwargs):

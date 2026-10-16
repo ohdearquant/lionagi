@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from lionagi.service.connections.endpoint import Endpoint
 
-from ._config import LatticeConfigs, _setup_lattice_endpoint
+from ._config import LatticeConfigs, LatticeRedirectsRefused, _setup_lattice_endpoint
 
 __all__ = ("LatticeEmbedEndpoint", "LatticeEmbedRequest")
 
@@ -34,9 +34,9 @@ class LatticeEmbedRequest(BaseModel):
 
 
 @LatticeConfigs.EMBED.register
-class LatticeEmbedEndpoint(Endpoint):
-    """Embeddings from a running `lattice serve`; no API key."""
+class LatticeEmbedEndpoint(LatticeRedirectsRefused, Endpoint):
+    """Embeddings from a running `lattice serve`; no API key, and no redirect is followed."""
 
     def __init__(self, config=None, **kwargs):
-        _setup_lattice_endpoint(config, kwargs)
+        config = _setup_lattice_endpoint(config, kwargs, LatticeEmbedRequest)
         super().__init__(config, **kwargs)

@@ -53,18 +53,29 @@ Lattice is a local inference server started with `lattice serve`. lionagi calls 
 with it the address guard admits only the loopback hosts `localhost`, `127.0.0.1` and `::1`: a
 `base_url=` may change the port or the path but not the host. Passing
 `allow_local_network=False` applies the ordinary guard instead, which refuses loopback and
-private addresses. `model` must be the id the server reports at `GET /v1/models`. The server
-refuses tool calling. A request that omits `max_tokens` gets the server's default, 256 tokens
-unless it was started with `--max-tokens`; a reply cut at that cap carries
-`finish_reason: "length"`, which lionagi reads as neither an error nor an unfinished reply. Its
-requests also take `reasoning_budget` and `lora`, an ordered list of resident adapters
-(`{"id": ..., "scale": ...}`). `top_k` and `repetition_penalty` are accepted and ignored by
+private addresses. The guard checks the URL once, before the request, so a Lattice request never
+follows a redirect: the redirect comes back as the failed response. `model` must be the id the
+server reports at `GET /v1/models`.
+
+A request that omits `max_tokens` gets the server's default of 256 tokens, and `lattice serve`
+refuses a `max_tokens` above its fixed cap of 4096. A reply cut at the `max_tokens` budget carries
+`finish_reason: "length"`, which lionagi reads as neither an error nor an unfinished reply. The
+server also refuses tool calling, `n` above 1, a `response_format` other than `{"type": "text"}`,
+`top_logprobs` above 20 or without `logprobs`, and `logprobs` on a stream; lionagi forwards these
+and the server answers 400. lionagi itself refuses a `top_p` of 0 and a negative `seed`, which the
+server cannot take. Requests also take `reasoning_budget` and `lora`, an ordered list of resident
+adapters (`{"id": ..., "scale": ...}`); an omitted `lora` selects the base model on today's
+servers, and `[]` pins it. `top_k` and `repetition_penalty` are accepted and ignored by
 `lattice serve` (the standalone `lattice_serve` daemon applies them), and `lattice serve` reads
 none of `frequency_penalty`, `presence_penalty`, `logit_bias` and `user`.
 
 A reply's leading `<think>...</think>` block is moved from `content` to `reasoning_content`, so structured
 output parses the answer after it; a block with no closing tag, from a reply cut off while it was
-still reasoning, stays in `content`, and streamed replies keep the block where it arrives.
+still reasoning, stays in `content`, and streamed replies keep the block where it arrives. A
+generation that fails after its stream has started arrives as a chunk with `is_error` set, which
+`iModel.stream` yields without raising, so a caller reads the flag to see the failure. A model
+restored with `iModel.from_dict` does not keep its request model, as for every provider today, so
+it forwards its payload unvalidated.
 Embeddings need `lattice serve` started on a vision-language checkpoint; a checkpoint without one
 gets `400 vision_unsupported`.
 

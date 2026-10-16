@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
+from aiohttp import ClientResponseError, web
 from aiohttp.test_utils import TestServer
 from pydantic import BaseModel, ValidationError
 
@@ -59,20 +59,25 @@ async def lattice_server():
     async def _start(
         reply: str = "Hello there",
         stream_events: list[dict] | None = None,
+        redirect: str | None = None,
     ) -> tuple[str, list[dict]]:
         received: list[dict] = []
 
         async def record(request: web.Request) -> dict:
+            raw = await request.read()
             entry = {
                 "path": request.path,
                 "headers": dict(request.headers),
-                "body": await request.json(),
+                "raw": raw,
+                "body": json.loads(raw) if raw else {},
             }
             received.append(entry)
             return entry
 
         async def chat(request: web.Request):
             entry = await record(request)
+            if redirect:
+                raise web.HTTPTemporaryRedirect(location=redirect)
             if not entry["body"].get("stream"):
                 return web.json_response(_chat_reply(reply))
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
@@ -85,6 +90,8 @@ async def lattice_server():
 
         async def embeddings(request: web.Request):
             entry = await record(request)
+            if redirect:
+                raise web.HTTPTemporaryRedirect(location=redirect)
             items = entry["body"]["input"]
             items = items if isinstance(items, list) else [items]
             return web.json_response(
@@ -99,9 +106,17 @@ async def lattice_server():
                 }
             )
 
+        async def elsewhere(request: web.Request):
+            """Where a redirect sends the request; records it so a test can see the second
+            request the client made."""
+            await record(request)
+            return web.json_response(_chat_reply(reply))
+
         app = web.Application()
         app.router.add_post("/v1/chat/completions", chat)
         app.router.add_post("/v1/embeddings", embeddings)
+        if redirect:
+            app.router.add_route("*", redirect, elsewhere)
         server = TestServer(app, host="127.0.0.1")
         await server.start_server()
         servers.append(server)
@@ -168,7 +183,8 @@ def test_a_chat_payload_keeps_the_lattice_fields_and_carries_no_credential():
 
 
 def test_an_omitted_adapter_list_stays_absent_and_an_empty_one_is_sent():
-    """The server reads an absent `lora` as "choose for me" and `[]` as "apply none"."""
+    """An absent `lora` and `[]` both select the base model on today's servers; `[]` pins it,
+    so it keeps selecting the base model if the server later enables adapter routing."""
     endpoint = match_endpoint(provider="lattice", endpoint="chat", model=MODEL)
     messages = [{"role": "user", "content": "hi"}]
 
@@ -197,6 +213,14 @@ def test_request_models_refuse_values_the_server_would_refuse():
         )
     with pytest.raises(ValidationError):
         LatticeEmbedRequest(model=MODEL, input="x", pooling="max")
+    # Bounds the server states: `top_p` is `(0.0, 1.0]` there, and `seed` is an unsigned
+    # integer, so a zero probability and a negative seed are refused before the request.
+    with pytest.raises(ValidationError):
+        LatticeChatCompletionsRequest(model=MODEL, messages=messages, top_p=0.0)
+    with pytest.raises(ValidationError):
+        LatticeChatCompletionsRequest(model=MODEL, messages=messages, seed=-1)
+    admitted = LatticeChatCompletionsRequest(model=MODEL, messages=messages, top_p=1.0, seed=0)
+    assert (admitted.top_p, admitted.seed) == (1.0, 0)
 
 
 @pytest.mark.asyncio
@@ -237,8 +261,8 @@ async def test_imodel_embed_round_trip_sends_only_the_fields_set(lattice_server)
 
 @pytest.mark.asyncio
 async def test_a_set_pooling_is_sent_and_an_unset_one_is_not(lattice_server):
-    """`pooling` is the one field the vision route reads and its text-only sibling
-    refuses, so it may only appear when the caller set it."""
+    """`pooling` may only appear when the caller set it, so the server's own default keeps
+    applying to a request that never named one."""
     base_url, received = await lattice_server()
     model = iModel(provider="lattice", endpoint="embed", model=MODEL, base_url=base_url)
 
@@ -338,6 +362,32 @@ async def test_the_stream_failure_and_its_evidence_reach_the_endpoint_contract(l
     assert error.metadata["raw"] == {"error": failure["error"]}
 
 
+@pytest.mark.asyncio
+async def test_a_lattice_request_never_follows_a_redirect(lattice_server):
+    """The address guard admits one host, once, before the first request. A redirect the
+    client followed would reach a host the guard never admitted, so none is followed: the
+    redirect comes back as the failed response, on a call, an embedding and a stream."""
+    base_url, received = await lattice_server(redirect="/v1/elsewhere")
+    chat = match_endpoint(provider="lattice", endpoint="chat", model=MODEL, base_url=base_url)
+    embed = match_endpoint(provider="lattice", endpoint="embed", model=MODEL, base_url=base_url)
+    request = {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}
+
+    with pytest.raises(ClientResponseError) as called:
+        await chat.call(request)
+    with pytest.raises(ClientResponseError) as embedded:
+        await embed.call({"model": MODEL, "input": "a"})
+    with pytest.raises(ClientResponseError) as streamed:
+        async for _ in chat.stream(request):
+            pass
+
+    assert called.value.status == embedded.value.status == streamed.value.status == 307
+    assert [entry["path"] for entry in received] == [
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/chat/completions",
+    ]
+
+
 def _lattice_doc_paragraph() -> str:
     doc = (REPO_ROOT / "docs" / "reference" / "providers.md").read_text()
     start = doc.index("Lattice is a local inference server")
@@ -356,6 +406,45 @@ def test_the_documented_server_rules_are_the_ones_the_server_has():
     assert "ignored" in paragraph and "`lattice serve`" in paragraph
     for field in ("frequency_penalty", "presence_penalty", "logit_bias", "user"):
         assert field in paragraph
+
+
+def test_the_reference_states_the_limits_and_refusals_lionagi_does_not_check():
+    """A caller cannot see these from lionagi: the flag the server does not have, the
+    hardcoded 4096-token cap, and the values the server refuses."""
+    paragraph = _lattice_doc_paragraph()
+
+    assert "--max-tokens" not in paragraph
+    assert "4096" in paragraph
+    assert "default of 256" in paragraph
+    assert 'finish_reason: "length"' in paragraph
+    for named in ("top_p", "seed", "response_format", "top_logprobs", "`n` above 1"):
+        assert named in paragraph
+
+
+def test_the_reference_states_the_stream_error_chunk_and_the_restored_model():
+    """Two behaviours a caller cannot see from lionagi: a mid-stream failure arrives as a
+    chunk with `is_error` set rather than as a raise, and a model restored with
+    `iModel.from_dict` sends an unvalidated payload."""
+    paragraph = _lattice_doc_paragraph()
+
+    assert "is_error" in paragraph and "iModel.stream" in paragraph
+    assert "iModel.from_dict" in paragraph
+
+
+@pytest.mark.asyncio
+async def test_a_model_restored_from_its_dict_sends_an_unvalidated_payload(lattice_server):
+    """`iModel.to_dict()` leaves the request model out of the endpoint config and `from_dict`
+    does not restore it, so a restored model forwards the payload as given: a numeric string
+    the model would have coerced reaches the server as a string."""
+    base_url, received = await lattice_server()
+    model = iModel(provider="lattice", model=MODEL, base_url=base_url)
+
+    restored = iModel.from_dict(model.to_dict())
+    await restored.invoke(messages=[{"role": "user", "content": "hi"}], temperature="0.5")
+
+    assert restored.endpoint.config.request_options is None
+    (request,) = received
+    assert request["body"]["temperature"] == "0.5"
 
 
 def test_the_request_model_records_what_the_server_does_not_apply():
@@ -405,6 +494,62 @@ def test_an_endpoint_rebuilds_from_its_own_serialized_config():
 
     assert rebuilt.config.allow_local_network is True
     assert rebuilt.config.serialize_by_alias is True
+    assert rebuilt.request_options is LatticeChatCompletionsRequest
+
+
+@pytest.mark.asyncio
+async def test_a_rebuilt_endpoint_sends_plain_json_on_the_wire(lattice_server):
+    """A request model survives serialization as a JSON schema, and the model rebuilt from
+    that schema holds `const` and `enum` fields as Enum members that `json` cannot encode, so
+    an endpoint rebuilt from its own config used to fail before its request left the client.
+    The server's own `body` proves the bytes on the wire were valid JSON."""
+    base_url, received = await lattice_server()
+
+    chat = LatticeChatEndpoint(
+        config=match_endpoint(
+            provider="lattice", endpoint="chat", model=MODEL, base_url=base_url
+        ).to_dict()["config"]
+    )
+    await chat.call({"model": MODEL, "messages": [{"role": "user", "content": "hi"}]})
+
+    embed = LatticeEmbedEndpoint(
+        config=match_endpoint(
+            provider="lattice", endpoint="embed", model=MODEL, base_url=base_url
+        ).to_dict()["config"]
+    )
+    await embed.call({"model": MODEL, "input": "a", "pooling": "last_token"})
+
+    assert chat.request_options is LatticeChatCompletionsRequest
+    assert embed.request_options is LatticeEmbedRequest
+    chat_request, embed_request = received
+    assert chat_request["path"] == "/v1/chat/completions"
+    assert chat_request["body"]["messages"][0]["role"] == "user"
+    assert type(chat_request["body"]["messages"][0]["role"]) is str
+    assert embed_request["path"] == "/v1/embeddings"
+    assert embed_request["body"] == {"model": MODEL, "input": "a", "pooling": "last_token"}
+    assert type(embed_request["body"]["pooling"]) is str
+    for request in (chat_request, embed_request):
+        assert json.loads(request["raw"]) == request["body"]
+
+
+def test_a_config_dict_api_key_is_dropped_like_the_keyword_one():
+    endpoint = LatticeChatEndpoint(
+        config={
+            "name": "lattice_chat",
+            "provider": "lattice",
+            "endpoint": "chat/completions",
+            "base_url": LATTICE_DEFAULT_BASE_URL,
+            "auth_type": "none",
+            "api_key": "sk-not-a-lattice-key",
+        }
+    )
+
+    assert endpoint.config.api_key is None
+    assert endpoint.config._api_key is None
+    _, headers = endpoint.create_payload(
+        {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}
+    )
+    assert not {"authorization", "x-api-key"} & {name.lower() for name in headers}
 
 
 def test_a_caller_supplied_local_network_setting_survives_every_construction_path():
