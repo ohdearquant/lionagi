@@ -379,10 +379,10 @@ def messages_for_record(
         out = p.get("tools") if kind == "tool_search_output" else p.get("output")
         text = json.dumps(out, default=str) if kind == "tool_search_output" else _text_blocks(out)
         req_id, resp_id = _tool_pair_ids(rollout_uid, call_id, pid)
-        # An output carries no request of its own to point at: its fallback id is derived
-        # from the output's record, not the call's, so it can only link by call_id. Without
-        # one, leave it unlinked rather than pointing at a shared fallback id that names it
-        # after whichever unkeyed call in the batch landed last.
+        # Without a call_id an output's fallback key is its own record id, which every unkeyed
+        # call with the same record id (an empty one, for instance) also takes, so the link
+        # could point at any of them and the output would be named after whichever landed
+        # last. Leave it unlinked.
         if not call_id:
             req_id = None
         fn = tool_names.pop(call_id, "")
@@ -594,7 +594,7 @@ async def mirror_session(
         entries.append((md, src))
     # Name each repeated output before its content is bounded: the source pointer's
     # content hash must cover the row as stored, name included, or a reader reconstructing
-    # the unnamed ActionResponse would mismatch and fall back to the stale preview.
+    # the unnamed ActionResponse would mismatch and fall back to the stored preview.
     await name_answered_results(db, [md for md, _ in entries])
     written: list[dict[str, Any]] = []
     for md, src in entries:

@@ -405,8 +405,8 @@ async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> 
     replace that row with an empty name. (A map loaded from an earlier release's key also holds
     answered uses, which stay until a repeat of their result consumes them.) The name comes from
     the use's own row instead: one in this batch, else the stored one. A result whose use is in
-    neither keeps the empty name. The batch's stored lookups run as one query, not one read per
-    result."""
+    neither keeps the empty name, and so does one whose stored row with that id is not a use. The
+    batch's stored lookups are read together, one query per 500 ids, not one read per result."""
     # Rows are told apart by their fields, as _bound_content does: a result carries both
     # function and output, a use function and arguments without output.
     requested: dict[str, Any] = {}
@@ -441,7 +441,11 @@ async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> 
         if name is None:
             stored_row = stored.get(link)
             stored_content = stored_row.get("content") if stored_row is not None else None
-            if isinstance(stored_content, dict):
+            if (
+                isinstance(stored_content, dict)
+                and "arguments" in stored_content
+                and "output" not in stored_content
+            ):
                 name = stored_content.get("function")
         if isinstance(name, str) and name:
             content["function"] = name

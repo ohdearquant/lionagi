@@ -279,3 +279,26 @@ async def test_an_empty_batch_writes_nothing(db: StateDB):
 
     assert updates == []
     assert await db.get_progression(p) == []
+
+
+async def test_get_messages_reads_in_chunks_of_500(db: StateDB):
+    stored = [uid() for _ in range(3)]
+    await db.insert_messages([_msg(i) for i in stored])
+    wanted = [uid() for _ in range(1200)]
+    for position, mid in zip((0, 600, 1199), stored, strict=True):
+        wanted[position] = mid
+    reads: list[str] = []
+
+    def _spy(conn, cursor, statement, parameters, context, executemany):
+        upper = statement.lstrip().upper()
+        if upper.startswith("SELECT") and "FROM MESSAGES" in upper:
+            reads.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+    try:
+        found = await db.get_messages(wanted)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
+
+    assert sorted(found) == sorted(stored)
+    assert len(reads) == 3

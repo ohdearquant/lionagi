@@ -3722,3 +3722,23 @@ def test_an_unset_flag_still_takes_the_computed_default(monkeypatch, tmp_path):
         assert config_mod.MIRROR_IMPORT_AMBIENT is True
     finally:
         _restore_config(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_a_result_takes_a_name_only_from_a_stored_use_row() -> None:
+    from lionagi.state._mirror_common import name_answered_results
+
+    class _Store:
+        async def get_messages(self, ids):
+            rows = {
+                "use": {"content": {"function": "Bash", "arguments": {}}},
+                "result": {"content": {"function": "Edit", "output": "x", "arguments": {}}},
+            }
+            return {i: rows[i] for i in ids if i in rows}
+
+    rows = [
+        {"id": "r1", "content": {"function": "", "output": "a", "action_request_id": "use"}},
+        {"id": "r2", "content": {"function": "", "output": "b", "action_request_id": "result"}},
+    ]
+    await name_answered_results(_Store(), rows)
+    assert [row["content"]["function"] for row in rows] == ["Bash", ""]

@@ -343,7 +343,7 @@ async def mirror_session(
         entries.append((md, src))
     # Name each repeated result before its content is bounded: the source pointer's
     # content hash must cover the row as stored, name included, or a reader reconstructing
-    # the unnamed ActionResponse would mismatch and fall back to the stale preview.
+    # the unnamed ActionResponse would mismatch and fall back to the stored preview.
     await name_answered_results(db, [md for md, _ in entries])
     written: list[dict[str, Any]] = []
     for md, src in entries:
