@@ -1251,8 +1251,10 @@ not-found responses are not guaranteed. An owned turn with no project can
 still resolve a full 36-character UUID, including one selected by `"current"`;
 prefix and substring lookup require project context. An ambiguous match
 returns candidates rather than choosing one: substring results are capped at
-`MAX_CANDIDATES` (10), while id-prefix candidates inherit the CLI helper's
-smaller cap. Each reports truncation when its limit is exceeded.
+`MAX_CANDIDATES` (10), and the shared resolver's id-prefix candidates at the
+CLI helper's own listing size (5), counting truncation over the rows the turn
+may see, so a collision set padded with foreign rows is not reported as
+truncated once those rows are gone.
 
 `run_progress.resolve_run("current")` calls `get_current_view`, which can use a
 later observation from the same browser page. Tools that reuse this resolver

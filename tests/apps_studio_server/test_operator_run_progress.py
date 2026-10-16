@@ -356,6 +356,55 @@ async def test_run_progress_colliding_id_prefix_is_ambiguous(db_path):
     assert {c["id"] for c in result["candidates"]} == {sid_a, sid_b}
 
 
+async def test_run_progress_id_prefix_candidate_cap_and_truncation(db_path):
+    """An id-prefix collision comes back as candidates capped at the same
+    listing size the CLI helper uses, and truncation is counted over the
+    rows this turn may actually see."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+    from lionagi.studio.operator.run_progress import run_progress
+
+    ids = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(6)]
+    for sid in ids:
+        await seed_session(db_path, session_id=sid, name="run", status="completed")
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert result["truncated"] is True
+
+
+async def test_run_progress_id_prefix_truncation_ignores_foreign_rows(db_path, monkeypatch):
+    """A collision set padded with foreign-project rows is not truncated once
+    those rows are gone: four visible candidates are all of them."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+    from lionagi.studio.operator.run_progress import run_progress
+
+    project = "/Users/admin/acme-research"
+    owned = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(4)]
+    foreign = [f"deadbeef-{index:04d}-8888-7777-666655554444" for index in range(2, 4)]
+    for sid in owned:
+        await seed_session(db_path, session_id=sid, name="run", status="completed", project=project)
+    for sid in foreign:
+        await seed_session(
+            db_path, session_id=sid, name="run", status="completed", project="/Users/admin/acme-ops"
+        )
+
+    cid, request_id = await _make_running_turn_with_project(db_path, project=project)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert {c["id"] for c in result["candidates"]} == set(owned)
+    assert len(result["candidates"]) < _CANDIDATES_SHOWN
+    assert result["truncated"] is False
+
+
 async def test_run_progress_current_view(db_path, monkeypatch):
     from lionagi.studio.operator.application_mcp import navigate  # noqa: F401
     from lionagi.studio.operator.run_progress import run_progress

@@ -1935,7 +1935,12 @@ export default function RunDetail({ id }: RunDetailProps) {
   // every unrelated RunDetail rerender.
   const noopLayoutHeight = useCallback(() => {}, []);
   const [error, setError] = useState<string | null>(null);
-  useReportOperatorProject(session?.id === id && !error ? id : null, session?.project);
+  // Scope follows the loaded run, not the fetch's health: an error raised
+  // after this run's detail loaded (a failed older-page fetch, a failed
+  // reload) still leaves the human on this run's route, so the project it
+  // reports stays the project this turn may be scoped to. A run whose detail
+  // never loaded has no session, so it stays unscoped either way.
+  useReportOperatorProject(session?.id === id ? id : null, session?.project);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   // Cross-view selection (ADR-0113 D6): the step a graph-node click resolved
@@ -2058,10 +2063,12 @@ export default function RunDetail({ id }: RunDetailProps) {
     // The Fleet view keeps this component mounted and swaps `id` — the
     // selection is scoped to the run it was made on, so a run switch must
     // drop it rather than let it read as the new run's selection.
-    // A switch also consumes a still-pending deep link: a later response
-    // must never apply the original run's node to a different run.
+    // A switch does NOT consume a still-pending deep link: the link was read
+    // for the run this component mounted with, so returning to that run
+    // before its first response lands still restores it. Each response is
+    // gated on `id === initialNodeRunId` below instead, which is what keeps
+    // the original run's node off a different run.
     if (initialNodeAppliedRef.current || id !== initialNodeRunId) {
-      initialNodeAppliedRef.current = true;
       setSelectedStepKey(null);
       setUnmatchedNodeId(null);
       writeSelectedNodeToUrl(null);
@@ -2093,9 +2100,9 @@ export default function RunDetail({ id }: RunDetailProps) {
               ? new Set([s.branches[0].name || s.branches[0].id.slice(0, 8)])
               : null;
         // Restore a deep-linked node selection against THIS run's branches,
-        // once only, ever — a later run swap must not reapply it (see the
-        // clear-on-id-change block above).
-        if (!initialNodeAppliedRef.current) {
+        // once only, ever, and only for the run the link was read for — a
+        // response for another run must not apply it (see the block above).
+        if (!initialNodeAppliedRef.current && id === initialNodeRunId) {
           initialNodeAppliedRef.current = true;
           if (initialUrlNodeKey) {
             const match = matchGraphNodeToBranch(initialUrlNodeKey, s.branches);

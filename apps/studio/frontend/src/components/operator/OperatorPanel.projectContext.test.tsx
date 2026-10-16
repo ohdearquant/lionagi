@@ -217,6 +217,28 @@ describe("Operator project context", () => {
     },
   );
 
+  it.each(["p".repeat(512), "\u{1f981}".repeat(512)])(
+    "keeps a selected run's project at the code-point limit",
+    async (project) => {
+      router.location.search = { s: "selected", project: "list-project" };
+      api.getSession.mockResolvedValue(session("selected", project));
+      await render("selected");
+      expect(await viewProject()).toBe(project);
+      expect(await sendProject()).toBe(project);
+    },
+  );
+
+  it.each(["p".repeat(513), "\u{1f981}".repeat(513)])(
+    "omits a selected run's project past the code-point limit",
+    async (project) => {
+      router.location.search = { s: "selected", project: "list-project" };
+      api.getSession.mockResolvedValue(session("selected", project));
+      await render("selected");
+      expect(await viewProject()).toBeUndefined();
+      expect(await sendProject()).toBeUndefined();
+    },
+  );
+
   it("uses the validated selection from an array-valued link", async () => {
     router.location.search = { s: ["", "selected", "other"], project: "list-project" };
     api.getSession.mockResolvedValue(session("selected", "selected-project"));
@@ -306,6 +328,56 @@ describe("Operator project context", () => {
       expect(container.querySelectorAll("[data-selected=true]")).toHaveLength(0);
     },
   );
+
+  it("keeps the loaded run's project when a later read fails", async () => {
+    router.location.search = { s: "selected", project: "list-project" };
+    api.getSession.mockResolvedValueOnce({
+      ...session("selected", "selected-project"),
+      message_next_cursor: "cursor-1",
+      branches: [
+        {
+          id: "branch-a",
+          name: "A",
+          created_at: 1,
+          message_total: 2,
+          message_has_older: true,
+          messages: [
+            {
+              id: "m2",
+              role: "user",
+              content: { instruction: "content" },
+              lion_class: "Instruction",
+              timestamp: 2,
+            },
+          ],
+        },
+      ],
+    });
+    await render("selected");
+    expect(await viewProject()).toBe("selected-project");
+
+    const loadOlder = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Load older messages"),
+    );
+    expect(loadOlder).toBeDefined();
+    api.getSession.mockRejectedValueOnce(new Error("upstream unavailable"));
+    await act(async () => {
+      loadOlder?.click();
+    });
+    expect(container.textContent).toContain("upstream unavailable");
+    // The reader is still on this run's route, so the project it reports is
+    // still the project the turn may be scoped to.
+    expect(await viewProject()).toBe("selected-project");
+  });
+
+  it("keeps a selected run unscoped when its own detail fails to load", async () => {
+    router.location.search = { s: "selected", project: "list-project" };
+    api.getSession.mockRejectedValueOnce(new Error("detail unavailable"));
+    await render("selected");
+    expect(container.textContent).toContain("detail unavailable");
+    expect(await viewProject()).toBeUndefined();
+    expect(await sendProject()).toBeUndefined();
+  });
 
   it("clears a detail project when selection is removed or the route changes", async () => {
     router.location.search = { s: "selected" };

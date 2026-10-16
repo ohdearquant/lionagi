@@ -240,7 +240,7 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     substring resolution are not -- see docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
+    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
 
     normalized = ref.strip()
@@ -303,15 +303,17 @@ async def resolve_run(ref: str) -> dict[str, Any]:
                 }
             if len(owned) == 1:
                 return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
+            # fetch_unique_row's prefix scan reads one row past the CLI
+            # helper's listing size (lionagi/cli/_util.py::_CANDIDATES_SHOWN)
+            # before raising, so the returned list is sliced back to that
+            # size here. Truncation is counted over the rows THIS turn may
+            # see: a collision set padded with foreign rows is not truncated
+            # once those rows are gone.
             return {
                 "found": True,
                 "ambiguous": True,
-                "candidates": owned,
-                # fetch_unique_row's own prefix scan caps at 6 rows (see
-                # lionagi/cli/_util.py::_CANDIDATES_SHOWN) before this
-                # function ever sees the list, so hitting that cap is the
-                # only honest truncation signal available here.
-                "truncated": len(exc.candidates) > 5,
+                "candidates": owned[:_CANDIDATES_SHOWN],
+                "truncated": len(owned) > _CANDIDATES_SHOWN,
             }
         if row is not None:
             if not _owns(row.get("project"), project):

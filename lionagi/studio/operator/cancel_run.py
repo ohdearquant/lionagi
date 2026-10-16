@@ -109,8 +109,11 @@ async def _current_run_id(store: OperatorStore, request_id: str) -> str | None:
     Deliberately reads the turn's OWN frozen context rather than a
     later-reported live view -- acting on a view reported after the
     instruction was sent could target a run the human was never looking at
-    when they said "stop it". See docs/internals/studio.md ("Resolving a
-    run reference") for why this reads the "s" key specifically.
+    when they said "stop it". Reads the "s" key specifically because that is
+    the only key a mission/history view carries its run selection under;
+    there is no runId/run_id/sessionId on the wire for those views, and the
+    longer names other resolvers also accept would only ever be written by a
+    caller that is not this surface.
     """
     turn = await store.get_turn(request_id)
     context = turn.get("context")

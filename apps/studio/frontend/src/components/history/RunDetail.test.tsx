@@ -2986,6 +2986,128 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     }
   });
 
+  it("a switch back to the run mounted with still restores its pending node link", async () => {
+    window.history.replaceState(null, "", "/?node=A");
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      let reject!: (reason: Error) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    const first = deferred<unknown>();
+    const middle = deferred<unknown>();
+    const back = deferred<unknown>();
+    vi.mocked(getSession)
+      .mockReturnValueOnce(first.promise as never)
+      .mockReturnValueOnce(middle.promise as never)
+      .mockReturnValueOnce(back.promise as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (id: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={id} />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        for (let i = 0; i < 4; i++) await Promise.resolve();
+      });
+    };
+    try {
+      await render("run-mount-view");
+      await render("run-next");
+      await render("run-mount-view");
+      await act(async () => {
+        back.resolve(sessionWithBranches(edgedGraph));
+      });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+      // The link was read for `run-mount-view`, and the reader is back on it
+      // before that run's first response lands — it still belongs to this run.
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+      // The earlier responses for the other run never apply it.
+      await act(async () => {
+        middle.resolve({
+          ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
+          id: "run-next",
+          name: "run-next",
+        });
+      });
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("a pending node link is never applied to another run's response", async () => {
+    window.history.replaceState(null, "", "/?node=A");
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    let resolveNext!: (value: unknown) => void;
+    vi.mocked(getSession)
+      .mockReturnValueOnce(new Promise(() => {}) as never)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveNext = resolve;
+        }) as never,
+      );
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (id: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={id} />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        for (let i = 0; i < 4; i++) await Promise.resolve();
+      });
+    };
+    try {
+      await render("run-mount-view");
+      await render("run-next");
+      // The other run answers first, with a node of the same name.
+      await act(async () => {
+        resolveNext({
+          ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
+          id: "run-next",
+          name: "run-next",
+        });
+      });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+      expect(container.querySelector('[data-testid="worker-canvas"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it("coupled minor: changing the run id clears the previous run's selected node", async () => {
     const [{ getSession }, { default: RunDetail }] = await Promise.all([
       import("@/lib/api"),

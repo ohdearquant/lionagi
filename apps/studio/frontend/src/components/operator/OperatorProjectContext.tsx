@@ -6,6 +6,7 @@ interface DetailProject {
 }
 
 type PublishProject = (detail: DetailProject) => () => void;
+const PROJECT_MAX_CODE_POINTS = 512;
 const DetailProjectContext = createContext<DetailProject | null>(null);
 const PublishProjectContext = createContext<PublishProject>(() => () => {});
 
@@ -26,6 +27,15 @@ export function OperatorProjectProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** The turn-context boundary, in Unicode code points, as the server enforces it
+ * (``OperatorContextSnapshot.project``). A project past it would be sent
+ * verbatim and rejected with the whole turn, so it is omitted instead: an
+ * unbounded scope is not a scope the server would accept. */
+function boundedProject(project: string | null | undefined): string | null {
+  if (!project) return null;
+  return [...project].length <= PROJECT_MAX_CODE_POINTS ? project : null;
+}
+
 export function useReportOperatorProject(sessionId: string | null, project?: string | null) {
   const publish = useContext(PublishProjectContext);
   useEffect(() => {
@@ -38,12 +48,13 @@ export function useOperatorProject(pathname: string, search: Record<string, unkn
   const detail = useContext(DetailProjectContext);
   if (pathname !== "/fleet" && pathname !== "/fleet/") return null;
   if (search.s != null) {
-    return typeof search.s === "string" && detail?.sessionId === search.s ? detail.project : null;
+    return typeof search.s === "string" && detail?.sessionId === search.s
+      ? boundedProject(detail.project)
+      : null;
   }
   // An invocation link can still be resolving its session selection. Only an
   // unselected list may use the router's scalar project filter as its scope.
   if (search.invocation != null || search.project_null === true) return null;
   const project = typeof search.project === "string" ? search.project.trim() : "";
-  // Match the turn-context limit in Unicode code points, as the server does.
-  return project && [...project].length <= 512 ? project : null;
+  return boundedProject(project);
 }
