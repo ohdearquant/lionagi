@@ -235,27 +235,142 @@ async def test_an_uncontained_judge_raises_a_refusal_its_call_raises():
         await _judge(Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(refusal))
 
 
-async def test_a_link_that_is_not_an_exception_ends_the_walk():
-    """An error class may answer ``__cause__`` with something that is not an exception;
-    the walk follows exceptions only, so the judge fails open as for any other error."""
+class _Holder:
+    """A link that is not an exception, holding whatever it is handed."""
 
-    class NotAnError:
-        __cause__ = None
+    def __init__(self, cause=None, context=None):
+        self.__cause__ = cause
+        self.__context__ = context
 
+
+class _NoContext:
+    __cause__ = None
+
+
+def _odd_links(link) -> RuntimeError:
     class OddLinks(RuntimeError):
         @property
         def __cause__(self):
-            return NotAnError()
+            return link
 
+    return OddLinks("odd links")
+
+
+async def _judge_outside_the_handler(error: BaseException):
     # Read outside the handler: an error raised with this chain as its context could not be
     # reported by a traceback that walks the same links.
     raised = None
+    allowed, events = None, []
     try:
         allowed, events = await _judge(
-            Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(OddLinks("odd links"))
+            Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(error)
         )
     except Exception as exc:
-        raised = f"{type(exc).__name__}: {exc}"
-    assert raised is None, raised
+        raised = exc
+    return raised, allowed, events
+
+
+async def test_a_link_that_is_not_an_exception_and_holds_nothing_fails_open():
+    """An error class may answer ``__cause__`` with an object that has no ``__context__``; the
+    walk reads what it can and the judge fails open as for any other error."""
+    raised, allowed, events = await _judge_outside_the_handler(_odd_links(_NoContext()))
+    assert raised is None, repr(raised)
     assert allowed is True
     assert [kind for kind, _ in events] == ["judge_error"]
+
+
+@pytest.mark.parametrize("held_as", ["cause", "context", "two-links-down"])
+async def test_a_refusal_behind_a_link_that_is_not_an_exception_is_raised(held_as):
+    from lionagi._errors import ContainmentRefusedError
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    if held_as == "cause":
+        link = _Holder(cause=refusal)
+    elif held_as == "context":
+        link = _Holder(context=refusal)
+    else:
+        link = _Holder(cause=_Holder(cause=refusal))
+    raised, _, _ = await _judge_outside_the_handler(_odd_links(link))
+    assert raised is refusal
+
+
+class _Minted(RuntimeError):
+    """An error whose ``__cause__`` builds a new link on every read, ending in *last*."""
+
+    def __init__(self, depth: int, last):
+        super().__init__(f"link {depth}")
+        self._depth, self._last = depth, last
+
+    @property
+    def __cause__(self):
+        if self._depth == 0:
+            return self._last
+        return _Minted(self._depth - 1, self._last)
+
+
+@pytest.mark.parametrize("depth", [1, 3, 6])
+async def test_a_refusal_behind_links_built_on_each_read_is_raised(depth):
+    """Each link is kept until the walk ends, so a link built on a later read cannot take the
+    address of one already read and be skipped as seen."""
+    from lionagi._errors import ContainmentRefusedError
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    raised, _, _ = await _judge_outside_the_handler(_Minted(depth, refusal))
+    assert raised is refusal
+
+
+class _Endless(RuntimeError):
+    """Builds a new link on every read of ``__cause__``, for ten times the walk's limit, so a walk
+    without a limit ends here too rather than exhausting memory."""
+
+    reads = 0
+
+    @property
+    def __cause__(self):
+        type(self).reads += 1
+        if type(self).reads > 10_000:
+            return None
+        return _Endless("again")
+
+
+async def test_a_chain_that_builds_a_new_link_on_every_read_ends_at_the_limit_and_fails_open():
+    _Endless.reads = 0
+    raised, allowed, events = await _judge_outside_the_handler(_Endless("first"))
+    assert _Endless.reads <= 1_000
+    assert raised is None, repr(raised)
+    assert allowed is True
+    assert [kind for kind, _ in events] == ["judge_error"]
+
+
+async def test_an_object_that_only_claims_to_be_a_refusal_is_not_raised():
+    from lionagi._errors import ContainmentRefusedError
+
+    class Claims:
+        __cause__ = None
+        __context__ = None
+
+        @property
+        def __class__(self):
+            return ContainmentRefusedError
+
+    claim = Claims()
+    assert isinstance(claim, ContainmentRefusedError)
+    raised, allowed, events = await _judge_outside_the_handler(_odd_links(claim))
+    assert raised is None, repr(raised)
+    assert allowed is True
+    assert [kind for kind, _ in events] == ["judge_error"]
+
+
+async def test_a_link_that_cannot_be_read_ends_that_branch_only():
+    from lionagi._errors import ContainmentRefusedError
+
+    class UnreadableCause(RuntimeError):
+        @property
+        def __cause__(self):
+            raise ValueError("this link cannot be read")
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    error = UnreadableCause("unreadable")
+    error.__context__ = refusal
+    raised, _, _ = await _judge_outside_the_handler(error)
+    assert raised is refusal

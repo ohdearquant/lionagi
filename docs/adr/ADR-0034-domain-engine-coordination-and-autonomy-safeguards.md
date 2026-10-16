@@ -24,8 +24,9 @@ turns the gate off for the whole run. Three cases are now raised instead:
   the third case raises it.
 - A `ContainmentRefusedError` is found anywhere on the error's chain. The model
   layer wraps a provider's refusal in its own error, and a wrapper that raises
-  without `from` (or `from None`) leaves it as the context, so each error's cause
-  and context are both followed, every error once; the refusal is raised.
+  without `from` (or `from None`) leaves it as the context, so each link's cause
+  and context are both followed, whatever object the link is, each link once and
+  at most 1,000 links in all; the refusal is raised.
 - With `contain_account_integrations` set, any other error. `judge_error` is
   emitted first, then the error is raised. Under containment the refusal can
   arrive as an error of any type (a working directory the process cannot enter, a

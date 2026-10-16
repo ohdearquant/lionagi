@@ -1324,6 +1324,10 @@ class EngineResult(str):
         return self._events_by_type(event_type)
 
 
+# How many links of a judge error's chain the refusal search reads before it gives up.
+_JUDGE_CHAIN_LIMIT = 1_000
+
+
 class Engine:
     """Stateless event-driven engine base; subclasses implement ``_run()``. See docs/reference/engines.md for parameter details."""
 
@@ -1416,7 +1420,7 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal anywhere on the error's chain of causes and contexts; and, when the engine contains account integrations, any error at all, because no error can show that a contained judge ran, so none can be read as a pass."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Budget exhaustion stops; any other error fails open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal on the error's chain of causes and contexts, within its first 1,000 links; and, when the engine contains account integrations, every other error, because no error can show that a contained judge ran, so none can be read as a pass."""
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
@@ -1451,23 +1455,26 @@ class Engine:
             # The model layer wraps a provider's refusal in its own error, so the refusal is
             # found on the error's chain: its cause, or its context when a wrapper raised
             # without `from`. It refuses every call this judge makes; read as a pass, it would
-            # turn the gate off for the whole run.
-            pending, seen = [exc], set()
-            while pending:
+            # turn the gate off for the whole run. Whatever a link holds is followed, an object
+            # that is not an exception included, and every link read is kept until the walk
+            # ends, so a link an error builds on each read cannot take a visited one's address.
+            pending: list[object] = [exc]
+            seen: dict[int, object] = {}
+            while pending and len(seen) < _JUDGE_CHAIN_LIMIT:
                 cause = pending.pop()
                 if cause is None or id(cause) in seen:
                     continue
-                if isinstance(cause, ContainmentRefusedError):
+                seen[id(cause)] = cause
+                if issubclass(type(cause), ContainmentRefusedError):
                     raise cause from cause.__cause__
-                seen.add(id(cause))
-                pending.extend(
-                    link
-                    for link in (cause.__context__, cause.__cause__)
-                    if isinstance(link, BaseException)
-                )
-            # No refusal on the chain. A chain that loops back on itself lands
-            # here too, instead of walking forever. Under containment the refusal
-            # can arrive as any error type (an unreadable directory, a config the
+                for name in ("__context__", "__cause__"):
+                    try:
+                        pending.append(getattr(cause, name, None))
+                    except Exception:  # noqa: S112 -- a link that cannot be read ends there
+                        continue
+            # No refusal on the chain. A chain that loops back on itself, or one longer than
+            # the limit, lands here too, instead of walking forever. Under containment the
+            # refusal can arrive as any error type (an unreadable directory, a config the
             # request model rejects), so an error is never read as a pass.
             run.notify("judge_error", eid=eid, error=str(exc))
             if self.contain_account_integrations:
