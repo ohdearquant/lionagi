@@ -654,6 +654,11 @@ class StateDB:
         self._native_file: tuple[int, int] | None = None
         # Whether a connection of this handle's writable engine has read the store (ADR-0128 D7).
         self._connection_read = False
+        # Whether this handle's current engine has finished opening, schema included. A plain
+        # open that fails after its connection read the store keeps its engine but never reaches
+        # its schema, so a later call that finds that engine completes the open instead of
+        # returning over a store whose schema never ran.
+        self._schema_applied = False
         # One open at a time: a native open reads the store in a worker thread before its engine
         # exists, so two opens running together would each build an engine and lose one.
         self._open_lock: Lock = Lock()
@@ -761,7 +766,8 @@ class StateDB:
         call reads and clears the mark before it waits: an entry whose ``__aenter__`` fails runs no
         ``__aexit__``, and only the call that got past the open lock has an engine to dispose.
         Running that cleanup under the lock means a queued open cannot build an engine that the
-        cleanup then disposes. A plain call keeps a later failure's engine, as it always has.
+        cleanup then disposes. A plain call keeps a later failure's engine, as it always has, and
+        the next call that finds that engine completes the open, its schema included.
         """
         context_entry = _OPEN_CALL.get() is self
         try:
@@ -771,6 +777,10 @@ class StateDB:
                     await self._open()
                 except BaseException:
                     if context_entry:
+                        # The shield keeps a cancellation from reaching the disposal, but a
+                        # second native cancel delivered while the disposal is in progress still
+                        # escapes it and leaves ``_engine`` set; the disposal is entered again by
+                        # the next open or close.
                         with CancelScope(shield=True):
                             await self._close()
                     raise
@@ -802,9 +812,17 @@ class StateDB:
 
     async def _open(self) -> None:
         if self._engine is not None:
+            if self._schema_applied:
+                return
+            # An engine kept by an open that failed after its connection read the store: its
+            # schema never ran, so this call completes the open rather than reporting success
+            # over a store with no schema.
+            await self._apply_schema()
+            self._schema_applied = True
             return
         if self._compat is not None:
             await self._open_compatibility()
+            self._schema_applied = True
             return
         if self.dialect == "sqlite":
             p = self.path
@@ -826,6 +844,7 @@ class StateDB:
             # No make_engine(), no _install_begin_immediate(), no _apply_schema(): every one of
             # those mutates the file.
             self._engine = make_readonly_engine(self.url)
+            self._schema_applied = True
             return
         held = _open_in_compatibility_mode(self.url)
         if held is not None:
@@ -850,6 +869,7 @@ class StateDB:
             self._engine = make_engine(self.url)
         try:
             await self._apply_schema()
+            self._schema_applied = True
         except BaseException as exc:
             # A refused open, or one whose first connection never read the store (a lock held past
             # the busy timeout, a file that is not a database), leaves no engine, so a caller that
@@ -1089,6 +1109,7 @@ class StateDB:
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
+        self._schema_applied = False
 
     async def __aenter__(self) -> StateDB:
         # __aexit__ does not run when __aenter__ fails, so the entry marks its own open call:
@@ -6963,8 +6984,10 @@ async def _holding_shared_lock():
     """Hold the shared-registry lock, refusing a call made from another event loop.
 
     The same guard StateDB's own open lock uses: the lock belongs to the loop that holds or waits
-    on it, and a call from any other loop would wait for a wake only that loop's release can send.
-    The user count rises before the wait and falls on every way out, cancellation included.
+    on it, and a call from any other loop would wait for a wake only that loop's release can send,
+    so such a call is refused at once with a ``RuntimeError`` naming the other loop rather than
+    left to time out with the registry emptied. The user count rises before the wait and falls on
+    every way out, cancellation included.
     """
     global _SHARED_LOCK_LOOP, _SHARED_LOCK_USERS, _SHARED_OPEN_LOCK  # noqa: PLW0603
 
@@ -7125,12 +7148,14 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
 # connection here may hold, so each stays open until the process exits, as SQLite keeps its own
 # descriptor of a file open while its connections here hold locks on it. Two costs follow from
 # that: each distinct store copied keeps one descriptor open for the life of the process, and a
-# store deleted after it was copied keeps its disk space allocated until the process exits. An open
-# that races another on one store opens its own descriptor before it finds the filed one: it is kept
-# open as well and is not filed, so that one race costs a second descriptor no entry can find. The
-# descriptors count against the process's open-file limit, so a long run that copies very many
-# distinct stores spends one of that limit's slots per store, and can meet `EMFILE` where a run that
-# copies fewer does not.
+# store deleted after it was copied keeps its disk space allocated until the process exits. The
+# opens are serialised by `_COPY_DESCRIPTORS_LOCK`, so an open never races another; a descriptor
+# that finds one already filed stays open and unfiled, which needs the file replaced between the
+# `stat` and the `open`, so the open costs a second descriptor no entry can find. The descriptors
+# count against the process's open-file limit, so a long run that copies very many distinct stores
+# spends one of that limit's slots per store, and an `EMFILE` reached there makes
+# `_read_lineage_from_a_copy` return `_UNREAD`, so the writable connection's own read of the row
+# decides.
 _COPY_DESCRIPTORS: dict[tuple[int, int], int] = {}
 _COPY_DESCRIPTORS_LOCK = threading.Lock()
 
@@ -7156,7 +7181,8 @@ def _copy_descriptor(path: str) -> int:
     The descriptor is never closed, since closing any descriptor of a file drops every POSIX lock
     this process holds on it. So each distinct store copied keeps one descriptor open for the life
     of the process, and a store deleted after it was copied keeps its disk space allocated until
-    the process exits.
+    the process exits. The opens are serialised by ``_COPY_DESCRIPTORS_LOCK``, so the one that
+    stays open and unfiled needs the file replaced between the ``stat`` and the ``open``.
     """
     with _COPY_DESCRIPTORS_LOCK:
         found = os.stat(path)
@@ -7282,10 +7308,13 @@ def _refuse_native_beside_compatibility(url: str) -> None:
 async def register_shared_db(db: StateDB) -> None:
     """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its url.
 
-    A native writer is refused for a store this process holds open in compatibility mode. The
-    handle being displaced is closed before the entry is replaced: a close this loop cannot make is
-    raised, and the registry keeps the handle that is still open rather than filing one with no
-    entry to reach it by.
+    A native writer is refused for a store this process holds open in compatibility mode.
+
+    The handle being displaced is closed before the entry is replaced. Any error that close raises
+    reaches the caller, not just a refusal, and the registry keeps the handle that is still open
+    rather than filing one with no entry to reach it by. A caller that registers for a run takes
+    that error as a setup failure: ``setup_agent_persist`` disables persistence for the run and
+    reports it degraded, while orchestration admission fails the run with the error as its reason.
     """
     gen = _SHARED_CLOSE_GEN
     async with _holding_shared_lock():
@@ -7321,15 +7350,12 @@ async def close_shared_db() -> None:
     """
     global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
 
-    if _SHARED_OPEN_LOCK is None:
-        # No open ever happened in this loop (opens create the lock first).
-        refused = await _sweep_shared_handles()
-        _SHARED_CLOSE_GEN += 1
-        _raise_refused_closes(refused)
-        return
     # Hold the open lock so an in-flight get_shared_db()/register_shared_db() cannot repopulate
     # _SHARED after the sweep; bump the generation and null the lock last, so a waiter that raced
-    # this close refuses to resurrect it.
+    # this close refuses to resurrect it. Every sweep takes the lock, the one after a refused close
+    # included: that close kept its handle registered and left the lock unset, and a sweep that ran
+    # without a lock over that entry would let a lookup register a second handle for the store,
+    # which the sweep would then return over or the re-file below would orphan.
     async with _holding_shared_lock():
         refused = await _sweep_shared_handles()
         _SHARED_CLOSE_GEN += 1

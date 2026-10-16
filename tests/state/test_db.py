@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import pytest_asyncio
@@ -535,6 +536,203 @@ async def test_a_close_from_another_loop_after_a_cancelled_open_closes_the_handl
 
     assert handle._open_lock_users == 0
     assert _close_on_another_loop(handle) == "returned"
+
+
+async def test_a_sweep_after_a_refused_close_still_takes_the_lock_a_lookup_meets(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+):
+    """A refused close leaves its handle registered and resets the shared lock. The next sweep
+    takes that lock all the same, so a lookup made during it meets the lock and the teardown
+    refusal instead of registering a second handle that the sweep then returns over."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, get_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    monkeypatch.setattr(db_mod, "_SHARED_LOCK_USERS", 0)
+    monkeypatch.setattr(db_mod, "_SHARED_LOCK_LOOP", None)
+    store = tmp_path / "state.db"
+    handle = StateDB(store)
+    await handle.open()
+    await register_shared_db(handle)
+
+    async def refused_close():
+        raise OSError("dispose failed")
+
+    with mock.patch.object(handle, "close", refused_close):
+        with pytest.raises(RuntimeError, match="could not be closed"):
+            await close_shared_db()
+    assert db_mod._SHARED.get(handle.url) is handle, "the refused handle stays registered"
+
+    async def slow_close():
+        await asyncio.sleep(0.3)
+        await StateDB.close(handle)
+
+    racing = None
+    try:
+        with mock.patch.object(handle, "close", slow_close):
+            sweep = asyncio.ensure_future(close_shared_db())
+            await asyncio.sleep(0.1)
+            with pytest.raises(RuntimeError, match="torn down"):
+                racing = await get_shared_db(store)
+            await sweep
+        assert not [db for db in db_mod._SHARED.values() if db._engine is not None], (
+            "the sweep returned with an open handle still in the registry"
+        )
+    finally:
+        if racing is not None and racing._engine is not None:
+            await racing.close()
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_cancelled_context_entry_that_read_the_store_disposes_its_own_engine(
+    tmp_path, monkeypatch
+):
+    """An entry whose connection read the store keeps its engine when it is cancelled, since only
+    an open whose connection never read the store is undone; the entry's own cleanup disposes it
+    under the open lock, so no engine outlives the entry."""
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+    entered = asyncio.Event()
+
+    async def schema(self):
+        await self.fetch_all("SELECT 1")
+        entered.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", schema)
+    handle = StateDB(store)
+    entry = asyncio.ensure_future(handle.__aenter__())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert handle._connection_read, "the entry's connection must have read the store"
+        entry.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await entry
+        assert handle._engine is None, "the cancelled entry left its engine open"
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_failed_context_entry_that_read_the_store_disposes_its_own_engine(
+    tmp_path, monkeypatch
+):
+    """The same when the entry's schema raises after its connection read the store."""
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+
+    async def schema(self):
+        await self.fetch_all("SELECT 1")
+        raise RuntimeError("the entry's schema failed")
+
+    monkeypatch.setattr(StateDB, "_apply_schema", schema)
+    handle = StateDB(store)
+
+    async def enter():
+        async with handle:
+            raise AssertionError("the failed entry's body must not run")
+
+    try:
+        with pytest.raises(RuntimeError, match="the entry's schema failed"):
+            await enter()
+        assert handle._engine is None, "the failed entry left its engine open"
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_queued_open_behind_an_entry_that_failed_after_its_read_builds_its_own_engine(
+    tmp_path, monkeypatch
+):
+    """The failed entry's cleanup disposes only what its own call opened, so the open queued
+    behind it builds an engine of its own and runs the schema on that one."""
+    import lionagi.state.db as db_mod
+
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+    original = StateDB._apply_schema
+    entered = asyncio.Event()
+    calls: list[int] = []
+
+    async def schema(self):
+        calls.append(1)
+        if len(calls) == 1:
+            await self.fetch_all("SELECT 1")
+            entered.set()
+            await asyncio.sleep(0.3)
+            raise RuntimeError("the entry's schema failed")
+        await original(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", schema)
+    built: list = []
+    make_engine = db_mod.make_engine
+
+    def counting(url, **kwargs):
+        engine = make_engine(url, **kwargs)
+        built.append(engine)
+        return engine
+
+    monkeypatch.setattr(db_mod, "make_engine", counting)
+    handle = StateDB(store)
+    entry = asyncio.ensure_future(handle.__aenter__())
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    queued = asyncio.ensure_future(handle.open())
+    with pytest.raises(RuntimeError, match="the entry's schema failed"):
+        await entry
+    await asyncio.wait_for(queued, timeout=10)
+    try:
+        assert len(built) == 2, "the queued open found the failed entry's engine still open"
+        assert handle._engine is built[-1]
+        assert await handle.fetch_all("SELECT 1")
+    finally:
+        await handle.close()
+    assert handle._engine is None
+
+
+async def test_a_queued_entry_after_a_plain_open_that_failed_completes_the_store_schema(
+    tmp_path, monkeypatch
+):
+    """A plain open that fails after its connection read the store keeps its engine, and its
+    schema never ran. A later ``async with`` on the handle must not return over that store: it
+    completes the open, the schema included."""
+    store = tmp_path / "fresh.db"
+    original = StateDB._apply_schema
+    calls: list[int] = []
+
+    async def schema(self):
+        calls.append(1)
+        if len(calls) == 1:
+            await self.fetch_all("SELECT 1")
+            await asyncio.sleep(0.3)
+            raise RuntimeError("the first open's schema failed")
+        await original(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", schema)
+    handle = StateDB(store)
+    opener = asyncio.ensure_future(handle.open())
+    await asyncio.sleep(0.1)
+    with pytest.raises(RuntimeError, match="the first open's schema failed"):
+        await opener
+    assert handle._engine is not None, "a plain open keeps the engine it built"
+
+    try:
+        async with handle:
+            rows = await handle.fetch_all(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
+            )
+            assert rows, "the entry returned over a store whose schema never ran"
+        assert len(calls) == 2
+    finally:
+        if handle._engine is not None:
+            await handle.close()
 
 
 # Schema
