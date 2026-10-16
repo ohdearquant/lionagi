@@ -125,16 +125,16 @@ _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
-# A fenced code block: a line opening with ``` or ~~~ through the closing line
-# of the same fence. Its contents are a quotation of the markup, not a call.
-_FENCED_CODE_RE = re.compile(
-    r"^[ \t]*(?P<fence>```|~~~)[^\n]*\n.*?^[ \t]*(?P=fence)[ \t]*$",
-    re.M | re.S,
-)
+# A fenced code block opens on a line of three or more backticks or tildes
+# (a backtick fence's info string holds no backtick) and closes on a line of
+# the same character, at least as long as the opener, with nothing after it.
+# Its contents are a quotation of the markup, not a call. A fence that never
+# closes is not a block: its text stays visible to the markup check.
+_FENCE_OPEN_RE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 # An inline code span: text between runs of the same length of backticks, on
-# one paragraph. A span does not cross a blank line, and a three-backtick run
-# is not closed by a two-backtick run.
-_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.S)
+# one paragraph. A span does not cross a blank line, a three-backtick run is
+# not closed by a two-backtick run, and a backslash-escaped backtick opens none.
+_INLINE_CODE_RE = re.compile(r"(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.S)
 
 # Completed items that are a call the CLI ran, or a call's result. One of these
 # after a message means the turn went on past that message, so the message is
@@ -159,19 +159,61 @@ _TOOL_CALL_MARKUP_FAILURE = (
 )
 
 
+def _code_free_blocks(text: str) -> list[str]:
+    """Split ``text`` into its runs of lines outside closed fenced code blocks.
+
+    A closed fence is dropped. A fence line also ends the paragraph before it,
+    so an inline span never reaches across one. A fence that never closes is
+    not code: its line starts a new run and its text stays visible. A table of
+    the longest closing line after each line keeps the scan linear however
+    many fences open without closing.
+    """
+    lines = text.split("\n")
+    longest_after = {"`": [0] * (len(lines) + 1), "~": [0] * (len(lines) + 1)}
+    for i in range(len(lines) - 1, -1, -1):
+        bare = lines[i].strip(" \t")
+        for char, column in longest_after.items():
+            run = len(bare) if bare and set(bare) == {char} else 0
+            column[i] = max(column[i + 1], run)
+
+    blocks: list[list[str]] = [[]]
+    i = 0
+    while i < len(lines):
+        m = _FENCE_OPEN_RE.match(lines[i])
+        if m is None or (m["fence"][0] == "`" and "`" in m["info"]):
+            blocks[-1].append(lines[i])
+            i += 1
+            continue
+        char, length = m["fence"][0], len(m["fence"])
+        if longest_after[char][i + 1] < length:
+            blocks.append([lines[i]])
+            i += 1
+            continue
+        i += 1
+        while True:
+            bare = lines[i].strip(" \t")
+            i += 1
+            if bare and set(bare) == {char} and len(bare) >= length:
+                break
+        blocks.append([])
+    return ["\n".join(block) for block in blocks if block]
+
+
 def _strip_code_regions(text: str) -> str:
     """Remove fenced code blocks and inline code spans from ``text``.
 
     Markup inside code is being shown, not written as a call, so the regions
-    are dropped before the markup patterns are matched.
+    are dropped before the markup patterns are matched. Line ends are
+    normalised first, so a CRLF blank line ends a span and a CRLF fence line
+    closes a block.
     """
-    without_blocks = _FENCED_CODE_RE.sub(" ", text)
-    return _INLINE_CODE_RE.sub(" ", without_blocks)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(_INLINE_CODE_RE.sub(" ", block) for block in _code_free_blocks(text))
 
 
-def _has_tool_call_markup(text: str) -> bool:
+def _has_tool_call_markup(text: object) -> bool:
     """True when ``text`` carries a tool-call markup tag written as plain text."""
-    if not text:
+    if not isinstance(text, str) or not text:
         return False
     visible = _strip_code_regions(text)
     return any(p.search(visible) for p in _TOOL_CALL_MARKUP_PATTERNS)
@@ -183,12 +225,15 @@ def _call_markup_error_chunk(session: CLISession, event: Mapping[str, Any]) -> S
     The session is marked failed the way any failed turn marks it -- ``is_error``
     and a result naming the cause -- and the returned chunk says the same thing
     in its content, carries ``call_markup_in_text``, and is a real error chunk.
+    A failure already recorded keeps its result; the chunk still names the
+    markup.
     """
+    if not session.is_error:
+        session.result = _TOOL_CALL_MARKUP_FAILURE
     session.is_error = True
-    session.result = _TOOL_CALL_MARKUP_FAILURE
     sc = StreamChunk(
         type="error",
-        content=session.result,
+        content=_TOOL_CALL_MARKUP_FAILURE,
         is_error=True,
         metadata={"call_markup_in_text": True, **event},
     )
@@ -958,7 +1003,7 @@ async def stream_codex_cli(
                     session.messages.append(item)
                     # A message with no visible text does not become the turn's
                     # last text; it does not replace a message that carried one.
-                    if text and text.strip():
+                    if isinstance(text, str) and text.strip():
                         _last_agent_text = text
                     if on_text:
                         await maybe_await(on_text(text))
@@ -1265,7 +1310,7 @@ async def stream_codex_cli(
                         btype = blk.get("type")
                         if btype in ("text", "output_text"):
                             text = blk.get("text", "")
-                            if text and text.strip():
+                            if isinstance(text, str) and text.strip():
                                 _last_agent_text = text
                             if on_text:
                                 await maybe_await(on_text(text))
@@ -1312,6 +1357,11 @@ async def stream_codex_cli(
                 # failure, or its success, cannot retract one either.
                 if not session.is_error and _event_result:
                     session.result = _event_result
+                # The event's own text is read like a message: markup there
+                # becomes the turn's pending text, which the stream end reads.
+                # Clean text does not replace pending markup.
+                if _has_tool_call_markup(_event_result):
+                    _last_agent_text = _event_result
                 session.is_error = session.is_error or bool(
                     obj.get("is_error", obj.get("error") is not None)
                 )
@@ -1338,8 +1388,8 @@ async def stream_codex_cli(
         await stream.aclose()
 
     # A stream that is exhausted mid-turn leaves the turn's pending text
-    # unread. A turn end (turn.completed, the sentinel, a real failure) already
-    # read and cleared it, so this reads what is left: a stream that ended
+    # unread. turn.completed and the sentinel read and clear it, and a real
+    # failure clears it, so this reads what is left: a stream that ended
     # without a turn end. A consumer that stops reading early never gets here.
     if _has_tool_call_markup(_last_agent_text or ""):
         yield _call_markup_error_chunk(session, {})

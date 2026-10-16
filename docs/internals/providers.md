@@ -313,11 +313,19 @@ by a later one, a completed call after the message clears it, and a message
 with no visible text leaves the text it followed in place. Text inside a
 fenced code block or an inline code span is a quotation of the markup rather
 than a call, so a call the model writes inside a fence completes the turn and
-never runs. The quotation is read as written, not as CommonMark reads a
-document: a backtick fence closed by `~~~` is not a closed fence, so the
-markup after it is still read as written call text and the turn fails. A tag
-in plain prose fails the reply as well; a reply that needs to name one writes
-it between backticks. The markup itself is the tuple
+never runs. Line ends are normalised first, so CRLF text reads like LF text.
+A fence opens on a line of three or more backticks or tildes (a backtick
+fence's information string holds no backtick) and closes only on a line of
+the same character, at least as long as the opener, with nothing else on it:
+a backtick fence closed by `~~~`, or a four-backtick fence by three
+backticks, stays open. A fence that never closes is not treated as code, so
+the text after its opener is still read and markup there fails the turn,
+where CommonMark would read the rest of the document as code. An inline span
+stays within one paragraph, closes only on a backtick run of its own length,
+and is not opened by a backslash-escaped backtick. A legacy
+`result`/`response`/`session.end` event's own text is read like a message:
+markup in it fails the turn at the stream end. A tag in plain prose fails the
+reply as well; a reply that needs to name one writes it between backticks. The markup itself is the tuple
 `_TOOL_CALL_MARKUP_PATTERNS`, one compiled pattern per call markup the CLI can
 surface; another model's markup is supported by adding one entry there. The
 patterns match markup tags only — never the word DSML or a bare `|` in

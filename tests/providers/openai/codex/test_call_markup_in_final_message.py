@@ -827,3 +827,129 @@ async def test_endpoint_stream_reports_a_failed_legacy_result_before_the_sentine
         f"{[(c.type, c.is_error, c.content) for c in chunks]}"
     )
     assert "boom" in failed[0].content, f"the failure text was lost: {failed[0].content!r}"
+
+
+# --- line ends and fence rules ---
+
+
+@pytest.mark.asyncio
+async def test_a_crlf_blank_line_ends_an_inline_span():
+    """A CRLF blank line is a paragraph break, so stray backticks do not quote the markup."""
+    text = f"I'll check the ` char.\r\n\r\n{MARKUP_FIXTURE}\r\n\r\nThen `x` is fine."
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a CRLF blank line did not end the span: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_crlf_tilde_fence_quotes_the_markup():
+    """A fence written with CRLF line ends closes, so its contents are a quotation."""
+    text = f"The model wrote:\r\n~~~\r\n{MARKUP_TAIL}\r\n~~~\r\nThat is the markup."
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a CRLF fence did not close: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_four_backtick_fence_holds_a_three_backtick_block():
+    """An inner three-backtick line does not close a four-backtick fence."""
+    text = f"Example:\n````markdown\n```\n{MARKUP_TAIL}\n```\n````\nDone."
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"the inner fence closed the outer one: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_longer_closer_closes_a_fence_and_the_text_after_it_is_read():
+    """A four-backtick line closes a three-backtick fence; markup after it is prose."""
+    text = f"```\nquoted\n````\n{MARKUP_FIXTURE}\n```"
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"the markup after the closed fence was hidden: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_backtick_line_with_a_backtick_in_its_info_string_opens_no_fence():
+    """A line like ```py `x` is prose with a code span, so it does not hide the call after it."""
+    text = f"```see `<{BAR}DSML{BAR} invoke>` here\n{MARKUP_FIXTURE}\n```"
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"an info string with a backtick opened a fence: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_unclosed_fence_leaves_its_text_visible():
+    """A fence that never closes is not treated as code."""
+    text = f"```\n{MARKUP_TAIL}"
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"an unclosed fence hid the markup: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_escaped_backticks_do_not_quote_the_markup():
+    """A backslash-escaped backtick opens no span."""
+    text = f'{NARRATION} \\`<{BAR}DSML{BAR} invoke name="x">\\`'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"escaped backticks quoted the markup: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- a recorded failure, non-string text and the legacy event's own text ---
+
+
+@pytest.mark.asyncio
+async def test_markup_after_a_failure_keeps_the_failure_result():
+    """The markup chunk is still emitted, but the earlier failure's result stays."""
+    chunks, session = await _parse([_turn_failed("boom"), _agent_message(MARKUP_FIXTURE)])
+
+    assert session.is_error is True, "the failed session read as a success"
+    assert session.result == "boom", f"the markup replaced the failure result: {session.result!r}"
+    errors = _markup_errors(chunks)
+    assert len(errors) == 1, f"expected one markup error chunk, got {chunks}"
+    assert "tool call" in errors[0].content, f"the chunk does not name the markup: {errors[0]}"
+
+
+@pytest.mark.asyncio
+async def test_non_string_message_text_is_not_read():
+    """A message whose text is not a string neither raises nor replaces the pending text."""
+    events = [
+        _agent_message(MARKUP_FIXTURE),
+        {"type": "item.completed", "item": {"type": "agent_message", "text": 7}},
+        {"type": "message", "message": {"content": [{"type": "text", "text": ["x"]}]}},
+        _turn_completed(),
+    ]
+    chunks, session = await _parse(events)
+
+    assert session.is_error is True, "a non-string message superseded the markup"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_markup_in_a_legacy_result_events_own_text_fails():
+    """A legacy terminal event's text is read like a message."""
+    events = [{"type": "result", "result": MARKUP_FIXTURE, "is_error": False}]
+    chunks, session = await _parse(events)
+
+    assert session.is_error is True, "markup in the legacy result text completed the run"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_clean_legacy_result_text_does_not_replace_pending_markup():
+    """Clean text in the legacy terminal event leaves an earlier message's markup pending."""
+    events = [
+        _legacy_message(MARKUP_FIXTURE),
+        {"type": "result", "result": "all done", "is_error": False},
+    ]
+    chunks, session = await _parse(events)
+
+    assert session.is_error is True, "clean result text superseded the pending markup"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
