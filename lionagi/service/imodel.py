@@ -461,24 +461,46 @@ class iModel:  # noqa: N801
             kw["stream"] = True
             api_call = await self.create_event(**kw)
             await self.executor.append(api_call)
-        # A streamed call is driven by its consumer, never by the executor's
-        # queue, so it must not stay in the pending queue once this call owns
-        # it. A pending entry left behind here is popped by the next forward()
-        # on this executor and looked up in the pile, which the teardown below
-        # has already emptied for it.
+        # A call stream() drives is consumed here, not by the executor's queue,
+        # so it must not sit in the pending queue once this generator owns it:
+        # the next forward() on this executor would pop its id and look it up in
+        # the pile, which the teardown below has already emptied for it. A call
+        # this method created is dropped here with no await after its append; a
+        # call the caller appended and passed in reached the queue at that
+        # append, so a forward() between the two can still have sent it.
         self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
 
-        if self.executor.processor is None or self.executor.processor.is_stopped():
-            await self.executor.start()
+        stream_error = None
+        try:
+            if self.executor.processor is None or self.executor.processor.is_stopped():
+                await self.executor.start()
 
-        if self.executor.processor._concurrency_sem:
-            async with self.executor.processor._concurrency_sem:
-                stream_error = None
+            if self.executor.processor._concurrency_sem:
+                async with self.executor.processor._concurrency_sem:
+                    try:
+                        async for i in api_call.stream():
+                            if self._reports_failure(i):
+                                # A failure voids any model read before it.
+                                served_model = None
+                            else:
+                                reported_model = self._reported_served_model(i)
+                                if reported_model is not None:
+                                    served_model = reported_model
+                            result = await self.process_chunk(i)
+                            yield result if result is not None else i
+                        # api_call.stream() captures a transport/provider failure as
+                        # FAILED instead of raising (so the shared processor can fire
+                        # events concurrently without one failure cancelling the batch).
+                        # This public boundary must not report that as a clean end —
+                        # surface it after iteration so the caller sees the error.
+                        stream_error = _terminal_stream_error(api_call)
+                    except Exception as e:
+                        raise ValueError(f"Failed to stream API call: {e}") from e
+            else:
                 try:
                     async for i in api_call.stream():
                         if self._reports_failure(i):
-                            # A failure voids any model read before it.
                             served_model = None
                         else:
                             reported_model = self._reported_served_model(i)
@@ -486,41 +508,20 @@ class iModel:  # noqa: N801
                                 served_model = reported_model
                         result = await self.process_chunk(i)
                         yield result if result is not None else i
-                    # api_call.stream() captures a transport/provider failure as
-                    # FAILED instead of raising (so the shared processor can fire
-                    # events concurrently without one failure cancelling the batch).
-                    # This public boundary must not report that as a clean end —
-                    # surface it after iteration so the caller sees the error.
                     stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
                     raise ValueError(f"Failed to stream API call: {e}") from e
-                finally:
-                    self._store_served_model(api_call, served_model)
-                    # Pop without yielding — yield-in-finally would swallow CancelledError
-                    # during generator cleanup, breaking anyio.fail_after timeout enforcement.
-                    self.executor.pile.pop(api_call.id, None)
-                if stream_error is not None:
-                    raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
-        else:
-            stream_error = None
-            try:
-                async for i in api_call.stream():
-                    if self._reports_failure(i):
-                        served_model = None
-                    else:
-                        reported_model = self._reported_served_model(i)
-                        if reported_model is not None:
-                            served_model = reported_model
-                    result = await self.process_chunk(i)
-                    yield result if result is not None else i
-                stream_error = _terminal_stream_error(api_call)
-            except Exception as e:
-                raise ValueError(f"Failed to stream API call: {e}") from e
-            finally:
-                self._store_served_model(api_call, served_model)
-                self.executor.pile.pop(api_call.id, None)
-            if stream_error is not None:
-                raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
+        finally:
+            # Runs on every exit from the point this generator owns the call: a
+            # clean end, a consumer that stops early, cancellation (including
+            # while waiting for the concurrency slot), an endpoint failure, and
+            # a processor start that raises.
+            self._store_served_model(api_call, served_model)
+            # Pop without yielding — yield-in-finally would swallow CancelledError
+            # during generator cleanup, breaking anyio.fail_after timeout enforcement.
+            self.executor.pile.pop(api_call.id, None)
+        if stream_error is not None:
+            raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
         try:
