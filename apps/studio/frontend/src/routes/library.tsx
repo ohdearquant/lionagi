@@ -407,6 +407,16 @@ function LibraryPage() {
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
+  // A create, clone, or delete completion can outlive the tab where it began.
+  // What it writes closes or reshapes the detail pane, so those writes are
+  // scoped to that tab the same way its selection write already is: a
+  // completion that resolves after the user moved on must not touch the new
+  // tab's pane.
+  const activeTab = useRef(kindFilter);
+  useEffect(() => {
+    activeTab.current = kindFilter;
+  }, [kindFilter]);
+  const completionOnTab = (captured: LibraryTab) => activeTab.current === captured;
   const parsed = parseSel(sel);
   const selectedHiddenKind =
     kindFilter !== "hooks" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
@@ -814,7 +824,7 @@ function LibraryPage() {
         <CreateMcpServerPanel
           onCreated={(name) => {
             if (!mounted.current) return;
-            setShowCreate(false);
+            if (completionOnTab(kindFilter)) setShowCreate(false);
             void reload();
             void navigate({
               search: (prev) =>
@@ -836,7 +846,7 @@ function LibraryPage() {
       <CreateAgentPanel
         onCreated={(name) => {
           if (!mounted.current) return;
-          setShowCreate(false);
+          if (completionOnTab(kindFilter)) setShowCreate(false);
           void reload();
           void navigate({
             search: (prev) =>
@@ -859,7 +869,7 @@ function LibraryPage() {
           onCreated={(workflow) => {
             if (!mounted.current) return;
             setOptimisticWorkflow(workflow);
-            setShowCreate(false);
+            if (completionOnTab(kindFilter)) setShowCreate(false);
             void reload();
             void navigate({
               search: (prev) =>
@@ -906,11 +916,14 @@ function LibraryPage() {
         onBack={handleBack}
         onDeleted={() => {
           if (!mounted.current) return;
+          const deleted = parsed.name;
           void reload();
-          handleBack();
+          if (completionOnTab(kindFilter)) handleBack();
           void navigate({
             search: (prev) => {
               if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "mcp" || current.name !== deleted) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -927,11 +940,14 @@ function LibraryPage() {
         onBack={handleBack}
         onDeleted={() => {
           if (!mounted.current) return;
-          setDetailActive(false);
+          const deleted = parsed.name;
+          if (completionOnTab(kindFilter)) setDetailActive(false);
           void reload();
           void navigate({
             search: (prev) => {
               if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "agent" || current.name !== deleted) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;

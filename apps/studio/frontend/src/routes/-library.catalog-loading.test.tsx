@@ -744,6 +744,84 @@ describe("Library catalog loading", () => {
     ).toBe("");
   });
 
+  it("keeps a selection made while a same-tab delete is pending", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    const deletion = deferred<void>();
+    mutations.deleteAgent.mockReturnValue(deletion.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    expect(router.search.sel).toBe("agent:first-agent");
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-agent"]')!.click(),
+    );
+    expect(mutations.deleteAgent).toHaveBeenCalledOnce();
+
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[1].click());
+    expect(router.search.sel).toBe("agent:second-agent");
+
+    deletion.resolve();
+    await flush();
+    expect(router.search.sel).toBe("agent:second-agent");
+    expect(container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.textContent).toBe(
+      "second-agent",
+    );
+  });
+
+  it("drops the selection when the delete resolves and it still names the deleted item", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    const deletion = deferred<void>();
+    mutations.deleteAgent.mockReturnValue(deletion.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-agent"]')!.click(),
+    );
+    deletion.resolve();
+    await flush();
+    expect(router.search.sel).toBeUndefined();
+  });
+
+  it("does not show a create form opened on one tab after a completion from another", async () => {
+    const creation = deferred<void>();
+    mutations.createWorkflow.mockReturnValue(creation.promise);
+    api.listWorkflowDefs.mockResolvedValue([{ id: "workflow-id", name: "saved-flow" }]);
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({});
+
+    const workflowCreate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newWorkflow"),
+    );
+    expect(workflowCreate).toBeDefined();
+    await act(async () => workflowCreate!.click());
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-workflow"]')!.click(),
+    );
+    expect(mutations.createWorkflow).toHaveBeenCalledOnce();
+
+    const agentTab = [...container.querySelectorAll("nav button")].find(
+      (button) => button.textContent === "filterAgent",
+    );
+    await act(async () => (agentTab as HTMLButtonElement).click());
+    await flush();
+
+    const agentCreate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    expect(agentCreate).toBeDefined();
+    await act(async () => agentCreate!.click());
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+
+    creation.resolve();
+    await flush();
+
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="submit-workflow"]')).toBeNull();
+    expect(router.search.tab).toBe("agent");
+  });
+
   it("clears engine model data when a late clone refresh fails", async () => {
     const completion = await startCompletion("playbook", "clonePlaybook", "clone-playbook", null);
     api.listEngineDefs.mockResolvedValueOnce([

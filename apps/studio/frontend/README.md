@@ -48,7 +48,10 @@ Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 Each Library tab loads only its own catalog; Playbook loads both bundled templates
 and custom playbooks. All loads the visible catalogs. Hidden workflow and engine
 catalogs are loaded only for an explicit detail deep link on a catalog tab;
-withheld tab names alone do not load them. Hooks is a full-page configuration surface:
+withheld tab names alone do not load them. A workflow detail opens the shared
+workflow editor, whose engine picker needs the engine catalog, so that pane
+fetches the engine catalog itself; a failure there leaves the editor usable and
+reports the failure inline with its own retry. Hooks is a full-page configuration surface:
 it owns its configuration requests and does not load a hidden Library detail.
 Selecting or leaving a hidden detail does not reload the visible catalog.
 Switching tabs loads the sources that tab has not fetched yet and renders a tab
@@ -66,10 +69,12 @@ not found only after a successful catalog response. The
 
 Catalog-list request counts are one for Agent, Skill, Plugin or MCP; two for Playbook;
 six for All; and zero for Hooks or a withheld tab name alone. An explicit hidden detail
-adds one request outside Hooks. Row selection adds none; a tab already visited fetches
-nothing again. Retry requests only the sources that failed. A completion refreshes the
-current tab's sources and any current hidden detail.
-A workflow created on All loads six visible sources plus its workflow catalog.
+adds one request outside Hooks; a workflow detail adds a second for the engine catalog
+its editor picks from, and retries only that catalog when it fails. Row selection adds
+none; a tab already visited fetches nothing again. Retry requests only the sources that
+failed. A completion refreshes the current tab's sources and any current hidden detail.
+A workflow created on All loads six visible sources plus its workflow catalog, along
+with the engine catalog its editor picks from.
 
 ## API resolution
 

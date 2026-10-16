@@ -24,6 +24,11 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
   const t = useTranslations("workflow");
   const [def, setDef] = useState<WorkflowDef | null>(null);
   const [engineDefs, setEngineDefs] = useState<EngineDef[]>([]);
+  // The editor's engine picker reads its own catalog, which is a separate
+  // source from the workflow: a failure or a pending response there must leave
+  // the editor usable, and a retry must re-request that catalog alone.
+  const [engineCatalog, setEngineCatalog] = useState<"loading" | "loaded" | "failed">("loading");
+  const [engineAttempt, setEngineAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -38,11 +43,9 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
     setArmedDelete(false);
     /* eslint-enable react-hooks/set-state-in-effect */
 
-    Promise.all([getWorkflowDef(id), listEngineDefs()])
-      .then(([d, eds]) => {
-        if (!alive) return;
-        setDef(d);
-        setEngineDefs(eds);
+    getWorkflowDef(id)
+      .then((d) => {
+        if (alive) setDef(d);
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : t("loadError"));
@@ -55,6 +58,31 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
       alive = false;
     };
   }, [id, t]);
+
+  useEffect(() => {
+    let alive = true;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setEngineCatalog("loading");
+    setEngineDefs([]);
+    /* eslint-enable react-hooks/set-state-in-effect */
+
+    listEngineDefs().then(
+      (defs) => {
+        if (!alive) return;
+        setEngineDefs(defs);
+        setEngineCatalog("loaded");
+      },
+      () => {
+        if (!alive) return;
+        setEngineDefs([]);
+        setEngineCatalog("failed");
+      },
+    );
+
+    return () => {
+      alive = false;
+    };
+  }, [id, engineAttempt]);
 
   const handleSave = useCallback(
     async (spec: WorkflowSpec) => {
@@ -124,6 +152,8 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
         <WorkflowEditor
           initialSpec={spec}
           engineDefs={engineDefs}
+          engineCatalog={engineCatalog}
+          onRetryEngineCatalog={() => setEngineAttempt((attempt) => attempt + 1)}
           onSave={handleSave}
           saving={saving}
         />

@@ -18,6 +18,14 @@ interface WorkflowEditorProps {
   engineDefs: EngineDef[];
   onSave: (spec: WorkflowSpec) => Promise<void>;
   saving?: boolean;
+  /**
+   * State of the engine-definition catalog the engine picker reads. A failed or
+   * pending catalog is reported next to the picker instead of replacing the
+   * editor, so a workflow stays editable while that one source is unavailable.
+   */
+  engineCatalog?: "loading" | "loaded" | "failed";
+  /** Re-request the engine catalog after `engineCatalog` reports "failed". */
+  onRetryEngineCatalog?: () => void;
   /** Show the synchronized YAML pane and file import/export controls. */
   withText?: boolean;
   /** Basename for exported files (falls back to "workflow"). */
@@ -51,10 +59,13 @@ function WorkflowEditorInner({
   engineDefs,
   onSave,
   saving,
+  engineCatalog = "loaded",
+  onRetryEngineCatalog,
   withText = false,
   exportName,
 }: Omit<WorkflowEditorProps, "initialSpec">) {
   const t = useTranslations("workflow");
+  const tDaemon = useTranslations("daemon");
   const { state, moveNode, reset } = useWorkflowDraft();
   const { spec, dirty } = state;
 
@@ -221,6 +232,34 @@ function WorkflowEditorInner({
           className="flex w-[220px] shrink-0 flex-col border-l border-edge"
           style={{ transition: "width 150ms" }}
         >
+          {/* The engine picker reads its own catalog. Report that one source
+              here — next to the choice it feeds — instead of blanking the
+              editor, so the workflow stays editable while it is unavailable. */}
+          {engineCatalog === "failed" && (
+            <div
+              role="alert"
+              className="flex shrink-0 items-center justify-between gap-2 border-b border-edge bg-status-error-bg px-3 py-2"
+            >
+              <span className="text-[length:var(--t-xs)] text-content-secondary">
+                {t("loadError")}
+              </span>
+              <button
+                type="button"
+                onClick={onRetryEngineCatalog}
+                className="shrink-0 rounded px-1.5 py-0.5 text-[length:var(--t-xs)] text-content-muted transition-colors hover:text-content-primary"
+              >
+                {tDaemon("retry")}
+              </button>
+            </div>
+          )}
+          {engineCatalog === "loading" && (
+            <div
+              role="status"
+              className="shrink-0 border-b border-edge px-3 py-2 text-[length:var(--t-xs)] text-content-muted"
+            >
+              {t("loading")}
+            </div>
+          )}
           <WorkflowNodeInspector nodeId={selectedId} engineDefs={engineDefs} />
         </div>
 
