@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import fs from "node:fs";
 import type { Readable } from "node:stream";
 import net from "node:net";
 import path from "node:path";
@@ -9,6 +10,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // e2e/ -> frontend -> studio -> apps -> repo root
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
 const FRONTEND_ROOT = path.resolve(__dirname, "..");
+// Each server's own output for the whole run, so a failed run shows why a
+// server stopped answering. CI uploads this directory when the job fails.
+const LOG_DIR = path.join(FRONTEND_ROOT, "e2e-logs");
 
 type Proc = ChildProcessByStdio<null, Readable, Readable>;
 
@@ -21,6 +25,24 @@ function stripAnsi(text: string): string {
 }
 
 const PORT_IN_USE_PATTERN = /EADDRINUSE|already in use/i;
+
+/**
+ * Append everything *proc* writes to `e2e-logs/<name>.log`, with its start and
+ * its exit code or signal. The listeners stay for the life of the process, so
+ * output after the readiness line is kept too. Exit is recorded on `close`,
+ * which fires after both pipes have drained.
+ */
+function recordOutput(proc: Proc, name: string): Proc {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const log = fs.createWriteStream(path.join(LOG_DIR, `${name}.log`), { flags: "a" });
+  log.write(`${new Date().toISOString()} started pid=${proc.pid}\n`);
+  proc.stdout.on("data", (chunk: Buffer) => log.write(chunk));
+  proc.stderr.on("data", (chunk: Buffer) => log.write(chunk));
+  proc.on("close", (code, signal) => {
+    log.end(`${new Date().toISOString()} exited code=${code} signal=${signal}\n`);
+  });
+  return proc;
+}
 
 /** Bind to port 0 and read back the OS-assigned free port. */
 function getFreePort(): Promise<number> {
@@ -186,10 +208,20 @@ export default async function globalSetup(_config: FullConfig) {
   try {
     const daemonResult = await startOnFreePort(
       (port) =>
-        spawn(
-          "uv",
-          ["run", "python", "-m", "tests.e2e_studio.run_seeded_daemon", "--port", String(port)],
-          { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"], detached: true },
+        recordOutput(
+          spawn(
+            "uv",
+            ["run", "python", "-m", "tests.e2e_studio.run_seeded_daemon", "--port", String(port)],
+            {
+              cwd: REPO_ROOT,
+              // Unbuffered, so the log holds what the daemon printed before it stopped;
+              // a native crash prints the Python stack of every thread to stderr.
+              env: { ...process.env, PYTHONFAULTHANDLER: "1", PYTHONUNBUFFERED: "1" },
+              stdio: ["ignore", "pipe", "pipe"],
+              detached: true,
+            },
+          ),
+          "studio-daemon",
         ),
       (proc) =>
         waitForOutput(proc, (line) => line.includes("studio-e2e-daemon-ready"), {
@@ -204,15 +236,18 @@ export default async function globalSetup(_config: FullConfig) {
 
     const previewResult = await startOnFreePort(
       (port) =>
-        spawn(
-          "npx",
-          ["vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
-          {
-            cwd: FRONTEND_ROOT,
-            env: { ...process.env, STUDIO_E2E_API_PORT: String(apiPort) },
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: true,
-          },
+        recordOutput(
+          spawn(
+            "npx",
+            ["vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
+            {
+              cwd: FRONTEND_ROOT,
+              env: { ...process.env, STUDIO_E2E_API_PORT: String(apiPort) },
+              stdio: ["ignore", "pipe", "pipe"],
+              detached: true,
+            },
+          ),
+          "vite-preview",
         ),
       (proc) =>
         waitForOutput(proc, (line) => /Local:\s*http/i.test(line), {

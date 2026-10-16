@@ -456,6 +456,7 @@ jobs:
         path: |
           apps/studio/frontend/playwright-report/
           apps/studio/frontend/test-results/
+          apps/studio/frontend/e2e-logs/
         retention-days: 7
 
   # Detect which conditional-job inputs changed, to gate the jobs below.
