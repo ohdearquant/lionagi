@@ -1,3 +1,6 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import logging
@@ -379,7 +382,11 @@ def _get_default_fields(
 def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
     """Normalize one listable operation field, through one stable validator identity."""
     del cls  # Pydantic recognizes the validator class argument by this exact name.
-    return to_list(value, dropna=True, flatten=True, unique=True)
+    result: list[Any] = []
+    for item in to_list(value, dropna=True, flatten=True):
+        if not any(existing is item or existing == item for existing in result):
+            result.append(item)
+    return result
 
 
 def _validate_action_required_field(cls: Any, value: Any) -> bool | None:

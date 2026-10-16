@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 
 from ._hash import hash_dict
 from ._lazy_init import LazyInit
-from .types import Params
+from .types import DataClass, Params
 
 __all__ = ("to_list", "ToListParams")
 
@@ -122,9 +122,15 @@ def to_list(
 
     if unique:
         seen: set = set()
+        dataclass_values: list[DataClass] = []
         unhashable_buckets: dict[Any, list] = {}
         out: list = []
         for i in processed:
+            if isinstance(i, DataClass):
+                if not any(existing is i or existing == i for existing in dataclass_values):
+                    dataclass_values.append(i)
+                    out.append(i)
+                continue
             try:
                 if i not in seen:
                     seen.add(i)

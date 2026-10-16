@@ -1,3 +1,8 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 from typing import Literal
 
 import orjson
@@ -18,7 +23,11 @@ __all__ = (
 
 
 class HashableModel(BaseModel):
-    """Used as base class for models that need to be hashable."""
+    """Mutable Pydantic model with sentinel-aware serialization.
+
+    The historical name remains for import compatibility. Instances are
+    unhashable; use a stable identifier or an immutable snapshot as a key.
+    """
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -84,8 +93,7 @@ class HashableModel(BaseModel):
         """Creates an instance of this class from a JSON string."""
         return cls.from_dict(data, mode=mode, **kwargs)
 
-    def __hash__(self):
-        return ln.hash_dict(self.to_dict())
+    __hash__ = None
 
 
 def _get_default_hashable_serializer():

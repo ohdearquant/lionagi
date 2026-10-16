@@ -2,6 +2,9 @@
 
 - **Status**: Accepted
 - **Kind**: Retrospective
+- **Implementation-status**: partial — utility and adapter strata are implemented; ADR-0119's
+  mutable `DataClass`/`HashableModel` hash removal is implemented, while the remaining layer
+  relocations and path-containment alignment listed below remain open
 - **Area**: utilities
 - **Date**: 2026-07-09
 - **Relations**: extended by ADR-0119 (deterministic declarations, three-state absence, and
@@ -252,6 +255,16 @@ class Note(BaseModel):
 - `HashableModel._to_dict()` removes top-level sentinel values. `mode="json"`
   round-trips through deterministic JSON; `mode="db"` additionally renames
   `metadata` to `node_metadata`. The inverse DB path renames it back.
+- `DataClass` and `HashableModel` are mutable and unhashable. The historical
+  `HashableModel` name and imports remain available for serialization compatibility;
+  they do not promise hashability. Use stable identifiers or immutable snapshots as
+  container keys. `DataClass` fallback equality compares public fields of the exact
+  concrete type, while ordinary message dataclasses retain generated equality.
+- `to_list(..., flatten=True, unique=True)` deduplicates `DataClass` values by
+  identity or equality in first-occurrence order. Generic mappings, Pydantic models,
+  and msgspec structs retain transient hash buckets with equality confirmation.
+  The operation DTO listable-field validator uses direct identity/equality instead,
+  including for opaque outputs whose equality differs from their representation.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model

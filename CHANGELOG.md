@@ -6,8 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- Mutable `DataClass` and `HashableModel` values, including operation DTOs, now reject
+  `hash()`, set membership admission, and use as dictionary keys with `TypeError`.
+  This removes content hashes that could change after mutation and corrupt container
+  membership. Use a stable identifier or an explicitly immutable snapshot as a key.
+  `HashableModel` keeps its public name, imports, value equality, and serialization.
+
 ### Changed
 
+- Dataclass and operation-field deduplication preserves the first equal value without
+  hashing mutable content, including equal opaque action outputs with different representations.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

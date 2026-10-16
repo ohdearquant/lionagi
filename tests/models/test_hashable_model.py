@@ -100,19 +100,23 @@ class TestJsonRoundtrip:
 
 
 class TestHashing:
-    def test_hash_is_stable(self):
+    def test_mutable_models_cannot_be_container_keys(self):
         m = _Sample(name="x", count=1)
-        assert hash(m) == hash(m)
+        for admit in (hash, lambda value: {value}, lambda value: {value: "present"}):
+            with pytest.raises(TypeError, match="unhashable type"):
+                admit(m)
 
-    def test_equal_models_hash_equal(self):
+    def test_equal_models_remain_equal(self):
         a = _Sample(name="x", count=1)
         b = _Sample(name="x", count=1)
-        assert hash(a) == hash(b)
+        assert a == b
 
-    def test_different_models_hash_differ(self):
+    def test_mutation_updates_value_equality(self):
         a = _Sample(name="x", count=1)
-        b = _Sample(name="x", count=2)
-        assert hash(a) != hash(b)
+        b = _Sample(name="x", count=1)
+        a.count = 2
+        assert a != b
+        assert a.to_dict()["count"] == 2
 
 
 class TestDefaultSerializer:
