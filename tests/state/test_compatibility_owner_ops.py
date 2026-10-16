@@ -25,6 +25,9 @@ from lionagi.state.compat import (
     TableWrites,
     _column_collation,
     _operation,
+    _ordered_collation,
+    _trigger_event,
+    _trigger_owner_problems,
     read_closure,
 )
 from lionagi.state.db import StateDB
@@ -149,13 +152,15 @@ _OPERATIONS = {
 _OWNER_COLUMN = "TEXT NOT NULL DEFAULT 'principal:default'"
 
 
-async def _managed_store(path: Path, owner_sql: str = _OWNER_COLUMN) -> Path:
+async def _managed_store(
+    path: Path, owner_sql: str = _OWNER_COLUMN, owner_name: str = OWNER
+) -> Path:
     native = StateDB(path)
     await native.open()
     await native.close()
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {OWNER} {owner_sql}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {owner_name} {owner_sql}")
         conn.executescript(
             """
             CREATE TABLE principals (id TEXT PRIMARY KEY, kind TEXT NOT NULL);
@@ -1700,6 +1705,95 @@ async def test_an_owner_column_whose_check_names_another_collation_is_refused(tm
     assert _rows(store, "SELECT COUNT(*) FROM messages") == before
 
 
+_OWNER_COLUMN_SHAPES = [
+    ("c TEXT COLLATE NOCASE", "c", "nocase", "a type first"),
+    ("c PRIMARY KEY COLLATE NOCASE", "c", "nocase", "no type, PRIMARY KEY first"),
+    ("c UNIQUE COLLATE NOCASE", "c", "nocase", "no type, UNIQUE first"),
+    ("c CHECK (c <> '') COLLATE NOCASE", "c", "nocase", "no type, CHECK first"),
+    ("c CONSTRAINT k NOT NULL COLLATE NOCASE", "c", "nocase", "no type, a named constraint first"),
+    ("c PRIMARY KEY COLLATE RTRIM", "c", "rtrim", "no type, another collation"),
+    ("c PRIMARY KEY", "c", "binary", "no type and no clause"),
+    ("'c' TEXT COLLATE NOCASE", "c", "nocase", "a name written as a string"),
+    ('"C" TEXT COLLATE NOCASE', "c", "nocase", "a quoted name in another case"),
+    ("d TEXT, [check] TEXT COLLATE NOCASE, CHECK (d <> '')", "check", "nocase", "named CHECK"),
+    ('d TEXT, "unique" TEXT COLLATE NOCASE, UNIQUE (d)', "unique", "nocase", "named UNIQUE"),
+    ('d TEXT, "primary" COLLATE NOCASE, PRIMARY KEY (d)', "primary", "nocase", "named PRIMARY"),
+    (
+        "d TEXT, \"constraint\" TEXT COLLATE NOCASE, CONSTRAINT k CHECK (d <> '')",
+        "constraint",
+        "nocase",
+        "named CONSTRAINT",
+    ),
+]
+
+
+def test_an_owner_column_whose_definition_cannot_be_read_is_not_taken_as_binary():
+    """A column the lookup cannot find a definition for is refused, never assumed binary."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE t (c TEXT COLLATE NOCASE)")
+        table = next(shape for shape in read_closure(conn, ["t"]).tables if shape.name == "t")
+
+    assert _ordered_collation(table, "c") == "nocase"
+    assert _ordered_collation(table, "absent") != "binary"
+
+
+@pytest.mark.parametrize(
+    ("body", "column", "expected", "what"),
+    _OWNER_COLUMN_SHAPES,
+    ids=[what for *_, what in _OWNER_COLUMN_SHAPES],
+)
+def test_the_owner_column_collation_is_read_however_its_definition_starts(
+    body, column, expected, what
+):
+    """The lookup finds the column's own definition whether a type, a constraint or nothing
+    follows its name, and however the name is spelled, and never reads a table constraint whose
+    first word is the column's name as that column."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE t ({body})")
+        conn.execute(f"INSERT INTO t (\"{column}\") VALUES ('a')")
+        folded = conn.execute(f"SELECT COUNT(*) FROM t WHERE \"{column}\" = 'A'").fetchone()[0]
+        trimmed = conn.execute(f"SELECT COUNT(*) FROM t WHERE \"{column}\" = 'a '").fetchone()[0]
+        table = next(shape for shape in read_closure(conn, ["t"]).tables if shape.name == "t")
+    measured = "nocase" if folded else "rtrim" if trimmed else "binary"
+    assert measured == expected, f"{what}: SQLite applied {measured}"
+    assert _ordered_collation(table, column) == expected
+
+
+_NOCASE_OWNER_SHAPES = [
+    (
+        OWNER,
+        "CHECK (owner_principal_id <> '') NOT NULL DEFAULT 'principal:default' COLLATE NOCASE",
+        "no type, CHECK first",
+    ),
+    (
+        OWNER,
+        "CONSTRAINT k NOT NULL DEFAULT 'principal:default' COLLATE NOCASE",
+        "no type, a named constraint first",
+    ),
+    (f"'{OWNER}'", _NOCASE_OWNER, "a name written as a string"),
+]
+
+
+@pytest.mark.parametrize(
+    ("owner_name", "owner_sql", "what"),
+    _NOCASE_OWNER_SHAPES,
+    ids=[what for *_, what in _NOCASE_OWNER_SHAPES],
+)
+async def test_a_nocase_owner_column_is_refused_however_its_definition_starts(
+    tmp_path, owner_name, owner_sql, what
+):
+    store = await _managed_store(
+        tmp_path / "managed.db", owner_sql=owner_sql, owner_name=owner_name
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="nocase") as caught:
+        await handle.open()
+
+    assert "collation" in caught.value.reason.lower()
+    assert handle._engine is None
+
+
 def _nocase_principals(store: Path) -> None:
     """A principals key that compares case-insensitively, holding only the lower-case spelling."""
     with closing(sqlite3.connect(store)) as conn:
@@ -1844,7 +1938,8 @@ async def test_a_trigger_that_deletes_is_refused_whatever_it_deletes(tmp_path, b
 def test_what_sqlite_makes_of_a_multi_event_trigger_and_of_new_and_old():
     """A trigger names one event, and the row a statement makes readable is the one its event
     carries: a DELETE trigger reads OLD and an INSERT trigger reads NEW, while the other is not
-    a column at all."""
+    a column at all. This pins SQLite's behaviour, the premise of the trigger reader;
+    test_a_delete_trigger_is_held_to_old_and_only_old holds the reader to it."""
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY, col TEXT)")
         conn.execute("CREATE TABLE log (v TEXT)")
@@ -1882,6 +1977,71 @@ def test_what_sqlite_makes_of_a_multi_event_trigger_and_of_new_and_old():
         "CREATE TRIGGER i AFTER INSERT ON t BEGIN INSERT INTO log VALUES (NEW.col); END",
         ["INSERT INTO t VALUES ('1', 'a')"],
     ) == ("rows", [("a",)])
+
+
+_DELETE_SWEEP = (
+    "CREATE TRIGGER sweep AFTER DELETE ON messages BEGIN "
+    f"UPDATE progressions AS d SET collection = '[]' WHERE {OWNER} = d.{OWNER}; END"
+)
+
+
+def test_a_delete_trigger_is_held_to_old_and_only_old():
+    """In a DELETE trigger only OLD is the row that fired it; a table alias that shares a letter
+    with it is another row."""
+    owned = frozenset({"progressions"})
+    copies_old = (
+        "CREATE TRIGGER d AFTER DELETE ON messages BEGIN "
+        f"UPDATE progressions SET collection = '[]' WHERE {OWNER} = OLD.{OWNER}; END"
+    )
+
+    assert _trigger_owner_problems(copies_old, OWNER, owned) == []
+    problems = _trigger_owner_problems(_DELETE_SWEEP, OWNER, owned)
+    assert problems == [
+        f"updates progressions with an owner other than OLD.{OWNER}, the owner of the row that "
+        "fired it"
+    ]
+
+
+async def test_a_delete_trigger_comparing_the_owner_with_an_alias_is_refused(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, _DELETE_SWEEP)
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger sweep") as caught:
+        await handle.open()
+
+    assert f"OLD.{OWNER}" in caught.value.reason
+    assert handle._engine is None
+
+
+@pytest.mark.parametrize("column", ["before", "after", "instead", '"delete"', '"update"'])
+def test_the_event_of_an_update_of_trigger_is_read_whatever_its_column_is_named(column):
+    """BEFORE, AFTER and INSTEAD name a column bare; the event word before them is the event."""
+    sql = f"CREATE TRIGGER t AFTER UPDATE OF {column} ON m BEGIN SELECT 1; END"
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE m (id TEXT, {column} TEXT)")
+        conn.execute(sql)
+
+    assert _trigger_event(sql) == "update"
+
+
+@pytest.mark.parametrize(
+    ("sql", "event"),
+    [
+        ("CREATE TRIGGER after AFTER INSERT ON m BEGIN SELECT 1; END", "insert"),
+        ("CREATE TRIGGER before BEFORE DELETE ON m BEGIN SELECT 1; END", "delete"),
+        ('CREATE TRIGGER "insert" INSTEAD OF UPDATE ON v BEGIN SELECT 1; END', "update"),
+        ("CREATE TRIGGER 'delete' AFTER INSERT ON m BEGIN SELECT 1; END", "insert"),
+        ("CREATE TRIGGER t UPDATE ON m BEGIN SELECT 1; END", "update"),
+    ],
+)
+def test_the_event_of_a_trigger_is_not_read_from_its_name(sql, event):
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE m (id TEXT)")
+        conn.execute("CREATE VIEW v AS SELECT id FROM m")
+        conn.execute(sql)
+
+    assert _trigger_event(sql) == event
 
 
 _NEW_OWNER_WRITE = (
