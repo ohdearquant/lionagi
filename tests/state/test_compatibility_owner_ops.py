@@ -945,7 +945,9 @@ async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_co
 ):
     """Every copy sees the store commit or checkpoint under it. After the bounded number of copies
     the early read decides nothing beyond the file's own row, which names no application here, and
-    the writable connection's own read refuses the row in the log."""
+    the writable connection's own read refuses the row in the log. That connection is the store's
+    last one when it closes, so SQLite folds the log into the file first: the row is refused, and
+    the store afterwards has no log and holds the row in its file (ADR-0128 D7)."""
     from lionagi.state import db as db_mod
 
     copy = _first_page_beside_its_log(tmp_path, whole=True)
@@ -961,9 +963,12 @@ async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_co
     monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: next(moves))
     StateDB(copy)._read_lineage_without_writing(())
     assert len(copies) == db_mod._COPY_ATTEMPTS
+    assert Path(f"{copy}-wal").exists()
     with pytest.raises(ForeignLineageError, match="'manager' as the application"):
         await StateDB(copy).open()
     assert len(copies) == 2 * db_mod._COPY_ATTEMPTS
+    assert not Path(f"{copy}-wal").exists(), "the refused connection left its log beside the file"
+    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("manager",)]
 
 
 async def test_close_from_another_event_loop_during_an_open_is_refused(tmp_path, monkeypatch):
@@ -1176,6 +1181,23 @@ def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_pa
     finally:
         writer.execute("ROLLBACK")
         writer.close()
+
+
+def test_a_copy_of_a_store_larger_than_one_chunk_is_byte_identical(tmp_path):
+    """The copy loop reads a fixed-size chunk at a time, so a store past that size takes more than
+    one read: the whole file is copied, byte for byte, as shutil.copyfile copies it."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "store.db"
+    store.write_bytes(bytes(range(256)) * (((1 << 20) + 4096) // 256) + b"tail")
+    copy = tmp_path / "copy.db"
+    db_mod._copy_store_file(str(store), str(copy))
+    assert copy.stat().st_size > 1 << 20, "the fixture store must exceed one read"
+    assert copy.read_bytes() == store.read_bytes()
+
+    reference = tmp_path / "reference.db"
+    shutil.copyfile(store, reference)
+    assert copy.read_bytes() == reference.read_bytes()
 
 
 async def test_a_handle_whose_open_failed_after_its_connection_read_the_store_is_registered(

@@ -604,6 +604,12 @@ _COMPAT_INSERTED: ContextVar[list[tuple[str, Any]] | None] = ContextVar(
     "lionagi_state_compat_inserted", default=None
 )
 
+# The handle whose open() call has got past that handle's open lock and is running _open() in this
+# task, else None. A context variable rather than an attribute: a second open() on the same handle
+# waits behind the first, and the waiter must not read the holder's call as its own (StateDB.open,
+# StateDB.__aenter__).
+_OPEN_CALL: ContextVar[Any] = ContextVar("lionagi_state_open_call", default=None)
+
 
 class StateDB:
     """Async SQLAlchemy state layer for sessions, branches, messages, and progressions."""
@@ -746,7 +752,16 @@ class StateDB:
     # Connection lifecycle
 
     async def open(self) -> None:
+        """Open this handle, one call at a time (see ``_holding_open_lock``).
+
+        ``_OPEN_CALL`` names this handle for the call that got past the lock, so a caller whose
+        open fails can tell whether it opened anything: an entry that only waited behind another
+        open and then failed opened nothing, and a cleanup it runs must leave that call's engine
+        alone.
+        """
+        _OPEN_CALL.set(None)
         async with self._holding_open_lock():
+            _OPEN_CALL.set(self)
             await self._open()
 
     @asynccontextmanager
@@ -1067,9 +1082,13 @@ class StateDB:
             await self.open()
         except BaseException:
             # __aexit__ is not entered when __aenter__ fails, so dispose the partially opened engine
-            # here rather than letting its driver worker outlive the failure.
-            with CancelScope(shield=True):
-                await self.close()
+            # here rather than letting its driver worker outlive the failure. Only the call that got
+            # past the open lock opened one: an entry that waited behind another open and was then
+            # cancelled or failed opened nothing, and close() would wait for that open to finish and
+            # then dispose the engine it had just built.
+            if _OPEN_CALL.get() is self:
+                with CancelScope(shield=True):
+                    await self.close()
             raise
         return self
 
@@ -6921,6 +6940,48 @@ _SHARED_TEARDOWN_RACE = (
     "shared StateDB was torn down while this call was pending; quiesce "
     "get_shared_db()/register_shared_db() callers before close_shared_db()"
 )
+# The event loop whose call holds or waits on _SHARED_OPEN_LOCK, and how many do: the lock wakes a
+# waiter only on the loop that holds it, so a call from another loop is refused rather than left
+# waiting for a wake that never comes.
+_SHARED_LOCK_GUARD = threading.Lock()
+_SHARED_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+_SHARED_LOCK_USERS = 0
+_SHARED_LOCK_OTHER_LOOP = (
+    "the shared state registry is being opened, registered or closed on another event loop; call "
+    "get_shared_db(), register_shared_db() and close_shared_db() on that loop"
+)
+
+
+@asynccontextmanager
+async def _holding_shared_lock():
+    """Hold the shared-registry lock, refusing a call made from another event loop.
+
+    The same guard StateDB's own open lock uses: the lock belongs to the loop that holds or waits
+    on it, and a call from any other loop would wait for a wake only that loop's release can send.
+    The user count rises before the wait and falls on every way out, cancellation included.
+    """
+    global _SHARED_LOCK_LOOP, _SHARED_LOCK_USERS, _SHARED_OPEN_LOCK  # noqa: PLW0603
+
+    if _SHARED_OPEN_LOCK is None:
+        _SHARED_OPEN_LOCK = Lock()
+    lock = _SHARED_OPEN_LOCK
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # another async library, where the engine cannot run anyway
+        loop = None
+    with _SHARED_LOCK_GUARD:
+        if _SHARED_LOCK_USERS and _SHARED_LOCK_LOOP is not loop:
+            raise RuntimeError(_SHARED_LOCK_OTHER_LOOP)
+        _SHARED_LOCK_LOOP = loop
+        _SHARED_LOCK_USERS += 1
+    try:
+        async with lock:
+            yield
+    finally:
+        with _SHARED_LOCK_GUARD:
+            _SHARED_LOCK_USERS -= 1
+            if not _SHARED_LOCK_USERS:
+                _SHARED_LOCK_LOOP = None
 
 
 def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None, str | None]:
@@ -7056,7 +7117,9 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
 # Descriptors this process opened on a store's file to copy it, one per file, never closed: closing
 # any descriptor of a file drops every POSIX lock this process holds on that file, which another
 # connection here may hold, so each stays open until the process exits, as SQLite keeps its own
-# descriptor of a file open while its connections here hold locks on it.
+# descriptor of a file open while its connections here hold locks on it. Two costs follow from
+# that: each distinct store copied keeps one descriptor open for the life of the process, and a
+# store deleted after it was copied keeps its disk space allocated until the process exits.
 _COPY_DESCRIPTORS: dict[tuple[int, int], int] = {}
 _COPY_DESCRIPTORS_LOCK = threading.Lock()
 
@@ -7077,6 +7140,13 @@ def _copy_store_file(path: str, copy: str) -> None:
 
 
 def _copy_descriptor(path: str) -> int:
+    """A descriptor this process keeps open on the file at *path*, opening one if none is filed.
+
+    The descriptor is never closed, since closing any descriptor of a file drops every POSIX lock
+    this process holds on it. So each distinct store copied keeps one descriptor open for the life
+    of the process, and a store deleted after it was copied keeps its disk space allocated until
+    the process exits.
+    """
     with _COPY_DESCRIPTORS_LOCK:
         found = os.stat(path)
         descriptor = _COPY_DESCRIPTORS.get((found.st_dev, found.st_ino))
@@ -7084,7 +7154,8 @@ def _copy_descriptor(path: str) -> int:
             descriptor = os.open(path, os.O_RDONLY)
             opened = os.fstat(descriptor)
             # A file replaced between the stat and the open is filed under the file it opened;
-            # a descriptor that finds one already filed there stays open, as every one here does.
+            # a descriptor that finds one already filed there stays open, as every one here does,
+            # and cannot be closed by this process without dropping the locks it holds on that file.
             descriptor = _COPY_DESCRIPTORS.setdefault((opened.st_dev, opened.st_ino), descriptor)
         return descriptor
 
@@ -7158,7 +7229,6 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
     than one compatibility handle registered is refused, and so is one this process holds open in
     compatibility mode without registering it, since the caller cannot be given that handle.
     """
-    global _SHARED_OPEN_LOCK  # noqa: PLW0603
     # Resolve the key through StateDB's own cascade so a monkeypatched DEFAULT_DB_PATH is honored;
     # normalize_state_db_url(None) would bypass it to the real home db.
     url = StateDB(path).url
@@ -7169,11 +7239,8 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
     _refuse_native_beside_compatibility(url)
     if key in _SHARED:
         return _SHARED[key]
-    if _SHARED_OPEN_LOCK is None:
-        _SHARED_OPEN_LOCK = Lock()
-    lock = _SHARED_OPEN_LOCK
     gen = _SHARED_CLOSE_GEN
-    async with lock:
+    async with _holding_shared_lock():
         # A close_shared_db() swept the registry while we waited on this lock;
         # refuse to resurrect the singleton rather than leak a fresh worker.
         if _SHARED_CLOSE_GEN != gen:
@@ -7206,14 +7273,10 @@ async def register_shared_db(db: StateDB) -> None:
 
     A native writer is refused for a store this process holds open in compatibility mode.
     """
-    global _SHARED_OPEN_LOCK  # noqa: PLW0603
     import contextlib
 
-    if _SHARED_OPEN_LOCK is None:
-        _SHARED_OPEN_LOCK = Lock()
-    lock = _SHARED_OPEN_LOCK
     gen = _SHARED_CLOSE_GEN
-    async with lock:
+    async with _holding_shared_lock():
         if _SHARED_CLOSE_GEN != gen:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
         if db.mode == "native":
@@ -7233,29 +7296,54 @@ def unregister_shared_db(db: StateDB) -> None:
         del _SHARED[key]
 
 
-async def close_shared_db() -> None:
-    """Close and forget every shared StateDB; callers must quiesce get_shared_db() first."""
-    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
-    import contextlib
+def _describe_a_shared_handle(db: StateDB) -> str:
+    """A shared handle for a message: the store it opens, masked, and the mode it was opened in."""
+    return f"{mask_db_url(db.url)} ({db.mode})"
 
-    lock = _SHARED_OPEN_LOCK
-    if lock is None:
+
+async def close_shared_db() -> None:
+    """Close and forget every shared StateDB; callers must quiesce get_shared_db() first.
+
+    Every handle the sweep can close is closed, and the ones it cannot are raised together once it
+    is done: a handle a close from another event loop refuses would otherwise be reported as
+    closed while it keeps its engine.
+    """
+    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
+
+    if _SHARED_OPEN_LOCK is None:
         # No open ever happened in this loop (opens create the lock first).
-        instances = list(_SHARED.values())
-        _SHARED.clear()
+        refused = await _sweep_shared_handles()
         _SHARED_CLOSE_GEN += 1
-        for db in instances:
-            with contextlib.suppress(Exception):
-                await db.close()
+        _raise_refused_closes(refused)
         return
     # Hold the open lock so an in-flight get_shared_db()/register_shared_db() cannot repopulate
     # _SHARED after the sweep; bump the generation and null the lock last, so a waiter that raced
     # this close refuses to resurrect it.
-    async with lock:
-        instances = list(_SHARED.values())
-        _SHARED.clear()
-        for db in instances:
-            with contextlib.suppress(Exception):
-                await db.close()
+    async with _holding_shared_lock():
+        refused = await _sweep_shared_handles()
         _SHARED_CLOSE_GEN += 1
         _SHARED_OPEN_LOCK = None
+    _raise_refused_closes(refused)
+
+
+async def _sweep_shared_handles() -> list[tuple[StateDB, Exception]]:
+    """Close every registered handle, returning the ones that refused with the refusal."""
+    instances = list(_SHARED.values())
+    _SHARED.clear()
+    refused: list[tuple[StateDB, Exception]] = []
+    for db in instances:
+        try:
+            await db.close()
+        except Exception as exc:  # noqa: BLE001 -- collected and raised after the sweep
+            refused.append((db, exc))
+    return refused
+
+
+def _raise_refused_closes(refused: list[tuple[StateDB, Exception]]) -> None:
+    """Raise once for every handle a sweep could not close, naming each one and its refusal."""
+    if not refused:
+        return
+    named = "; ".join(f"{_describe_a_shared_handle(db)}: {exc}" for db, exc in refused)
+    raise RuntimeError(
+        f"{len(refused)} shared StateDB handle(s) could not be closed: {named}"
+    ) from (refused[0][1])

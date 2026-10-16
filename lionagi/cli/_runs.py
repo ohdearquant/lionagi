@@ -1300,7 +1300,13 @@ async def teardown_persist(
             # callers opt out so teardown cannot close unrelated shared state.
             from lionagi.state.db import close_shared_db
 
-            await close_shared_db()
+            # The sweep raises for a handle it could not close (one another
+            # event loop is opening). Teardown reports the run's outcome and
+            # must not raise, so the refusal is logged like db.close() above.
+            try:
+                await close_shared_db()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("live persist shared db sweep failed: %s", exc, exc_info=True)
 
 
 def _unroute_message_hooks(ctx: dict) -> None:

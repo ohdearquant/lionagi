@@ -227,13 +227,15 @@ of the file and the log. A private copy is made in a new directory under the sys
 directory (Python's `tempfile`), which only the user running lionagi can read, and the directory is
 removed before the read returns; a process killed while it copies leaves the copy in that directory.
 The file is copied byte for byte, whatever its pages hold, through a descriptor this process keeps
-open for each file it copies and never closes, since closing a descriptor of the file would drop the
-locks this process's other connections hold on it; on Windows, where a lock belongs to the handle
-that took it, the file is copied as usual. A copy the store committed or checkpointed under, seen as
-a changed journal or log header, is taken again from the first read, a bounded number of times; when
-every copy sees the store move, the file's own row stands and the writable connection decides the
-rest. A copy costs a read of the whole file, and is made only beside such a journal or a log without
-a readable index.
+open for each file it copies and never closes, since closing any descriptor of a file drops every
+lock this process holds on it, which another connection here may hold; two costs follow from that:
+each distinct store copied keeps one descriptor open for the life of the process, and a store deleted
+after it was copied keeps its disk space allocated until the process exits. On Windows, where a lock
+belongs to the handle that took it, the file is copied as usual. A copy the store committed or
+checkpointed under, seen as a changed journal or log header, is taken again from the first read, a
+bounded number of times; when every copy sees the store move, the file's own row stands and the
+writable connection decides the rest. A copy costs a read of the whole file, and is made only beside
+such a journal or a log without a readable index.
 
 A read that fails decides nothing; the writable connection then decides. Each writable connection
 reads the row again right after its busy timeout, before the connection settings of P2 and before
