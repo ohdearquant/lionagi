@@ -5,15 +5,16 @@ and a first run, start with [Get started with Studio](../guides/studio-getting-s
 For the relationship between execution and stored definitions, see
 [the Studio model](../concepts/studio-model.md).
 
-The navigation and available actions below are checked against
-`apps/studio/frontend/src/routes/` and `components/shell/IconRail.tsx`.
-Backend area names refer to the registrations in
-`lionagi/studio/services/`; the running daemon's generated schema is the
+Each section names the implementation checked for its available actions.
+UI source paths below are relative to `apps/studio/frontend/src/`; service
+paths are relative to `lionagi/studio/services/`. Navigation labels follow
+`messages/en.json` and `components/shell/IconRail.tsx`. Backend area names
+refer to service registrations; the running daemon's generated schema is the
 reference for exact requests and responses.
 
-## Home and Attention
+## Mission Control and Attention
 
-**Home** opens an overview of work running now, recent runs, activity and
+**Mission Control** opens an overview of work running now, recent runs, activity and
 reported spend, and items needing attention. Select a run to inspect its
 execution. Activity and spend share a time-window selector. A stale-data
 indicator distinguishes an interrupted refresh from a current view.
@@ -27,6 +28,10 @@ make the actual approval decision.
 Backend areas: runs, invocations, schedules, stats, and attention provide the
 execution summaries, activity, spend, and persistent attention dispositions.
 
+Sources: UI `routes/index.tsx`, `components/mission/MissionControl.tsx`,
+`components/mission/AttentionQueue.tsx`, and `routes/attention.tsx`; services
+`runs.py`, `invocations.py`, `schedules.py`, `stats.py`, and `attention.py`.
+
 ## Fleet
 
 Open **Fleet** beside Overview to browse active and past runs. Search the
@@ -36,22 +41,37 @@ searchable project names and counts.
 
 Run detail brings together status, recorded messages and tool results,
 branches, graph activity, and file links when present. **Continue this run**
-uses a persisted branch for a follow-up; see the
+offers an instruction and branch choice for agent follow-ups. Play, flow,
+and show-play runs instead offer **Continue** to replay their saved checkpoint,
+without an instruction or branch selector. Missing saved state or unsupported
+run kinds produce an explained refusal. See the
 [Operator guide](../guides/studio-operator.md#follow-work-into-fleet-and-runs)
 for live-run queuing, branch selection, and the CLI escape hatch.
 
 Backend areas: runs and sessions provide execution history and branch detail;
 runs also handles follow-ups, and invocations records launch context.
 
+Sources: UI `routes/fleet.tsx`, `components/fleet/FleetView.tsx`, and
+`components/history/ResumeRun.tsx`; services `runs.py`, `sessions.py`,
+`invocations.py`, and `run_resume.py`.
+
 ## Operator
 
 Operator is a dock available across Studio. Send instructions, follow the
-stream, decide permission requests, stop a turn, or open its run. The daemon
-stores conversations so they can be restored after a browser reload.
+stream, decide permission requests, or stop a turn. A successful tool result
+containing a run ID offers **Open run**; a text-only reply does not. The daemon
+stores conversations so they can be restored after a browser reload, and
+later turns can reuse the conversation's persisted branch and run record.
 
 Backend areas: operator owns conversations, turns, streamed events, and native
 permission decisions; linked execution appears through runs and invocations.
 See [Use Operator](../guides/studio-operator.md).
+
+Sources: UI `components/operator/OperatorPanel.tsx`; services `operator.py`,
+`runs.py`, and `invocations.py`; conversation identity and permissions are
+implemented in `lionagi/studio/operator/engine.py`,
+`lionagi/studio/operator/store.py`, and
+`lionagi/studio/operator/permission_mcp.py`.
 
 ## Schedules
 
@@ -62,6 +82,9 @@ open the corresponding execution view.
 
 Backend area: schedules owns definitions, fire requests, history, and limits.
 See [Automate work with schedules](../guides/studio-schedules.md).
+
+Sources: UI `routes/schedules/index.tsx` and `components/schedules/`;
+service `schedules.py`.
 
 ## Library
 
@@ -96,6 +119,10 @@ Backend areas: agents, playbooks, skills, plugins, mcp, hooks, and operator
 supply the visible definitions and hook settings. The workflow-defs and
 engine-defs areas exist independently of their hidden tabs.
 
+Sources: UI `routes/library.tsx` and `components/library/`; services
+`agents.py`, `playbooks.py`, `skills.py`, `plugins.py`, `mcp_servers.py`,
+`hooks_library.py`, `operator_hooks.py`, `workflow_defs.py`, and `engine_defs.py`.
+
 ## Teams
 
 **Teams** browses crews created with `li team`. The list shows a team's name,
@@ -106,6 +133,8 @@ sending remain in the [team coordination tools](../api/team.md).
 
 Backend area: teams reads the team JSON files under `~/.lionagi/teams`.
 The page is separate from Operator conversation history and Fleet runs.
+
+Sources: UI `routes/teams/index.tsx`; service `teams.py`.
 
 ## System
 
@@ -128,6 +157,9 @@ Backend area: admin supplies health, maintenance, and audit events. Data
 links open the engine-runs and definitions areas; appearance and language are
 client preferences.
 
+Sources: UI `routes/system.tsx`, `lib/theme.ts`, and `i18n/locales.ts`;
+services `admin.py`, `db_maintenance.py`, `engine_runs.py`, and `definitions.py`.
+
 ## Approvals
 
 Approvals are a mechanism used by work that needs a decision, rather than a
@@ -138,6 +170,10 @@ conversation. Granting one request does not approve all later work.
 Backend areas: approvals stores approval requests and decisions; operator
 handles its conversation-specific permission flow. Acknowledging an item in
 Attention does not grant its pending approval.
+
+Sources: UI `components/mission/AttentionQueue.tsx`,
+`components/history/RunDetail.tsx`, and `components/operator/OperatorPanel.tsx`;
+services `approvals.py`, `attention.py`, and `operator.py`.
 
 ## Projects
 
@@ -155,9 +191,10 @@ projects and does not delete their sessions.
 
 Backend area: projects owns the registry and assignment operations. Fleet's
 project choices come from the runs area, so the filter represents attributed
-runs rather than a project-management screen. These behaviors are checked
-against `lionagi/studio/services/projects.py` and
-`components/fleet/ProjectFilter.tsx`.
+runs rather than a project-management screen.
+
+Sources: UI `components/fleet/ProjectFilter.tsx`; services `projects.py`
+and `runs.py`.
 
 ## Generated API reference
 
@@ -170,6 +207,9 @@ The schema is generated from the routes mounted by `lionagi/studio/app.py`
 and registered through `lionagi/studio/registry.py`. It describes the API of
 that running version, including request schemas and response shapes. Consult
 it for exact endpoints instead of inferring an API path from a page name.
+
+Sources: `lionagi/studio/app.py`, `lionagi/studio/registry.py`, and the
+registered service modules.
 
 For scheduling behavior, see
 [ADR-0070](../adr/ADR-0070-studio-scheduling-and-dispatch-delivery.md).

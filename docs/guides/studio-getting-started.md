@@ -64,12 +64,33 @@ Choose a launch mode for your setup:
 `--no-open` applies to hosted-client mode. In a noninteractive terminal, the
 default also leaves opening the browser to you.
 
-Docker mode pulls `ghcr.io/ohdearquant/lion-studio:latest`, serves the bundled UI
-on port 8765 by default, and bind-mounts `~/.lionagi` into the container at
-`/root/.lionagi` so state persists outside the container. If Docker is missing,
-the command exits with an installation message. Install and start Docker, or
-use the default hosted-client mode. If the image pull fails, Studio attempts
-to use a cached image.
+Docker mode pulls `ghcr.io/ohdearquant/lion-studio:latest` and serves the bundled
+UI and API on port 8765 by default. It bind-mounts `~/.lionagi` read-write at
+`/root/.lionagi` so state persists outside the container. If present,
+`~/.claude/plugins` is mounted read-only. Targets of symlinks in the `agents`,
+`skills`, `playbooks`, and `teams` directories under `~/.lionagi` are also
+mounted read-only when they pass the launcher's allowed-root check;
+disallowed targets are skipped with a warning.
+
+The launcher currently uses `-p 8765:8765`, without a host address, and the
+container listens on `0.0.0.0:8765`. With Docker's default port-binding
+configuration, this publishes on all host interfaces. Docker network/daemon
+settings and host firewalls can narrow actual reachability. The local-only
+default for this launch mode is tracked in
+[the Docker port-binding issue](https://github.com/ohdearquant/lionagi/issues/3561).
+Until that changes, use a custom Docker invocation with an explicit loopback
+mapping such as `-p 127.0.0.1:8765:8765` when access should stay local.
+
+For bearer-token enforcement, `LIONAGI_STUDIO_AUTH_TOKEN` must be set
+**inside the container**. `li studio --docker` does not forward that variable: exporting
+it on the host alone does not configure container authentication. Supply the
+container environment explicitly in a custom Docker invocation before allowing
+remote access. A Host-header check is not a substitute for authentication.
+
+If Docker is missing, the command exits with an installation message. Install
+and start Docker, or use the default hosted-client mode. If the image pull
+fails, Studio attempts to use a cached image. These launch and mount behaviors
+are defined in `lionagi/studio/cli.py` and `apps/studio/Dockerfile`.
 
 Development mode requires the repository's `apps/studio/frontend` directory
 and Node.js. It is not a frontend mode for a package-only installation.
@@ -89,11 +110,13 @@ same daemon. The default daemon address is `http://127.0.0.1:8765`.
 
 ## Find your way around
 
-The left rail has **Home**, **Library**, **Schedules**, and **Teams**, with
-**System** near the bottom. Home opens the overview of active work, recent
-runs, and items needing attention. **Fleet** and **Attention** are tabs beside
-**Overview**: Fleet browses execution history, while Attention expands the
-home page's attention queue.
+The left rail has **Mission Control**, **Library**, **Schedules**, and **Teams**,
+with **System** near the bottom. Mission Control opens the overview of active
+work, recent runs, and items needing attention. **Fleet** and **Attention** are
+tabs beside **Overview**: Fleet browses execution history, while Attention
+expands Mission Control's attention queue. These labels come from
+`apps/studio/frontend/src/messages/en.json` and
+`apps/studio/frontend/src/components/shell/IconRail.tsx`.
 
 The speech-bubble button near the top of the rail opens **Operator**. This
 dock stays available while you move between pages. The command palette opens
@@ -109,8 +132,10 @@ objects relate.
    <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>J</kbd>.
 2. Send `Reply with exactly: operator-ready` with <kbd>Enter</kbd>.
    Watch the reply and tool activity stream into the conversation.
-3. Once the turn completes, choose **Open run** to inspect the matching run
-   in Fleet.
+3. Once the turn completes, open the **Fleet** tab beside Overview to inspect
+   recorded Operator execution. A text-only reply does not show **Open run**;
+   that control appears only on a successful tool result containing a run ID.
+   Later turns can reuse the conversation's persisted branch and run record.
 4. Reload the page and reopen Operator. The daemon restores the conversation
    history.
 

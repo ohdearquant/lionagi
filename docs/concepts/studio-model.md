@@ -33,8 +33,8 @@ choose a launch mode.
 
 In the current runs service, a Fleet run is a view over persisted session
 state. Open its detail to inspect the branches and recorded messages behind
-it. A session may have several branches; resuming work therefore requires a
-branch choice when more than one is available. An invocation or schedule
+it. A session may have several branches; an agent follow-up therefore requires
+a branch choice when more than one is available. An invocation or schedule
 fire provides launch context rather than being another name for a branch.
 
 In Python, [`Session`](../api/session.md) owns branches and supports their
@@ -46,9 +46,16 @@ the original interaction, while saved artifacts are a separate output.
 
 Operator also stores its conversation and turn events in the daemon. Reloading
 the client reconstructs that history; it does not replay the instruction as a
-new request. **Continue this run** resumes from a persisted branch snapshot,
-which must still exist after retention or cleanup. Durable records do not
-mean that an active process continues through every daemon shutdown.
+new request. Later turns can reuse the same conversation branch and run record.
+For agent runs, **Continue this run** takes a follow-up instruction and resumes
+from a persisted branch snapshot, with a branch choice when needed. Play, flow,
+and show-play runs instead offer **Continue** to replay a saved checkpoint,
+without an instruction or branch choice. The required branch snapshot or
+checkpoint must still exist after retention or cleanup. Unsupported kinds or
+missing state produce an explained refusal. Durable records do not mean that
+an active process continues through every daemon shutdown. These continuation
+paths follow `apps/studio/frontend/src/components/history/ResumeRun.tsx` and
+`lionagi/studio/services/run_resume.py`.
 
 See [durable operations](../guides/durable-operations.md) for monitoring,
 control, and recovery, and the [Operator guide](../guides/studio-operator.md)

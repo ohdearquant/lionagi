@@ -5,7 +5,12 @@ than prose formatting. They should fail when a shipped product surface can no
 longer be found or when MkDocs references a file that the site cannot serve.
 """
 
+import re
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+import yaml
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
@@ -18,6 +23,65 @@ UNPUBLISHED_STALE_PAGES = {
     "reference/migrate-logs.md",
     "reference/outcomes-work.md",
 }
+STUDIO_PAGES = {
+    "guides/studio-getting-started.md",
+    "guides/studio-operator.md",
+    "guides/studio-schedules.md",
+    "concepts/studio-model.md",
+    "reference/studio-surfaces.md",
+}
+
+
+def _nav_targets(node: Node) -> set[str]:
+    """Read navigation values, never YAML keys, comments, or unrelated settings."""
+    if isinstance(node, ScalarNode):
+        return {node.value}
+    if isinstance(node, SequenceNode):
+        return set().union(*(_nav_targets(child) for child in node.value))
+    if isinstance(node, MappingNode):
+        return set().union(*(_nav_targets(value) for _, value in node.value))
+    return set()
+
+
+def test_studio_pages_are_in_site_navigation() -> None:
+    # Compose nodes rather than constructing tagged MkDocs Python objects.
+    config = yaml.compose(MKDOCS.read_text())
+    assert isinstance(config, MappingNode)
+    nav = next(value for key, value in config.value if key.value == "nav")
+    missing = STUDIO_PAGES - _nav_targets(nav)
+    assert not missing, f"Studio pages missing from MkDocs navigation: {sorted(missing)}"
+    assert all((DOCS / page).is_file() for page in STUDIO_PAGES)
+
+
+def test_documentation_links_do_not_target_the_retired_studio_guide() -> None:
+    pages = [
+        page
+        for page in DOCS.rglob("*.md")
+        if not {"_archive", "overrides"}.intersection(page.relative_to(DOCS).parts)
+        and page.relative_to(DOCS).as_posix() not in UNPUBLISHED_STALE_PAGES
+    ]
+    pages.append(DOCS / "llms.txt")
+    stale: list[str] = []
+    for page in pages:
+        text = re.sub(r"<!--.*?-->", "", page.read_text(), flags=re.S)
+        text = re.sub(r"(?ms)^ {0,3}(?:```|~~~).*?^ {0,3}(?:```|~~~)[^\n]*$", "", text)
+        targets = re.findall(r"\[[^\]\n]+\]\(\s*<?([^\s)>]+)", text)
+        targets += re.findall(r"(?m)^ {0,3}\[[^\]\n]+\]:\s*<?([^\s>]+)", text)
+        for target in targets:
+            link = urlsplit(target)
+            path = unquote(link.path)
+            retired_url = re.search(r"(?:^|/)guides/studio(?:\.md|/?)$", path)
+            retired_relative = (
+                not link.scheme
+                and not link.netloc
+                and (
+                    (page.parent / path).resolve()
+                    in {(DOCS / "guides/studio.md").resolve(), (DOCS / "guides/studio").resolve()}
+                )
+            )
+            if retired_url or retired_relative:
+                stale.append(f"{page.relative_to(ROOT)}: {target}")
+    assert not stale, f"Links target the retired Studio guide: {stale}"
 
 
 def _configured_local_assets() -> list[Path]:

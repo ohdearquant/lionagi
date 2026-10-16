@@ -53,12 +53,19 @@ after creation. Expiry denies the request; it never approves it.
 
 ### Follow work into Fleet and Runs
 
-Every Operator turn creates a normal Studio run. Use **Open run** in the
-conversation to inspect its status, messages, tool results, and activity in
-Fleet's Runs view.
+Open the **Fleet** tab beside Overview to find recorded Operator execution and
+inspect its status, messages, tool results, and activity. Successive turns can
+reuse the conversation's persisted branch and run record. **Open run** appears
+in the conversation only when a successful tool result contains a run ID; a
+text-only reply has no such control.
 
-Run detail includes **Continue this run** for every live or terminal run that
-still has a persisted branch:
+Run detail checks whether **Continue this run** is available and explains a
+refusal when the required saved state is missing or the run kind is unsupported.
+There are two continuation paths.
+
+#### Agent follow-ups
+
+For an agent run with a persisted branch:
 
 1. Enter the follow-up instruction.
 2. If the run has more than one branch, select the branch to continue. A
@@ -78,7 +85,7 @@ the resumed `li agent` process. Repeating the identical request returns the
 same accepted invocation; a different concurrent follow-up for that branch
 returns a conflict instead of starting parallel work.
 
-The always-visible **CLI escape hatch** shows and copies the equivalent command:
+The agent form's **CLI escape hatch** shows and copies the equivalent command:
 
 ```bash
 li agent -r '<branch-id>' --prompt '<follow-up instruction>'
@@ -86,6 +93,20 @@ li agent -r '<branch-id>' --prompt '<follow-up instruction>'
 
 For a multi-branch run, select a branch first. When no branch is available, the
 placeholder remains visible but copying is disabled.
+
+#### Checkpoint continuation
+
+For play, flow, and show-play runs, choose **Continue** to replay the saved
+checkpoint's plan. There is no instruction field or branch selector: the
+checkpoint owns the work to resume. The required checkpoint must still exist
+and be readable. Acceptance records the continuation request; a replay failure
+is reported in the run's activity rather than guaranteeing completion.
+
+These paths are defined by
+`apps/studio/frontend/src/components/history/ResumeRun.tsx` and
+`lionagi/studio/services/run_resume.py`. Run-link visibility and conversation
+identity follow `components/operator/OperatorPanel.tsx` under that frontend
+source directory and `lionagi/studio/operator/engine.py`.
 
 ## Verify the real local Operator path
 
@@ -97,16 +118,16 @@ shipping a release, exercise the real path in a disposable project:
    needed.
 2. Start Studio with `li studio` and open Operator.
 3. Send `Reply with exactly: operator-ready` and confirm text arrives
-   incrementally, the turn completes, and **Open run** reaches the matching
-   run.
+   incrementally and the turn completes. Open Fleet to inspect the recorded
+   execution; this text-only instruction does not require an **Open run** link.
 4. Reload Studio and confirm the conversation and completed turn return.
 5. Ask Operator to create a harmless temporary file. Choose **Deny** and
    confirm the file was not created. Ask again, choose **Allow**, and confirm
    the file was created; then remove it.
 6. Start a longer inspection, choose **Stop**, and confirm the conversation
-   reports **Turn stopped** and the linked run reaches a cancelled state.
-7. From that run, use **Continue this run** to send a follow-up and confirm the
-   new activity appears.
+   reports **Turn stopped** and inspect the cancelled execution in Fleet.
+7. From that agent run, use **Continue this run** to send a follow-up and
+   confirm the new activity appears.
 
 This check uses the actual Claude Code executable, account, stream, permission
 gate, cancellation path, and durable run store.
