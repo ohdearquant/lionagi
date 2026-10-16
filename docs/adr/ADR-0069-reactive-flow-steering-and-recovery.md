@@ -1,7 +1,12 @@
 # ADR-0069: Reactive flow steering and recovery
 
-- **Status**: Accepted, amended 2026-10-16 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-16 (see Amendment 1); the Amendment 1 clauses marked
+  **DEFERRED** below are decided but not shipped
 - **Kind**: Retrospective
+- **Implementation-status**: partial — D1-D5 are shipped. Amendment 1's settle check on a recorded
+  `completed` node, its recorded completion digest, its consumed-producer refusal, and its
+  original-artifact-root threading are **DEFERRED**, so resume still pre-marks from the recorded
+  `status` alone
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0085, v0-0088; amended by ADR-0108, which widens the
@@ -10,7 +15,8 @@
   row no longer holds for that verb, and widens the terminal `result` vocabulary
   below, which is no longer a closed list of three; amended by Amendment 1, which
   narrows D5's pre-marking of a recorded `completed` node to a node whose result it
-  can show is still there
+  can show is still there (Amendment 1 is decided but not shipped — see
+  `Implementation-status`)
 
 ## Context
 
@@ -44,7 +50,7 @@ This ADR answers five concrete problems:
 | Cooperative pause semantics | D2: Gate new operation starts at the executor boundary; never preempt an in-flight provider call. |
 | Context-mode steering | D3: Apply messages at most once to shared flow context and render them once into a pending operation instruction. |
 | Checkpoint persistence | D4: Atomically replace a versioned full-state JSON checkpoint after operation outcomes. |
-| Resume and reactive-growth bounds | D5: Replay the recorded plan without planning; refuse spawned topology and gate degraded inherited context. |
+| Resume and reactive-growth bounds | D5: Replay the recorded plan without planning; rebuild checkpointed spawn entries that carry their reconstruction fields, refuse the whole resume on any entry that cannot, and gate degraded inherited context. |
 
 Out of scope:
 
@@ -291,7 +297,7 @@ The writer is a run-local dataclass:
 
 ```python
 # lionagi/cli/orchestrate/_checkpoint.py
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 @dataclass
 class CheckpointWriter:
@@ -329,7 +335,7 @@ Wire shape:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "session_id": "...",
   "prompt": "...",
   "plan": [{"agent_id": "...", "dep_indices": [], "assignee": "..."}],
@@ -368,11 +374,14 @@ Exact persistence semantics:
   checkpoint task exceptions at drain time, so checkpoint freshness is not guaranteed when a
   write fails.
 - `load_checkpoint()` performs `json.loads(path.read_text())`. The current resume path does not
-  reject an unsupported `version` field explicitly; version 1 is descriptive, not a complete
-  migration gate.
+  reject an unsupported `version` field explicitly; version 2 is descriptive, not a complete
+  migration gate (`lionagi/cli/orchestrate/_checkpoint.py:160`).
 
-`CHECKPOINT_VERSION = 1` marks the initial shipped shape. No rationale beyond initial format
-versioning is recorded.
+`CHECKPOINT_VERSION = 2` (`lionagi/cli/orchestrate/_checkpoint.py:29`) is the current shape: 2 adds
+the spawn-reconstruction fields resume reads (`operation`, `assignee`, `instruction`, `parent_id`,
+`spawn_id`, and the later `context`) that `record_spawned` writes
+(`lionagi/cli/orchestrate/_checkpoint.py:92`). No rationale beyond initial format versioning is
+recorded.
 
 Why this way: full snapshots are simple to inspect and avoid a partial event-log replay protocol.
 Atomic replacement protects readers from torn target files. The cost is write amplification after
@@ -422,18 +431,28 @@ Exact replay semantics:
 - The persisted `plan` is reconstructed directly; the planner is not called.
 - An empty plan is rejected.
 - Previously completed nodes are pre-marked `COMPLETED` with their response. Previously failed
-  nodes are pre-marked `FAILED`; resume does not guess that retrying their possibly side-effecting
-  operation is safe.
+  nodes are not: a checkpoint that records one refuses the resume, because replaying a failed node
+  as terminal skips it and everything downstream, so resuming would finish nothing
+  (`lionagi/cli/orchestrate/flow.py:1270-1278`). `--retry-failed` runs the failed nodes again
+  instead, which resume does not do silently because it re-executes whatever side effects the first
+  attempt already had.
 - Pending nodes run normally and receive restored shared result context.
 - If any pending node requested `inherit_context`, resume refuses because predecessor conversation
   messages are not restored. `--allow-degraded-context` permits those named nodes to run with an
   empty branch while retaining result context.
-- Any non-empty `spawned` checkpoint list refuses resume. The current writer records spawned
-  outcomes, but the plan does not contain their position or branch inheritance, so replay would
-  silently drop work.
-  **Amended by Amendment 1:** a spawned list is no longer refused wholesale. Replayable entries are
-  rebuilt into the fresh graph and only the entries that fail the soundness checks are refused, so
-  the rule now reads "no spawned entry is replayed unless it can be soundly rebuilt".
+- A checkpoint `spawned` list whose entries can be rebuilt does not refuse resume: every entry is
+  reconstructed into the fresh graph. But refusal is whole-resume, not per-entry.
+  `_reconstruct_spawned_nodes` (`lionagi/cli/orchestrate/flow.py:1078`) runs before any node is
+  added, and its four checks each raise `FlowResumeError` for the whole resume when any single entry
+  fails: (1) the entry must carry `operation` (`CHECKPOINT_VERSION` 2+; a pre-2 entry carries
+  nothing to rebuild from); (2) its `status` must be `completed` or `failed`; (3) an entry with an
+  `assignee` must also carry `spawn_id`; (4) a `parent_id` must itself be checkpointed terminal or
+  another entry in the same list. One failing entry refuses the resume, naming only that entry's
+  node; it never resumes the remaining entries.
+  **Amended by Amendment 1:** a checkpoint whose entries can all be rebuilt no longer refuses
+  wholesale — they are reconstructed into the fresh graph — and a checkpoint that holds any
+  unreconstructible entry is still refused as a whole, so the rule reads "no spawned entry is
+  replayed unless every spawned entry can be soundly rebuilt".
 - A resumed run writes its own checkpoint and records `resumed_from=<original-session-id>`.
 
 Reactive growth itself is bounded by the live executor:
@@ -462,14 +481,16 @@ runaway-planner defense; the numeric threshold likewise has no recorded empirica
 
 Spawn attempts reject and record `builder_error`, `null_child`, `cycle`,
 `max_spawn_exceeded`, or `duplicate`. Accepted nodes receive a branch clone, an optional dependency
-edge from the emitter, and a `NodeSpawned` signal. These live semantics do not make their topology
-recoverable by the version-1 checkpoint.
+edge from the emitter, and a `NodeSpawned` signal. These live semantics are recoverable only to the
+extent the version-2 checkpoint records them: `record_spawned` stamps the reconstruction fields
+above (`lionagi/cli/orchestrate/_checkpoint.py:92`), and a spawned entry that lacks them refuses the
+resume (see Amendment 1).
 
 Why this way: replaying a stable planner output avoids paying for or drifting through a second
 plan. Refusal is preferable to silently dropping spawned work or conversational inheritance. The
 explicit degraded flag makes the one supported fidelity loss visible to the caller.
 
-## Amendment 1 (2026-10-16) — `completed` stands only on a result still present
+## Amendment 1 (2026-10-16) — `completed` stands only on a result still present and unchanged
 
 D5 pre-marks every node the checkpoint recorded `completed` and hands its recorded `response` to
 its dependents. It never asks whether that recorded result still describes what the node produced,
@@ -479,58 +500,89 @@ check.
 
 **The decision.** A resume treats a recorded `completed` entry as settled only on evidence that the
 result the entry names is still present and unchanged. Anything less is not a settled node and is
-not replayed as one.
+not replayed as one. **DEFERRED** — the settle check is decided here but not shipped; the replay
+path still pre-marks a recorded `completed` node from its stored status with no check
+(`lionagi/cli/orchestrate/flow.py:1307`).
 
-Three rules follow from the same premise, and this ADR had not decided any of them:
+Two of the three rules that follow were already decided by this ADR, not freshly here: D4 keys
+planned nodes by stable `agent_id` and spawned nodes by node id in a separate list so one namespace
+cannot overwrite the other, and D5 already fixes the pre-marking of a recorded `completed` node.
+Only the settle condition on top of them is new:
 
-- **A checkpoint entry's `status` is the only thing that settles a node.** A node's own terminal
-  signal does not. An operation that finished but whose outcome the checkpoint never wrote back is
-  unsettled and runs again; the replay path pre-marks a node only from a checkpoint entry, never
-  from the graph it rebuilds (`_apply_checkpoint_precompletion`,
-  `lionagi/cli/orchestrate/flow.py:1236`).
-- **A result counts only in the run's own row.** The writer keys planned nodes by stable `agent_id`
+- **A checkpoint entry's `status` is the only thing that can indicate a settled node, and even it
+  is not sufficient on its own.** A node's own terminal signal does not settle it. An operation
+  that finished but whose outcome the checkpoint never wrote back is unsettled and runs again; the
+  replay path pre-marks a node only from a checkpoint entry, never from the graph it rebuilds
+  (`_apply_checkpoint_precompletion`,
+  `lionagi/cli/orchestrate/flow.py:1236`). This is D5's pre-marking, narrowed.
+- **A result counts only in the run's own row.** D4 already keys planned nodes by stable `agent_id`
   (`CheckpointWriter.record`, `lionagi/cli/orchestrate/_checkpoint.py:72`) and spawned nodes by node
-  id in a separate list (`record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:92`) so one
-  namespace cannot overwrite the other. An entry outside this run's own keys is not this run's
-  result.
+  id in a separate list (`record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:92`). An entry
+  outside this run's own keys is not this run's result.
 - **A stored response is evidence, never the settlement.** The value a node returned is not proof
   that its work stands, and a resume must not derive a node's status by reading it.
 
 **Content identity.** The result to prove is the artifact set a node declared, read through the
 same verifier a live run uses (`verify_artifact_contract`,
-`lionagi/state/artifact_verifier.py:215`), with its identity taken as a cryptographic hash over the
-bytes (`compute_hash`, `lionagi/ln/_hash.py:177`). A node whose declared artifacts are present and
-unchanged stands. Planned legs already write their artifacts under a per-node directory
-(`RunDir.agent_artifact_dir`, `lionagi/cli/_runs.py:187`), and a leg's declared entries are
-namespaced under its own node id (`_leg_artifact_entries`, `lionagi/cli/orchestrate/flow.py:230`),
-so the declared set and the set on disk are addressable by node without a new store.
+`lionagi/state/artifact_verifier.py:215`), against the contract the run itself persisted rather than
+a contract re-derived from the live roles. That persisted contract is the `artifact_contract_json`
+column ADR-0064 D3 has a flow write at DAG-build time
+(`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:403`; the column is declared at
+`lionagi/state/schema.sql:191` and written at `lionagi/cli/orchestrate/flow.py:1057`). Resume reads
+that record; an unreadable record leaves the node unsettled. Today it does not: at resume
+`_build_dag` re-folds each leg's profile or role `artifact_defaults` into the contract from the live roles
+(`lionagi/cli/orchestrate/flow.py:942-951`), so removing a role's `artifact_defaults` between runs
+loses that leg's contract. **DEFERRED** — reading the persisted record on resume is not shipped.
 
-Two limits are stated rather than papered over. A completed node that declared **no** artifact
-contract has nothing independent to check: the hash of its recorded response proves only that the
-JSON round-tripped through `json.dumps(..., default=str)` and back (`_write_locked`,
-`lionagi/cli/orchestrate/_checkpoint.py:147`; `load_checkpoint`,
-`lionagi/cli/orchestrate/_checkpoint.py:160`). And the live verifier proves presence and a non-zero
-size, not content: it reads `os.path.getsize(full) > 0`
-(`lionagi/state/artifact_verifier.py:249`), and the currency check beside it uses mtime and size and
-says itself that this "narrows, but doesn't close" the window a rewrite preserving both leaves
-(`stale_artifact_markers`, `lionagi/state/artifact_verifier.py:299`). A byte-level check is delta 7.
+The identity of the declared set is a digest recorded in the checkpoint entry when the node
+completes. **Field**: `result_digest`, beside the entry's `status` and `response`
+(`CheckpointWriter.record`, `lionagi/cli/orchestrate/_checkpoint.py:72`). It is taken with the
+BLAKE-family hash the tree already uses for recorded content — `blake2b`
+(`lionagi/cli/orchestrate/_manifest.py:333`; ADR-0110 D1 records a "BLAKE-family content hash",
+`docs/adr/ADR-0110-deterministic-manifest-fanout.md:119`) — not `compute_hash`'s SHA-256 default
+(`lionagi/ln/_hash.py:177-181`). **DEFERRED** — no digest field is recorded today. A declared
+artifact over the hash size limit cannot be digested: `compute_hash` refuses a payload above
+`MAX_HASH_INPUT_BYTES = 10 * 1024 * 1024` (`lionagi/ln/_hash.py:153,193-194`), and ADR-0050 records
+that a caller hashing content larger than 10 MiB must choose a different streaming design rather
+than expect `compute_hash()` to accept it
+(`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:834-836`). A node whose
+result crosses that limit is unsettled and re-runs.
+
+Two further limits are stated rather than papered over. A completed node that declared **no**
+artifact contract has nothing independent to check, so it re-runs on resume — the cost of not
+having a contract (delta 6). And the live verifier proves presence and a non-zero size, not
+content: it reads `os.path.getsize(full) > 0` (`lionagi/state/artifact_verifier.py:249`), and the
+currency check beside it uses mtime and size and says itself that this "narrows, but doesn't close"
+the window a rewrite preserving both leaves (`stale_artifact_markers`,
+`lionagi/state/artifact_verifier.py:299`). The byte-level check that closes it is delta 7, and row 2
+depends on it: row 2 cannot close first.
 
 **What this changes.** D5's `Previously completed nodes are pre-marked COMPLETED with their
-response` becomes conditional: a completed node whose result survives the check stands with that
-result; one whose result is missing, empty, or changed is unsettled, runs again, and the reason is
-recorded.
+response` becomes conditional: a completed node whose declared result survives the check stands
+with that result; one whose result is missing, empty, or changed and that no consumer has read is
+unsettled, runs again, and the reason is recorded. **DEFERRED.**
 
 **What the check must refuse.** Re-running a node whose result a dependent already consumed
-invalidates that dependent's inputs. Only a producer no consumer has read may re-run as a new
-attempt; a producer whose result a dependent read cannot re-run without recomputing the dependent
-closure, which this ADR does not ship. Such a node is left unsettled and named, and the
-recomputation case is recorded as a delta.
+invalidates that dependent's inputs. A producer whose result a consumer read cannot re-run without
+recomputing the dependent closure, which this ADR does not ship. So the resume refuses instead: it
+raises `FlowResumeError` naming the consumed producer and the consumers that read it, and leaves
+the node unsettled. The recomputation that would let such a producer re-run is delta 7.
+**DEFERRED** — no consumed-producer refusal is shipped.
 
 **Delta-table changes.** Row 2 is rewritten. Its replay half shipped: `_reconstruct_spawned_nodes`
 (`lionagi/cli/orchestrate/flow.py:1078`) rebuilds reactively spawned nodes into the fresh graph, and
-its three soundness checks refuse the entries it cannot rebuild. What remains is the check this
-amendment decides, applied to the replayed node's result rather than to its recorded status. Rows 6
-and 7 are new and carry this amendment's own gaps.
+its four soundness checks — `operation` present, `status` in `completed|failed`, `assignee` paired
+with a `spawn_id`, and a `parent_id` that is itself checkpointed terminal or another entry in the
+same list (`lionagi/cli/orchestrate/flow.py:1105`, `1115`, `1125`, `1146`) — refuse what they cannot
+rebuild. Refusal is whole-resume, not per-entry: one failing entry raises `FlowResumeError` before
+any node is added, so no other entry is resumed either. What remains is the check this amendment
+decides, applied to the replayed node's result rather than to its recorded status, and it cannot
+close before delta 7's byte-level check. Rows 6 and 7 are new and carry this amendment's own gaps.
+One live behaviour already trades recorded spawns away: with `--retry-failed`, the resume drops
+every recorded spawn descended from a re-running (formerly failed) parent
+(`_drop_spawns_under_rerun_parents`, `lionagi/cli/orchestrate/flow.py:1211`, called at `1287-1288`),
+which D5's rule that refusal is preferable to silently dropping spawned work disfavours. The
+settle check this amendment adds is what row 2 tracks.
 
 **The code today.** The replay path pre-marks a completed planned node from
 `checkpoint_ops[agent_id]["status"] == "completed"` and assigns `entry.get("response")` with no
@@ -538,7 +590,15 @@ check (`lionagi/cli/orchestrate/flow.py:1307`), and the spawned path does the sa
 (`lionagi/cli/orchestrate/flow.py:1186`). The executor then admits any already-completed operation
 and seeds its result (`lionagi/operations/flow.py:213`), and dependents read that value
 (`lionagi/operations/flow.py:888`). Nothing hashes or re-reads either result, so the decision is a
-delta in full.
+delta in full. The artifact root a resume would read is not the original run's either: it is found
+by `resolve_checkpoint_target` (`resolve_checkpoint_target` → `_find_run_dir_by_id`,
+`lionagi/cli/orchestrate/_checkpoint.py:164`), which returns the original run's `RunDir` with its
+`artifact_root`. But `_resume_flow` drops it, keeping only the checkpoint dict
+(`lionagi/cli/orchestrate/flow.py:3371`, `_run_dir` bound and unused), and `_run_flow` allocates a
+fresh run, so without `--save` the resumed run's `artifact_root` is a new directory
+(`allocate_run`, `lionagi/cli/_runs.py:408-426`). Against that new root every completed node's
+declared artifacts are absent. The fix threads the original run's `artifact_root` through the
+resume; **DEFERRED** — threading it is not shipped.
 
 **Alternatives.** Three were considered and rejected, and each is what a shorter version of this
 amendment would have decided.
@@ -563,11 +623,13 @@ named, never completed by presumption.
 **What this costs.** Resume stops treating a recorded status as a result: a checkpoint whose
 artifacts are gone or changed now re-runs the affected node or refuses, where it previously replayed
 it as completed. The cost is one artifact read and hash per settled node with a declared contract,
-paid once at resume; a node without one pays nothing and gains nothing, which is delta 6. A refused
+paid once at resume; a node that declared no contract re-runs, which is the cost of not having one
+and is delta 6. A refused
 or re-run node is named at resume, which is louder than the replay it replaces and is the intended
 direction, since a resumed run that cannot show its results is not a recovery. Dependencies are
 protected: a producer whose result a consumer read is not silently re-run under the consumer's stale
-input, and the recomputation that would allow it is delta 7.
+input — resume refuses, naming the producer and its consumers — and the recomputation that would
+allow the re-run is delta 7.
 
 ## Consequences
 
@@ -578,11 +640,13 @@ input, and the recomputation that would allow it is delta 7.
   visible row requiring diagnosis.
 - Full checkpoint snapshots are inspectable and atomically visible, but are not a transactional log
   and do not guarantee fsync-level persistence.
-- Amendment 1 narrows resume further: a recorded `completed` node is pre-marked only once its
-  result is shown to be still present, so a checkpoint whose results were lost or changed re-runs
-  the affected node or refuses instead of replaying it as finished.
-- Resume is planner-free and preserves completed/failed outcomes, but refuses checkpoints containing
-  reactive spawn outcomes and requires an explicit flag to lose inherited conversation state.
+- Amendment 1 narrows resume further once shipped: a recorded `completed` node would be pre-marked
+  only once its result is shown to be still present, so a checkpoint whose results were lost or
+  changed would re-run the affected node or refuse instead of replaying it as finished. Today it is
+  **DEFERRED** and the replay path still trusts the recorded `status`.
+- Resume is planner-free and preserves completed/failed outcomes, but refuses the whole resume on
+  any checkpoint spawn entry that cannot be rebuilt, and requires an explicit flag to lose inherited
+  conversation state.
 - Contributors extending control must understand verb-specific apply/stamp ordering; treating a
   message like idempotent pause/resume would introduce duplicate steering.
 - Reversing D1-D3 requires a new control transport and compatibility for pending rows. D4's JSON
@@ -594,11 +658,11 @@ input, and the recomputation that would allow it is delta 7.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
-| 2 | Verify a replayed node's recorded result before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node completed from a record whose result is missing, empty, or changed. | M | (filled at issue-open time) |
+| 2 | Verify a replayed node's recorded result before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node completed from a record whose result is missing, empty, or changed. Depends on delta 7's byte-level check — this row cannot close first. | M | (filled at issue-open time) |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
 | 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
-| 6 | Give a completed node's settlement an independent recorded result identity, so a node that declared no artifact contract is provable too; acceptance: a checkpointed completion can be verified without relying on a value that proves only its own JSON round-trip. | L | (filled at issue-open time) |
+| 6 | Give a completed node's settlement an independent recorded result identity (the `result_digest` field above), so a node that declared no artifact contract is provable too; acceptance: a checkpoint holds a digest recorded at completion, so a completed node that declared no artifact contract is re-checked from that digest instead of re-running. | L | (filled at issue-open time) |
 | 7 | Make the artifact check byte-level and recompute the dependent closure when a value a consumer already read must be re-produced; acceptance: a result whose bytes changed under a preserved path, size, and mtime is detected, and a dependent of a re-run producer is never left reading a stale value. | L | (filled at issue-open time) |
 
 ## Alternatives considered
@@ -645,7 +709,8 @@ invalidating completed results and provenance.
 ### Silently skip unsupported spawned nodes or inherited conversation
 
 This would maximize the number of checkpoints that appear resumable. It lost because the resulting
-run is not faithful. The code now refuses spawned checkpoints and requires an explicit degraded
+run is not faithful. The code rebuilds checkpoint spawn entries that carry their reconstruction
+fields, refuses the whole resume on any entry it cannot rebuild, and requires an explicit degraded
 flag for inherited conversation.
 
 ### Use the durable task queue as the live-control channel

@@ -391,16 +391,19 @@ crash or orphan exit before teardown still leaves the DB accurate.
 
 `_reconstruct_spawned_nodes` rebuilds a checkpoint's `spawned` entries into a
 fresh graph on resume, checked BEFORE any node is added so a refusal never
-leaves the graph partially mutated. Three soundness checks per entry: (1) it
+leaves the graph partially mutated. Four soundness checks per entry: (1) it
 must carry `operation` (CHECKPOINT_VERSION 2+; older checkpoints have nothing
-to rebuild from); (2) if it has a `parent_id`, that parent must itself be
-checkpointed terminal (completed/failed) or be another entry in the same
-`checkpoint_spawned` list — a parent merely existing in the DAG isn't enough,
-since resuming while that parent reruns live risks duplicating or dropping the
-spawn decision; (3) an entry with `assignee` must also carry `spawn_id` (both
-are stamped together unconditionally by `role_node_builder`, so one without
-the other means the checkpoint predates that field or is corrupt). Any failure
-refuses resume for only the affected node(s), never the whole run.
+to rebuild from); (2) its `status` must be `completed` or `failed`; (3) an
+entry with `assignee` must also carry `spawn_id` (both are stamped together
+unconditionally by `role_node_builder`, so one without the other means the
+checkpoint predates that field or is corrupt); (4) if it has a `parent_id`,
+that parent must itself be checkpointed terminal (completed/failed) or be
+another entry in the same `checkpoint_spawned` list — a parent merely existing
+in the DAG isn't enough, since resuming while that parent reruns live risks
+duplicating or dropping the spawn decision. A failure raises
+`FlowResumeError` and refuses the whole resume, naming only the failing
+node(s): no entry is rebuilt, so a checkpoint carrying one unreconstructible
+spawn is not resumed at all.
 
 Spawn-id sequencing: on resume, the ordinal sequence must start past the MAX
 existing ordinal among restored spawns + 1 (not `count`, since a crashed run
