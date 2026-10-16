@@ -120,10 +120,14 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
             # here alone leaves the lock held and the next writer waits out its whole
             # busy timeout before failing with "database is locked". Ending the
             # transaction first releases the lock even when a statement is still
-            # open, so the connection is handed back the way it was found.
+            # open. The rollback is queued whether or not a transaction looks open:
+            # ``in_transaction`` is read here on the event loop, and a BEGIN still
+            # queued for the connection's worker thread when the body was cancelled
+            # reads as no transaction, then opens one once the worker reaches it.
+            # The worker runs calls in order, so the ROLLBACK runs after any such
+            # BEGIN, and with no transaction open it does nothing.
             with suppress(Exception):
-                if db.in_transaction:
-                    await db.rollback()
+                await db.rollback()
 
 
 async def table_columns(db: aiosqlite.Connection, table: str) -> set[str]:

@@ -179,6 +179,107 @@ class TestOpenDb:
             "the store is still write-locked after a cancelled write"
         )
 
+    @pytest.mark.asyncio
+    async def test_a_write_cancelled_before_its_begin_has_run_releases_the_write_lock(
+        self, tmp_path
+    ):
+        """A cancel can arrive while the ``BEGIN IMMEDIATE`` is still queued for the
+        connection's worker thread. Read on the event loop at that moment the connection is
+        in no transaction, and the queued BEGIN opens one once the worker reaches it, so the
+        helper has to end the transaction in the worker's order rather than decide from that
+        earlier reading."""
+        import asyncio
+        import threading
+
+        from lionagi.studio.services._db import open_db
+
+        db_path = str(tmp_path / "test.db")
+        gate = threading.Event()
+        queued = asyncio.Event()
+
+        async def _cancelled_write():
+            async with open_db(db_path) as db:
+                await db.execute("CREATE TABLE t (a)")
+                await db.commit()
+                # Keeps the worker busy until the gate opens, so the BEGIN below is still
+                # queued when the cancel arrives; its cursor is left unread.
+                await db.create_function("hold", 0, lambda: 1 if gate.wait(10) else 0)
+                holder = asyncio.ensure_future(db.execute("SELECT hold()"))
+                await asyncio.sleep(0)
+                begin = db.execute("BEGIN IMMEDIATE")
+                queued.set()
+                await begin
+                await holder
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(_cancelled_write())
+        await asyncio.wait_for(queued.wait(), timeout=5)
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=10)
+
+        assert self._write_lock_is_free(db_path), (
+            "the store is still write-locked after a write cancelled before its BEGIN ran"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_returns_inside_its_transaction_releases_the_write_lock(
+        self, tmp_path
+    ):
+        """A body that returns between its ``BEGIN IMMEDIATE`` and its ``COMMIT``, a read
+        still open, leaves no write lock behind, and its writes are rolled back."""
+        from lionagi.studio.services._db import open_db
+
+        db_path = str(tmp_path / "test.db")
+        async with open_db(db_path) as db:
+            await db.execute("CREATE TABLE t (a)")
+            await db.commit()
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("INSERT INTO t VALUES (1)")
+            await db.execute("INSERT INTO t VALUES (2)")
+            cursor = await db.execute("SELECT a FROM t")
+            await cursor.fetchone()
+
+        assert self._write_lock_is_free(db_path)
+        assert self._rows(db_path) == 0
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_raises_inside_its_transaction_releases_the_write_lock(
+        self, tmp_path
+    ):
+        """A body that raises between its ``BEGIN IMMEDIATE`` and its ``COMMIT`` leaves no
+        write lock behind, its writes are rolled back, and its own error reaches the caller."""
+        from lionagi.studio.services._db import open_db
+
+        db_path = str(tmp_path / "test.db")
+        with pytest.raises(RuntimeError, match="the body failed"):
+            async with open_db(db_path) as db:
+                await db.execute("CREATE TABLE t (a)")
+                await db.commit()
+                await db.execute("BEGIN IMMEDIATE")
+                await db.execute("INSERT INTO t VALUES (1)")
+                await db.execute("INSERT INTO t VALUES (2)")
+                cursor = await db.execute("SELECT a FROM t")
+                await cursor.fetchone()
+                raise RuntimeError("the body failed")
+
+        assert self._write_lock_is_free(db_path)
+        assert self._rows(db_path) == 0
+
+    @staticmethod
+    def _rows(db_path: str) -> int:
+        """How many rows table ``t`` holds, read by a fresh connection."""
+        import sqlite3
+
+        conn = sqlite3.connect(db_path)
+        try:
+            return conn.execute("SELECT count(*) FROM t").fetchone()[0]
+        finally:
+            conn.close()
+
     @staticmethod
     def _write_lock_is_free(db_path: str) -> bool:
         """Whether a fresh connection can take the store's write lock right now."""
