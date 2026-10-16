@@ -279,9 +279,9 @@ def _refuse_oversized_cli_inputs(
     # them, so the refusal names them; every argument is measured again where the
     # process starts.
     if failure is None and system_prompt:
-        argument = f"developer_instructions={system_prompt}"
-        failure = _strict_utf8_failure(argument, "The system prompt")
+        failure = _strict_utf8_failure(system_prompt, "The system prompt")
         if failure is None:
+            argument = f"developer_instructions={toml_override_value(system_prompt)}"
             measured.append(("The system prompt", argument.encode("utf-8")))
     for key, value in (config_overrides or {}).items():
         if failure is not None:
@@ -938,9 +938,12 @@ class CodexCodeRequest(BaseModel):
         else:
             args.extend(["--disable", "tool_search"])
 
-        # Codex CLI has no --system-prompt flag; uses -c developer_instructions.
+        # Codex CLI has no --system-prompt flag; uses -c developer_instructions. The
+        # value is read as TOML like every other `-c` value, so it is written as a TOML
+        # string: written raw, a prompt that parses as TOML ("true", "42", '"quoted"')
+        # would reach codex as that value instead of as its own text.
         if self.system_prompt:
-            args.extend(["-c", f"developer_instructions={self.system_prompt}"])
+            args.extend(["-c", f"developer_instructions={toml_override_value(self.system_prompt)}"])
 
         # Encoded like every other `-c` override below. While these fields were
         # a closed Literal of eight bare words, emitting them unencoded was

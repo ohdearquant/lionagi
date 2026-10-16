@@ -30,8 +30,10 @@ except ModuleNotFoundError:  # Python 3.10 has no tomllib
     tomllib = None  # type: ignore[assignment]
 
 ARGUMENT_MAX_BYTES = codex_mod._CLI_ARGUMENT_MAX_BYTES
-# developer_instructions=<system prompt> is one argument; the prefix counts toward it.
+# developer_instructions=<system prompt> is one argument; the prefix counts toward it, and
+# the prompt is written as a TOML string, so its two quotes do too.
 PREFIX = len("developer_instructions=")
+QUOTES = 2
 
 
 def test_the_limits_are_the_documented_values():
@@ -127,10 +129,10 @@ def test_a_system_message_too_long_for_one_argument_is_refused(tmp_path):
 
 
 def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
-    """The bound is on developer_instructions=<system prompt>, in its UTF-8 bytes, which is
-    what the operating system measures for text that holds no surrogate; the turn input is
-    bounded in characters."""
-    just_under = "s" * (ARGUMENT_MAX_BYTES - PREFIX - 1)
+    """The bound is on developer_instructions=<system prompt as a TOML string>, in its UTF-8
+    bytes, which is what the operating system measures for text that holds no surrogate; the
+    turn input is bounded in characters."""
+    just_under = "s" * (ARGUMENT_MAX_BYTES - PREFIX - QUOTES - 1)
     request = CodexCodeRequest(prompt="hi", system_prompt=just_under, repo=tmp_path)
     assert request.system_prompt == just_under
     argument = next(a for a in request.as_cmd_args() if a.startswith("developer_instructions="))
@@ -141,9 +143,33 @@ def test_the_system_prompt_is_bounded_as_the_argument_it_becomes(tmp_path):
 
     wide = "漢" * ((ARGUMENT_MAX_BYTES - PREFIX) // 3 + 1)
     assert len(wide) < ARGUMENT_MAX_BYTES < len(wide.encode("utf-8")) + PREFIX
-    size = len(wide.encode("utf-8")) + PREFIX
+    size = len(wide.encode("utf-8")) + PREFIX + QUOTES
     with pytest.raises(CLIInputRefusedError, match=f"argument of {size:,} bytes,"):
         CodexCodeRequest(prompt="hi", system_prompt=wide, repo=tmp_path)
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib is Python 3.11+")
+@pytest.mark.parametrize(
+    "system_prompt",
+    [
+        "true",
+        "42",
+        '"quoted"',
+        "[1, 2]",
+        "a\nk = v",
+        "tab\there",
+        'back\\slash "q"',
+        "emoji \U0001f600",
+    ],
+    ids=["bool", "integer", "quoted", "array", "table-line", "tab", "escapes", "non-bmp"],
+)
+def test_the_system_prompt_reaches_codex_as_its_own_text(tmp_path, system_prompt):
+    """codex reads a `-c` value as TOML, so a prompt written raw that parses as TOML
+    would arrive as a bool, a number, an unquoted string or an array. Written as a TOML
+    string, it reads back as exactly the text given."""
+    request = CodexCodeRequest(prompt="hi", system_prompt=system_prompt, repo=tmp_path)
+    argument = next(a for a in request.as_cmd_args() if a.startswith("developer_instructions="))
+    assert tomllib.loads(argument) == {"developer_instructions": system_prompt}
 
 
 def test_a_config_override_too_long_for_one_argument_is_refused(tmp_path):
