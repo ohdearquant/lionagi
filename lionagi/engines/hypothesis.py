@@ -489,8 +489,9 @@ def _accepted_verdict(run: HypothesisRun, d: DedupChecked) -> bool:
     dispatches no observers, so nothing is recorded there: a seed's first stored
     verdict stands, and an agent-sourced finding's does not, since nothing shows
     its judge passed. For verdicts stored after their seed that is the verdict a
-    live run acts on; a verdict stored before its seed, which a live run treats
-    as naming no finding, is accepted here.
+    live run acts on. A verdict stored before its seed names no finding when it
+    arrives, so a live run does not act on it, but with no later verdict
+    recorded this fallback accepts it, in a live run as in a collected one.
     """
     f = run.find(d.finding_ref)
     if not isinstance(f, FindingPosted):

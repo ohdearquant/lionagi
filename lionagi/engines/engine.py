@@ -1416,7 +1416,7 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal anywhere on the error's cause chain; and, when the engine contains account integrations, any error at all, because no error can show that a contained judge ran, so none can be read as a pass."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal anywhere on the error's chain of causes and contexts; and, when the engine contains account integrations, any error at all, because no error can show that a contained judge ran, so none can be read as a pass."""
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
@@ -1449,14 +1449,18 @@ class Engine:
             raise
         except Exception as exc:
             # The model layer wraps a provider's refusal in its own error, so the refusal is
-            # found on the cause chain. It refuses every call this judge makes; read as a pass,
-            # it would turn the gate off for the whole run.
-            cause, seen = exc, set()
-            while cause is not None and id(cause) not in seen:
+            # found on the error's chain: its cause, or its context when a wrapper raised
+            # without `from`. It refuses every call this judge makes; read as a pass, it would
+            # turn the gate off for the whole run.
+            pending, seen = [exc], set()
+            while pending:
+                cause = pending.pop()
+                if cause is None or id(cause) in seen:
+                    continue
                 if isinstance(cause, ContainmentRefusedError):
                     raise cause from cause.__cause__
                 seen.add(id(cause))
-                cause = cause.__cause__
+                pending.extend((cause.__context__, cause.__cause__))
             # No refusal on the chain. A chain that loops back on itself lands
             # here too, instead of walking forever. Under containment the refusal
             # can arrive as any error type (an unreadable directory, a config the

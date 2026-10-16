@@ -694,7 +694,12 @@ async def _released_on_an_empty_search(eng):
     run.operate_with_repair = operate_with_repair
     await run.emit(FindingPosted(description="released on an empty search"))
     await run.wait_quiescence()
-    return run, calls, run.events_of(FindingPosted)[-1]
+    f = run.events_of(FindingPosted)[-1]
+    # The search posted nothing, so the finding was released: extracted once, no verdict yet.
+    assert [stage for stage, _ in calls] == ["extract"]
+    assert f.eid in run.dedup_cleared
+    assert f.eid not in run.dedup_verdicts
+    return run, calls, f
 
 
 @pytest.mark.asyncio

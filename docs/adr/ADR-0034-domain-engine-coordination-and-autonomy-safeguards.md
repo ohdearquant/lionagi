@@ -22,9 +22,10 @@ turns the gate off for the whole run. Three cases are now raised instead:
   judge, an `agent_mcp_config_path` that does not parse among them, is not one
   of these: without containment it fails open as before, and under containment
   the third case raises it.
-- A `ContainmentRefusedError` is found anywhere on the error's cause chain. The
-  model layer wraps a provider's refusal in its own error, so the chain is walked;
-  the refusal is raised.
+- A `ContainmentRefusedError` is found anywhere on the error's chain. The model
+  layer wraps a provider's refusal in its own error, and a wrapper that raises
+  without `from` (or `from None`) leaves it as the context, so each error's cause
+  and context are both followed, every error once; the refusal is raised.
 - With `contain_account_integrations` set, any other error. `judge_error` is
   emitted first, then the error is raised. Under containment the refusal can
   arrive as an error of any type (a working directory the process cannot enter, a
@@ -342,7 +343,8 @@ async def Engine.judge(
   passes.
 - Judge `EngineBudgetError` returns `False`: no budget means no expansion.
 - Other judge exceptions emit `judge_error` and return `True`: infrastructure
-  failure is fail-open while D2 remains authoritative.
+  failure is fail-open while D2 remains authoritative. Amendment 1 raises three
+  cases instead.
 
 **Why this way**: payload-oriented queries keep engines independent of observer
 transport. Bounded repair addresses common serialization failure without turning a
@@ -580,7 +582,7 @@ indirectly. Enforceable agent creation and monotonic deadline checks are require
 This would prevent expansion whenever quality cannot be proven. It lost because a
 judge provider or parse failure would become a global availability dependency.
 Budget exhaustion still fails closed; other judge errors fail open under the hard
-bounds.
+bounds. Amendment 1 raises every judge error under `contain_account_integrations`.
 
 ### Fabricate a minimal event after repair exhaustion
 

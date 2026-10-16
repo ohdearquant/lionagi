@@ -3,8 +3,8 @@
 
 """A judge whose failure carries a cyclic cause chain still reads as a pass.
 
-``Engine.judge`` walks ``__cause__`` to find a provider refusal that arrived
-wrapped in the model layer's own error. A chain that loops back on itself makes
+``Engine.judge`` walks ``__cause__`` and ``__context__`` to find a provider
+refusal that arrived wrapped in the model layer's own error. A chain that loops back on itself makes
 that walk never end, and the walk is synchronous, so the event loop freezes with
 it. The walk must stop on a repeat, and the gate must still fail open.
 """
@@ -105,6 +105,49 @@ async def test_a_refusal_behind_a_cyclic_chain_is_still_raised():
 
     with pytest.raises(ContainmentRefusedError, match="refuses its containment"):
         await _judge(Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(wrapper))
+
+
+def _wrapped_without_from(refusal: BaseException, *, hide: bool) -> BaseException:
+    """An error raised while handling *refusal*, with no ``from`` (or ``from None``)."""
+    try:
+        raise refusal
+    except type(refusal):
+        try:
+            if hide:
+                raise RuntimeError("the layer above it") from None
+            raise RuntimeError("the layer above it")
+        except RuntimeError as wrapper:
+            return wrapper
+
+
+@pytest.mark.parametrize("hide", [False, True], ids=["implicit", "from-none"])
+async def test_a_refusal_left_as_the_context_of_a_wrapper_is_raised(hide):
+    """A wrapper that raises without ``from`` keeps the refusal only as its context."""
+    from lionagi._errors import ContainmentRefusedError
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    wrapper = _wrapped_without_from(refusal, hide=hide)
+    assert wrapper.__cause__ is None
+    assert wrapper.__context__ is refusal
+
+    with pytest.raises(ContainmentRefusedError, match="refuses its containment"):
+        await _judge(Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(wrapper))
+
+
+@pytest.mark.timeout(_HANG_BOUND_S, method="signal")
+@_SIGALRM_ONLY
+async def test_a_two_element_context_cycle_fails_open_instead_of_walking_forever():
+    first = RuntimeError("the provider refused the key")
+    second = ValueError("the layer above it")
+    first.__context__ = second
+    second.__context__ = first
+
+    allowed, events = await _judge(
+        Engine(judge_model="openai/gpt-4.1"), _JudgeWhoseCallRaises(first)
+    )
+
+    assert allowed is True
+    assert [kind for kind, _ in events] == ["judge_error"]
 
 
 @contextlib.asynccontextmanager
