@@ -49,10 +49,12 @@ DeepSeek's `reasoning_effort` field maps lionagi effort levels: `low`/`medium` �
 `xhigh` → `"max"`. DeepSeek native values (`low`, `medium`, `high`, `max`) pass through unchanged.
 
 Lattice is a local inference server started with `lattice serve`. lionagi calls it at
-`http://127.0.0.1:8080/v1`. Its address guard admits Lattice only on the loopback hosts
-`localhost`, `127.0.0.1` and `::1` — a `base_url=` may change the port or the path but not the
-host — and `model` must be the id the server reports at `GET /v1/models`. The server refuses
-tool calling. Its requests also take `reasoning_budget`, `top_k`, `repetition_penalty`, and
+`http://127.0.0.1:8080/v1`. By default a Lattice endpoint sets `allow_local_network=True`, and
+with it the address guard admits only the loopback hosts `localhost`, `127.0.0.1` and `::1`: a
+`base_url=` may change the port or the path but not the host. Passing
+`allow_local_network=False` applies the ordinary guard instead, which refuses loopback and
+private addresses. `model` must be the id the server reports at `GET /v1/models`. The server
+refuses tool calling. Its requests also take `reasoning_budget`, `top_k`, `repetition_penalty`, and
 `lora`, an ordered list of resident adapters (`{"id": ..., "scale": ...}`).
 
 ```python
