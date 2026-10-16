@@ -239,7 +239,8 @@ jobs:
         uv venv
         uv sync --all-extras
 
-    # Coverage runs on 3.10, and only on pushes — never on a pull request.
+    # Coverage runs on 3.10, only on pushes and manual runs — never on a pull
+    # request.
     #
     # Running the suite under coverage instrumentation is materially slower than
     # running it plain. The 3.10 leg runs on every pull request and ci-gate

@@ -20,9 +20,10 @@ a catastrophic-failure ceiling of 25 because it is the critical path. Local
 commands retain the faster defaults of 3 and 1. Worker restarts remain disabled
 so a hard crash names the test that owned the worker.
 
-`performance` tests stay in the benchmark workflow. Tests marked `slow_timing`
-exercise real deadline behavior and must have at least 10x scheduling margin.
-There are no blanket test retries.
+`performance` tests run serially in `ci.yml`'s advisory `performance` job,
+outside the required matrix. Tests marked `slow_timing` exercise real deadline
+behavior and must have at least 10x scheduling margin. There are no blanket
+test retries.
 
 The separate `quarantine` job runs only `flaky_quarantine` tests on Python 3.12.
 It is `continue-on-error` and intentionally absent from `ci-gate`; its result is

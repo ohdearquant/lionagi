@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -97,15 +98,41 @@ CONCURRENCY = {
 
 @pytest.mark.parametrize("name", sorted(ADVISORY_JOBS))
 def test_an_advisory_workflow_keeps_its_concurrency(name: str) -> None:
-    assert _load(name)["concurrency"] == CONCURRENCY[name]
+    workflow = _load(name)
+    assert workflow["concurrency"] == CONCURRENCY[name]
+    # A job-level block would form a second group with its own cancellation,
+    # outside the one pinned above.
+    assert all("concurrency" not in job for job in workflow["jobs"].values())
 
 
-def test_only_the_advisory_workflows_read_the_switch() -> None:
-    # GitHub loads workflows with either suffix. The name is matched without
-    # regard to case, so a reader spelling it in lower case is found too.
+# A read of any repository variable: `vars.NAME`, or `vars[...]`, which also takes
+# a name built at run time, such as `vars[format('ADVISORY_PR_{0}', 'CHECKS')]`.
+VARIABLE_READ = re.compile(r"\bvars\s*[.\[]", re.IGNORECASE)
+
+
+def _strings(node: object) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        return [s for key, value in node.items() for s in (*_strings(key), *_strings(value))]
+    if isinstance(node, list):
+        return [s for item in node for s in _strings(item)]
+    return []
+
+
+def _reads_a_variable(path: Path) -> bool:
+    # The raw text and the parsed strings are both searched: a double-quoted YAML
+    # scalar can spell a character as an escape, which only the parse decodes.
+    text = path.read_text()
+    return any(VARIABLE_READ.search(s) for s in (text, *_strings(yaml.safe_load(text))))
+
+
+def test_only_the_advisory_workflows_read_a_repository_variable() -> None:
+    # GitHub loads workflows with either suffix. Any repository variable counts,
+    # not only the switch's own name, since a name can be assembled at run time
+    # and a required workflow should hold no switch at all. A future need for
+    # one in a required workflow is a change to review here.
     workflows = [*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]
-    readers = sorted(
-        path.name for path in workflows if "advisory_pr_checks" in path.read_text().lower()
-    )
+    readers = sorted(path.name for path in workflows if _reads_a_variable(path))
     assert readers == sorted(ADVISORY_JOBS)
-    assert "advisory_pr_checks" not in (WORKFLOWS / "ci.yml").read_text().lower()
+    assert not _reads_a_variable(WORKFLOWS / "ci.yml")

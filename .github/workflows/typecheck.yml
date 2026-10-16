@@ -6,8 +6,13 @@ on:
     paths-ignore:
       - '**/*.ipynb'
   # ready_for_review is not a default activity type, so without this a draft PR
-  # marked ready starts no run. Naming types replaces the defaults rather than
-  # extending them, so the three defaults are listed back.
+  # marked ready starts no run. Converting a pull request back to draft starts no
+  # run (converted_to_draft is not listed), so a run in progress goes on; marking
+  # it ready again starts a run in the same concurrency group, which cancels the
+  # one in progress and checks the same commit again. The cost is one duplicate
+  # run, and nothing is decided by it, since this check is not required.
+  # Naming types replaces the defaults rather than extending them, so the three
+  # defaults are listed back.
   pull_request:
     types: [ opened, synchronize, reopened, ready_for_review ]
     branches: [ main, develop ]
