@@ -1104,8 +1104,8 @@ describe("the shell token does not follow a ?api= override to another daemon", (
   it.each(["127.0.0.1", "127.0.0.2"])(
     "still sends the token to its issuing origin on %s",
     async (host) => {
-      // The documented workaround: a viewer pasting the address of the very
-      // daemon the shell started must not be punished for it.
+      // An override that names the daemon the shell started is that daemon's
+      // own origin, so the token still goes to it.
       stubLocation(`?api=http://${host}:8765`);
       setInjected(`http://${host}:8765`, "shell-token");
       const { resolveAuthToken } = await import("./api");
@@ -1293,6 +1293,8 @@ describe("a page paired by `li studio`", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    window.sessionStorage.removeItem("studio.apiBaseOverride");
   });
 
   async function pairedModules(token: string) {
@@ -1400,7 +1402,5 @@ describe("a page paired by `li studio`", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`${destination}/api/stats`);
     const headers = captured[0]?.headers as Record<string, string> | undefined;
     expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
-    window.history.replaceState(null, "", "/");
-    window.sessionStorage.removeItem("studio.apiBaseOverride");
   });
 });
