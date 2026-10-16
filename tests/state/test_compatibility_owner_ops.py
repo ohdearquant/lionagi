@@ -2176,9 +2176,47 @@ def test_a_delete_trigger_is_held_to_old_and_only_old():
     ]
 
 
-async def test_a_delete_trigger_comparing_the_owner_with_an_alias_is_refused(tmp_path):
+# The same sweep without the alias: the owner compared with the updated row's own column.
+_DELETE_SWEEP_BY_NAME = (
+    "CREATE TRIGGER sweep AFTER DELETE ON messages BEGIN "
+    f"UPDATE progressions SET collection = '[]' WHERE {OWNER} = progressions.{OWNER}; END"
+)
+
+
+def _sqlite_aliases_a_trigger_update() -> bool:
+    """Whether this SQLite accepts ``UPDATE t AS a`` in a trigger body.
+
+    Older releases refuse the alias there, so no store they open can hold such a trigger.
+    """
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE messages ({OWNER} TEXT)")
+        conn.execute(f"CREATE TABLE progressions ({OWNER} TEXT, collection TEXT)")
+        try:
+            conn.execute(_DELETE_SWEEP)
+        except sqlite3.OperationalError:
+            return False
+    return True
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        _DELETE_SWEEP_BY_NAME,
+        pytest.param(
+            _DELETE_SWEEP,
+            marks=pytest.mark.skipif(
+                not _sqlite_aliases_a_trigger_update(),
+                reason=f"SQLite {sqlite3.sqlite_version} refuses a table alias in a trigger's UPDATE",
+            ),
+        ),
+    ],
+    ids=["table-name", "alias"],
+)
+async def test_a_delete_trigger_comparing_the_owner_with_the_updated_row_is_refused(
+    tmp_path, trigger
+):
     store = await _managed_store(tmp_path / "managed.db")
-    _execute(store, _DELETE_SWEEP)
+    _execute(store, trigger)
     handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
 
     with pytest.raises(StateCompatibilityRefused, match="trigger sweep") as caught:
