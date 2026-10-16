@@ -564,14 +564,11 @@ async def test_postgres_schema_lock_rechecks_when_version_table_appears(monkeypa
             return race["table_exists"]
 
     class FakeResult:
-        def __init__(self, row=None):
-            self.row = row
+        def __init__(self, rows=()):
+            self.rows = list(rows)
 
-        def mappings(self):
-            return self
-
-        def first(self):
-            return self.row
+        def all(self):
+            return self.rows
 
     class FakeConnection:
         async def execute(self, statement, params=None):
@@ -582,9 +579,9 @@ async def test_postgres_schema_lock_rechecks_when_version_table_appears(monkeypa
                 # obtains the lock, so the table absent at entry now exists.
                 race["table_exists"] = True
                 return FakeResult()
-            if "SELECT value FROM schema_meta" in sql:
+            if "FROM schema_meta" in sql and sql.endswith(" FOR UPDATE"):
                 events.append("version")
-                return FakeResult({"value": newer})
+                return FakeResult([("version", newer)])
             raise AssertionError(f"unexpected SQL: {sql}")
 
         async def run_sync(self, callback):

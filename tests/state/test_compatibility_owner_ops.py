@@ -4,15 +4,18 @@
 """Compatibility-mode ownership (ADR-0128 D5) and a run's creating operations (Appendix A).
 
 The managed store here is lionagi's own native schema with an owner column added to the tables
-that carry one, a principals table, and another lineage's version stamp: the shape of a store a
-newer schema manages, built synthetically.
+that carry one, a principals table, and another lineage's version stamp and lineage row: the shape
+of a store a newer schema manages, built synthetically.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -30,7 +33,7 @@ from lionagi.state.compat import (
     _trigger_owner_problems,
     read_closure,
 )
-from lionagi.state.db import StateDB
+from lionagi.state.db import ForeignLineageError, StateDB
 
 OWNER = "owner_principal_id"
 _OWNED = ("sessions", "branches", "progressions", "messages", "status_transitions", "invocations")
@@ -158,6 +161,8 @@ async def _managed_store(
     native = StateDB(path)
     await native.open()
     await native.close()
+    # The managing application's own columns, principals and version, and the lineage row it writes
+    # when it creates the store (ADR-0128 D7).
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {owner_name} {owner_sql}")
@@ -167,6 +172,7 @@ async def _managed_store(
             INSERT INTO principals VALUES
                 ('principal:a', 'human'), ('principal:b', 'human'), ('principal:default', 'human');
             UPDATE schema_meta SET value = '900' WHERE key = 'version';
+            INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager');
             """
         )
         conn.commit()
@@ -320,6 +326,105 @@ async def test_the_shared_lookup_refuses_a_store_held_open_without_sharing_the_h
         assert db_mod._SHARED.get(db.url) is None
     finally:
         await db_mod.close_shared_db()
+
+
+# Opens from another process (ADR-0128 D7): the in-process refusals above cover this process only.
+# The managed store's lineage row, written by its manager, is what a second process's native open
+# reads before it opens a writable connection.
+
+_SECOND_PROCESS = """
+import asyncio
+import sys
+
+from lionagi.state import db as db_mod
+
+writable = []
+make_engine = db_mod.make_engine
+db_mod.make_engine = lambda url, **kw: writable.append(url) or make_engine(url, **kw)
+
+
+async def main(path):
+    try:
+        await db_mod.StateDB(path).open()
+    except db_mod.ForeignLineageError as exc:
+        print("refused", len(writable), str(exc))
+    else:
+        print("opened", len(writable))
+
+
+asyncio.run(main(sys.argv[1]))
+"""
+
+
+async def test_a_native_open_in_another_process_is_refused_before_it_opens_a_writer(db, store):
+    """This process holds the store in compatibility mode; a second process opening the same file
+    natively is refused on the lineage row before it creates a writable engine, so the store's
+    bytes, version and lineage are as they were, and this process goes on writing."""
+    before = store.read_bytes()
+    result = subprocess.run(
+        [sys.executable, "-c", _SECOND_PROCESS, str(store)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=store.parent,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("refused 0 "), result.stdout
+    assert "'manager' as the application that manages its schema" in result.stdout
+    assert store.read_bytes() == before
+    meta = "SELECT key, value FROM schema_meta WHERE key IN ('lineage', 'version') ORDER BY key"
+    assert _rows(store, meta) == [("lineage", "manager"), ("version", "900")]
+    await _setup_run(db)
+    assert _rows(store, f"SELECT {OWNER} FROM sessions WHERE id = 's1'") == [("principal:a",)]
+
+
+@pytest.mark.parametrize("name", ["managed.db", "managed #1.db"], ids=["plain", "uri-characters"])
+async def test_a_refused_native_open_leaves_the_store_and_its_journal_mode_as_they_were(
+    tmp_path, name
+):
+    """The writable engine's connection settings would switch a rollback-journal store to WAL, so
+    the lineage is read through a read-only connection first, on the file the writable engine
+    would open, whatever characters its path holds."""
+    store = await _managed_store(tmp_path / name)
+    _execute(store, "PRAGMA journal_mode = delete")
+    before = store.read_bytes()
+    native = StateDB(store)
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await native.open()
+    assert native._engine is None
+    assert _rows(store, "PRAGMA journal_mode") == [("delete",)]
+    assert store.read_bytes() == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == [name]
+
+
+async def test_the_lineage_refuses_before_the_version_on_either_guard(store):
+    """The managed store records version 900, above this package's. The lineage decides the
+    refusal before the writable engine opens and again inside the migration's version check under
+    the write lock, which reads the lineage first, so the two guards never disagree."""
+    with pytest.raises(ForeignLineageError):
+        await StateDB(store).open()
+
+    schema = _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+    late = StateDB(store)
+    # As if the lineage row landed after the read-only read: its manager still creating the store.
+    with patch.object(StateDB, "_refuse_foreign_lineage_read_only", AsyncMock()):
+        try:
+            with pytest.raises(ForeignLineageError):
+                await late.open()
+        finally:
+            await late.close()
+    assert _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY type, name") == schema
+
+
+async def test_a_store_whose_lineage_names_this_package_opens_natively(tmp_path):
+    path = tmp_path / "native.db"
+    first = StateDB(path)
+    await first.open()
+    await first.close()
+    _execute(path, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')")
+    again = StateDB(path)
+    await again.open()
+    await again.close()
 
 
 async def test_a_run_writes_its_owner_on_every_row_it_creates(db, store):

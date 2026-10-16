@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
@@ -32,7 +33,14 @@ from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, shield
-from lionagi.state.compat import CompatibilityProfile, _operation, _sql_tokens, _statement_kind
+from lionagi.state.compat import (
+    _LINEAGE_KEY,
+    CompatibilityProfile,
+    _names_another_application,
+    _operation,
+    _sql_tokens,
+    _statement_kind,
+)
 from lionagi.state.compat import _Guard as _CompatibilityGuard
 from lionagi.state.compat import _quote as _quote_identifier
 from lionagi.state.engine import (
@@ -172,6 +180,10 @@ class SchemaTooNewError(RuntimeError):
     """``schema_meta.version`` is higher than ``SCHEMA_VERSION``; only a writable open raises it."""
 
 
+class ForeignLineageError(RuntimeError):
+    """``schema_meta.lineage`` names another application; only a writable native open raises it."""
+
+
 class BackupNotTrustworthyError(RuntimeError):
     """A pre-rebuild backup was not trustworthy, so the rebuild aborts."""
 
@@ -184,8 +196,6 @@ def state_db_file() -> Path | None:
     url = normalize_state_db_url(raw)
     if dialect_of(url) != "sqlite":
         return None
-    from sqlalchemy.engine import make_url
-
     database = make_url(url).database
     if not database or database == ":memory:":
         return None
@@ -502,6 +512,16 @@ def _validate_enum(
         raise ValueError(f"Invalid {name} {value!r}; {adr} vocabulary is {sorted(allowed)}")
 
 
+_SCHEMA_META_GUARD_ROWS = "SELECT key, value FROM schema_meta WHERE key IN ('lineage', 'version')"
+
+
+def _read_schema_meta(connection) -> dict[str, Any]:
+    """The lineage and version rows of ``schema_meta``, through a sync connection."""
+    if not inspect(connection).has_table("schema_meta"):
+        return {}
+    return dict(connection.exec_driver_sql(_SCHEMA_META_GUARD_ROWS).all())
+
+
 def _install_begin_immediate(sync_engine) -> None:
     @event.listens_for(sync_engine, "connect")
     def _on_connect(dbapi_conn, _rec):
@@ -744,10 +764,27 @@ class StateDB:
                 "apply this package's schema to it",
                 "open",
             )
+        if self.dialect == "sqlite":
+            # P2: the writable engine's connection settings change the file, so a store another
+            # application manages is refused from a read-only connection first (ADR-0128 D7).
+            await self._refuse_foreign_lineage_read_only()
         self._engine = make_engine(self.url)
         if self.dialect == "sqlite":
             _install_begin_immediate(self._engine.sync_engine)
         await self._apply_schema()
+
+    async def _refuse_foreign_lineage_read_only(self) -> None:
+        database = make_url(self.url).database
+        if not database or database == ":memory:" or not Path(database).exists():
+            return
+        engine = make_readonly_engine(self.url)
+        try:
+            async with engine.connect() as conn:
+                meta = await conn.run_sync(_read_schema_meta)
+        finally:
+            with CancelScope(shield=True):
+                await engine.dispose()
+        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
 
     async def _open_compatibility(self) -> None:
         # Never _apply_schema(), create_all, a rebuild, a backfill or a version stamp: the store's
@@ -1062,6 +1099,23 @@ class StateDB:
 
     # Schema management
 
+    def _store_named_for_an_operator(self) -> str:
+        # Masked: on a server-backed store this is the connection URL, and the refusals that name
+        # it fire on routine mistakes (upgrade order, a path pointed at another application's store).
+        if self.dialect == "sqlite" and self.path is not None:
+            return mask_credentials(str(self.path))
+        return mask_db_url(self.url)
+
+    def _raise_if_foreign_lineage(self, lineage: Any) -> None:
+        if not _names_another_application(lineage):
+            return
+        raise ForeignLineageError(
+            f"{self._store_named_for_an_operator()} names {str(lineage)[:80]!r} as the application "
+            "that manages its schema, and opening it for writing would apply this package's "
+            "schema to it. Open it read-only to inspect it, or in compatibility mode with a "
+            "profile for that application."
+        )
+
     def _raise_if_schema_too_new(self, recorded: str | None) -> None:
         if recorded is None:
             return
@@ -1073,13 +1127,7 @@ class StateDB:
             return
         if recorded_n <= int(SCHEMA_VERSION):
             return
-        # Named for an operator, so masked: on a server-backed store this is the connection URL, and
-        # this refusal fires on a routine upgrade-order mistake.
-        where = (
-            mask_credentials(str(self.path))
-            if self.dialect == "sqlite" and self.path is not None
-            else mask_db_url(self.url)
-        )
+        where = self._store_named_for_an_operator()
         raise SchemaTooNewError(
             f"{where} records schema version {recorded} but this version of lionagi "
             f"applies schema version {SCHEMA_VERSION}. It was written by a later "
@@ -1089,7 +1137,8 @@ class StateDB:
         )
 
     async def _refuse_newer_schema(self, conn) -> None:
-        """Refuse to open a database stamped with a version above SCHEMA_VERSION."""
+        """Refuse to open a database another application manages or stamped with a version above
+        SCHEMA_VERSION, reading both under the write lock and the lineage first."""
         if self.dialect == "postgresql":
             # The version table may not exist yet, so a row lock cannot serialize first-time schema
             # creation; this database-local lock predates any schema object.
@@ -1099,11 +1148,12 @@ class StateDB:
             )
         if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
             return
-        query = "SELECT value FROM schema_meta WHERE key = 'version'"
+        query = _SCHEMA_META_GUARD_ROWS
         if self.dialect == "postgresql":
             query += " FOR UPDATE"
-        row = (await conn.execute(text(query))).mappings().first()
-        self._raise_if_schema_too_new(row["value"] if row else None)
+        meta = dict((await conn.execute(text(query))).all())
+        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
+        self._raise_if_schema_too_new(meta.get("version"))
 
     async def _refuse_newer_sqlite_schema(self, driver) -> None:
         """Check the version through a raw driver holding BEGIN IMMEDIATE."""
@@ -1114,10 +1164,9 @@ class StateDB:
         ).fetchone()
         if table is None:
             return
-        row = await (
-            await driver.execute("SELECT value FROM schema_meta WHERE key = 'version'")
-        ).fetchone()
-        self._raise_if_schema_too_new(row[0] if row else None)
+        meta = dict(await (await driver.execute(_SCHEMA_META_GUARD_ROWS)).fetchall())
+        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
+        self._raise_if_schema_too_new(meta.get("version"))
 
     async def _apply_schema(self) -> None:
         self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")

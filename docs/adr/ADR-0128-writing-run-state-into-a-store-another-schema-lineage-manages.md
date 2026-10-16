@@ -199,6 +199,21 @@ lionagi's own history produced. Compatibility mode reads the store's metadata an
 `version`, `lineage` or any backfill key. Non-numeric, missing and equal version values are
 classified explicitly rather than falling through a numeric comparison.
 
+A store another application manages carries a `lineage` row naming that application. The managing
+application writes it when it creates the store, in the transaction that creates its schema, and the
+row is the admission contract: compatibility mode admits only a store whose `lineage` row is present
+and names an application other than lionagi. lionagi never writes the row into a store it does not
+manage. A compatibility open that wrote it on first use would leave every native open before that
+write, in any process, free to migrate the store.
+
+A writable native open refuses a store whose `lineage` row names another application, raising
+`ForeignLineageError`. On SQLite it reads the row through a read-only connection before it creates
+the writable engine, so the refusal comes before the connection settings of P2 and before any
+statement of `_apply_schema()`; this is what refuses a second process opening a store this process
+holds in compatibility mode. Every transaction of `_apply_schema()` that writes reads the row again
+under its write lock, ahead of the version, so a store whose `lineage` names another application and
+whose version is above `SCHEMA_VERSION` is refused on its lineage by either check.
+
 ### D8: acceptance
 
 An operation enters a profile only with these tests passing on scratch stores built by the managing
@@ -231,6 +246,10 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 - The aiosqlite floor rises to 0.22.0 (D3).
 - Turning compatibility writes off is the rollback. Restoring a backup over a store the managing
   application is still writing is not.
+- No production caller opens a store in compatibility mode until the native refusal of D7 ships,
+  since before it a native open in another process can migrate a store this process is writing.
+  None does today: the mode is reached only by passing a profile to `StateDB`, and no command,
+  server or configuration passes one.
 
 ## Alternatives considered
 
@@ -266,6 +285,12 @@ before any data or DDL statement. Every step `_apply_schema()` runs ahead of its
 `schedules`, `invocations`, `schedule_runs` and `definitions`) either finds nothing to do or checks
 the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
 any of it. Compatibility mode (D1) runs none of these steps.
+
+A writable native open of a store whose `lineage` row names another application raises
+`ForeignLineageError` (D7) before the writable engine exists, so before the connection settings too,
+and wherever the lineage and the version are both read, the lineage is checked first. While this
+process holds a store open in compatibility mode, a native open of that store from this process is
+refused before any statement, whatever the row says.
 
 ### A.1 Entry points
 

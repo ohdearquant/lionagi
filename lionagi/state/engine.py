@@ -860,7 +860,13 @@ def make_readonly_engine(url: str, **overrides):
     if raw_path == ":memory:":
         raise ValueError("make_readonly_engine() requires an on-disk database, not :memory:")
 
-    ro_url = f"{_SQLITE_ASYNC_PREFIX}file:{raw_path}?mode=ro&uri=true"
+    from sqlalchemy.engine import make_url
+
+    # The file make_engine() opens for *url*, written as a file URI: written raw, SQLite reads a
+    # '#' in the path as the start of a fragment, which also drops mode=ro, so another file was
+    # created and opened writable, and reads '%' as the start of an escape.
+    location = Path(make_url(url).database).absolute().as_uri()
+    ro_url = f"{_SQLITE_ASYNC_PREFIX}{location}?mode=ro&uri=true"
     kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
     kwargs.update(overrides)
     engine = create_async_engine(ro_url, **kwargs)

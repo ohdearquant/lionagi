@@ -15,6 +15,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   is admitted only when that structure matches, every connection carries a default-deny SQLite
   authorizer, and anything outside the profile raises `StateCompatibilityRefused`. The minimum
   aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
+- A writable `StateDB` open refuses a store whose `schema_meta` `lineage` row names another
+  application, raising `ForeignLineageError` (exported from `lionagi.state`) before it opens a
+  writable connection, so before any migration or connection setting. The managing application
+  writes that row when it creates the store, and compatibility mode admits only a store that has it,
+  so a native open in another process cannot migrate a store being written in compatibility mode.
 
 ### Changed
 
@@ -66,6 +71,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   releases read High). An effort that is not a string also counts as none (earlier releases
   read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
   on a list or dict).
+
+### Fixed
+
+- A read-only `StateDB` open of a store whose path contains `#` or `%` opened another file: SQLite
+  read the path as a URI, so `#` started a fragment, which also dropped read-only mode and created
+  that file, and `%` started an escape. The path is now passed as a file URI, so it names the file.
 
 ## [0.35.5] - 2026-10-11
 

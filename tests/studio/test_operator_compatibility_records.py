@@ -635,20 +635,31 @@ async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_
 
 
 @pytest.mark.asyncio
-async def test_a_setup_recovery_refused_by_a_later_schema_is_a_store_refusal(tmp_path, monkeypatch):
-    """The recovery opens the store natively, and a store at a later schema refuses that open;
-    no retry changes that, so the turn records it as the store's refusal."""
-    from lionagi.state.db import SchemaTooNewError
+@pytest.mark.parametrize(
+    "error_name, message",
+    [
+        ("SchemaTooNewError", "state.db schema version 900 is newer than this package"),
+        ("ForeignLineageError", "state.db names 'manager' as the application that manages it"),
+    ],
+    ids=["later-schema", "another-application"],
+)
+async def test_a_setup_recovery_whose_native_open_is_refused_is_a_store_refusal(
+    tmp_path, monkeypatch, error_name, message
+):
+    """The recovery opens the store natively, and a store at a later schema or one another
+    application manages refuses that open; no retry changes that, so the turn records it as the
+    store's refusal."""
+    from lionagi.state import db as db_mod
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
-    too_new = SchemaTooNewError("state.db schema version 900 is newer than this package")
+    refused_open = getattr(db_mod, error_name)(message)
 
     async def setup(*args, **kwargs):
         raise RuntimeError("setup fell over")
 
     async def recover(run_id):
-        raise too_new
+        raise refused_open
 
     monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
     monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", recover)
@@ -665,7 +676,7 @@ async def test_a_setup_recovery_refused_by_a_later_schema_is_a_store_refusal(tmp
     (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
     assert turn["status"] == "failed"
     assert error["code"] == "store_refused"
-    assert error["message"] == str(too_new)
+    assert error["message"] == str(refused_open)
     assert error["retryable"] is False
 
 

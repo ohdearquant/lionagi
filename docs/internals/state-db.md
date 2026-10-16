@@ -16,8 +16,11 @@ records the shape this code understands. A writable `StateDB.open()` rewrites
 an older on-disk database into the current shape and stamps the new version;
 if the on-disk version is *higher* than `SCHEMA_VERSION`, open refuses rather
 than guessing what a later release's shape means (`SchemaTooNewError`).
-Read-only opens apply no schema migration at all and are unaffected by this
-check.
+It also refuses a SQLite store whose `schema_meta` `lineage` row names another
+application (`ForeignLineageError`, ADR-0128 D7), reading that row through a
+read-only connection before it opens a writable one; a store with no such row,
+or one naming lionagi, opens as before. Read-only opens apply no schema
+migration at all and are unaffected by these checks.
 
 Three kinds of schema change show up in the code:
 

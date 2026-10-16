@@ -734,12 +734,15 @@ class OperatorCoordinator:
                         run_dir.run_id
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
-                    from lionagi.state.db import SchemaTooNewError
+                    from lionagi.state.db import ForeignLineageError, SchemaTooNewError
 
                     refusal = refusal_in(recovery_exc)
-                    if refusal is None and isinstance(recovery_exc, SchemaTooNewError):
-                        # The recovery opens the store natively, and a store at a later schema
-                        # than this package refuses that open: no retry would change it.
+                    if refusal is None and isinstance(
+                        recovery_exc, (ForeignLineageError, SchemaTooNewError)
+                    ):
+                        # The recovery opens the store natively, and a store another application
+                        # manages or at a later schema than this package refuses that open: no
+                        # retry would change it.
                         refusal = recovery_exc
             if live is not None:
                 run_id = live["session_id"]
@@ -755,8 +758,8 @@ class OperatorCoordinator:
             if refusal is not None:
                 # The store refused a write in compatibility mode (ADR-0128 D6), including
                 # one of the setup writes themselves, or refused the recovery's native open as
-                # a store at a later schema: stopping here did not need a retry, and the turn's
-                # own run details point at the refused write's run.
+                # a store another application manages or at a later schema: stopping here did not
+                # need a retry, and the turn's own run details point at the refused write's run.
                 await record(
                     "failed",
                     {

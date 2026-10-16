@@ -32,6 +32,7 @@ from lionagi.state.compat import (
 from lionagi.state.db import StateDB
 
 # A store another application manages: lionagi's operations write runs and events, never other.
+# Its manager names itself in the schema_meta lineage row when it creates the store (ADR-0128 D7).
 _SCHEMA = """
 CREATE TABLE runs (
     id TEXT PRIMARY KEY,
@@ -49,8 +50,15 @@ CREATE TABLE events (
 CREATE TABLE other (id TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO schema_meta VALUES ('version', '14');
+INSERT INTO schema_meta VALUES ('lineage', 'manager');
 INSERT INTO other VALUES ('keep', 'untouched');
 """
+
+# The schema_meta row a managing application writes, for the tests that build their own tables.
+_NAMED_BY_ITS_MANAGER = (
+    "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n"
+    "INSERT INTO schema_meta VALUES ('lineage', 'manager');\n"
+)
 
 _WRITES = {
     "runs": TableWrites(
@@ -677,7 +685,7 @@ _PAST_ASCII = (
     "CREATE TABLE tail€ (id TEXT PRIMARY KEY, value TEXT);\n"
     "CREATE TRIGGER mirror AFTER INSERT ON runs€ BEGIN "
     "INSERT OR REPLACE INTO tail€ (id, value) VALUES (NEW.id, 'mirrored'); END;\n"
-)
+) + _NAMED_BY_ITS_MANAGER
 
 
 async def test_tables_named_past_ascii_are_read_as_sqlite_reads_them(tmp_path):
@@ -728,6 +736,30 @@ def test_compatibility_needs_sqlite_and_is_not_readonly(reference):
         StateDB(reference, readonly=True, compatibility=profile)
     with pytest.raises(TypeError, match="CompatibilityProfile"):
         StateDB(reference, compatibility="synthetic")
+
+
+@pytest.mark.parametrize(
+    "lineage",
+    [
+        "DROP TABLE schema_meta",
+        "DELETE FROM schema_meta WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = 'lionagi' WHERE key = 'lineage'",
+    ],
+    ids=["no-schema-meta", "no-lineage-row", "names-this-package"],
+)
+async def test_a_store_that_names_no_other_manager_is_not_admitted(tmp_path, reference, lineage):
+    """A native open in another process refuses a store only by a lineage row naming another
+    application, so compatibility mode writes to no store without one (ADR-0128 D7)."""
+    store = _store(tmp_path / "managed.db")
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute(lineage)
+        conn.commit()
+    before = _digest(store)
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused, match="managing application names itself"):
+        await db.open()
+    assert db._engine is None
+    assert _digest(store) == before
 
 
 async def test_a_store_version_narrows_but_never_admits(store, reference, tmp_path):
@@ -1338,7 +1370,8 @@ async def test_a_name_that_differs_past_ascii_in_case_is_another_table(tmp_path,
     store = _store(
         tmp_path / "managed.db",
         f'CREATE TABLE "{named}" (id TEXT PRIMARY KEY, label TEXT);\n'
-        f'CREATE TABLE "{twin}" (id TEXT PRIMARY KEY, label TEXT, extra TEXT);\n',
+        f'CREATE TABLE "{twin}" (id TEXT PRIMARY KEY, label TEXT, extra TEXT);\n'
+        + _NAMED_BY_ITS_MANAGER,
     )
     with closing(sqlite3.connect(store)) as conn:
         closure = read_closure(conn, [named])

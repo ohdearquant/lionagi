@@ -120,6 +120,18 @@ def is_compatibility_store(db: Any) -> bool:
     return isinstance(getattr(db, "compatibility", None), CompatibilityProfile)
 
 
+# ADR-0128 D7: the `schema_meta` row naming the application whose migrations own a store's schema.
+# The managing application writes its own name there when it creates the store. A native open
+# refuses a store that names another application, and compatibility mode admits only such a store,
+# so every store compatibility mode writes to is one that a native open refuses in any process.
+_LINEAGE_KEY = "lineage"
+_NATIVE_LINEAGE = "lionagi"
+
+
+def _names_another_application(lineage: Any) -> bool:
+    return lineage is not None and lineage != _NATIVE_LINEAGE
+
+
 # SQL tokens
 
 _WORD, _IDENT, _STRING, _BLOB, _PUNCT = "word", "ident", "string", "blob", "punct"
@@ -1685,6 +1697,7 @@ class _Guard:
             return connection.exec_driver_sql(sql).fetchall()
 
         try:
+            self._check_lineage(fetch)
             self._check_store(fetch, "admission", "open")
             self._check_owner(connection, "admission", "open")
             self.schema_version = int(fetch("PRAGMA schema_version")[0][0])
@@ -1692,6 +1705,22 @@ class _Guard:
             raise
         except (sqlite3.Error, DBAPIError) as exc:
             raise self.refusal(f"the store could not be read: {exc}", operation="open") from exc
+
+    def _check_lineage(self, fetch: _Fetch) -> None:
+        present = fetch(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+        )
+        row = fetch("SELECT value FROM schema_meta WHERE key = 'lineage'") if present else []
+        lineage = row[0][0] if row else None
+        if not _names_another_application(lineage):
+            # Without a row naming its manager, a native open in another process would migrate
+            # the store under this one's writes (ADR-0128 D7).
+            shown = "no lineage row" if lineage is None else f"lineage {str(lineage)[:80]!r}"
+            raise self.refusal(
+                f"admission: the store's schema_meta has {shown}; compatibility mode admits only "
+                "a store whose managing application names itself there when it creates the store",
+                "open",
+            )
 
     def _check_owner(self, connection, when: str, operation: str | None) -> None:
         rule = self.profile.owner
