@@ -2045,6 +2045,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const olderSentinelRef = useRef<HTMLDivElement>(null);
+  // The run the component currently has selected. The Fleet view keeps this
+  // component mounted and swaps `id`, so a response for a run the reader has
+  // left can land after the switch; it must be checked against this before it
+  // writes, or run A's header and rows reappear under run B's URL. The mount
+  // effect sets this synchronously on every id change, so a request can ask
+  // whether the run it was made for is still the one on screen.
+  const selectedRunRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -2086,6 +2093,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       writeSelectedNodeToUrl(null);
     }
     selectionRunRef.current = id;
+    selectedRunRef.current = id;
     getSession(id)
       .then((s) => {
         if (cancelled) return;
@@ -2361,6 +2369,10 @@ export default function RunDetail({ id }: RunDetailProps) {
     suppressAutoScrollRef.current = true;
     getSession(id, { messageCursor: cursor })
       .then((older) => {
+        // The reader may have switched runs while this page was in flight: a
+        // response for a run that is no longer on screen must not set its
+        // cursor or merge its rows into the newly selected run.
+        if (selectedRunRef.current !== id) return;
         setOlderCursor(older.message_next_cursor ?? null);
         setSession((prev) => {
           if (!prev) return prev;
@@ -2405,6 +2417,9 @@ export default function RunDetail({ id }: RunDetailProps) {
     setLoadingOlder(true);
     getSession(id)
       .then((fresh) => {
+        // A reload started on one run and finished after a switch must not
+        // replace the view with the run the reader has left.
+        if (selectedRunRef.current !== id) return;
         setOlderCursor(fresh.message_next_cursor ?? null);
         setSession(fresh);
       })
@@ -2453,7 +2468,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       try {
         const fresh = await getSession(id);
         setSession((previous) =>
-          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
+          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : previous,
         );
       } catch {
         // The accepted resume remains visible in ResumeRun. The existing SSE

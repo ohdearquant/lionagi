@@ -3027,10 +3027,10 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     try {
       await render("run-mount-view");
       await render("run-next");
-      await render("run-mount-view");
-      // The other run answers while the reader is back on the run the link
-      // was read for, and it must not restore anything: the response is the
-      // other run's, not this one's.
+      // The other run answers while it is still the selected run, so its
+      // response is not superseded by a later switch: the only thing that can
+      // keep the pending link off it is the restore gate (`id` equals the run
+      // the link was read for), which is what this case pins.
       await act(async () => {
         middle.resolve({
           ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
@@ -3043,7 +3043,9 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
       });
       expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
 
-      // This run's own response lands next, and the link still belongs to it.
+      // Back on the run the link was read for, its own response lands and the
+      // link still belongs to it.
+      await render("run-mount-view");
       await act(async () => {
         back.resolve(sessionWithBranches(edgedGraph));
       });
@@ -3263,6 +3265,214 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     } finally {
       act(() => root.unmount());
       container.remove();
+    }
+  });
+});
+
+// ─── A fetch for a run the reader has left must not overwrite the run on screen ─
+
+describe("history/RunDetail.tsx — a response for a run the reader has left", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Element.prototype.scrollIntoView = vi.fn();
+    window.history.replaceState(null, "", "/");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const instruction = (id: string, text: string) => ({
+    id,
+    role: "user",
+    content: { instruction: text },
+    lion_class: "Instruction",
+    timestamp: 1,
+  });
+
+  // The run the reader starts on: one loaded message with older history still
+  // behind it, so the "Load older messages" control is offered.
+  const runA = {
+    id: "run-a",
+    name: "first-run-name",
+    created_at: 0,
+    updated_at: 0,
+    status: "completed",
+    message_next_cursor: "cursor-1",
+    branches: [
+      {
+        id: "branch-a",
+        name: "first-branch",
+        created_at: 0,
+        message_total: 2,
+        message_has_older: true,
+        messages: [instruction("a2", "second")],
+      },
+    ],
+    graph: null,
+  };
+
+  // The run the reader switches to, with its own older history still behind a
+  // distinct anchor of its own.
+  const runB = {
+    id: "run-b",
+    name: "second-run-name",
+    created_at: 0,
+    updated_at: 0,
+    status: "completed",
+    message_next_cursor: "cursor-b",
+    branches: [
+      {
+        id: "branch-b",
+        name: "second-branch",
+        created_at: 0,
+        message_total: 2,
+        message_has_older: true,
+        messages: [instruction("b1", "only")],
+      },
+    ],
+    graph: null,
+  };
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function mount() {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockReset();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (id: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={id} />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+    };
+    const flush = async () => {
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+    };
+    return {
+      getSession,
+      ApiError: (await import("@/lib/api")).ApiError,
+      container,
+      render,
+      flush,
+      root,
+    };
+  }
+
+  function button(container: HTMLElement, text: string) {
+    return [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
+  }
+
+  it("a reload started on one run does not replace the run the reader switched to", async () => {
+    const h = await mount();
+    const staleReload = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The anchor aged out, so older history is refused and the reload is offered.
+      .mockRejectedValueOnce(new h.ApiError(400, "the anchor moved on"))
+      // That reload is still in flight when the reader leaves the run.
+      .mockReturnValueOnce(staleReload.promise as never)
+      .mockResolvedValueOnce(runB as never);
+    try {
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("first-run-name");
+
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      const reload = button(h.container, "Reload conversation");
+      expect(reload, "setup: the reload control is offered after the failed page").toBeDefined();
+      await act(async () => {
+        reload?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      // The reload was the run the reader has left: its response must not put
+      // that run's header or rows back under the run now on screen.
+      await act(async () => {
+        staleReload.resolve(runA);
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("second-run-name");
+      expect(h.container.textContent).not.toContain("first-run-name");
+      expect(h.container.textContent).not.toContain("first-branch");
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a page of older history fetched for one run leaves the next page anchored to the run now on screen", async () => {
+    const h = await mount();
+    const olderPage = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The older page is still in flight when the reader leaves the run.
+      .mockReturnValueOnce(olderPage.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runB as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      // The page belongs to the run the reader has left. Its cursor must not
+      // replace this run's own anchor, and its rows must not appear here.
+      await act(async () => {
+        olderPage.resolve({
+          ...runA,
+          message_next_cursor: "cursor-a-older",
+          branches: [
+            {
+              ...runA.branches[0],
+              messages: [...runA.branches[0].messages, instruction("a1", "first")],
+            },
+          ],
+        });
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("second-run-name");
+      expect(h.container.textContent).not.toContain("first-branch");
+
+      // The next page the reader asks for on this run must be anchored to this
+      // run's own cursor, not the cursor the abandoned page carried.
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenLastCalledWith("run-b", { messageCursor: "cursor-b" });
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
     }
   });
 });

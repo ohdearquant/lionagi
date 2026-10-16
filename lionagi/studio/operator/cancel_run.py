@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .redact import public_project
+from .redact import MAX_CANDIDATES, public_project
 from .store import OperatorStore
 
 CANCEL_RUN_COMMAND_TYPE = "cancel"
@@ -59,10 +59,19 @@ class CancelRunInput(_StrictInput):
 
 
 class AmbiguousRunReferenceError(ValueError):
-    """A run reference matched more than one session; never guess."""
+    """A run reference matched more than one session; never guess.
 
-    def __init__(self, candidates: list[str]) -> None:
+    ``candidates`` holds every matched row the arm's bounded read returned,
+    and ``cap`` is the listing size that arm shows: the id-prefix arm
+    mirrors ``fetch_unique_row``'s own bounded window, while the
+    name/playbook arm uses the wider ``MAX_CANDIDATES`` bound. Keeping both
+    means the caller can tell a full window (truncated) from a short one
+    without re-counting a read whose bound it cannot see.
+    """
+
+    def __init__(self, candidates: list[str], *, cap: int) -> None:
         self.candidates = list(candidates)
+        self.cap = cap
         super().__init__(f"ambiguous run reference -- matches {len(candidates)} sessions")
 
 
@@ -187,7 +196,7 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     it and hide a match behind them. See docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
+    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
 
     ref = ref.strip()
     if not ref:
@@ -201,7 +210,11 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
             return None
         if len(owned) == 1:
             return owned[0]
-        raise AmbiguousRunReferenceError([r["id"] for r in owned]) from exc
+        # The scoped prefix scan stops one row past the CLI helper's listing
+        # size, so a full window is the honest truncation signal and the
+        # candidates are that listing size -- the same window the read-only
+        # resolver reports.
+        raise AmbiguousRunReferenceError([r["id"] for r in owned], cap=_CANDIDATES_SHOWN) from exc
     if row is not None:
         row_dict = db._row_to_dict(row)
         if not _owns(row_dict.get("project"), project):
@@ -220,7 +233,9 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     if not rows:
         return None
     if len(rows) > 1:
-        raise AmbiguousRunReferenceError([db._row_to_dict(r)["id"] for r in rows])
+        raise AmbiguousRunReferenceError(
+            [db._row_to_dict(r)["id"] for r in rows], cap=MAX_CANDIDATES
+        )
     return db._row_to_dict(rows[0])
 
 
@@ -258,12 +273,16 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
         try:
             row = await _resolve_run(db, ref, project=project)
         except AmbiguousRunReferenceError as exc:
-            candidates = exc.candidates[:10]
+            # Cap and truncation both come from the arm that raised, so a
+            # collision set is reported the same way the read-only resolver
+            # reports it: the listed candidates at that arm's listing size
+            # and truncation true only when more rows matched than are
+            # returned.
             return {
                 "found": True,
                 "ambiguous": True,
-                "candidates": candidates,
-                "truncated": len(exc.candidates) > 10,
+                "candidates": exc.candidates[: exc.cap],
+                "truncated": len(exc.candidates) > exc.cap,
             }
         if row is None:
             return {"found": False}

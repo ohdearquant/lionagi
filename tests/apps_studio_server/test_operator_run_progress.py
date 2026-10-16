@@ -455,6 +455,29 @@ async def test_run_progress_id_prefix_ambiguity_counts_only_visible_rows(db_path
     assert result["truncated"] is False
 
 
+async def test_run_progress_id_prefix_exactly_listing_size_is_not_truncated(db_path, monkeypatch):
+    """Exactly the listing size of in-scope rows share a prefix: five
+    candidates come back and nothing was left out, so truncation is false.
+    A full window is the truncation signal only when a row was actually
+    dropped -- a boundary of exactly the cap must not read as truncated."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+    from lionagi.studio.operator.run_progress import run_progress
+
+    project = "/Users/admin/acme-research"
+    owned = await _seed_shared_prefix_runs(
+        db_path, owned_indexes=[1, 2, 3, 4, 5], foreign_indexes=[0], project=project
+    )
+    await _scope_turn_to(db_path, monkeypatch, project)
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert {c["id"] for c in result["candidates"]} == set(owned)
+    assert result["truncated"] is False
+
+
 async def test_run_progress_id_prefix_truncation_counts_only_visible_rows(db_path, monkeypatch):
     """One foreign row and six in-scope rows share a prefix. Five candidates
     are shown and a sixth in-scope match is hidden, so truncation is reported

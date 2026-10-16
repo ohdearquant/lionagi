@@ -229,10 +229,12 @@ async def resolve_run(ref: str) -> dict[str, Any]:
       - ``{"found": True, "ambiguous": True, "candidates": [...], "truncated": bool}``
       - ``{"found": True, "ambiguous": False, "session_id": "..."}``
 
-    Never guesses: an id prefix matching more than one session, or a
-    name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
-    back as candidates; more than ``MAX_CANDIDATES`` text matches come back
-    as the newest ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
+    Never guesses: an id prefix matching more than one session comes back as
+    candidates, capped at the CLI helper's listing size (``_CANDIDATES_SHOWN``,
+    5) with ``truncated: True`` when more rows matched than are returned; a
+    name/playbook substring matching 2-``MAX_CANDIDATES`` sessions comes back
+    as candidates, and more than ``MAX_CANDIDATES`` text matches as the newest
+    ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
     scoped to the calling turn's project (when it names one), and id-prefix
     ambiguity is counted over that project's rows alone: the prefix query
     carries the project predicate, so foreign rows cannot fill its window
