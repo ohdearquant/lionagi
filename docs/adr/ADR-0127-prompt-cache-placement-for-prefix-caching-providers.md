@@ -48,10 +48,13 @@ with request 0 at all.
 **P4: the Anthropic adapter places one five-minute mark, and the flag that asks for it never
 reaches it.** `providers/anthropic/messages.py:209-221` marks only the last message's last block,
 with no lifetime choice, and lifts a native `system` field only when the first message has role
-`system`, which the fold never produces. The same `cache_control` flag is popped before the payload
-is built (`service/imodel.py:278`) and, in `Endpoint.call`, switches on a local response memo
-(`service/connections/endpoint.py:255-263`), a different feature. Building the Anthropic payload for
-the probe's last request with `cache_control=True` gave no `system` field and no cache mark.
+`system`, which the fold never produces. The `cache_control` flag never reaches that code: the
+Anthropic request model has no such field, so the request-option filter drops it
+(`service/connections/endpoint.py:149-153`) before `messages.py:209` looks for it. `iModel` then pops
+the same flag from the request (`service/imodel.py:278`) and, in `Endpoint.call`, it switches on a
+local response memo (`service/connections/endpoint.py:255-263`), a different feature. Building the
+Anthropic payload for the probe's last request with `cache_control=True` gave no `system` field
+and no cache mark.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
 `cache_write_tokens` (`session/signal.py:66-67`) without the lifetime of the write, and ADR-0126's
