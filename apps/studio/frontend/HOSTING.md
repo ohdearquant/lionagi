@@ -36,9 +36,11 @@ page is exempt from mixed-content blocking, so this works from a hosted TLS orig
 no login and no server-side state for the hosted deploy to manage — if `/health` at the
 resolved API base doesn't answer, or something other than the daemon answers there (another
 program already on port 8765), `NoDaemonGate` (`src/components/shell/NoDaemonGate.tsx`)
-shows a recovery screen with the fix for each case and retries in the background.
-The data-dependent application renders only after a daemon answers successfully;
-the recovery screen cannot be dismissed to reveal it.
+shows a recovery screen in place of the app with the fix for each case, and retries in
+the background. A daemon that answers but refuses the page (401) gets its own screen,
+which names `li studio` as the fix and does not retry. The data-dependent application
+renders only after a daemon answers successfully; the recovery screen cannot be
+dismissed to reveal it.
 
 On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode built
 for this deploy: it starts only the local daemon and prints/opens this hosted URL,
@@ -47,8 +49,17 @@ Studio" section for the other launch modes (`--docker`, `--no-frontend`, `--dev`
 
 ## Auth: loopback vs everything else
 
-The default daemon binds `127.0.0.1` and runs without auth — the browser tab and the
-daemon are the same person's machine, and the OS user boundary is the security boundary.
+The default daemon binds `127.0.0.1` and runs without a configured token: the browser
+tab and the daemon are the same person's machine, and the OS user boundary is the
+security boundary. A page on another origin still has to show that `li studio` opened
+it. With no token, the daemon refuses API requests from a browser origin that is neither
+loopback nor its own unless they carry the bearer of its launch, which it keeps in
+memory only. `li studio` opens the hosted page with a one-time pairing code in the URL
+fragment (`#pair=<code>`, single use, 120 seconds); the page removes the code from the
+address bar on load, exchanges it for that bearer at `POST /api/studio/pair`, and keeps
+the bearer in memory. A reload loses it, and the page then asks for `li studio` again;
+with the daemon already running, that opens a freshly paired page without starting a
+second daemon.
 
 For **any non-loopback backend** — an SSH/Cloudflare tunnel, a LAN bind (`--host 0.0.0.0`),
 or a reverse proxy in front of the daemon — token auth is a hard **MUST**, not a
@@ -61,15 +72,15 @@ li studio start --no-frontend
 ```
 
 Clients send it as `Authorization: Bearer <token>` on every request. The hosted SPA has
-no token-entry UI today — it only attaches a token injected as
-`window.__STUDIO_AUTH_TOKEN__` (the desktop shell does this). So a token-protected
-non-loopback daemon is currently for API/desktop-shell use; treat the hosted page as
-loopback-only until a token prompt ships. Rotate the token like any credential; never
-commit it.
+no token-entry UI. It attaches a token injected as `window.__STUDIO_AUTH_TOKEN__` (the
+desktop shell does this) or the one `li studio` pairs it with. `li studio` asks the
+daemon on `127.0.0.1`, so pairing serves the machine the daemon runs on; a
+token-protected daemon reached over a tunnel or a LAN is for API and desktop-shell use.
+Rotate the token like any credential; never commit it.
 
 The API destination is selected once at page load and shared by data requests,
-health probes, and the endpoint display. Query or session storage changes during
-client-side navigation take effect only after reloading the page.
+health probes, pairing, and the endpoint display. Query or session storage changes
+during client-side navigation take effect only after reloading the page.
 
 When a viewer override selects that destination, the shell token is sent only if
 the destination has the same absolute origin as the injected `__STUDIO_API_BASE__`

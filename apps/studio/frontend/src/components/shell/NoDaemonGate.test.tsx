@@ -15,6 +15,9 @@
  * - a connectivity failure reported from elsewhere in the app (any other
  *   fetchJson call hitting a network-level error) triggers an immediate
  *   re-probe instead of waiting for the poll interval
+ * - a page `li studio` opened redeems its pairing code once the daemon answers
+ * - accessRequired (the daemon refused the code, or refused a request later),
+ *   which names `li studio` as the remedy and does not poll
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -23,7 +26,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import NoDaemonGate from "./NoDaemonGate";
 import enMessages from "@/messages/en.json";
-import { reportConnectivityFailure } from "@/lib/connectivity";
+import { reportAccessRefused, reportConnectivityFailure } from "@/lib/connectivity";
+import { pairedBearer, resetPairingForTests, takePairingCodeFromLocation } from "@/lib/pairing";
 
 const apiConfig = vi.hoisted(() => ({ base: "http://127.0.0.1:8765" }));
 
@@ -55,6 +59,8 @@ describe("NoDaemonGate", () => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     vi.useFakeTimers();
+    resetPairingForTests();
+    window.history.replaceState(null, "", "/");
   });
 
   afterEach(() => {
@@ -193,5 +199,109 @@ describe("NoDaemonGate", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  function daemonAnswering(pair: Response) {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok" }));
+      if (url.endsWith("/api/studio/pair")) return Promise.resolve(pair);
+      return Promise.reject(new Error(`unexpected request: ${url}`));
+    });
+  }
+
+  async function settle() {
+    await act(async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    });
+  }
+
+  function pairCalls() {
+    return fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/studio/pair"));
+  }
+
+  it("redeems the pairing code of a page `li studio` opened, then shows the app", async () => {
+    window.history.replaceState(null, "", "/#pair=one-time-code");
+    takePairingCodeFromLocation();
+    daemonAnswering(jsonResponse({ token: "launch-bearer" }));
+
+    await mount();
+    await settle();
+
+    expect(pairCalls()).toHaveLength(1);
+    expect(pairedBearer("http://127.0.0.1:8765")).toBe("launch-bearer");
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("shows the access-required state with the `li studio` remedy when the code is refused", async () => {
+    window.history.replaceState(null, "", "/#pair=spent-code");
+    takePairingCodeFromLocation();
+    daemonAnswering(jsonResponse({ detail: "expired" }, false, 401));
+
+    await mount();
+    await settle();
+
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    const recovery = container.querySelector('[role="alert"]');
+    expect(recovery?.textContent).toContain("This daemon needs an access token");
+    expect(recovery?.textContent).toContain("li studio");
+    expect(recovery?.textContent).not.toContain("Another program is using this port");
+  });
+
+  it("does not poll while access is refused, so it never flaps back to the app", async () => {
+    window.history.replaceState(null, "", "/#pair=spent-code");
+    takePairingCodeFromLocation();
+    daemonAnswering(jsonResponse({ detail: "expired" }, false, 401));
+    await mount();
+    await settle();
+    const calls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+  });
+
+  it("keeps the code and stays unreachable when the pairing request fails on the network", async () => {
+    window.history.replaceState(null, "", "/#pair=one-time-code");
+    takePairingCodeFromLocation();
+    fetchMock.mockImplementation((url: string) =>
+      url.endsWith("/health")
+        ? Promise.resolve(jsonResponse({ status: "ok" }))
+        : Promise.reject(new TypeError("Failed to fetch")),
+    );
+    await mount();
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Studio needs a local lionagi daemon",
+    );
+
+    daemonAnswering(jsonResponse({ token: "launch-bearer" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+
+    expect(pairCalls()).toHaveLength(2);
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+  });
+
+  it("switches to the access-required state when a request is refused while connected", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
+    await mount();
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+
+    await act(async () => {
+      reportAccessRefused();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "This daemon needs an access token",
+    );
+    expect(pairCalls()).toHaveLength(0);
   });
 });

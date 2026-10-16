@@ -17,3 +17,20 @@ export function onConnectivityFailure(listener: Listener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+
+/**
+ * A daemon that is running can still refuse this page: with no token
+ * configured it answers 401 to a page on another origin, and with one it
+ * answers 401 to a request without it. /health stays public either way, so the
+ * gate's probe cannot see the refusal; API calls report it here instead.
+ */
+const refusalListeners = new Set<Listener>();
+
+export function reportAccessRefused(): void {
+  for (const listener of refusalListeners) listener();
+}
+
+export function onAccessRefused(listener: Listener): () => void {
+  refusalListeners.add(listener);
+  return () => refusalListeners.delete(listener);
+}

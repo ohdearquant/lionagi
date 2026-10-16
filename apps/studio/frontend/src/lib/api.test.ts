@@ -1282,3 +1282,87 @@ describe("the shell token does not follow a ?api= override to another daemon", (
     },
   );
 });
+
+describe("a page paired by `li studio`", () => {
+  beforeEach(() => {
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    window.history.replaceState(null, "", "/");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function pairedModules(token: string) {
+    const pairing = await import("./pairing");
+    const api = await import("./api");
+    window.history.replaceState(null, "", "/#pair=one-time-code");
+    pairing.takePairingCodeFromLocation();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ token }), { status: 200 }))),
+    );
+    expect(await pairing.redeemPairingCode(api.API_BASE)).toBe("paired");
+    return api;
+  }
+
+  it("sends the paired bearer when no token was injected", async () => {
+    const api = await pairedModules("launch-bearer");
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      }),
+    );
+
+    expect(api.resolveAuthToken()).toBe("launch-bearer");
+    await api.getStats();
+
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
+  });
+
+  it("prefers a token the desktop shell injected", async () => {
+    const api = await pairedModules("launch-bearer");
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = "shell-token";
+    expect(api.resolveAuthToken()).toBe("shell-token");
+  });
+
+  it("reports a refusal from the daemon so the gate can name the remedy", async () => {
+    const { onAccessRefused } = await import("./connectivity");
+    const api = await import("./api");
+    const refused = vi.fn();
+    const unsubscribe = onAccessRefused(refused);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 })),
+      ),
+    );
+
+    await expect(api.getStats()).rejects.toThrow();
+    expect(refused).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it("does not report other failures as a refusal", async () => {
+    const { onAccessRefused } = await import("./connectivity");
+    const api = await import("./api");
+    const refused = vi.fn();
+    const unsubscribe = onAccessRefused(refused);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ detail: "Forbidden" }), { status: 403 })),
+      ),
+    );
+
+    await expect(api.getStats()).rejects.toThrow();
+    expect(refused).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+});
