@@ -53,11 +53,13 @@ it("sends the usage flag only when the caller asks for the aggregates", async ()
     total: 0,
     completed_total: 0,
   };
-  const fetch = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }),
+  // A Response body can be read once, so each call gets its own.
+  const fetch = vi.fn().mockImplementation(
+    async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
   );
   vi.stubGlobal("fetch", fetch);
 
