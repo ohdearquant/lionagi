@@ -57,13 +57,21 @@ private addresses. The guard checks the URL once, before the request, so a Latti
 follows a redirect: the redirect comes back as the failed response. `model` must be the id the
 server reports at `GET /v1/models`.
 
+An `api_key` endpoint setting is dropped whether supplied as a keyword, in a config dict, or
+in an `EndpointConfig`; the caller's config object is left unchanged. Rebuilding a
+`LatticeChatEndpoint` or `LatticeEmbedEndpoint` from its serialized config dict, an
+`EndpointConfig` containing that schema or its JSON text, or its `from_dict()` restores the
+Lattice request model. An absent request model also receives the provider default; a
+caller-supplied request model class is preserved.
+
 A request that omits `max_tokens` gets the server's default of 256 tokens, and `lattice serve`
 refuses a `max_tokens` above its fixed cap of 4096. A reply cut at the `max_tokens` budget carries
 `finish_reason: "length"`, which lionagi reads as neither an error nor an unfinished reply. The
 server also refuses tool calling, `n` above 1, a `response_format` other than `{"type": "text"}`,
 `top_logprobs` above 20 or without `logprobs`, and `logprobs` on a stream; lionagi forwards these
-and the server answers 400. lionagi itself refuses a `top_p` of 0 and a negative `seed`, which the
-server cannot take. Requests also take `reasoning_budget` and `lora`, an ordered list of resident
+and the server answers 400. lionagi itself refuses a `top_p` of 0 and a `seed` outside the
+unsigned 64-bit range `0` through `2**64 - 1`, which the server cannot take. Requests also take
+`reasoning_budget` and `lora`, an ordered list of resident
 adapters (`{"id": ..., "scale": ...}`); an omitted `lora` selects the base model on today's
 servers, and `[]` pins it. `top_k` and `repetition_penalty` are accepted and ignored by
 `lattice serve` (the standalone `lattice_serve` daemon applies them), and `lattice serve` reads

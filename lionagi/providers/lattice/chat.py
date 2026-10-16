@@ -50,7 +50,8 @@ class LatticeChatCompletionsRequest(OpenAIChatCompletionsRequest):
     seed: int | None = Field(
         default=None,
         ge=0,
-        description="Sampling seed; the server reads it as an unsigned integer.",
+        le=(1 << 64) - 1,
+        description="Sampling seed; the server reads it as an unsigned 64-bit integer.",
     )
     reasoning_budget: int | None = Field(
         default=None,

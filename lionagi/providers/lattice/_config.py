@@ -1,8 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from enum import Enum
 
+from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.provider_config import LazyType, ProviderConfig
 from lionagi.service.connections.registry import EndpointType
 
@@ -59,7 +62,12 @@ def _serialized_or_absent(request_model) -> bool:
     loader rebuilds from that schema holds `const` and `enum` fields as Enum members that
     `json` cannot encode; an absent one leaves the payload unvalidated.
     """
-    return request_model is None or isinstance(request_model, (dict, str))
+    if request_model is None or isinstance(request_model, (dict, str)):
+        return True
+
+    from lionagi.libs.schema.load_pydantic_model_from_schema import SCHEMA_MODEL_MODULE
+
+    return getattr(request_model, "__module__", None) == SCHEMA_MODEL_MODULE
 
 
 def _setup_lattice_endpoint(config, kwargs: dict, request_model: type):
@@ -75,7 +83,8 @@ def _setup_lattice_endpoint(config, kwargs: dict, request_model: type):
     in -- a rebuilt stand-in holding Enum members, or nothing at all -- can send a request.
 
     Returns the config to hand ``super().__init__``: a dict config is rebuilt without the keys
-    whose values are replaced, so no field is passed twice.
+    whose values are replaced, so no field is passed twice. A config object carrying a key is
+    copied before both key fields are cleared, leaving the caller's object unchanged.
     """
     if isinstance(config, dict):
         if _serialized_or_absent(config.get("request_options")):
@@ -83,8 +92,13 @@ def _setup_lattice_endpoint(config, kwargs: dict, request_model: type):
         if "api_key" in config:
             config = {k: v for k, v in config.items() if k != "api_key"}
         stated = frozenset(config)
-    elif config is not None:
-        stated = frozenset(getattr(config, "model_fields_set", ()) or ())
+    elif isinstance(config, EndpointConfig):
+        if config.api_key is not None or config._api_key is not None:
+            config = config.model_copy(update={"api_key": None}, deep=True)
+            config._api_key = None
+        stated = frozenset(config.model_fields_set)
+        if _serialized_or_absent(config.request_options):
+            stated -= {"request_options"}
     else:
         stated = frozenset()
 

@@ -219,8 +219,14 @@ def test_request_models_refuse_values_the_server_would_refuse():
         LatticeChatCompletionsRequest(model=MODEL, messages=messages, top_p=0.0)
     with pytest.raises(ValidationError):
         LatticeChatCompletionsRequest(model=MODEL, messages=messages, seed=-1)
+    with pytest.raises(ValidationError):
+        LatticeChatCompletionsRequest(model=MODEL, messages=messages, seed=1 << 64)
     admitted = LatticeChatCompletionsRequest(model=MODEL, messages=messages, top_p=1.0, seed=0)
     assert (admitted.top_p, admitted.seed) == (1.0, 0)
+    assert (
+        LatticeChatCompletionsRequest(model=MODEL, messages=messages, seed=(1 << 64) - 1).seed
+        == (1 << 64) - 1
+    )
 
 
 @pytest.mark.asyncio
@@ -612,3 +618,92 @@ def test_the_provider_inventories_name_lattice():
 
     assert imodel_doc.count('"lattice"') >= 3  # chat table, embed table, resolution table
     assert "`lattice`" in claude_md
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["chat", "embed"])
+@pytest.mark.parametrize("rebuild", ["schema-config", "json-config", "endpoint-dict"])
+async def test_endpoint_config_rebuilds_send_plain_json(lattice_server, kind, rebuild):
+    base_url, received = await lattice_server()
+    original = match_endpoint(provider="lattice", endpoint=kind, model=MODEL, base_url=base_url)
+    serialized = original.to_dict()
+    config = serialized["config"]
+    if rebuild == "endpoint-dict":
+        rebuilt = type(original).from_dict(serialized)
+    else:
+        if rebuild == "json-config":
+            config = {**config, "request_options": json.dumps(config["request_options"])}
+        rebuilt = type(original)(config=EndpointConfig(**config))
+
+    if kind == "chat":
+        payload = {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}
+        expected_model = LatticeChatCompletionsRequest
+    else:
+        payload = {"model": MODEL, "input": "a", "pooling": "last_token"}
+        expected_model = LatticeEmbedRequest
+    await rebuilt.call(payload)
+
+    assert rebuilt.request_options is expected_model
+    (request,) = received
+    assert request["path"] == f"/v1/{original.config.endpoint}"
+    assert request["body"] == expected_model.model_validate(payload).model_dump(
+        by_alias=True, exclude_none=True
+    )
+    assert json.loads(request["raw"]) == request["body"]
+
+
+@pytest.mark.parametrize("kind", ["chat", "embed"])
+def test_an_absent_endpoint_config_request_model_gets_the_provider_default(kind):
+    original = match_endpoint(provider="lattice", endpoint=kind, model=MODEL)
+    config = EndpointConfig(**{**original.to_dict()["config"], "request_options": None})
+
+    rebuilt = type(original)(config=config)
+
+    assert rebuilt.request_options is original.request_options
+    assert config.request_options is None
+
+
+@pytest.mark.parametrize("kind", ["chat", "embed"])
+@pytest.mark.parametrize("construction", ["keyword", "dict", "config"])
+def test_a_caller_request_model_survives_lattice_configuration(kind, construction):
+    class CallerRequest(BaseModel):
+        model: str
+        custom: str
+
+    original = match_endpoint(provider="lattice", endpoint=kind, model=MODEL)
+    config = {**original.to_dict()["config"], "request_options": CallerRequest}
+    if construction == "keyword":
+        endpoint = type(original)(request_options=CallerRequest)
+    elif construction == "dict":
+        endpoint = type(original)(config=config)
+    else:
+        endpoint = type(original)(config=EndpointConfig(**config))
+
+    assert endpoint.request_options is CallerRequest
+    payload, _ = endpoint.create_payload({"model": MODEL, "custom": "kept"})
+    assert payload == {"model": MODEL, "custom": "kept"}
+
+
+@pytest.mark.parametrize("kind", ["chat", "embed"])
+@pytest.mark.parametrize("private_only", [False, True], ids=["both-key-fields", "private-key-only"])
+def test_a_config_object_key_is_dropped_without_changing_the_caller(kind, private_only):
+    original = match_endpoint(provider="lattice", endpoint=kind, model=MODEL)
+    config = EndpointConfig(
+        name=original.config.name,
+        provider="lattice",
+        endpoint=original.config.endpoint,
+        base_url=LATTICE_DEFAULT_BASE_URL,
+        auth_type="none",
+        api_key="sk-not-a-lattice-key",
+    )
+    if private_only:
+        config.api_key = None
+    public_key, private_key = config.api_key, config._api_key
+
+    endpoint = type(original)(config=config)
+
+    assert endpoint.config.api_key is None
+    assert endpoint.config._api_key is None
+    assert config.api_key == public_key
+    assert config._api_key == private_key
+    assert endpoint.config is not config
