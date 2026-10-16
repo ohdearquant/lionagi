@@ -571,7 +571,6 @@ def _copies_owner(value: list[tuple[str, str]], column: str, rows: tuple[str, ..
     )
 
 
-_TIMING_WORDS = frozenset({(_WORD, "before"), (_WORD, "after"), (_WORD, "instead")})
 _EVENT_WORDS = frozenset({(_WORD, "insert"), (_WORD, "update"), (_WORD, "delete")})
 
 
@@ -579,10 +578,12 @@ def _trigger_event(sql: str) -> str | None:
     """The event a trigger fires on: INSERT, UPDATE or DELETE.
 
     A created trigger names exactly one event, and SQLite refuses a trigger that names more than
-    one (``AFTER DELETE OR INSERT ON t`` is a syntax error), so one event word is read. It is the
-    first such word after the trigger's timing (BEFORE, AFTER or INSTEAD OF) and before the ``ON``
-    that names the table, never the first one in the statement: a trigger's name may itself be an
-    event word, and it sits before the timing.
+    one (``AFTER DELETE OR INSERT ON t`` is a syntax error), so one event word is read: the first
+    unquoted INSERT, UPDATE or DELETE before the ``ON`` that names the table. SQLite reserves those
+    three words, so a trigger's name or a column of ``UPDATE OF`` spells one of them only quoted,
+    and a quoted name is not an event word. BEFORE, AFTER and INSTEAD are not reserved: a trigger
+    or an ``UPDATE OF`` column may be named after them bare, which is why the timing is not where
+    the reading starts.
     """
     tokens = _sql_tokens(sql)
     depths = _depths(tokens)
@@ -590,11 +591,9 @@ def _trigger_event(sql: str) -> str | None:
     on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
     if on is None:
         return None
-    before = [index for index in top if index < on]
-    timing = [index for index in before if tokens[index] in _TIMING_WORDS]
-    if timing:
-        before = [index for index in before if index > timing[-1]]
-    return next((tokens[index][1] for index in before if tokens[index] in _EVENT_WORDS), None)
+    return next(
+        (tokens[index][1] for index in top if index < on and tokens[index] in _EVENT_WORDS), None
+    )
 
 
 def _trigger_statements(sql: str) -> list[list[tuple[str, str]]]:
@@ -660,7 +659,7 @@ def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> lis
         return []
     # A DELETE trigger reads OLD and an INSERT trigger reads NEW; a trigger names exactly one
     # event, so the other of the two is not a column of it at all.
-    rows = {"insert": ("new",), "delete": ("old")}.get(_trigger_event(sql), ("new", "old"))
+    rows = {"insert": ("new",), "delete": ("old",)}.get(_trigger_event(sql), ("new", "old"))
     problems: list[str] = []
     for statement in statements:
         target = _write_target(statement)
@@ -986,21 +985,35 @@ def _column_collation(definition: str) -> str:
     return collation
 
 
-_TABLE_CONSTRAINTS = frozenset({"constraint", "primary", "unique", "check", "foreign"})
+def _is_table_constraint(words: list[str]) -> bool:
+    """Whether a closure definition, as its words, is a table constraint and not a column.
+
+    The closure keeps definitions with their quotes dropped, so a column named ``"check"`` and a
+    CHECK constraint both start with ``check``; what follows tells them apart. A table constraint
+    is ``CHECK (``, ``UNIQUE (``, ``PRIMARY KEY (``, ``FOREIGN KEY (``, or one of those after
+    ``CONSTRAINT <name>``; a column's type is a word, never a parenthesis.
+    """
+    if words[:2] in (["check", "("], ["unique", "("]):
+        return True
+    if words[:3] in (["primary", "key", "("], ["foreign", "key", "("]):
+        return True
+    return words[:1] == ["constraint"] and _is_table_constraint(words[2:])
 
 
 def _ordered_collation(table: TableShape, column: str) -> str:
-    """The collation *column* compares under in *table*, read from its column definition."""
+    """The collation *column* compares under in *table*, read from its column definition.
+
+    A column definition starts with the column's name and whatever follows it: a type, a
+    constraint, or nothing. A column whose definition is not found reads as an unknown
+    collation, which is not binary, so the owner check refuses it rather than assume binary.
+    """
     for definition in sorted(table.definitions):
         tokens = _sql_tokens(definition)
-        if (
-            len(tokens) > 1
-            and tokens[0][0] in (_WORD, _IDENT)
-            and tokens[0][1] == column
-            and tokens[1][1] not in _TABLE_CONSTRAINTS
-        ):
+        if not tokens or _name(tokens[0]) != column:
+            continue
+        if not _is_table_constraint([token[1] for token in tokens]):
             return _column_collation(definition)
-    return "binary"
+    return "unknown (its definition could not be read)"
 
 
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
