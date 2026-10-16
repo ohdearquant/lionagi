@@ -24,7 +24,11 @@ from lionagi.state.compat import (
     OwnerRule,
     StateCompatibilityRefused,
     TableWrites,
+    _column_collation,
     _operation,
+    _ordered_collation,
+    _trigger_event,
+    _trigger_owner_problems,
     read_closure,
 )
 from lionagi.state.db import StateDB
@@ -173,13 +177,15 @@ _OPERATIONS = {
 _OWNER_COLUMN = "TEXT NOT NULL DEFAULT 'principal:default'"
 
 
-async def _managed_store(path: Path, owner_sql: str = _OWNER_COLUMN) -> Path:
+async def _managed_store(
+    path: Path, owner_sql: str = _OWNER_COLUMN, owner_name: str = OWNER
+) -> Path:
     native = StateDB(path)
     await native.open()
     await native.close()
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {OWNER} {owner_sql}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {owner_name} {owner_sql}")
         conn.executescript(
             """
             CREATE TABLE principals (id TEXT PRIMARY KEY, kind TEXT NOT NULL);
@@ -1887,7 +1893,8 @@ async def test_a_trigger_named_begin_that_copies_the_owner_is_admitted(tmp_path)
 
 
 async def test_a_trigger_that_reads_old_in_an_insert_is_refused(tmp_path):
-    """OLD is NULL in an INSERT trigger, so a trigger that copies it fails every insert."""
+    """An INSERT trigger has no OLD row, so a body that reads ``OLD.<column>`` names no column
+    of the trigger at all and the insert that fires it fails."""
     store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
     _execute(
         store,
@@ -1903,7 +1910,8 @@ async def test_a_trigger_that_reads_old_in_an_insert_is_refused(tmp_path):
 
 
 async def test_a_trigger_that_reads_new_in_a_delete_is_refused(tmp_path):
-    """NEW is NULL in a DELETE trigger, so the copy it writes is no owner either."""
+    """A DELETE trigger has no NEW row, so a body that reads ``NEW.<column>`` names no column of
+    the trigger at all and copies nothing."""
     store = await _managed_store(tmp_path / "managed.db", owner_sql="TEXT")
     _execute(
         store,
@@ -1927,7 +1935,7 @@ async def test_an_owner_column_that_does_not_compare_under_binary_is_refused(tmp
     before = _rows(store, "SELECT COUNT(*) FROM messages")
     handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
 
-    with pytest.raises(StateCompatibilityRefused, match="NOCASE") as caught:
+    with pytest.raises(StateCompatibilityRefused, match="nocase") as caught:
         await handle.open()
 
     assert "collation" in caught.value.reason.lower()
@@ -1962,6 +1970,491 @@ async def test_a_trigger_whose_owner_term_is_parenthesised_is_admitted(tmp_path)
         "CREATE TRIGGER par AFTER INSERT ON messages BEGIN "
         "UPDATE progressions SET collection = '[]' WHERE id = NEW.sender "
         f"AND ({OWNER} = NEW.{OWNER}); END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    await handle.close()
+
+
+_COLLATION_DEFINITIONS = [
+    ("TEXT", "binary", "no clause"),
+    ("TEXT COLLATE NOCASE", "nocase", "own clause"),
+    ("TEXT COLLATE RTRIM", "rtrim", "another collation"),
+    (
+        "TEXT CHECK (col COLLATE BINARY <> '') COLLATE NOCASE",
+        "nocase",
+        "a CHECK before the clause",
+    ),
+    ("TEXT CHECK (col COLLATE NOCASE <> '')", "binary", "a CHECK and no clause of its own"),
+    ("TEXT CHECK (col COLLATE RTRIM <> '')", "binary", "a CHECK of a third collation"),
+    ("TEXT COLLATE NOCASE COLLATE RTRIM", "rtrim", "two clauses, NOCASE then RTRIM"),
+    ("TEXT COLLATE RTRIM COLLATE NOCASE", "nocase", "two clauses, RTRIM then NOCASE"),
+    ('TEXT COLLATE "NOCASE"', "nocase", "a quoted name"),
+    ("TEXT collate nocase", "nocase", "a lower-case name"),
+    ("TEXT Collate NoCase", "nocase", "a mixed-case name"),
+    ("TEXT COLLATE RTRIM COLLATE RTRIM", "rtrim", "the same clause twice"),
+]
+
+
+def _collation_sqlite_applied(definition: str) -> str:
+    """The collation SQLite compares a column declared *definition* under, measured.
+
+    The column takes the value ``'a'``; a match for ``'A'`` is NOCASE's case folding and a match
+    for ``'a '`` is RTRIM's folding of trailing spaces, neither of which binary has. Neither
+    reaches a body comparison through :func:`_fold` for some other collation, which is why the
+    answer is the folded name of the collation the column declares.
+    """
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE t (col {definition})")
+        conn.execute("INSERT INTO t VALUES ('a')")
+        folded = conn.execute("SELECT COUNT(*) FROM t WHERE col = 'A'").fetchone()[0]
+        trimmed = conn.execute("SELECT COUNT(*) FROM t WHERE col = 'a '").fetchone()[0]
+    if folded:
+        return "nocase"
+    if trimmed:
+        return "rtrim"
+    return "binary"
+
+
+@pytest.mark.parametrize(
+    ("definition", "expected", "what"),
+    _COLLATION_DEFINITIONS,
+    ids=[what for _, _, what in _COLLATION_DEFINITIONS],
+)
+def test_a_column_collation_is_read_from_the_clause_sqlite_uses(definition, expected, what):
+    """SQLite takes the collation of a column's own clause, the last one when it declares
+    several, and a COLLATE inside a CHECK or a DEFAULT is part of that expression, not the
+    column's."""
+    measured = _collation_sqlite_applied(definition)
+    assert measured == expected, f"{what}: SQLite applied {measured}"
+    assert _column_collation(definition) == expected
+
+
+def test_column_collation_folds_the_name_as_sqlite_folds_it():
+    """``_fold`` maps ASCII letters only, so the dotless ``ı`` is not the ASCII ``i`` and the
+    name it appears in is not the folded ``binary``."""
+    assert _column_collation("TEXT COLLATE bınary") == "bınary"
+    assert _column_collation("TEXT COLLATE BINARY") == "binary"
+    assert _column_collation("TEXT COLLATE NOCASE") == "nocase"
+    assert _column_collation("TEXT COLLATE Bınary") == "bınary"
+    assert _column_collation("TEXT CHECK (col COLLATE BINARY <> '') COLLATE NOCASE") == "nocase"
+
+
+async def test_an_owner_column_whose_check_names_another_collation_is_refused(tmp_path):
+    """A CHECK's COLLATE is not the column's, so the clause after it still governs."""
+    store = await _managed_store(
+        tmp_path / "managed.db",
+        owner_sql="TEXT NOT NULL CHECK (owner_principal_id COLLATE BINARY <> '') COLLATE NOCASE",
+    )
+    before = _rows(store, "SELECT COUNT(*) FROM messages")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="nocase") as caught:
+        await handle.open()
+
+    assert "collation" in caught.value.reason.lower()
+    assert handle._engine is None
+    assert _rows(store, "SELECT COUNT(*) FROM messages") == before
+
+
+_OWNER_COLUMN_SHAPES = [
+    ("c TEXT COLLATE NOCASE", "c", "nocase", "a type first"),
+    ("c PRIMARY KEY COLLATE NOCASE", "c", "nocase", "no type, PRIMARY KEY first"),
+    ("c UNIQUE COLLATE NOCASE", "c", "nocase", "no type, UNIQUE first"),
+    ("c CHECK (c <> '') COLLATE NOCASE", "c", "nocase", "no type, CHECK first"),
+    ("c CONSTRAINT k NOT NULL COLLATE NOCASE", "c", "nocase", "no type, a named constraint first"),
+    ("c PRIMARY KEY COLLATE RTRIM", "c", "rtrim", "no type, another collation"),
+    ("c PRIMARY KEY", "c", "binary", "no type and no clause"),
+    ("'c' TEXT COLLATE NOCASE", "c", "nocase", "a name written as a string"),
+    ('"C" TEXT COLLATE NOCASE', "c", "nocase", "a quoted name in another case"),
+    ("d TEXT, [check] TEXT COLLATE NOCASE, CHECK (d <> '')", "check", "nocase", "named CHECK"),
+    ('d TEXT, "unique" TEXT COLLATE NOCASE, UNIQUE (d)', "unique", "nocase", "named UNIQUE"),
+    ('d TEXT, "primary" COLLATE NOCASE, PRIMARY KEY (d)', "primary", "nocase", "named PRIMARY"),
+    (
+        "d TEXT, \"constraint\" TEXT COLLATE NOCASE, CONSTRAINT k CHECK (d <> '')",
+        "constraint",
+        "nocase",
+        "named CONSTRAINT",
+    ),
+]
+
+
+def test_an_owner_column_whose_definition_cannot_be_read_is_not_taken_as_binary():
+    """A column the lookup cannot find a definition for is refused, never assumed binary."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE t (c TEXT COLLATE NOCASE)")
+        table = next(shape for shape in read_closure(conn, ["t"]).tables if shape.name == "t")
+
+    assert _ordered_collation(table, "c") == "nocase"
+    assert _ordered_collation(table, "absent") != "binary"
+
+
+@pytest.mark.parametrize(
+    ("body", "column", "expected", "what"),
+    _OWNER_COLUMN_SHAPES,
+    ids=[what for *_, what in _OWNER_COLUMN_SHAPES],
+)
+def test_the_owner_column_collation_is_read_however_its_definition_starts(
+    body, column, expected, what
+):
+    """The lookup finds the column's own definition whether a type, a constraint or nothing
+    follows its name, and however the name is spelled, and never reads a table constraint whose
+    first word is the column's name as that column."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE t ({body})")
+        conn.execute(f"INSERT INTO t (\"{column}\") VALUES ('a')")
+        folded = conn.execute(f"SELECT COUNT(*) FROM t WHERE \"{column}\" = 'A'").fetchone()[0]
+        trimmed = conn.execute(f"SELECT COUNT(*) FROM t WHERE \"{column}\" = 'a '").fetchone()[0]
+        table = next(shape for shape in read_closure(conn, ["t"]).tables if shape.name == "t")
+    measured = "nocase" if folded else "rtrim" if trimmed else "binary"
+    assert measured == expected, f"{what}: SQLite applied {measured}"
+    assert _ordered_collation(table, column) == expected
+
+
+_NOCASE_OWNER_SHAPES = [
+    (
+        OWNER,
+        "CHECK (owner_principal_id <> '') NOT NULL DEFAULT 'principal:default' COLLATE NOCASE",
+        "no type, CHECK first",
+    ),
+    (
+        OWNER,
+        "CONSTRAINT k NOT NULL DEFAULT 'principal:default' COLLATE NOCASE",
+        "no type, a named constraint first",
+    ),
+    (f"'{OWNER}'", _NOCASE_OWNER, "a name written as a string"),
+]
+
+
+@pytest.mark.parametrize(
+    ("owner_name", "owner_sql", "what"),
+    _NOCASE_OWNER_SHAPES,
+    ids=[what for *_, what in _NOCASE_OWNER_SHAPES],
+)
+async def test_a_nocase_owner_column_is_refused_however_its_definition_starts(
+    tmp_path, owner_name, owner_sql, what
+):
+    store = await _managed_store(
+        tmp_path / "managed.db", owner_sql=owner_sql, owner_name=owner_name
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="nocase") as caught:
+        await handle.open()
+
+    assert "collation" in caught.value.reason.lower()
+    assert handle._engine is None
+
+
+def _nocase_principals(store: Path) -> None:
+    """A principals key that compares case-insensitively, holding only the lower-case spelling."""
+    with closing(sqlite3.connect(store)) as conn:
+        conn.executescript(
+            "DROP TABLE principals;"
+            "CREATE TABLE principals (id TEXT PRIMARY KEY COLLATE NOCASE, kind TEXT NOT NULL);"
+            "INSERT INTO principals VALUES ('principal:a', 'human');"
+        )
+        conn.commit()
+
+
+async def test_an_owner_that_another_case_spelling_names_is_refused(tmp_path):
+    """The principals key compares under NOCASE, so ``PRINCIPAL:A`` finds ``principal:a`` there
+    while the owner predicate, which is BINARY, then treats the row it wrote as another
+    owner's."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _nocase_principals(store)
+    handle = StateDB(store, compatibility=_profile(store), owner="PRINCIPAL:A")
+
+    with pytest.raises(StateCompatibilityRefused, match="not in principals") as caught:
+        await handle.open()
+
+    assert handle._engine is None
+    assert caught.value.operation == "open"
+
+
+async def test_an_owner_the_nocase_principals_key_names_exactly_still_opens(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _nocase_principals(store)
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    try:
+        await handle.create_progression("sp")
+    finally:
+        await handle.close()
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions") == [("sp", "principal:a")]
+
+
+async def test_an_insert_that_names_a_column_twice_is_refused(store):
+    """Two slots for one column leave the value SQLite writes to the order it takes them in."""
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id")
+
+    message = "names the column owner_principal_id twice"
+    with pytest.raises(StateCompatibilityRefused, match=message):
+        await _raw_write(
+            store,
+            _PROGRESSION[:-2] + f", {OWNER}) VALUES (:id, 1.0, '[]', 'principal:b', 'principal:a')",
+            {},
+        )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == before
+
+
+async def test_an_insert_that_names_a_non_owner_column_twice_is_refused(store):
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id")
+
+    with pytest.raises(StateCompatibilityRefused, match="names the column id twice"):
+        await _raw_write(
+            store,
+            "INSERT INTO progressions (id, id, created_at, collection, "
+            f"{OWNER}) VALUES (:id, 'x', 1.0, '[]', 'principal:a')",
+            {},
+        )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == before
+
+
+async def test_an_insert_into_an_owned_table_that_names_the_owner_twice_is_refused(store):
+    """SQLite takes the first value bound for a column it names twice and raises no error, so
+    the slot the guard reads as the owner need not be the one the row is written with."""
+    _foreign_rows(store)
+    before = _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id")
+
+    with pytest.raises(StateCompatibilityRefused, match="the INSERT names the column"):
+        await _raw_write(
+            store,
+            _PROGRESSION[:-2] + f", {OWNER}) VALUES (:id, 1.0, '[]', :o, :o)",
+            {"o": "principal:a"},
+        )
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions ORDER BY id") == before
+
+
+async def test_an_insert_that_names_each_column_once_is_admitted(store):
+    await _raw_write(store, _PROGRESSION + "VALUES (:id, 1.0, '[]', :o)", {"o": "principal:a"})
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions") == [("p1", "principal:a")]
+
+
+async def test_a_trigger_that_deletes_from_a_closure_table_is_refused(tmp_path):
+    """A trigger's DELETE runs inside the write that fires it and reaches the authorizer as no
+    admitted action, so admission refuses it."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        "CREATE TRIGGER sweep AFTER INSERT ON messages BEGIN "
+        "DELETE FROM progressions WHERE id = NEW.id; END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger sweep") as caught:
+        await handle.open()
+
+    assert "DELETE FROM progressions" in caught.value.reason
+    assert handle._engine is None
+
+
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        ("DELETE FROM progressions WHERE id = NEW.id", "DELETE FROM progressions"),
+        (
+            "DELETE FROM message_types WHERE lion_class = NEW.lion_class",
+            "DELETE FROM message_types",
+        ),
+        ("DELETE FROM 'progressions'", "DELETE FROM progressions"),
+        ("DELETE FROM [progressions]", "DELETE FROM progressions"),
+        (
+            "DELETE FROM progressions WHERE id IN (SELECT id FROM progressions)",
+            "DELETE FROM progressions",
+        ),
+    ],
+    ids=["closure table", "another table", "a string name", "a bracketed name", "a subquery"],
+)
+async def test_a_trigger_that_deletes_is_refused_whatever_it_deletes(tmp_path, body, names):
+    """The authorizer refuses every DELETE on a compatibility connection, so a trigger that
+    runs one never survives the write that fires it."""
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, f"CREATE TRIGGER sweep AFTER INSERT ON messages BEGIN {body}; END")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger sweep") as caught:
+        await handle.open()
+
+    assert names in caught.value.reason
+    assert handle._engine is None
+
+
+def test_what_sqlite_makes_of_a_multi_event_trigger_and_of_new_and_old():
+    """A trigger names one event, and the row a statement makes readable is the one its event
+    carries: a DELETE trigger reads OLD and an INSERT trigger reads NEW, while the other is not
+    a column at all. This pins SQLite's behaviour, the premise of the trigger reader;
+    test_a_delete_trigger_is_held_to_old_and_only_old holds the reader to it."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY, col TEXT)")
+        conn.execute("CREATE TABLE log (v TEXT)")
+        with pytest.raises(sqlite3.OperationalError, match="syntax error"):
+            conn.execute(
+                "CREATE TRIGGER m AFTER DELETE OR INSERT ON t BEGIN "
+                "INSERT INTO log VALUES (NEW.col); END"
+            )
+
+    def fired(sql: str, statements: list[str]) -> tuple:
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY, col TEXT)")
+            conn.execute("CREATE TABLE log (v TEXT)")
+            conn.execute(sql)
+            for statement in statements:
+                try:
+                    conn.execute(statement)
+                except sqlite3.Error as exc:
+                    return ("error", str(exc))
+            return ("rows", conn.execute("SELECT v FROM log").fetchall())
+
+    assert fired(
+        "CREATE TRIGGER d AFTER DELETE ON t BEGIN INSERT INTO log VALUES (NEW.col); END",
+        ["INSERT INTO t VALUES ('1', 'a')", "DELETE FROM t WHERE id = '1'"],
+    ) == ("error", "no such column: NEW.col")
+    assert fired(
+        "CREATE TRIGGER i AFTER INSERT ON t BEGIN INSERT INTO log VALUES (OLD.col); END",
+        ["INSERT INTO t VALUES ('1', 'a')"],
+    ) == ("error", "no such column: OLD.col")
+    assert fired(
+        "CREATE TRIGGER d AFTER DELETE ON t BEGIN INSERT INTO log VALUES (OLD.col); END",
+        ["INSERT INTO t VALUES ('1', 'a')", "DELETE FROM t WHERE id = '1'"],
+    ) == ("rows", [("a",)])
+    assert fired(
+        "CREATE TRIGGER i AFTER INSERT ON t BEGIN INSERT INTO log VALUES (NEW.col); END",
+        ["INSERT INTO t VALUES ('1', 'a')"],
+    ) == ("rows", [("a",)])
+
+
+_DELETE_SWEEP = (
+    "CREATE TRIGGER sweep AFTER DELETE ON messages BEGIN "
+    f"UPDATE progressions AS d SET collection = '[]' WHERE {OWNER} = d.{OWNER}; END"
+)
+
+
+def test_a_delete_trigger_is_held_to_old_and_only_old():
+    """In a DELETE trigger only OLD is the row that fired it; a table alias that shares a letter
+    with it is another row."""
+    owned = frozenset({"progressions"})
+    copies_old = (
+        "CREATE TRIGGER d AFTER DELETE ON messages BEGIN "
+        f"UPDATE progressions SET collection = '[]' WHERE {OWNER} = OLD.{OWNER}; END"
+    )
+
+    assert _trigger_owner_problems(copies_old, OWNER, owned) == []
+    problems = _trigger_owner_problems(_DELETE_SWEEP, OWNER, owned)
+    assert problems == [
+        f"updates progressions with an owner other than OLD.{OWNER}, the owner of the row that "
+        "fired it"
+    ]
+
+
+async def test_a_delete_trigger_comparing_the_owner_with_an_alias_is_refused(tmp_path):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, _DELETE_SWEEP)
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match="trigger sweep") as caught:
+        await handle.open()
+
+    assert f"OLD.{OWNER}" in caught.value.reason
+    assert handle._engine is None
+
+
+@pytest.mark.parametrize("column", ["before", "after", "instead", '"delete"', '"update"'])
+def test_the_event_of_an_update_of_trigger_is_read_whatever_its_column_is_named(column):
+    """BEFORE, AFTER and INSTEAD name a column bare; the event word before them is the event."""
+    sql = f"CREATE TRIGGER t AFTER UPDATE OF {column} ON m BEGIN SELECT 1; END"
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE m (id TEXT, {column} TEXT)")
+        conn.execute(sql)
+
+    assert _trigger_event(sql) == "update"
+
+
+@pytest.mark.parametrize(
+    ("sql", "event"),
+    [
+        ("CREATE TRIGGER after AFTER INSERT ON m BEGIN SELECT 1; END", "insert"),
+        ("CREATE TRIGGER before BEFORE DELETE ON m BEGIN SELECT 1; END", "delete"),
+        ('CREATE TRIGGER "insert" INSTEAD OF UPDATE ON v BEGIN SELECT 1; END', "update"),
+        ("CREATE TRIGGER 'delete' AFTER INSERT ON m BEGIN SELECT 1; END", "insert"),
+        ("CREATE TRIGGER t UPDATE ON m BEGIN SELECT 1; END", "update"),
+    ],
+)
+def test_the_event_of_a_trigger_is_not_read_from_its_name(sql, event):
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE m (id TEXT)")
+        conn.execute("CREATE VIEW v AS SELECT id FROM m")
+        conn.execute(sql)
+
+    assert _trigger_event(sql) == event
+
+
+_NEW_OWNER_WRITE = (
+    "INSERT INTO progressions (id, created_at, collection, " + OWNER + ") "
+    f"VALUES (NEW.id, 1.0, '[]', NEW.{OWNER})"
+)
+_OTHER_OWNER_WRITE = (
+    "INSERT INTO progressions (id, created_at, collection, " + OWNER + ") "
+    "VALUES (NEW.id, 1.0, '[]', 'principal:b')"
+)
+
+
+_KEYWORD_NAMES = ["begin", "insert", "update", "delete", "after", "on"]
+# SQLite reads a bare name only for some of these; the others have to be quoted to be one.
+_BARE_KEYWORD_NAMES = ["begin", "after", "before"]
+
+
+@pytest.mark.parametrize("name", _KEYWORD_NAMES + _BARE_KEYWORD_NAMES)
+async def test_a_trigger_the_keyword_it_is_named_after_is_read_from_its_own_event(tmp_path, name):
+    """The trigger's name is a keyword, so the reader takes the event word after the name and
+    its timing, never the first one in the statement, which is the name here."""
+    store = await _managed_store(tmp_path / "managed.db")
+    quoted = name in _KEYWORD_NAMES
+    spelled = f'"{name}"' if quoted else name
+    _execute(
+        store,
+        f"CREATE TRIGGER {spelled} AFTER INSERT ON messages BEGIN {_NEW_OWNER_WRITE}; END",
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    try:
+        await handle.insert_message(_system_message())
+    finally:
+        await handle.close()
+
+    assert _rows(store, f"SELECT id, {OWNER} FROM progressions") == [("m-sys", "principal:a")]
+
+
+@pytest.mark.parametrize("name", _KEYWORD_NAMES)
+async def test_a_trigger_the_keyword_it_is_named_after_writes_the_owner_from_new(tmp_path, name):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        f'CREATE TRIGGER "{name}" AFTER INSERT ON messages BEGIN {_OTHER_OWNER_WRITE}; END',
+    )
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
+
+    with pytest.raises(StateCompatibilityRefused, match=f"trigger {name}"):
+        await handle.open()
+
+    assert handle._engine is None
+
+
+@pytest.mark.parametrize("name", _KEYWORD_NAMES)
+async def test_a_trigger_named_after_a_keyword_is_admitted_when_it_copies_the_owner(tmp_path, name):
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(
+        store,
+        f'CREATE TRIGGER "{name}" AFTER INSERT ON messages BEGIN '
+        f"UPDATE progressions SET collection = '[]' WHERE id = NEW.id "
+        f"AND {OWNER} = NEW.{OWNER}; END",
     )
     handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
     await handle.open()

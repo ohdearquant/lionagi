@@ -474,3 +474,185 @@ async def test_a_stand_in_whose_compatibility_is_a_mock_takes_the_native_path():
     for _ in range(4):
         assert await compat_queue.submit(event) is False
     assert compat.calls == 4
+
+
+# 8. act: a refusal a call or hook wrapped in a group is still raised as itself
+
+
+async def test_a_refusal_inside_a_group_from_the_call_leaves_as_itself():
+    """A task group wrapping the refusal must not hide it from ``_act()``: the refusal is
+    raised as itself, not recorded as a tool error (ADR-0128 D6)."""
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.operations.act.act import _act
+
+    refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+    group = BaseExceptionGroup("the tool call failed", [ValueError("ordinary"), refusal])
+    branch = MagicMock()
+    branch._hooks = None
+    branch.id = "branch-test"
+    branch.authorize = AsyncMock(return_value=True)
+    branch._log_manager.log = MagicMock()
+    branch.msgs.a_add_message = AsyncMock()
+    branch.emit_and_log = AsyncMock()
+    branch._action_manager.invoke = AsyncMock(side_effect=group)
+
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await _act(branch, {"function": "my_tool", "arguments": {}}, suppress_errors=True)
+    assert caught.value is refusal
+
+
+async def test_a_group_without_a_refusal_still_degrades_to_a_tool_error():
+    """A group of ordinary tool failures is suppressed exactly as a single one was."""
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.operations.act.act import _act
+
+    group = BaseExceptionGroup("the tool call failed", [ValueError("one"), OSError("two")])
+    branch = MagicMock()
+    branch._hooks = None
+    branch.id = "branch-test"
+    branch.authorize = AsyncMock(return_value=True)
+    branch._log_manager.log = MagicMock()
+    branch.msgs.a_add_message = AsyncMock()
+    branch.emit_and_log = AsyncMock()
+    branch._action_manager.invoke = AsyncMock(side_effect=group)
+
+    response = await _act(branch, {"function": "my_tool", "arguments": {}}, suppress_errors=True)
+
+    assert response.output is not None
+    assert "error" in response.output
+
+
+# 9. setup: a refusal inside a group is raised as itself, and an ordinary group is unchanged
+
+
+async def test_a_setup_refusal_inside_a_group_leaves_as_itself(monkeypatch):
+    from lionagi.cli import _runs as runs_mod
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.session.branch import Branch
+
+    refusal = StateCompatibilityRefused("create_session", "synthetic", "refused")
+    group = BaseExceptionGroup("setup writes", [ValueError("ordinary"), refusal])
+
+    async def refuse(*args, **kwargs):
+        raise group
+
+    monkeypatch.setattr(runs_mod, "_open_shared_db", refuse)
+
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await runs_mod.setup_agent_persist(Branch(), agent_name="refusal-group")
+    assert caught.value is refusal
+
+
+async def test_a_setup_group_without_a_refusal_still_degrades_persistence(monkeypatch):
+    from lionagi.cli import _runs as runs_mod
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.session.branch import Branch
+
+    group = BaseExceptionGroup("setup writes", [ValueError("one"), OSError("two")])
+
+    async def fail(*args, **kwargs):
+        raise group
+
+    monkeypatch.setattr(runs_mod, "_open_shared_db", fail)
+
+    assert await runs_mod.setup_agent_persist(Branch(), agent_name="plain-group") is None
+
+
+# 10. ReAct: a refusal inside a group from the final call is raised as itself
+
+
+async def test_a_final_operate_refusal_inside_a_group_leaves_as_itself(tmp_path: Path):
+    """The caller's ``isinstance`` check must still find the refusal when a task group
+    wrapped it beside another failure."""
+    from unittest.mock import patch
+
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.operations.ReAct.utils import ReActAnalysis
+    from lionagi.testing import LionAGIMockFactory
+
+    refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+    group = BaseExceptionGroup("the final call failed", [ValueError("ordinary"), refusal])
+    branch = LionAGIMockFactory.create_mocked_branch(
+        name="refusal-group", user="tester", response="mocked", model="gpt-4.1-mini"
+    )
+    await branch.msgs.a_add_message(assistant_response="an earlier round's answer")
+
+    class _Round(ReActAnalysis):
+        extension_needed: bool = False
+
+    calls: list[int] = []
+
+    async def operate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _Round(analysis="reasoning about the task")
+        raise group
+
+    with patch("lionagi.operations.operate.operate.operate", new=operate):
+        with pytest.raises(StateCompatibilityRefused) as caught:
+            await branch.ReAct(instruct={"instruction": "do the thing"}, extension_allowed=False)
+    assert caught.value is refusal
+
+
+async def test_a_final_operate_group_without_a_refusal_still_falls_back(tmp_path: Path):
+    from unittest.mock import patch
+
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.operations.ReAct.utils import ReActAnalysis
+    from lionagi.testing import LionAGIMockFactory
+
+    group = BaseExceptionGroup("the final call failed", [ValueError("one"), OSError("two")])
+    branch = LionAGIMockFactory.create_mocked_branch(
+        name="plain-group", user="tester", response="mocked", model="gpt-4.1-mini"
+    )
+    await branch.msgs.a_add_message(assistant_response="an earlier round's answer")
+    expected = branch.msgs.last_response.response
+
+    class _Round(ReActAnalysis):
+        extension_needed: bool = False
+
+    calls: list[int] = []
+
+    async def operate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _Round(analysis="reasoning about the task")
+        raise group
+
+    with patch("lionagi.operations.operate.operate.operate", new=operate):
+        result = await branch.ReAct(
+            instruct={"instruction": "do the thing"}, extension_allowed=False
+        )
+    assert result == expected
+
+
+# 11. message callbacks: a cancellation beside the refusal is not reported as an error
+
+
+def test_a_cancellation_beside_a_refusal_is_not_logged(caplog):
+    refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+    manager = _manager_with_cancellation(refusal)
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.protocols.messages.manager"):
+        with pytest.raises(StateCompatibilityRefused) as caught:
+            manager.add_message(instruction="hi", sender="u", recipient="r")
+
+    assert caught.value is refusal
+    assert "beside a store refusal" not in caplog.text
+
+
+def _manager_with_cancellation(refusal: StateCompatibilityRefused):
+    import asyncio
+
+    from lionagi.protocols.types import MessageManager
+
+    manager = MessageManager()
+
+    def refuse(msg):
+        raise refusal
+
+    def cancelled(msg):
+        raise asyncio.CancelledError
+
+    manager._on_message_added.extend([cancelled, refuse])
+    return manager

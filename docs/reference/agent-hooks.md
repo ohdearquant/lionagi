@@ -59,7 +59,10 @@ A store refusal is never suppressed by `suppress_errors`. A
 `StateCompatibilityRefused` raised by a tool call's own path, or by a
 `TOOL_POST` handler `_act()` fires under its default `suppress_errors=True`, is
 re-raised as itself: a refused write never becomes a swallowed tool error
-result, so a run cannot report a success the store refused to persist.
+result, so a run cannot report a success the store refused to persist. A signal
+whose own persistence is refused is the one exception: the session signal sink
+counts it as a dropped signal and lets the session go on, so the refused signal
+is missing from the stored history while the run's other records still stop.
 
 `USER_PROMPT_SUBMIT` fires at most once per genuine user-originated turn,
 regardless of how many internal calls that turn drives underneath it — see

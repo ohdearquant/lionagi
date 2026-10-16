@@ -229,6 +229,14 @@ class OperatorCoordinator:
         self.engine_factory = engine_factory or BranchOperatorEngine
         self.command_executor = command_executor or _execute_application_command
         self._tasks: dict[str, asyncio.Task] = {}
+        # Turns whose store is in compatibility mode and that have a run: their
+        # outcome is deferred to the finish after teardown, so a cancel must not
+        # write the record first (ADR-0128 D6).
+        self._compatibility_turns: set[str] = set()
+        # Turns whose outcome is deferred and whose teardown is therefore still to
+        # write their record: shutdown waits for these instead of cancelling the
+        # teardown that will write it.
+        self._streams_ended: set[str] = set()
         self._started = False
         self._execution_root_resolution: OperatorExecutionRootResolution | None = None
 
@@ -264,6 +272,11 @@ class OperatorCoordinator:
         for request_id, task in tasks:
             if task.done():
                 continue
+            if request_id in self._streams_ended:
+                # The stream has ended and teardown is running; its record and
+                # its run.json are still to be written, so wait for it rather
+                # than cancelling it (ADR-0128 D6).
+                continue
             try:
                 turn = await self.store.get_turn(request_id)
             except Exception:  # noqa: BLE001
@@ -284,6 +297,8 @@ class OperatorCoordinator:
                 return_exceptions=True,
             )
         self._tasks.clear()
+        self._compatibility_turns.clear()
+        self._streams_ended.clear()
         self._started = False
         self._execution_root_resolution = None
 
@@ -361,6 +376,8 @@ class OperatorCoordinator:
         def discard(done: asyncio.Task) -> None:
             ready.set()
             self._tasks.pop(request_id, None)
+            self._compatibility_turns.discard(request_id)
+            self._streams_ended.discard(request_id)
             if done.cancelled():
                 return
             exc = done.exception()
@@ -388,10 +405,31 @@ class OperatorCoordinator:
         engine_link_task: asyncio.Task | None = None
         opening_write: asyncio.Future | None = None
         engine_session_uid: str | None = None
-        # Set on the turn's own completion path when its store is in compatibility
-        # mode: the turn record is written after teardown, so it can carry the
-        # status teardown decides rather than the one the engine reached.
+        # Set when the turn's store is in compatibility mode: the turn record is
+        # written after teardown, so it carries the status teardown decides rather
+        # than the one the engine reached (ADR-0128 D6).
         turn_finish_deferred = False
+        deferred_outcome: str | None = None
+        deferred_error: dict[str, Any] | None = None
+
+        async def record(outcome: str, error: dict[str, Any] | None) -> None:
+            """Record the turn's outcome, or defer it to after teardown.
+
+            A compatibility-mode turn waits for teardown, which decides the status the engine's
+            own endpoint may not have reached, so no outcome is written here. The finish that
+            waits records the outcome and error set here unless teardown's status takes over.
+            """
+            nonlocal turn_finish_deferred, deferred_outcome, deferred_error
+            if request_id in self._compatibility_turns:
+                turn_finish_deferred = True
+                deferred_outcome = outcome
+                deferred_error = error
+                # Teardown is what writes the record now; shutdown must wait for it
+                # rather than cancel the task mid-teardown.
+                self._streams_ended.add(request_id)
+                return
+            await self.store.finish_turn(request_id, outcome=outcome, error=error)
+
         try:
             complete_turns = await self.store.list_complete_turn_frame_groups(
                 conversation_id,
@@ -541,6 +579,10 @@ class OperatorCoordinator:
             )
             if live is None:
                 raise RuntimeError("Could not create the canonical Operator run")
+            if _in_compatibility_mode(live.get("db")):
+                # From here the turn's record is written by the finish after
+                # teardown, so a cancel of this turn must not write it first.
+                self._compatibility_turns.add(request_id)
             run_id = live["session_id"]
             await self.store.append_frame(
                 conversation_id,
@@ -626,16 +668,12 @@ class OperatorCoordinator:
                     await self.store.append_frame(
                         conversation_id, request_id, event.type, event.payload
                     )
-            if live is not None and _in_compatibility_mode(live.get("db")):
-                turn_finish_deferred = True
-            else:
-                await self.store.finish_turn(request_id, outcome="completed")
+            await record("completed", None)
         except asyncio.CancelledError:
             terminal_status = "cancelled"
-            await self.store.finish_turn(
-                request_id,
-                outcome="cancelled",
-                error={
+            await record(
+                "cancelled",
+                {
                     "code": "cancelled",
                     "message": "The operator cancelled this turn",
                     "retryable": False,
@@ -645,10 +683,9 @@ class OperatorCoordinator:
         except OperatorProviderUnavailableError as exc:
             terminal_status = "failed"
             terminal_exc = exc
-            await self.store.finish_turn(
-                request_id,
-                outcome="failed",
-                error={
+            await record(
+                "failed",
+                {
                     "code": "provider_unavailable",
                     "message": str(exc),
                     "retryable": False,
@@ -657,10 +694,9 @@ class OperatorCoordinator:
         except OperatorExecutionRootError as exc:
             terminal_status = "failed"
             terminal_exc = exc
-            await self.store.finish_turn(
-                request_id,
-                outcome="failed",
-                error={
+            await record(
+                "failed",
+                {
                     "code": "service_failure",
                     "message": str(exc),
                     "retryable": False,
@@ -695,47 +731,75 @@ class OperatorCoordinator:
             else:
                 evidence = "no run was recorded for this turn before it failed"
                 details = {"runId": None}
-            await self.store.finish_turn(
-                request_id,
-                outcome="failed",
-                error={
-                    "code": "model_failure",
-                    "message": (f"The Operator engine failed ({type(exc).__name__}); {evidence}."),
-                    "retryable": True,
-                    "details": details,
-                },
-            )
-        finally:
-            # Publish the final checkpoint before marking the canonical
-            # session terminal. Queued resume workers use that transition as
-            # the hand-off boundary.
-            if run_branch is not None and run_dir is not None:
-                with suppress(Exception):
-                    await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
-            if engine_link_task is not None:
-                # Settle the stamp before teardown closes the db handle it
-                # borrowed. A turn that ends before the mirror mints the row
-                # must not wait out the retry window here: cancel, then make
-                # one last attempt on a short-lived handle of our own. A miss
-                # is cosmetic and self-heals on the conversation's next turn,
-                # which carries the same provider session id.
-                if not engine_link_task.done():
-                    engine_link_task.cancel()
-                with suppress(BaseException):
-                    await engine_link_task
-                if engine_session_uid is not None and not (
-                    engine_link_task.done()
-                    and not engine_link_task.cancelled()
-                    and engine_link_task.result()
-                ):
-                    with suppress(Exception):
-                        await _link_engine_child_once(
-                            engine_session_uid, parent_run_id=live["session_id"]
-                        )
-            if live is not None:
-                from lionagi.cli._runs import teardown_agent_persist
+            from lionagi.state.compat import refusal_in
 
-                try:
+            refusal = refusal_in(exc)
+            if refusal is not None:
+                # The store refused a write in compatibility mode (ADR-0128 D6), including
+                # one of the setup writes themselves: stopping here did not need a retry, and
+                # the turn's own run details point at the refused write's run.
+                await record(
+                    "failed",
+                    {
+                        "code": "store_refused",
+                        "message": str(refusal),
+                        "retryable": False,
+                        "details": details,
+                    },
+                )
+            else:
+                await record(
+                    "failed",
+                    {
+                        "code": "model_failure",
+                        "message": (
+                            f"The Operator engine failed ({type(exc).__name__}); {evidence}."
+                        ),
+                        "retryable": True,
+                        "details": details,
+                    },
+                )
+        finally:
+            # The deferred finish runs in a finally of its own, so a step before it that
+            # raises -- a cancel landing in the checkpoint write included -- cannot leave the
+            # turn's record unwritten for startup recovery. A cancel in the checkpoint write
+            # must not skip teardown either: it is held and re-raised once both records exist.
+            early_failure: BaseException | None = None
+            try:
+                # Publish the final checkpoint before marking the canonical
+                # session terminal. Queued resume workers use that transition as
+                # the hand-off boundary.
+                if run_branch is not None and run_dir is not None:
+                    try:
+                        with suppress(Exception):
+                            await write_resumable_operator_snapshot(
+                                run_branch, run_dir.branches_dir
+                            )
+                    except BaseException as exc:  # a cancel here must not skip teardown
+                        early_failure = exc
+                if engine_link_task is not None:
+                    # Settle the stamp before teardown closes the db handle it
+                    # borrowed. A turn that ends before the mirror mints the row
+                    # must not wait out the retry window here: cancel, then make
+                    # one last attempt on a short-lived handle of our own. A miss
+                    # is cosmetic and self-heals on the conversation's next turn,
+                    # which carries the same provider session id.
+                    if not engine_link_task.done():
+                        engine_link_task.cancel()
+                    with suppress(BaseException):
+                        await engine_link_task
+                    if engine_session_uid is not None and not (
+                        engine_link_task.done()
+                        and not engine_link_task.cancelled()
+                        and engine_link_task.result()
+                    ):
+                        with suppress(Exception):
+                            await _link_engine_child_once(
+                                engine_session_uid, parent_run_id=live["session_id"]
+                            )
+                if live is not None:
+                    from lionagi.cli._runs import teardown_agent_persist
+
                     with suppress(Exception):
                         status = await teardown_agent_persist(
                             live,
@@ -754,11 +818,18 @@ class OperatorCoordinator:
 
                             if status in SESSION_TERMINAL_STATUSES:
                                 terminal_status = status
-                finally:
-                    # In a finally so a cancel that lands during teardown still finishes the
-                    # turn, as the native path already has before teardown starts.
-                    if turn_finish_deferred:
-                        await self._finish_deferred_turn(request_id, terminal_status, live)
+            finally:
+                # Whatever the steps above raised, the turn's record is written once teardown
+                # has had its say: the status teardown decided takes over, as it does for
+                # completion, so the turn never reads as retryable work while its run failed.
+                if turn_finish_deferred:
+                    await self._finish_deferred_turn(
+                        request_id,
+                        terminal_status,
+                        live,
+                        recorded_outcome=deferred_outcome,
+                        recorded_error=deferred_error,
+                    )
             if run_branch is not None and run_dir is not None:
                 if opening_write is not None:
                     # its thread writes whatever happens to this wait, so the wait holds through any
@@ -775,7 +846,7 @@ class OperatorCoordinator:
                                 request_id,
                                 exc_info=failure,
                             )
-                with suppress(Exception):
+                try:
                     final_provider, final_model = resolve_operator_provider_model(engine_turn)
                     await asyncio.to_thread(
                         run_dir.write_manifest,
@@ -791,20 +862,39 @@ class OperatorCoordinator:
                             "ended_at": time.time(),
                         },
                     )
+                except Exception:
+                    # The run's record keeps its last status; say why, as the opening
+                    # write's failure is said. A cancel that lands while this write is in
+                    # flight propagates instead, and the write's outcome goes unobserved.
+                    _log.error(
+                        "Operator turn %s: its terminal run.json write failed",
+                        request_id,
+                        exc_info=True,
+                    )
             ready.set()
+            if early_failure is not None:
+                raise early_failure
 
     async def _finish_deferred_turn(
-        self, request_id: str, terminal_status: str, live: dict[str, Any]
+        self,
+        request_id: str,
+        terminal_status: str,
+        live: dict[str, Any],
+        *,
+        recorded_outcome: str | None = None,
+        recorded_error: dict[str, Any] | None = None,
     ) -> None:
         """Write a compatibility-mode turn's record with the status its teardown decided.
 
-        The record follows the same decision as run.json, so a turn the engine finished whose
-        teardown the store refused does not read `completed` while its run reads `failed`. A
+        The record follows the same decision as run.json, so a turn whose teardown the store
+        refused does not read `completed` -- or `cancelled` -- while its run reads `failed`.
+        When teardown's status is the outcome the turn already reached, the outcome and error
+        the turn set are recorded as they are, so a cancelled turn keeps its own message. A
         failure to write it is logged: run.json must still be written.
         """
         outcome = _TURN_OUTCOME_BY_STATUS.get(terminal_status, "failed")
-        error: dict[str, Any] | None = None
-        if outcome == "failed":
+        error = recorded_error
+        if outcome == "failed" and outcome != recorded_outcome:
             decided = live.get("terminal_reason")
             error = {
                 "code": "service_failure",
@@ -826,11 +916,14 @@ class OperatorCoordinator:
         task = self._tasks.get(request_id)
         if task is not None and not task.done():
             task.cancel()
-        if result["cancelRequested"]:
+        if result["cancelRequested"] and request_id not in self._compatibility_turns:
             # Do not rely on the task's coroutine body having started: a task
             # cancelled immediately after create_task() never enters its
             # try/except. finish_turn is idempotent with the running task's
             # cancellation cleanup.
+            # A compatibility-mode turn that already has a run is left alone: its
+            # record carries the status its teardown decides, and writing
+            # `cancelled` here would leave it beside a run.json reading `failed`.
             await self.store.finish_turn(
                 request_id,
                 outcome="cancelled",

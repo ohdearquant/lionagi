@@ -220,7 +220,7 @@ class TestFiltersApplyInSql:
         both = client.get("/api/runs/", params={"tag": ["keep", "urgent"], "per_page": 100}).json()
         assert one["total"] == 2
         assert both["total"] == 1
-        assert both["runs"][0]["run_id"] == ids[0]
+        assert both["runs"][0]["id"] == ids[0]
 
     def test_tag_filter_on_never_tagged_store(self, client):
         """run_tags is created on first tag write; filtering before that must

@@ -252,10 +252,11 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 ## Appendix A: operation manifest for the first profile
 
 Traced at commit `5cab31a2` by reading each entry point down through `StateDB`, the lifecycle
-service and the session observer. Entries name functions, not line numbers. The traced runs on
-scratch stores that confirm the manifest (D4) and the tests in the last column (D8) land with the
-implementation; until then this is the reading, and a trace that shows an effect missing here is a
-defect in this appendix.
+service and the session observer; the four rows for the default hook handlers and the steer
+tombstone sweep's row were traced at `54132f85`. Entries name functions, not line numbers. The
+traced runs on scratch stores that confirm the manifest (D4) and the tests in the last column (D8)
+land with the implementation; until then this is the reading, and a trace that shows an effect
+missing here is a defect in this appendix.
 
 ### A.0 Today
 
@@ -302,6 +303,20 @@ the previous one committed.
 | teardown `update_status` (lifecycle transition) | a `SELECT` of the status columns (Postgres `FOR UPDATE`), `UPDATE sessions` guarded on the expected previous status, `INSERT INTO status_transitions`, and `INSERT INTO admin_events` on the rejected and override paths | compare-and-set on status; no owner predicate | one | only this run's session; owner on the transition and any admin event; override refuses in compatibility mode |
 | terminal callbacks | after commit, in process: handlers registered on the terminal callback registry run; `li` registers one when `notify.on_terminal` is configured, and it runs an external command and records its outcome in the run directory | none | after commit, outside any transaction | no store statement; admitted unchanged |
 | session and branch signals at setup | `SESSION_START` and `BRANCH_CREATE` are emitted before the observer's sink is bound, so neither reaches `session_signals` today | n/a | n/a | unchanged; the manifest does not add them |
+| `persist_session_start` (the default `SESSION_START` handler) | a `get_session` read, and nothing more when the session is missing or terminal; when its reason is not yet `run.started.ok`: the `update_status` transition to `running` as above, then `UPDATE sessions SET` the provenance columns the event carries (`model`, `provider`, `effort`, `agent_name`, `agent_hash`, `invocation_id`), `started_at = COALESCE(started_at, :now)` and `updated_at`; when it already is, only that `UPDATE` | by id; `started_at` keeps the first value written; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `started_at` written only when null; the owner on the transition (D5); `invocation_id` only when that invocation belongs to the same owner |
+| `persist_branch_provenance` (the default `BRANCH_CREATE` handler) | `UPDATE branches SET model, provider, agent_name WHERE id`, each as the event carries it, a missing one as `NULL` | by id only | one | only this run's branch |
+| `persist_branch_end` (the default `BRANCH_END` handler, through `finalize_branch`) | for a terminal status only: `UPDATE branches SET status, ended_at WHERE id AND (status IS NULL OR status = 'running')` | by id, guarded on a status that is not yet terminal | one | only this run's branch; the guard kept |
+| `persist_session_end` (the default `SESSION_END` handler) | a `get_session` read; when the session is not terminal: the `update_status` transition to the event's status as above, carrying `ended_at`, `duration_ms` and, when the event has an error, `node_metadata` read, merged with `error` in Python and written whole; then `UPDATE sessions SET` the usage columns the event carries (`input_tokens`, `output_tokens`, `total_cost_usd`, `num_turns`) and `updated_at`; when the session is already terminal, the usual order since teardown writes the status first, only `UPDATE sessions SET` those usage columns, `duration_ms` and `updated_at` | by id; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `node_metadata` written by key merge, never whole; the owner on the transition (D5) |
+| steer tombstone sweep (`li agent`, after teardown) | `list_pending_session_controls` for the session, then for each control no consumer claimed `UPDATE session_controls SET applied_at, result WHERE id AND result IS NULL` | by id, guarded on an unclaimed control | one per control | only this run's session's controls; the guard kept |
+
+The four default hook handlers take their store from `_db()` in `lionagi/hooks/builtins.py`, the
+process's shared handle looked up by the store's URL. The profile admits their rows only through the
+run's own compatibility handle. A lookup that opens a second, native handle on the same file meets
+A.0's refusal before any statement: the hook bus logs the failure, no write lands, and the run loses
+`started_at` (so teardown cannot derive the session's `duration_ms`), the provenance columns, the
+branch's terminal status and the session's usage columns, with no refusal a caller sees. The steer
+tombstone sweep is the same class: it opens its own native `StateDB()` on the store instead of
+taking the run's handle, so its row is admitted on the same terms.
 
 ### A.3 Reader invariants the profile keeps
 

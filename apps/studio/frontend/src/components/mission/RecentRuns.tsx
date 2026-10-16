@@ -161,7 +161,7 @@ function RunRow({
   return (
     <Link
       to="/fleet"
-      search={{ s: run.run_id }}
+      search={{ s: run.id }}
       className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
       style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
     >
@@ -233,13 +233,7 @@ function RecentGroupRows({
       </button>
       {expanded &&
         group.runs.map((run) => (
-          <RunRow
-            key={run.run_id}
-            run={run}
-            nowSec={nowSec}
-            first={false}
-            statusLabel={statusLabel}
-          />
+          <RunRow key={run.id} run={run} nowSec={nowSec} first={false} statusLabel={statusLabel} />
         ))}
     </div>
   );

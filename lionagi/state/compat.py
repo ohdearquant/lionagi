@@ -122,7 +122,7 @@ def is_compatibility_store(db: Any) -> bool:
 
 # SQL tokens
 
-_WORD, _IDENT, _STRING, _PUNCT = "word", "ident", "string", "punct"
+_WORD, _IDENT, _STRING, _BLOB, _PUNCT = "word", "ident", "string", "blob", "punct"
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 # Words after which SQLite reads a double-quoted token as a name, never as a string literal. The
 # rule belongs to *spelled* below, which compares a table's or index's definition; a trigger body,
@@ -153,21 +153,24 @@ def _sql_tokens(
 
     Bare words are folded as SQLite folds a name, ASCII letters only. A quoted identifier ("x",
     `x`, [x]) is unquoted and folded but keeps its own kind, so a column named "returning" is
-    never read as the keyword. A string literal keeps its text verbatim, quotes included. As in
-    SQLite, only ASCII whitespace separates tokens and every character past ASCII belongs to an
-    identifier.
+    never read as the keyword. A string literal (``'x'``) and a blob literal (``x'41'``, a single
+    ``x`` or ``X`` immediately before the opening quote) each keep their text verbatim, quotes
+    included, so a literal equals only the same literal written the same way. As in SQLite, only
+    ASCII whitespace separates tokens and every character past ASCII belongs to an identifier.
 
     *verbatim* keeps every token as written, its quotes and the case of its letters included.
     That is how a trigger body, a view body and a column's DEFAULT are compared: whether SQLite
     reads a quoted token as a name or as a string literal depends on the scope it sits in and on
-    the connection's double-quoted-string setting, so the text as written is the only safe unit.
+    the connection's double-quoted-string setting, so the text as written is compared rather than
+    a reading of it that could differ from SQLite's.
 
     *spelled* keeps the case of a double-quoted token that SQLite may read as a string literal,
-    for comparing a table's definition and an index's terms as PRAGMA output leaves them: one
-    that names no column is a literal, so ``WHERE status = "running"`` differs from
-    ``WHERE status = "Running"``. A double-quoted token after a dot or a word that takes a name
-    (``REFERENCES "Runs"``, ``ON "Runs"``, ``COLLATE "NOCASE"``), or one naming one of *columns*,
-    is a name, and is folded.
+    for comparing a table's definition and an index's terms as ``sqlite_master`` holds them: one
+    that names no column is a literal, and keeps its quotes, so ``WHERE status = "running"``
+    differs from ``WHERE status = "Running"`` and neither equals the bare word ``running``. A
+    double-quoted token after a dot or a word that takes a name (``REFERENCES "Runs"``,
+    ``ON "Runs"``, ``COLLATE "NOCASE"``), or one naming one of *columns*, is a name, and is
+    folded.
     """
     tokens: list[tuple[str, str]] = []
     i, n = 0, len(sql)
@@ -181,6 +184,14 @@ def _sql_tokens(
         elif sql.startswith("/*", i):
             end = sql.find("*/", i + 2)
             i = n if end < 0 else end + 2
+        elif ch in "xX" and sql[i + 1 : i + 2] == "'":
+            # A single x or X immediately before a quote opens a blob literal, one token through
+            # its closing quote, kept as written.
+            j = i + 2
+            while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
+                j += 2 if sql[j] == "'" else 1
+            tokens.append((_BLOB, sql[i : j + 1]))
+            i = j + 1
         elif ch == "'":
             j = i + 1
             while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
@@ -207,7 +218,7 @@ def _sql_tokens(
                 last = tokens[-1] if tokens else (_PUNCT, "")
                 named = last == (_PUNCT, ".") or (last[0] == _WORD and last[1] in _NAME_POSITIONS)
                 literal = spelled and ch == '"' and not named and _fold(name) not in columns
-                tokens.append((_IDENT, name if literal else _fold(name)))
+                tokens.append((_IDENT, sql[i : j + 1] if literal else _fold(name)))
             i = j + 1
         elif _identifier_char(ch):
             j = i + 1
@@ -222,7 +233,8 @@ def _sql_tokens(
 
 
 def _joined(tokens: list[tuple[str, str]]) -> str:
-    """One canonical spelling of *tokens*: single spaces, none inside parentheses or around dots."""
+    """One canonical spelling of *tokens*: single spaces, none inside parentheses, after an
+    opening parenthesis or a dot, or before a closing parenthesis, a comma or a dot."""
     out: list[str] = []
     for index, (kind, text) in enumerate(tokens):
         tight = (kind == _PUNCT and text in (")", ",", ".")) or (
@@ -235,7 +247,8 @@ def _joined(tokens: list[tuple[str, str]]) -> str:
 
 
 def _spelled_sql(sql: str) -> str:
-    """*sql* as written: every token its own text, one space apart, comments and layout aside."""
+    """*sql* as written: every token its own text, joined by :func:`_joined`, comments and
+    whitespace aside."""
     return _joined(_sql_tokens(sql, verbatim=True))
 
 
@@ -286,13 +299,14 @@ def _name_of(kind: str, text: str) -> str:
 
 
 def _names(tokens: list[tuple[str, str]]) -> set[str]:
-    """Every token of a trigger or view body that may name a table, folded as SQLite folds names.
+    """Every token of a trigger or view body that may name an object, folded as SQLite folds names.
 
     A bare word, a quoted identifier and a quoted string all count, wherever in the body they sit.
     Whether SQLite reads a quoted token as a name or as a string literal depends on the scope it
     appears in and on the connection's double-quoted-string setting, so a quoted token is taken as
-    a possible name of a closure table wherever it appears. An object that may name a closure
-    table belongs to the closure, and a profile that does not list it refuses the store.
+    a possible name of a closure table or of another closure object wherever it appears. An object
+    that may name one belongs to the closure, and a profile that does not list it refuses the
+    store.
     """
     return {_name_of(kind, text) for kind, text in tokens if kind != _PUNCT}
 
@@ -397,6 +411,26 @@ def _write_target(tokens: list[tuple[str, str]]) -> tuple[str, str | None, int] 
     return verb, table, index + 1
 
 
+def _duplicate_column(names: list[str | None]) -> str | None:
+    """A column an INSERT's column list names more than once, or None when it names none twice.
+
+    SQLite takes the first value a statement binds for a column it names twice and raises no
+    error, so the columns an INSERT says it writes are not the columns it writes.
+    """
+    return next(
+        (name for name in names if name is not None and names.count(name) > 1),
+        None,
+    )
+
+
+def _insert_columns(tokens: list[tuple[str, str]], after: int) -> list[str | None] | None:
+    """The column names an INSERT's column list names, in order, or None when it has no list."""
+    if tokens[after : after + 1] != [(_PUNCT, "(")]:
+        return None
+    columns, _ = _spans(tokens, after)
+    return [_name(tokens[first]) if end == first + 1 else None for first, end in columns]
+
+
 def _insert_owner_values(
     tokens: list[tuple[str, str]], after: int, column: str
 ) -> list[tuple[int, int]] | str:
@@ -407,6 +441,9 @@ def _insert_owner_values(
         return f"leaves out the owner column {column}"
     columns, close = _spans(tokens, after)
     names = [_name(tokens[first]) if end == first + 1 else None for first, end in columns]
+    twice = _duplicate_column(names)
+    if twice is not None:
+        return f"names the column {twice} twice, so the value SQLite writes cannot be read"
     if column not in names:
         return f"leaves out the owner column {column}"
     at = names.index(column)
@@ -565,35 +602,41 @@ def _copies_owner(value: list[tuple[str, str]], column: str, rows: tuple[str, ..
     )
 
 
-def _trigger_event(tokens: list[tuple[str, str]], top: list[int], on: int | None) -> str | None:
-    """The event a trigger fires on: the last of INSERT, UPDATE and DELETE before its ``ON``.
-
-    The event word sits just before the ON that names the table, so the last one wins and a
-    trigger whose name is one of the three is not mistaken for it.
-    """
-    if on is None:
-        return None
-    return next(
-        (
-            tokens[index][1]
-            for index in reversed(top)
-            if index < on and tokens[index][1] in ("insert", "update", "delete")
-        ),
-        None,
-    )
+_EVENT_WORDS = frozenset({(_WORD, "insert"), (_WORD, "update"), (_WORD, "delete")})
 
 
-def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> list[str]:
-    """How a trigger's statements write an owned table other than with the owner of the row that
-    fired it: an INSERT must copy ``NEW.<column>`` (``OLD.<column>`` in a DELETE trigger) into
-    every row, and an UPDATE must restrict its rows by a term comparing the column with one of
-    the rows its event makes readable.
+def _trigger_event(sql: str) -> str | None:
+    """The event a trigger fires on: INSERT, UPDATE or DELETE.
+
+    A created trigger names exactly one event, and SQLite refuses a trigger that names more than
+    one (``AFTER DELETE OR INSERT ON t`` is a syntax error), so one event word is read: the first
+    unquoted INSERT, UPDATE or DELETE before the ``ON`` that names the table. SQLite reserves those
+    three words, so a trigger's name or a column of ``UPDATE OF`` spells one of them only quoted,
+    and a quoted name is not an event word. BEFORE, AFTER and INSTEAD are not reserved: a trigger
+    or an ``UPDATE OF`` column may be named after them bare, which is why the timing is not where
+    the reading starts.
     """
     tokens = _sql_tokens(sql)
     depths = _depths(tokens)
     top = [index for index in range(len(tokens)) if depths[index] == 0]
-    # The trigger's own name may be the keyword BEGIN, so the body starts at the first BEGIN
-    # after the ON that names the table the trigger fires on.
+    on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
+    if on is None:
+        return None
+    return next(
+        (tokens[index][1] for index in top if index < on and tokens[index] in _EVENT_WORDS), None
+    )
+
+
+def _trigger_statements(sql: str) -> list[list[tuple[str, str]]]:
+    """The statements of a trigger body, each as its tokens, or none when there is no body.
+
+    The trigger's own name may be the keyword BEGIN, so the body starts at the first BEGIN after
+    the ON that names the table the trigger fires on, and the statements it holds are separated
+    by the semicolons at parenthesis depth zero.
+    """
+    tokens = _sql_tokens(sql)
+    depths = _depths(tokens)
+    top = [index for index in range(len(tokens)) if depths[index] == 0]
     on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
     begin = next(
         (
@@ -605,15 +648,49 @@ def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> lis
     )
     if begin is None:
         return []
-    # An INSERT trigger's OLD and a DELETE trigger's NEW are NULL, so neither is an owner.
-    event = _trigger_event(tokens, top, on)
-    rows = {"insert": ("new",), "delete": ("old",)}.get(event, ("new", "old"))
     statements: list[list[tuple[str, str]]] = [[]]
     for index in range(begin + 1, len(tokens)):
         if depths[index] == 0 and tokens[index] == (_PUNCT, ";"):
             statements.append([])
         else:
             statements[-1].append(tokens[index])
+    return statements
+
+
+def _trigger_deletions(sql: str) -> list[str]:
+    """What each top-level DELETE of a trigger's body deletes, as ``DELETE FROM <table>``, or
+    ``DELETE`` when the table it names cannot be read.
+
+    The authorizer refuses every DELETE on a compatibility connection, so a trigger that runs one
+    is refused at admission rather than at the write that fires it.
+    """
+    found: list[str] = []
+    for statement in _trigger_statements(sql):
+        depths = _depths(statement)
+        for index, token in enumerate(statement):
+            if depths[index] or token != (_WORD, "delete"):
+                continue
+            rest = statement[index + 1 :]
+            name = None
+            if rest[:1] == [(_WORD, "from")] and len(rest) > 1:
+                name = _name(rest[1])
+            # Text for the refusal message; it is never executed.
+            found.append(f"DELETE FROM {name}" if name else "DELETE")  # noqa: S608
+    return found
+
+
+def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> list[str]:
+    """How a trigger's statements write an owned table other than with the owner of the row that
+    fired it: an INSERT must copy ``NEW.<column>`` (``OLD.<column>`` in a DELETE trigger) into
+    every row, and an UPDATE must restrict its rows by a term comparing the column with one of
+    the rows its event makes readable.
+    """
+    statements = _trigger_statements(sql)
+    if not statements:
+        return []
+    # A DELETE trigger reads OLD and an INSERT trigger reads NEW; a trigger names exactly one
+    # event, so the other of the two is not a column of it at all.
+    rows = {"insert": ("new",), "delete": ("old",)}.get(_trigger_event(sql), ("new", "old"))
     problems: list[str] = []
     for statement in statements:
         target = _write_target(statement)
@@ -707,6 +784,12 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
                 return f"the OR {action.upper()} conflict clause {effect}"
     if "returning" in top:
         return "RETURNING is not admitted"
+    if verb == "insert":
+        target = _write_target(tokens)
+        names = None if target is None else _insert_columns(tokens, target[2])
+        twice = None if names is None else _duplicate_column(names)
+        if twice is not None:
+            return f"the INSERT names the column {twice} twice"
     return None
 
 
@@ -717,8 +800,8 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
 class ColumnShape:
     """One column as ``PRAGMA table_xinfo`` reports it.
 
-    ``type`` is uppercased with single spaces and ``default`` is the SQL of the column's
-    definition as it is written, whitespace and comments set aside. ``pk`` is the column's
+    ``type`` is uppercased with single spaces and ``default`` is the DEFAULT expression as it is
+    written, with the tokens joined by :func:`_joined` and comments aside. ``pk`` is the column's
     position in the primary key (0 when it is not part of it); ``hidden`` is 2 for a virtual and
     3 for a stored generated column.
     """
@@ -781,11 +864,18 @@ class ForeignKeyShape:
 
 @dataclass(frozen=True)
 class SchemaObject:
-    """A trigger or view whose SQL names a closure table, with that SQL as it is written."""
+    """A trigger or view of the closure, with its SQL as it is written.
+
+    An object joins the closure when its SQL may name a closure table or another closure object.
+    ``position`` is a trigger's place among the closure triggers on its own table, in creation
+    order, since SQLite fires them in that order; it is 0 for a view and for a trigger that is
+    the only closure trigger on its table.
+    """
 
     type: str
     name: str
     sql: str
+    position: int = 0
 
 
 @dataclass(frozen=True)
@@ -793,7 +883,9 @@ class Closure:
     """The structure of a set of tables and of everything in the store that touches them.
 
     ``foreign_keys`` holds every key into or out of the tables; ``objects`` every trigger and view
-    whose SQL names one of them.
+    whose SQL may name one of the tables or of the other objects, and, in turn, whose own SQL may
+    bring in a view or a table of its own: the closure follows what its objects read, until
+    nothing new joins.
     """
 
     tables: tuple[TableShape, ...]
@@ -903,29 +995,56 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
 
 
 def _column_collation(definition: str) -> str:
-    """The collation a column's definition declares, ``BINARY`` when it declares none."""
+    """The collation a column's definition declares, its name folded as SQLite folds a name.
+
+    ``binary`` is the answer for a definition that declares none. Only a clause at parenthesis
+    depth zero of the definition counts: a ``COLLATE`` inside a CHECK, a DEFAULT or a GENERATED
+    expression collates one comparison of that expression, not the column. When the definition
+    carries several such clauses SQLite compares the column under the last of them, so the last
+    one is read. Folding is by ASCII letters only, so a name spelled with another character in
+    the place of one, ``bınary``, is not the folded ``binary``.
+    """
     tokens = _sql_tokens(definition)
+    depths = _depths(tokens)
+    collation = "binary"
     for index, token in enumerate(tokens):
-        if token == (_WORD, "collate") and tokens[index + 1 : index + 2]:
-            return tokens[index + 1][1].upper()
-    return "BINARY"
+        if depths[index] or token != (_WORD, "collate"):
+            continue
+        name = _name(tokens[index + 1]) if index + 1 < len(tokens) else None
+        if name is not None:
+            collation = name
+    return collation
 
 
-_TABLE_CONSTRAINTS = frozenset({"constraint", "primary", "unique", "check", "foreign"})
+def _is_table_constraint(words: list[str]) -> bool:
+    """Whether a closure definition, as its words, is a table constraint and not a column.
+
+    The closure keeps definitions with their quotes dropped, so a column named ``"check"`` and a
+    CHECK constraint both start with ``check``; what follows tells them apart. A table constraint
+    is ``CHECK (``, ``UNIQUE (``, ``PRIMARY KEY (``, ``FOREIGN KEY (``, or one of those after
+    ``CONSTRAINT <name>``; a column's type is a word, never a parenthesis.
+    """
+    if words[:2] in (["check", "("], ["unique", "("]):
+        return True
+    if words[:3] in (["primary", "key", "("], ["foreign", "key", "("]):
+        return True
+    return words[:1] == ["constraint"] and _is_table_constraint(words[2:])
 
 
 def _ordered_collation(table: TableShape, column: str) -> str:
-    """The collation *column* compares under in *table*, read from its column definition."""
+    """The collation *column* compares under in *table*, read from its column definition.
+
+    A column definition starts with the column's name and whatever follows it: a type, a
+    constraint, or nothing. A column whose definition is not found reads as an unknown
+    collation, which is not binary, so the owner check refuses it rather than assume binary.
+    """
     for definition in sorted(table.definitions):
         tokens = _sql_tokens(definition)
-        if (
-            len(tokens) > 1
-            and tokens[0][0] in (_WORD, _IDENT)
-            and tokens[0][1] == column
-            and tokens[1][1] not in _TABLE_CONSTRAINTS
-        ):
+        if not tokens or _name(tokens[0]) != column:
+            continue
+        if not _is_table_constraint([token[1] for token in tokens]):
             return _column_collation(definition)
-    return "BINARY"
+    return "unknown (its definition could not be read)"
 
 
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
@@ -1023,30 +1142,62 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
     wanted = frozenset(_fold(name) for name in tables)
     entries = {
         (str(row[0]), _fold(str(row[1]))): row
-        for row in fetch("SELECT type, name, tbl_name, sql FROM sqlite_master")
+        for row in fetch("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY rowid")
     }
+    bodies = {
+        key: _sql_tokens(row[3])
+        for key, row in entries.items()
+        if key[0] in ("trigger", "view") and row[3]
+    }
+    # A table is named with its ASCII letters in either case, as SQLite matches it, and a quoted
+    # token may be read as a name or as a string literal depending on its scope and on the
+    # connection's setting, so every spelling a body carries counts: an object that may name a
+    # closure table or another closure object belongs to the closure, and what that object reads
+    # joins in turn, until nothing new joins. The body itself is kept as written.
+    known = {name for _, name in entries if not name.startswith("sqlite_")}
+    inside = set(wanted)
+    joined: set[tuple[str, str]] = set()
+    while True:
+        found = {
+            key
+            for key, tokens in bodies.items()
+            if key not in joined and inside.intersection(_names(tokens))
+        }
+        # An object whose own name the closure already holds joins too: what a closure object
+        # reads is part of the closure, and that includes an object it reads by name.
+        found |= {key for key in bodies if key not in joined and key[1] in inside}
+        if not found:
+            break
+        joined |= found
+        for key in found:
+            inside |= _names(bodies[key]) & known
     shapes = [
         _table_shape(fetch, str(row[1]), row[3] or "", entries)
-        for name in sorted(wanted)
+        for name in sorted(inside)
         if (row := entries.get(("table", name))) is not None
     ]
+    table_names = frozenset(shape.name for shape in shapes)
     keys: set[ForeignKeyShape] = set()
-    objects: set[SchemaObject] = set()
     for (kind, name), row in entries.items():
         if kind == "table" and not name.startswith("sqlite_"):
             keys.update(
                 key
                 for key in _foreign_keys(fetch, str(row[1]))
-                if key.table in wanted or key.parent in wanted
+                if key.table in table_names or key.parent in table_names
             )
-        elif kind in ("trigger", "view") and row[3]:
-            # A table is named with its ASCII letters in either case, as SQLite matches it, and
-            # a quoted token may be read as a name or as a string literal depending on its scope
-            # and on the connection's setting, so every spelling the body carries counts: an
-            # object that may name a closure table belongs to the closure, and the profile has
-            # to list it. The body itself is kept as written.
-            if wanted.intersection(_names(_sql_tokens(row[3]))):
-                objects.add(SchemaObject(kind, name, _spelled_sql(row[3])))
+    objects: set[SchemaObject] = set()
+    positions: dict[str, int] = {}
+    for (kind, name), row in entries.items():
+        if (kind, name) not in joined:
+            continue
+        position = 0
+        if kind == "trigger":
+            # SQLite fires a table's triggers in the order it created them, so a trigger's place
+            # among the closure triggers on its own table is part of the closure.
+            table_name = _fold(str(row[2]))
+            position = positions.get(table_name, 0)
+            positions[table_name] = position + 1
+        objects.add(SchemaObject(kind, name, _spelled_sql(row[3]), position))
     return Closure(tuple(shapes), frozenset(keys), frozenset(objects))
 
 
@@ -1096,8 +1247,16 @@ def _closure_differences(expected: Closure, observed: Closure) -> list[str]:
         found.append(f"foreign key not in the profile: {key}")
     for key in sorted(expected.foreign_keys - observed.foreign_keys, key=repr):
         found.append(f"foreign key missing: {key}")
+    expected_objects = {(item.type, item.name): item for item in expected.objects}
     for item in sorted(observed.objects - expected.objects, key=repr):
-        found.append(f"{item.type} {item.name} is not in the profile")
+        twin = expected_objects.get((item.type, item.name))
+        if item.type == "trigger" and twin is not None and twin.sql == item.sql:
+            found.append(
+                f"trigger {item.name} is in another position on its table than the profile's, "
+                "and SQLite fires a table's triggers in the order they were created"
+            )
+        else:
+            found.append(f"{item.type} {item.name} is not in the profile")
     for item in sorted(expected.objects - observed.objects, key=repr):
         found.append(f"{item.type} {item.name} is missing or changed")
     return found
@@ -1455,19 +1614,33 @@ class _Guard:
                 f"resolution: {shown}",
                 operation,
             )
+        # A trigger runs inside the write that fires it, and every DELETE is refused there by
+        # the authorizer, so a trigger that runs one is refused when the store is admitted.
+        deletions = [
+            f"trigger {item.name} {problem}"
+            for item in sorted(self.profile.closure.objects, key=lambda o: o.name)
+            if item.type == "trigger"
+            for problem in _trigger_deletions(item.sql)
+        ]
+        if deletions:
+            raise self.refusal(
+                f"{when}: compatibility mode admits no DELETE, and a trigger's DELETE runs "
+                f"inside the write that fires it: " + "; ".join(deletions),
+                operation,
+            )
         rule = self.profile.owner
         if rule is not None:
-            # `owner = ?` compares under the column's collation, so an owner that is not BINARY
+            # `owner = ?` compares under the column's collation, so an owner that is not binary
             # takes a variant of the owner's name as the owner, and writes another owner's row.
             variants = [
                 f"{table.name}.{rule.column} compares under {_ordered_collation(table, rule.column)}"
                 for table in self.profile.closure.tables
                 if rule.column in {column.name for column in table.columns}
-                and _ordered_collation(table, rule.column) != "BINARY"
+                and _ordered_collation(table, rule.column) != "binary"
             ]
             if variants:
                 raise self.refusal(
-                    f"{when}: the owner column compares under a collation, not BINARY, so its "
+                    f"{when}: the owner column compares under a collation, not binary, so its "
                     f"rows cannot be told from a variant's: {'; '.join(variants)}",
                     operation,
                 )
@@ -1524,8 +1697,12 @@ class _Guard:
         rule = self.profile.owner
         if rule is None:
             return
+        # BINARY, whatever the key column's collation is: a key that names an owner only through
+        # case folding names one whose rows the statement check, which compares the owner column
+        # under that column's own collation, would then treat as another owner's.
         found = connection.exec_driver_sql(
-            f"SELECT 1 FROM {_quote(rule.principals)} WHERE {_quote(rule.key)} = ?",  # noqa: S608
+            f"SELECT 1 FROM {_quote(rule.principals)} "  # noqa: S608 -- the names are the rule's
+            f"WHERE {_quote(rule.key)} = ? COLLATE BINARY",
             (self.owner,),
         ).fetchall()
         if not found:

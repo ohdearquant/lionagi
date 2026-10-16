@@ -1282,11 +1282,16 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 with contextlib.suppress(get_cancelled_exc_class(), Exception):
                     await driver_done.wait()
         if driver_errors:
-            # Sweep, as the driver's own cancellation path does: the driver stopped on an error
-            # rather than completing, so a node it announced and never reached is still owed a
-            # terminal, and a refusal here is raised as itself.
-            self._cancel_announced_unfinished()
-            raise _refusal(driver_errors[0]) or driver_errors[0]
+            # A refusal settles announced nodes the way the driver's own cancellation path
+            # does: the driver stopped, so a node it announced and never reached is still owed
+            # a terminal. An ordinary driver error is raised as itself and leaves them exactly
+            # as the earlier code did -- the per-operation handlers own their own terminals,
+            # and the nodes the driver never reached keep the "queued" they were announced
+            # with, as a consumer closing the stream early leaves them too.
+            refusal = _refusal(driver_errors[0])
+            if refusal is not None:
+                self._cancel_announced_unfinished()
+            raise refusal or driver_errors[0]
 
     async def _run_tracked(self, node: Operation) -> None:
         token = _CURRENT_OP.set(node)

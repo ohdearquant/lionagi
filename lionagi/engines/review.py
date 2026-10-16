@@ -283,6 +283,13 @@ class ReviewVerdict(Verdict):
     blocking: list[str] = Field(
         default_factory=list, description="Issues that must be fixed before approval."
     )
+    served_model: str | None = Field(
+        default=None,
+        description=(
+            "The model the provider named for the last synthesis call; None when it "
+            "named none or no call was made."
+        ),
+    )
 
 
 # Runs per session, weak both ways, so a run can see whether it started beside another.
@@ -814,6 +821,14 @@ class ReviewEngine(Engine):
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
         text = str(res) if res is not None else ""
+        # The provider's own report on the synthesis model. The model-level value is the
+        # last call's, not call-correlated; it is this call's because this branch and its
+        # model were made for the synthesis alone and call in sequence, and a call that
+        # reports no model clears it.
+        metadata = getattr(getattr(synth, "chat_model", None), "provider_metadata", None)
+        served = metadata.get("served_model") if isinstance(metadata, dict) else None
+        if not isinstance(served, str) or not served.strip():
+            served = None
 
         unevidenced = self._unevidenced_dimensions(run, dimensions)
         unverified = self._unverified_findings(run)
@@ -822,6 +837,7 @@ class ReviewEngine(Engine):
         proposals = run.by_type(ProposedVerdict)
         proposed = proposals[-1] if proposals else None
         final = self._rule(proposed, unevidenced, unverified, text, unaudited=unaudited)
+        final.served_model = served
         await run.emit(final)
 
         notes = []
