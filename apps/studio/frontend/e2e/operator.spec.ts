@@ -15,7 +15,7 @@ async function createConversation(page: Page): Promise<string> {
   return title;
 }
 
-async function selectFreshConversation(page: Page): Promise<void> {
+async function selectFreshConversation(page: Page, wait?: { timeout: number }): Promise<void> {
   // The conversation switcher is a disclosure button ("Conversations") that
   // reveals a list of conversation rows, each a labeled button rather than a
   // <select>/<option> pair. The fixture conversation is created with a unique
@@ -30,9 +30,9 @@ async function selectFreshConversation(page: Page): Promise<void> {
   const toggle = page.getByRole("button", { name: /^Conversations/ });
   await toggle.click();
   const row = page.getByRole("button", { name: title, exact: true });
-  await expect(row).toHaveCount(1);
+  await expect(row).toHaveCount(1, wait);
   await row.click();
-  await expect(page.getByLabel("Instruction")).toBeEnabled();
+  await expect(page.getByLabel("Instruction")).toBeEnabled(wait);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -136,13 +136,16 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
 test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
   test.setTimeout(90_000);
-  // 15 waits in this test take streamTimeout: four assert a permission proposal
-  // or its command is on screen, six confirm the two decisions (three each), and
-  // five re-assert durable history after the reload. Each wait tolerates up to
-  // 30s of delay, so a slow render passes silently. The 90s is a chosen cap on
-  // the whole case, not a sum of those waits: a delayed run can reach the cap
-  // before any single wait times out. Setup, the response waits, and the two
-  // assertions inside selectFreshConversation carry no explicit timeout.
+  // 17 waits in this test take streamTimeout: two select the fresh conversation
+  // after selectFreshConversation reloads the page, four assert a permission
+  // proposal or its command is on screen, six confirm the two decisions (three
+  // each), and five re-assert durable history after the reload. Each wait
+  // tolerates up to 30s of delay, so a slow render passes silently. The 90s is a
+  // chosen cap on the whole case, not a sum of those waits: a delayed run can
+  // reach the cap before any single wait times out. The other waits carry no
+  // explicit timeout. This config sets no actionTimeout or navigationTimeout, so
+  // the three response waits, the clicks and the navigations have no limit of
+  // their own and only the case cap bounds them.
   // The 30s is sized against the stream's stall-and-replay path, whose timings
   // come from src/lib/api.ts: OPERATOR_STREAM_LIVENESS_TIMEOUT_MS (15_000) plus
   // the reconnect backoff, which starts at 750ms, multiplies by 1.8 per failed
@@ -165,7 +168,7 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   await page.goto("/");
   expect((await discovery).status()).toBe(200);
 
-  await selectFreshConversation(page);
+  await selectFreshConversation(page, streamTimeout);
   const instruction = page.getByLabel("Instruction");
 
   await instruction.fill("Request a gated demo action and wait for me to deny it.");
