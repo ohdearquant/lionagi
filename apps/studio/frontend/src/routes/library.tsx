@@ -121,6 +121,14 @@ interface SourceData {
 // records a rejected request so a retry can target just that source.
 type SourceCache = Partial<Record<CatalogSource, SourceData | "failed">>;
 
+// A create, delete, or clone names the kind it changed. Dropping that kind's
+// sources from the cache makes every tab that lists them fetch them again —
+// including a tab the completion did not resolve on.
+interface CatalogInvalidation {
+  token: number;
+  kinds: LibraryKind[];
+}
+
 const SOURCE_REQUESTS: Record<CatalogSource, () => Promise<SourceData>> = {
   agents: async () => {
     const value = await listAgents();
@@ -237,14 +245,19 @@ const SOURCE_REQUESTS: Record<CatalogSource, () => Promise<SourceData>> = {
 
 function useLibraryData(
   tab: LibraryTab | undefined,
-  refresh: { reloadToken: number; retryToken: number },
+  refresh: {
+    reloadToken: number;
+    retryToken: number;
+    invalidation: CatalogInvalidation;
+  },
   hidden = false,
 ) {
-  const { reloadToken, retryToken } = refresh;
+  const { reloadToken, retryToken, invalidation } = refresh;
   const [cache, setCache] = useState<SourceCache>({});
   const requestVersion = useRef<Partial<Record<CatalogSource, number>>>({});
   const prevReloadToken = useRef(reloadToken);
   const prevRetryToken = useRef(retryToken);
+  const prevInvalidationToken = useRef(invalidation.token);
 
   const wants = (kind: LibraryKind) =>
     (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
@@ -258,14 +271,40 @@ function useLibraryData(
   useEffect(() => {
     const reload = reloadToken !== prevReloadToken.current;
     const retry = !reload && retryToken !== prevRetryToken.current;
+    const invalidated = invalidation.token !== prevInvalidationToken.current;
     prevReloadToken.current = reloadToken;
     prevRetryToken.current = retryToken;
+    prevInvalidationToken.current = invalidation.token;
+
+    // A create, delete, or clone drops the completed kind's sources here, so a
+    // tab that lists them fetches them again on its next visit even when the
+    // completion resolved on another tab. Sources the same refresh already
+    // re-requests are left in place, so the list does not blink empty under a
+    // viewer who is still on the completed tab.
+    if (invalidated) {
+      const dropped = new Set(invalidation.kinds.flatMap((kind) => KIND_SOURCES[kind]));
+      const refetched = reload ? new Set(wantedSources) : new Set<CatalogSource>();
+      setCache((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const source of dropped) {
+          if (refetched.has(source)) continue;
+          if (source in next) {
+            delete next[source];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
 
     const sources = wantedSources.filter((source) => {
       const cached = cache[source];
       if (reload) return true;
       if (retry) return cached === "failed";
-      return cached === undefined;
+      // A failed source must be attempted again on a revisit; holding it
+      // would leave the tab permanently stuck on its error state.
+      return cached === undefined || cached === "failed";
     });
     if (sources.length === 0) return;
 
@@ -284,7 +323,7 @@ function useLibraryData(
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- wantedSources derives from tab/hidden; cache is read only to pick what to request
-  }, [scope, reloadToken, retryToken, hidden]);
+  }, [scope, reloadToken, retryToken, invalidation.token, hidden]);
 
   const items = wantedKinds.flatMap((kind) =>
     KIND_SOURCES[kind].flatMap((source) => {
@@ -430,16 +469,28 @@ function LibraryPage() {
   const [reloadToken, setReloadToken] = useState(0);
   const [visibleRetryToken, setVisibleRetryToken] = useState(0);
   const [hiddenRetryToken, setHiddenRetryToken] = useState(0);
+  // A create, delete, or clone names the kind it changed. Recording that kind
+  // here lets every tab that lists it fetch it again on its next visit, even
+  // when the completion resolved after the viewer moved to another tab.
+  const [invalidation, setInvalidation] = useState<CatalogInvalidation>({ token: 0, kinds: [] });
   // Completion callbacks can outlive the tab where they were created. Refresh
   // the current effects instead of issuing requests for a captured tab.
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+  const invalidate = useCallback(
+    (kind: LibraryKind) => setInvalidation((prev) => ({ token: prev.token + 1, kinds: [kind] })),
+    [],
+  );
   const retryVisible = useCallback(() => setVisibleRetryToken((token) => token + 1), []);
   const retryHidden = useCallback(() => setHiddenRetryToken((token) => token + 1), []);
-  const visible = useLibraryData(kindFilter, { reloadToken, retryToken: visibleRetryToken });
+  const visible = useLibraryData(kindFilter, {
+    reloadToken,
+    retryToken: visibleRetryToken,
+    invalidation,
+  });
   // Detail navigation must not reload or hide the visible catalog.
   const hidden = useLibraryData(
     selectedHiddenKind,
-    { reloadToken, retryToken: hiddenRetryToken },
+    { reloadToken, retryToken: hiddenRetryToken, invalidation },
     true,
   );
   const items = [...visible.items, ...hidden.items];
@@ -452,16 +503,19 @@ function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  // A create form belongs to the tab that opened it; switching tabs closes it
-  // rather than leaving a form for the previous kind on screen.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- close the form for the previous tab
-    setShowCreate(false);
-  }, [kindFilter]);
-  const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
-
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
+  // A create form belongs to the tab that opened it, and the detail pane's
+  // collapsed state belongs to the selection; switching tabs closes the form
+  // and returns to the list rather than leaving the previous tab's pane up.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- a tab change closes the
+       create form and returns the collapsed layout to the list */
+    setShowCreate(false);
+    setDetailActive(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [kindFilter]);
+  const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
@@ -825,10 +879,11 @@ function LibraryPage() {
           onCreated={(name) => {
             if (!mounted.current) return;
             if (completionOnTab(kindFilter)) setShowCreate(false);
+            invalidate("mcp");
             void reload();
             void navigate({
               search: (prev) =>
-                (prev.tab ?? "all") === kindFilter
+                (prev.tab ?? "all") === kindFilter && prev.sel === sel
                   ? { ...prev, sel: encodeSel("mcp", name) }
                   : prev,
               replace: false,
@@ -847,10 +902,11 @@ function LibraryPage() {
         onCreated={(name) => {
           if (!mounted.current) return;
           if (completionOnTab(kindFilter)) setShowCreate(false);
+          invalidate("agent");
           void reload();
           void navigate({
             search: (prev) =>
-              (prev.tab ?? "all") === kindFilter
+              (prev.tab ?? "all") === kindFilter && prev.sel === sel
                 ? { ...prev, sel: encodeSel("agent", name) }
                 : prev,
             replace: false,
@@ -870,10 +926,11 @@ function LibraryPage() {
             if (!mounted.current) return;
             setOptimisticWorkflow(workflow);
             if (completionOnTab(kindFilter)) setShowCreate(false);
+            invalidate("workflow");
             void reload();
             void navigate({
               search: (prev) =>
-                (prev.tab ?? "all") === kindFilter
+                (prev.tab ?? "all") === kindFilter && prev.sel === sel
                   ? { ...prev, sel: encodeSel("workflow", workflow.name) }
                   : prev,
               replace: false,
@@ -918,6 +975,7 @@ function LibraryPage() {
           if (!mounted.current) return;
           const deleted = parsed.name;
           void reload();
+          invalidate("mcp");
           if (completionOnTab(kindFilter)) handleBack();
           void navigate({
             search: (prev) => {
@@ -942,6 +1000,7 @@ function LibraryPage() {
           if (!mounted.current) return;
           const deleted = parsed.name;
           if (completionOnTab(kindFilter)) setDetailActive(false);
+          invalidate("agent");
           void reload();
           void navigate({
             search: (prev) => {
@@ -958,7 +1017,30 @@ function LibraryPage() {
       />
     );
   } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
-    detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
+    detailPane = (
+      <WorkflowDetail
+        id={selectedWorkflowId}
+        onBack={handleBack}
+        onDeleted={() => {
+          if (!mounted.current) return;
+          const deleted = parsed.name;
+          if (completionOnTab(kindFilter)) setDetailActive(false);
+          invalidate("workflow");
+          void reload();
+          void navigate({
+            search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "workflow" || current.name !== deleted) return prev;
+              const next = { ...prev };
+              delete next.sel;
+              return next;
+            },
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "playbook") {
     detailPane = (
       <PlaybookTemplateDetail
@@ -967,10 +1049,11 @@ function LibraryPage() {
         onBack={handleBack}
         onCloned={(clonedName) => {
           if (!mounted.current) return;
+          invalidate("playbook");
           void reload();
           void navigate({
             search: (prev) =>
-              (prev.tab ?? "all") === kindFilter
+              (prev.tab ?? "all") === kindFilter && prev.sel === sel
                 ? { ...prev, sel: encodeSel("playbook", clonedName, "custom") }
                 : prev,
             replace: false,

@@ -94,9 +94,12 @@ function WorkflowEditorInner({
 
   const knownEngineDefIds = useMemo(() => new Set(engineDefs.map((d) => d.id)), [engineDefs]);
 
+  // Rule 4 checks engine ids against this catalog. Until it has loaded, an
+  // empty set would read as "every engine id is unknown", which disables Save
+  // for a workflow that is fine; pass the registry only once it is available.
   const validationErrors = useMemo(
-    () => validateSpec(spec, knownEngineDefIds),
-    [spec, knownEngineDefIds],
+    () => validateSpec(spec, engineCatalog === "loaded" ? knownEngineDefIds : undefined),
+    [spec, knownEngineDefIds, engineCatalog],
   );
 
   const model = useMemo(() => specToFlowModel(spec), [spec]);

@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
+import type { WorkflowSpec } from "@/lib/api";
 
 const api = vi.hoisted(() => ({
   createWorkflowDef: vi.fn(),
@@ -22,6 +23,16 @@ async function flush() {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("CreateWorkflowPanel", () => {
@@ -138,6 +149,52 @@ describe("WorkflowDetail — engine catalog", () => {
     await flush();
   }
 
+  async function renderDetailWith(id: string) {
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <WorkflowDetail id={id} />
+        </IntlProvider>,
+      );
+    });
+    await flush();
+  }
+
+  async function renderDetailWithDelete(onDeleted: () => void) {
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <WorkflowDetail id={savedWorkflow.id} onDeleted={onDeleted} />
+        </IntlProvider>,
+      );
+    });
+    await flush();
+  }
+
+  it("reports a completed delete to the list instead of only collapsing the pane", async () => {
+    api.getWorkflowDef.mockResolvedValue(savedWorkflow);
+    api.listEngineDefs.mockResolvedValue([]);
+    api.deleteWorkflowDef.mockResolvedValue({ ok: true });
+    const onDeleted = vi.fn();
+    await renderDetailWithDelete(onDeleted);
+
+    const remove = [...container.querySelectorAll("button")].find(
+      (element) => element.textContent === "Delete",
+    );
+    expect(remove).toBeDefined();
+    // The first click arms the confirmation; the second performs the delete.
+    await act(async () => remove!.click());
+    const confirm = [...container.querySelectorAll("button")].find(
+      (element) => element.textContent === "Confirm delete",
+    );
+    expect(confirm).toBeDefined();
+    await act(async () => confirm!.click());
+    await flush();
+
+    expect(api.deleteWorkflowDef).toHaveBeenCalledOnce();
+    expect(onDeleted).toHaveBeenCalledOnce();
+  });
+
   it("keeps the editor and retries only the engine catalog when that source fails", async () => {
     api.getWorkflowDef.mockResolvedValue(savedWorkflow);
     api.listEngineDefs.mockRejectedValueOnce(new Error("engine catalog unavailable"));
@@ -172,5 +229,89 @@ describe("WorkflowDetail — engine catalog", () => {
     expect(container.textContent).not.toContain("Workflow not found");
     expect(container.querySelector('[role="status"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  // An absent catalog cannot testify that an engine id is unknown. Until the
+  // catalog resolves, rule 4 must stay out of the way so a workflow with an
+  // engine node remains editable.
+  const engineSpec: WorkflowSpec = {
+    version: 1,
+    nodes: [
+      { id: "n1", kind: "input", label: "Input", pos: { x: 64, y: 64 } },
+      {
+        id: "n2",
+        kind: "engine",
+        label: "Engine",
+        pos: { x: 320, y: 64 },
+        config: { engine_def_id: "engine-id" },
+      },
+    ],
+    edges: [{ id: "e1", from: "n1", to: "n2" }],
+    inputs: [],
+    outputs: [],
+  };
+
+  function saveButton() {
+    const button = [...container.querySelectorAll("button")].find(
+      (element) => element.textContent === "Save",
+    );
+    expect(button).toBeDefined();
+    return button as HTMLButtonElement;
+  }
+
+  it("keeps Save usable while an engine node's catalog is still pending", async () => {
+    api.getWorkflowDef.mockResolvedValue({ ...savedWorkflow, spec_json: engineSpec });
+    api.listEngineDefs.mockReturnValue(new Promise(() => {}));
+    await renderDetail();
+
+    expect(saveButton().disabled).toBe(false);
+    expect(container.textContent).not.toContain("issue");
+  });
+
+  it("keeps Save usable when an engine node's catalog fails", async () => {
+    api.getWorkflowDef.mockResolvedValue({ ...savedWorkflow, spec_json: engineSpec });
+    api.listEngineDefs.mockRejectedValueOnce(new Error("engine catalog unavailable"));
+    await renderDetail();
+
+    expect(saveButton().disabled).toBe(false);
+    expect(container.textContent).not.toContain("issue");
+  });
+
+  it("does not write a save that resolved after the detail changed workflows", async () => {
+    const workflowA = {
+      id: "wf-a",
+      name: "alpha-workflow",
+      description: null,
+      spec_json: null,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const workflowB = {
+      id: "wf-b",
+      name: "beta-workflow",
+      description: null,
+      spec_json: null,
+      created_at: 2,
+      updated_at: 2,
+    };
+    api.getWorkflowDef.mockImplementation(async (id: string) =>
+      id === "wf-b" ? workflowB : workflowA,
+    );
+    api.listEngineDefs.mockResolvedValue([]);
+    await renderDetailWith("wf-a");
+    expect(container.textContent).toContain("alpha-workflow");
+
+    const update = deferred<void>();
+    api.updateWorkflowDef.mockReturnValue(update.promise);
+    await act(async () => saveButton().click());
+    expect(api.updateWorkflowDef).toHaveBeenCalledOnce();
+
+    await renderDetailWith("wf-b");
+    expect(container.textContent).toContain("beta-workflow");
+
+    update.resolve();
+    await flush();
+    expect(container.textContent).toContain("beta-workflow");
+    expect(container.textContent).not.toContain("alpha-workflow");
   });
 });

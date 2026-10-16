@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import {
   getWorkflowDef,
@@ -18,9 +18,11 @@ import Button from "@/components/ui/Button";
 interface WorkflowDetailProps {
   id: string;
   onBack?: () => void;
+  /** Runs after the workflow is deleted; the list drops its row and selection. */
+  onDeleted?: () => void;
 }
 
-export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
+export function WorkflowDetail({ id, onBack, onDeleted }: WorkflowDetailProps) {
   const t = useTranslations("workflow");
   const [def, setDef] = useState<WorkflowDef | null>(null);
   const [engineDefs, setEngineDefs] = useState<EngineDef[]>([]);
@@ -33,6 +35,13 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [armedDelete, setArmedDelete] = useState(false);
+  // A save or delete can outlive the workflow it started on: the detail is
+  // keyed by `id`, so a response for an earlier workflow must not be written
+  // into whichever workflow the pane now shows.
+  const currentId = useRef(id);
+  useEffect(() => {
+    currentId.current = id;
+  }, [id]);
 
   useEffect(() => {
     let alive = true;
@@ -87,11 +96,12 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
   const handleSave = useCallback(
     async (spec: WorkflowSpec) => {
       if (!def) return;
+      const savedId = def.id;
       setSaving(true);
       try {
         await updateWorkflowDef(def.id, { spec_json: spec });
         const updated = await getWorkflowDef(def.id);
-        setDef(updated);
+        if (currentId.current === savedId) setDef(updated);
       } finally {
         setSaving(false);
       }
@@ -107,11 +117,12 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
     }
     try {
       await deleteWorkflowDef(def.id);
-      onBack?.();
+      if (onDeleted) onDeleted();
+      else onBack?.();
     } catch {
       setArmedDelete(false);
     }
-  }, [def, armedDelete, onBack]);
+  }, [def, armedDelete, onBack, onDeleted]);
 
   if (loading) {
     return (

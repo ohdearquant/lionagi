@@ -48,10 +48,19 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 vi.mock("use-intl", () => ({ useTranslations: () => (key: string) => key }));
 vi.mock("@/lib/api", () => ({ ...api, ...mutations }));
 vi.mock("@/components/ui/SplitPane", () => ({
-  default: ({ master, detail }: { master: ReactNode; detail: ReactNode }) => (
+  default: ({
+    master,
+    detail,
+    detailActive,
+  }: {
+    master: ReactNode;
+    detail: ReactNode;
+    detailActive?: boolean;
+  }) => (
     <>
       <div data-testid="master-pane">{master}</div>
       <div data-testid="detail-pane">{detail}</div>
+      <div data-testid="split-pane" data-detail-active={String(detailActive ?? false)} />
     </>
   ),
 }));
@@ -89,7 +98,14 @@ vi.mock("@/components/AgentProfileForm", () => ({
   ),
 }));
 vi.mock("@/components/library/WorkflowDetail", () => ({
-  WorkflowDetail: ({ id }: { id: string }) => <div data-testid="workflow-detail">{id}</div>,
+  WorkflowDetail: ({ id, onDeleted }: { id: string; onDeleted?: (name: string) => void }) => (
+    <>
+      <div data-testid="workflow-detail">{id}</div>
+      <button type="button" data-testid="delete-workflow" onClick={() => onDeleted?.("saved-flow")}>
+        delete workflow
+      </button>
+    </>
+  ),
   CreateWorkflowPanel: ({
     onCreated,
   }: {
@@ -839,5 +855,179 @@ describe("Library catalog loading", () => {
     ).toContain("loadError");
     expect(container.textContent).not.toContain("old-engine-model");
     expect(router.search.sel).toBe("engine:saved-engine");
+  });
+
+  async function clickTab(label: string) {
+    const button = [...container.querySelectorAll("nav button")].find(
+      (element) => element.textContent === label,
+    );
+    expect(button).toBeDefined();
+    await act(async () => (button as HTMLButtonElement).click());
+    await flush();
+  }
+
+  it("refetches the tab where an agent create completed after the viewer left it", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "existing-agent" }] });
+    const creation = deferred<void>();
+    mutations.createAgent.mockReturnValue(creation.promise);
+    await renderLibrary({ tab: "agent" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    expect(mutations.createAgent).toHaveBeenCalledOnce();
+
+    await clickTab("filterSkill");
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "existing-agent" }, { name: "created-agent" }],
+    });
+    creation.resolve();
+    await flush();
+
+    await clickTab("filterAgent");
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("tbody")?.textContent).toContain("created-agent");
+  });
+
+  it("refetches the tab where an agent delete completed after the viewer left it", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "existing-agent" }, { name: "doomed-agent" }],
+    });
+    const deletion = deferred<void>();
+    mutations.deleteAgent.mockReturnValue(deletion.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:doomed-agent" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-agent"]')!.click(),
+    );
+    expect(mutations.deleteAgent).toHaveBeenCalledOnce();
+
+    await clickTab("filterSkill");
+    api.listAgents.mockResolvedValue({ agents: [{ name: "existing-agent" }] });
+    deletion.resolve();
+    await flush();
+
+    await clickTab("filterAgent");
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("tbody")?.textContent).not.toContain("doomed-agent");
+  });
+
+  it("refetches the tab where a playbook clone completed after the viewer left it", async () => {
+    api.listBuiltinPlaybooks.mockResolvedValue({ playbooks: [{ name: "bundled" }] });
+    api.listPlaybooks.mockResolvedValue({ playbooks: [] });
+    const clone = deferred<void>();
+    mutations.clonePlaybook.mockReturnValue(clone.promise);
+    await renderLibrary({ tab: "playbook", sel: "playbook:builtin:bundled" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="clone-playbook"]')!.click(),
+    );
+    expect(mutations.clonePlaybook).toHaveBeenCalledOnce();
+
+    await clickTab("filterSkill");
+    api.listPlaybooks.mockResolvedValue({ playbooks: [{ name: "cloned-playbook" }] });
+    clone.resolve();
+    await flush();
+
+    await clickTab("filterPlaybook");
+    expect(api.listPlaybooks).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("tbody")?.textContent).toContain("cloned-playbook");
+  });
+
+  it("keeps a row picked while a same-tab agent create is pending", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    const creation = deferred<void>();
+    mutations.createAgent.mockReturnValue(creation.promise);
+    await renderLibrary({ tab: "agent" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[1].click());
+    expect(router.search.sel).toBe("agent:second-agent");
+
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }, { name: "created-agent" }],
+    });
+    creation.resolve();
+    await flush();
+    expect(router.search.sel).toBe("agent:second-agent");
+  });
+
+  it("keeps a row picked while a same-tab playbook clone is pending", async () => {
+    api.listBuiltinPlaybooks.mockResolvedValue({ playbooks: [{ name: "bundled" }] });
+    api.listPlaybooks.mockResolvedValue({ playbooks: [{ name: "own" }] });
+    const clone = deferred<void>();
+    mutations.clonePlaybook.mockReturnValue(clone.promise);
+    await renderLibrary({ tab: "playbook", sel: "playbook:builtin:bundled" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="clone-playbook"]')!.click(),
+    );
+
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[1].click());
+    expect(router.search.sel).toBe("playbook:custom:own");
+
+    clone.resolve();
+    await flush();
+    expect(router.search.sel).toBe("playbook:custom:own");
+  });
+
+  it("refetches a failed source when its tab is revisited", async () => {
+    api.listSkills.mockRejectedValueOnce(new Error("skill catalog unavailable"));
+    await renderLibrary({ tab: "skill" });
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+
+    api.listSkills.mockResolvedValue({ skills: [{ name: "alpha-skill" }] });
+    await clickTab("filterAgent");
+    await clickTab("filterSkill");
+    expect(api.listSkills).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector("tbody")?.textContent).toContain("alpha-skill");
+  });
+
+  it("resets the detail pane when the tab changes", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[0].click());
+    expect(
+      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
+    ).toBe("true");
+
+    // The Skill tab has nothing to select, so no selection keeps its detail
+    // pane up: the collapsed layout must fall back to the list.
+    api.listSkills.mockResolvedValue({ skills: [] });
+    await clickTab("filterSkill");
+    expect(
+      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
+    ).toBe("false");
+  });
+
+  it("clears the workflow selection and its row when the detail deletes it", async () => {
+    api.listWorkflowDefs.mockResolvedValue([{ id: "workflow-id", name: "saved-flow" }]);
+    await renderLibrary({ sel: "workflow:saved-flow" });
+    expect(container.querySelector('[data-testid="workflow-detail"]')?.textContent).toBe(
+      "workflow-id",
+    );
+    api.listWorkflowDefs.mockResolvedValue([]);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-workflow"]')!.click(),
+    );
+    await flush();
+    expect(router.search.sel).toBeUndefined();
+    expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
+
+    // The deleted workflow's catalog was dropped too, so a fresh deep link
+    // fetches it again instead of resolving the stale cached row.
+    await renderLibrary({ sel: "workflow:saved-flow" });
+    expect(api.listWorkflowDefs).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
   });
 });
