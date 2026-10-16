@@ -460,19 +460,18 @@ class iModel:  # noqa: N801
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
-            await self.executor.append(api_call)
-        # A call stream() drives is consumed here, not by the executor's queue,
-        # so it must not sit in the pending queue once this generator owns it:
-        # the next forward() on this executor would pop its id and look it up in
-        # the pile, which the teardown below has already emptied for it. A call
-        # this method created is dropped here with no await after its append; a
-        # call the caller appended and passed in reached the queue at that
-        # append, so a forward() between the two can still have sent it.
+        # A call stream() drives is consumed by this generator, so it is tracked
+        # in the executor's pile and never queued: the next forward() on this
+        # executor would pop a queued id and look it up in the pile, which the
+        # teardown below has already emptied for it. A caller that appended the
+        # call before passing it in put it in the queue at that append, so it is
+        # dropped here, and a forward() between the two can still have sent it.
         self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
 
         stream_error = None
         try:
+            await self.executor.pile.ainclude(api_call)
             if self.executor.processor is None or self.executor.processor.is_stopped():
                 await self.executor.start()
 

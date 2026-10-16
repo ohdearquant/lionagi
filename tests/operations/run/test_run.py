@@ -1062,7 +1062,7 @@ async def test_imodel_stream_propagates_cancellation():
     m.executor = types.SimpleNamespace(
         append=AsyncMock(side_effect=lambda event: pending.include(event.id)),
         pending=pending,
-        pile=types.SimpleNamespace(pop=lambda *a, **kw: None),
+        pile=types.SimpleNamespace(ainclude=AsyncMock(), pop=lambda *a, **kw: None),
         processor=types.SimpleNamespace(
             _concurrency_sem=None,
             is_stopped=lambda: False,
@@ -1070,7 +1070,7 @@ async def test_imodel_stream_propagates_cancellation():
         config={},
     )
 
-    # Same order as run(): the caller appends the call, then streams it.
+    # A caller that queued the call itself before streaming it.
     await m.executor.append(api_call)
 
     chunks_yielded: list = []

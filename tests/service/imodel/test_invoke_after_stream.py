@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import anyio
 import pytest
 
+from lionagi.operations.run.run import _stream_with_liveness
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.imodel import iModel
 
@@ -219,8 +221,9 @@ async def test_a_cancelled_stream_waiting_for_a_slot_leaves_no_pending_entry():
             consumer = asyncio.create_task(_drain(model.stream(messages=MESSAGES)))
 
             async def reached_the_slot_wait() -> None:
-                # The call enters the pile in append(); with this test holding
-                # the only slot, the next await in stream() is the slot acquire.
+                # The call enters the pile when stream() takes it; with this test
+                # holding the only slot, the next await in stream() is the slot
+                # acquire.
                 while len(model.executor.pile) == 0:
                     await asyncio.sleep(0)
 
@@ -253,3 +256,27 @@ async def test_a_stream_whose_processor_fails_to_start_leaves_no_pending_entry()
     assert fake_stream.call_count == 0
     assert len(model.executor.pending) == 0
     assert len(model.executor.pile) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_run_stream_past_its_deadline_before_it_starts_leaves_nothing_queued():
+    # run() arms its deadline before the pre-call hooks run, so a hook that
+    # outlasts the timeout ends the run before stream() starts. The call it
+    # created must not be left for the next invoke() to send.
+    model = _model()
+    with patch.object(model.endpoint, "stream", side_effect=_chunks(1)) as fake_stream:
+        with pytest.raises(TimeoutError):
+            await _drain(
+                _stream_with_liveness(
+                    model,
+                    {"messages": MESSAGES, "stream": True},
+                    anyio.current_time() - 1.0,
+                    None,
+                    [],
+                )
+            )
+        assert len(model.executor.pending) == 0
+        assert len(model.executor.pile) == 0
+        await _invoke_once(model)
+
+    assert fake_stream.call_count == 0
